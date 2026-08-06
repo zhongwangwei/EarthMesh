@@ -82,24 +82,6 @@ pub fn run_refine_pipeline_namelist(
     }
     let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
     let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(&contents)?;
-    // The point+radius route is one of *Method-C's* two ways of turning criteria
-    // into refinement, not a stage above the backends. Red-green grows its own
-    // marking and has no reader for it, so past this line the section is not
-    // visible to a red-green run at all.
-    //
-    // Dropped rather than refused because the project layer defaults it on for
-    // every refining run: refusing would fail every red-green project that
-    // never asked for it. Dropped here rather than ignored at the branch
-    // because it is not inert on the way down -- left visible it stands down
-    // the calculated-region reader below, for a route that will not run, and
-    // the mesh comes out missing those regions with nothing said.
-    //
-    // Parsed first either way, so a malformed `&adaptive` is still an error
-    // whichever backend the run selects.
-    let adaptive_options = match config.refine_backend.trim() {
-        "red_green" => None,
-        _ => adaptive_options,
-    };
     if hfield_options.is_some() && config.nxp % 3 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -256,24 +238,25 @@ pub fn run_refine_pipeline_namelist(
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let has_configured_calculated_regions =
         !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
-    // `refine_cal` says a criterion decides where to refine, and both routes
-    // that read one in-process are Method-C's. Red-green refines named regions:
-    // mask *files* it serves fine, since a mask file is a named region by
-    // another name, but a criterion with no file behind it has no reader here.
+    // `refine_cal` says a criterion decides where to refine. On red-green the
+    // point+radius route is what reads one, so this only bites when that route
+    // is off too: mask *files* are served either way, since a mask file is a
+    // named region by another name, but a criterion with neither a file nor
+    // `&adaptive` behind it has nowhere to go.
     //
     // Said now rather than at the backend branch, because the reader below runs
     // first -- and on the unconfigured prefix it fails with a message about
     // Method-C and a `/tmp` path nobody typed.
     if config.refine_backend.trim() == "red_green"
         && refine.refine_cal
+        && adaptive_options.is_none()
         && !has_configured_calculated_regions
     {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "NL%refine_backend = red_green has no reader for calculated criteria: it refines \
-             named regions, and the routes that read a criterion (&hfield, &adaptive) are \
-             Method-C's. Point RL%mask_refine_cal_fprefix at mask files, which red-green serves \
-             as named regions, or use method_c",
+            "NL%refine_backend = red_green has no reader for calculated criteria with the \
+             point+radius route off: it refines named regions, and &hfield is Method-C's. Enable \
+             &adaptive, point RL%mask_refine_cal_fprefix at mask files, or use method_c",
         ));
     }
     if refine.refine_cal && (!backend_consumes_criteria || has_configured_calculated_regions) {
@@ -370,14 +353,14 @@ pub fn run_refine_pipeline_namelist(
     } = match config.refine_backend.trim() {
         "red_green" => {
             // What this route does not read, said outright rather than served
-            // quietly with less. The marking comes from named regions and
-            // nothing else, so any of these would simply be dropped -- and the
-            // run would still write a valid mesh that passes every quality
-            // check it has and is not the mesh that was asked for.
+            // quietly with less: any of these would simply be dropped, and the
+            // run would still write a valid mesh that passes every quality check
+            // it has and is not the mesh that was asked for.
             //
-            // `&adaptive` is not on this list: it is Method-C's own route, it is
-            // on by default, and it was dropped at the top of this function
-            // rather than carried down to be refused here.
+            // `&adaptive` is not on this list. Its criteria half is a shared
+            // upstream -- raster work that produces an ordinary circle list --
+            // and red-green consumes it below. Only turning circles into mesh is
+            // per-backend, which is exactly the half suspended on Method-C.
             let unsupported = if active_hfield_options.is_some() {
                 Some("an h-field (&hfield)")
             } else if native_cartesian_xy {
@@ -392,11 +375,37 @@ pub fn run_refine_pipeline_namelist(
                     io::ErrorKind::Unsupported,
                     format!(
                         "NL%refine_backend = red_green does not serve {unsupported}; it refines \
-                         the named regions and nothing else. Use method_c for this run"
+                         named regions and the point+radius criteria. Use method_c for this run"
                     ),
                 ));
             }
-            refine_with_redgreen(&mesh, &regions, &refine, max_level)?
+            let adaptive = adaptive_options
+                .as_ref()
+                .map(|adaptive| -> io::Result<RedGreenAdaptive<'_>> {
+                    Ok(RedGreenAdaptive {
+                        inputs: crate::refinement_demand::plan::DemandPlanInputs {
+                            bounds: adaptive_demand_bounds(domain_region.as_ref(), &config)?,
+                            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(
+                                |_| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "NL%gridnum_perdegree must fit usize",
+                                    )
+                                },
+                            )?,
+                            landtype_file: adaptive_landtype_file(&config),
+                            mesh_type,
+                            refine_coastline: adaptive.coastline,
+                        },
+                        base_cell_meters: adaptive.base_m.unwrap_or_else(|| {
+                            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                                / (5.0 * method_c_nxp as f64)
+                        }),
+                        coastline: adaptive.coastline,
+                    })
+                })
+                .transpose()?;
+            refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
         }
         _ => {
             let MethodCRefineOutcome {
@@ -627,17 +636,26 @@ struct RefinedGrid {
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
+/// The criteria half of the point+radius route, as red-green consumes it.
+struct RedGreenAdaptive<'a> {
+    inputs: crate::refinement_demand::plan::DemandPlanInputs<'a>,
+    base_cell_meters: f64,
+    coastline: bool,
+}
+
 /// Refine by red-green: mark the triangles the regions ask for, split each into
 /// four, close the seams by halving the neighbours left hanging, once per level.
 ///
 /// Unlike Method-C this never refuses a region for its shape -- the judge chain
 /// grows a marking until the triangulation closes -- which is the whole reason
-/// the backend exists.
+/// the backend exists, and why the criteria route is served here and suspended
+/// there. A criterion's demand has whatever shape the data has.
 fn refine_with_redgreen(
     mesh: &TriangularMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
+    named_regions: &[earthmesh_mesh::RefinementRegion],
     refine: &RefineConfig,
     max_level: usize,
+    adaptive: Option<RedGreenAdaptive<'_>>,
 ) -> io::Result<RefinedGrid> {
     if max_level > 1 && !refine.is_transition {
         // Said here rather than met halfway through level 2, where it surfaces
@@ -654,11 +672,44 @@ fn refine_with_redgreen(
     let mut output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
     let mut previous_marks: Option<Vec<i32>> = None;
     let mut split_triangles = 0usize;
+    let mut passes = Vec::new();
+    let mut deepest_level = 0usize;
+    let mut stopped_on_empty_demand = false;
     for level in 1..=max_level {
         let before = redgreen.triangle_count();
+        // Named regions carry their own target level, so a deeper one is also
+        // refined by every level above it -- that is the `>= level` the marking
+        // applies. Criteria circles are planned *for* this level and nest by
+        // radius instead, so they are added as they come.
+        let mut level_regions: Vec<earthmesh_mesh::RefinementRegion> = named_regions.to_vec();
+        let mut demanded_cells = 0usize;
+        if let Some(adaptive) = &adaptive {
+            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level(
+                refine,
+                &adaptive.inputs,
+                level,
+                adaptive.base_cell_meters,
+                max_level,
+            )?;
+            demanded_cells = demand.demanded_cells;
+            eprintln!(
+                "red-green refine level {level} judging {:.0} m cells: {} circles over {} \
+                 demanded source cells",
+                adaptive.base_cell_meters / 2f64.powi((level - 1) as i32),
+                demand.circles.len(),
+                demand.demanded_cells,
+            );
+            level_regions.extend(demand.circles);
+        }
+        // Nothing asks at this depth, and nothing deeper will either: the
+        // criteria stopped and the named regions that reach here are gone.
+        if !level_regions.iter().any(|region| region.level() >= level) {
+            stopped_on_empty_demand = true;
+            break;
+        }
         let (written, outcome) = crate::redgreen_bridge::refine_redgreen_level(
             &redgreen,
-            regions,
+            &level_regions,
             refine,
             level,
             previous_marks.as_deref(),
@@ -687,9 +738,22 @@ fn refine_with_redgreen(
         // inside the transition band, never further out.
         previous_marks = Some(crate::redgreen_bridge::redgreen_marking_from_regions(
             &outcome.mesh,
-            regions,
+            &level_regions,
             level,
         ));
+        passes.push(crate::refinement_demand::nest::NestPassReport {
+            level,
+            cell_meters: adaptive
+                .as_ref()
+                .map(|adaptive| adaptive.base_cell_meters / 2f64.powi((level - 1) as i32))
+                .unwrap_or(0.0),
+            circle_count: level_regions.len(),
+            regions: level_regions,
+            demanded_cells,
+            faces_before: before,
+            faces_after: outcome.mesh.triangle_count(),
+        });
+        deepest_level = level;
         redgreen = outcome.mesh;
         output_mesh = written;
     }
@@ -700,10 +764,16 @@ fn refine_with_redgreen(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "red-green refinement was requested over {} region(s) up to level {max_level} but \
-                 no triangle was split; check that the regions carry a level in 1..={max_level} \
-                 and that they hold triangle centres of a mesh this coarse",
-                regions.len()
+                "red-green refinement was requested over {} named region(s){} up to level \
+                 {max_level} but no triangle was split; check that the regions carry a level in \
+                 1..={max_level}, and that they or the criteria cover triangle centres of a mesh \
+                 this coarse",
+                named_regions.len(),
+                if adaptive.is_some() {
+                    " and the enabled criteria"
+                } else {
+                    ""
+                }
             ),
         ));
     }
@@ -718,7 +788,24 @@ fn refine_with_redgreen(
         transition_faces: 0,
         spring_nest_passes: 0,
         hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default(),
-        adaptive_run: None,
+        // Reported for the same two reasons Method-C reports it: the ocean
+        // carve reads it to protect the cells a criterion demanded from its
+        // largest-component rule, and the quality step reads the written file
+        // to ask whether the mesh reached the level the circles asked for.
+        // Without it a coastal circle sitting on a small bay is carved away and
+        // nothing says the region asked for is gone.
+        adaptive_run: adaptive.map(|adaptive| {
+            (
+                crate::refinement_demand::nest::AdaptiveNestReport {
+                    passes,
+                    deepest_level,
+                    stopped_on_empty_demand,
+                },
+                max_level,
+                adaptive.base_cell_meters,
+                adaptive.coastline,
+            )
+        }),
     })
 }
 

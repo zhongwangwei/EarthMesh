@@ -99,6 +99,68 @@ pub const METHOD_C_ADAPTIVE_SUSPENDED: &str = concat!(
     "Set refinement.adaptive.enabled = false, or use named regions, until the red-green backend serves this path."
 );
 
+/// What the criteria ask for at one level, before any backend sees it.
+pub struct LevelCircles {
+    /// Whether any criterion asked for anything at this level at all.
+    ///
+    /// Kept apart from `circles` being empty because the reduction can drop
+    /// demand it cannot cover with a circle, and "nobody asked" and "asked but
+    /// nothing survived" are different answers to a backend deciding whether it
+    /// can serve the run.
+    pub demanded: bool,
+    /// Source cells the criteria asked for, for a caller that wants to say how
+    /// much demand a level's circles came from.
+    pub demanded_cells: usize,
+    /// Circle radius this level uses. Reported when a level cannot be built, so
+    /// the message can say what size failed.
+    pub radius_meters: f64,
+    pub circles: Vec<RefinementRegion>,
+}
+
+/// Re-ask the criteria at the cell size this level will produce, and reduce what
+/// they demand to circles.
+///
+/// This is the half of the point+radius route that does not depend on the
+/// backend: it is raster work, and the circles that come out are an ordinary
+/// region list. What is Method-C's is the other half -- turning those circles
+/// into mesh -- which is the half that is suspended.
+///
+/// The levels nest by construction: every level blocks on the finest radius so
+/// the centres coincide, and only the radius changes. A backend that holds a
+/// deeper level inside the one above it can therefore take these at face value.
+pub fn adaptive_demand_circles_for_level(
+    refine: &RefineConfig,
+    inputs: &DemandPlanInputs<'_>,
+    level: usize,
+    base_cell_meters: f64,
+    max_level: usize,
+) -> io::Result<LevelCircles> {
+    let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
+    // The cell this pass refines away is the one the previous level left.
+    let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
+    let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
+    let radius_meters = radii[level - 1];
+    if plan.is_empty() {
+        return Ok(LevelCircles {
+            demanded: false,
+            demanded_cells: 0,
+            radius_meters,
+            circles: Vec::new(),
+        });
+    }
+    Ok(LevelCircles {
+        demanded: true,
+        demanded_cells: plan.demand.demanded_count(),
+        radius_meters,
+        circles: reduce_demand_to_circles_on_blocks(
+            &plan.demand,
+            level,
+            radius_meters,
+            radii[max_level - 1],
+        )?,
+    })
+}
+
 pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &TriangularMesh,
     refine: &RefineConfig,
@@ -132,39 +194,29 @@ pub fn spawn_nest_adaptive_with_named_regions(
             ),
         ));
     }
-    let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
     let mut current = mesh.clone();
     let mut passes = Vec::new();
     let mut deepest_level = 0usize;
     let mut stopped_on_empty_demand = false;
 
     for level in 1..=max_level {
-        // The cell this pass refines away is the one the previous level left.
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-        let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
+        let demand =
+            adaptive_demand_circles_for_level(refine, inputs, level, base_cell_meters, max_level)?;
         // Named regions are shapes Method-C can build and stay served; it is
-        // demand whose shape came from the data that is suspended. Testing the
-        // plan itself is what separates them exactly -- a config that names no
-        // criterion, or one that finds nothing, produces an empty plan and
-        // passes straight through.
-        if !plan.is_empty() {
+        // demand whose shape came from the data that is suspended. Testing
+        // whether a criterion asked at all is what separates them exactly -- a
+        // config that names no criterion, or one that finds nothing, demands
+        // nothing and passes straight through.
+        if demand.demanded {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 METHOD_C_ADAPTIVE_SUSPENDED,
             ));
         }
-        // Every level blocks on the finest radius so the centres coincide and
-        // the levels come out concentric; only the radius changes per level.
-        let mut regions = if plan.is_empty() {
-            Vec::new()
-        } else {
-            reduce_demand_to_circles_on_blocks(
-                &plan.demand,
-                level,
-                radii[level - 1],
-                radii[max_level - 1],
-            )?
-        };
+        let demanded_cells = demand.demanded_cells;
+        let radius_meters = demand.radius_meters;
+        let mut regions = demand.circles;
         regions.extend(
             named_regions
                 .iter()
@@ -325,7 +377,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
                      {:.0} m could not be nested: {error}",
                     level - 1,
                     regions.len(),
-                    radii[level - 1]
+                    radius_meters
                 );
                     break;
                 }
@@ -336,7 +388,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
                             "adaptive refinement level {level} with {} circles of radius {:.0} m: \
                          {error}",
                             regions.len(),
-                            radii[level - 1]
+                            radius_meters
                         ),
                     ))
                 }
@@ -355,7 +407,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
                      cells but the mesh reached only mrlw {deepest_mrlw}; the circles are too \
                      small for this generation to seed inside",
                     regions.len(),
-                    plan.demand.demanded_count()
+                    demanded_cells
                 ),
             ));
         }
@@ -364,7 +416,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
             cell_meters,
             circle_count: regions.len(),
             regions: regions.clone(),
-            demanded_cells: plan.demand.demanded_count(),
+            demanded_cells,
             faces_before,
             faces_after: face_count(&current),
         });

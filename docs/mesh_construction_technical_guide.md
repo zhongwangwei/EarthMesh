@@ -790,21 +790,24 @@ M 132536 是**发射新造的点**,现有定点修复 `try_fill_method_c_specifi
 分支点在 `refine_pipeline/global_source.rs`,`match config.refine_backend.trim()`。
 两个臂都产出同一个 `RefinedGrid`,差别在于**红绿臂填不了的字段留空,而不是编造**。
 
-**它读什么。** 只读具名区域:`redgreen_marking_from_regions` 按三角形中心做包含
-测试,一层一次,`refine_redgreen_level` 逐层推进。中心采样与海洋雕刻同规则,所以
-一个单元要么细化并保留,要么两者都不。
+**它读什么。** 具名区域,以及点+半径判据规约出的圆——两者都经
+`redgreen_marking_from_regions` 按三角形中心做包含测试,一层一次,
+`refine_redgreen_level` 逐层推进。中心采样与海洋雕刻同规则,所以一个单元要么细化并
+保留,要么两者都不。具名区域自带目标层级,所以每一层都按 `level() >= 本层` 取;判据
+圆是**为本层**规划的,靠半径嵌套,直接加进来。
 
-**`&adaptive` 是 Method-C 的,不是后端之上的一层。** 点+半径是 Method-C 把判据变成
-细化的两条路之一(另一条是 h 场),红绿没有它的读者,自己长标记。所以:
+**`&adaptive` 不是 Method-C 专属的,它有两半。**
 
-- `earthmesh_project` 的 lowering **只在后端是 Method-C 时才发 `&adaptive`**。这一条
-  是必须的而不是整洁而已:那个分支对任何要细化、又没要 h 场的项目**默认发**它,不按
-  后端把关的话,每一个红绿项目都会带着一段自己后端服务不了的 section 到达 runner。
-- 手写 namelist 仍可能带它,所以 `global_source.rs` 在读完之后、任何人用它之前,对
-  红绿一路把 `adaptive_options` 置 `None`。**丢弃而不是拒绝**,因为它是默认打开的;
-  **在顶部丢弃而不是到分支处忽略**,因为它一路向下并不惰性——留着会让 calculated
-  区域读取器为一条根本不会跑的路"让位",区域少了却没人说。仍先解析,所以格式错误
-  的 `&adaptive` 不论哪个后端都照样报错。
+- **判据 → 圆**:在每层要产生的网格尺度上复问判据,把需求规约成圆。纯栅格计算,与
+  后端无关,出来的就是一份普通区域列表。函数是
+  `refinement_demand::nest::adaptive_demand_circles_for_level`,**两个后端走同一个**。
+  层间嵌套由构造保证:每层都以最细半径 block,圆心重合,只有半径变。
+- **圆 → 网格**:每个后端各做各的。**Method-C 专属的只有这一半,而这一半正是被
+  suspend 的那半**(`METHOD_C_ADAPTIVE_SUSPENDED`):它的种子晶格三格一步、周长须为
+  3 的倍数,数据形状的区域被拒而不是被近似。红绿把任何标记长到闭合为止,所以同一批
+  需求它建得出来——**这就是这个后端存在的理由**。
+
+所以 lowering 对两个后端都发 `&adaptive`,`global_source.rs` 也不再为红绿丢弃它。
 
 **它拒什么(而不是悄悄少做)。** 下面每一项若被忽略,跑出来的网格都会有效、通过全部
 质量检查、并且不是项目要的那张——而且它们都只在被明确写下时才出现,所以在分支
@@ -812,21 +815,24 @@ M 132536 是**发射新造的点**,现有定点修复 `try_fill_method_c_specifi
 
 | 请求 | 为什么红绿臂服务不了 |
 |---|---|
-| `&hfield` | 目标层场根本不在这条路上被读;lowering 只在显式要求时才发它 |
+| `&hfield` | 目标层场只有 Method-C 读;lowering 只在显式要求时才发它 |
 | Cartesian-XY | 红绿网格在经纬度上工作,x/y 米的点转经纬度是无意义的 |
 | `NL%sfcgrid_res_factor` | 地表扩张是另一种操作,不是细化 |
+| `refine_cal` 且 `&adaptive` 关、又没有 mask 文件 | 判据无人可读。mask **文件**照常服务(mask 文件就是换个名字的具名区域),只有"判据背后既没文件也没点+半径"才没地方去 |
 | `max_level ≥ 2` 且 `RL%Istransition=.false.` | 不建过渡行的一轮会留下悬挂节点,下一层连三角邻居都导不出来 |
 
 最后一条若不前置说明,会在第 2 层中途以 `ngrmm row N has invalid neighbor 0` 冒出来,
-读起来像网格缺陷而不像配置错误。
+读起来像网格缺陷而不像配置错误。倒数第二条若不前置说明,会撞进 calculated 区域读取器,
+以一句提 Method-C、还带着没人打过的 `/tmp` 路径的话失败。
 
-**GUI 尚未反映这层耦合**:前端把 `algorithm`(后端)与 `route`(点+半径 / h 场 /
-discrete)当作两个独立选择,选了红绿之后 adaptive 那组控件仍可编辑,而它不会被 lower
-下去。命令层的文档已说明,选择器本身要不要联动是产品决策。
+**GUI 的 `algorithm` × `route` 现在确实是两个独立选择**,除了一种组合:红绿 + h 场
+会被引擎拒。点+半径两个后端都服务。
 
 **它报不了什么。** `state = None`(网格已在经纬度上,不经 Voronoi/PCVT)、
 `method_c_metadata = None`(没有 mrlm/ngr/lineage)、`realized_max_level = 0`、
-`transition_faces = 0`。**零在这里是"本网格上未测量",不是"测量结果为零"**——红绿
+`transition_faces = 0`。判据跑起来时 `AdaptiveNestReport` **是**报的,和 Method-C 同一
+个结构:海洋雕刻靠它保护判据要过的单元不被最大连通分量规则删掉,质量步骤靠写出的
+`adaptive_refinement.json` 复问网格有没有达到圆要求的层级。**零在这里是"本网格上未测量",不是"测量结果为零"**——红绿
 确实建了过渡带,只是不以 Method-C 的 `boundary_rows` 计数。请求的深度另有 `max_level`
 承载,不要为了让日志好看而合成一个层数。运行记录的 `nma`/`nwa` 在无 state 时取自
 gridfile 自身的行数。
@@ -847,7 +853,10 @@ gridfile 自身的行数。
    可以超过它(一层细化进上一层的过渡带就会产出),而"到达上限"不等于"允许越界索
    引一张按上限开的表"——那是进程中止,不是错误答案。
 
-**测试落点**:端到端在 `tests/refine_pipeline.rs` 的
+**测试落点**:具名区域端到端在 `tests/refine_pipeline.rs` 的
 `redgreen_backend_refines_a_named_circle_end_to_end`(NXP=21,两层,读回 gridfile 做
-拓扑检查——只断言"单元变多"抓不到上面第 1 条);链接规则与行布局在
-`redgreen_bridge` 的单元测试;越界那条在 `refine_loop` 里。
+拓扑检查——只断言"单元变多"抓不到上面第 1 条);判据链在
+`tests/redgreen_criteria_demand.rs`(合成海岸线走真实栅格计算——管线入口把
+`NL%gridnum_perdegree` 锁死在 120/240,全球栅格约 1 GB,所以直接喂规划器);全流程判据
+run 在 `tests/adaptive_criteria_only_run.rs`,**需挂载 `EARTHMESH_LANDTYPE`,否则跳过**;
+链接规则与行布局在 `redgreen_bridge` 的单元测试;越界那条在 `refine_loop` 里。

@@ -360,14 +360,12 @@ impl ProjectConfig {
         }
         .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
-        // Point+radius is one of *Method-C's* two ways of turning criteria into
-        // refinement, not a stage above the backends -- red-green has no reader
-        // for it and grows its own marking instead. So it is gated on the
-        // backend as well as on the h-field: this arm defaults it *on*, and an
-        // ungated default would put an unservable section into every red-green
-        // project that never asked for one.
-        let method_c = matches!(backend, crate::RefinementBackend::MethodC);
-        let adaptive = if mkgrd.refine && !hfield_requested && method_c {
+        // Not gated on the backend: the criteria half of the point+radius route
+        // is raster work that produces an ordinary circle list, and both
+        // backends consume it. Only turning those circles into mesh is
+        // per-backend -- and that is the half suspended on Method-C, which is
+        // why red-green is the one that can actually serve a coastline.
+        let adaptive = if mkgrd.refine && !hfield_requested {
             match &self.refinement.adaptive {
                 Some(recipe) if recipe.enabled => Some(recipe.clone()),
                 Some(_) => None,

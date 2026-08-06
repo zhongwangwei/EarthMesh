@@ -158,14 +158,16 @@ pub enum MeshDomainKind {
 /// care.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefinementBackend {
-    /// Nested regions with transition rows. The default because it is the one
-    /// that reads every route into refinement a project can ask for: the
-    /// point+radius criteria and the h-field are both its own.
+    /// Nested regions with transition rows. The default, and the only backend
+    /// that reads an h-field -- but criteria-driven refinement is suspended on
+    /// it: a region whose shape came from the data is refused rather than
+    /// approximated, so `refinement.adaptive` with a criterion enabled fails.
     #[default]
     MethodC,
-    /// Split any marked triangle into four and close the seams. Builds a mesh
-    /// end to end from **named regions**; the criteria routes are Method-C's
-    /// and are not lowered into a red-green run.
+    /// Split any marked triangle into four and close the seams. Serves named
+    /// regions *and* the point+radius criteria, because its judge chain grows a
+    /// marking it cannot take as given and never rejects a shape. This is the
+    /// backend for a coastline.
     RedGreen,
 }
 

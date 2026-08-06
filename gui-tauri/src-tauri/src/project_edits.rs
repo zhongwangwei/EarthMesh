@@ -678,11 +678,12 @@ pub(crate) fn set_expert(
 /// closes the seams, growing a marking it cannot take as given rather than
 /// rejecting it.
 ///
-/// Not orthogonal to `set_adaptive_refinement`, despite reading that way: the
-/// point+radius route is one of *Method-C's* two ways of turning criteria into
-/// refinement, and lowering does not emit `&adaptive` for a red-green project.
-/// So selecting red-green here leaves a run driven by named regions alone, and
-/// whatever the adaptive controls say is not what will build the mesh.
+/// Orthogonal to `set_adaptive_refinement` with one exception. The point+radius
+/// route's criteria half is shared -- both backends consume the circles it
+/// plans -- so either algorithm serves it. What differs is the other half:
+/// criteria-driven refinement is *suspended* on Method-C, which refuses a shape
+/// off its lattice, so a run with a criterion enabled needs red-green. The h
+/// field is the exception: only Method-C reads it, and red-green refuses.
 #[tauri::command]
 pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;

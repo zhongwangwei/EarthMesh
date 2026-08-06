@@ -44,7 +44,7 @@ fn landtype_path() -> Option<PathBuf> {
 /// scratch needs every field the engine validates, and chasing them one error at
 /// a time produces a file that resembles no real configuration. This keeps the
 /// example's own settings and changes exactly what the case is about.
-fn criteria_only_namelist(mesh_type: &str, landtype: &str, depth: usize) -> String {
+fn criteria_only_namelist(mesh_type: &str, landtype: &str, depth: usize, backend: &str) -> String {
     let example = match mesh_type {
         "atmos" | "atmosmesh" => "atmosphere_hex_global.nml",
         _ => "land_hex_global.nml",
@@ -101,6 +101,18 @@ fn criteria_only_namelist(mesh_type: &str, landtype: &str, depth: usize) -> Stri
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // Inserted, not replaced: the examples do not carry this field, and
+    // `replace_quoted` on a line that is not there is a silent no-op -- the
+    // case would run the other backend and only say so much later.
+    text = text.replacen(
+        "&mkgrd",
+        &format!("&mkgrd\n  NL%refine_backend = '{backend}'"),
+        1,
+    );
+    assert!(
+        text.contains(&format!("NL%refine_backend = '{backend}'")),
+        "the fixture must actually select the backend it was asked for"
+    );
     text = replace_quoted(text, "NL%mask_domain_type", "bbox");
     text = replace_quoted(
         text,
@@ -127,14 +139,18 @@ fn landtype_cells_per_degree(landtype: &str) -> usize {
 }
 
 fn run(mesh_type: &str, depth: usize) -> (bool, String) {
+    run_with_backend(mesh_type, depth, "method_c")
+}
+
+fn run_with_backend(mesh_type: &str, depth: usize, backend: &str) -> (bool, String) {
     let Some(landtype) = landtype_path() else {
         return (true, "EARTHMESH_LANDTYPE not set; skipped".to_string());
     };
-    let root = temp_root(mesh_type);
+    let root = temp_root(&format!("{mesh_type}_{backend}"));
     let namelist = root.join("case.nml");
     fs::write(
         &namelist,
-        criteria_only_namelist(mesh_type, &landtype.to_string_lossy(), depth),
+        criteria_only_namelist(mesh_type, &landtype.to_string_lossy(), depth, backend),
     )
     .expect("write namelist");
 
@@ -211,4 +227,39 @@ fn a_resolution_dependent_criterion_narrows_as_the_levels_deepen() {
             "demand must narrow as cells shrink, got {demanded:?}:\n{log}"
         );
     }
+}
+
+/// The same criteria-only run on red-green, where the criteria are served
+/// rather than refused.
+///
+/// Method-C refuses this configuration outright the moment a criterion demands
+/// anything (`METHOD_C_ADAPTIVE_SUSPENDED`): its seed lattice steps three cells
+/// at a time and its perimeter must be a multiple of three, so a region shaped
+/// by the data is refused rather than approximated. Red-green grows a marking
+/// it cannot take as given, which is the whole reason the backend exists -- and
+/// this is the run that says so end to end.
+#[test]
+fn red_green_serves_the_criterion_method_c_suspends() {
+    let (ok, log) = run_with_backend("landmesh", 2, "red_green");
+    if log.contains("skipped") {
+        eprintln!("{log}");
+        return;
+    }
+    assert!(ok, "criteria-only red-green run failed:\n{log}");
+    assert!(
+        log.contains("red-green refine level 1"),
+        "the red-green route must have run:\n{log}"
+    );
+    assert!(
+        log.contains("triangles split"),
+        "and must have split triangles the criterion asked for:\n{log}"
+    );
+
+    // The same configuration on Method-C is refused, which is what makes the
+    // run above worth having rather than a second way of doing the same thing.
+    let (method_c_ok, method_c_log) = run_with_backend("landmesh", 2, "method_c");
+    assert!(
+        !method_c_ok && method_c_log.contains("suspended on the Method-C backend"),
+        "Method-C must still refuse the shape it cannot build:\n{method_c_log}"
+    );
 }
