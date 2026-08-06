@@ -1,5 +1,6 @@
 use super::*;
 
+mod method_c_accretion;
 mod method_c_boundary_repair;
 mod method_c_child_w_geometry;
 mod method_c_entrypoints;
