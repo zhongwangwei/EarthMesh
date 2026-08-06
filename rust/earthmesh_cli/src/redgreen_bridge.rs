@@ -181,3 +181,92 @@ mod settings_tests {
         assert!(redgreen_settings_for_level(&refine, 9).max_transition_row >= 1);
     }
 }
+
+/// Which triangles a level's regions ask for, one entry per triangle.
+///
+/// The marking is the whole interface between "what the project wants" and
+/// "what red-green builds": any set of triangles is legal input, and the judge
+/// chain grows it until the triangulation closes. That is why this can be a
+/// containment test and nothing more -- there is no shape to satisfy.
+///
+/// A triangle is asked for when its own centre falls inside a region. Centre
+/// sampling is the same rule the ocean carve uses, so a cell is refined and
+/// kept, or neither, rather than refined and then carved away.
+pub fn redgreen_marking_from_regions(
+    mesh: &earthmesh_refine_redgreen::RedGreenMesh,
+    regions: &[earthmesh_mesh::MethodCRefinementRegion],
+    level: usize,
+) -> Vec<i32> {
+    let mut marking = vec![0i32; mesh.triangle_count() + 1];
+    if regions.is_empty() {
+        return marking;
+    }
+    for triangle in mesh.num_vertex + 1..=mesh.triangle_count() {
+        let centre = mesh.triangle_points[triangle];
+        let wanted = regions
+            .iter()
+            .filter(|region| region.level() >= level)
+            .any(|region| region.contains_lonlat_canonical(centre));
+        if wanted {
+            marking[triangle] = 1;
+        }
+    }
+    marking
+}
+
+#[cfg(test)]
+mod marking_tests {
+    use super::*;
+    use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+
+    fn base() -> earthmesh_refine_redgreen::RedGreenMesh {
+        let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = mesh.m_neighbors.clone();
+        earthmesh_refine_redgreen::redgreen_mesh_from_method_c(&mesh, &neighbors).expect("bridge")
+    }
+
+    #[test]
+    fn a_circle_marks_the_triangles_whose_centres_it_holds() {
+        let mesh = base();
+        let marking = redgreen_marking_from_regions(
+            &mesh,
+            &[MethodCRefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 2_000_000.0,
+                level: 1,
+            }],
+            1,
+        );
+
+        let marked = marking.iter().filter(|&&value| value == 1).count();
+        assert!(marked > 0, "a circle this size must hold some triangle");
+        assert!(
+            marked < mesh.triangle_count(),
+            "and must not hold the whole globe: {marked} of {}",
+            mesh.triangle_count()
+        );
+        assert_eq!(marking[0], 0, "slot 0 is not a triangle");
+        assert_eq!(
+            marking[1], 0,
+            "slot 1 is the canonical placeholder and is never asked for"
+        );
+    }
+
+    #[test]
+    fn a_region_shallower_than_this_level_asks_for_nothing_here() {
+        // A level-1 circle is served by level 1 and must not reappear at level
+        // 2, or every level would refine everything the one above it did.
+        let mesh = base();
+        let regions = [MethodCRefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 2_000_000.0,
+            level: 1,
+        }];
+
+        assert!(redgreen_marking_from_regions(&mesh, &regions, 1).contains(&1));
+        assert!(redgreen_marking_from_regions(&mesh, &regions, 2)
+            .iter()
+            .all(|&value| value == 0));
+    }
+}
