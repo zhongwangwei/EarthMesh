@@ -78,25 +78,19 @@ pub struct RedGreenSettings {
     /// `weak_concav_eliminate`: absorb weak concavities by refining them out
     /// rather than carrying them through the transition rounds.
     ///
-    /// **Only one of two branches is built, and the flag reads as if both
-    /// were.** In `MOD_refine.F90` this is not a switch between "handle weak
-    /// concavities" and "do not" -- it chooses *which* of two treatments runs:
+    /// In `MOD_refine.F90` this is not a switch between "handle weak
+    /// concavities" and "do not". It chooses *which* of two treatments runs,
+    /// and both are here:
     ///
     /// - true: `iterG` grows the marking until the concavity is refined away.
-    ///   That is the branch here.
     /// - false: `iterG`'s count becomes `num_ref_weak_concav`, and the
-    ///   concavity is carried through the transition rounds instead, by
-    ///   `weak_concav_segment_make` (line 355), `weak_concav_pair_special` and
-    ///   `weak_concav_lop_judge` (line 477). `close_transition_rows` calls none
-    ///   of the three.
+    ///   concavity is carried through the transition rounds instead --
+    ///   `weak_concav_segment_make` (line 355), the reverse judge over those
+    ///   segments (447), `weak_concav_pair_special` (450) and
+    ///   `weak_concav_lop_judge` (477).
     ///
-    /// So finishing this is not three extra calls: `iterG` has to run either
-    /// way and its result has to fork. The three kernels themselves are ready
-    /// -- all of `refine_lop_sharp`, `refine_lop_weak` and
-    /// `refine_lop_weak_pair` are now zero-based and agree with the Fortran.
-    ///
-    /// Left `false` until the fork is built, so the half that exists cannot be
-    /// mistaken for the whole.
+    /// `false` is the default because that is the treatment that keeps the
+    /// concavity's shape rather than filling it in.
     pub eliminate_weak_concavity: bool,
     /// `HALO`: how far inside the previous level's refined region this level
     /// must stay.
@@ -473,12 +467,10 @@ pub fn refine_redgreen_round_inside(
             break;
         }
         if !settings.eliminate_weak_concavity {
-            // Carried, not absorbed. The count is what the transition rounds'
-            // weak-segment machinery would be sized by; that machinery is not
-            // built (see `eliminate_weak_concavity`), so for now this is a
-            // measurement rather than an instruction -- and a measurement is
-            // still worth more than the silence it replaces, because it says
-            // how often the unbuilt half would have been needed.
+            // Carried, not absorbed: the count sizes the transition rounds'
+            // weak-segment tables, and the marking stays out of `segment` on
+            // purpose -- these triangles are not being split into four, they
+            // are being transitioned across.
             weak_concavity_count = weak;
             break;
         }
@@ -570,6 +562,7 @@ pub fn refine_redgreen_round_inside(
         flipped_triangle_count = close_transition_rows(
             mesh,
             settings,
+            weak_concavity_count,
             &triangle_neighbors,
             &closed_curves,
             &mut mrl_new,
@@ -624,6 +617,7 @@ pub fn refine_redgreen_round_inside(
 fn close_transition_rows(
     mesh: &RedGreenMesh,
     settings: &RedGreenSettings,
+    weak_concavity_count: usize,
     triangle_neighbors: &[Vec<usize>],
     closed_curves: &[Vec<usize>],
     mrl_new: &mut [i32],
@@ -645,6 +639,20 @@ fn close_transition_rows(
         return Ok(0);
     }
 
+    // `MOD_refine.F90:355`, and only when the concavities are being carried
+    // rather than absorbed -- `weak_concavity_count` is zero otherwise and the
+    // maker would have nothing to build from.
+    let mut weak = if weak_concavity_count > 0 {
+        Some(crate::refine_weak_concav_segment_make_one_based(
+            settings.max_transition_row,
+            weak_concavity_count,
+            &mesh.cells_on_triangle,
+            &segments.bdy_refine_segment,
+        )?)
+    } else {
+        None
+    };
+
     let mut sjx_child = vec![[0usize; 2]; sjx_points + 1];
     let mut flipped = 0usize;
 
@@ -652,6 +660,10 @@ fn close_transition_rows(
         // The judge compares the segments before and after this row was
         // consumed, so the snapshot has to be taken before the heads are eaten.
         let segments_before = segments.bdy_refine_segment.clone();
+        let weak_before = weak
+            .as_ref()
+            .map(|weak| weak.weak_concav_segment.clone())
+            .unwrap_or_default();
         let mut row_marking = vec![0i32; sjx_points + 1];
         let mut row_count = 0usize;
         for index in 0..segments.num_bdy_refine_segment {
@@ -674,6 +686,26 @@ fn close_transition_rows(
                 }
             }
             segments.n_bdy_refine_segment[index] -= 1;
+        }
+        // `MOD_refine.F90:395-410`: the weak segments give up a head each round
+        // too, so a concavity's band walks outward alongside the boundary's.
+        if let Some(weak) = weak.as_mut() {
+            for index in 0..weak.weak_concav_segment.len() {
+                if weak.n_weak_concav_segment[index] == 0 {
+                    continue;
+                }
+                for slot in 0..settings.max_transition_row {
+                    let triangle = weak.weak_concav_segment[index][slot];
+                    if triangle == 1 {
+                        break;
+                    }
+                    if triangle <= sjx_points && row_marking[triangle] == 0 {
+                        row_marking[triangle] = 1;
+                        row_count += 1;
+                    }
+                }
+                weak.n_weak_concav_segment[index] -= 1;
+            }
         }
         if row_count == 0 {
             break;
@@ -716,6 +748,24 @@ fn close_transition_rows(
             &mut segments.bdy_refine_segment,
             &segments.n_bdy_refine_segment,
         )?;
+        // `MOD_refine.F90:447`: the same judge over the weak segments, whose
+        // marks join the boundary's for this round's reverse split.
+        let mut reverse_marking = reverse_marking;
+        if let Some(weak) = weak.as_mut() {
+            let weak_reverse = refine_isreverse_judge_one_based(
+                settings.max_transition_row,
+                weak.num_weak_concav_segment,
+                triangle_neighbors,
+                mrl_new,
+                &mut weak.weak_concav_segment,
+                &weak.n_weak_concav_segment,
+            )?;
+            for triangle in mesh.num_vertex + 1..=sjx_points {
+                if weak_reverse[triangle] == 1 {
+                    reverse_marking[triangle] = 1;
+                }
+            }
+        }
         let reverse_count = (mesh.num_vertex + 1..=sjx_points)
             .filter(|&triangle| reverse_marking[triangle] == 1)
             .count();
@@ -753,9 +803,30 @@ fn close_transition_rows(
         // these tables are indexed by a count, not by an entity id.
         let num_end = 4.max(4 * settings.max_transition_row.saturating_sub(1));
         let mut lop_candidates = vec![1usize; 0];
-        let mut lop_counts = vec![0usize; segments.num_bdy_refine_segment];
-        let mut lop_rows = vec![vec![1usize; num_end]; segments.num_bdy_refine_segment];
+        // `MOD_refine.F90:487` sizes these as (num_end, num_bdy + num_weak):
+        // the weak judge writes past the boundary segments into rows of its own.
+        let weak_rows = weak
+            .as_ref()
+            .map(|weak| weak.num_ref_weak_concav)
+            .unwrap_or(0);
+        let mut lop_counts = vec![0usize; segments.num_bdy_refine_segment + weak_rows];
+        let mut lop_rows = vec![vec![1usize; num_end]; segments.num_bdy_refine_segment + weak_rows];
+        // `MOD_refine.F90:450` -- the pair pass decides which outward triangles
+        // the LOP judge will pair up, so it runs first.
         let mut flips = 0usize;
+        if let Some(weak) = weak.as_mut().filter(|weak| weak.num_weak_concav_pair > 0) {
+            let mut pair_marking = vec![0i32; sjx_points + 1];
+            crate::refine_weak_concav_pair_special_one_based(
+                weak.num_weak_concav_pair,
+                weak.num_ref_weak_concav,
+                triangle_neighbors,
+                cells_on_triangle_new,
+                mrl_new,
+                &mut pair_marking,
+                &mut weak.weak_concav_pair,
+                &mut weak.weak_concav_segment,
+            )?;
+        }
         refine_sharp_concav_lop_judge_one_based(
             &mut flips,
             segments.num_bdy_refine_segment,
@@ -769,6 +840,32 @@ fn close_transition_rows(
             &mut lop_rows,
             &mut lop_counts,
         )?;
+        // `MOD_refine.F90:477`. Each half of this judge is guarded on its own
+        // count in the Fortran; the port checks both up front, so a round whose
+        // concavities produced neither segments nor pairs has to be skipped
+        // rather than refused.
+        if let Some(weak) = weak
+            .as_mut()
+            .filter(|weak| weak.num_weak_concav_segment > 0 || weak.num_weak_concav_pair > 0)
+        {
+            crate::refine_weak_concav_lop_judge_one_based(
+                &mut flips,
+                segments.num_bdy_refine_segment,
+                weak.num_ref_weak_concav,
+                weak.num_weak_concav_segment,
+                weak.num_weak_concav_pair,
+                mrl_new,
+                triangle_neighbors,
+                cells_on_triangle_new,
+                &sjx_child,
+                &mut weak.weak_concav_segment,
+                &weak_before,
+                &weak.n_weak_concav_segment,
+                &weak.weak_concav_pair,
+                &mut lop_rows,
+                &mut lop_counts,
+            )?;
+        }
         if flips > 0 {
             for (index, count) in lop_counts.iter().enumerate() {
                 lop_candidates.extend_from_slice(&lop_rows[index][..(*count).min(num_end)]);

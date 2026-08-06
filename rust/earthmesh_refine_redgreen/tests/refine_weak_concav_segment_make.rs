@@ -21,7 +21,10 @@ fn weak_concav_segment_make_records_one_plus_one_as_pair_entries() {
     assert_eq!(result.num_weak_concav_segment, 0);
     assert_eq!(result.num_weak_concav_pair, 2);
     assert_eq!(result.weak_concav_pair, vec![[2, 0], [3, 0]]);
-    assert_eq!(result.weak_concav_segment, vec![vec![2], vec![3]]);
+    // Rows are `set_dis_in` wide with the "triangle id 1" placeholder, as
+    // `MOD_refine.F90:1446` allocates them; `n_weak_concav_segment` is what
+    // says how much of each row is real.
+    assert_eq!(result.weak_concav_segment, vec![vec![2, 1], vec![3, 1]]);
     assert_eq!(result.n_weak_concav_segment, vec![1, 1]);
     assert_eq!(
         result.bdy_refine_segment,
@@ -67,7 +70,10 @@ fn weak_concav_segment_make_extracts_pair_from_one_plus_n_and_keeps_remainder() 
     assert_eq!(result.num_weak_concav_segment, 0);
     assert_eq!(result.num_weak_concav_pair, 2);
     assert_eq!(result.weak_concav_pair, vec![[2, 0], [3, 0]]);
-    assert_eq!(result.weak_concav_segment, vec![vec![2], vec![3]]);
+    assert_eq!(
+        result.weak_concav_segment,
+        vec![vec![2, 1, 1], vec![3, 1, 1]]
+    );
     assert_eq!(
         result.bdy_refine_segment,
         vec![Vec::<usize>::new(), vec![4, 5]]

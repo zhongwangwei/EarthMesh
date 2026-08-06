@@ -111,6 +111,20 @@ pub fn refine_weak_concav_segment_make_one_based(
         .map(Vec::len)
         .collect::<Vec<_>>();
     let num_ref_weak_concav = num_ref_weak_concav.max(all_weak_concav_segment.len());
+    // `MOD_refine.F90:1446` allocates
+    // `weak_concav_segment_temp(set_dis_in, num_ref_weak_concav)` filled with
+    // the "triangle id 1" placeholder, and `n_weak_concav_segment_temp` the
+    // same length filled with zero -- the table is sized by the concavity
+    // count, while `num_weak_concav_segment` and `num_weak_concav_pair` are
+    // counts *within* it. Returning only the rows that were built lets
+    // `num_end` exceed the table, which is what refuses the consumers that
+    // index by those counts.
+    let mut n_weak_concav_segment = n_weak_concav_segment;
+    all_weak_concav_segment.resize(num_ref_weak_concav, vec![1; set_dis_in]);
+    for row in &mut all_weak_concav_segment {
+        row.resize(set_dis_in.max(row.len()), 1);
+    }
+    n_weak_concav_segment.resize(num_ref_weak_concav, 0);
     let n_bdy_refine_segment = bdy_refine_segment_next
         .iter()
         .map(Vec::len)

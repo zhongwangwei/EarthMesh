@@ -38,7 +38,7 @@ fn delaunay_lop_flips_adjacent_triangle_diagonal_and_clears_old_triangles() {
     let mut cells_on_triangle = vec![[0, 0, 0]; 6];
     cells_on_triangle[2] = [10, 11, 12];
     cells_on_triangle[3] = [11, 12, 13];
-    let ref_segment = vec![0, 2, 3];
+    let ref_segment = vec![2, 3];
 
     refine_delaunay_lop_one_based(
         2,
@@ -82,7 +82,7 @@ fn delaunay_lop_skips_zero_pairs_without_advancing_output_child_counter() {
     let mut cells_on_triangle = vec![[0, 0, 0]; 6];
     cells_on_triangle[2] = [10, 11, 12];
     cells_on_triangle[3] = [11, 12, 13];
-    let ref_segment = vec![0, 0, 0, 2, 3];
+    let ref_segment = vec![0, 0, 2, 3];
 
     refine_delaunay_lop_one_based(
         2,
@@ -119,7 +119,7 @@ fn delaunay_lop_applies_canonical_dateline_shift_before_centroid_cleanup() {
     let mut cells_on_triangle = vec![[0, 0, 0]; 6];
     cells_on_triangle[2] = [10, 11, 12];
     cells_on_triangle[3] = [11, 12, 13];
-    let ref_segment = vec![0, 2, 3];
+    let ref_segment = vec![2, 3];
 
     refine_delaunay_lop_one_based(
         2,

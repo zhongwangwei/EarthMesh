@@ -24,10 +24,13 @@ pub fn refine_delaunay_lop_one_based(
             format!("iter {iter} must address num_mp/num_wp previous and current slots"),
         ));
     }
-    if num_ref >= ref_sjx_segment.len() {
+    // `MOD_refine.F90:1938` takes `ref_sjx_lop(num_ref)` -- size equals the
+    // count, no placeholder -- and reads `2k-1`/`2k` for `k = 1, num_ref/2`,
+    // which in zero-based terms is `2k`/`2k+1` for `k = 0, num_ref/2`.
+    if num_ref > ref_sjx_segment.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "num_ref must address one-based ref_sjx_segment entries",
+            "num_ref must address ref_sjx_segment entries",
         ));
     }
     if num_mp[iter] >= triangle_points.len() || num_mp[iter] >= cells_on_triangle.len() {
@@ -44,9 +47,9 @@ pub fn refine_delaunay_lop_one_based(
     }
 
     let mut refed_iter = 0_usize;
-    for k in 1..=(num_ref / 2) {
-        let i = ref_sjx_segment[2 * k - 1];
-        let j = ref_sjx_segment[2 * k];
+    for k in 0..(num_ref / 2) {
+        let i = ref_sjx_segment[2 * k];
+        let j = ref_sjx_segment[2 * k + 1];
         if i == 0 || j == 0 {
             continue;
         }
