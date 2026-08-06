@@ -730,6 +730,17 @@ pub fn run_refine_pipeline_namelist(
             .map(|point| report.target_level_at(point.lon, point.lat) > 0)
             .collect::<Vec<bool>>()
     });
+    // Splitting this by backend is smaller than it looks from the top of the
+    // function. `output_mesh` is already an `UnstructuredMesh` and the metadata
+    // argument is already an `Option` built right here, so the red-green route
+    // needs neither a new writer nor a fake set of Method-C tables -- it needs
+    // its own `output_mesh` and `None`.
+    //
+    // What is Method-C's is the block just above: `m_ngr`, `w_ngr`, the refine
+    // levels and the lineages, all read off `state` and `mesh`. Those have to
+    // become conditional, and because the struct borrows them the owners have
+    // to outlive the call -- `Option<Vec<_>>` bound before the branch, slices
+    // taken inside it. That is the shape of the remaining work.
     let outputs = write_refined_outputs(
         &contents,
         &config,
