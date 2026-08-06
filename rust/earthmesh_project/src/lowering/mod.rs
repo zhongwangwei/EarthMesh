@@ -352,11 +352,16 @@ impl ProjectConfig {
         let backend = self.refinement.backend;
         if mkgrd.refine && backend == crate::RefinementBackend::RedGreen {
             return Err(
-                "refinement.backend: the red-green backend is selectable but not yet \
-                        wired to the runner. Its kernels and driver are in \
-                        earthmesh_refine_redgreen; the one remaining blocker is a base mismatch \
-                        between refine_boundary_segments_make (zero-based rows) and \
-                        refine_sharp_concav_lop_judge (one-based). Use MethodC until then"
+                "refinement.backend: the red-green algorithm is complete and tested in \
+                        earthmesh_refine_redgreen -- red step, green closure, forward and reverse \
+                        transition rounds, both weak-concavity treatments, halo nesting, \
+                        renumbering -- and is not reachable from a run yet. The runner consumes a \
+                        namelist, and the backend is settled during lowering without being \
+                        emitted into one, so nothing downstream can see the choice. Wiring it \
+                        means giving the namelist the field and branching refine_pipeline on it; \
+                        the five steps between a marking and a gridfile are in \
+                        earthmesh_cli::redgreen_bridge, each with its own test. Use MethodC \
+                        until then"
                     .to_string(),
             );
         }
