@@ -119,56 +119,6 @@ impl MethodCDelaunayMesh {
         Ok(imcent)
     }
 
-    /// The generation of the ground this pass still has to refine.
-    ///
-    /// Method-C takes the walk's generation from its start point, and the start
-    /// point is just the M point nearest the region -- with no regard for
-    /// whether an earlier tile in this same pass already made it finer. When it
-    /// has, the walk runs one generation too fine and reads every ordinary
-    /// unrefined edge around it as coarser, which is its test for stepping off
-    /// the parent.
-    ///
-    /// That the refusals were false follows from the test itself. `crosses` is
-    /// `edge < mrlo` over edges whose generation is at least one, so it can
-    /// only fire when `mrlo` is two or more -- a first-level pass over
-    /// unrefined ground can never reach it. A global run reported it nine
-    /// times at level one, which is nine proofs that the walk had started on
-    /// ground it was not refining.
-    ///
-    /// The coarsest generation the regions themselves contain is the ground the
-    /// pass is there to refine, and it keeps the canonical rule that mrlo comes
-    /// from the mesh rather than from a pass counter: a nested region sits
-    /// wholly inside its parent, so every point it holds carries the parent's
-    /// generation and the minimum is that. Only a tile pressed against a
-    /// neighbour refined moments earlier sees two generations at once, and
-    /// there the coarser one is the half nobody has served yet.
-    fn method_c_generation_to_refine(
-        &self,
-        regions: &[MethodCRefinementRegion],
-        radius: f64,
-        use_cartesian_xy: bool,
-    ) -> Option<usize> {
-        let mut coarsest: Option<usize> = None;
-        for im in 2..=self.nmd {
-            let generation = self.m_metadata[im].mrlm;
-            if generation == 0 || coarsest.is_some_and(|best| generation >= best) {
-                continue;
-            }
-            if refine_regions_contain_method_c(regions, self.m_points[im], radius, use_cartesian_xy)
-            {
-                coarsest = Some(generation);
-                // One is the coarsest a mesh can be, so nothing later can win
-                // and the containment tests -- the expensive half of this --
-                // stop here. Without it a group of several hundred circles
-                // costs one stereographic distance per circle per M point.
-                if generation == 1 {
-                    break;
-                }
-            }
-        }
-        coarsest
-    }
-
     pub(crate) fn closest_m_point_to_region_anchor(
         &self,
         region: &MethodCRefinementRegion,

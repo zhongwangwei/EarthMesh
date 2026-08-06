@@ -76,34 +76,22 @@ fn a_coastline_drives_the_loop_to_the_depth_it_is_given() {
     write_landtype(&path, |lon, _lat| i8::from(lon >= 291));
 
     let refine = RefineConfig::default();
-    let (refined, report) = spawn_nest_adaptive(
+    // Criteria-driven refinement is suspended on this backend: Method-C seeds
+    // on a lattice that steps three cells at a time and needs a perimeter that
+    // is a multiple of three, so a region shaped by the data is refused rather
+    // than approximated -- and a global run showed it refusing 25 of 59 groups
+    // while still producing a mesh that passed every gate. Refusing is what
+    // keeps that from reading as success.
+    let error = spawn_nest_adaptive(
         &base_mesh(),
         &refine,
         &plan_inputs(&path, true),
         base_cell_meters(),
-        3,
+        5,
     )
-    .expect("adaptive nest");
-
-    assert_eq!(report.deepest_level, 3, "{report:?}");
-    assert!(!report.stopped_on_empty_demand, "{report:?}");
-    assert_eq!(report.passes.len(), 3);
-    // Each pass judges a cell half the size of the one before it.
-    for pair in report.passes.windows(2) {
-        assert!(
-            (pair[0].cell_meters / 2.0 - pair[1].cell_meters).abs() < 1.0,
-            "{report:?}"
-        );
-        assert!(pair[1].faces_before >= pair[0].faces_after, "{report:?}");
-    }
-    let deepest = refined
-        .w_faces
-        .iter()
-        .skip(2)
-        .map(|face| face.mrlw)
-        .max()
-        .unwrap_or(0);
-    assert_eq!(deepest, 4, "three levels must reach mrlw 4");
+    .expect_err("criteria-driven refinement must refuse while it is suspended");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(error.to_string().contains("suspended"), "{error}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -145,35 +133,22 @@ fn a_resolution_dependent_criterion_changes_its_mind_between_levels() {
         th_num_landtypes: 1,
         ..RefineConfig::default()
     };
-    let (_, report) = spawn_nest_adaptive(
+    // Criteria-driven refinement is suspended on this backend: Method-C seeds
+    // on a lattice that steps three cells at a time and needs a perimeter that
+    // is a multiple of three, so a region shaped by the data is refused rather
+    // than approximated -- and a global run showed it refusing 25 of 59 groups
+    // while still producing a mesh that passed every gate. Refusing is what
+    // keeps that from reading as success.
+    let error = spawn_nest_adaptive(
         &base_mesh(),
         &refine,
         &plan_inputs(&path, false),
         base_cell_meters(),
         5,
     )
-    .expect("adaptive nest");
-
-    assert!(!report.passes.is_empty(), "{report:?}");
-    // Demand has to shrink as the cells do, or the criterion is not being asked
-    // at the level's own scale.
-    for pair in report.passes.windows(2) {
-        assert!(
-            pair[1].demanded_cells <= pair[0].demanded_cells,
-            "demand grew from level {} to {}: {report:?}",
-            pair[0].level,
-            pair[1].level
-        );
-    }
-    // Three endings are legitimate now. The demand can run out; the ceiling can
-    // be reached; or the icosahedral frame can refuse to carry another level at
-    // this place, which ends the run at the depth it did reach rather than
-    // throwing that away. What is not legitimate is refining nothing.
-    assert!(report.deepest_level >= 1, "{report:?}");
-    assert!(
-        report.deepest_level <= 5,
-        "the ceiling must hold: {report:?}"
-    );
+    .expect_err("criteria-driven refinement must refuse while it is suspended");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(error.to_string().contains("suspended"), "{error}");
     let _ = fs::remove_dir_all(root);
 }
 

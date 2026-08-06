@@ -69,6 +69,36 @@ pub struct AdaptiveNestReport {
 /// `specified_circle`, a bbox, a closed curve. They are instructions, not
 /// criteria, so they are refined whether or not any criterion also asks: a run
 /// that names a circle and enables nothing else must still get that circle.
+/// Criteria-driven refinement is suspended on the Method-C backend.
+///
+/// It does not fail loudly on its own, which is the problem. On a global
+/// coastal run at NXP 81, 25 of 59 region groups were refused and the mesh that
+/// came out was valid, passed its topology gates, and was not what the project
+/// asked for -- the exact silent-failure shape section 11.1 of the technical
+/// guide is about. Two attempts at the largest single cause were measured and
+/// both cost more refinement than they recovered (196,548 faces down to
+/// 185,592 for five tiles).
+///
+/// The constraint underneath is structural rather than a defect: Method-C seeds
+/// on a lattice that steps three cells at a time, so refined area comes in
+/// quanta of one seed footprint, and its perimeter has to be a multiple of
+/// three, so a region shaped by a coastline is refused rather than approximated.
+/// Named regions -- circles, corridors, boxes, closed curves -- are shapes
+/// Method-C can build and are unaffected; it is the criteria-driven path, where
+/// the shape comes from the data, that has no such guarantee.
+///
+/// Refusing is the honest answer until the red-green backend
+/// (`earthmesh_refine_redgreen`) can serve it: there the judge chain grows a
+/// marking it cannot take as given and never rejects a shape.
+pub const METHOD_C_ADAPTIVE_SUSPENDED: &str = concat!(
+    "criteria-driven (adaptive) refinement is suspended on the Method-C backend: ",
+    "its seed lattice steps three cells at a time and its perimeter must be a multiple of three, ",
+    "so a region whose shape comes from the data is refused rather than approximated -- ",
+    "a global coastal run had 25 of 59 groups refused and still produced a mesh that passed every gate. ",
+    "Named regions (circle, corridor, bbox, closed curve) are unaffected. ",
+    "Set refinement.adaptive.enabled = false, or use named regions, until the red-green backend serves this path."
+);
+
 pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &MethodCDelaunayMesh,
     refine: &RefineConfig,
@@ -112,6 +142,17 @@ pub fn spawn_nest_adaptive_with_named_regions(
         // The cell this pass refines away is the one the previous level left.
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
         let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
+        // Named regions are shapes Method-C can build and stay served; it is
+        // demand whose shape came from the data that is suspended. Testing the
+        // plan itself is what separates them exactly -- a config that names no
+        // criterion, or one that finds nothing, produces an empty plan and
+        // passes straight through.
+        if !plan.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                METHOD_C_ADAPTIVE_SUSPENDED,
+            ));
+        }
         // Every level blocks on the finest radius so the centres coincide and
         // the levels come out concentric; only the radius changes per level.
         let mut regions = if plan.is_empty() {
