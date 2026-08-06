@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_iter_g_judge_one_based;
+use earthmesh_refine_redgreen::refine_iter_g_judge_one_based;
 
 #[test]
 fn iter_g_marks_unrefined_triangles_in_six_edge_weak_concavity() {

@@ -1,7 +1,7 @@
 # EarthMesh v3 网格构建技术指南：计算细节
 
 版本：2026-08-04（在 2026-07-11 球面几何/拓扑/质量契约版之上，补入海洋掩膜拓扑清理、tri 弹簧默认值、质量比较容差、grid_preprocess 迁出与 h 场栅格推导）
-性质：实现级技术文档。所有公式、常量与索引约定均以当前 Rust 源码核验；除第 3 节外，模块名即 `rust/earthmesh_mesh/src/` 下的目录名（第 3 节对应 `extends/earthmesh_grid_preprocess/src/`）。
+性质：实现级技术文档。所有公式、常量与索引约定均以当前 Rust 源码核验；除第 3 节外，模块名即 `rust/earthmesh_mesh/src/` 下的目录名（第 3 节对应 `rust/earthmesh_refine_redgreen/src/`）。
 
 ---
 
@@ -34,7 +34,7 @@
 
 两条细化路线共享初始网格与输出端，方法论差异见 `docs/mesh_refinement_method_research_2026-07-02.md`；h 场层（第 8 节）是二者共同的上游。
 
-**集成状态（重要）：生产路径只走 Method-C。** 上图左支（grid_preprocess 三角细化，第 3 节）已于 2026-08 迁出主程序，现位于独立 crate **`extends/earthmesh_grid_preprocess`**（27 个模块 + 22 个测试文件）。依赖方向是单向的：该 crate 依赖 `earthmesh_mesh`，而 `earthmesh_mesh` / `earthmesh_cli` / `earthmesh_project` / EarthMesh Studio **均不依赖它**——迁出后主程序零错误零警告编译通过，这是隔离性的编译期证据。`refine_pipeline` 的每个分支落点都是 `spawn_nest_*`。
+**集成状态：生产路径当前只走 Method-C，正在改为双后端。** 上图左支（red-green 三角细化，第 3 节）位于 **`rust/earthmesh_refine_redgreen`**（27 个模块 + 24 个测试文件），2026-08-06 起由"验证资产"改造为生产默认后端，Method-C 退为第二后端并在 GUI 中可选。依赖方向是单向的：该 crate 依赖 `earthmesh_mesh`，而 `earthmesh_mesh` / `earthmesh_cli` / `earthmesh_project` / EarthMesh Studio **均不依赖它**——迁出后主程序零错误零警告编译通过，这是隔离性的编译期证据。`refine_pipeline` 的每个分支落点都是 `spawn_nest_*`。
 
 左支作为**逐位对拍的内核库**保留——离散整数拓扑才能对参考实现做表级精确比对（第 6 节验收层级的 compat 模式），这份验证能力是连续/构造式内核给不了的。阅读第 3 节时请按"可测试的算法资产"而非"运行时可选路径"理解。
 
@@ -111,9 +111,11 @@
 
 ## 3. grid_preprocess 三角细化管线
 
-> **集成状态：未接入生产流水线，代码位于 `extends/earthmesh_grid_preprocess`。** 本节内核（iterB/C/D/E/F/G 判定、1→2 过渡细分、LOP 翻边、弱凹清理、`ngr_renew`）由测试驱动，主程序不调用其中任何一个。移植目的是保住对 `MOD_grid_preprocess.F90` 的逐位对拍能力（第 6 节 compat 模式）。生产细化见第 4 节 Method-C。
+> **集成状态（2026-08-06 起改造中）：内核齐备、驱动循环与接线在建，代码位于 `rust/earthmesh_refine_redgreen`。** 本节内核（iterB/C/D/E/F/G 判定、1→2 过渡细分、LOP 翻边、弱凹清理、`ngr_renew`）已逐个移植并由 73 个测试驱动；`refine_loop` 驱动循环、`num_ref_cal`、`OnedivideFour_renew` 与 CLI/GUI 接线尚未完成，因此主程序目前仍只走第 4 节 Method-C。
 >
-> 本节的模块名对应 `extends/earthmesh_grid_preprocess/src/` 下的目录（其余各节仍对应 `rust/earthmesh_mesh/src/`）。它对主程序的依赖面很浅，只用到 `earthmesh_mesh` 的 `LonLatDegrees`、`is_ngrmm`、`BoundaryConnection`、`boundary_closed_curves_one_based`、`push_boundary_neighbor`、`robust_spherical_area_unit`、`spherical_centroid_degrees` 与两个 `Refine*Segments` 类型。`MethodCRefinementRegion` 留在 `earthmesh_mesh`，因为它是 Method-C 生产路径的类型。
+> **为什么把它扶正**：判定链遇到不可行的标记集时**扩张**它，从不拒绝——本 crate 的全部错误分支都是输入校验（数组长度、索引越界、连通性不闭合），没有一条是"这个区域形状不对"。Method-C 会拒绝：种子点阵每次跨三格、周界必须是 3 的倍数、过渡补丁伸到掩膜外两层面。这就是"任意海岸带都能细化"与"只能细化 Method-C 造得出的块形"之间的全部差别。Method-C 换来的是顶点价数锁在 {5,6,7}，那是六边形对偶可用的前提；直接吃三角形的模型（如 FVCOM）不为它付账。
+>
+> 本节的模块名对应 `rust/earthmesh_refine_redgreen/src/` 下的目录（其余各节仍对应 `rust/earthmesh_mesh/src/`）。它对主程序的依赖面很浅，只用到 `earthmesh_mesh` 的 `LonLatDegrees`、`is_ngrmm`、`BoundaryConnection`、`boundary_closed_curves_one_based`、`push_boundary_neighbor`、`robust_spherical_area_unit`、`spherical_centroid_degrees` 与两个 `Refine*Segments` 类型。`MethodCRefinementRegion` 留在 `earthmesh_mesh`，因为它是 Method-C 生产路径的类型。
 
 驱动循环按"轮"（iter/level）推进：打标 → 过渡判定 → 细分 → 翻边 → 清理 → 重编号 → （最终）弹簧。
 
@@ -592,7 +594,7 @@ plan 通过 `hfield_target_cells_geojson + hfield_target_levels_json` 转成梯�
 
 ### 11.2 两个 Rust workspace(2026-08）
 
-根 workspace 是九个 crate（`rust/*` 加 `extends/earthmesh_grid_preprocess`）；**`gui-tauri/src-tauri` 是独立 workspace，不在其中**。于是 `cargo test --workspace`、`cargo fmt --all`、`cargo clippy --workspace` 从仓库根跑，都覆盖不到 GUI —— 而且不会失败，只会为跑过的那部分报成功，读起来就是"全过了"。
+根 workspace 是九个 crate（`rust/*` 加 `rust/earthmesh_refine_redgreen`）；**`gui-tauri/src-tauri` 是独立 workspace，不在其中**。于是 `cargo test --workspace`、`cargo fmt --all`、`cargo clippy --workspace` 从仓库根跑，都覆盖不到 GUI —— 而且不会失败，只会为跑过的那部分报成功，读起来就是"全过了"。
 
 v3.0.0-alpha3 的 CI 就栽在这里：本轮改了 `gui-tauri/src-tauri/src/*.rs`，根目录的 `cargo fmt --all` 碰不到它们，`fast` 和 `heavy` 两个 job 全绿、五个平台的 wheel 全部构建成功，只有 `gui` job 的 `make fmt-gui` 挂了。
 

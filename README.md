@@ -155,17 +155,14 @@ EarthMesh/
 |-- cases/                     # generated and fixture run outputs
 |-- docs/                      # architecture and technical references
 |-- examples/                  # runnable namelists and external-data templates
-|-- extends/
-|   `-- earthmesh_grid_preprocess/ # MOD_grid_preprocess.F90 compatibility port,
-|                                  # kept for bit-for-bit verification; the
-|                                  # production engine does not depend on it
 |-- gui-tauri/                 # EarthMesh Studio desktop GUI
 |-- input/                     # small/default input references
 |-- rust/
 |   |-- earthmesh_core/        # config, namelist parsing, run manifest support
 |   |-- earthmesh_geometry/    # geometry helpers
 |   |-- earthmesh_hfield/      # continuous target cell-width field
-|   |-- earthmesh_mesh/        # mesh kernels
+|   |-- earthmesh_mesh/        # mesh kernels, incl. Method-C nested refinement
+|   |-- earthmesh_refine_redgreen/ # red-green refinement: any marked triangles
 |   |-- earthmesh_quality/     # mesh quality metrics and reports
 |   |-- earthmesh_refine_planner/ # experimental score-based planning crate
 |   |-- earthmesh_project/     # v3 project schema and lowering

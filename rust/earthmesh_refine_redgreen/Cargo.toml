@@ -1,5 +1,5 @@
 [package]
-name = "earthmesh_grid_preprocess"
+name = "earthmesh_refine_redgreen"
 version = "3.0.0-alpha3"
 edition = "2021"
 description = "Bit-for-bit compatibility port of the MOD_grid_preprocess.F90 triangle refinement pipeline. Not part of the production engine."
@@ -7,7 +7,7 @@ license = "GPL-2.0-only"
 repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [lib]
-name = "earthmesh_grid_preprocess"
+name = "earthmesh_refine_redgreen"
 path = "src/lib.rs"
 
 [dependencies]

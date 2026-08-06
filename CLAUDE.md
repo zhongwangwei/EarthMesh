@@ -2,7 +2,7 @@
 
 ## There are two Rust workspaces, not one
 
-The root workspace holds nine crates (`rust/*` plus `extends/earthmesh_grid_preprocess`).
+The root workspace holds nine crates, all under `rust/`.
 **`gui-tauri/src-tauri` is its own workspace and is not a member of it.**
 
 That means a root-level command silently covers only part of the repository:
@@ -69,7 +69,7 @@ pushing the branch is what builds the wheels. `master` is a separate lineage and
 is not where the v3 line lives.
 
 1. Bump the version everywhere. It appears in nine `Cargo.toml` files plus
-   `extends/`, both `Cargo.lock` files (`cargo update -w` in the root and in
+   both `Cargo.lock` files (`cargo update -w` in the root and in
    `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
    title and changelog, and **four `--version` assertions in
    `.github/workflows/python-release.yml`** that compare the string verbatim.

@@ -16,7 +16,7 @@ members = [
     # Compatibility ports kept for bit-for-bit verification against the Fortran
     # reference. Built and tested by the workspace; depended on by nothing in
     # the production engine (the dependency edge only points into rust/).
-    "extends/earthmesh_grid_preprocess",
+    "rust/earthmesh_refine_redgreen",
 ]
 
 # Release tuning for the numeric mesh pipeline. Thin LTO + single codegen unit

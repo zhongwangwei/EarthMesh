@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_weak_concav_lop_judge_one_based;
+use earthmesh_refine_redgreen::refine_weak_concav_lop_judge_one_based;
 
 #[test]
 fn weak_concav_lop_judge_builds_pair_only_segments() {

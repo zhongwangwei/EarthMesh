@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_m1w1_to_m11w11_one_based;
+use earthmesh_refine_redgreen::refine_m1w1_to_m11w11_one_based;
 
 #[test]
 fn m1w1_to_m11w11_returns_first_adjacent_child_pair() {

@@ -141,7 +141,7 @@ pub use mask_postproc_domain::renew_mask_postproc_domain_triangles_one_based;
 mod mask_postproc_opposite_domain;
 pub use mask_postproc_opposite_domain::renew_mask_postproc_opposite_domain_triangles_one_based;
 mod mask_postproc_boundary;
-// Public for the `earthmesh_grid_preprocess` compatibility crate in `extends/`,
+// Public for the `earthmesh_refine_redgreen` compatibility crate in `extends/`,
 // which ports the boundary walk this helper backs.
 pub use mask_postproc_boundary::push_boundary_neighbor;
 pub use mask_postproc_boundary::{boundary_closed_curves_one_based, BoundaryClosedCurves};

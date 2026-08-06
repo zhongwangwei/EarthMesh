@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_boundary_connection_make_one_based;
+use earthmesh_refine_redgreen::refine_boundary_connection_make_one_based;
 
 #[test]
 fn refine_boundary_connection_make_builds_closed_curve_from_unrefined_boundary_triangles() {

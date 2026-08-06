@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_boundary_segments_make_one_based;
+use earthmesh_refine_redgreen::refine_boundary_segments_make_one_based;
 
 #[test]
 fn boundary_segments_make_splits_each_edge_when_transition_distance_is_one() {

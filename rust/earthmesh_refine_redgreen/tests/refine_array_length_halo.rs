@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_array_length_halo_one_based;
+use earthmesh_refine_redgreen::refine_array_length_halo_one_based;
 
 #[test]
 fn array_length_halo_marks_initial_boundary_and_expands_transition_rows() {

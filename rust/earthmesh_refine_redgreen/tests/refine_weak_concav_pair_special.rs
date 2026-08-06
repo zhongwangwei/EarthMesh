@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_weak_concav_pair_special_one_based;
+use earthmesh_refine_redgreen::refine_weak_concav_pair_special_one_based;
 
 fn base_inputs() -> (
     Vec<Vec<usize>>,

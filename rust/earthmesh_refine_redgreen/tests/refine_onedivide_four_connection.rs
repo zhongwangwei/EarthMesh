@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_onedivide_four_connection_one_based;
+use earthmesh_refine_redgreen::refine_onedivide_four_connection_one_based;
 
 #[test]
 fn onedivide_four_connection_marks_refined_triangle_and_parent_cells() {

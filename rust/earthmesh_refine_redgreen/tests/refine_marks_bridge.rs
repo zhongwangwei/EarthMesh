@@ -3,9 +3,9 @@
 //! nested contiguous rings (the property the discrete transition machinery
 //! relies on).
 
-use earthmesh_grid_preprocess::refine_marks_from_target_levels_one_based;
 use earthmesh_hfield::{HField, HRegion};
 use earthmesh_mesh::LonLatDegrees;
+use earthmesh_refine_redgreen::refine_marks_from_target_levels_one_based;
 
 #[test]
 fn hfield_levels_drive_nested_contiguous_refinement_marks() {

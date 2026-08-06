@@ -1,21 +1,34 @@
-//! Bit-for-bit compatibility port of the `MOD_grid_preprocess.F90` /
-//! `MOD_refine.F90` triangle refinement pipeline.
+//! Red-green refinement: subdivide any marked set of triangles, then close the
+//! seams the subdivision left behind.
 //!
-//! **This crate is not part of the production engine.** Nothing in
-//! `earthmesh_cli`, `earthmesh_project` or EarthMesh Studio depends on it, and
-//! the dependency only runs the other way (this crate uses `earthmesh_mesh`
-//! types). Production refinement is Method-C, in `earthmesh_mesh`.
+//! Marked triangles are split into four (the *red* step). That leaves their
+//! unmarked neighbours with a hanging node on the shared edge, so each of those
+//! is split into two (the *green* step), and Lawson edge flips clean up the
+//! angles the green triangles cost. The iterA..G judges run before any of it,
+//! growing the marking until the result is a legal triangulation.
 //!
-//! # Why it exists
+//! # What this buys over Method-C
 //!
-//! The kernels here are a discrete integer-topology pipeline — marking, the
-//! iterA..G transition judges, 1→4 / 1→2 subdivision, LOP edge flips, weak
-//! concavity cleanup, renumbering — which is what makes table-level exact
-//! comparison against the Fortran reference implementation possible (matching
-//! `nmd`/`nud`/`nwd`, per-level W face counts, and mrow envelopes). Method-C and
-//! the h-field path can only be validated at the topology/statistics level, so
-//! this port is kept as a verification asset even though the runtime no longer
-//! calls it.
+//! The judges *grow* a marking they cannot take as given; they never refuse it.
+//! Every error in this crate is an input-validation error — an array too short,
+//! an index out of range, connectivity that does not close — and none of them
+//! says a region is the wrong shape to refine. Method-C, in `earthmesh_mesh`,
+//! does refuse: its seed lattice steps three cells at a time, its perimeter has
+//! to be a multiple of three, and its transition patch reaches two faces beyond
+//! the mask. That is the whole difference between refining an arbitrary coastal
+//! region and refining one shaped like the blocks Method-C can build.
+//!
+//! What Method-C buys in exchange is vertex degree held to {5, 6, 7}, which is
+//! what keeps the hexagonal dual usable. A model that consumes the triangles
+//! directly, as FVCOM does, is not paying for that.
+//!
+//! # Provenance
+//!
+//! Ported from `MOD_grid_preprocess.F90` / `MOD_refine.F90` (EarthMesh v2)
+//! kernel by kernel, which is what makes table-level exact comparison against
+//! the Fortran reference possible: `nmd`/`nud`/`nwd`, per-level W face counts
+//! and mrow envelopes all match row for row. Method-C and the h-field path can
+//! only be checked at the topology and statistics level.
 //!
 //! See `docs/mesh_construction_technical_guide.md` section 3 for the algorithm
 //! and section 6 for where this fits in the acceptance tiers.

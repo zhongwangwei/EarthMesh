@@ -22,7 +22,7 @@ earthmesh_cli         executable orchestration and file-format adapters
     ↑
 EarthMesh Studio      Tauri adapter and static frontend
 
-extends/earthmesh_grid_preprocess   compatibility port, depends on earthmesh_mesh,
+rust/earthmesh_refine_redgreen   compatibility port, depends on earthmesh_mesh,
                                     depended on by nothing above
 ```
 
@@ -30,14 +30,24 @@ Arrows indicate the normal direction toward higher-level orchestration, not a
 complete Cargo dependency graph. Shared physical constants live in
 `earthmesh_core`; geometry and h-field code reuse that source of truth.
 
-## `extends/`
+## Two refinement backends
 
-Crates under `extends/` are verification assets, not engine layers. They may
-depend on `rust/` crates; nothing in `rust/` or EarthMesh Studio may depend on
-them, so removing one can never change mesh output. `earthmesh_grid_preprocess`
-is the port of the `MOD_grid_preprocess.F90` triangle refinement pipeline, kept
-because discrete integer topology is what makes table-level exact comparison
-against the Fortran reference possible; production refinement is Method-C.
+`earthmesh_refine_redgreen` is red-green refinement: mark any set of triangles,
+split each of them into four, and close the seams by halving the neighbours the
+split left hanging. `earthmesh_mesh`'s `method_c_*` modules are Method-C, which
+subdivides a closed region and surrounds it with transition rows.
+
+The difference that decides which to use is what happens to a marking the
+algorithm cannot take as given. Red-green's judge chain *grows* it until it is
+legal -- every error it can return is an input-validation error, never a refusal
+of a shape. Method-C refuses: its seed lattice steps three cells at a time, its
+perimeter has to be a multiple of three, and its transition patch reaches two
+faces beyond the mask. So red-green refines an arbitrary region and Method-C
+refines a region shaped like the ones it can build.
+
+Method-C buys something for that: vertex degree stays in {5, 6, 7}, which is
+what keeps the *hexagonal dual* usable. A model that consumes the triangles
+directly, as FVCOM does, is not paying for it.
 
 ## Canonical execution paths
 

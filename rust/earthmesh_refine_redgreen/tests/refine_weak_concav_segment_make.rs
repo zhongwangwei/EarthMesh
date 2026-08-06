@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_weak_concav_segment_make_one_based;
+use earthmesh_refine_redgreen::refine_weak_concav_segment_make_one_based;
 
 fn cells_fixture(max_triangle: usize) -> Vec<[usize; 3]> {
     let mut cells = vec![[0, 0, 0]; max_triangle + 1];

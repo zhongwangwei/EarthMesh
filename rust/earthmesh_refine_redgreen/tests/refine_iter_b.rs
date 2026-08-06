@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_iter_b_judge_one_based;
+use earthmesh_refine_redgreen::refine_iter_b_judge_one_based;
 
 #[test]
 fn iter_b_marks_unrefined_cell_hit_by_two_existing_four_refinements() {

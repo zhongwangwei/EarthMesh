@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_isreverse_judge_one_based;
+use earthmesh_refine_redgreen::refine_isreverse_judge_one_based;
 
 #[test]
 fn isreverse_judge_marks_common_neighbors_and_rewrites_next_round_segments() {

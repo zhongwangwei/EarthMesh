@@ -1,5 +1,5 @@
-use earthmesh_grid_preprocess::{checked_lop_edge_flip, refine_delaunay_lop_one_based};
 use earthmesh_mesh::{spherical_centroid_degrees, LonLatDegrees};
+use earthmesh_refine_redgreen::{checked_lop_edge_flip, refine_delaunay_lop_one_based};
 
 fn ll(lon: f64, lat: f64) -> LonLatDegrees {
     LonLatDegrees::new(lon, lat)

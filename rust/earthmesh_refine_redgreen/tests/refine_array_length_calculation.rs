@@ -1,4 +1,4 @@
-use earthmesh_grid_preprocess::refine_array_length_calculation_one_based;
+use earthmesh_refine_redgreen::refine_array_length_calculation_one_based;
 
 #[test]
 fn array_length_calculation_combines_halo_sizing_with_refine_close_curves() {
