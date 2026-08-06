@@ -681,6 +681,21 @@ pub fn run_refine_pipeline_namelist(
     };
     let transition_faces = mesh.boundary_rows().len();
 
+    // Where the backend branch has to go, and the decision it forces.
+    //
+    // With the metadata now optional, `state` has exactly one remaining
+    // consumer: `output_mesh`. Red-green needs neither -- its mesh is already
+    // in lon/lat, so `redgreen_bridge::unstructured_mesh_from_redgreen` gives
+    // `output_mesh` directly and the whole Voronoi/PCVT step below is skipped.
+    //
+    // So the branch cannot live here. It has to be up at the refinement itself,
+    // because from there down this function's spine is a `MethodCDelaunayMesh`
+    // -- `mesh` feeds the spawn, `boundary_rows`, the lineages and this state.
+    // Making it serve both means either an enum over the two mesh types
+    // threaded through the tail, or two tails behind a shared head. That is a
+    // design choice about this function's shape, not a wiring detail, and it
+    // wants to be made deliberately rather than reached by the first branch
+    // that compiles.
     let state = if native_cartesian_xy {
         let mut state = voronoi_grid_from_method_c_delaunay_mesh_cartesian(
             &mesh,
