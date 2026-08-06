@@ -78,6 +78,16 @@ pub struct RedGreenSettings {
     /// `weak_concav_eliminate`: absorb weak concavities by refining them out
     /// rather than carrying them through the transition rounds.
     pub eliminate_weak_concavity: bool,
+    /// `HALO`: how far inside the previous level's refined region this level
+    /// must stay.
+    ///
+    /// A level that marks a triangle sitting in the previous level's transition
+    /// band would refine ground that is still changing resolution, so
+    /// `MOD_refine.F90:113-152` erodes the previous region inward this many
+    /// rings and cancels any mark that falls in what it ate. Zero means no
+    /// protection, which is right for a first level -- there is nothing to
+    /// stay inside of.
+    pub halo: usize,
 }
 
 impl Default for RedGreenSettings {
@@ -86,6 +96,7 @@ impl Default for RedGreenSettings {
             max_transition_row: 3,
             build_transition_rows: true,
             eliminate_weak_concavity: false,
+            halo: 3,
         }
     }
 }
@@ -100,6 +111,8 @@ pub struct RedGreenOutcome {
     pub grown_triangle_count: usize,
     /// Triangles dropped for having no marked neighbour.
     pub isolated_dropped_count: usize,
+    /// Triangles dropped for lying outside the previous level's halo.
+    pub halo_cancelled_count: usize,
     /// Triangles rebuilt by Lawson flips while closing the seams.
     pub flipped_triangle_count: usize,
 }
@@ -146,6 +159,75 @@ fn drop_isolated_marks(
     isolated.len()
 }
 
+/// Erode the previous level's region inward and cancel what falls outside.
+///
+/// Port of `MOD_refine.F90:113-152`. A cell is on the region's boundary when
+/// its incident triangles are neither all marked nor all unmarked; one ring of
+/// erosion clears the marks on every such cell's triangles, and `halo` rings of
+/// it leave the interior the next level is allowed to touch.
+///
+/// Returns how many of this level's marks were cancelled, so a caller can say
+/// so rather than quietly refining less than was asked.
+fn cancel_marks_outside_halo(
+    mesh: &RedGreenMesh,
+    previous_level_marks: &[i32],
+    halo: usize,
+    marking: &mut [i32],
+) -> io::Result<usize> {
+    let sjx_points = mesh.triangle_count();
+    if previous_level_marks.len() <= sjx_points {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the previous level's marking has {} rows for {sjx_points} triangles",
+                previous_level_marks.len()
+            ),
+        ));
+    }
+    let mut interior = previous_level_marks[..=sjx_points].to_vec();
+    // Original vertices are never inside anything, which is what keeps a deeper
+    // level from creeping onto the icosahedron's own points.
+    for slot in interior.iter_mut().take(mesh.num_vertex + 1) {
+        *slot = 0;
+    }
+
+    for _ in 0..halo {
+        let boundary: Vec<usize> = (mesh.num_center + 1..=mesh.cell_count())
+            .filter(|&cell| {
+                let edges = mesh.n_triangles_on_cell[cell];
+                if edges == 0 {
+                    return false;
+                }
+                let marked = mesh.triangles_on_cell[cell][..edges]
+                    .iter()
+                    .filter(|&&triangle| interior.get(triangle).copied().unwrap_or(0) == 1)
+                    .count();
+                marked > 0 && marked < edges
+            })
+            .collect();
+        if boundary.is_empty() {
+            break;
+        }
+        for cell in boundary {
+            let edges = mesh.n_triangles_on_cell[cell];
+            for &triangle in &mesh.triangles_on_cell[cell][..edges] {
+                if let Some(slot) = interior.get_mut(triangle) {
+                    *slot = 0;
+                }
+            }
+        }
+    }
+
+    let mut cancelled = 0usize;
+    for triangle in mesh.num_vertex + 1..=sjx_points {
+        if marking[triangle] != 0 && interior[triangle] != 1 {
+            marking[triangle] = 0;
+            cancelled += 1;
+        }
+    }
+    Ok(cancelled)
+}
+
 /// One red-green refinement round.
 ///
 /// `ref_sjx` is the marking, one entry per triangle, `1` for "split this".
@@ -156,6 +238,21 @@ pub fn refine_redgreen_round_one_based(
     mesh: &RedGreenMesh,
     ref_sjx: &[i32],
     settings: &RedGreenSettings,
+) -> io::Result<RedGreenOutcome> {
+    refine_redgreen_round_inside(mesh, ref_sjx, settings, None)
+}
+
+/// The same round, held inside the region a previous level refined.
+///
+/// `previous_level_marks` is that level's marking, one entry per triangle.
+/// Every mark this level made that does not survive eroding it by
+/// `settings.halo` rings is cancelled, so a level never refines ground the
+/// level above it is still transitioning across.
+pub fn refine_redgreen_round_inside(
+    mesh: &RedGreenMesh,
+    ref_sjx: &[i32],
+    settings: &RedGreenSettings,
+    previous_level_marks: Option<&[i32]>,
 ) -> io::Result<RedGreenOutcome> {
     let sjx_points = mesh.triangle_count();
     let lbx_points = mesh.cell_count();
@@ -177,6 +274,10 @@ pub fn refine_redgreen_round_one_based(
 
     let triangle_neighbors = triangle_neighbor_rows(mesh)?;
     let mut marking = ref_sjx.to_vec();
+    let halo_cancelled_count = match previous_level_marks {
+        Some(previous) => cancel_marks_outside_halo(mesh, previous, settings.halo, &mut marking)?,
+        None => 0,
+    };
     let isolated_dropped_count = drop_isolated_marks(
         mesh.num_vertex,
         sjx_points,
@@ -192,6 +293,7 @@ pub fn refine_redgreen_round_one_based(
             refined_triangle_count: 0,
             grown_triangle_count: 0,
             isolated_dropped_count,
+            halo_cancelled_count,
             flipped_triangle_count: 0,
         });
     }
@@ -449,6 +551,7 @@ pub fn refine_redgreen_round_one_based(
         refined_triangle_count,
         grown_triangle_count,
         isolated_dropped_count,
+        halo_cancelled_count,
         flipped_triangle_count,
     })
 }
@@ -734,6 +837,53 @@ mod tests {
 
         assert_eq!(outcome.refined_triangle_count, 0);
         assert_eq!(outcome.mesh, mesh, "an empty marking must not move a point");
+    }
+
+    #[test]
+    fn a_deeper_level_is_held_inside_the_one_above_it() {
+        // A level marking ground that the level above is still transitioning
+        // across would refine a resolution that has not settled. The halo
+        // erodes the previous region and cancels what falls outside -- and the
+        // count says so, because a silent cancel reads as "refined what you
+        // asked for".
+        let mesh = icosahedron(6);
+        let previous: Vec<i32> = (0..=mesh.triangle_count())
+            .map(|triangle| i32::from((40..70).contains(&triangle)))
+            .collect();
+        let mut marking = vec![0i32; mesh.triangle_count() + 1];
+        for triangle in 40..70 {
+            marking[triangle] = 1;
+        }
+
+        let held = refine_redgreen_round_inside(
+            &mesh,
+            &marking,
+            &RedGreenSettings {
+                halo: 2,
+                ..RedGreenSettings::default()
+            },
+            Some(&previous),
+        )
+        .expect("a held round");
+        let free = refine_redgreen_round_inside(
+            &mesh,
+            &marking,
+            &RedGreenSettings {
+                halo: 0,
+                ..RedGreenSettings::default()
+            },
+            Some(&previous),
+        )
+        .expect("an unheld round");
+
+        assert!(
+            held.halo_cancelled_count > free.halo_cancelled_count,
+            "eroding two rings must cancel more than eroding none: {held:?} vs {free:?}"
+        );
+        assert!(
+            held.refined_triangle_count < free.refined_triangle_count,
+            "and so refine less: {held:?} vs {free:?}"
+        );
     }
 
     #[test]
