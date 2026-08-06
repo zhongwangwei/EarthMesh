@@ -314,117 +314,126 @@ pub fn run_refine_pipeline_namelist(
     } else {
         method_c_spring_iterations(&refine, is_atmosmesh)?
     };
-    let MethodCRefineOutcome {
-        mesh,
+    let file_dir = PathBuf::from(config.file_dir());
+    // The choice of backend, at the one place where it is a choice. Method-C
+    // continues as a `TriangularMesh` through the Voronoi/PCVT step; red-green's
+    // mesh is already in lon/lat and skips it entirely. What the tail below
+    // needs is the same from either -- a gridfile mesh, and whatever each one
+    // can honestly say about how it was built.
+    let RefinedGrid {
+        state,
+        output_mesh,
+        method_c_metadata,
+        pentagon_indices,
+        transition_faces,
         spring_nest_passes,
         hfield_diagnostics,
         adaptive_run,
-    } = refine_with_method_c(
-        mesh,
-        MethodCRefineRequest {
-            config: &config,
-            refine: &refine,
-            mesh_type,
-            regions: &regions,
-            native_atmosphere_regions: &native_atmosphere_regions,
-            native_surface_regions: &native_surface_regions,
-            domain_region: domain_region.as_ref(),
-            hfield_options: active_hfield_options,
-            adaptive_options: adaptive_options.as_ref(),
-            is_atmosmesh,
-            native_only_spawn,
-            native_surface_global_expansion,
-            native_cartesian_xy,
-            native_deltax,
-            native_sfcgrid_res_factor,
-            nxp,
-            method_c_nxp,
-            max_level,
-            max_cal_level,
-            has_hydro_hfield_source,
-            has_threshold_hfield_sources,
-            spring_nest_iterations,
-        },
-    )?;
-    let transition_faces = mesh.boundary_rows().len();
-    // The twelve pentagons are the icosahedron's, and refinement never moves
-    // them, so taking them here rather than off the refined `state` costs
-    // nothing and removes one of the two things that tied the run record to
-    // Method-C's Voronoi step. The other is `output_mesh`, which a backend can
-    // supply itself.
-    let pentagon_indices = mesh.impent;
-
-    // Past this point `state` now has exactly one consumer that is not the
-    // Method-C metadata: `output_mesh`, which red-green produces directly
-    // through `redgreen_bridge::unstructured_mesh_from_redgreen`. The pentagon
-    // ids used to be the other one and are taken from the base mesh above.
-    //
-    // So the tail is thinner than it reads. Making it serve both backends is:
-    // make `state` itself the thing that becomes optional, and let the branch at
-    // the refinement decide whether the mesh continues as a `TriangularMesh`
-    // through the Voronoi step or arrives already in lon/lat.
-    //
-    // Where the backend branch has to go, and the decision it forces.
-    //
-    // With the metadata now optional, `state` has exactly one remaining
-    // consumer: `output_mesh`. Red-green needs neither -- its mesh is already
-    // in lon/lat, so `redgreen_bridge::unstructured_mesh_from_redgreen` gives
-    // `output_mesh` directly and the whole Voronoi/PCVT step below is skipped.
-    //
-    // So the branch cannot live here. It has to be up at the refinement itself,
-    // because from there down this function's spine is a `TriangularMesh`
-    // -- `mesh` feeds the spawn, `boundary_rows`, the lineages and this state.
-    // Making it serve both means either an enum over the two mesh types
-    // threaded through the tail, or two tails behind a shared head. That is a
-    // design choice about this function's shape, not a wiring detail, and it
-    // wants to be made deliberately rather than reached by the first branch
-    // that compiles.
-    let state = if native_cartesian_xy {
-        let mut state = voronoi_grid_from_triangular_mesh_cartesian(
-            &mesh,
-            earthmesh_core::EARTH_RADIUS_METERS,
-        )?;
-        grid_cartesian_xy_to_lonlat_placeholders_one_based_state(&mut state.grid)?;
-        state
-    } else {
-        let mut state =
-            voronoi_grid_from_triangular_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
-        pcvt_adjust_voronoi_grid_state(&mut state)?;
-        grid_xyz2lonlat_one_based_state(&mut state.grid)?;
-        state
+    } = match config.refine_backend.trim() {
+        "red_green" => {
+            // What this route does not read, said outright rather than served
+            // quietly with less. The marking comes from named regions and
+            // nothing else, so any of these would simply be dropped -- and the
+            // run would still write a valid mesh that passes every quality
+            // check it has and is not the mesh that was asked for.
+            let unsupported = if active_hfield_options.is_some() {
+                Some("an h-field (&hfield)")
+            } else if adaptive_options.is_some() {
+                Some("the adaptive point+radius criteria (&adaptive)")
+            } else if native_cartesian_xy {
+                Some("a Cartesian-XY mesh")
+            } else if native_surface_global_expansion {
+                Some("the native surface expansion (NL%sfcgrid_res_factor)")
+            } else {
+                None
+            };
+            if let Some(unsupported) = unsupported {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "NL%refine_backend = red_green does not serve {unsupported}; it refines \
+                         the named regions and nothing else. Use method_c for this run"
+                    ),
+                ));
+            }
+            refine_with_redgreen(&mesh, &regions, &refine, max_level)?
+        }
+        _ => {
+            let MethodCRefineOutcome {
+                mesh,
+                spring_nest_passes,
+                hfield_diagnostics,
+                adaptive_run,
+            } = refine_with_method_c(
+                mesh,
+                MethodCRefineRequest {
+                    config: &config,
+                    refine: &refine,
+                    mesh_type,
+                    regions: &regions,
+                    native_atmosphere_regions: &native_atmosphere_regions,
+                    native_surface_regions: &native_surface_regions,
+                    domain_region: domain_region.as_ref(),
+                    hfield_options: active_hfield_options,
+                    adaptive_options: adaptive_options.as_ref(),
+                    is_atmosmesh,
+                    native_only_spawn,
+                    native_surface_global_expansion,
+                    native_cartesian_xy,
+                    native_deltax,
+                    native_sfcgrid_res_factor,
+                    nxp,
+                    method_c_nxp,
+                    max_level,
+                    max_cal_level,
+                    has_hydro_hfield_source,
+                    has_threshold_hfield_sources,
+                    spring_nest_iterations,
+                },
+            )?;
+            let state = if native_cartesian_xy {
+                let mut state = voronoi_grid_from_triangular_mesh_cartesian(
+                    &mesh,
+                    earthmesh_core::EARTH_RADIUS_METERS,
+                )?;
+                grid_cartesian_xy_to_lonlat_placeholders_one_based_state(&mut state.grid)?;
+                state
+            } else {
+                let mut state =
+                    voronoi_grid_from_triangular_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
+                pcvt_adjust_voronoi_grid_state(&mut state)?;
+                grid_xyz2lonlat_one_based_state(&mut state.grid)?;
+                state
+            };
+            let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+            let method_c_metadata = Some(MethodCMetadataOwned {
+                m_refine_levels: method_c_m_refine_levels_zero_based(&state)?,
+                m_refine_levels_orig: method_c_m_refine_levels_orig_zero_based(&state)?,
+                m_ngr: method_c_m_ngr(&state)?,
+                w_refine_levels: method_c_w_refine_levels_zero_based(&state)?,
+                w_refine_levels_orig: method_c_w_refine_levels_orig_zero_based(&state)?,
+                w_ngr: method_c_w_ngr(&state)?,
+                // Ancestry as the mesh tracked it through every pass and
+                // renumbering.
+                m_lineages: mesh.gridfile_m_cell_lineages()?,
+                w_lineages: mesh.gridfile_w_cell_lineages()?,
+            });
+            RefinedGrid {
+                transition_faces: mesh.boundary_rows().len(),
+                // The twelve pentagons are the icosahedron's, taken here off the
+                // refined mesh -- which is the numbering the run record wants --
+                // rather than off the Voronoi `state`, which not every backend
+                // has.
+                pentagon_indices: mesh.impent,
+                state: Some(state),
+                output_mesh,
+                method_c_metadata,
+                spring_nest_passes,
+                hfield_diagnostics,
+                adaptive_run,
+            }
+        }
     };
-
-    let file_dir = PathBuf::from(config.file_dir());
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-
-    /// Everything the gridfile carries that only Method-C can say.
-    ///
-    /// Owned rather than borrowed, and bound before the backend branch, because
-    /// `MethodCMetadataSlices` borrows all of it and has to outlive the call
-    /// that consumes it. A backend with no generations or ancestry to report
-    /// leaves this `None` and the writer serves it just the same.
-    struct MethodCMetadataOwned {
-        m_refine_levels: Vec<i32>,
-        m_refine_levels_orig: Vec<i32>,
-        m_ngr: Vec<i32>,
-        w_refine_levels: Vec<i32>,
-        w_refine_levels_orig: Vec<i32>,
-        w_ngr: Vec<i32>,
-        m_lineages: Vec<i64>,
-        w_lineages: Vec<i64>,
-    }
-
-    let method_c_metadata = Some(MethodCMetadataOwned {
-        m_refine_levels: method_c_m_refine_levels_zero_based(&state)?,
-        m_refine_levels_orig: method_c_m_refine_levels_orig_zero_based(&state)?,
-        m_ngr: method_c_m_ngr(&state)?,
-        w_refine_levels: method_c_w_refine_levels_zero_based(&state)?,
-        w_refine_levels_orig: method_c_w_refine_levels_orig_zero_based(&state)?,
-        w_ngr: method_c_w_ngr(&state)?,
-        // Ancestry as the mesh tracked it through every pass and renumbering.
-        m_lineages: mesh.gridfile_m_cell_lineages()?,
-        w_lineages: mesh.gridfile_w_cell_lineages()?,
-    });
 
     // Measured from the produced mesh, not from the request: a pass whose demand
     // is clipped away stops descending without failing, and `max_level` alone
@@ -461,17 +470,6 @@ pub fn run_refine_pipeline_namelist(
             .map(|point| report.target_level_at(point.lon, point.lat) > 0)
             .collect::<Vec<bool>>()
     });
-    // Splitting this by backend is smaller than it looks from the top of the
-    // function. `output_mesh` is already an `UnstructuredMesh` and the metadata
-    // argument is already an `Option` built right here, so the red-green route
-    // needs neither a new writer nor a fake set of Method-C tables -- it needs
-    // its own `output_mesh` and `None`.
-    //
-    // What is Method-C's is the block just above: `m_ngr`, `w_ngr`, the refine
-    // levels and the lineages, all read off `state` and `mesh`. Those have to
-    // become conditional, and because the struct borrows them the owners have
-    // to outlive the call -- `Option<Vec<_>>` bound before the branch, slices
-    // taken inside it. That is the shape of the remaining work.
     let outputs = write_refined_outputs(
         &contents,
         &config,
@@ -509,8 +507,21 @@ pub fn run_refine_pipeline_namelist(
 
     let mut runtime_state =
         EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
-    runtime_state.grid = state.grid;
-    runtime_state.ijtabs = state.tabs;
+    match state {
+        Some(state) => {
+            runtime_state.grid = state.grid;
+            runtime_state.ijtabs = state.tabs;
+        }
+        // Red-green has no Voronoi state to hand over -- its mesh arrives in
+        // lon/lat and never passes through one. The counts the step record
+        // wants are the gridfile's own rows, which is what Method-C's
+        // `nma`/`nwa` are as well; the tables stay empty because there are none
+        // to fill, not because they were dropped.
+        None => {
+            runtime_state.grid.nma = output_mesh.m_points.len();
+            runtime_state.grid.nwa = output_mesh.w_points.len();
+        }
+    }
     runtime_state
         .record_pentagon_indices_from_icosahedron(pentagon_indices)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
@@ -533,6 +544,141 @@ pub fn run_refine_pipeline_namelist(
         coupled_outputs: outputs.coupled_outputs,
         output: outputs.output,
         runtime_state,
+    })
+}
+
+/// Everything the gridfile carries that only Method-C can say.
+///
+/// Owned rather than borrowed because `MethodCMetadataSlices` borrows all of it
+/// and has to outlive the call that consumes it. A backend with no generations
+/// or ancestry to report leaves this `None` and the writer serves it the same.
+struct MethodCMetadataOwned {
+    m_refine_levels: Vec<i32>,
+    m_refine_levels_orig: Vec<i32>,
+    m_ngr: Vec<i32>,
+    w_refine_levels: Vec<i32>,
+    w_refine_levels_orig: Vec<i32>,
+    w_ngr: Vec<i32>,
+    m_lineages: Vec<i64>,
+    w_lineages: Vec<i64>,
+}
+
+/// A refined mesh in the shape the rest of the pipeline reads, whichever
+/// backend built it.
+///
+/// The fields a backend cannot fill are `Option` or zero rather than invented:
+/// a fabricated level count or a fabricated ngr table would read as measured
+/// and be wrong, which is the failure this whole path is built to avoid.
+struct RefinedGrid {
+    /// Method-C's Voronoi state. Red-green has none -- its mesh is already in
+    /// lon/lat -- and the run record fills its counts from `output_mesh`.
+    state: Option<earthmesh_mesh::VoronoiGridState>,
+    output_mesh: crate::UnstructuredMesh,
+    method_c_metadata: Option<MethodCMetadataOwned>,
+    /// The twelve pentagons, in the numbering of the mesh that was produced.
+    pentagon_indices: [usize; 12],
+    /// Method-C's refinement-boundary rows. Zero from red-green: it builds its
+    /// transition band a different way and does not count it in these terms, so
+    /// zero here reads "not measured from this mesh", the same answer
+    /// `realized_max_level` gives.
+    transition_faces: usize,
+    spring_nest_passes: usize,
+    hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
+    adaptive_run: Option<AdaptiveRunRecord>,
+}
+
+/// Refine by red-green: mark the triangles the regions ask for, split each into
+/// four, close the seams by halving the neighbours left hanging, once per level.
+///
+/// Unlike Method-C this never refuses a region for its shape -- the judge chain
+/// grows a marking until the triangulation closes -- which is the whole reason
+/// the backend exists.
+fn refine_with_redgreen(
+    mesh: &TriangularMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+    refine: &RefineConfig,
+    max_level: usize,
+) -> io::Result<RefinedGrid> {
+    if max_level > 1 && !refine.is_transition {
+        // Said here rather than met halfway through level 2, where it surfaces
+        // as "ngrmm row N has invalid neighbor 0" and reads like a mesh defect.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "red-green refinement past one level requires RL%Istransition = .true.; without the \
+             transition rows a round leaves hanging nodes and the next level cannot derive the \
+             triangle neighbours it needs",
+        ));
+    }
+    let mut redgreen =
+        earthmesh_refine_redgreen::redgreen_mesh_from_triangular(mesh, &mesh.m_neighbors)?;
+    let mut output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
+    let mut previous_marks: Option<Vec<i32>> = None;
+    let mut split_triangles = 0usize;
+    for level in 1..=max_level {
+        let before = redgreen.triangle_count();
+        let (written, outcome) = crate::redgreen_bridge::refine_redgreen_level(
+            &redgreen,
+            regions,
+            refine,
+            level,
+            previous_marks.as_deref(),
+        )?;
+        eprintln!(
+            "red-green refine level {level}: {} triangles split, {} grown by the judges, \
+             {} dropped as isolated, {} cancelled outside the halo, {} flipped, {before} -> {} triangles",
+            outcome.refined_triangle_count,
+            outcome.grown_triangle_count,
+            outcome.isolated_dropped_count,
+            outcome.halo_cancelled_count,
+            outcome.flipped_triangle_count,
+            outcome.mesh.triangle_count(),
+        );
+        split_triangles += outcome.refined_triangle_count;
+        // What this level refined, in the numbering the *next* level will ask
+        // about. Not the array just handed in: that one indexes the triangles
+        // of the mesh this round consumed, and a round renumbers them. The
+        // outcome's `cell_renumbering` cannot carry it either -- it maps cells,
+        // and a marking is per triangle.
+        //
+        // Asking the regions again on the new mesh is the same question in the
+        // right numbering, and where it differs it errs the safe way: the judge
+        // chain grew this level's region past what was asked, so the recomputed
+        // interior is the smaller of the two and the next level is held further
+        // inside the transition band, never further out.
+        previous_marks = Some(crate::redgreen_bridge::redgreen_marking_from_regions(
+            &outcome.mesh,
+            regions,
+            level,
+        ));
+        redgreen = outcome.mesh;
+        output_mesh = written;
+    }
+    if split_triangles == 0 {
+        // A run that asked to refine and refined nothing is the failure that
+        // stays quiet: the gridfile opens, the quality checks pass, and the
+        // mesh is uniform.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "red-green refinement was requested over {} region(s) up to level {max_level} but \
+                 no triangle was split; check that the regions carry a level in 1..={max_level} \
+                 and that they hold triangle centres of a mesh this coarse",
+                regions.len()
+            ),
+        ));
+    }
+    Ok(RefinedGrid {
+        state: None,
+        output_mesh,
+        method_c_metadata: None,
+        // Red-green renumbers each round, but `vertex_mapping` is the identity
+        // over the cells that went in, so a base-mesh cell keeps its id through
+        // every level. The pentagons are base-mesh cells.
+        pentagon_indices: mesh.impent,
+        transition_faces: 0,
+        spring_nest_passes: 0,
+        hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default(),
+        adaptive_run: None,
     })
 }
 
@@ -746,28 +892,6 @@ fn refine_with_method_c(
             mesh_type,
             refine_coastline: adaptive.coastline,
         };
-        // The choice reaches here, which is where routing belongs. Only one
-        // route is built.
-        //
-        // The seam for the other one is `write_refined_outputs`: it
-        // takes `&UnstructuredMesh` and an *optional* `MethodCMetadataSlices`,
-        // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
-        // produces and what red-green cannot supply. So this branch does not
-        // have to fake Method-C's tables -- it runs
-        // `redgreen_mesh_from_triangular`, then `refine_redgreen_level` per level
-        // (carrying the previous level's marking through
-        // `RedGreenOutcome::cell_renumbering`, since a round renumbers), and
-        // hands the result to that writer with `metadata: None`.
-        //
-        // What stands in the way is the hundred lines between: they are typed
-        // on `TriangularMesh` and compute mrlm/ngr/lineage that red-green
-        // has no equivalent for. Splitting them is the work, not the call.
-        if config.refine_backend.trim() == "red_green" {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "NL%refine_backend = red_green is not routed through the refinement pipeline yet;                  the algorithm and the marking-to-gridfile steps are built and tested, what is                  missing is this branch calling them. Use method_c until then",
-            ));
-        }
         let (refined, report) =
             crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
                 &mesh, refine, &inputs, regions, base_m, depth,

@@ -2794,3 +2794,123 @@ fn top_level_dispatcher_compatibility_atmos_mesh_name_routes_to_refine_pipeline_
         "top-level dispatcher should return refined Method-C output"
     );
 }
+
+/// The red-green route, end to end: a project names a circle, the backend
+/// splits the triangles it holds, and a gridfile comes out with more cells than
+/// the mesh it started from.
+///
+/// Every link of this chain had its own test before this one, and the chain
+/// still did not run: the pipeline refused the backend at the adaptive call
+/// site. Without an end-to-end case a wrong `output_mesh` writes a file that
+/// opens fine.
+#[test]
+fn redgreen_backend_refines_a_named_circle_end_to_end() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("redgreen_named_circle");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    // Two levels, so the chaining is exercised rather than just the first
+    // round: a level-2 mask carries its own parent halo down to level 1, which
+    // is the nesting red-green's `halo` erodes against.
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 2,
+            points: vec![LonLatPoint {
+                lon: 115.0,
+                lat: 25.0,
+            }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("mkgrd_redgreen_circle.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_redgreen_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+        ),
+    )
+    .expect("write red-green namelist");
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect("red_green backend should run through the refinement pipeline");
+
+    assert_eq!(run.max_level, 2);
+    assert!(run.output.output.exists());
+    assert!(
+        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        "red-green should refine the initial mesh: {} vs {}",
+        run.output.lbx_points,
+        run.gridinit.gridfile.lbx_points
+    );
+    // Not synthesised to make a log line look better: red-green reports no
+    // per-cell generations, so nothing was measured off this mesh. The
+    // requested depth travels as `max_level`.
+    assert_eq!(run.realized_max_level, 0);
+    assert_eq!(run.transition_faces, 0);
+    // The run record's counts come from the gridfile when there is no Voronoi
+    // state to take them from.
+    assert!(run.runtime_state.grid.nwa > 0);
+    assert!(run.runtime_state.grid.nma > run.runtime_state.grid.nwa);
+
+    // "More cells" is what a wrong `output_mesh` would also produce. This is
+    // the assertion that says the file is a mesh.
+    let refined_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
+            .expect("read final red-green mesh");
+    let topology =
+        earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&refined_mesh);
+    assert!(
+        topology.is_consistent(),
+        "red-green output topology violations: {:?}",
+        &topology.violations[..topology.violations.len().min(8)]
+    );
+}
+
+/// A request red-green cannot serve is refused, not served with less.
+///
+/// The marking comes from named regions; an h-field's target levels are simply
+/// not read on this route. Ignoring them would produce a mesh that is valid,
+/// passes its quality checks, and is not what the project asked for.
+#[test]
+fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("redgreen_hfield_refusal");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 1,
+            points: vec![LonLatPoint {
+                lon: 115.0,
+                lat: 25.0,
+            }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("redgreen_hfield.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='redgreen_hfield'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_max_level=1\n/\n",
+        ),
+    )
+    .expect("write red-green h-field namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect_err("red_green must not silently drop an h-field");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(
+        error.to_string().contains("does not serve an h-field"),
+        "unexpected error: {error}"
+    );
+}
