@@ -3,7 +3,7 @@ use std::io;
 use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
 
 use crate::coordinates::normalize_cartesian_to_radius;
-use crate::{CartesianPoint, IcosahedronRelaxedGrid, MethodCDelaunayMesh};
+use crate::{CartesianPoint, IcosahedronRelaxedGrid, TriangularMesh};
 
 /// One-based grid/connectivity state after `mkgrd.F90:voronoi`, before `pcvt`.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,32 +21,32 @@ pub fn voronoi_grid_from_icosahedron_relaxed(
     relaxed: &IcosahedronRelaxedGrid,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    let mesh = MethodCDelaunayMesh::from_relaxed_icosahedron(relaxed);
-    voronoi_grid_from_method_c_delaunay_mesh(&mesh, radius)
+    let mesh = TriangularMesh::from_relaxed_icosahedron(relaxed);
+    voronoi_grid_from_triangular_mesh(&mesh, radius)
 }
 
 /// Convert a generic Method-C Delaunay mesh to the Voronoi grid state used by the
 /// existing EarthMesh gridfile writers.
 ///
 /// This is the Method-C replacement boundary for `mkgrd.F90:voronoi`: callers should
-/// produce or refine an [`MethodCDelaunayMesh`], validate it, then call this
+/// produce or refine an [`TriangularMesh`], validate it, then call this
 /// adapter at the output boundary.
-pub fn voronoi_grid_from_method_c_delaunay_mesh(
-    mesh: &MethodCDelaunayMesh,
+pub fn voronoi_grid_from_triangular_mesh(
+    mesh: &TriangularMesh,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    voronoi_grid_from_method_c_delaunay_mesh_with_projection(mesh, radius, true)
+    voronoi_grid_from_triangular_mesh_with_projection(mesh, radius, true)
 }
 
-pub fn voronoi_grid_from_method_c_delaunay_mesh_cartesian(
-    mesh: &MethodCDelaunayMesh,
+pub fn voronoi_grid_from_triangular_mesh_cartesian(
+    mesh: &TriangularMesh,
     radius: f64,
 ) -> io::Result<VoronoiGridState> {
-    voronoi_grid_from_method_c_delaunay_mesh_with_projection(mesh, radius, false)
+    voronoi_grid_from_triangular_mesh_with_projection(mesh, radius, false)
 }
 
-fn voronoi_grid_from_method_c_delaunay_mesh_with_projection(
-    mesh: &MethodCDelaunayMesh,
+fn voronoi_grid_from_triangular_mesh_with_projection(
+    mesh: &TriangularMesh,
     radius: f64,
     project_cell_centers_to_radius: bool,
 ) -> io::Result<VoronoiGridState> {
@@ -150,10 +150,10 @@ mod tests {
 
     #[test]
     fn spherical_voronoi_rejects_invalid_radius() {
-        let mesh = MethodCDelaunayMesh::from_icosahedron(1, 0, 1.0, 0.25, 100)
-            .expect("valid Method-C mesh");
+        let mesh =
+            TriangularMesh::from_icosahedron(1, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
         for radius in [-1.0, 0.0, f64::NAN, f64::INFINITY] {
-            let error = voronoi_grid_from_method_c_delaunay_mesh(&mesh, radius)
+            let error = voronoi_grid_from_triangular_mesh(&mesh, radius)
                 .expect_err("invalid spherical radius must be rejected");
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }

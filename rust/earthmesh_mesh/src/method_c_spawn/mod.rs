@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Spawn specified Method-C refinement regions with independent per-region
     /// levels using Method-C. Each pass follows the compatibility perimeter
     /// grouping and transition-patch table updates instead of a generic local

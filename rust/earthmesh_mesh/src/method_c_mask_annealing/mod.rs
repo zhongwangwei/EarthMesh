@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn spawn_nest_pass_with_mask_annealing(
         &self,
         selected_faces: &[bool],

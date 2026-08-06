@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, io};
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn try_fill_method_c_specific_m_point(
         &self,
         selected: &[bool],

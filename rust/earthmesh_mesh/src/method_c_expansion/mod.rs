@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Port of Method-C `expand_global2`: insert one M point on every active
     /// Delaunay edge and subdivide every triangular W face into four children.
     ///

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn active_mesh_radius(mesh: &MethodCDelaunayMesh) -> io::Result<f64> {
+pub(crate) fn active_mesh_radius(mesh: &TriangularMesh) -> io::Result<f64> {
     for point in mesh.m_points.iter().skip(2) {
         let radius = magnitude(*point);
         if radius.is_finite() && radius > 0.0 {
@@ -13,7 +13,7 @@ pub(crate) fn active_mesh_radius(mesh: &MethodCDelaunayMesh) -> io::Result<f64> 
     ))
 }
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Apply Method-C `spring_dynamics_globe` to the active Delaunay M points.
     ///
     /// Method-C's global spring is a Delaunay-edge relaxation pass: U-edge lengths

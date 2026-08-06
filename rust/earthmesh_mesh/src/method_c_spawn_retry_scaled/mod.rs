@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn retry_child_with_scaled_parent_region(
         &self,
         parent_regions: &[RefinementRegion],

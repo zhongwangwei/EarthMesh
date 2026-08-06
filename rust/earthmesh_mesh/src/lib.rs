@@ -267,15 +267,15 @@ mod area_judge_mask_patch;
 pub use area_judge_mask_patch::{area_judge_apply_mask_patch_one_based, AreaJudgeMaskPatchReport};
 mod voronoi_grid;
 pub use voronoi_grid::{
-    voronoi_grid_from_icosahedron_relaxed, voronoi_grid_from_method_c_delaunay_mesh,
-    voronoi_grid_from_method_c_delaunay_mesh_cartesian, VoronoiGridState,
+    voronoi_grid_from_icosahedron_relaxed, voronoi_grid_from_triangular_mesh,
+    voronoi_grid_from_triangular_mesh_cartesian, VoronoiGridState,
 };
 mod voronoi_pcvt;
 pub use voronoi_pcvt::pcvt_adjust_voronoi_grid_state;
 mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
 mod method_c_mesh;
-pub use method_c_mesh::MethodCDelaunayMesh;
+pub use method_c_mesh::TriangularMesh;
 mod method_c_mesh_gridfile;
 pub use method_c_mesh_gridfile::MethodCGridfileMetadata;
 mod refine_regions;

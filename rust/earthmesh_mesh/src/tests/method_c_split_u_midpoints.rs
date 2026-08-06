@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_split_u_midpoint_coordinates_match_canonical_edge_average_projection() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
@@ -113,7 +112,7 @@ fn method_c_split_u_midpoint_coordinates_match_canonical_edge_average_projection
 
 #[test]
 fn method_c_cartesian_split_u_midpoint_coordinates_match_native_edge_average() {
-    let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
+    let mesh = TriangularMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
@@ -175,7 +174,7 @@ fn method_c_cartesian_split_u_midpoint_coordinates_match_native_edge_average() {
         .spawn_nest_pass_with_max_mrows(
             &selected,
             2,
-            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
             false,
         )
         .expect("Cartesian Method-C pass");

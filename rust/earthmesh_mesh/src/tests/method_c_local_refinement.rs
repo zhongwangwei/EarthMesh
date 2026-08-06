@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_refines_locally_and_caps_old_m_valence() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -33,8 +32,7 @@ fn method_c_refines_locally_and_caps_old_m_valence() {
 
 #[test]
 fn spawn_nest_rejects_all_active_selection_instead_of_global_fallback() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let mut selected = vec![false; mesh.nwd + 1];
     for item in selected.iter_mut().take(mesh.nwd + 1).skip(2) {
         *item = true;
@@ -44,7 +42,7 @@ fn spawn_nest_rejects_all_active_selection_instead_of_global_fallback() {
         .spawn_nest_pass_with_max_mrows(
             &selected,
             2,
-            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
             true,
         )
         .expect_err("Method-C should not replace all-active selection with global expansion");

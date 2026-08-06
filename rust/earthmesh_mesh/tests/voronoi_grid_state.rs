@@ -3,8 +3,8 @@ use earthmesh_mesh::{
     grid_xyz2lonlat_one_based_state, gridinit_voronoi_state_canonical,
     icosahedron_relaxed_grid_canonical, lonlat_degrees_to_unit_xyz, pcvt_adjust_voronoi_grid_state,
     spherical_centroid_degrees, spherical_circumcenter_from_barycenter,
-    voronoi_grid_from_icosahedron_relaxed, voronoi_grid_from_method_c_delaunay_mesh,
-    CartesianPoint, LonLatDegrees, MethodCDelaunayMesh,
+    voronoi_grid_from_icosahedron_relaxed, voronoi_grid_from_triangular_mesh, CartesianPoint,
+    LonLatDegrees, TriangularMesh,
 };
 
 fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
@@ -202,13 +202,13 @@ fn gridinit_voronoi_state_enforces_max_tris() {
 
 #[test]
 fn gridinit_voronoi_state_uses_method_c_factor2_expansion_when_selected() {
-    let base = MethodCDelaunayMesh::from_icosahedron(24, 0, 1.0, 0.25, 100)
-        .expect("Method-C base NXP 24 mesh");
+    let base =
+        TriangularMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("Method-C base NXP 24 mesh");
     let expanded = base
         .expand_by_factor(2)
         .expect("Method-C factor-2 expansion");
     let mut expected =
-        voronoi_grid_from_method_c_delaunay_mesh(&expanded, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
+        voronoi_grid_from_triangular_mesh(&expanded, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
             .expect("expanded Method-C Voronoi state");
     pcvt_adjust_voronoi_grid_state(&mut expected).expect("expected pcvt");
     grid_xyz2lonlat_one_based_state(&mut expected.grid).expect("expected lonlat fill");

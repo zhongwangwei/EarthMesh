@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn retry_child_with_eroded_parent_mask(
         &self,
         parent_selected_faces: &[bool],

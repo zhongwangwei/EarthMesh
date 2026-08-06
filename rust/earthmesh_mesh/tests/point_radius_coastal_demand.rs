@@ -8,7 +8,7 @@
 //! so this pins down whether the geometry path carries the same demand without
 //! that window.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion, TriangularMesh};
 
 /// Coast blocks sampled at 1 degree from `landtype_igbp_update.nc` over
 /// 108-120E / 18-26N, using the engine's own land/sea rule (`landtype != 0`).
@@ -49,8 +49,7 @@ fn circles(radius_m: f64, level: usize) -> Vec<RefinementRegion> {
 /// One level of circles along the coast must refine, not abort.
 #[test]
 fn coastal_circle_chain_refines_at_one_level() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
     let before = mesh.nwd;
 
     let refined = mesh
@@ -73,8 +72,7 @@ fn coastal_circle_chain_refines_at_one_level() {
 /// on the parent boundary and Method-C rejects it.
 #[test]
 fn coastal_circle_chain_refines_at_two_levels() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
 
     // The outer ring has to clear the inner one by more than a parent cell, or
     // the child perimeter lands on the parent boundary. NXP 21 base cells are
@@ -103,8 +101,7 @@ fn coastal_circle_chain_refines_at_two_levels() {
 /// stays a measured fact rather than a comment.
 #[test]
 fn nested_rings_closer_than_a_parent_cell_are_rejected() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
 
     // 150 km of separation against ~381 km base cells.
     let mut regions = circles(300_000.0, 1);
@@ -147,7 +144,7 @@ fn nested_circles_reach_the_five_level_ceiling() {
 
     for depth in 1..=5usize {
         let mesh =
-            MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+            TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
         let regions: Vec<_> = RADII_KM[..depth]
             .iter()
             .enumerate()

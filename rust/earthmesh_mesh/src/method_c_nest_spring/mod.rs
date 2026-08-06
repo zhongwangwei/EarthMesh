@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Apply the core Method-C `spring_dynamics_nest` relaxation to a refined nest.
     ///
     /// With `move_interior=false` this mirrors Method-C's atmospheric nest call:
@@ -261,14 +261,14 @@ impl MethodCDelaunayMesh {
 }
 
 /// Sample per-edge target lengths for
-/// [`MethodCDelaunayMesh::spring_nest_with_edge_targets`] from a
+/// [`TriangularMesh::spring_nest_with_edge_targets`] from a
 /// `(lon_degrees, lat_degrees) -> meters` closure, evaluated at each active U
 /// edge's chordal midpoint (dateline-safe by construction: the midpoint is
 /// averaged in Cartesian space before converting to lon/lat). Inactive
 /// placeholder edges keep a `0.0` target, which is fine because only movable
 /// edges are ever read and validated by the scratch builder.
 pub fn method_c_edge_target_lengths_from_field<F: Fn(f64, f64) -> f64>(
-    mesh: &MethodCDelaunayMesh,
+    mesh: &TriangularMesh,
     target_m: F,
 ) -> io::Result<Vec<f64>> {
     let mut targets = vec![0.0_f64; mesh.nud + 1];
@@ -299,7 +299,7 @@ pub fn method_c_edge_target_lengths_from_field<F: Fn(f64, f64) -> f64>(
 }
 
 pub(crate) fn method_c_nest_movable_m_points(
-    mesh: &MethodCDelaunayMesh,
+    mesh: &TriangularMesh,
     ngr: usize,
     move_interior: bool,
 ) -> io::Result<Vec<bool>> {

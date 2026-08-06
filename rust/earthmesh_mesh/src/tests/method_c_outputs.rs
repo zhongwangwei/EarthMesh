@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_emits_closed_topology_without_placeholder_neighbor_ids() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -57,8 +56,7 @@ fn method_c_emits_closed_topology_without_placeholder_neighbor_ids() {
 }
 #[test]
 fn method_c_multiple_regions_emit_projected_closed_outputs() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()

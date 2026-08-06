@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     #[cfg(test)]
     pub(crate) fn selected_region_faces(
         &self,

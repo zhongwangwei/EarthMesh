@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn is_repairable_method_c_transition_error(error: &io::Error) -> bool {
         method_c_repairable_payload(error).is_some()
     }

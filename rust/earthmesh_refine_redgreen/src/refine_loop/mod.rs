@@ -902,7 +902,7 @@ fn close_transition_rows(
 /// here. A triangle has no stored coordinate, so its centre is built from its
 /// three corners.
 pub fn redgreen_mesh_from_triangular(
-    mesh: &earthmesh_mesh::MethodCDelaunayMesh,
+    mesh: &earthmesh_mesh::TriangularMesh,
     m_neighbors: &[earthmesh_mesh::IcosahedronMPointNeighbors],
 ) -> io::Result<RedGreenMesh> {
     if m_neighbors.len() < mesh.nmd + 1 {
@@ -966,7 +966,7 @@ mod tests {
     use super::*;
 
     fn icosahedron(nxp: usize) -> RedGreenMesh {
-        let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0)
+        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")

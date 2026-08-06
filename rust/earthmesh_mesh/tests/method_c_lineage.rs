@@ -4,12 +4,12 @@
 //! from" after passes and a renumbering have moved every row. It is only worth
 //! anything if it survives all three, so that is what these check.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion, TriangularMesh};
 
 const NXP: usize = 21;
 
-fn base_mesh() -> MethodCDelaunayMesh {
-    MethodCDelaunayMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+fn base_mesh() -> TriangularMesh {
+    TriangularMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
 }
 
 #[test]

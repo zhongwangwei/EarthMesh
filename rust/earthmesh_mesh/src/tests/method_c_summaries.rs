@@ -2,8 +2,7 @@ use super::super::*;
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_single_circle_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -47,8 +46,7 @@ fn method_c_matches_reduced_canonical_nxp6_single_circle_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp7_single_circle_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -92,8 +90,7 @@ fn method_c_matches_reduced_canonical_nxp7_single_circle_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
@@ -140,8 +137,7 @@ fn method_c_matches_reduced_canonical_nxp6_corridor_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp7_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
@@ -188,8 +184,7 @@ fn method_c_matches_reduced_canonical_nxp7_corridor_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_variable_radius_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
@@ -236,8 +231,7 @@ fn method_c_matches_reduced_canonical_nxp6_variable_radius_corridor_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_three_point_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
@@ -285,8 +279,7 @@ fn method_c_matches_reduced_canonical_nxp6_three_point_corridor_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_two_level_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Corridor {
             points: vec![
@@ -343,8 +336,7 @@ fn method_c_matches_reduced_canonical_nxp6_two_level_corridor_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp7_two_level_corridor_summary() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Corridor {
             points: vec![

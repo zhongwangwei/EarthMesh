@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn perim_fill3_method_c(
         &self,

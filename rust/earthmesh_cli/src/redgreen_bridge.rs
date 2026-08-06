@@ -67,7 +67,7 @@ mod tests {
     fn a_refined_mesh_arrives_with_every_table_intact() {
         // The tables are the same five under different names, so the test that
         // matters is that none of them loses a row or a slot on the way.
-        let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         let redgreen = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors)
@@ -220,7 +220,7 @@ mod marking_tests {
     use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
     fn base() -> earthmesh_refine_redgreen::RedGreenMesh {
-        let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
@@ -307,7 +307,7 @@ mod level_tests {
     fn a_named_circle_refines_and_arrives_as_a_writable_mesh() {
         // The chain end to end: regions -> marking -> round -> gridfile tables.
         // Every link has its own test; this is the one that says they compose.
-        let base = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)

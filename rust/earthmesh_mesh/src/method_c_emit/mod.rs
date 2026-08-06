@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn emit_method_c_tables(
         &self,
         perimeter: &[MethodCPerimeterPoint],
@@ -340,7 +340,7 @@ impl MethodCDelaunayMesh {
             )?
         };
 
-        let mut mesh = MethodCDelaunayMesh {
+        let mut mesh = TriangularMesh {
             nmd: nmd0,
             nud: nud0,
             nwd: nwd0,

@@ -15,18 +15,37 @@
 
 use super::*;
 
-/// Generic Method-C-style Delaunay mesh state.
+/// A refined triangular mesh, and its generations and ancestry.
 ///
-/// Method-C carries the triangular mesh as three reciprocal tables:
+/// **Measured, against the assumption that this holds Method-C's private
+/// state:** it does not. Outside the `method_c_*` modules the four fields that
+/// look private are referenced once in the whole crate -- `voronoi_grid` reads
+/// `mrlm`, `mrlm_orig` and `ngr` to fill `ItabW`, because the gridfile carries
+/// them. `boundary_rows`, `w_lineage` and `m_lineage` are referenced nowhere
+/// outside at all.
+///
+/// Which reverses what the split of this crate looked like it needed. There is
+/// no Method-C state to separate out: a generation and an ancestry are what any
+/// refinement produces, and red-green produces both (`mrl_new`, and the
+/// renumbering `RedGreenOutcome::cell_renumbering` carries). What is
+/// Method-C's is the 331 occurrences of the *name*, and the nesting modules
+/// themselves.
+///
+/// So splitting this crate three ways is a file move plus promoting
+/// `pub(crate)` to `pub` -- not the type surgery it appeared to be. The rename
+/// is done.
+///
+/// The mesh carries three reciprocal tables:
+///
 ///
 /// - M: Delaunay vertices / future Voronoi cell centers.
 /// - U: Delaunay edges.
 /// - W: Delaunay triangle faces / future Voronoi vertices.
 ///
-/// Its validation rules are generic so global expansion and local refinement
-/// share the same topology invariants.
+/// The validation rules are generic, so global expansion and either refinement
+/// backend share the same topology invariants.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MethodCDelaunayMesh {
+pub struct TriangularMesh {
     pub nmd: usize,
     pub nud: usize,
     pub nwd: usize,
@@ -62,7 +81,7 @@ fn identity_lineage(count: usize) -> Vec<usize> {
     (0..=count).collect()
 }
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Surface (non-atmosphere) perimeter-row expansion width used by
     /// Method-C `perim_mrow`.
     pub const METHOD_C_MAX_MROWS_SURFACE: usize = 7;

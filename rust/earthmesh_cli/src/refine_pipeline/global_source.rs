@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, RefineConfig};
 use earthmesh_mesh::{
     grid_cartesian_xy_to_lonlat_placeholders_one_based_state, grid_xyz2lonlat_one_based_state,
-    pcvt_adjust_voronoi_grid_state, voronoi_grid_from_method_c_delaunay_mesh,
-    voronoi_grid_from_method_c_delaunay_mesh_cartesian, MethodCDelaunayMesh,
+    pcvt_adjust_voronoi_grid_state, voronoi_grid_from_triangular_mesh,
+    voronoi_grid_from_triangular_mesh_cartesian, TriangularMesh,
 };
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
@@ -350,7 +350,7 @@ pub fn run_refine_pipeline_namelist(
                     mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
                         &native_atmosphere_regions,
                         atmosphere_max_level,
-                        MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
                         nxp,
                         atmosphere_spring_iterations,
                         native_deltax,
@@ -369,7 +369,7 @@ pub fn run_refine_pipeline_namelist(
                         mesh.spawn_nest_cartesian_xy_with_max_mrows(
                             &native_atmosphere_regions,
                             atmosphere_max_level,
-                            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
                         )?
                     } else {
                         mesh.spawn_nest_as_atmosmesh(
@@ -401,7 +401,7 @@ pub fn run_refine_pipeline_namelist(
                 mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
                     &native_surface_regions,
                     surface_max_level,
-                    MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
                     surface_nxp,
                     surface_spring_iterations,
                     native_deltax,
@@ -420,7 +420,7 @@ pub fn run_refine_pipeline_namelist(
                     mesh.spawn_nest_cartesian_xy_with_max_mrows(
                         &native_surface_regions,
                         surface_max_level,
-                        MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                        TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
                     )?
                 } else {
                     mesh.spawn_nest_as_surface(&native_surface_regions, surface_max_level)?
@@ -465,7 +465,7 @@ pub fn run_refine_pipeline_namelist(
         // hands the result to that writer with `metadata: None`.
         //
         // What stands in the way is the hundred lines between: they are typed
-        // on `MethodCDelaunayMesh` and compute mrlm/ngr/lineage that red-green
+        // on `TriangularMesh` and compute mrlm/ngr/lineage that red-green
         // has no equivalent for. Splitting them is the work, not the call.
         if config.refine_backend.trim() == "red_green" {
             return Err(io::Error::new(
@@ -527,9 +527,9 @@ pub fn run_refine_pipeline_namelist(
         });
         let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
         let max_mrows = if is_atmosmesh {
-            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
         } else {
-            MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
         };
         if native_cartesian_xy && has_hydro_hfield_source {
             return Err(io::Error::new(
@@ -636,9 +636,9 @@ pub fn run_refine_pipeline_namelist(
                 &regions,
                 max_level,
                 if is_atmosmesh {
-                    MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
                 } else {
-                    MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
                 },
                 nxp,
                 spring_nest_iterations,
@@ -648,7 +648,7 @@ pub fn run_refine_pipeline_namelist(
             mesh.spawn_nest_with_spring_and_max_mrows(
                 &regions,
                 max_level,
-                MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS,
+                TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
                 nxp,
                 spring_nest_iterations,
             )?
@@ -656,7 +656,7 @@ pub fn run_refine_pipeline_namelist(
             mesh.spawn_nest_with_spring_and_max_mrows(
                 &regions,
                 max_level,
-                MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
+                TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
                 nxp,
                 spring_nest_iterations,
             )?
@@ -667,9 +667,9 @@ pub fn run_refine_pipeline_namelist(
                 &regions,
                 max_level,
                 if is_atmosmesh {
-                    MethodCDelaunayMesh::METHOD_C_MAX_MROWS_ATMOS
+                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
                 } else {
-                    MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE
+                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
                 },
             )?,
             0,
@@ -689,7 +689,7 @@ pub fn run_refine_pipeline_namelist(
     // `output_mesh` directly and the whole Voronoi/PCVT step below is skipped.
     //
     // So the branch cannot live here. It has to be up at the refinement itself,
-    // because from there down this function's spine is a `MethodCDelaunayMesh`
+    // because from there down this function's spine is a `TriangularMesh`
     // -- `mesh` feeds the spawn, `boundary_rows`, the lineages and this state.
     // Making it serve both means either an enum over the two mesh types
     // threaded through the tail, or two tails behind a shared head. That is a
@@ -697,7 +697,7 @@ pub fn run_refine_pipeline_namelist(
     // wants to be made deliberately rather than reached by the first branch
     // that compiles.
     let state = if native_cartesian_xy {
-        let mut state = voronoi_grid_from_method_c_delaunay_mesh_cartesian(
+        let mut state = voronoi_grid_from_triangular_mesh_cartesian(
             &mesh,
             earthmesh_core::EARTH_RADIUS_METERS,
         )?;
@@ -705,7 +705,7 @@ pub fn run_refine_pipeline_namelist(
         state
     } else {
         let mut state =
-            voronoi_grid_from_method_c_delaunay_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
+            voronoi_grid_from_triangular_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
         pcvt_adjust_voronoi_grid_state(&mut state)?;
         grid_xyz2lonlat_one_based_state(&mut state.grid)?;
         state

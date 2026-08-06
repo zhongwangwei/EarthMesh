@@ -5,8 +5,8 @@ const METHOD_C_DIAGNOSTIC_EVERY: usize = 100;
 /// In-memory Rust orchestration for the global `mkgrd.F90:gridinit` mesh path.
 ///
 /// This composes the current deterministic kernels without writing NetCDF:
-/// `method_c_gridinit_factorization_canonical` -> `MethodCDelaunayMesh` expansion
-/// -> `voronoi_grid_from_method_c_delaunay_mesh`
+/// `method_c_gridinit_factorization_canonical` -> `TriangularMesh` expansion
+/// -> `voronoi_grid_from_triangular_mesh`
 /// -> `pcvt_adjust_voronoi_grid_state` -> `grid_xyz2lonlat_one_based_state`.
 /// The returned state intentionally remains one-based so callers can pass it to
 /// `earthmesh_cli::write_gridfile_from_one_based_state` at the I/O boundary.
@@ -40,7 +40,7 @@ pub fn gridinit_voronoi_state_canonical(
             format!("invalid Method-C gridinit NXP {nxp0}"),
         )
     })?;
-    let mut mesh = MethodCDelaunayMesh::from_icosahedron(
+    let mut mesh = TriangularMesh::from_icosahedron(
         factors.base_nxp,
         nspring,
         beta,
@@ -58,7 +58,7 @@ pub fn gridinit_voronoi_state_canonical(
     }
 
     let mut state =
-        voronoi_grid_from_method_c_delaunay_mesh(&mesh, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)?;
+        voronoi_grid_from_triangular_mesh(&mesh, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)?;
     pcvt_adjust_voronoi_grid_state(&mut state)?;
     grid_xyz2lonlat_one_based_state(&mut state.grid)?;
     Ok(state)

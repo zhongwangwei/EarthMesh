@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_full_subdivision_child_w_vertices_match_canonical_geometry() {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),

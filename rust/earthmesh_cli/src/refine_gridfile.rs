@@ -2,8 +2,8 @@ use std::io;
 use std::path::Path;
 
 use earthmesh_mesh::{
-    method_c_gridinit_factorization_canonical, LonLatDegrees, MethodCDelaunayMesh,
-    MethodCGridfileMetadata,
+    method_c_gridinit_factorization_canonical, LonLatDegrees, MethodCGridfileMetadata,
+    TriangularMesh,
 };
 
 use crate::{
@@ -20,7 +20,7 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
     beta: f64,
     spring_relax: f64,
     max_tris: usize,
-) -> io::Result<MethodCDelaunayMesh> {
+) -> io::Result<TriangularMesh> {
     let m_point_lonlat = mesh
         .w_points
         .iter()
@@ -71,7 +71,7 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
         .filter(|&(row, &count)| row > 0 && count == 5)
         .count();
     if pentagons == 12 {
-        return MethodCDelaunayMesh::from_voronoi_gridfile_tables_with_metadata(
+        return TriangularMesh::from_voronoi_gridfile_tables_with_metadata(
             &m_point_lonlat,
             &w_face_m_points,
             &m_face_counts,
@@ -91,22 +91,17 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
             format!("invalid Method-C gridinit NXP {nxp}"),
         )
     })?;
-    let mut mesh = MethodCDelaunayMesh::from_icosahedron(
-        factors.base_nxp,
-        nspring,
-        beta,
-        spring_relax,
-        max_tris,
-    )
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "failed to build Method-C icosahedron fallback for NXP={}",
-                factors.base_nxp
-            ),
-        )
-    })?;
+    let mut mesh =
+        TriangularMesh::from_icosahedron(factors.base_nxp, nspring, beta, spring_relax, max_tris)
+            .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "failed to build Method-C icosahedron fallback for NXP={}",
+                    factors.base_nxp
+                ),
+            )
+        })?;
     if factors.expansion_factor > 1 {
         mesh = mesh.expand_by_factor(factors.expansion_factor)?;
     }

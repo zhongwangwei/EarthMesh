@@ -7,7 +7,7 @@
 use earthmesh_cli::coast_refinement_regions::{
     coastal_refinement_circles, materializable_radius_meters, CoastRefinementRequest,
 };
-use earthmesh_mesh::{MethodCDelaunayMesh, RefinementRegion};
+use earthmesh_mesh::{RefinementRegion, TriangularMesh};
 
 /// Production land-type raster; skipped when the data is not mounted.
 fn landtype_path() -> Option<std::path::PathBuf> {
@@ -34,8 +34,7 @@ fn derived_coastal_circles_refine_a_method_c_mesh() {
         eprintln!("EARTHMESH_LANDTYPE not set to a real file; skipping");
         return;
     };
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let mesh = TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
     // NXP 21 base cells are ~381 km.
     let base_cell_m = 2.0 * std::f64::consts::PI * 6_371_229.0 / (5.0 * 21.0);
     let radius_m = materializable_radius_meters(base_cell_m);

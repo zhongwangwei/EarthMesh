@@ -6,7 +6,7 @@
 //! every depth the ceiling allows and asks how deep the mesh actually got.
 
 use earthmesh_cli::refinement_demand::ladder::nested_circle_radii_meters;
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion, TriangularMesh};
 
 const NXP: usize = 21;
 
@@ -14,7 +14,7 @@ fn base_cell_meters(nxp: usize) -> f64 {
     2.0 * std::f64::consts::PI * 6_371_229.0 / (5.0 * nxp as f64)
 }
 
-fn deepest_level(mesh: &MethodCDelaunayMesh) -> usize {
+fn deepest_level(mesh: &TriangularMesh) -> usize {
     mesh.w_faces
         .iter()
         .skip(2)
@@ -34,7 +34,7 @@ fn nests_to_depth(nxp: usize, center: LonLatDegrees, depth: usize) {
             level: index + 1,
         })
         .collect();
-    let mesh = MethodCDelaunayMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
     let refined = mesh
         .spawn_nest(&regions, depth)
         .unwrap_or_else(|error| panic!("nxp {nxp} depth {depth} radii {radii:?}: {error}"));

@@ -63,7 +63,7 @@ pub(crate) struct MethodCNestSpringScratch {
 
 impl MethodCNestSpringScratch {
     pub(crate) fn new(
-        mesh: &MethodCDelaunayMesh,
+        mesh: &TriangularMesh,
         topology: &IcosahedronSpringTopology,
         movable_m_points: &[bool],
         dist00: f64,
@@ -137,7 +137,7 @@ impl MethodCNestSpringScratch {
     /// f32 multiply after the angle ratio, so folding it into the field
     /// changes rounding order by ULPs -- near-identical, not bit-identical.
     pub(crate) fn with_edge_target_lengths(
-        mesh: &MethodCDelaunayMesh,
+        mesh: &TriangularMesh,
         topology: &IcosahedronSpringTopology,
         movable_m_points: &[bool],
         edge_targets_m: &[f64],

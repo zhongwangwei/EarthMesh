@@ -3,23 +3,18 @@ use super::super::*;
 /// Small Method-C refined fixture shared by the h-field spring tests: an
 /// NXP-6 icosahedral base with one level-1 circular nest (same recipe as the
 /// mrow tests).
-fn refined_test_mesh() -> MethodCDelaunayMesh {
-    let mesh =
-        MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+fn refined_test_mesh() -> TriangularMesh {
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
     };
-    mesh.spawn_nest_with_max_mrows(
-        &[region],
-        1,
-        MethodCDelaunayMesh::METHOD_C_MAX_MROWS_SURFACE,
-    )
-    .expect("Method-C nest")
+    mesh.spawn_nest_with_max_mrows(&[region], 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .expect("Method-C nest")
 }
 
-fn max_ngr(mesh: &MethodCDelaunayMesh) -> usize {
+fn max_ngr(mesh: &TriangularMesh) -> usize {
     (2..=mesh.nmd)
         .map(|im| mesh.m_metadata[im].ngr)
         .max()
@@ -29,7 +24,7 @@ fn max_ngr(mesh: &MethodCDelaunayMesh) -> usize {
 /// Compatibility-equivalent per-edge targets: `dist00 / 2^(mrlu - 1)`, optionally
 /// folding in the mrow transition multiplier.
 fn level_derived_targets(
-    mesh: &MethodCDelaunayMesh,
+    mesh: &TriangularMesh,
     edge_count: usize,
     dist00: f64,
     fold_mrow_multiplier: bool,

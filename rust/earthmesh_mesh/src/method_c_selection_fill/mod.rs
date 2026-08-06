@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn method_c_rad3_faces_with_neighbors(
         &self,
         im: usize,

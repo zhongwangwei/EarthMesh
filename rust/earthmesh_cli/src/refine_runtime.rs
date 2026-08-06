@@ -1,7 +1,7 @@
 use std::io;
 
 use earthmesh_core::RefineConfig;
-use earthmesh_mesh::MethodCDelaunayMesh;
+use earthmesh_mesh::TriangularMesh;
 
 pub(crate) fn final_quality_non_negative_usize(value: i32, message: &str) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, message))
@@ -62,9 +62,9 @@ pub(crate) fn native_initial_delaunay_mesh(
     nxp: usize,
     native_mdomain: Option<usize>,
     native_deltax: f64,
-) -> io::Result<Option<MethodCDelaunayMesh>> {
+) -> io::Result<Option<TriangularMesh>> {
     if native_mdomain == Some(5) {
-        return MethodCDelaunayMesh::from_cart_hex(nxp, native_deltax).map(Some);
+        return TriangularMesh::from_cart_hex(nxp, native_deltax).map(Some);
     }
     Ok(None)
 }

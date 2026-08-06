@@ -12,7 +12,7 @@ pub struct MethodCGridfileMetadata<'a> {
     pub w_ngr: Option<&'a [i32]>,
 }
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Rebuild an Method-C Delaunay mesh from the compact EarthMesh gridfile
     /// tables written at the Voronoi output boundary.
     ///
@@ -239,8 +239,8 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_restores_persisted_refinement_ownership() {
-        let mesh = MethodCDelaunayMesh::from_icosahedron(3, 0, 1.0, 0.25, 100)
-            .expect("base Method-C mesh");
+        let mesh =
+            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();
@@ -255,7 +255,7 @@ mod tests {
         m_levels[1] = 2;
         w_levels[1] = 3;
 
-        let rebuilt = MethodCDelaunayMesh::from_voronoi_gridfile_tables_with_refine_levels(
+        let rebuilt = TriangularMesh::from_voronoi_gridfile_tables_with_refine_levels(
             &points,
             &faces,
             &counts,
@@ -270,8 +270,8 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_rejects_negative_refinement_levels() {
-        let mesh = MethodCDelaunayMesh::from_icosahedron(3, 0, 1.0, 0.25, 100)
-            .expect("base Method-C mesh");
+        let mesh =
+            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();
@@ -284,7 +284,7 @@ mod tests {
         let mut levels = vec![0; mesh.nwd];
         levels[1] = -1;
 
-        let error = MethodCDelaunayMesh::from_voronoi_gridfile_tables_with_refine_levels(
+        let error = TriangularMesh::from_voronoi_gridfile_tables_with_refine_levels(
             &points,
             &faces,
             &counts,
@@ -297,7 +297,7 @@ mod tests {
         let mut ngr = vec![1; mesh.nwd];
         ngr[0] = 0;
         ngr[1] = 0;
-        let error = MethodCDelaunayMesh::from_voronoi_gridfile_tables_with_metadata(
+        let error = TriangularMesh::from_voronoi_gridfile_tables_with_metadata(
             &points,
             &faces,
             &counts,
@@ -312,8 +312,8 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_restores_original_levels_and_ngr() {
-        let mesh = MethodCDelaunayMesh::from_icosahedron(3, 0, 1.0, 0.25, 100)
-            .expect("base Method-C mesh");
+        let mesh =
+            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();
@@ -336,7 +336,7 @@ mod tests {
         w_orig[1] = 1;
         w_ngr[1] = 8;
 
-        let rebuilt = MethodCDelaunayMesh::from_voronoi_gridfile_tables_with_metadata(
+        let rebuilt = TriangularMesh::from_voronoi_gridfile_tables_with_metadata(
             &points,
             &faces,
             &counts,

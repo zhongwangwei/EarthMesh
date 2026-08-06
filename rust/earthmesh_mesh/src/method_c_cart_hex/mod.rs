@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Build Method-C's local Cartesian hexagonal base grid used by
     /// `cart_hex.F90:cart_hex` for `MDOMAIN = 5`.
     pub fn from_cart_hex(nxp: usize, deltax_meters: f64) -> io::Result<Self> {

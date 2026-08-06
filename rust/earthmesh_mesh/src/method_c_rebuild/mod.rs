@@ -8,7 +8,7 @@ pub(crate) fn method_c_mesh_from_triangle_seeds(
     impent: [usize; 12],
     m_points: Vec<CartesianPoint>,
     face_seeds: &[MethodCTriangleSeed],
-) -> io::Result<MethodCDelaunayMesh> {
+) -> io::Result<TriangularMesh> {
     method_c_mesh_from_triangle_seeds_with_boundary_rows(
         nmd,
         impent,
@@ -24,7 +24,7 @@ fn method_c_mesh_from_triangle_seeds_with_boundary_rows(
     m_points: Vec<CartesianPoint>,
     face_seeds: &[MethodCTriangleSeed],
     boundary_rows: Vec<usize>,
-) -> io::Result<MethodCDelaunayMesh> {
+) -> io::Result<TriangularMesh> {
     require_method_c_len("m_points", m_points.len(), nmd + 1)?;
 
     let face_iw = assign_method_c_triangle_seed_w_ids(face_seeds)?;
@@ -106,7 +106,7 @@ fn method_c_mesh_from_triangle_seeds_with_boundary_rows(
     )?;
     let m_metadata = derive_method_c_m_metadata_from_w_faces(nmd, &connectivity.w_faces)?;
 
-    let mesh = MethodCDelaunayMesh {
+    let mesh = TriangularMesh {
         nmd,
         nud,
         nwd,

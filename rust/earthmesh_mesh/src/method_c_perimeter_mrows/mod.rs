@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn apply_method_c_perimeter_mrows(
         &mut self,
         ngr: usize,

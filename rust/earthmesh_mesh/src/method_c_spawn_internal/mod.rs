@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     pub(crate) fn spawn_nest_internal(
         &self,
         regions: &[RefinementRegion],

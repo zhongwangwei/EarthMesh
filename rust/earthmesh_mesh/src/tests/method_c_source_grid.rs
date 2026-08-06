@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_source_grid_style_multilevel_corridor_table_outputs_closed_mesh() {
-    let mesh = MethodCDelaunayMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+    let mesh = TriangularMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
         .expect("base Method-C mesh")
         .expand_by_factor(2)
         .expect("Canonical expand_global2 base Method-C mesh");
@@ -65,7 +65,7 @@ fn method_c_source_grid_style_multilevel_corridor_table_outputs_closed_mesh() {
 #[test]
 #[ignore = "runs three 5000-iteration atmosphere spring passes; use the table-only source-grid corridor test for default Method-C count/topology coverage"]
 fn method_c_source_grid_style_multilevel_corridor_outputs_closed_mesh() {
-    let mesh = MethodCDelaunayMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+    let mesh = TriangularMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
         .expect("base Method-C mesh")
         .expand_by_factor(2)
         .expect("Canonical expand_global2 base Method-C mesh");
@@ -166,7 +166,7 @@ fn method_c_source_grid_style_multilevel_corridor_outputs_closed_mesh() {
         );
     }
 
-    let adapted = voronoi_grid_from_method_c_delaunay_mesh(
+    let adapted = voronoi_grid_from_triangular_mesh(
         &refined,
         active_mesh_radius(&refined).expect("active mesh radius"),
     )

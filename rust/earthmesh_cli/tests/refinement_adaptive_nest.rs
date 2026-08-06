@@ -15,7 +15,7 @@ use earthmesh_cli::refinement_demand::{
     nest::spawn_nest_adaptive, plan::DemandPlanInputs, source_bounds_for_bbox,
 };
 use earthmesh_core::RefineConfig;
-use earthmesh_mesh::MethodCDelaunayMesh;
+use earthmesh_mesh::TriangularMesh;
 
 static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -64,8 +64,8 @@ fn plan_inputs<'a>(landtype: &'a Path, refine_coastline: bool) -> DemandPlanInpu
     }
 }
 
-fn base_mesh() -> MethodCDelaunayMesh {
-    MethodCDelaunayMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+fn base_mesh() -> TriangularMesh {
+    TriangularMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
 }
 
 #[test]

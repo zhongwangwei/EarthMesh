@@ -1,6 +1,6 @@
 use super::*;
 
-impl MethodCDelaunayMesh {
+impl TriangularMesh {
     /// Canonical text dump of the current Method-C Delaunay M/U/W topology tables.
     ///
     /// This is intentionally exhaustive for fields owned by `earthmesh_mesh` and

@@ -27,7 +27,7 @@
 
 use std::io;
 
-use earthmesh_mesh::{MethodCDelaunayMesh, RefinementRegion};
+use earthmesh_mesh::{RefinementRegion, TriangularMesh};
 
 use super::ladder::nested_circle_radii_meters;
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
@@ -100,13 +100,13 @@ pub const METHOD_C_ADAPTIVE_SUSPENDED: &str = concat!(
 );
 
 pub fn spawn_nest_adaptive_with_named_regions(
-    mesh: &MethodCDelaunayMesh,
+    mesh: &TriangularMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
     named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
-) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
+) -> io::Result<(TriangularMesh, AdaptiveNestReport)> {
     if !base_cell_meters.is_finite() || base_cell_meters <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -381,11 +381,11 @@ pub fn spawn_nest_adaptive_with_named_regions(
     ))
 }
 
-fn face_count(mesh: &MethodCDelaunayMesh) -> usize {
+fn face_count(mesh: &TriangularMesh) -> usize {
     mesh.w_faces.len().saturating_sub(2)
 }
 
-fn deepest_mrlw(mesh: &MethodCDelaunayMesh) -> usize {
+fn deepest_mrlw(mesh: &TriangularMesh) -> usize {
     mesh.w_faces
         .iter()
         .skip(2)
@@ -396,12 +396,12 @@ fn deepest_mrlw(mesh: &MethodCDelaunayMesh) -> usize {
 
 /// Adaptive refinement with no regions named outright.
 pub fn spawn_nest_adaptive(
-    mesh: &MethodCDelaunayMesh,
+    mesh: &TriangularMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
     base_cell_meters: f64,
     max_level: usize,
-) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
+) -> io::Result<(TriangularMesh, AdaptiveNestReport)> {
     spawn_nest_adaptive_with_named_regions(mesh, refine, inputs, &[], base_cell_meters, max_level)
 }
 
