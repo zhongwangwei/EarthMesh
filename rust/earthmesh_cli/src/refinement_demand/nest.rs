@@ -177,46 +177,56 @@ pub fn spawn_nest_adaptive_with_named_regions(
                         face_count(&current)
                     );
                 }
-                match current.spawn_nest(group, level) {
-                    Ok(next) => current = next,
+                let outcome = current.spawn_nest(group, level);
+                let reason = match outcome {
+                    Ok(next) => {
+                        current = next;
+                        None
+                    }
                     Err(error) => {
                         refused_groups += 1;
                         refused_circles += group.len();
+                        let reason = error.to_string();
                         if first_reason.is_none() {
-                            first_reason = Some(error.to_string());
+                            first_reason = Some(reason.clone());
                         }
-                        // Leave the refused circles where a diagnosis can pick
-                        // them up: replaying one group locally takes seconds,
-                        // re-running the globe to reach the same failure takes
-                        // forty minutes.
-                        if let Ok(mut file) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("refused_groups.jsonl")
-                        {
-                            use std::io::Write;
-                            let circles: Vec<String> = group
-                                .iter()
-                                .filter_map(|region| match region {
-                                    MethodCRefinementRegion::Circle {
-                                        center,
-                                        radius_meters,
-                                        ..
-                                    } => Some(format!(
-                                        "{{\"lon\":{},\"lat\":{},\"r\":{}}}",
-                                        center.lon_degrees, center.lat_degrees, radius_meters
-                                    )),
-                                    _ => None,
-                                })
-                                .collect();
-                            let _ = writeln!(
-                                file,
-                                "{{\"level\":{level},\"reason\":{:?},\"circles\":[{}]}}",
-                                error.to_string(),
-                                circles.join(",")
-                            );
-                        }
+                        Some(reason)
                     }
+                };
+                // Leave every group where a diagnosis can pick it up, in the
+                // order it was refined. Replaying one group locally takes
+                // seconds; re-running the globe to reach the same failure takes
+                // most of an hour -- and a refused group cannot be replayed
+                // alone anyway, because what it collides with is whatever the
+                // groups before it already put on the mesh.
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("refinement_groups.jsonl")
+                {
+                    use std::io::Write;
+                    let circles: Vec<String> = group
+                        .iter()
+                        .filter_map(|region| match region {
+                            MethodCRefinementRegion::Circle {
+                                center,
+                                radius_meters,
+                                ..
+                            } => Some(format!(
+                                "{{\"lon\":{},\"lat\":{},\"r\":{}}}",
+                                center.lon_degrees, center.lat_degrees, radius_meters
+                            )),
+                            _ => None,
+                        })
+                        .collect();
+                    let status = if reason.is_some() { "refused" } else { "ok" };
+                    let _ = writeln!(
+                        file,
+                        "{{\"level\":{level},\"order\":{index},\"status\":\"{status}\",\"faces\":{},\"reason\":{:?},\"circles\":[{}]}}",
+                        face_count(&current),
+                        reason.unwrap_or_default(),
+                        circles.join(",")
+                    );
                 }
             }
             if refused_groups == groups.len() {

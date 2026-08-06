@@ -47,3 +47,4 @@ gui-tauri/src-tauri/input
 
 # Refinement diagnostics a run drops beside its working directory.
 refused_groups.jsonl
+refinement_groups.jsonl
