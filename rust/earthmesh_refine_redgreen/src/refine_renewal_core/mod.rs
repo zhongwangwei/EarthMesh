@@ -62,6 +62,14 @@ pub fn refine_ngr_renew_core_one_based(
 
     let mut vertex_mapping = vec![0_usize; final_wp + 1];
     let mut cell_points = vec![LonLatDegrees::new(9999.0, 9999.0); final_wp + 1];
+    // Slot 0 is not a cell, and downstream it is read as one. The 9999 marks
+    // "no vertex accepted here yet" for the dedup scan below, which never looks
+    // at slot 0 -- but a gridfile reader decides between the compact and the
+    // two-placeholder row layout by whether rows 0 and 1 sit at the origin. Left
+    // at 9999 the cell array reads as compact while the triangle array, which
+    // fills its slot 0 with the origin, reads as two-placeholder: the file opens
+    // and every connectivity id resolves one row off.
+    cell_points[0] = LonLatDegrees::new(0.0, 0.0);
     let mut num_dbx = original_wp;
     cell_points[1..=original_wp].copy_from_slice(&cell_points_new[1..=original_wp]);
     for (idx, mapping) in vertex_mapping

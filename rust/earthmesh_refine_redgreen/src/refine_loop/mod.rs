@@ -972,6 +972,63 @@ mod tests {
         redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
     }
 
+    /// A cell can end up with more incident triangles than the seven-edge cap
+    /// the transition judge forks on, and reaching that cap is not the same as
+    /// being allowed to index past the end of a table sized for it.
+    ///
+    /// A second level refining into the first level's transition band -- which
+    /// is what `halo: 0` permits -- produces such a cell, and `iterC`'s
+    /// `ref_lbx_in` was a fixed seven columns wide. The round did not return a
+    /// wrong mesh; it aborted the process.
+    #[test]
+    fn a_cell_wider_than_the_transition_cap_does_not_index_off_the_end() {
+        let mesh = icosahedron(9);
+        let settings = RedGreenSettings {
+            max_transition_row: 3,
+            build_transition_rows: true,
+            // The engine's namelist default, and the treatment that grows the
+            // marking -- which is how the round reaches a cell this wide.
+            eliminate_weak_concavity: true,
+            halo: 0,
+        };
+        // The same disc on both rounds, sampled by triangle centre the way the
+        // pipeline's region marking does.
+        let region = earthmesh_mesh::RefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 3_000_000.0,
+            level: 1,
+        };
+        let disc = |mesh: &RedGreenMesh| {
+            let mut marking = vec![0i32; mesh.triangle_count() + 1];
+            for triangle in mesh.num_vertex + 1..=mesh.triangle_count() {
+                if region.contains_lonlat_canonical(mesh.triangle_points[triangle]) {
+                    marking[triangle] = 1;
+                }
+            }
+            marking
+        };
+
+        let first = refine_redgreen_round_one_based(&mesh, &disc(&mesh), &settings)
+            .expect("the first level");
+        let second = refine_redgreen_round_inside(
+            &first.mesh,
+            &disc(&first.mesh),
+            &settings,
+            Some(&disc(&first.mesh)),
+        )
+        .expect("a second level held by nothing must still return, not abort");
+
+        assert!(second.refined_triangle_count > 0);
+        assert!(
+            first
+                .mesh
+                .n_triangles_on_cell
+                .iter()
+                .any(|&edges| edges > 7),
+            "this case only exercises the fix if the second round is handed a cell past the cap"
+        );
+    }
+
     #[test]
     fn an_unmarked_mesh_comes_back_unchanged() {
         let mesh = icosahedron(6);

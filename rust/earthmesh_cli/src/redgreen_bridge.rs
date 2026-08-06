@@ -342,4 +342,121 @@ mod level_tests {
             "and arrives whole"
         );
     }
+
+    /// A refined mesh has to reach the writer with both arrays on the same row
+    /// layout.
+    ///
+    /// A gridfile reader picks between the compact layout (id = row + 1) and the
+    /// two-placeholder one (id = row) by whether rows 0 and 1 sit at the origin
+    /// -- and it picks per array. The renewal left slot 0 of the cell points at
+    /// its 9999 "no vertex here yet" sentinel, so the cell array read as compact
+    /// while the triangle array read as two-placeholder. The file opened, passed
+    /// its checks, and resolved every connectivity id one row off.
+    #[test]
+    fn a_refined_mesh_keeps_both_arrays_on_the_same_row_layout() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("bridge in");
+
+        let (written, _) = refine_redgreen_level(
+            &mesh,
+            &[RefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 3_000_000.0,
+                level: 1,
+            }],
+            // With the transition rows off the round leaves hanging nodes by
+            // design -- only the hexagonal dual reads such a mesh -- so the
+            // triangular view is only a mesh to check when they are on.
+            &earthmesh_core::RefineConfig {
+                is_transition: true,
+                ..earthmesh_core::RefineConfig::default()
+            },
+            1,
+            None,
+        )
+        .expect("one red-green level");
+
+        let topology = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&written);
+        assert!(
+            topology.is_consistent(),
+            "a refined red-green mesh must reach the writer as one mesh: {:?}",
+            &topology.violations[..topology.violations.len().min(4)]
+        );
+    }
+
+    /// How a caller chains levels, and why the previous marking is asked for
+    /// again rather than carried.
+    ///
+    /// A round renumbers *triangles*, so the array handed to level 1 indexes a
+    /// mesh that no longer exists by level 2 -- it is not even the right
+    /// length. `RedGreenOutcome::cell_renumbering` cannot bridge that: it maps
+    /// cells, and a marking is per triangle. Asking the regions again on the
+    /// refined mesh is the same question in the numbering the next level will
+    /// be asked about.
+    #[test]
+    fn a_deeper_level_is_held_inside_the_one_above_it() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(9, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("bridge in");
+        // Both levels ask for the same disc, so level 2 reaches all the way out
+        // to level 1's boundary and the halo has something to cancel.
+        let regions = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 3_000_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 3_000_000.0,
+                level: 2,
+            },
+        ];
+        // The transition rows have to be built for a level to be chainable at
+        // all -- without them the round leaves hanging nodes and the next one
+        // cannot even derive the triangle neighbours -- and the halo is what
+        // holds the deeper level inside.
+        let refine = earthmesh_core::RefineConfig {
+            is_transition: true,
+            halo: [3; 10],
+            max_transition_row: [3; 10],
+            ..earthmesh_core::RefineConfig::default()
+        };
+
+        let (_, first) =
+            refine_redgreen_level(&mesh, &regions, &refine, 1, None).expect("level one");
+        let previous = redgreen_marking_from_regions(&first.mesh, &regions, 1);
+        assert_eq!(
+            previous.len(),
+            first.mesh.triangle_count() + 1,
+            "the marking a level reads must be sized to the mesh that level sees"
+        );
+        assert_ne!(
+            previous.len(),
+            first.cell_renumbering.len(),
+            "and cell_renumbering is not that mapping -- it is per cell"
+        );
+
+        let (_, held) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous))
+            .expect("level two, held inside level one");
+        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None)
+            .expect("level two, free");
+
+        assert!(
+            held.halo_cancelled_count > 0,
+            "a level reaching its parent's boundary must be pulled back inside: {held:?}"
+        );
+        assert_eq!(free.halo_cancelled_count, 0, "and only when asked to be");
+        assert!(
+            held.refined_triangle_count < free.refined_triangle_count,
+            "so it refines less: {} vs {}",
+            held.refined_triangle_count,
+            free.refined_triangle_count
+        );
+    }
 }

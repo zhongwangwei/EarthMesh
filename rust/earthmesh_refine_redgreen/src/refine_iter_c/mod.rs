@@ -139,7 +139,18 @@ pub fn refine_iter_c_judge_one_based(
         mrl_in.clone_from(&mrl_bk);
     }
 
-    let mut ref_lbx_in = vec![vec![0_i32; 7]; lbx_points + 1];
+    // Wide enough for the widest cell present, not for the seven-edge cap the
+    // rules below fork on. Every read is `[..num_edges]`, so a cell within the
+    // cap sees exactly what a fixed seven gave it; a cell past it -- which a
+    // level refining into the level above's transition band can produce --
+    // matches none of the degree rules instead of indexing off the end.
+    let row_width = edge_counts[..=lbx_points]
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let mut ref_lbx_in = vec![vec![0_i32; row_width]; lbx_points + 1];
     for cell in (num_center + 1)..=lbx_points {
         let num_edges = edge_counts[cell];
         for (pos, &triangle) in triangles_on_cell[cell][..num_edges].iter().enumerate() {
