@@ -169,14 +169,26 @@ pub fn spawn_nest_adaptive_with_named_regions(
             let mut refused_circles = 0usize;
             let mut first_reason: Option<String> = None;
             let report_every = (groups.len() / 20).max(1);
+            // Groups are not comparable units of work: a refused one gives up
+            // in milliseconds, while one that lands spends its time in
+            // perimeter repair, which is quadratic in the block's boundary. A
+            // count alone made a run that was working look like one that had
+            // hung, so the line carries what the last group cost.
+            let mut group_started = std::time::Instant::now();
+            let mut last_group_circles = 0usize;
             for (index, group) in groups.iter().enumerate() {
                 if index > 0 && index.is_multiple_of(report_every) {
                     eprintln!(
-                        "adaptive refine level {level}: group {index}/{} ({} faces so far)",
+                        "adaptive refine level {level}: group {index}/{} ({} faces so far; group \
+                         {} took {:.1}s over {last_group_circles} circles)",
                         groups.len(),
-                        face_count(&current)
+                        face_count(&current),
+                        index - 1,
+                        group_started.elapsed().as_secs_f64()
                     );
                 }
+                group_started = std::time::Instant::now();
+                last_group_circles = group.len();
                 let outcome = current.spawn_nest(group, level);
                 let reason = match outcome {
                     Ok(next) => {
