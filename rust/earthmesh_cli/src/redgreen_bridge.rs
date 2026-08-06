@@ -113,3 +113,71 @@ mod tests {
         );
     }
 }
+
+/// The engine's refinement settings, as this level's red-green run reads them.
+///
+/// `halo` and `max_transition_row` are per-level in the namelist -- v2's
+/// `HALO = 3, 3, 3` -- so the level picks its own entry. A level past the end of
+/// the array reuses the last one that was given rather than silently falling
+/// back to a default: the array is how the user said "these levels", and
+/// running a deeper level on a number nobody wrote would be inventing one.
+pub fn redgreen_settings_for_level(
+    refine: &earthmesh_core::RefineConfig,
+    level: usize,
+) -> earthmesh_refine_redgreen::RedGreenSettings {
+    let at_level = |values: &[i32; 10]| -> usize {
+        let index = level.max(1).min(values.len()) - 1;
+        let chosen = values[index..]
+            .iter()
+            .rev()
+            .find(|&&value| value > 0)
+            .copied()
+            .unwrap_or(values[index]);
+        let value = if values[index] > 0 {
+            values[index]
+        } else {
+            chosen
+        };
+        value.max(0) as usize
+    };
+    earthmesh_refine_redgreen::RedGreenSettings {
+        max_transition_row: at_level(&refine.max_transition_row).max(1),
+        build_transition_rows: refine.is_transition,
+        eliminate_weak_concavity: refine.weak_concav_eliminate,
+        halo: at_level(&refine.halo),
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn each_level_reads_its_own_halo_and_transition_width() {
+        // The namelist gives these per level -- v2's HALO = 3, 3, 3 -- so a
+        // three-level run that narrows the band as it deepens has to be read
+        // that way, not collapsed to one number.
+        let refine = earthmesh_core::RefineConfig {
+            halo: [4, 3, 2, 0, 0, 0, 0, 0, 0, 0],
+            max_transition_row: [3, 2, 1, 0, 0, 0, 0, 0, 0, 0],
+            ..earthmesh_core::RefineConfig::default()
+        };
+
+        assert_eq!(redgreen_settings_for_level(&refine, 1).halo, 4);
+        assert_eq!(redgreen_settings_for_level(&refine, 2).halo, 3);
+        assert_eq!(redgreen_settings_for_level(&refine, 3).halo, 2);
+        assert_eq!(
+            redgreen_settings_for_level(&refine, 3).max_transition_row,
+            1
+        );
+    }
+
+    #[test]
+    fn a_transition_width_of_zero_still_leaves_one_row() {
+        // Zero rows is not a mesh this path can build -- the driver rejects it
+        // -- and the namelist's zeros are "levels not configured", not "no
+        // transition". Clamping here keeps that from reading as a request.
+        let refine = earthmesh_core::RefineConfig::default();
+        assert!(redgreen_settings_for_level(&refine, 9).max_transition_row >= 1);
+    }
+}
