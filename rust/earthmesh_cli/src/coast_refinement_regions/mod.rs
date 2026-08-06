@@ -19,7 +19,7 @@
 
 use std::path::Path;
 
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 
 use crate::refinement_demand::{
     landtype::coastal_demand, reduce_demand_to_circles, source_bounds_for_bbox,
@@ -47,7 +47,7 @@ pub fn coastal_refinement_circles(
     landtype_file: impl AsRef<Path>,
     gridnum_perdegree: usize,
     request: CoastRefinementRequest,
-) -> std::io::Result<Vec<MethodCRefinementRegion>> {
+) -> std::io::Result<Vec<RefinementRegion>> {
     if !request.radius_meters.is_finite() || request.radius_meters <= 0.0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

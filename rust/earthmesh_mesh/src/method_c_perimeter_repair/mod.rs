@@ -9,7 +9,7 @@ impl MethodCDelaunayMesh {
 
     pub(crate) fn method_c_valence_error_m_point(error: &io::Error) -> Option<usize> {
         let payload = method_c_repairable_payload(error)?;
-        (payload.kind == MethodCRepairableKind::Valence)
+        (payload.kind == RepairableKind::Valence)
             .then_some(payload.m_point)
             .flatten()
     }
@@ -77,8 +77,8 @@ impl MethodCDelaunayMesh {
         }
 
         let perimeters = self.method_c_perimeters_from_selected_faces(selected, m_neighbors)?;
-        Err(method_c_repairable_error(
-            MethodCRepairableKind::NonTripletPerimeter,
+        Err(repairable_error(
+            RepairableKind::NonTripletPerimeter,
             None,
             format!(
                 "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples without crossing the parent boundary",

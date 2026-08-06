@@ -4,7 +4,7 @@ impl MethodCDelaunayMesh {
     #[cfg(test)]
     pub(crate) fn method_c_refinement_start_point_with_neighbors(
         &self,
-        region: &MethodCRefinementRegion,
+        region: &RefinementRegion,
         radius: f64,
         m_neighbors: &[IcosahedronMPointNeighbors],
         use_cartesian_xy: bool,
@@ -45,7 +45,7 @@ impl MethodCDelaunayMesh {
     /// a correction applied to this one.
     pub(crate) fn method_c_refinement_start_point_for_regions_with_neighbors(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         radius: f64,
         m_neighbors: &[IcosahedronMPointNeighbors],
         use_cartesian_xy: bool,
@@ -121,7 +121,7 @@ impl MethodCDelaunayMesh {
 
     pub(crate) fn closest_m_point_to_region_anchor(
         &self,
-        region: &MethodCRefinementRegion,
+        region: &RefinementRegion,
         use_cartesian_xy: bool,
     ) -> io::Result<usize> {
         if use_cartesian_xy {

@@ -19,8 +19,8 @@ impl MethodCDelaunayMesh {
         let perimeters =
             self.method_c_perimeters_from_selected_faces(selected, method_c_m_neighbors)?;
         if !Self::method_c_perimeters_are_triplets(&perimeters) {
-            return Err(method_c_repairable_error(
-                MethodCRepairableKind::NonTripletPerimeter,
+            return Err(repairable_error(
+                RepairableKind::NonTripletPerimeter,
                 None,
                 format!(
                     "Method-C perimeter length invalid: perimeter lengths {:?} cannot be grouped into transition triples",

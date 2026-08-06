@@ -1,6 +1,6 @@
 use std::io;
 
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 
 use super::{
     native_grid_grid_count, read_native_grid_mdomain, read_native_grid_sfcgrid_res_factor,
@@ -65,11 +65,11 @@ pub(crate) fn native_grid_refinement_depth(
     Ok(atmosphere_depth + surface_grid_count)
 }
 
-pub(crate) fn method_c_refinement_region_level(region: &MethodCRefinementRegion) -> usize {
+pub(crate) fn method_c_refinement_region_level(region: &RefinementRegion) -> usize {
     match region {
-        MethodCRefinementRegion::Circle { level, .. }
-        | MethodCRefinementRegion::Bbox { level, .. }
-        | MethodCRefinementRegion::Corridor { level, .. }
-        | MethodCRefinementRegion::Polygon { level, .. } => *level,
+        RefinementRegion::Circle { level, .. }
+        | RefinementRegion::Bbox { level, .. }
+        | RefinementRegion::Corridor { level, .. }
+        | RefinementRegion::Polygon { level, .. } => *level,
     }
 }

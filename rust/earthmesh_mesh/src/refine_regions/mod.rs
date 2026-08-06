@@ -2,7 +2,14 @@ use crate::LonLatDegrees;
 
 /// User-facing specified-region refinement request for the Method-C mesh layer.
 #[derive(Debug, Clone, PartialEq)]
-pub enum MethodCRefinementRegion {
+/// A region a run asks to refine, in the shape a project describes one.
+///
+/// Shared: a circle, a corridor, a box or a closed curve means the same thing
+/// whichever algorithm builds the mesh. What differs is whether the algorithm
+/// can build *that* shape -- Method-C refuses shapes off its lattice, red-green
+/// grows a marking until it is legal -- and that is the backends' business, not
+/// this type's.
+pub enum RefinementRegion {
     Circle {
         center: LonLatDegrees,
         radius_meters: f64,
@@ -28,50 +35,50 @@ pub enum MethodCRefinementRegion {
 
 pub(crate) const METHOD_C_MIN_GRID_SPACING_METERS: f64 = 0.001;
 
-pub(crate) fn scale_method_c_refinement_regions_radius(
-    regions: &[MethodCRefinementRegion],
+pub(crate) fn scale_refinement_regions_radius(
+    regions: &[RefinementRegion],
     factor: f64,
-) -> Option<Vec<MethodCRefinementRegion>> {
+) -> Option<Vec<RefinementRegion>> {
     if regions.is_empty() {
         return None;
     }
     regions
         .iter()
-        .map(|region| scale_method_c_refinement_region_radius(region, factor))
+        .map(|region| scale_refinement_region_radius(region, factor))
         .collect()
 }
 
-pub(crate) fn scale_method_c_refinement_region_radius(
-    region: &MethodCRefinementRegion,
+pub(crate) fn scale_refinement_region_radius(
+    region: &RefinementRegion,
     factor: f64,
-) -> Option<MethodCRefinementRegion> {
+) -> Option<RefinementRegion> {
     if !factor.is_finite() || factor <= 0.0 {
         return None;
     }
     match region {
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center,
             radius_meters,
             level,
-        } => Some(MethodCRefinementRegion::Circle {
+        } => Some(RefinementRegion::Circle {
             center: *center,
             radius_meters: radius_meters * factor,
             level: *level,
         }),
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points,
             radius_meters,
             level,
-        } => Some(MethodCRefinementRegion::Corridor {
+        } => Some(RefinementRegion::Corridor {
             points: points.clone(),
             radius_meters: radius_meters.iter().map(|radius| radius * factor).collect(),
             level: *level,
         }),
-        MethodCRefinementRegion::Bbox { .. } | MethodCRefinementRegion::Polygon { .. } => None,
+        RefinementRegion::Bbox { .. } | RefinementRegion::Polygon { .. } => None,
     }
 }
 
-impl MethodCRefinementRegion {
+impl RefinementRegion {
     pub fn level(&self) -> usize {
         match self {
             Self::Circle { level, .. }

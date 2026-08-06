@@ -15,14 +15,14 @@ fn vector_conversion_preserves_order() {
 #[test]
 fn method_c_bbox_uses_directed_west_to_east_span() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
-    let wide = MethodCRefinementRegion::Bbox {
+    let wide = RefinementRegion::Bbox {
         west_degrees: -170.0,
         east_degrees: 170.0,
         south_degrees: -10.0,
         north_degrees: 10.0,
         level: 1,
     };
-    let crossing = MethodCRefinementRegion::Bbox {
+    let crossing = RefinementRegion::Bbox {
         west_degrees: 170.0,
         east_degrees: -170.0,
         south_degrees: -10.0,
@@ -37,7 +37,7 @@ fn method_c_bbox_uses_directed_west_to_east_span() {
     assert!(!crossing.contains_cartesian(prime, radius));
     assert!(crossing.contains_cartesian(dateline, radius));
 
-    let global = MethodCRefinementRegion::Bbox {
+    let global = RefinementRegion::Bbox {
         west_degrees: -180.0,
         east_degrees: 180.0,
         south_degrees: -10.0,
@@ -54,7 +54,7 @@ fn method_c_bbox_uses_directed_west_to_east_span() {
 
 #[test]
 fn method_c_circle_region_uses_canonical_polar_stereographic_distance() {
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(0.0, 0.0),
         radius_meters: 5_000_000.0,
         level: 1,
@@ -69,7 +69,7 @@ fn method_c_circle_region_uses_canonical_polar_stereographic_distance() {
 
 #[test]
 fn canonical_lonlat_entrypoint_makes_radius_metric_explicit() {
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(0.0, 0.0),
         radius_meters: 5_000_000.0,
         level: 1,
@@ -88,7 +88,7 @@ fn canonical_lonlat_entrypoint_makes_radius_metric_explicit() {
 
 #[test]
 fn canonical_polygon_exposes_planar_high_latitude_warning_without_changing_semantics() {
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(-20.0, 80.0),
             LonLatDegrees::new(20.0, 80.0),
@@ -115,7 +115,7 @@ fn method_c_circle_region_resolves_sub_f32_boundary_offsets() {
     let outer = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.000_000_01, 0.0));
     let inner_distance = method_c_ec_ps_distance_meters(inner, center, radius);
     let outer_distance = method_c_ec_ps_distance_meters(outer, center, radius);
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center,
         radius_meters: 0.5 * (inner_distance + outer_distance),
         level: 1,
@@ -132,12 +132,12 @@ fn method_c_stereographic_regions_reject_antipodal_singularity() {
     let antipode = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(180.0, 0.0));
     let near_antipode = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(179.999_999, 0.0));
     let center = LonLatDegrees::new(0.0, 0.0);
-    let circle = MethodCRefinementRegion::Circle {
+    let circle = RefinementRegion::Circle {
         center,
         radius_meters: 2_000_000.0,
         level: 1,
     };
-    let corridor = MethodCRefinementRegion::Corridor {
+    let corridor = RefinementRegion::Corridor {
         points: vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
         radius_meters: vec![2_000_000.0, 2_000_000.0],
         level: 1,
@@ -157,12 +157,12 @@ fn method_c_region_boundaries_use_canonical_strict_less_than_radius() {
     let center = LonLatDegrees::new(0.0, 0.0);
     let circle_boundary = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(1.0, 0.0));
     let circle_distance = method_c_ec_ps_distance_meters(circle_boundary, center, radius);
-    let circle = MethodCRefinementRegion::Circle {
+    let circle = RefinementRegion::Circle {
         center,
         radius_meters: circle_distance,
         level: 1,
     };
-    let circle_close = MethodCRefinementRegion::Circle {
+    let circle_close = RefinementRegion::Circle {
         center,
         radius_meters: circle_distance / 1.5,
         level: 1,
@@ -180,12 +180,12 @@ fn method_c_region_boundaries_use_canonical_strict_less_than_radius() {
         radius,
     )
     .0;
-    let corridor = MethodCRefinementRegion::Corridor {
+    let corridor = RefinementRegion::Corridor {
         points: corridor_points.clone(),
         radius_meters: vec![corridor_distance],
         level: 1,
     };
-    let zero_radius_corridor = MethodCRefinementRegion::Corridor {
+    let zero_radius_corridor = RefinementRegion::Corridor {
         points: corridor_points.clone(),
         radius_meters: vec![0.0],
         level: 1,
@@ -199,7 +199,7 @@ fn method_c_region_boundaries_use_canonical_strict_less_than_radius() {
 
 #[test]
 fn method_c_refinement_region_rejects_radius_below_canonical_dzxmin() {
-    let circle = MethodCRefinementRegion::Circle {
+    let circle = RefinementRegion::Circle {
         center: LonLatDegrees::new(0.0, 0.0),
         radius_meters: 0.0005,
         level: 1,
@@ -209,7 +209,7 @@ fn method_c_refinement_region_rejects_radius_below_canonical_dzxmin() {
         "Canonical Method-C rejects grdrad below dzxmin=0.001"
     );
 
-    let corridor = MethodCRefinementRegion::Corridor {
+    let corridor = RefinementRegion::Corridor {
         points: vec![LonLatDegrees::new(0.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
         radius_meters: vec![0.001, 0.0005],
         level: 1,
@@ -222,7 +222,7 @@ fn method_c_refinement_region_rejects_radius_below_canonical_dzxmin() {
 
 #[test]
 fn method_c_corridor_region_uses_canonical_segment_polar_stereographic_distance() {
-    let region = MethodCRefinementRegion::Corridor {
+    let region = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(-80.0, 40.0),
             LonLatDegrees::new(80.0, 40.0),
@@ -245,7 +245,7 @@ fn method_c_corridor_region_interpolates_segment_radius_like_canonical() {
     let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 1.0));
     let (distance, t) =
         method_c_corridor_segment_distance_meters(point, points[0], points[1], radius);
-    let region = MethodCRefinementRegion::Corridor {
+    let region = RefinementRegion::Corridor {
         points,
         radius_meters: vec![distance * 0.5, distance * 3.0],
         level: 1,
@@ -263,7 +263,7 @@ fn method_c_corridor_region_interpolates_segment_radius_like_canonical() {
 
 #[test]
 fn method_c_corridor_region_requires_radius_per_canonical_endpoint() {
-    let region = MethodCRefinementRegion::Corridor {
+    let region = RefinementRegion::Corridor {
         points: vec![LonLatDegrees::new(-1.0, 0.0), LonLatDegrees::new(1.0, 0.0)],
         radius_meters: vec![1_000_000.0],
         level: 1,
@@ -277,7 +277,7 @@ fn method_c_corridor_region_requires_radius_per_canonical_endpoint() {
 
 #[test]
 fn method_c_native_cartesian_circle_uses_canonical_mdomain_ge_two_distance() {
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10.0, 20.0),
         radius_meters: 5.0,
         level: 1,
@@ -290,12 +290,12 @@ fn method_c_native_cartesian_circle_uses_canonical_mdomain_ge_two_distance() {
 
 #[test]
 fn method_c_native_cartesian_region_validation_allows_canonical_mdomain_ge_two_coordinates() {
-    let circle = MethodCRefinementRegion::Circle {
+    let circle = RefinementRegion::Circle {
         center: LonLatDegrees::new(250.0, 200.0),
         radius_meters: 5.0,
         level: 1,
     };
-    let corridor = MethodCRefinementRegion::Corridor {
+    let corridor = RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(250.0, 200.0),
             LonLatDegrees::new(260.0, 210.0),
@@ -316,14 +316,14 @@ fn method_c_native_cartesian_region_validation_allows_canonical_mdomain_ge_two_c
 
 #[test]
 fn method_c_cartesian_bbox_and_polygon_use_native_xy_geometry() {
-    let bbox = MethodCRefinementRegion::Bbox {
+    let bbox = RefinementRegion::Bbox {
         west_degrees: 10.0,
         east_degrees: 20.0,
         south_degrees: 30.0,
         north_degrees: 40.0,
         level: 1,
     };
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(10.0, 30.0),
             LonLatDegrees::new(20.0, 30.0),
@@ -365,7 +365,7 @@ fn method_c_native_cartesian_start_uses_imcent_not_global_pentagon_like_canonica
     let pentagon_xy = mesh.m_points[pentagon];
     let anchor_xy = mesh.m_points[non_pentagon];
     let radius_meters = (anchor_xy.x - pentagon_xy.x).hypot(anchor_xy.y - pentagon_xy.y) * 1.01;
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(anchor_xy.x, anchor_xy.y),
         radius_meters,
         level: 1,
@@ -391,12 +391,12 @@ fn method_c_native_cartesian_start_uses_imcent_not_global_pentagon_like_canonica
 fn method_c_selected_faces_do_not_pre_expand_for_future_levels_like_canonical() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region_level_one = MethodCRefinementRegion::Circle {
+    let region_level_one = RefinementRegion::Circle {
         center: LonLatDegrees::new(105.0, 35.0),
         radius_meters: 2_500_000.0,
         level: 1,
     };
-    let region_level_two = MethodCRefinementRegion::Circle {
+    let region_level_two = RefinementRegion::Circle {
         center: LonLatDegrees::new(105.0, 35.0),
         radius_meters: 2_500_000.0,
         level: 2,
@@ -417,7 +417,7 @@ fn method_c_selected_faces_do_not_pre_expand_for_future_levels_like_canonical() 
 
 #[test]
 fn method_c_native_cartesian_corridor_uses_canonical_linesegdist2_radius_interpolation() {
-    let region = MethodCRefinementRegion::Corridor {
+    let region = RefinementRegion::Corridor {
         points: vec![LonLatDegrees::new(0.0, 0.0), LonLatDegrees::new(10.0, 0.0)],
         radius_meters: vec![2.0, 6.0],
         level: 1,
@@ -430,7 +430,7 @@ fn method_c_native_cartesian_corridor_uses_canonical_linesegdist2_radius_interpo
 
 #[test]
 fn method_c_polygon_near_edge_uses_canonical_segment_polar_stereographic_distance() {
-    let region = MethodCRefinementRegion::Polygon {
+    let region = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(-80.0, 40.0),
             LonLatDegrees::new(80.0, 40.0),
@@ -449,7 +449,7 @@ fn method_c_polygon_near_edge_uses_canonical_segment_polar_stereographic_distanc
 
 #[test]
 fn method_c_bbox_halo_follows_the_segmented_directed_boundary() {
-    let region = MethodCRefinementRegion::Bbox {
+    let region = RefinementRegion::Bbox {
         west_degrees: -80.0,
         east_degrees: 80.0,
         south_degrees: -40.0,
@@ -473,7 +473,7 @@ fn method_c_bbox_halo_follows_the_segmented_directed_boundary() {
 fn method_c_bbox_and_polygon_regions_fill_lonlat_interiors() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
     let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(-40.0, -40.0),
             LonLatDegrees::new(40.0, -40.0),
@@ -482,7 +482,7 @@ fn method_c_bbox_and_polygon_regions_fill_lonlat_interiors() {
         ],
         level: 1,
     };
-    let bbox = MethodCRefinementRegion::Bbox {
+    let bbox = RefinementRegion::Bbox {
         west_degrees: -40.0,
         east_degrees: 40.0,
         south_degrees: -40.0,
@@ -504,14 +504,14 @@ fn method_c_bbox_and_polygon_regions_fill_lonlat_interiors() {
 fn method_c_bbox_and_polygon_close_paths_include_filled_interiors() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
     let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 0.0));
-    let bbox = MethodCRefinementRegion::Bbox {
+    let bbox = RefinementRegion::Bbox {
         west_degrees: -80.0,
         east_degrees: 80.0,
         south_degrees: -40.0,
         north_degrees: 40.0,
         level: 1,
     };
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(-80.0, -40.0),
             LonLatDegrees::new(80.0, -40.0),
@@ -528,7 +528,7 @@ fn method_c_bbox_and_polygon_close_paths_include_filled_interiors() {
 #[test]
 fn method_c_polygon_region_closes_last_point_to_first_for_interior_fill() {
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(0.0, 0.0),
             LonLatDegrees::new(60.0, 0.0),
@@ -548,12 +548,12 @@ fn method_c_polygon_region_closes_last_point_to_first_for_interior_fill() {
 #[test]
 fn method_c_multipoint_region_anchor_uses_first_specified_point_like_canonical() {
     let first = LonLatDegrees::new(-40.0, -30.0);
-    let corridor = MethodCRefinementRegion::Corridor {
+    let corridor = RefinementRegion::Corridor {
         points: vec![first, LonLatDegrees::new(20.0, 30.0)],
         radius_meters: vec![500_000.0, 500_000.0],
         level: 1,
     };
-    let polygon = MethodCRefinementRegion::Polygon {
+    let polygon = RefinementRegion::Polygon {
         points: vec![
             first,
             LonLatDegrees::new(40.0, -30.0),
@@ -577,7 +577,7 @@ fn method_c_multipoint_region_anchor_uses_first_specified_point_like_canonical()
 
 #[test]
 fn method_c_bbox_region_anchor_uses_first_closed_corridor_corner_like_canonical() {
-    let bbox = MethodCRefinementRegion::Bbox {
+    let bbox = RefinementRegion::Bbox {
         west_degrees: -40.0,
         east_degrees: 40.0,
         south_degrees: -30.0,

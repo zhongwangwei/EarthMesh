@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
 use crate::namelist_reader::{namelist_assignments, native_grid_index};
 
@@ -18,7 +18,7 @@ pub(crate) fn read_native_grid_refinement_regions(
     contents: &str,
     is_atmosmesh: bool,
     validate_geographic_bounds: bool,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     validate_native_grid_optional_usize_bounds(contents, "gridplot_base", 2, max_grids())?;
     validate_native_grid_optional_usize_bounds(contents, "sfcgridplot_base", 1, max_grids())?;
     if is_atmosmesh {
@@ -42,7 +42,7 @@ pub(crate) fn read_native_grid_refinement_regions_for_grid(
     contents: &str,
     is_atmosgrid: bool,
     validate_geographic_bounds: bool,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     let grid_count_field = if is_atmosgrid { "ngrids" } else { "nsfcgrids" };
     let point_count_field = if is_atmosgrid { "ngrdll" } else { "nsfcgrdll" };
     let radius_field = if is_atmosgrid { "grdrad" } else { "sfcgrdrad" };
@@ -220,13 +220,13 @@ pub(crate) fn read_native_grid_refinement_regions_for_grid(
             radius_meters.push(radius);
         }
         if points.len() == 1 {
-            regions.push(MethodCRefinementRegion::Circle {
+            regions.push(RefinementRegion::Circle {
                 center: points[0],
                 radius_meters: radius_meters[0],
                 level,
             });
         } else {
-            regions.push(MethodCRefinementRegion::Corridor {
+            regions.push(RefinementRegion::Corridor {
                 points,
                 radius_meters,
                 level,

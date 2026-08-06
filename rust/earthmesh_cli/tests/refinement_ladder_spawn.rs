@@ -6,7 +6,7 @@
 //! every depth the ceiling allows and asks how deep the mesh actually got.
 
 use earthmesh_cli::refinement_demand::ladder::nested_circle_radii_meters;
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
 
 const NXP: usize = 21;
 
@@ -28,7 +28,7 @@ fn nests_to_depth(nxp: usize, center: LonLatDegrees, depth: usize) {
     let regions: Vec<_> = radii
         .iter()
         .enumerate()
-        .map(|(index, &radius_meters)| MethodCRefinementRegion::Circle {
+        .map(|(index, &radius_meters)| RefinementRegion::Circle {
             center,
             radius_meters,
             level: index + 1,

@@ -1,7 +1,7 @@
 //! EarthMesh execution pipelines, format adapters, and CLI-facing reports.
 
 use earthmesh_core::MkgrdWorkspacePlan;
-use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
 pub mod mask_source_discovery;
 use mask_source_discovery::discover_mask_sources;

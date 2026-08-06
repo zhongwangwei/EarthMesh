@@ -11,17 +11,17 @@ fn method_c_source_grid_style_multilevel_corridor_table_outputs_closed_mesh() {
         LonLatDegrees::new(-95.0, 26.0),
     ];
     let regions = [
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path.clone(),
             radius_meters: vec![3_000_000.0, 3_000_000.0],
             level: 1,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path.clone(),
             radius_meters: vec![1_800_000.0, 1_800_000.0],
             level: 2,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path,
             radius_meters: vec![1_200_000.0, 1_200_000.0],
             level: 3,
@@ -74,17 +74,17 @@ fn method_c_source_grid_style_multilevel_corridor_outputs_closed_mesh() {
         LonLatDegrees::new(-95.0, 26.0),
     ];
     let regions = [
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path.clone(),
             radius_meters: vec![3_000_000.0, 3_000_000.0],
             level: 1,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path.clone(),
             radius_meters: vec![1_800_000.0, 1_800_000.0],
             level: 2,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: path,
             radius_meters: vec![1_200_000.0, 1_200_000.0],
             level: 3,

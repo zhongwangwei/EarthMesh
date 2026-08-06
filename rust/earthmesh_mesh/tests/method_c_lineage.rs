@@ -4,7 +4,7 @@
 //! from" after passes and a renumbering have moved every row. It is only worth
 //! anything if it survives all three, so that is what these check.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
 
 const NXP: usize = 21;
 
@@ -33,7 +33,7 @@ fn an_unrefined_mesh_has_every_cell_as_its_own_ancestor() {
 fn refined_children_name_the_face_they_were_split_from() {
     let mesh = base_mesh();
     let before = mesh.gridfile_m_cell_lineages().expect("m lineage");
-    let regions = vec![MethodCRefinementRegion::Circle {
+    let regions = vec![RefinementRegion::Circle {
         center: LonLatDegrees::new(114.0, 22.0),
         radius_meters: 400_000.0,
         level: 1,
@@ -79,7 +79,7 @@ fn no_cell_of_either_kind_is_left_without_an_ancestor() {
     // earlier tests missed it because they only read the M-cell lineage, which
     // is derived from W faces. Both kinds are checked here.
     let mesh = base_mesh();
-    let regions = vec![MethodCRefinementRegion::Circle {
+    let regions = vec![RefinementRegion::Circle {
         center: LonLatDegrees::new(114.0, 22.0),
         radius_meters: 400_000.0,
         level: 1,
@@ -114,12 +114,12 @@ fn lineage_survives_a_second_pass() {
     let original_faces = mesh.gridfile_m_cell_lineages().expect("m lineage").len();
     let center = LonLatDegrees::new(114.0, 22.0);
     let regions = vec![
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center,
             radius_meters: 1_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center,
             radius_meters: 400_000.0,
             level: 2,
@@ -140,7 +140,7 @@ fn lineage_survives_a_second_pass() {
 #[test]
 fn spring_moves_points_without_touching_ancestry() {
     let mesh = base_mesh();
-    let regions = vec![MethodCRefinementRegion::Circle {
+    let regions = vec![RefinementRegion::Circle {
         center: LonLatDegrees::new(114.0, 22.0),
         radius_meters: 400_000.0,
         level: 1,

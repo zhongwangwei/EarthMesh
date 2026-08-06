@@ -34,7 +34,7 @@ fn one_demanded_cell_yields_one_circle_covering_it() {
     let radius_meters = 200_000.0;
     let regions = reduce_demand_to_circles(&demand, 2, radius_meters).expect("reduce");
     assert_eq!(regions.len(), 1, "got {regions:?}");
-    let MethodCRefinementRegion::Circle {
+    let RefinementRegion::Circle {
         center,
         radius_meters: emitted,
         level,
@@ -98,8 +98,8 @@ fn consecutive_blocks_overlap_by_half_a_radius() {
     assert!(regions.len() > 2, "expected a chain, got {regions:?}");
     for pair in regions.windows(2) {
         let (
-            MethodCRefinementRegion::Circle { center: left, .. },
-            MethodCRefinementRegion::Circle { center: right, .. },
+            RefinementRegion::Circle { center: left, .. },
+            RefinementRegion::Circle { center: right, .. },
         ) = (&pair[0], &pair[1])
         else {
             panic!("reduction must emit circles");
@@ -166,7 +166,7 @@ fn every_demanded_cell_lands_inside_some_circle() {
     let regions = reduce_demand_to_circles(&demand, 1, radius_meters).expect("reduce");
     for (lon, lat) in cells {
         let covered = regions.iter().any(|region| {
-            let MethodCRefinementRegion::Circle {
+            let RefinementRegion::Circle {
                 center,
                 radius_meters,
                 ..

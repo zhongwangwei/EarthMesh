@@ -6,7 +6,7 @@ use super::super::*;
 fn refined_test_mesh() -> MethodCDelaunayMesh {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -135,7 +135,7 @@ fn hfield_spring_with_level_derived_targets_tracks_compatibility_and_is_determin
         .expect("compatibility nest spring");
 
     let radius = crate::method_c_spring::active_mesh_radius(&refined).expect("mesh radius");
-    let dist00 = method_c_canonical_global_dist00(1.0, radius, 6);
+    let dist00 = canonical_global_dist00(1.0, radius, 6);
     let topology = icosahedron_spring_topology_canonical(
         refined.nmd,
         &refined.u_edges,
@@ -192,7 +192,7 @@ fn edge_targets_sample_at_midpoints_and_move_only_transition_points() {
     let refined = refined_test_mesh();
     let ngr = max_ngr(&refined);
     let radius = crate::method_c_spring::active_mesh_radius(&refined).expect("mesh radius");
-    let dist00 = method_c_canonical_global_dist00(1.0, radius, 6);
+    let dist00 = canonical_global_dist00(1.0, radius, 6);
 
     let targets = method_c_edge_target_lengths_from_field(&refined, |_lon, _lat| dist00)
         .expect("uniform field targets");

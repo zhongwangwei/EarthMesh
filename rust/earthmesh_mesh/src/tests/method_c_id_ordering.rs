@@ -4,7 +4,7 @@ use super::*;
 fn method_c_child_w_ids_follow_canonical_parent_then_three_children_order() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -109,7 +109,7 @@ fn method_c_child_w_ids_follow_canonical_parent_then_three_children_order() {
 fn method_c_midpoint_m_ids_follow_canonical_first_seen_edge_order() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,

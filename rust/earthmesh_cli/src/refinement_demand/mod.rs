@@ -55,7 +55,7 @@ pub mod threshold;
 
 use std::io;
 
-use earthmesh_mesh::{AreaJudgeSourceBounds, LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{AreaJudgeSourceBounds, LonLatDegrees, RefinementRegion};
 
 /// Refinement demand over a window of the source raster.
 ///
@@ -324,7 +324,7 @@ pub fn reduce_demand_to_circles(
     demand: &RefinementDemand,
     level: usize,
     radius_meters: f64,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     reduce_demand_to_circles_on_blocks(demand, level, radius_meters, radius_meters)
 }
 
@@ -344,7 +344,7 @@ pub fn reduce_demand_to_circles_on_blocks(
     level: usize,
     radius_meters: f64,
     block_radius_meters: f64,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     if !radius_meters.is_finite() || radius_meters <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -381,7 +381,7 @@ pub fn reduce_demand_to_circles_on_blocks(
             if wanted {
                 let lon_centre = (lon_block + lon_end) as f64 / 2.0;
                 let lat_centre = (lat_block + lat_end) as f64 / 2.0;
-                regions.push(MethodCRefinementRegion::Circle {
+                regions.push(RefinementRegion::Circle {
                     center: LonLatDegrees::new(
                         demand.lon_degrees(lon_centre),
                         demand.lat_degrees(lat_centre),

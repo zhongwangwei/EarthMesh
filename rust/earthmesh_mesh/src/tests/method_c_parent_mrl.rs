@@ -4,7 +4,7 @@ use super::*;
 fn method_c_selected_faces_use_current_parent_mrl_inside_existing_nest() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let first_region = MethodCRefinementRegion::Circle {
+    let first_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -24,7 +24,7 @@ fn method_c_selected_faces_use_current_parent_mrl_inside_existing_nest() {
                     .all(|&iu| first.u_edges[iu].mrlu == 2)
         })
         .expect("first nest should create an interior level-2 M point");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: xyz_to_lonlat_degrees(first.m_points[nested_point]),
         radius_meters: 1.0,
         level: 1,
@@ -51,7 +51,7 @@ fn method_c_selected_faces_use_current_parent_mrl_inside_existing_nest() {
 fn method_c_selected_faces_parent_halo_keeps_current_parent_mrl() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let first_region = MethodCRefinementRegion::Circle {
+    let first_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -71,7 +71,7 @@ fn method_c_selected_faces_parent_halo_keeps_current_parent_mrl() {
                     .all(|&iu| first.u_edges[iu].mrlu == 2)
         })
         .expect("first nest should create an interior level-2 M point");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: xyz_to_lonlat_degrees(first.m_points[nested_point]),
         radius_meters: 1.0,
         level: 2,

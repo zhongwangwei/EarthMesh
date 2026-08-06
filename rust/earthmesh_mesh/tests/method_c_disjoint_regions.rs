@@ -10,7 +10,7 @@
 //! so the emit -- which is 99.5% of the cost of a pass and renumbers the whole
 //! mesh regardless of how many blocks it carries -- still runs once.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
 
 const NXP: usize = 81;
 
@@ -22,8 +22,8 @@ fn mesh() -> MethodCDelaunayMesh {
     MethodCDelaunayMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
 }
 
-fn circle(lon: f64, lat: f64) -> MethodCRefinementRegion {
-    MethodCRefinementRegion::Circle {
+fn circle(lon: f64, lat: f64) -> RefinementRegion {
+    RefinementRegion::Circle {
         center: LonLatDegrees::new(lon, lat),
         radius_meters: 0.4 * base_meters(),
         level: 1,

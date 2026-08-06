@@ -1,5 +1,5 @@
 use earthmesh_mesh::METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
-use earthmesh_mesh::{CartesianPoint, LonLatDegrees, MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{CartesianPoint, LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
 
 fn magnitude(point: earthmesh_mesh::CartesianPoint) -> f64 {
     (point.x * point.x + point.y * point.y + point.z * point.z).sqrt()
@@ -59,7 +59,7 @@ fn spawn_nest_refines_one_circle_without_refining_the_whole_globe() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let global_tripled = mesh.expand_global3().expect("global factor-3 expansion");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -100,7 +100,7 @@ fn spawn_nest_refines_one_circle_without_refining_the_whole_globe() {
 #[test]
 fn spawn_nest_cartesian_xy_keeps_method_c_points_unprojected_like_canonical_mdomain_ge_two() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -157,7 +157,7 @@ fn spawn_nest_cart_hex_preserves_canonical_periodic_prognostic_maps() {
         original_m_copies > 0 && original_u_copies > 0 && original_w_copies > 0,
         "cart_hex fixture must contain Canonical periodic M/U/W copy maps"
     );
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -215,7 +215,7 @@ fn spawn_nest_cart_hex_preserves_canonical_periodic_prognostic_maps() {
 #[test]
 fn spawn_nest_cartesian_xy_spring_keeps_movable_points_unprojected_like_canonical_mdomain_ge_two() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -259,7 +259,7 @@ fn spawn_nest_cartesian_xy_spring_keeps_movable_points_unprojected_like_canonica
 #[test]
 fn spawn_nest_cartesian_xy_spring_uses_canonical_deltax_target_distance_for_mdomain_ge_two() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -311,7 +311,7 @@ fn spawn_nest_cartesian_xy_spring_uses_canonical_deltax_target_distance_for_mdom
 fn spawn_nest_cartesian_xy_spring_rejects_deltax_below_canonical_lower_bound() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(0.0, 0.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -339,7 +339,7 @@ fn spawn_nest_rejects_tiny_contained_region_that_crosses_method_c_boundary() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let point_id = non_pentagon_point_away_from_pentagons(&mesh);
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: lonlat_from_cartesian(mesh.m_points[point_id]),
         radius_meters: 1.0,
         level: 1,
@@ -362,12 +362,12 @@ fn spawn_nest_uses_one_imbeg_for_disconnected_same_level_regions_like_canonical_
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(-120.0, 0.0),
             radius_meters: 500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(60.0, 0.0),
             radius_meters: 500_000.0,
             level: 1,
@@ -400,17 +400,17 @@ fn spawn_nest_uses_one_imbeg_for_disconnected_mixed_level_regions_like_canonical
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let high_center = LonLatDegrees::new(-120.0, 0.0);
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: high_center,
             radius_meters: 1_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: high_center,
             radius_meters: 350_000.0,
             level: 2,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(60.0, 0.0),
             radius_meters: 500_000.0,
             level: 1,
@@ -441,7 +441,7 @@ fn spawn_nest_uses_one_imbeg_for_disconnected_mixed_level_regions_like_canonical
 fn spawn_nest_uses_current_levels_only_when_max_level_exceeds_input() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,
         level: 2,
@@ -468,12 +468,12 @@ fn spawn_nest_uses_current_levels_only_when_max_level_exceeds_input() {
 fn spawn_nest_continues_grid_numbers_on_already_nested_mesh() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let first_region = MethodCRefinementRegion::Circle {
+    let first_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,
         level: 1,
     };
-    let second_region = MethodCRefinementRegion::Circle {
+    let second_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(60.0, 0.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -509,17 +509,17 @@ fn spawn_nest_continues_grid_numbers_on_already_nested_mesh() {
 fn spawn_nest_rejects_mixed_regions_when_child_crosses_parent_mrow_like_canonical() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let low = MethodCRefinementRegion::Circle {
+    let low = RefinementRegion::Circle {
         center: LonLatDegrees::new(-70.0, -20.0),
         radius_meters: 2_000_000.0,
         level: 1,
     };
-    let high = MethodCRefinementRegion::Circle {
+    let high = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 800_000.0,
         level: 2,
     };
-    let high_parent = MethodCRefinementRegion::Circle {
+    let high_parent = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 3_000_000.0,
         level: 1,
@@ -539,22 +539,22 @@ fn spawn_nest_two_level_china_regions_keep_method_c_valence_limit() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(90.0, 25.0),
             radius_meters: 1_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 500_000.0,
             level: 2,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(90.0, 25.0),
             radius_meters: 500_000.0,
             level: 2,
@@ -581,7 +581,7 @@ fn spawn_nest_two_level_china_regions_keep_method_c_valence_limit() {
 fn spawn_nest_rejects_two_level_polygon_without_explicit_parent_halo_like_canonical() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Polygon {
+    let region = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(100.0, 15.0),
             LonLatDegrees::new(130.0, 15.0),
@@ -605,7 +605,7 @@ fn spawn_nest_rejects_two_level_polygon_without_explicit_parent_halo_like_canoni
 fn debug_single_west_china_method_c_region() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(90.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -618,7 +618,7 @@ fn debug_single_west_china_method_c_region() {
 fn debug_single_east_china_method_c_region() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -631,7 +631,7 @@ fn debug_single_east_china_method_c_region() {
 fn debug_single_south_america_method_c_region() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-70.0, -20.0),
         radius_meters: 2_000_000.0,
         level: 1,
@@ -653,12 +653,12 @@ fn spawn_nest_rejects_overlapping_china_regions_with_method_c_perimeter_error() 
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 500_000.0,
             level: 3,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(112.0, 24.0),
             radius_meters: 500_000.0,
             level: 3,
@@ -681,12 +681,12 @@ fn spawn_nest_with_spring_uses_one_imbeg_for_disconnected_regions() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(90.0, 25.0),
             radius_meters: 500_000.0,
             level: 1,
@@ -708,12 +708,12 @@ fn spawn_nest_with_spring_runs_per_pass_for_mixed_level_regions_like_canonical()
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 500_000.0,
             level: 2,
@@ -745,7 +745,7 @@ fn spawn_nest_with_spring_runs_per_pass_for_mixed_level_regions_like_canonical()
 fn spawn_nest_accepts_bbox_regions() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Bbox {
+    let region = RefinementRegion::Bbox {
         west_degrees: 100.0,
         east_degrees: 125.0,
         south_degrees: 15.0,
@@ -764,7 +764,7 @@ fn spawn_nest_accepts_bbox_regions() {
 fn spawn_nest_accepts_coarse_calculated_bbox_region() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Bbox {
+    let region = RefinementRegion::Bbox {
         west_degrees: 105.0,
         east_degrees: 125.0,
         south_degrees: 15.0,
@@ -783,7 +783,7 @@ fn spawn_nest_accepts_coarse_calculated_bbox_region() {
 fn spawn_nest_uses_method_c_surface_transition_row_width() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -808,7 +808,7 @@ fn spawn_nest_uses_method_c_surface_transition_row_width() {
 fn spawn_nest_explicit_max_mrows_controls_transition_width() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -856,7 +856,7 @@ fn spawn_nest_explicit_max_mrows_controls_transition_width() {
 fn spawn_nest_explicit_widths_change_transition_band_for_same_input() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -902,7 +902,7 @@ fn spawn_nest_method_c_constant_widths_match_canonical_defaults() {
 fn spawn_nest_default_width_matches_surface_max_mrows() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -944,7 +944,7 @@ fn spawn_nest_default_width_matches_surface_max_mrows() {
 fn spawn_nest_as_atmosmesh_uses_atmos_transition_width() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -988,7 +988,7 @@ fn spawn_nest_as_atmosmesh_uses_atmos_transition_width() {
 fn spawn_nest_with_spring_as_atmosmesh_uses_atmos_transition_width_and_runs_spring() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -1030,7 +1030,7 @@ fn spawn_nest_with_spring_as_atmosmesh_uses_atmos_transition_width_and_runs_spri
 fn spawn_nest_tracks_canonical_m_point_grid_metadata() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -1090,7 +1090,7 @@ fn spawn_nest_tracks_canonical_m_point_grid_metadata() {
 fn spawn_nest_marks_perimeter_m_points_with_current_grid_number() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -1128,7 +1128,7 @@ fn spawn_nest_marks_perimeter_m_points_with_current_grid_number() {
 fn method_c_nest_spring_moves_transition_points_without_changing_topology() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -1182,7 +1182,7 @@ fn method_c_nest_spring_moves_transition_points_without_changing_topology() {
 fn spawn_nest_rejects_invalid_refinement_levels() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(0.0, 0.0),
         radius_meters: 1_000_000.0,
         level: 6,

@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 
 use super::shared::method_c_calculated_region_level;
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
 pub(crate) fn read_method_c_bbox_refinement_regions(
     source: &Path,
     max_level: usize,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_bbox_mask_nml(source, max_level)?,
@@ -32,7 +32,7 @@ pub(crate) fn read_method_c_bbox_refinement_regions(
         return Ok(());
     }
     for point in &mask.points {
-        regions.push(MethodCRefinementRegion::Bbox {
+        regions.push(RefinementRegion::Bbox {
             west_degrees: point.west,
             east_degrees: point.east,
             south_degrees: point.south,
@@ -46,7 +46,7 @@ pub(crate) fn read_method_c_bbox_refinement_regions(
 pub(crate) fn read_method_c_calculated_bbox_refinement_regions(
     source: &Path,
     max_level: usize,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_bbox_mask_nml(source, usize::MAX)?,
@@ -60,7 +60,7 @@ pub(crate) fn read_method_c_calculated_bbox_refinement_regions(
         return Ok(());
     };
     for point in &mask.points {
-        regions.push(MethodCRefinementRegion::Bbox {
+        regions.push(RefinementRegion::Bbox {
             west_degrees: point.west,
             east_degrees: point.east,
             south_degrees: point.south,

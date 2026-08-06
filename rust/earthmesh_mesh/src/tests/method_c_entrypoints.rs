@@ -4,7 +4,7 @@ use super::*;
 fn method_c_public_spawn_entrypoints_use_same_table_path() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -80,7 +80,7 @@ fn method_c_public_spawn_entrypoints_use_same_table_path() {
 
     let cart_mesh =
         MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let cart_region = MethodCRefinementRegion::Circle {
+    let cart_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -138,7 +138,7 @@ fn method_c_spring_niter_keeps_table_path_and_closed_topology() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -178,7 +178,7 @@ fn method_c_spring_niter_keeps_table_path_and_closed_topology() {
 #[test]
 fn method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,
@@ -229,7 +229,7 @@ fn method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
 fn method_c_cartesian_deltax_spring_niter_keeps_table_path_and_closed_topology() {
     let deltax = 1_000_000.0;
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, deltax).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,

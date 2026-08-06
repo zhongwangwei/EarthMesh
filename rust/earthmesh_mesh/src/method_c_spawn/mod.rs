@@ -11,11 +11,7 @@ impl MethodCDelaunayMesh {
     /// This defaults to surface-style Method-C transition width (`max_mrows = 7`)
     /// and is therefore intended for non-atmosphere meshes unless callers pass
     /// an explicit width.
-    pub fn spawn_nest(
-        &self,
-        regions: &[MethodCRefinementRegion],
-        max_level: usize,
-    ) -> io::Result<Self> {
+    pub fn spawn_nest(&self, regions: &[RefinementRegion], max_level: usize) -> io::Result<Self> {
         self.spawn_nest_with_max_mrows(regions, max_level, Self::METHOD_C_MAX_MROWS_SURFACE)
     }
 
@@ -23,7 +19,7 @@ impl MethodCDelaunayMesh {
     /// (`max_mrows = 13`).
     pub fn spawn_nest_as_atmosmesh(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
     ) -> io::Result<Self> {
         self.spawn_nest_with_max_mrows(regions, max_level, Self::METHOD_C_MAX_MROWS_ATMOS)
@@ -33,7 +29,7 @@ impl MethodCDelaunayMesh {
     /// (`max_mrows = 7`).
     pub fn spawn_nest_as_surface(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
     ) -> io::Result<Self> {
         self.spawn_nest(regions, max_level)
@@ -45,7 +41,7 @@ impl MethodCDelaunayMesh {
     /// to select atmosphere-like (13) or surface-like (7) boundary behavior.
     pub fn spawn_nest_with_max_mrows(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
     ) -> io::Result<Self> {
@@ -57,7 +53,7 @@ impl MethodCDelaunayMesh {
     /// Canonical `ngr_area` when a Method-C spawn is actually active.
     pub fn spawn_nest_cartesian_xy_with_max_mrows(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
     ) -> io::Result<Self> {
@@ -70,7 +66,7 @@ impl MethodCDelaunayMesh {
     /// number of spring passes executed.
     pub fn spawn_nest_with_spring(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         nxp: usize,
         niter: usize,
@@ -88,7 +84,7 @@ impl MethodCDelaunayMesh {
     /// (`max_mrows = 13`) and run Method-C nest spring after each pass.
     pub fn spawn_nest_with_spring_as_atmosmesh(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         nxp: usize,
         niter: usize,
@@ -106,7 +102,7 @@ impl MethodCDelaunayMesh {
     /// optional springing.
     pub fn spawn_nest_with_spring_and_max_mrows(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
         nxp: usize,
@@ -125,7 +121,7 @@ impl MethodCDelaunayMesh {
     /// coordinates used by Canonical `ngr_area` when a Method-C spawn is active.
     pub fn spawn_nest_cartesian_xy_with_spring_and_max_mrows(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
         nxp: usize,
@@ -145,7 +141,7 @@ impl MethodCDelaunayMesh {
     /// `deltax * sqrt(2 / sqrt(3))`.
     pub fn spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
         nxp: usize,

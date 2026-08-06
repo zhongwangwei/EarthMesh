@@ -17,7 +17,7 @@ fn method_c_region_start_prefers_contained_global_pentagon() {
             if lon_offset == 0 && lat_offset == 0 {
                 continue;
             }
-            let region = MethodCRefinementRegion::Circle {
+            let region = RefinementRegion::Circle {
                 center: LonLatDegrees::new(
                     pentagon_lonlat.lon_degrees + lon_offset as f64,
                     pentagon_lonlat.lat_degrees + lat_offset as f64,
@@ -74,7 +74,7 @@ fn method_c_region_start_marches_from_nearby_global_pentagon() {
                     continue;
                 }
                 for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
-                    let region = MethodCRefinementRegion::Circle {
+                    let region = RefinementRegion::Circle {
                         center: LonLatDegrees::new(
                             pentagon_lonlat.lon_degrees + lon_offset as f64,
                             pentagon_lonlat.lat_degrees + lat_offset as f64,
@@ -139,7 +139,7 @@ fn method_c_region_start_skips_nearby_global_pentagon_with_different_mrlm() {
                     continue;
                 }
                 for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
-                    let region = MethodCRefinementRegion::Circle {
+                    let region = RefinementRegion::Circle {
                         center: LonLatDegrees::new(
                             pentagon_lonlat.lon_degrees + lon_offset as f64,
                             pentagon_lonlat.lat_degrees + lat_offset as f64,
@@ -205,7 +205,7 @@ fn method_c_near_pentagon_march_uses_marched_start_mrlm_for_parent_ownership() {
                     continue;
                 }
                 for radius_meters in [500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
-                    let region = MethodCRefinementRegion::Circle {
+                    let region = RefinementRegion::Circle {
                         center: LonLatDegrees::new(
                             pentagon_lonlat.lon_degrees + lon_offset as f64,
                             pentagon_lonlat.lat_degrees + lat_offset as f64,
@@ -282,7 +282,7 @@ fn method_c_near_pentagon_march_preserves_canonical_jdone_between_steps() {
                     continue;
                 }
                 for radius_meters in [250_000.0, 500_000.0, 750_000.0, 1_000_000.0, 1_250_000.0] {
-                    let region = MethodCRefinementRegion::Circle {
+                    let region = RefinementRegion::Circle {
                         center: LonLatDegrees::new(
                             pentagon_lonlat.lon_degrees + lon_offset as f64,
                             pentagon_lonlat.lat_degrees + lat_offset as f64,
@@ -447,7 +447,7 @@ fn method_c_thirdm_skips_intermediate_zero_npoly_path() {
 fn method_c_impen_march_start_canonical_jdone_for_test(
     mesh: &MethodCDelaunayMesh,
     pentagon_id: usize,
-    region: &MethodCRefinementRegion,
+    region: &RefinementRegion,
     radius: f64,
 ) -> Option<usize> {
     let method_c_m_neighbors =
@@ -492,7 +492,7 @@ fn method_c_impen_march_start_canonical_jdone_for_test(
 fn method_c_impen_march_start_for_test(
     mesh: &MethodCDelaunayMesh,
     pentagon_id: usize,
-    region: &MethodCRefinementRegion,
+    region: &RefinementRegion,
     radius: f64,
 ) -> Option<usize> {
     let method_c_m_neighbors =

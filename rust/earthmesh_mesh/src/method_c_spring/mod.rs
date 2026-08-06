@@ -109,7 +109,7 @@ impl MethodCDelaunayMesh {
                 "failed to build Method-C global spring topology",
             )
         })?;
-        let dist00 = dist00_override.unwrap_or(method_c_canonical_global_dist00(beta, radius, nxp));
+        let dist00 = dist00_override.unwrap_or(canonical_global_dist00(beta, radius, nxp));
         // Double buffering keeps each relaxation step Jacobi-style. Dummy
         // slots are never written and retain their initial values.
         let mut m_points = self.m_points.clone();

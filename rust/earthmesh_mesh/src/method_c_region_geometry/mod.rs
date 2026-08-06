@@ -1,7 +1,7 @@
-use crate::{CartesianPoint, MethodCRefinementRegion};
+use crate::{CartesianPoint, RefinementRegion};
 
 pub(crate) fn method_c_region_contains_method_c(
-    region: &MethodCRefinementRegion,
+    region: &RefinementRegion,
     point: CartesianPoint,
     radius: f64,
     use_cartesian_xy: bool,
@@ -14,7 +14,7 @@ pub(crate) fn method_c_region_contains_method_c(
 }
 
 pub(crate) fn refine_regions_contain_method_c(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     point: CartesianPoint,
     radius: f64,
     use_cartesian_xy: bool,
@@ -25,7 +25,7 @@ pub(crate) fn refine_regions_contain_method_c(
 }
 
 pub(crate) fn method_c_region_close_to_method_c(
-    region: &MethodCRefinementRegion,
+    region: &RefinementRegion,
     point: CartesianPoint,
     radius: f64,
     use_cartesian_xy: bool,
@@ -38,7 +38,7 @@ pub(crate) fn method_c_region_close_to_method_c(
 }
 
 pub(crate) fn refine_regions_close_to_method_c(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     point: CartesianPoint,
     radius: f64,
     use_cartesian_xy: bool,

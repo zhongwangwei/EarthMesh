@@ -214,7 +214,7 @@ fn method_c_fill_rad3_skips_cart_hex_periodic_copy_faces_like_canonical() {
 #[test]
 fn method_c_selected_regions_skip_cart_hex_periodic_copy_faces_like_canonical() {
     let mesh = MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
         level: 1,

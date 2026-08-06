@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use earthmesh_core::{EarthmeshRuntimeState, RefineConfig};
 
 use crate::{
-    ColmCouplingNetcdfWriteReport, ColmSurfaceCounts, MethodCRefinementRegion,
-    UnstructuredMeshWriteReport,
+    ColmCouplingNetcdfWriteReport, ColmSurfaceCounts, RefinementRegion, UnstructuredMeshWriteReport,
 };
 
 use super::MkgrdGridinitRunReport;
@@ -25,7 +24,7 @@ pub struct RefineCoupledOutputReport {
 pub struct RefinePipelineRunReport {
     pub gridinit: MkgrdGridinitRunReport,
     pub refine: RefineConfig,
-    pub regions: Vec<MethodCRefinementRegion>,
+    pub regions: Vec<RefinementRegion>,
     /// Refinement depth the configuration asked for, derived from
     /// `max_iter_spc`/`max_iter_cal` before any refinement runs.
     pub max_level: usize,

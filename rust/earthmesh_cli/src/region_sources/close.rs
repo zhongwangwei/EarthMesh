@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 use earthmesh_project::{
     transform_close_boundary, CloseBoundaryGeometry, CloseBoundaryMode, CloseBoundaryReport,
     GeometryPoint,
@@ -17,7 +17,7 @@ pub(crate) fn read_method_c_close_refinement_regions(
     source: &Path,
     max_level: usize,
     boundary: &CloseBoundaryMode,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_close_mask_nml(source, max_level)?,
@@ -41,13 +41,13 @@ pub(crate) fn read_method_c_close_refinement_regions(
     log_close_boundary_report(source, boundary, &transformed.report);
     match transformed.geometry {
         CloseBoundaryGeometry::Polygon(points) => {
-            regions.push(MethodCRefinementRegion::Polygon {
+            regions.push(RefinementRegion::Polygon {
                 points: method_c_geometry_points_for_canonical_ngrdll(&points),
                 level: mask.refine_degree,
             });
         }
         CloseBoundaryGeometry::EnclosingCap { center, radius_km } => {
-            regions.push(MethodCRefinementRegion::Circle {
+            regions.push(RefinementRegion::Circle {
                 center: LonLatDegrees::new(center.lon, center.lat),
                 radius_meters: radius_km * 1_000.0,
                 level: mask.refine_degree,
@@ -60,7 +60,7 @@ pub(crate) fn read_method_c_close_refinement_regions(
 pub(crate) fn read_method_c_calculated_close_refinement_regions(
     source: &Path,
     max_level: usize,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_close_mask_nml(source, usize::MAX)?,
@@ -73,7 +73,7 @@ pub(crate) fn read_method_c_calculated_close_refinement_regions(
     let Some(level) = method_c_calculated_region_level(mask.refine_degree, max_level) else {
         return Ok(());
     };
-    regions.push(MethodCRefinementRegion::Polygon {
+    regions.push(RefinementRegion::Polygon {
         points: method_c_close_mask_points_for_canonical_ngrdll(&mask.points),
         level,
     });

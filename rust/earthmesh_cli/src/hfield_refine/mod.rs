@@ -24,7 +24,7 @@ use std::{
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_hfield::HField;
-use earthmesh_mesh::{CartesianPoint, LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{CartesianPoint, LonLatDegrees, RefinementRegion};
 use serde::{Deserialize, Serialize};
 
 use crate::area_judge_threshold_inputs::{
@@ -273,7 +273,7 @@ impl HfieldRefineOptions {
 /// pointwise minimum wins on overlap, and `limit_gradient(g)` builds the
 /// slope-g transition skirts that make nested level sets legal by construction.
 pub fn build_hfield_from_regions(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     base_m: f64,
     g: f64,
     nlon: usize,
@@ -283,7 +283,7 @@ pub fn build_hfield_from_regions(
 }
 
 fn build_hfield_from_regions_in_domain(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     base_m: f64,
     g: f64,
     nlon: usize,
@@ -330,7 +330,7 @@ fn build_hfield_from_regions_in_domain(
 /// region boundary; the pointwise minimum is already the largest field below
 /// those constraints, so no raster or projection is needed.
 pub(crate) fn cartesian_hfield_level_at(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     x_meters: f64,
     y_meters: f64,
     base_m: f64,
@@ -1515,7 +1515,7 @@ fn apply_landtype_basic_thresholds_from_bins(
 }
 
 pub(crate) fn build_composed_hfield(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     refine: &RefineConfig,
     mesh_type: &str,
     config: Option<&EarthmeshConfig>,
@@ -2185,7 +2185,7 @@ mod tests {
 
     #[test]
     fn regions_pin_levels_and_field_is_graded() {
-        let regions = [MethodCRefinementRegion::Circle {
+        let regions = [RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 500_000.0,
             level: 2,
@@ -2204,7 +2204,7 @@ mod tests {
 
     #[test]
     fn geographic_hfield_rejects_out_of_sphere_latitude() {
-        let regions = [MethodCRefinementRegion::Bbox {
+        let regions = [RefinementRegion::Bbox {
             west_degrees: 170.0,
             east_degrees: -170.0,
             south_degrees: -10.0,
@@ -2220,7 +2220,7 @@ mod tests {
     #[test]
     fn hfield_region_footprints_use_explicit_canonical_radius_metric() {
         let base = 1_000_000.0;
-        let circle = MethodCRefinementRegion::Circle {
+        let circle = RefinementRegion::Circle {
             center: LonLatDegrees::new(0.0, 0.0),
             radius_meters: 5_000_000.0,
             level: 1,
@@ -2235,7 +2235,7 @@ mod tests {
                 .unwrap();
         assert_eq!(circle_field.get(223, 90), base);
 
-        let corridor = MethodCRefinementRegion::Corridor {
+        let corridor = RefinementRegion::Corridor {
             points: vec![LonLatDegrees::new(-5.0, 0.0), LonLatDegrees::new(5.0, 0.0)],
             radius_meters: vec![100_000.0, 600_000.0],
             level: 1,
@@ -2258,7 +2258,7 @@ mod tests {
 
     #[test]
     fn cartesian_regions_pin_levels_and_grade_in_native_meters() {
-        let regions = [MethodCRefinementRegion::Circle {
+        let regions = [RefinementRegion::Circle {
             center: LonLatDegrees::new(1_000_000.0, -300_000.0),
             radius_meters: 100_000.0,
             level: 2,
@@ -2276,14 +2276,14 @@ mod tests {
 
     #[test]
     fn cartesian_bbox_and_polygon_pin_hfield_levels() {
-        let bbox = [MethodCRefinementRegion::Bbox {
+        let bbox = [RefinementRegion::Bbox {
             west_degrees: -200_000.0,
             east_degrees: 0.0,
             south_degrees: -100_000.0,
             north_degrees: 100_000.0,
             level: 1,
         }];
-        let polygon = [MethodCRefinementRegion::Polygon {
+        let polygon = [RefinementRegion::Polygon {
             points: vec![
                 LonLatDegrees::new(100_000.0, -100_000.0),
                 LonLatDegrees::new(300_000.0, -100_000.0),
@@ -3978,7 +3978,7 @@ mod tests {
             south: 18.0,
             north: 26.0,
         };
-        let outside = MethodCRefinementRegion::Circle {
+        let outside = RefinementRegion::Circle {
             center: LonLatDegrees::new(107.0, 22.0),
             radius_meters: 50_000.0,
             level: 2,

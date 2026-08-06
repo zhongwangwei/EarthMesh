@@ -8,7 +8,7 @@
 //! so this pins down whether the geometry path carries the same demand without
 //! that window.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, MethodCDelaunayMesh, RefinementRegion};
 
 /// Coast blocks sampled at 1 degree from `landtype_igbp_update.nc` over
 /// 108-120E / 18-26N, using the engine's own land/sea rule (`landtype != 0`).
@@ -35,10 +35,10 @@ const COAST: &[(f64, f64)] = &[
     (110.5000, 18.5000),
 ];
 
-fn circles(radius_m: f64, level: usize) -> Vec<MethodCRefinementRegion> {
+fn circles(radius_m: f64, level: usize) -> Vec<RefinementRegion> {
     COAST
         .iter()
-        .map(|&(lon, lat)| MethodCRefinementRegion::Circle {
+        .map(|&(lon, lat)| RefinementRegion::Circle {
             center: LonLatDegrees::new(lon, lat),
             radius_meters: radius_m,
             level,
@@ -151,7 +151,7 @@ fn nested_circles_reach_the_five_level_ceiling() {
         let regions: Vec<_> = RADII_KM[..depth]
             .iter()
             .enumerate()
-            .map(|(index, &radius_km)| MethodCRefinementRegion::Circle {
+            .map(|(index, &radius_km)| RefinementRegion::Circle {
                 center,
                 radius_meters: radius_km * 1000.0,
                 level: index + 1,

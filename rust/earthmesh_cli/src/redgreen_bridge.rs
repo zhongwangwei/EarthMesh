@@ -70,7 +70,7 @@ mod tests {
         let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
-        let redgreen = earthmesh_refine_redgreen::redgreen_mesh_from_method_c(&mesh, &neighbors)
+        let redgreen = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors)
             .expect("bridge in");
 
         let written = unstructured_mesh_from_redgreen(&redgreen).expect("bridge out");
@@ -194,7 +194,7 @@ mod settings_tests {
 /// kept, or neither, rather than refined and then carved away.
 pub fn redgreen_marking_from_regions(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
-    regions: &[earthmesh_mesh::MethodCRefinementRegion],
+    regions: &[earthmesh_mesh::RefinementRegion],
     level: usize,
 ) -> Vec<i32> {
     let mut marking = vec![0i32; mesh.triangle_count() + 1];
@@ -217,13 +217,13 @@ pub fn redgreen_marking_from_regions(
 #[cfg(test)]
 mod marking_tests {
     use super::*;
-    use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+    use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
     fn base() -> earthmesh_refine_redgreen::RedGreenMesh {
         let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
-        earthmesh_refine_redgreen::redgreen_mesh_from_method_c(&mesh, &neighbors).expect("bridge")
+        earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod marking_tests {
         let mesh = base();
         let marking = redgreen_marking_from_regions(
             &mesh,
-            &[MethodCRefinementRegion::Circle {
+            &[RefinementRegion::Circle {
                 center: LonLatDegrees::new(0.0, 0.0),
                 radius_meters: 2_000_000.0,
                 level: 1,
@@ -258,7 +258,7 @@ mod marking_tests {
         // A level-1 circle is served by level 1 and must not reappear at level
         // 2, or every level would refine everything the one above it did.
         let mesh = base();
-        let regions = [MethodCRefinementRegion::Circle {
+        let regions = [RefinementRegion::Circle {
             center: LonLatDegrees::new(0.0, 0.0),
             radius_meters: 2_000_000.0,
             level: 1,
@@ -281,7 +281,7 @@ mod marking_tests {
 /// of looping internally over a mapping it would have to guess at.
 pub fn refine_redgreen_level(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
-    regions: &[earthmesh_mesh::MethodCRefinementRegion],
+    regions: &[earthmesh_mesh::RefinementRegion],
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
@@ -301,7 +301,7 @@ pub fn refine_redgreen_level(
 #[cfg(test)]
 mod level_tests {
     use super::*;
-    use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+    use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
     #[test]
     fn a_named_circle_refines_and_arrives_as_a_writable_mesh() {
@@ -310,13 +310,13 @@ mod level_tests {
         let base = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = base.m_neighbors.clone();
-        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_method_c(&base, &neighbors)
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
         let before = mesh.triangle_count();
 
         let (written, outcome) = refine_redgreen_level(
             &mesh,
-            &[MethodCRefinementRegion::Circle {
+            &[RefinementRegion::Circle {
                 center: LonLatDegrees::new(0.0, 0.0),
                 radius_meters: 3_000_000.0,
                 level: 1,

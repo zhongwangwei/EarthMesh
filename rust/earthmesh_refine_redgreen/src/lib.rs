@@ -61,7 +61,7 @@ pub(crate) use refine_iter_helpers::{
 };
 mod refine_loop;
 pub use refine_loop::{
-    redgreen_mesh_from_method_c, refine_redgreen_round_inside, refine_redgreen_round_one_based,
+    redgreen_mesh_from_triangular, refine_redgreen_round_inside, refine_redgreen_round_one_based,
     RedGreenMesh, RedGreenOutcome, RedGreenSettings,
 };
 mod refine_num_ref;

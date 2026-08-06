@@ -24,7 +24,7 @@ pub fn icosahedron_relaxed_grid_canonical(
         relax,
     )?;
     let radius = METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
-    let dist00 = method_c_canonical_global_dist00(beta, radius, nxp0);
+    let dist00 = canonical_global_dist00(beta, radius, nxp0);
     let spring = icosahedron_spring_dynamics1_canonical(
         &initial.m_points,
         &topology,

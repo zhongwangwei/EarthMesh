@@ -7,7 +7,7 @@
 use earthmesh_cli::coast_refinement_regions::{
     coastal_refinement_circles, materializable_radius_meters, CoastRefinementRequest,
 };
-use earthmesh_mesh::{MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{MethodCDelaunayMesh, RefinementRegion};
 
 /// Production land-type raster; skipped when the data is not mounted.
 fn landtype_path() -> Option<std::path::PathBuf> {
@@ -50,7 +50,7 @@ fn derived_coastal_circles_refine_a_method_c_mesh() {
     assert!(
         regions
             .iter()
-            .all(|r| matches!(r, MethodCRefinementRegion::Circle { .. })),
+            .all(|r| matches!(r, RefinementRegion::Circle { .. })),
         "only circles are emitted"
     );
 

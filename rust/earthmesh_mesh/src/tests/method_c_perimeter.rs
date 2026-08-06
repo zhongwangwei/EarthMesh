@@ -4,7 +4,7 @@ use super::super::*;
 fn method_c_suppresses_center_perimeter_segment_faces_like_canonical() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -272,7 +272,7 @@ fn method_c_perim_ngr_matches_perimeter_next_point() {
     let mut selected_case = None;
     for im in 2..=mesh.nmd {
         let point = mesh.m_points[im];
-        let region = MethodCRefinementRegion::Circle {
+        let region = RefinementRegion::Circle {
             center: xyz_to_lonlat_degrees(point),
             radius_meters: 2_000_000.0,
             level: 1,
@@ -336,7 +336,7 @@ fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
         5_500_000.0,
         6_000_000.0,
     ] {
-        let region = MethodCRefinementRegion::Circle {
+        let region = RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters,
             level: 1,
@@ -385,7 +385,7 @@ fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
 fn method_c_pass_uses_canonical_table_numbering_counts() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,

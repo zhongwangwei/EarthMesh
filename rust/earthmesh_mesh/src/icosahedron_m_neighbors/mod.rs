@@ -78,8 +78,8 @@ pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
                 })?;
                 walk_trace.push((iunow, edge_now.im, edge_now.iw, edge_now.iu));
                 if npoly > 7 {
-                    return Err(method_c_repairable_error(
-                        MethodCRepairableKind::Valence,
+                    return Err(repairable_error(
+                        RepairableKind::Valence,
                         Some(im),
                         format!(
                             "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge Method-C ring while walking from U edge {iu}; trace {:?}",

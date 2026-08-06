@@ -232,8 +232,8 @@ impl MethodCDelaunayMesh {
                         radius,
                     )?;
                     let ll = xyz_to_lonlat_degrees(center);
-                    return Err(method_c_repairable_error(
-                        MethodCRepairableKind::TransitionPatch,
+                    return Err(repairable_error(
+                        RepairableKind::TransitionPatch,
                         Some(jm2),
                         format!(
                             "Method-C perimeter length invalid: Current nested grid {child_level} crosses the parent boundary in Method-C transition at W face {iw} (mrlw={}, lon={:.3}, lat={:.3})",

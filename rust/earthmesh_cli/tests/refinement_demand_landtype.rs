@@ -13,7 +13,7 @@ use earthmesh_cli::refinement_demand::{
     },
     reduce_demand_to_circles, source_bounds_for_bbox,
 };
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 
 static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -126,7 +126,7 @@ fn a_coast_on_a_block_edge_still_yields_circles() {
     let latitudes: Vec<f64> = regions
         .iter()
         .map(|region| {
-            let MethodCRefinementRegion::Circle { center, .. } = region else {
+            let RefinementRegion::Circle { center, .. } = region else {
                 panic!("reduction must emit circles");
             };
             center.lat_degrees

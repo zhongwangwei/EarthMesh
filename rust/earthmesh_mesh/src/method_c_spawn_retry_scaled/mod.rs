@@ -5,9 +5,9 @@ use super::*;
 impl MethodCDelaunayMesh {
     pub(crate) fn retry_child_with_scaled_parent_region(
         &self,
-        parent_regions: &[MethodCRefinementRegion],
+        parent_regions: &[RefinementRegion],
         parent_grid_number: usize,
-        child_regions: &[MethodCRefinementRegion],
+        child_regions: &[RefinementRegion],
         child_grid_number: usize,
         max_mrows: usize,
         project_to_radius: bool,
@@ -16,7 +16,7 @@ impl MethodCDelaunayMesh {
         for step in 1..=12 {
             let factor = 1.0 - (step as f64 * 0.05);
             let Some(scaled_parent_regions) =
-                scale_method_c_refinement_regions_radius(parent_regions, factor)
+                scale_refinement_regions_radius(parent_regions, factor)
             else {
                 return Ok(None);
             };

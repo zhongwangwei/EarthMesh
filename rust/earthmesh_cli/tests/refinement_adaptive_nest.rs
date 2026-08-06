@@ -162,7 +162,7 @@ fn a_named_region_is_refined_even_when_no_criterion_asks() {
     let path = root.join("landtype.nc");
     write_landtype(&path, |_, _| 0); // open ocean: no coast, no land cover
 
-    let named = vec![earthmesh_mesh::MethodCRefinementRegion::Circle {
+    let named = vec![earthmesh_mesh::RefinementRegion::Circle {
         center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
         radius_meters: 400_000.0,
         level: 1,
@@ -208,12 +208,12 @@ fn a_named_region_deeper_than_the_run_is_refused_rather_than_dropped() {
     write_landtype(&path, |_, _| 0);
 
     let named = vec![
-        earthmesh_mesh::MethodCRefinementRegion::Circle {
+        earthmesh_mesh::RefinementRegion::Circle {
             center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
             radius_meters: 400_000.0,
             level: 1,
         },
-        earthmesh_mesh::MethodCRefinementRegion::Circle {
+        earthmesh_mesh::RefinementRegion::Circle {
             center: earthmesh_mesh::LonLatDegrees::new(118.0, 22.0),
             radius_meters: 400_000.0,
             level: 3,

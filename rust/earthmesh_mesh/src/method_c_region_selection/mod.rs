@@ -3,10 +3,10 @@ use crate::{
     method_c_closed_corridor_contains_cartesian, method_c_corridor_radius_at_segment,
     method_c_corridor_segment_distance_meters, method_c_ec_ps_distance_meters,
     method_c_open_corridor_contains_cartesian, xyz_to_lonlat_degrees, CartesianPoint,
-    LonLatDegrees, MethodCRefinementRegion,
+    LonLatDegrees, RefinementRegion,
 };
 
-impl MethodCRefinementRegion {
+impl RefinementRegion {
     pub(crate) fn anchor_lonlat(&self) -> LonLatDegrees {
         match self {
             Self::Circle { center, .. } => *center,

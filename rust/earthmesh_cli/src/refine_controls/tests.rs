@@ -11,7 +11,7 @@ use crate::read_method_c_domain_region;
 use crate::read_method_c_specified_refinement_regions;
 use crate::read_native_grid_deltax;
 use crate::validate_native_spawn_mdomain;
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 use std::fs;
 
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
@@ -214,7 +214,7 @@ fn method_c_specified_multipoint_circle_reader_uses_canonical_corridor_with_pare
         .expect("read specified circle refinement regions");
 
     assert_eq!(regions.len(), 2);
-    let MethodCRefinementRegion::Corridor {
+    let RefinementRegion::Corridor {
         points,
         radius_meters,
         level,
@@ -227,7 +227,7 @@ fn method_c_specified_multipoint_circle_reader_uses_canonical_corridor_with_pare
     assert_eq!(radius_meters.len(), 2);
     assert!(radius_meters.iter().all(|radius| *radius > 500_000.0));
 
-    let MethodCRefinementRegion::Corridor {
+    let RefinementRegion::Corridor {
         points,
         radius_meters,
         level,
@@ -268,7 +268,7 @@ fn hfield_circle_reader_ignores_compatibility_parent_halo() {
         .expect("read h-field circle refinement regions");
 
     assert_eq!(regions.len(), 1);
-    let MethodCRefinementRegion::Circle {
+    let RefinementRegion::Circle {
         radius_meters,
         level,
         ..
@@ -303,7 +303,7 @@ fn method_c_calculated_multipoint_circle_reader_uses_canonical_corridor() {
         .expect("read calculated circle refinement regions");
 
     assert_eq!(regions.len(), 1);
-    let MethodCRefinementRegion::Corridor {
+    let RefinementRegion::Corridor {
         points,
         radius_meters,
         level,
@@ -338,7 +338,7 @@ fn method_c_close_mask_reader_repeats_first_point_for_canonical_ngrdll() {
     read_method_c_close_refinement_regions(&source, 1, &CloseBoundaryMode::Polyline, &mut regions)
         .expect("read close refinement regions");
 
-    let MethodCRefinementRegion::Polygon { points, level } = &regions[0] else {
+    let RefinementRegion::Polygon { points, level } = &regions[0] else {
         panic!("close mask should produce Method-C polygon region");
     };
     assert_eq!(*level, 1);
@@ -376,7 +376,7 @@ fn method_c_close_mask_reader_applies_spherical_chaikin_before_polygon_membershi
     )
     .expect("smooth close refinement regions");
 
-    let MethodCRefinementRegion::Polygon { points, level } = &regions[0] else {
+    let RefinementRegion::Polygon { points, level } = &regions[0] else {
         panic!("smooth close mask should remain an Method-C polygon");
     };
     assert_eq!(*level, 1);
@@ -467,7 +467,7 @@ fn close_boundary_engine_specs_drive_domain_and_specified_dispatch() {
     };
     let regions = read_method_c_specified_refinement_regions(&refine, 1, 40, false)
         .expect("specified dispatch");
-    let MethodCRefinementRegion::Polygon { points, .. } = &regions[0] else {
+    let RefinementRegion::Polygon { points, .. } = &regions[0] else {
         panic!("specified smooth close must remain polygon");
     };
     assert!(points.len() > 5);
@@ -491,7 +491,7 @@ fn an_inline_circle_chain_becomes_one_region_per_member() {
         read_method_c_specified_refinement_regions(&refine, 1, 40, false).expect("chain dispatch");
     assert_eq!(regions.len(), 2, "got {regions:?}");
     for region in &regions {
-        let MethodCRefinementRegion::Circle {
+        let RefinementRegion::Circle {
             radius_meters,
             level,
             ..

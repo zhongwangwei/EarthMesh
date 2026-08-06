@@ -4,7 +4,7 @@ use super::*;
 fn method_c_emits_closed_topology_without_placeholder_neighbor_ids() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -64,34 +64,34 @@ fn method_c_multiple_regions_emit_projected_closed_outputs() {
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
     let cases = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 2_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 3_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(15.0, 45.0),
             radius_meters: 2_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(-75.0, 10.0),
             radius_meters: 2_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Bbox {
+        RefinementRegion::Bbox {
             west_degrees: 110.0,
             east_degrees: 120.0,
             south_degrees: 20.0,
             north_degrees: 30.0,
             level: 1,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: vec![
                 LonLatDegrees::new(110.0, 24.0),
                 LonLatDegrees::new(120.0, 26.0),
@@ -99,7 +99,7 @@ fn method_c_multiple_regions_emit_projected_closed_outputs() {
             radius_meters: vec![1_500_000.0, 1_500_000.0],
             level: 1,
         },
-        MethodCRefinementRegion::Polygon {
+        RefinementRegion::Polygon {
             points: vec![
                 LonLatDegrees::new(110.0, 20.0),
                 LonLatDegrees::new(120.0, 20.0),

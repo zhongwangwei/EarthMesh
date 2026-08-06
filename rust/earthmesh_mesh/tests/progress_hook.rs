@@ -53,7 +53,7 @@ fn method_c_nest_spring_reports_at_canonical_nprnt_interval() {
 
     let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100)
         .expect("base Method-C mesh");
-    let region = earthmesh_mesh::MethodCRefinementRegion::Circle {
+    let region = earthmesh_mesh::RefinementRegion::Circle {
         center: earthmesh_mesh::LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,

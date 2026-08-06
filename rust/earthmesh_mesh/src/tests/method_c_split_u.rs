@@ -4,7 +4,7 @@ use super::*;
 fn method_c_split_u_second_half_ids_follow_canonical_iunew_order() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -148,7 +148,7 @@ fn method_c_split_u_second_half_ids_follow_canonical_iunew_order() {
 fn method_c_split_u_m_metadata_marks_child_ownership() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
@@ -260,7 +260,7 @@ fn method_c_split_u_m_metadata_marks_child_ownership() {
 fn method_c_suppressed_split_u_reuses_original_u_and_skips_midpoint_like_canonical() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,

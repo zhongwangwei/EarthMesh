@@ -459,7 +459,7 @@ pub fn run_refine_pipeline_namelist(
         // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
         // produces and what red-green cannot supply. So this branch does not
         // have to fake Method-C's tables -- it runs
-        // `redgreen_mesh_from_method_c`, then `refine_redgreen_level` per level
+        // `redgreen_mesh_from_triangular`, then `refine_redgreen_level` per level
         // (carrying the previous level's marking through
         // `RedGreenOutcome::cell_renumbering`, since a round renumbers), and
         // hands the result to that writer with `metadata: None`.

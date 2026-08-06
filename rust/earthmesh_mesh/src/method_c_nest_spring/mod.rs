@@ -61,7 +61,7 @@ impl MethodCDelaunayMesh {
                 "failed to build Method-C nest spring topology",
             )
         })?;
-        let dist00 = dist00_override.unwrap_or(method_c_canonical_global_dist00(1.0, radius, nxp));
+        let dist00 = dist00_override.unwrap_or(canonical_global_dist00(1.0, radius, nxp));
         // Loop-invariant masks/targets + reusable buffers, hoisted out of the
         // per-iteration hot path (bit-identical; see MethodCNestSpringScratch).
         let mut scratch = MethodCNestSpringScratch::new(

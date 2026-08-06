@@ -1,7 +1,7 @@
 use std::io;
 
 use earthmesh_core::RefineConfig;
-use earthmesh_mesh::MethodCRefinementRegion;
+use earthmesh_mesh::RefinementRegion;
 use earthmesh_project::CloseBoundaryMode;
 
 use super::bbox::{
@@ -22,7 +22,7 @@ pub(crate) fn read_method_c_specified_refinement_regions(
     max_level: usize,
     nxp: usize,
     apply_parent_halos: bool,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     if let Some(source) = parse_inline_mask_source(&refine.mask_refine_spc_fprefix)? {
         let mut regions = Vec::new();
         match (refine.mask_refine_spc_type.trim(), source) {
@@ -34,7 +34,7 @@ pub(crate) fn read_method_c_specified_refinement_regions(
                     south,
                     north,
                 },
-            ) => regions.push(MethodCRefinementRegion::Bbox {
+            ) => regions.push(RefinementRegion::Bbox {
                 west_degrees: west,
                 east_degrees: east,
                 south_degrees: south,
@@ -147,7 +147,7 @@ pub(crate) fn read_method_c_specified_refinement_regions(
 pub(crate) fn read_method_c_calculated_refinement_regions(
     refine: &RefineConfig,
     max_level: usize,
-) -> io::Result<Vec<MethodCRefinementRegion>> {
+) -> io::Result<Vec<RefinementRegion>> {
     let discovery = discover_mask_sources(&refine.mask_refine_cal_fprefix)?;
     let mut regions = Vec::new();
     for source in discovery.files {

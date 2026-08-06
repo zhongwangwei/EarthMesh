@@ -8,7 +8,7 @@ pub const METHOD_C_CANONICAL_EARTH_RADIUS_METERS: f64 = earthmesh_core::EARTH_RA
 #[allow(clippy::approx_constant)]
 const METHOD_C_CANONICAL_PI2: f32 = 3.1415927_f32 * 2.0;
 
-pub(crate) fn method_c_canonical_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
+pub(crate) fn canonical_global_dist00(beta: f64, radius: f64, nxp: usize) -> f64 {
     ((beta as f32) * METHOD_C_CANONICAL_PI2 * (radius as f32) / (5.0 * nxp as f32)) as f64
 }
 

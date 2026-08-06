@@ -627,7 +627,7 @@ fn single_level_field_spawn_matches_region_spawn_footprint() {
         .expect("field spawn topology");
     assert!(from_field.nwd > mesh.nwd, "field spawn must refine faces");
 
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: radius_m,
         level: 1,
@@ -695,12 +695,12 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
     // spawnable by the standard path on this fixture. If THIS expect fires, the
     // fixture geometry (not the h-field selection) is infeasible at NXP 6.
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: outer_m,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: inner_m,
             level: 2,

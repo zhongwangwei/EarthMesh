@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 
 use earthmesh_core::RefineConfig;
-use earthmesh_mesh::{LonLatDegrees, MethodCRefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
 use super::shared::method_c_calculated_region_level;
 use crate::{
@@ -14,7 +14,7 @@ pub(crate) fn read_method_c_circle_refinement_regions(
     refine: &RefineConfig,
     max_level: usize,
     nxp: usize,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
     apply_parent_halos: bool,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
@@ -61,7 +61,7 @@ pub(crate) fn read_method_c_circle_refinement_regions(
 }
 
 pub(crate) fn push_method_c_circle_or_corridor_region_with_parent_halos(
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
     points: Vec<LonLatDegrees>,
     radius_meters: Vec<f64>,
     level: usize,
@@ -107,19 +107,19 @@ pub(crate) fn push_method_c_circle_or_corridor_region_with_parent_halos(
 }
 
 pub(crate) fn push_method_c_circle_or_corridor_region(
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
     points: Vec<LonLatDegrees>,
     radius_meters: Vec<f64>,
     level: usize,
 ) {
     if points.len() == 1 && radius_meters.len() == 1 {
-        regions.push(MethodCRefinementRegion::Circle {
+        regions.push(RefinementRegion::Circle {
             center: points[0],
             radius_meters: radius_meters[0],
             level,
         });
     } else {
-        regions.push(MethodCRefinementRegion::Corridor {
+        regions.push(RefinementRegion::Corridor {
             points,
             radius_meters,
             level,
@@ -127,17 +127,17 @@ pub(crate) fn push_method_c_circle_or_corridor_region(
     }
 }
 
-pub(crate) fn merge_refine_regions_by_shape(regions: &mut Vec<MethodCRefinementRegion>) {
-    let mut merged = Vec::<MethodCRefinementRegion>::with_capacity(regions.len());
+pub(crate) fn merge_refine_regions_by_shape(regions: &mut Vec<RefinementRegion>) {
+    let mut merged = Vec::<RefinementRegion>::with_capacity(regions.len());
     'next_region: for region in regions.drain(..) {
         match region {
-            MethodCRefinementRegion::Circle {
+            RefinementRegion::Circle {
                 center,
                 radius_meters,
                 level,
             } => {
                 for existing in &mut merged {
-                    let MethodCRefinementRegion::Circle {
+                    let RefinementRegion::Circle {
                         center: existing_center,
                         radius_meters: existing_radius,
                         level: existing_level,
@@ -153,19 +153,19 @@ pub(crate) fn merge_refine_regions_by_shape(regions: &mut Vec<MethodCRefinementR
                         continue 'next_region;
                     }
                 }
-                merged.push(MethodCRefinementRegion::Circle {
+                merged.push(RefinementRegion::Circle {
                     center,
                     radius_meters,
                     level,
                 });
             }
-            MethodCRefinementRegion::Corridor {
+            RefinementRegion::Corridor {
                 points,
                 radius_meters,
                 level,
             } => {
                 for existing in &mut merged {
-                    let MethodCRefinementRegion::Corridor {
+                    let RefinementRegion::Corridor {
                         points: existing_points,
                         radius_meters: existing_radius,
                         level: existing_level,
@@ -185,7 +185,7 @@ pub(crate) fn merge_refine_regions_by_shape(regions: &mut Vec<MethodCRefinementR
                         continue 'next_region;
                     }
                 }
-                merged.push(MethodCRefinementRegion::Corridor {
+                merged.push(RefinementRegion::Corridor {
                     points,
                     radius_meters,
                     level,
@@ -200,7 +200,7 @@ pub(crate) fn merge_refine_regions_by_shape(regions: &mut Vec<MethodCRefinementR
 pub(crate) fn read_method_c_calculated_circle_refinement_regions(
     source: &Path,
     max_level: usize,
-    regions: &mut Vec<MethodCRefinementRegion>,
+    regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_circle_mask_nml(source, usize::MAX)?,

@@ -27,7 +27,7 @@
 
 use std::io;
 
-use earthmesh_mesh::{MethodCDelaunayMesh, MethodCRefinementRegion};
+use earthmesh_mesh::{MethodCDelaunayMesh, RefinementRegion};
 
 use super::ladder::nested_circle_radii_meters;
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
@@ -41,7 +41,7 @@ pub struct NestPassReport {
     /// Circles this pass handed to `spawn_nest`. Kept so the quality report can
     /// ask the same question afterwards -- did the mesh reach the level these
     /// circles asked for -- without re-planning the demand.
-    pub regions: Vec<MethodCRefinementRegion>,
+    pub regions: Vec<RefinementRegion>,
     /// Cell size this pass was judging — the generation it refines away.
     pub cell_meters: f64,
     pub circle_count: usize,
@@ -103,7 +103,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &MethodCDelaunayMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
-    named_regions: &[MethodCRefinementRegion],
+    named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
 ) -> io::Result<(MethodCDelaunayMesh, AdaptiveNestReport)> {
@@ -185,7 +185,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
         // the level still refines. Serial cost is one emit per group, which the
         // measured radius floor keeps affordable: it cut the circle count from
         // 114566 to 8190, so the groups are hundreds, not tens of thousands.
-        let mut groups: Vec<Vec<MethodCRefinementRegion>> =
+        let mut groups: Vec<Vec<RefinementRegion>> =
             earthmesh_mesh::method_c_connected_region_groups(&regions, false)
                 .into_iter()
                 .flat_map(split_oversized_group)
@@ -261,7 +261,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
                     let circles: Vec<String> = group
                         .iter()
                         .filter_map(|region| match region {
-                            MethodCRefinementRegion::Circle {
+                            RefinementRegion::Circle {
                                 center,
                                 radius_meters,
                                 ..
@@ -416,7 +416,7 @@ impl AdaptiveNestReport {
         let mut deepest = 0u32;
         for pass in &self.passes {
             for region in &pass.regions {
-                let MethodCRefinementRegion::Circle {
+                let RefinementRegion::Circle {
                     center,
                     radius_meters,
                     level,
@@ -464,7 +464,7 @@ impl AdaptiveNestReport {
                     .regions
                     .iter()
                     .filter_map(|region| match region {
-                        MethodCRefinementRegion::Circle {
+                        RefinementRegion::Circle {
                             center,
                             radius_meters,
                             ..
@@ -510,21 +510,19 @@ const MAX_GROUP_CIRCLES: usize = 500;
 /// the standoff concedes a strip a few cells wide -- bounded, and beside a
 /// block that already serves the demand. Bisection is by the wider axis at the
 /// sorted midpoint, so the tiling is deterministic.
-fn split_oversized_group(group: Vec<MethodCRefinementRegion>) -> Vec<Vec<MethodCRefinementRegion>> {
+fn split_oversized_group(group: Vec<RefinementRegion>) -> Vec<Vec<RefinementRegion>> {
     if group.len() <= MAX_GROUP_CIRCLES {
         return vec![group];
     }
     let all_circles = group
         .iter()
-        .all(|region| matches!(region, MethodCRefinementRegion::Circle { .. }));
+        .all(|region| matches!(region, RefinementRegion::Circle { .. }));
     if !all_circles {
         return vec![group];
     }
-    let center = |region: &MethodCRefinementRegion| -> (f64, f64) {
+    let center = |region: &RefinementRegion| -> (f64, f64) {
         match region {
-            MethodCRefinementRegion::Circle { center, .. } => {
-                (center.lon_degrees, center.lat_degrees)
-            }
+            RefinementRegion::Circle { center, .. } => (center.lon_degrees, center.lat_degrees),
             _ => (0.0, 0.0),
         }
     };

@@ -173,7 +173,7 @@ pub use icosahedron_types::{
     IcosahedronSpringTopology, IcosahedronUEdge, IcosahedronWFace,
 };
 mod icosahedron_initial;
-pub(crate) use icosahedron_initial::method_c_canonical_global_dist00;
+pub(crate) use icosahedron_initial::canonical_global_dist00;
 pub use icosahedron_initial::{
     icosahedron_counts_canonical, icosahedron_diamond_corners_canonical,
     icosahedron_initial_grid_canonical, ICOSAHEDRON_MLOOPS, METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
@@ -280,7 +280,7 @@ mod method_c_mesh_gridfile;
 pub use method_c_mesh_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
 pub use method_c_selection::method_c_connected_region_groups;
-pub use refine_regions::MethodCRefinementRegion;
+pub use refine_regions::RefinementRegion;
 pub(crate) use refine_regions::*;
 mod method_c_region_geometry;
 mod method_c_region_selection;
@@ -377,9 +377,8 @@ pub(crate) use method_c_spring_iteration::{
     method_c_global_spring_iteration_into, MethodCGlobalSpringScratch,
 };
 pub(crate) use method_c_table_helpers::{
-    canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_repairable_error,
-    method_c_repairable_payload, method_c_split_outer_edges, other_edge_face, set_first_two,
-    MethodCRepairableKind,
+    canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_repairable_payload,
+    method_c_split_outer_edges, other_edge_face, repairable_error, set_first_two, RepairableKind,
 };
 mod method_c_w_face_edge_replacement;
 pub(crate) use method_c_w_face_edge_replacement::{

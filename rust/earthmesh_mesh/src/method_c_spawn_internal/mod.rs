@@ -5,7 +5,7 @@ use super::*;
 impl MethodCDelaunayMesh {
     pub(crate) fn spawn_nest_internal(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         max_level: usize,
         max_mrows: usize,
         spring: Option<(usize, usize, Option<f64>)>,
@@ -51,7 +51,7 @@ impl MethodCDelaunayMesh {
             Self,
             Vec<bool>,
             usize,
-            Vec<MethodCRefinementRegion>,
+            Vec<RefinementRegion>,
             bool,
         )> = None;
         let mut pass_levels = regions
@@ -83,7 +83,7 @@ impl MethodCDelaunayMesh {
             if pass > 1
                 && pass_regions
                     .iter()
-                    .any(|region| matches!(region, MethodCRefinementRegion::Polygon { .. }))
+                    .any(|region| matches!(region, RefinementRegion::Polygon { .. }))
                 && !has_nested_parent
                 && !has_parent_level_region
             {

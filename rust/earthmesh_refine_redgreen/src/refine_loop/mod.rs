@@ -892,14 +892,16 @@ fn close_transition_rows(
     Ok(flipped)
 }
 
-/// Build the red-green tables from a Method-C mesh.
+/// Build the red-green tables from the shared triangular mesh.
 ///
-/// The two representations are duals of each other's naming, which is the only
-/// thing that makes this look like work: Method-C's W faces are the triangles
-/// this pipeline calls `sjx`, and Method-C's M points are the polygon centres
-/// it calls `wp` -- the triangles' corners. A triangle has no stored coordinate
-/// in Method-C, so its centre is built from its three corners here.
-pub fn redgreen_mesh_from_method_c(
+/// The container is named for Method-C because that is what built it, not
+/// because the contents belong to Method-C: its W faces are the triangles this
+/// pipeline calls `sjx`, and its M points are the polygon centres it calls `wp`
+/// -- the triangles' corners. The base icosahedron and the global spring that
+/// produce it are shared ground; the nesting is not, and none of it is used
+/// here. A triangle has no stored coordinate, so its centre is built from its
+/// three corners.
+pub fn redgreen_mesh_from_triangular(
     mesh: &earthmesh_mesh::MethodCDelaunayMesh,
     m_neighbors: &[earthmesh_mesh::IcosahedronMPointNeighbors],
 ) -> io::Result<RedGreenMesh> {
@@ -967,7 +969,7 @@ mod tests {
         let mesh = earthmesh_mesh::MethodCDelaunayMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0)
             .expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
-        redgreen_mesh_from_method_c(&mesh, &neighbors).expect("bridge")
+        redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
     }
 
     #[test]

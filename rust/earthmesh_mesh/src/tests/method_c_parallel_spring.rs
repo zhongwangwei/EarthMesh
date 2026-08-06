@@ -30,7 +30,7 @@ fn method_c_parallel_springs_match_single_worker_exactly() {
     assert_eq!(global_two, global_one);
     assert_eq!(global_four, global_one);
 
-    let region = MethodCRefinementRegion::Circle {
+    let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,

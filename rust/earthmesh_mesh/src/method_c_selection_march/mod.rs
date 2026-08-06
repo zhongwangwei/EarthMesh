@@ -9,7 +9,7 @@ impl MethodCDelaunayMesh {
     pub(crate) fn method_c_march_from_nearby_pentagon_to_region_with_neighbors(
         &self,
         pentagon_id: usize,
-        region: &MethodCRefinementRegion,
+        region: &RefinementRegion,
         radius: f64,
         m_neighbors: &[IcosahedronMPointNeighbors],
         use_cartesian_xy: bool,
@@ -26,7 +26,7 @@ impl MethodCDelaunayMesh {
     pub(crate) fn method_c_march_from_nearby_pentagon_to_regions_with_neighbors(
         &self,
         pentagon_id: usize,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         radius: f64,
         m_neighbors: &[IcosahedronMPointNeighbors],
         use_cartesian_xy: bool,
@@ -81,7 +81,7 @@ impl MethodCDelaunayMesh {
     pub(crate) fn nearest_inside_m_point_to(
         &self,
         source_im: usize,
-        region: &MethodCRefinementRegion,
+        region: &RefinementRegion,
         radius: f64,
         use_cartesian_xy: bool,
     ) -> io::Result<Option<usize>> {
@@ -96,7 +96,7 @@ impl MethodCDelaunayMesh {
     pub(crate) fn nearest_inside_m_point_to_regions(
         &self,
         source_im: usize,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         radius: f64,
         use_cartesian_xy: bool,
     ) -> io::Result<Option<usize>> {

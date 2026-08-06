@@ -3,7 +3,7 @@ use std::io;
 use crate::MethodCNestWd;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MethodCRepairableKind {
+pub(crate) enum RepairableKind {
     TransitionPatch,
     Valence,
     NonTripletPerimeter,
@@ -11,7 +11,7 @@ pub(crate) enum MethodCRepairableKind {
 
 #[derive(Debug)]
 pub(crate) struct MethodCRepairableError {
-    pub(crate) kind: MethodCRepairableKind,
+    pub(crate) kind: RepairableKind,
     pub(crate) m_point: Option<usize>,
     message: String,
 }
@@ -24,8 +24,8 @@ impl std::fmt::Display for MethodCRepairableError {
 
 impl std::error::Error for MethodCRepairableError {}
 
-pub(crate) fn method_c_repairable_error(
-    kind: MethodCRepairableKind,
+pub(crate) fn repairable_error(
+    kind: RepairableKind,
     m_point: Option<usize>,
     message: impl Into<String>,
 ) -> io::Error {
@@ -104,8 +104,8 @@ pub(crate) fn method_c_split_outer_edges(
         } else {
             "the mask does not select it, so the mask is one face thick here"
         };
-        return Err(method_c_repairable_error(
-            MethodCRepairableKind::TransitionPatch,
+        return Err(repairable_error(
+            RepairableKind::TransitionPatch,
             Some(m_point),
             format!(
                 "Method-C {label} transition patch neighbour is not subdivided ({cause}; nest_wd flag {})",
@@ -132,8 +132,8 @@ pub(crate) fn method_c_split_outer_edges(
                 .unwrap_or_else(|| format!("{iu}:<missing>"))
         })
         .join(", ");
-    Err(method_c_repairable_error(
-        MethodCRepairableKind::TransitionPatch,
+    Err(repairable_error(
+        RepairableKind::TransitionPatch,
         Some(m_point),
         format!("Method-C {label} transition patch has no solid split edge ({edge_summary})"),
     ))

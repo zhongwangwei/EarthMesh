@@ -1,11 +1,10 @@
 use std::io;
 
 use crate::{
-    validate_lonlat, validate_positive_distance, MethodCRefinementRegion,
-    METHOD_C_MIN_GRID_SPACING_METERS,
+    validate_lonlat, validate_positive_distance, RefinementRegion, METHOD_C_MIN_GRID_SPACING_METERS,
 };
 
-impl MethodCRefinementRegion {
+impl RefinementRegion {
     /// Compatibility warning for geometry whose Canonical interpretation is
     /// intentionally planar rather than spherical.
     ///

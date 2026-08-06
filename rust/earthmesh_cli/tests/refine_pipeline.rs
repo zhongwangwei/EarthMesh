@@ -498,7 +498,7 @@ fn default_atmos_native_method_c_ngrids_three_spawns_each_canonical_grid_once() 
     assert_eq!(
         run.regions
             .iter()
-            .map(earthmesh_mesh::MethodCRefinementRegion::level)
+            .map(earthmesh_mesh::RefinementRegion::level)
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
@@ -1010,7 +1010,7 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
     assert!(run
         .regions
         .iter()
-        .any(|region| matches!(region, earthmesh_mesh::MethodCRefinementRegion::Bbox { .. })));
+        .any(|region| matches!(region, earthmesh_mesh::RefinementRegion::Bbox { .. })));
     let cartesian_base = earthmesh_mesh::MethodCDelaunayMesh::from_cart_hex(18, 1_000_000.0)
         .expect("build Cartesian base mesh");
     assert!(

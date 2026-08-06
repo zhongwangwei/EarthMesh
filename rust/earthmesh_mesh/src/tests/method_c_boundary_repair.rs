@@ -5,7 +5,7 @@ fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: vec![
                 LonLatDegrees::new(115.0, 25.0),
                 LonLatDegrees::new(130.0, 25.0),
@@ -13,7 +13,7 @@ fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary
             radius_meters: vec![6_000_000.0, 6_000_000.0],
             level: 1,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: vec![
                 LonLatDegrees::new(115.0, 25.0),
                 LonLatDegrees::new(130.0, 25.0),
@@ -45,12 +45,12 @@ fn method_c_matches_reduced_canonical_nxp6_two_circle_summary() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 4_000_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_000_000.0,
             level: 2,
@@ -97,12 +97,12 @@ fn method_c_matches_reduced_canonical_nxp7_two_circle_summary() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 3_000_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_000_000.0,
             level: 2,
@@ -148,7 +148,7 @@ fn method_c_matches_reduced_canonical_nxp7_two_circle_summary() {
 fn method_c_repairs_nxp7_circle_parent_radius_that_canonical_overruns_perimeter() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let regions = [MethodCRefinementRegion::Circle {
+    let regions = [RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 4_000_000.0,
         level: 1,
@@ -172,7 +172,7 @@ fn method_c_repairs_nxp7_circle_parent_radius_that_canonical_overruns_perimeter(
 fn method_c_repairs_nxp7_corridor_parent_radius_that_canonical_overruns_perimeter() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
-    let regions = [MethodCRefinementRegion::Corridor {
+    let regions = [RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
             LonLatDegrees::new(130.0, 25.0),
@@ -200,12 +200,12 @@ fn method_c_anneals_nxp7_two_circle_after_repaired_parent() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 4_000_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_000_000.0,
             level: 2,
@@ -231,7 +231,7 @@ fn method_c_anneals_nxp7_two_corridor_after_repaired_parent() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: vec![
                 LonLatDegrees::new(115.0, 25.0),
                 LonLatDegrees::new(130.0, 25.0),
@@ -239,7 +239,7 @@ fn method_c_anneals_nxp7_two_corridor_after_repaired_parent() {
             radius_meters: vec![4_000_000.0, 4_000_000.0],
             level: 1,
         },
-        MethodCRefinementRegion::Corridor {
+        RefinementRegion::Corridor {
             points: vec![
                 LonLatDegrees::new(120.0, 25.0),
                 LonLatDegrees::new(125.0, 25.0),
@@ -268,12 +268,12 @@ fn method_c_rejects_reduced_canonical_nxp6_two_circle_too_close_boundary() {
     let mesh =
         MethodCDelaunayMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 2_500_000.0,
             level: 1,
         },
-        MethodCRefinementRegion::Circle {
+        RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
             radius_meters: 1_000_000.0,
             level: 2,

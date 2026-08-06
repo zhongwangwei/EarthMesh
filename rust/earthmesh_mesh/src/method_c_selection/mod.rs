@@ -4,7 +4,7 @@ impl MethodCDelaunayMesh {
     #[cfg(test)]
     pub(crate) fn selected_region_faces(
         &self,
-        region: &MethodCRefinementRegion,
+        region: &RefinementRegion,
         pass: usize,
         use_cartesian_xy: bool,
     ) -> io::Result<Vec<bool>> {
@@ -39,7 +39,7 @@ impl MethodCDelaunayMesh {
     /// of the demand went unserved.
     pub(crate) fn selected_regions_faces_over_groups(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         pass: usize,
         use_cartesian_xy: bool,
     ) -> io::Result<Vec<bool>> {
@@ -85,7 +85,7 @@ impl MethodCDelaunayMesh {
 
     pub(crate) fn selected_regions_faces(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         pass: usize,
         use_cartesian_xy: bool,
     ) -> io::Result<Vec<bool>> {
@@ -213,7 +213,7 @@ impl MethodCDelaunayMesh {
 
     pub(crate) fn selected_region_thirdm_seed_points_with_neighbors(
         &self,
-        regions: &[MethodCRefinementRegion],
+        regions: &[RefinementRegion],
         pass: usize,
         radius: f64,
         m_neighbors: &[IcosahedronMPointNeighbors],
@@ -291,8 +291,8 @@ impl MethodCDelaunayMesh {
                     .map(|(iu, generation)| format!("u{iu}:mrlu{generation}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return Err(method_c_repairable_error(
-                    MethodCRepairableKind::NonTripletPerimeter,
+                return Err(repairable_error(
+                    RepairableKind::NonTripletPerimeter,
                     Some(im),
                     format!(
                         "Method-C perimeter length invalid: Current nested grid crosses the parent boundary / next coarser grid boundary at M point {im}                          (walk generation {mrlo} from start M point {start} whose mrlm is {}; coarser edges {offending})",
@@ -337,16 +337,16 @@ impl MethodCDelaunayMesh {
 /// enough at the equator spans most of the globe near a pole, and the seam and
 /// the poles are exactly where a bucketed search drops pairs.
 pub fn method_c_connected_region_groups(
-    regions: &[MethodCRefinementRegion],
+    regions: &[RefinementRegion],
     use_cartesian_xy: bool,
-) -> Vec<Vec<MethodCRefinementRegion>> {
+) -> Vec<Vec<RefinementRegion>> {
     if use_cartesian_xy || regions.len() < 2 {
         return vec![regions.to_vec()];
     }
     let circles: Vec<Option<(f64, f64, f64)>> = regions
         .iter()
         .map(|region| match region {
-            MethodCRefinementRegion::Circle {
+            RefinementRegion::Circle {
                 center,
                 radius_meters,
                 ..
@@ -407,8 +407,7 @@ pub fn method_c_connected_region_groups(
             }
         }
     }
-    let mut groups: std::collections::BTreeMap<usize, Vec<MethodCRefinementRegion>> =
-        Default::default();
+    let mut groups: std::collections::BTreeMap<usize, Vec<RefinementRegion>> = Default::default();
     for (index, region) in regions.iter().enumerate() {
         groups
             .entry(find(&mut parent, index))
