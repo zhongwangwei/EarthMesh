@@ -59,6 +59,10 @@ mod refine_iter_helpers;
 pub(crate) use refine_iter_helpers::{
     unique_triangle_cell, validate_refine_cell_neighbors, validate_triangle_neighbor_rows,
 };
+mod refine_num_ref;
+pub use refine_num_ref::refine_num_ref_cal_one_based;
+mod refine_onedivide_four_renew;
+pub use refine_onedivide_four_renew::refine_onedivide_four_renew_one_based;
 mod refine_onedivide_two;
 pub use refine_onedivide_two::refine_onedivide_two_one_based;
 mod refine_onedivide_four_connection;
