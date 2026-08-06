@@ -451,12 +451,22 @@ pub fn run_refine_pipeline_namelist(
             mesh_type,
             refine_coastline: adaptive.coastline,
         };
-        // The choice now reaches here, which is where routing belongs. Only one
-        // route is built: the red-green algorithm is complete and tested in
-        // earthmesh_refine_redgreen, and the five steps from a marking to a
-        // gridfile are in crate::redgreen_bridge, but nothing joins them to
-        // this pipeline yet. Refusing at the branch says exactly that, instead
-        // of a project failing to compile over a backend it is allowed to name.
+        // The choice reaches here, which is where routing belongs. Only one
+        // route is built.
+        //
+        // The seam for the other one is `write_method_c_refined_outputs`: it
+        // takes `&UnstructuredMesh` and an *optional* `MethodCMetadataSlices`,
+        // which is exactly what `redgreen_bridge::unstructured_mesh_from_redgreen`
+        // produces and what red-green cannot supply. So this branch does not
+        // have to fake Method-C's tables -- it runs
+        // `redgreen_mesh_from_method_c`, then `refine_redgreen_level` per level
+        // (carrying the previous level's marking through
+        // `RedGreenOutcome::cell_renumbering`, since a round renumbers), and
+        // hands the result to that writer with `metadata: None`.
+        //
+        // What stands in the way is the hundred lines between: they are typed
+        // on `MethodCDelaunayMesh` and compute mrlm/ngr/lineage that red-green
+        // has no equivalent for. Splitting them is the work, not the call.
         if config.refine_backend.trim() == "red_green" {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
