@@ -52,33 +52,47 @@ impl MethodCDelaunayMesh {
         // same pass had already refined. Its generation would become the
         // walk's, and every ordinary unrefined edge beside it would then read
         // as coarser -- the test for stepping off the parent -- so the tile
-        // would be refused for touching ground nobody had touched. Step to the
-        // nearest point of the generation the regions are actually standing on.
-        let anchor = lonlat_degrees_to_unit_xyz(regions[0].anchor_lonlat());
-        let mut best_im = 0usize;
-        let mut best_score = f64::NEG_INFINITY;
-        for im in 2..=self.nmd {
-            if self.m_metadata[im].mrlm != target_generation {
-                continue;
+        // would be refused for touching ground nobody had touched.
+        //
+        // Stepping to the geometrically nearest point of the right generation
+        // is not the way out. The selection walk moves three hops at a time,
+        // so only one M point in nine is ever a seed, and *which* ninth is
+        // fixed by where the walk starts. The canonical search puts the start
+        // on the lattice the pentagons define; a jump straight to the nearest
+        // point lands on whatever phase happens to be there, and the tile then
+        // refines a fraction of what it was asked to. Measured on the globe:
+        // no refusals at all, and eight thousand fewer faces by group ten than
+        // the run that refused.
+        //
+        // So walk the same stride-3 lattice the selection will use, and stop at
+        // the first point of the generation this pass refines. The phase is
+        // whatever the canonical start had, which is the point.
+        // Breadth first, so the answer is the *closest* lattice point of that
+        // generation. Depth first would find one too, on the far side of an
+        // ocean if the lattice led that way.
+        let mut jdone = vec![[false; 6]; self.nmd + 1];
+        let mut visited = vec![false; self.nmd + 1];
+        let mut frontier = std::collections::VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(im) = frontier.pop_front() {
+            if self.m_metadata[im].mrlm == target_generation {
+                return Ok(im);
             }
-            let point = self.m_points[im];
-            let point_radius = magnitude(point);
-            if point_radius == 0.0 {
-                continue;
-            }
-            let score = dot(point, anchor) / point_radius;
-            if score > best_score {
-                best_score = score;
-                best_im = im;
+            for neighbor in self.method_c_thirdm_neighbors_canonical_with_neighbors(
+                im,
+                &mut jdone,
+                m_neighbors,
+            )? {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    frontier.push_back(neighbor);
+                }
             }
         }
-        // No such point is not a failure: the canonical answer is still the
-        // canonical answer, and the walk will judge it on its own terms.
-        if best_im == 0 {
-            Ok(start)
-        } else {
-            Ok(best_im)
-        }
+        // The lattice never reaches that generation from here. The canonical
+        // answer is still the canonical answer, and the walk will judge it on
+        // its own terms.
+        Ok(start)
     }
 
     fn method_c_refinement_start_point_for_regions_unadjusted(

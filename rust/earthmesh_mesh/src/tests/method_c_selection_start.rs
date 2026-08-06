@@ -633,8 +633,20 @@ fn method_c_start_leaves_ground_an_earlier_tile_in_this_pass_refined() {
     let selected = first
         .selected_region_faces(&region, 1, false)
         .expect("a tile beside an earlier one must not be refused for touching it");
+    let count = selected.iter().skip(2).filter(|face| **face).count();
     assert!(
-        selected.iter().skip(2).any(|selected| *selected),
+        count > 0,
         "the neighbour still has unrefined ground of its own to take"
+    );
+    // Staying on the lattice is the whole reason the correction walks rather
+    // than jumps. Measured on this case: 37 faces by walking the stride-3
+    // neighbours breadth first, 22 depth first, 21 by taking the nearest point
+    // of the right generation. The seed lattice reaches one M point in nine and
+    // which ninth is fixed by the start, so a jump off it refines a fraction of
+    // what was asked for -- on the globe, no refusals at all and eight thousand
+    // fewer faces by group ten.
+    assert!(
+        count >= 30,
+        "the corrected start must keep the canonical lattice phase, got {count} faces"
     );
 }
