@@ -77,6 +77,18 @@ pub struct RedGreenSettings {
     pub build_transition_rows: bool,
     /// `weak_concav_eliminate`: absorb weak concavities by refining them out
     /// rather than carrying them through the transition rounds.
+    ///
+    /// **Only half wired.** Turning this on reaches `iterG` in the judge chain,
+    /// which is what grows the marking over a weak concavity. It does *not*
+    /// reach the transition rounds' half: `MOD_refine.F90:355,477` also call
+    /// `weak_concav_segment_make`, `weak_concav_lop_judge` and
+    /// `weak_concav_pair_special`, and `close_transition_rows` calls none of
+    /// them. Two of those ports (`refine_lop_weak`, `refine_lop_weak_pair`)
+    /// additionally carry the same one-based drift this crate's
+    /// `refine_lop_sharp` was just converted out of, so wiring them means
+    /// converting them first -- the recipe is the same table.
+    ///
+    /// Left `false` until both halves are there, so it cannot half-run.
     pub eliminate_weak_concavity: bool,
     /// `HALO`: how far inside the previous level's refined region this level
     /// must stay.
