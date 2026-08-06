@@ -7,6 +7,8 @@ mod method_c_hfield_spawn;
 mod method_c_hfield_spring;
 mod method_c_id_ordering;
 mod method_c_internal_u_ordering;
+mod method_c_lattice_invariants;
+mod method_c_lattice_mask;
 mod method_c_local_refinement;
 mod method_c_nest_mrows;
 mod method_c_outputs;
