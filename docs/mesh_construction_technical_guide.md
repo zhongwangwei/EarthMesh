@@ -729,6 +729,37 @@ mrlo",与 canonical 契约一致。
 此处缩颈),`0` 是掩膜压根没选中(掩膜在此处只有一层厚)。消息已改为直接说出
 是哪一种。
 
+### 11.5 `quality=fail` 的真实来源不是角度(2026-08-06)
+
+全球验证一直报 `auto_refine quality=fail level=1`,此前被归因于 `min_angle_deg`
+29° 达不到项目要求的 40°。读 `quality_summary.json` 的 `gates`/`topology_issues`
+可知不是:
+
+| 门 | 级别 | 值 |
+|---|---|---|
+| `min_angle_deg` | warn | 29.08 |
+| `angle_deviation_deg_max` | warn | 42.04 |
+| `isolated_refined_cell_count` | warn | 2 |
+| **`disconnected_mesh`** | **fail** | **50 个边连通分量** |
+
+角度全部只是 warn。判 fail 的是 `disconnected_mesh`。
+
+**机制**(`mask_postproc_components::retain_largest_component_pass_one_based`):
+
+```rust
+if component_id == retained_component || (demanded && !alone) {
+```
+
+雕刻保留"最大分量" **加上**"任何含被需求格子且不止一格的分量"。实测:229 个
+分量 → 保留 1 + 49 = 50。日志里"保留最大连通水体"这句话因此是误导的 —— 保留的
+不止最大的那个。
+
+这是**设计取舍而非缺陷**:丢掉那 49 个分量就等于丢掉用户点名要细化的水体(内陆
+湖、封闭海),而留下它们则违反 FVCOM 单一连通域的要求。质量门给的建议是"连通
+它们,或作为独立网格导出"。需要产品决策,不应由实现单方面选边。注意 `min_angle
+40°` 是项目设定值,引擎默认 25;Method-C 过渡行必然产生 5/7 价顶点,其三角形
+达不到 40°,这一项即使细化完全正确也会保持 warn。
+
 **尚未解决的最后一个缺陷**(精确诊断,未修):7,022 圆的巨型海岸带(全部圆的
 86%)被拒。机制:带状掩膜两臂在一个顶点以两段弧接触(与雕刻的 pinch 同构),
 两臂的过渡行各自加边,顶点价数破 7,发射后的邻居表重建拒绝全网格。失败点
