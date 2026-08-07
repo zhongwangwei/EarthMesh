@@ -581,11 +581,21 @@ pub fn run_cycles(
                             let before = neighbourhood_max_degree(mesh.state(), site);
                             let improves =
                                 |state: &MeshState| neighbourhood_max_degree(state, site) < before;
-                            if let Ok(Acceptance::Committed(_)) =
-                                mesh.propose_move(site, destination, gates, &improves)
+                            // `?`, not a discarded `Ok`. The only error this
+                            // returns is a rollback that failed, which leaves
+                            // the mesh inconsistent -- swallowing it would
+                            // carry on refining a mesh nobody can trust.
+                            if let Acceptance::Committed(_) =
+                                mesh.propose_move(site, destination, gates, &improves)?
                             {
                                 relieved += 1;
-                                accepted_this_cycle += 1;
+                                // Deliberately *not* counted as an accepted
+                                // transaction. A relief move serves no demand,
+                                // so a cycle that only relieves has made no
+                                // progress on what was asked -- counting it
+                                // would keep `NoAcceptedTransactions` from ever
+                                // firing and let such a run spin to the cycle
+                                // limit reporting the wrong reason.
                             }
                         }
                     }

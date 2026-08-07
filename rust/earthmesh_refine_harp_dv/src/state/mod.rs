@@ -168,6 +168,19 @@ impl AdaptiveMesh {
     /// The generation carried per face is the depth of the site that made it,
     /// so a reader can tell an original face from one adaptation produced.
     pub fn to_triangular_mesh(&self) -> Result<earthmesh_mesh::TriangularMesh> {
+        // The site table and the triangulation must agree, because the levels
+        // below are looked up by subtracting `MESH_STATE_FIRST_ID` from a
+        // vertex id. If they ever drift the lookup misses and `unwrap_or(1)`
+        // reports generation 1 for every face -- a wrong answer that reads
+        // exactly like an unrefined mesh.
+        if self.sites.len() != self.state.vertex_count() {
+            return Err(HarpDvError::InvalidMesh(format!(
+                "the site table has {} rows and the triangulation {} sites; a rollback or an \
+                 insertion left them out of step",
+                self.sites.len(),
+                self.state.vertex_count()
+            )));
+        }
         let mut levels = vec![1usize; self.state.triangles().len()];
         for (triangle, level) in levels.iter_mut().enumerate().skip(MESH_STATE_FIRST_ID) {
             *level = self.state.triangles()[triangle]

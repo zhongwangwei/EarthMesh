@@ -1007,6 +1007,17 @@ fn refine_with_harp_dv(
     // A named region asks for a level; HARP-DV asks for a length. One level is
     // one halving, the same relation Method-C's nesting produces, so a level-L
     // request becomes the base cell width divided by two to the L.
+    // **Known unit mismatch, not fixed here.** This formula gives a nominal
+    // cell *width*; `TargetScale` compares it against `sqrt(A/pi)`, and at NXP
+    // 21 those are 381 km and about 1073 km. So a level-L request asks for
+    // something finer than Method-C's level L by roughly a factor of three.
+    //
+    // Replacing it with the mesh's median `sqrt(A/pi)` -- the quantity actually
+    // being compared -- was tried and breaks the run: the whole target field
+    // shifts, the refinement produces triangles the writer rejects for a
+    // non-local circumcentre. The mismatch is therefore load-bearing somewhere
+    // else, and guide 11.30 records both halves so the next attempt starts from
+    // the measurement rather than from the formula.
     let base_cell_m =
         2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
