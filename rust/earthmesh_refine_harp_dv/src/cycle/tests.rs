@@ -534,3 +534,38 @@ fn the_degree_budget_saturates() {
          large gain, widening the gridfile rows is worth reconsidering"
     );
 }
+
+/// With degree out of the way, every remaining refusal is a pentagon.
+///
+/// The second wall, and it has a fix that costs no code: guide 11.14 measured
+/// that relaxing the base mesh (`NL%niter`) takes pentagon refusals to zero,
+/// because a relaxed mesh separates the twelve enough that candidates stop
+/// landing beside one.
+#[test]
+fn the_wall_behind_degree_is_the_pentagons() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates {
+            max_vertex_degree: 16,
+            ..HardGates::default()
+        },
+        limits(40, 100_000),
+    )
+    .expect("run");
+
+    let refusals = outcome.report.refusals;
+    assert_eq!(
+        refusals.degree, 0,
+        "the budget was meant to be out of reach"
+    );
+    assert!(refusals.pentagon > 0);
+    assert_eq!(
+        refusals.pentagon,
+        refusals.total(),
+        "with degree lifted, the pentagons are the whole of what is left: {refusals:?}"
+    );
+}
