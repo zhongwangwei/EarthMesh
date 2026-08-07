@@ -569,3 +569,95 @@ fn the_wall_behind_degree_is_the_pentagons() {
         "with degree lifted, the pentagons are the whole of what is left: {refusals:?}"
     );
 }
+
+/// Ruppert's encroachment rule is what makes quality refinement terminate.
+///
+/// Same 25-degree angle target, with and without protected segments:
+///
+/// - without: 11067 sites, the cycle limit, and a degenerate triangle
+/// - with:      489 sites, converged, min triangle angle 21.09 degrees
+///
+/// 21.09 is above Ruppert's 20.7-degree bound, which is the point -- the
+/// guarantee is constructive, not something a template happened to give. And
+/// it costs five sites over the same run with no quality criterion at all.
+#[test]
+fn protected_segments_make_a_quality_target_terminate() {
+    use crate::criteria::MinAngle;
+
+    let run = |protect: bool| {
+        let base = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base");
+        let mut mesh = AdaptiveMesh::from_triangular_mesh(&base).expect("adaptive");
+        let coarsest = coarsest_scale(&mesh);
+        let centre = LonLatDegrees::new(105.0, 35.0);
+        let reach = 1_200_000.0;
+        if protect {
+            let state = mesh.state();
+            let radius = state.sphere_radius();
+            let unit_centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(centre);
+            let ring: Vec<usize> = (MESH_STATE_FIRST_ID..state.vertices().len())
+                .filter(|&site| {
+                    let point = state.vertices()[site];
+                    let length = earthmesh_mesh::magnitude(point);
+                    if length <= 0.0 {
+                        return false;
+                    }
+                    let dot = (point.x * unit_centre.x
+                        + point.y * unit_centre.y
+                        + point.z * unit_centre.z)
+                        / length;
+                    (dot.clamp(-1.0, 1.0).acos() * radius - reach).abs() <= coarsest
+                })
+                .collect();
+            mesh.protect_boundary_sites(ring);
+        }
+        let mut criteria = target(
+            coarsest / 4.0,
+            TargetRegion::Circle {
+                centre,
+                radius_m: reach,
+            },
+        );
+        criteria.push(Box::new(MinAngle {
+            id: "min-angle".to_string(),
+            min_angle_deg: 25.0,
+        }));
+        let outcome = run_cycles(
+            &mut mesh,
+            &criteria,
+            CandidatePolicy::default(),
+            HardGates::default(),
+            limits(40, 200_000),
+        )
+        .expect("run");
+        let state = mesh.state();
+        let worst = (MESH_STATE_FIRST_ID..state.triangles().len())
+            .map(|triangle| {
+                let c = state.triangles()[triangle];
+                crate::criteria::smallest_angle_deg_for_test([
+                    state.vertices()[c[0]],
+                    state.vertices()[c[1]],
+                    state.vertices()[c[2]],
+                ])
+            })
+            .fold(f64::MAX, f64::min);
+        (mesh.active_site_count(), worst, outcome.report.stop_reason)
+    };
+
+    let (sites, worst, stop) = run(true);
+    assert!(
+        sites < 2_000,
+        "{sites} sites; it should converge, not run away"
+    );
+    assert!(
+        worst > 20.7,
+        "min triangle angle {worst:.2}; Ruppert bounds this at 20.7"
+    );
+    assert_eq!(stop, StopReason::NoAcceptedTransactions);
+
+    let (unprotected_sites, unprotected_worst, _) = run(false);
+    assert!(
+        unprotected_sites > sites * 5 && unprotected_worst < worst,
+        "without protected segments this should run away and end worse: \
+         {unprotected_sites} sites, {unprotected_worst:.2} degrees"
+    );
+}

@@ -96,6 +96,10 @@ pub struct AdaptiveMesh {
     /// The site whose demand is being served, so a new one can be recorded a
     /// generation deeper than it.
     pub(crate) refining: Option<usize>,
+    /// Sites on a protected boundary. An edge between two of them is a
+    /// segment in Ruppert's sense, and a candidate that encroaches on one is
+    /// replaced by that segment's midpoint rather than inserted.
+    pub(crate) protected: std::collections::BTreeSet<usize>,
 }
 
 impl AdaptiveMesh {
@@ -130,6 +134,7 @@ impl AdaptiveMesh {
             allocator,
             cycles_completed: 0,
             refining: None,
+            protected: std::collections::BTreeSet::new(),
         })
     }
 
@@ -219,6 +224,18 @@ impl AdaptiveMesh {
         site.cumulative_displacement_m += unit_from;
         site.position = position;
         site.site_id
+    }
+
+    /// Mark the sites that lie on a boundary the refinement must respect.
+    ///
+    /// Ruppert's segments. Without them a quality-driven refinement subdivides
+    /// without end near a region's edge -- measured in guide 11.25.
+    pub fn protect_boundary_sites(&mut self, sites: impl IntoIterator<Item = usize>) {
+        self.protected = sites.into_iter().collect();
+    }
+
+    pub(crate) fn is_protected_edge(&self, tail: usize, head: usize) -> bool {
+        self.protected.contains(&tail) && self.protected.contains(&head)
     }
 
     pub(crate) fn refining_site(&self) -> Option<usize> {

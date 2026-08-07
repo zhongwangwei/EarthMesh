@@ -204,6 +204,12 @@ pub struct MinAngle {
     pub min_angle_deg: f64,
 }
 
+/// The smallest angle of a spherical triangle, in degrees, for tests.
+#[cfg(test)]
+pub(crate) fn smallest_angle_deg_for_test(points: [CartesianPoint; 3]) -> f64 {
+    smallest_angle_deg(points)
+}
+
 /// The smallest angle of a spherical triangle, in degrees.
 fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
     let mut smallest = f64::MAX;

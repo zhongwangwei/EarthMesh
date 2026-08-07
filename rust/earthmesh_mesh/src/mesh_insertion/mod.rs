@@ -195,6 +195,16 @@ impl MeshState {
     }
 }
 
+/// A protected edge a candidate point encroaches on, and where to split it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Encroachment {
+    pub tail: usize,
+    pub head: usize,
+    /// The midpoint, on the sphere: what Ruppert inserts instead of the point
+    /// that encroached.
+    pub split_at: CartesianPoint,
+}
+
 /// What inserting a point would do to the degrees around it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DegreeForecast {
@@ -205,6 +215,78 @@ pub struct DegreeForecast {
 }
 
 impl MeshState {
+    /// A protected edge near `point` whose diametral circle contains it.
+    ///
+    /// Ruppert's encroachment test, and the precondition his termination proof
+    /// needs: a circumcentre that falls inside a protected segment's diametral
+    /// circle must not be inserted -- the segment is split at its midpoint
+    /// instead. Without this the refinement subdivides without end near a
+    /// protected boundary, which is measured in guide 11.25: a 25-degree angle
+    /// target ran to the cycle limit and ended at a degenerate circumcentre.
+    ///
+    /// `protected` says which edges are segments. Only edges of triangles in
+    /// `region` are examined, so the cost is the neighbourhood rather than the
+    /// mesh.
+    pub fn encroached_segment(
+        &self,
+        point: CartesianPoint,
+        region: &BTreeSet<usize>,
+        protected: &dyn Fn(usize, usize) -> bool,
+    ) -> Option<Encroachment> {
+        let mut best: Option<(f64, Encroachment)> = None;
+        for &triangle in region {
+            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles().len() {
+                continue;
+            }
+            let corners = self.triangles()[triangle];
+            for corner in 0..3 {
+                let tail = corners[(corner + 1) % 3];
+                let head = corners[(corner + 2) % 3];
+                if !protected(tail, head) {
+                    continue;
+                }
+                let a = self.vertices()[tail];
+                let b = self.vertices()[head];
+                // The diametral circle: the point is inside it when the angle
+                // it subtends at the point is obtuse, which is the dot product
+                // of the two directions being negative.
+                let to_a = CartesianPoint::new(a.x - point.x, a.y - point.y, a.z - point.z);
+                let to_b = CartesianPoint::new(b.x - point.x, b.y - point.y, b.z - point.z);
+                let dot = to_a.x * to_b.x + to_a.y * to_b.y + to_a.z * to_b.z;
+                if dot >= 0.0 {
+                    continue;
+                }
+                let midpoint =
+                    CartesianPoint::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (a.z + b.z) / 2.0);
+                let length = magnitude(midpoint);
+                if length <= 0.0 {
+                    continue;
+                }
+                // Back onto the sphere the edge lives on.
+                let radius = (magnitude(a) + magnitude(b)) / 2.0;
+                let split_at = CartesianPoint::new(
+                    midpoint.x / length * radius,
+                    midpoint.y / length * radius,
+                    midpoint.z / length * radius,
+                );
+                // The most encroached one first, so a deterministic choice
+                // among several.
+                let severity = -dot;
+                if best.as_ref().is_none_or(|(worst, _)| severity > *worst) {
+                    best = Some((
+                        severity,
+                        Encroachment {
+                            tail,
+                            head,
+                            split_at,
+                        },
+                    ));
+                }
+            }
+        }
+        best.map(|(_, encroachment)| encroachment)
+    }
+
     /// Predict the degrees an insertion would leave, without performing it.
     ///
     /// Cheap and exact rather than a heuristic. Bowyer-Watson fans the cavity

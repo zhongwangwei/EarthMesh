@@ -32,7 +32,7 @@ use earthmesh_mesh::{
     CartesianPoint, InsertionError, MeshState, VoronoiError, MESH_STATE_FIRST_ID,
 };
 
-use crate::candidate::{candidates_for_site, CandidatePolicy, CandidateSource};
+use crate::candidate::{candidates_for_site, Candidate, CandidatePolicy, CandidateSource};
 use crate::error::{HarpDvError, Result};
 use crate::state::{AdaptiveMesh, SiteId};
 
@@ -163,6 +163,29 @@ impl Acceptance {
             Self::RolledBack(rejection) => Some(rejection),
             Self::Committed(_) => None,
         }
+    }
+}
+
+impl AdaptiveMesh {
+    /// Where a candidate should go instead, if it encroaches a segment.
+    fn encroachment_of(&self, candidate: &Candidate) -> Option<CartesianPoint> {
+        if self.protected.is_empty() {
+            return None;
+        }
+        let state = self.state();
+        let mut region: BTreeSet<usize> = BTreeSet::new();
+        region.insert(candidate.hint);
+        region.extend(
+            state.neighbours()[candidate.hint]
+                .iter()
+                .copied()
+                .filter(|&other| other >= MESH_STATE_FIRST_ID),
+        );
+        state
+            .encroached_segment(candidate.point, &region, &|tail, head| {
+                self.is_protected_edge(tail, head)
+            })
+            .map(|encroachment| encroachment.split_at)
     }
 }
 
@@ -475,6 +498,17 @@ impl AdaptiveMesh {
 
         let mut refusals = Vec::with_capacity(ladder.len());
         for candidate in ladder {
+            // Ruppert's rule, applied to the candidate rather than after the
+            // fact: a point inside a protected segment's diametral circle is
+            // never inserted -- the segment is split at its midpoint instead,
+            // and that split is what makes the refinement terminate.
+            let candidate = match self.encroachment_of(&candidate) {
+                Some(split) => Candidate {
+                    point: split,
+                    ..candidate
+                },
+                None => candidate,
+            };
             match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {
                 Acceptance::Committed(report) => {
                     return Ok(DemandOutcome::Resolved {
