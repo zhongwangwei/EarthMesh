@@ -20,7 +20,7 @@
 //! it proposed was legal has not finished, and a report calling that success
 //! would be the silent failure this backend exists to avoid.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, magnitude, CartesianPoint, MESH_STATE_FIRST_ID};
 use earthmesh_refine::{
@@ -188,11 +188,88 @@ fn unbalanced_pairs(mesh: &AdaptiveMesh, limits: CycleLimits) -> usize {
     over
 }
 
-/// The worst neighbour scale ratio at one site.
+/// How badly the neighbourhood around a site breaks the scale bound.
 ///
-/// Unused, like the destination rule below, and kept for the same reason: it
-/// is the local improvement gate the next attempt at r-adaptation will want,
-/// and section 11.9 records what it did when it was wired in.
+/// Not called. Three improvement gates were built and measured, each wider
+/// than the last, and each lowered the violation count without closing the
+/// bound or letting the run converge (guide 11.9). Kept because the sequence
+/// is the finding: the objective has to be global, and these are the local
+/// ones already ruled out.
+#[allow(dead_code)]
+///
+/// Sum of squared excess over every adjacent pair in the site's fan and one
+/// ring out -- not the site's own worst ratio, which is what the first attempt
+/// at an improvement gate measured and why it failed. Moving a site changes
+/// every pair around it at once, so a gate reading one pair accepts moves that
+/// improve that pair and push the violation next door. Guide section 11.9.
+///
+/// Local, because the whole point of a per-transaction gate is that it costs
+/// the neighbourhood rather than the mesh (section 11.7).
+fn neighbourhood_violation(state: &MeshState, site: usize, bound: f64) -> f64 {
+    let radius_m = state.sphere_radius();
+    let scale = |site: usize| {
+        let cell = state.voronoi_cell(site).ok()?;
+        CellView {
+            site,
+            cell: &cell,
+            state,
+            radius_m,
+        }
+        .effective_scale_m()
+    };
+    let Ok(fan) = state.triangle_fan(site) else {
+        return f64::INFINITY;
+    };
+    // Every site in the fan, and every site in theirs: the ring whose pairs a
+    // move can shift.
+    let mut region: BTreeSet<usize> = BTreeSet::new();
+    for triangle in &fan {
+        for corner in state.triangles()[*triangle] {
+            region.insert(corner);
+        }
+    }
+    let inner: Vec<usize> = region.iter().copied().collect();
+    for &member in &inner {
+        if let Ok(their_fan) = state.triangle_fan(member) {
+            for triangle in their_fan {
+                for corner in state.triangles()[triangle] {
+                    region.insert(corner);
+                }
+            }
+        }
+    }
+
+    let mut total = 0.0;
+    let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for &member in &region {
+        let Some(here) = scale(member) else {
+            continue;
+        };
+        let Ok(their_fan) = state.triangle_fan(member) else {
+            continue;
+        };
+        for triangle in their_fan {
+            for corner in state.triangles()[triangle] {
+                if corner == member || !region.contains(&corner) {
+                    continue;
+                }
+                let key = (member.min(corner), member.max(corner));
+                if !seen.insert(key) {
+                    continue;
+                }
+                let Some(there) = scale(corner) else { continue };
+                let ratio = here.max(there) / here.min(there);
+                if ratio > bound {
+                    let excess = ratio - bound;
+                    total += excess * excess;
+                }
+            }
+        }
+    }
+    total
+}
+
+/// The worst neighbour scale ratio at one site.
 #[allow(dead_code)]
 ///
 /// Local: the improvement gate compares this before and after a move, and a
@@ -231,19 +308,10 @@ fn worst_ratio_at(state: &MeshState, site: usize, limits: CycleLimits) -> f64 {
     worst
 }
 
-/// Where a site would move to even out the scales around it.
-///
-/// Not called. `propose_move` and this destination were built, wired into the
-/// balance path, and measured: r-adaptation made the residual worse and stopped
-/// the run converging (guide section 11.9). Kept because the measurement is
-/// about *this* destination rule and not about r-adaptation, and the next rule
-/// to try needs somewhere to go.
-#[allow(dead_code)]
-fn balance_destination_unused(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoint> {
-    balance_destination(mesh, site)
-}
-
 /// Where to move a site to even out the scales around it.
+///
+/// Not called; see `neighbourhood_violation` for why the balance path does not
+/// move sites today.
 #[allow(dead_code)]
 ///
 /// Toward the centroid of its neighbours, weighted so the coarse side pulls
@@ -412,8 +480,8 @@ pub fn run_cycles(
                 let radius = magnitude(mesh.state().vertices()[site]);
                 CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius)
             });
-            attempted += 1;
             let for_balance = matches!(demand.cause, RefinementCause::ScaleBalance { .. });
+            attempted += 1;
             match mesh.refine_cell(site, witness, policy, gates)? {
                 DemandOutcome::Resolved { .. } => {
                     committed += 1;
