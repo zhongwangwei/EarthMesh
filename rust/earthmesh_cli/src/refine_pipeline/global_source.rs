@@ -1159,8 +1159,16 @@ fn harp_spring_smoothed(
             let here = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
                 earthmesh_mesh::LonLatDegrees::new(lon, lat),
             );
-            // The finest thing any region asks for here; the base cell where
-            // none does.
+            // Gradient-limited, not a step at the circle's edge. A target that
+            // jumps from base to base/4 across one edge asks the spring for a
+            // discontinuity it can only answer with a sliver; letting it grow
+            // back at a bounded rate is what an h-field does and what a circle
+            // list on its own does not.
+            //
+            // 0.3 metres of growth per metre of distance: shallow enough that
+            // the transition spans a few cells, steep enough that a target
+            // does not reach across the globe.
+            const GRADIENT: f64 = 0.3;
             let mut width = base_cell_m;
             for region in regions {
                 if let earthmesh_mesh::RefinementRegion::Circle {
@@ -1172,9 +1180,9 @@ fn harp_spring_smoothed(
                     let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
                     let dot = (here.x * centre.x + here.y * centre.y + here.z * centre.z)
                         .clamp(-1.0, 1.0);
-                    if dot.acos() * radius <= *radius_meters {
-                        width = width.min(base_cell_m / 2.0_f64.powi(*level as i32));
-                    }
+                    let outside = (dot.acos() * radius - *radius_meters).max(0.0);
+                    let asked = base_cell_m / 2.0_f64.powi(*level as i32);
+                    width = width.min(asked + GRADIENT * outside);
                 }
             }
             width * shape_factor
