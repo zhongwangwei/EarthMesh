@@ -1,0 +1,7 @@
+{
+  "kind": "earthmesh_refinement_plan",
+  "total_cells": 1,
+  "cells": [
+    {"cell": 0, "cell_id": "9865", "target_level": 2}
+  ]
+}

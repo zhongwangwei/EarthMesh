@@ -54,6 +54,20 @@ impl MeshState {
         impent: [usize; 12],
         face_levels: Option<&[usize]>,
     ) -> io::Result<TriangularMesh> {
+        self.to_triangular_mesh_with_grid_number(impent, face_levels, 1)
+    }
+
+    /// The same, choosing the grid number the rows carry.
+    ///
+    /// `ngr` is not decoration. The nest spring moves only points whose `ngr`
+    /// equals the one it is called with, so a backend that leaves every row at
+    /// 1 produces a mesh no spring will touch.
+    pub fn to_triangular_mesh_with_grid_number(
+        &self,
+        impent: [usize; 12],
+        face_levels: Option<&[usize]>,
+        ngr: usize,
+    ) -> io::Result<TriangularMesh> {
         if let Some(&stranger) = impent
             .iter()
             .find(|&&site| site < MESH_STATE_FIRST_ID || site >= self.vertices().len())
@@ -70,7 +84,7 @@ impl MeshState {
                     .and_then(|levels| levels.get(triangle))
                     .copied()
                     .unwrap_or(1);
-                MethodCTriangleSeed::new(self.triangles()[triangle], (level, level, 1))
+                MethodCTriangleSeed::new(self.triangles()[triangle], (level, level, ngr))
                     // Keep the id. Every report, lineage and demand the caller
                     // is holding names a face by it.
                     .with_target_iw(triangle)

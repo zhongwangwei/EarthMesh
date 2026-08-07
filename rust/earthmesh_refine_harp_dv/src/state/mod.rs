@@ -168,8 +168,12 @@ impl AdaptiveMesh {
                 .max()
                 .unwrap_or(1);
         }
+        // Grid number 2, not 1. The nest spring only moves points whose `ngr`
+        // matches the one it is called with, and it refuses `ngr <= 1` -- so a
+        // mesh marked 1 is a mesh no spring will touch, which is what this was
+        // and why 5000 iterations changed nothing at all.
         self.state
-            .to_triangular_mesh(self.impent, Some(&levels))
+            .to_triangular_mesh_with_grid_number(self.impent, Some(&levels), 2)
             .map_err(HarpDvError::Io)
     }
 
