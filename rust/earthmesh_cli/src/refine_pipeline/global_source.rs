@@ -408,6 +408,7 @@ pub fn run_refine_pipeline_namelist(
                 .transpose()?;
             refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
         }
+        "harp_dv" => refine_with_harp_dv(&mesh, &regions, method_c_nxp)?,
         _ => {
             let MethodCRefineOutcome {
                 mesh,
@@ -449,25 +450,10 @@ pub fn run_refine_pipeline_namelist(
                 grid_cartesian_xy_to_lonlat_placeholders_one_based_state(&mut state.grid)?;
                 state
             } else {
-                let mut state =
-                    voronoi_grid_from_triangular_mesh(&mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
-                pcvt_adjust_voronoi_grid_state(&mut state)?;
-                grid_xyz2lonlat_one_based_state(&mut state.grid)?;
-                state
+                spherical_voronoi_state(&mesh)?
             };
             let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-            let method_c_metadata = Some(MethodCMetadataOwned {
-                m_refine_levels: method_c_m_refine_levels_zero_based(&state)?,
-                m_refine_levels_orig: method_c_m_refine_levels_orig_zero_based(&state)?,
-                m_ngr: method_c_m_ngr(&state)?,
-                w_refine_levels: method_c_w_refine_levels_zero_based(&state)?,
-                w_refine_levels_orig: method_c_w_refine_levels_orig_zero_based(&state)?,
-                w_ngr: method_c_w_ngr(&state)?,
-                // Ancestry as the mesh tracked it through every pass and
-                // renumbering.
-                m_lineages: mesh.gridfile_m_cell_lineages()?,
-                w_lineages: mesh.gridfile_w_cell_lineages()?,
-            });
+            let method_c_metadata = Some(gridfile_metadata(&state, &mesh)?);
             RefinedGrid {
                 transition_faces: mesh.boundary_rows().len(),
                 // The twelve pentagons are the icosahedron's, taken here off the
@@ -936,6 +922,142 @@ type AdaptiveRunRecord = (
 
 /// Refine `mesh` the Method-C way: native spawn, adaptive point+radius, h-field
 /// target levels, or plain specified regions, whichever the request selects.
+/// Refine by re-reading the criteria against the cells that exist.
+///
+/// The one thing this route does differently at the pipeline boundary: it
+/// produces its mesh from `MeshState`, so it goes out through
+/// `to_triangular_mesh` rather than arriving as a `TriangularMesh` already.
+fn refine_with_harp_dv(
+    mesh: &earthmesh_mesh::TriangularMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+    nxp: usize,
+) -> io::Result<RefinedGrid> {
+    use earthmesh_refine_harp_dv as harp;
+
+    // Said outright rather than served quietly with less. Each of these would
+    // otherwise be dropped and the run would still write a valid mesh that is
+    // not the mesh that was asked for.
+    let unsupported = regions
+        .iter()
+        .find(|region| !matches!(region, earthmesh_mesh::RefinementRegion::Circle { .. }))
+        .map(|_| "a region that is not a circle");
+    if let Some(unsupported) = unsupported {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "NL%refine_backend = harp_dv does not serve {unsupported}; it reads a target \
+                 scale per cell, and only circles carry one today. Use method_c for this run"
+            ),
+        ));
+    }
+
+    // A named region asks for a level; HARP-DV asks for a length. One level is
+    // one halving, the same relation Method-C's nesting produces, so a level-L
+    // request becomes the base cell width divided by two to the L.
+    let base_cell_m =
+        2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
+    let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, region)| match region {
+            earthmesh_mesh::RefinementRegion::Circle {
+                center,
+                radius_meters,
+                level,
+            } => Some(Box::new(harp::TargetScale {
+                id: format!("region-{index}"),
+                target_scale_m: base_cell_m / 2.0_f64.powi(*level as i32),
+                region: harp::TargetRegion::Circle {
+                    centre: *center,
+                    radius_m: *radius_meters,
+                },
+                source_resolution_m: None,
+            }) as Box<dyn harp::CellCriterion>),
+            _ => None,
+        })
+        .collect();
+
+    let adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let outcome = harp::refine_harp_dv(
+        adaptive,
+        &harp::HarpDvRequest {
+            config: harp::HarpDvConfig::default(),
+            criteria: &criteria,
+            candidate_policy: harp::CandidatePolicy::default(),
+            gates: harp::HardGates::default(),
+        },
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+
+    // What it could not do, on the run's own output rather than in a log line
+    // nobody reads afterwards.
+    if !outcome.unresolved_cells.is_empty() {
+        eprintln!(
+            "harp_dv: {} cells could not be refined further, and {} adjacent pairs are past the \
+             neighbour scale bound; stopped because {:?}",
+            outcome.unresolved_cells.len(),
+            outcome.report.unbalanced_pairs_remaining,
+            outcome.report.stop_reason
+        );
+    }
+
+    let refined = outcome
+        .mesh
+        .to_triangular_mesh()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let state = spherical_voronoi_state(&refined)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+    let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
+    Ok(RefinedGrid {
+        // HARP-DV builds no transition band, so there is nothing to count in
+        // these terms -- the same answer red-green gives, and for the same
+        // reason.
+        transition_faces: 0,
+        pentagon_indices: refined.impent,
+        state: Some(state),
+        output_mesh,
+        method_c_metadata,
+        spring_nest_passes: 0,
+        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        adaptive_run: None,
+    })
+}
+
+/// The Voronoi/PCVT step, in lon/lat, for a mesh on the sphere.
+///
+/// Shared by every backend that produces a spherical mesh. The Cartesian-XY
+/// route is Method-C's alone and stays where it is.
+fn spherical_voronoi_state(
+    mesh: &earthmesh_mesh::TriangularMesh,
+) -> io::Result<earthmesh_mesh::VoronoiGridState> {
+    let mut state = voronoi_grid_from_triangular_mesh(mesh, earthmesh_core::EARTH_RADIUS_METERS)?;
+    pcvt_adjust_voronoi_grid_state(&mut state)?;
+    grid_xyz2lonlat_one_based_state(&mut state.grid)?;
+    Ok(state)
+}
+
+/// The per-row generations and ancestry the gridfile carries.
+///
+/// Named for the file rather than for Method-C: every backend fills these,
+/// because the format has the columns.
+fn gridfile_metadata(
+    state: &earthmesh_mesh::VoronoiGridState,
+    mesh: &earthmesh_mesh::TriangularMesh,
+) -> io::Result<MethodCMetadataOwned> {
+    Ok(MethodCMetadataOwned {
+        m_refine_levels: method_c_m_refine_levels_zero_based(state)?,
+        m_refine_levels_orig: method_c_m_refine_levels_orig_zero_based(state)?,
+        m_ngr: method_c_m_ngr(state)?,
+        w_refine_levels: method_c_w_refine_levels_zero_based(state)?,
+        w_refine_levels_orig: method_c_w_refine_levels_orig_zero_based(state)?,
+        w_ngr: method_c_w_ngr(state)?,
+        // Ancestry as the mesh tracked it through every pass and renumbering.
+        m_lineages: mesh.gridfile_m_cell_lineages()?,
+        w_lineages: mesh.gridfile_w_cell_lineages()?,
+    })
+}
+
 fn refine_with_method_c(
     mesh: TriangularMesh,
     request: MethodCRefineRequest<'_>,
