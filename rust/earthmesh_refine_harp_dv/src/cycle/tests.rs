@@ -4,6 +4,18 @@ use earthmesh_mesh::{LonLatDegrees, TriangularMesh};
 
 use crate::criteria::{TargetRegion, TargetScale};
 
+/// Gates with the sliver floor off.
+///
+/// These tests are about the cycle -- demands, stop reasons, balance, degree --
+/// and the shipped 28-degree floor would refuse ordinary insertions and change
+/// what they measure. The floor has its own coverage in `transaction`.
+fn permissive() -> HardGates {
+    HardGates {
+        min_triangle_angle_deg: 0.0,
+        ..HardGates::default()
+    }
+}
+
 fn sphere(nxp: usize) -> AdaptiveMesh {
     let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
     AdaptiveMesh::from_triangular_mesh(&mesh).expect("adaptive mesh")
@@ -57,7 +69,7 @@ fn a_satisfied_target_stops_at_once_and_changes_nothing() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(8, 100_000),
     )
     .expect("run");
@@ -91,7 +103,7 @@ fn a_regional_target_refines_where_it_applies_and_nowhere_else() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(6, 100_000),
     )
     .expect("run");
@@ -137,7 +149,7 @@ fn refining_makes_the_demand_go_away() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(12, 100_000),
     )
     .expect("run");
@@ -164,7 +176,7 @@ fn the_site_budget_stops_the_run_under_its_own_name() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(20, before + 25),
     )
     .expect("run");
@@ -192,7 +204,7 @@ fn a_run_that_cannot_place_anything_says_so() {
         CandidatePolicy::default(),
         HardGates {
             max_vertex_degree: 5,
-            ..HardGates::default()
+            ..permissive()
         },
         limits(20, 100_000),
     )
@@ -218,7 +230,7 @@ fn the_cycle_limit_is_reported_as_the_cycle_limit() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(1, 100_000),
     )
     .expect("run");
@@ -241,7 +253,7 @@ fn a_cell_at_the_minimum_width_stops_asking() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         CycleLimits {
             max_cycles: 8,
             max_sites: 100_000,
@@ -272,7 +284,7 @@ fn a_run_is_deterministic() {
             &mut mesh,
             &criteria,
             CandidatePolicy::default(),
-            HardGates::default(),
+            permissive(),
             limits(8, 100_000),
         )
         .expect("run");
@@ -352,7 +364,7 @@ fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         CycleLimits {
             max_cycles: 40,
             max_sites: 100_000,
@@ -397,7 +409,7 @@ fn without_balance_the_same_target_breaks_the_bound() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         CycleLimits {
             max_cycles: 30,
             max_sites: 100_000,
@@ -428,7 +440,7 @@ fn the_report_separates_balance_from_what_was_asked_for() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         CycleLimits {
             max_cycles: 30,
             max_sites: 100_000,
@@ -464,7 +476,7 @@ fn the_refusals_are_counted_by_kind() {
         &mut mesh,
         &criteria,
         CandidatePolicy::default(),
-        HardGates::default(),
+        permissive(),
         limits(20, 100_000),
     )
     .expect("run");
@@ -505,7 +517,7 @@ fn the_degree_budget_saturates() {
             CandidatePolicy::default(),
             HardGates {
                 max_vertex_degree: budget,
-                ..HardGates::default()
+                ..permissive()
             },
             limits(40, 100_000),
         )
@@ -551,7 +563,7 @@ fn the_wall_behind_degree_is_the_pentagons() {
         CandidatePolicy::default(),
         HardGates {
             max_vertex_degree: 16,
-            ..HardGates::default()
+            ..permissive()
         },
         limits(40, 100_000),
     )
@@ -640,7 +652,7 @@ fn protected_segments_make_a_quality_target_terminate() {
             &mut mesh,
             &criteria,
             CandidatePolicy::default(),
-            HardGates::default(),
+            permissive(),
             limits(40, 200_000),
         )
         .expect("run");

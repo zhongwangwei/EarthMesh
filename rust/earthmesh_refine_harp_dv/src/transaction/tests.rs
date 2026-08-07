@@ -2,6 +2,18 @@ use super::*;
 
 use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, LonLatDegrees, TriangularMesh};
 
+/// Gates with the sliver floor off.
+///
+/// Most tests here are about insertion, rollback and accounting, not about
+/// mesh quality. Leaving the shipped 28-degree floor on would have them refuse
+/// perfectly ordinary insertions and assert nothing they claim to.
+fn permissive() -> HardGates {
+    HardGates {
+        min_triangle_angle_deg: 0.0,
+        ..HardGates::default()
+    }
+}
+
 fn sphere(nxp: usize) -> AdaptiveMesh {
     let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
     AdaptiveMesh::from_triangular_mesh(&mesh).expect("adaptive mesh")
@@ -41,7 +53,7 @@ fn worst_degree(mesh: &AdaptiveMesh) -> usize {
 #[test]
 fn the_degree_gate_keeps_the_mesh_writable() {
     let mut mesh = sphere(6);
-    let gates = HardGates::default();
+    let gates = permissive();
     let mut outcomes = Vec::new();
     for (lon, lat) in candidates(40) {
         let point = on(&mesh, lon, lat);
@@ -68,7 +80,7 @@ fn the_degree_gate_keeps_the_mesh_writable() {
 #[test]
 fn a_refusal_says_which_site_and_by_how_much() {
     let mut mesh = sphere(6);
-    let gates = HardGates::default();
+    let gates = permissive();
     let mut degree_refusals = 0;
     for (lon, lat) in candidates(40) {
         let point = on(&mesh, lon, lat);
@@ -150,9 +162,7 @@ fn a_committed_site_is_recorded_where_the_report_says() {
     let before_sites = mesh.sites().len();
     let point = on(&mesh, 41.0, 19.0);
 
-    let outcome = mesh
-        .propose_site(point, HardGates::default())
-        .expect("propose");
+    let outcome = mesh.propose_site(point, permissive()).expect("propose");
     let report = outcome.committed().expect("this one passes");
 
     assert_eq!(mesh.sites().len(), before_sites + 1);
@@ -173,8 +183,7 @@ fn proposing_is_deterministic() {
             .into_iter()
             .map(|(lon, lat)| {
                 let point = on(&mesh, lon, lat);
-                mesh.propose_site(point, HardGates::default())
-                    .expect("propose")
+                mesh.propose_site(point, permissive()).expect("propose")
             })
             .collect();
         (mesh.state().clone(), committed_site_ids(&outcomes))
@@ -225,9 +234,7 @@ fn a_proposal_touches_a_neighbourhood_whatever_the_mesh_size() {
         let radius = mesh.state().sphere_radius();
         let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(41.0, 19.0));
         let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
-        let outcome = mesh
-            .propose_site(point, HardGates::default())
-            .expect("propose");
+        let outcome = mesh.propose_site(point, permissive()).expect("propose");
         let report = outcome.committed().expect("this one passes");
         touched.push(report.triangles_created + report.triangles_removed);
     }
@@ -248,7 +255,7 @@ fn a_location_hint_does_not_change_the_outcome() {
         for (lon, lat) in candidates(12) {
             let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat));
             let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
-            mesh.propose_site_near(point, hint, HardGates::default())
+            mesh.propose_site_near(point, hint, permissive())
                 .expect("propose");
         }
         mesh.state().clone()
@@ -308,7 +315,7 @@ fn a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone() {
 fn refining_a_cell_keeps_the_first_candidate_that_survives() {
     let mut mesh = sphere(6);
     let outcome = mesh
-        .refine_cell(40, None, CandidatePolicy::default(), HardGates::default())
+        .refine_cell(40, None, CandidatePolicy::default(), permissive())
         .expect("refine");
     match outcome {
         DemandOutcome::Resolved { source, report } => {
@@ -339,7 +346,7 @@ fn each_rung_is_undone_before_the_next_is_tried() {
     // refusal precedes whatever is finally kept somewhere in this sweep.
     let gates = HardGates {
         max_vertex_degree: 6,
-        ..HardGates::default()
+        ..permissive()
     };
     let mut resolved = 0;
     for site in [7usize, 40, 120, 300] {
@@ -390,7 +397,7 @@ fn a_witness_is_tried_first() {
             site,
             Some(witness),
             CandidatePolicy::default(),
-            HardGates::default(),
+            permissive(),
         )
         .expect("refine");
     match outcome {
@@ -400,4 +407,62 @@ fn a_witness_is_tried_first() {
         }
         other => panic!("expected the witness to be kept, got {other:?}"),
     }
+}
+
+/// The sliver floor is the lever on mesh quality, not just a degeneracy guard.
+///
+/// Measured through the CLI at NXP 21 (guide 11.33): a 5-degree floor leaves a
+/// worst angle of 17.07 and 7723 cells; 28 leaves 28.12 and 7371. Refusing an
+/// insertion that would make a thin triangle sends the ladder somewhere better,
+/// and the finished mesh tracks the floor.
+///
+/// Asserted as the relation rather than those figures: a higher floor gives a
+/// better worst angle and costs cells. Pinning 28.12 would make the next person
+/// to improve this edit the test first.
+#[test]
+fn a_higher_sliver_floor_buys_a_better_worst_angle() {
+    let worst_angle = |mesh: &AdaptiveMesh| {
+        let state = mesh.state();
+        (MESH_STATE_FIRST_ID..state.triangles().len())
+            .map(|triangle| {
+                let corners = state.triangles()[triangle];
+                crate::criteria::smallest_angle_deg_for_test([
+                    state.vertices()[corners[0]],
+                    state.vertices()[corners[1]],
+                    state.vertices()[corners[2]],
+                ])
+            })
+            .fold(f64::MAX, f64::min)
+    };
+
+    let run = |floor: f64| {
+        let mut mesh = sphere(6);
+        let gates = HardGates {
+            min_triangle_angle_deg: floor,
+            ..HardGates::default()
+        };
+        let radius = mesh.state().sphere_radius();
+        for (lon, lat) in candidates(40) {
+            let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat));
+            let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
+            mesh.propose_site(point, gates).expect("propose");
+        }
+        (mesh.state().vertex_count(), worst_angle(&mesh))
+    };
+
+    let (loose_sites, loose_angle) = run(1.0);
+    let (tight_sites, tight_angle) = run(28.0);
+
+    assert!(
+        tight_angle > loose_angle,
+        "a 28-degree floor left {tight_angle:.2} and a 1-degree floor {loose_angle:.2}"
+    );
+    assert!(
+        tight_angle >= 28.0,
+        "the floor is a floor: {tight_angle:.2} is under it"
+    );
+    assert!(
+        tight_sites <= loose_sites,
+        "refusing thin triangles cannot add sites: {tight_sites} against {loose_sites}"
+    );
 }

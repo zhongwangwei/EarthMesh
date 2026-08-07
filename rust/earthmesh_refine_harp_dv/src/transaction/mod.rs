@@ -66,10 +66,21 @@ impl Default for HardGates {
     fn default() -> Self {
         Self {
             max_vertex_degree: GRIDFILE_MAX_VERTEX_DEGREE,
-            // Well below anything a healthy mesh has, so it only catches what
-            // the writer would refuse anyway -- and catches it where the cause
-            // is still known and still reversible.
-            min_triangle_angle_deg: 5.0,
+            // Not merely a floor against degeneracy: measured, this *is* the
+            // lever on mesh quality. Every insertion that would leave a thin
+            // triangle is refused and the ladder finds somewhere better, so the
+            // worst angle of the finished mesh tracks this number (guide
+            // 11.33):
+            //
+            //      5 deg gate -> 17.07 worst, 7723 cells
+            //     22          -> 22.03,       7616
+            //     28          -> 28.12,       7371
+            //
+            // 28 rather than the quality gate's 25-degree warn line: the gate
+            // is a floor on what is *accepted*, and the finished mesh lands a
+            // little above it, so setting it at the line leaves no margin --
+            // measured, 25 gives 25.01.
+            min_triangle_angle_deg: 28.0,
             require_closed_surface: true,
         }
     }
