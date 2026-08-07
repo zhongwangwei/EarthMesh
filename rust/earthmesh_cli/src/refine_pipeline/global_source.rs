@@ -1191,13 +1191,50 @@ fn harp_spring_smoothed(
     base_cell_m: f64,
     iterations: usize,
 ) -> io::Result<earthmesh_mesh::TriangularMesh> {
-    // Median triangle edge over median cell width, on this mesh.
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+
+    // The factor from a cell width to a triangle edge length, measured on the
+    // parts of the mesh that were *not* refined -- those are the ones whose
+    // width is `base_cell_m` by definition.
+    //
+    // Taking the median over every edge instead was wrong and worked by
+    // accident: it is right only while refined edges are a minority, and a run
+    // that refines most of its domain would get a factor pulled down by the
+    // short edges, shrink every target, and have the spring compress the whole
+    // mesh.
+    let inside = |a: &earthmesh_mesh::CartesianPoint, b: &earthmesh_mesh::CartesianPoint| {
+        let middle = earthmesh_mesh::CartesianPoint::new(
+            (a.x + b.x) / 2.0,
+            (a.y + b.y) / 2.0,
+            (a.z + b.z) / 2.0,
+        );
+        let length = earthmesh_mesh::magnitude(middle);
+        if length <= 0.0 {
+            return false;
+        }
+        regions.iter().any(|region| {
+            let earthmesh_mesh::RefinementRegion::Circle {
+                center,
+                radius_meters,
+                ..
+            } = region
+            else {
+                return false;
+            };
+            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+            let dot = (middle.x * centre.x + middle.y * centre.y + middle.z * centre.z) / length;
+            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
+        })
+    };
     let mut edges: Vec<f64> = Vec::new();
     for iu in 2..=mesh.nud {
         let [im1, im2] = mesh.u_edges[iu].im;
         let (Some(a), Some(b)) = (mesh.m_points.get(im1), mesh.m_points.get(im2)) else {
             continue;
         };
+        if inside(a, b) {
+            continue;
+        }
         let length = earthmesh_mesh::arc_length_unit_sphere(*a, *b);
         if length.is_finite() && length > 0.0 {
             edges.push(length);
@@ -1205,15 +1242,12 @@ fn harp_spring_smoothed(
     }
     if edges.is_empty() {
         return Err(io::Error::other(
-            "no edges to measure a spring target against",
+            "every edge is inside a refinement region, so there is no unrefined \
+             scale to calibrate the spring targets against",
         ));
     }
     edges.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    let median_edge = edges[edges.len() / 2];
-    // The unrefined mesh's cell width, which the median edge belongs to.
-    let shape_factor = median_edge / base_cell_m;
-
-    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let shape_factor = edges[edges.len() / 2] / base_cell_m;
     let targets =
         earthmesh_refine_method_c::method_c_edge_target_lengths_from_field(mesh, |lon, lat| {
             let here = earthmesh_mesh::lonlat_degrees_to_unit_xyz(

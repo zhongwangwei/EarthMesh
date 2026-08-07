@@ -96,9 +96,24 @@ pub struct AdaptiveMesh {
     /// The site whose demand is being served, so a new one can be recorded a
     /// generation deeper than it.
     pub(crate) refining: Option<usize>,
-    /// Sites on a protected boundary. An edge between two of them is a
-    /// segment in Ruppert's sense, and a candidate that encroaches on one is
-    /// replaced by that segment's midpoint rather than inserted.
+    /// Sites on a protected boundary. An edge between two of them is treated
+    /// as a segment in Ruppert's sense, and a candidate that encroaches on one
+    /// is replaced by that segment's midpoint rather than inserted.
+    ///
+    /// **This is an approximation, and an unsound one.** Ruppert's segments
+    /// are an explicit list -- a PSLG -- and "both endpoints are on the
+    /// boundary" is not the same predicate: two boundary sites that happen to
+    /// be adjacent across the region are not a boundary edge, and every split
+    /// adds more such pairs.
+    ///
+    /// Guide 11.28 measures what that costs. Propagating protection to split
+    /// midpoints, which Ruppert's induction requires, takes the min triangle
+    /// angle from 21.09 degrees to 12.29 -- because the spurious segments
+    /// multiply and divert every candidate into splitting them. The 21.09
+    /// result therefore depends on *not* propagating, which is to say it
+    /// depends on the approximation staying broken.
+    ///
+    /// A sound implementation needs the segment list itself.
     pub(crate) protected: std::collections::BTreeSet<usize>,
 }
 
