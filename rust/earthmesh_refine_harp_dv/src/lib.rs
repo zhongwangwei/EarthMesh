@@ -27,6 +27,7 @@ pub mod config;
 pub mod error;
 pub mod report;
 pub mod state;
+pub mod transaction;
 
 pub use api::{refine_harp_dv, HarpDvOutcome, HarpDvRequest};
 pub use config::HarpDvConfig;
@@ -40,6 +41,10 @@ pub use earthmesh_refine::{
 };
 pub use report::{HarpDvRunReport, StopReason};
 pub use state::{AdaptiveMesh, AdaptiveSite, SiteId, SiteIdAllocator, SiteMobility};
+pub use transaction::{
+    committed_site_ids, Acceptance, HardGates, Rejection, TransactionReport,
+    GRIDFILE_MAX_VERTEX_DEGREE,
+};
 
 #[cfg(test)]
 mod tests;

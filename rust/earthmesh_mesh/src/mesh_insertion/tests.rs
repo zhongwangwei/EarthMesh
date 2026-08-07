@@ -252,3 +252,49 @@ fn insertion_is_deterministic() {
     };
     assert_eq!(build(), build());
 }
+
+/// Insertion breaks the degree-7 cap almost at once.
+///
+/// Method-C holds vertex degree to {5, 6, 7} with its transition rows and
+/// red-green holds it to 7 with its judge chain, because the gridfile cannot
+/// carry more: `ItabW`'s `im`/`iv`/`iw` are `[i32; 7]`, and the ring walk in
+/// `icosahedron_m_neighbors` refuses a valence above seven -- loudly, as a
+/// repairable error, not by truncating.
+///
+/// Plain Delaunay insertion promises nothing about degree, and this measures
+/// how little room that leaves: ten sites into an NXP 6 mesh is enough. So a
+/// backend that inserts has to gate on degree itself; there is no depth of
+/// insertion at which the question can be deferred.
+#[test]
+fn inserting_sites_passes_the_degree_the_gridfile_can_carry() {
+    let mut state = sphere(6);
+    let worst = |state: &MeshState| {
+        (MESH_STATE_FIRST_ID..state.vertices().len())
+            .filter_map(|site| state.vertex_degree(site).ok())
+            .max()
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        worst(&state),
+        6,
+        "an unrefined icosahedral mesh has none over 6"
+    );
+
+    let mut inserted = 0;
+    let mut first_over_seven = None;
+    for step in 0..40 {
+        let lon = -180.0 + f64::from(step) * 6.1;
+        let lat = -70.0 + f64::from((step * 37) % 140);
+        if state.insert_site(on(&state, lon, lat)).is_ok() {
+            inserted += 1;
+            if first_over_seven.is_none() && worst(&state) > 7 {
+                first_over_seven = Some(inserted);
+            }
+        }
+    }
+    let broke_at = first_over_seven.expect("the cap does get broken");
+    assert!(
+        broke_at <= 15,
+        "the cap survived {broke_at} insertions; it was measured to break by ten"
+    );
+}

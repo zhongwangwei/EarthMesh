@@ -124,6 +124,29 @@ impl AdaptiveMesh {
         Self::from_mesh_state(state)
     }
 
+    /// The triangulation, to change.
+    ///
+    /// Crate-private: a caller that writes here without also recording the
+    /// site leaves the two out of step, and the site table is what every id in
+    /// every report resolves against.
+    pub(crate) fn state_mut(&mut self) -> &mut MeshState {
+        &mut self.state
+    }
+
+    /// Give a vertex an insertion just created its identity.
+    ///
+    /// Called only after the gates pass, so an id is never spent on a site the
+    /// run then rolled back.
+    pub(crate) fn adopt_inserted_site(&mut self, vertex: usize) -> SiteId {
+        let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
+        let site_id = self.allocator.allocate();
+        let mut site = AdaptiveSite::inherited(site_id, position);
+        site.birth_cycle = self.cycles_completed + 1;
+        site.depth = 1;
+        self.sites.push(site);
+        site_id
+    }
+
     pub fn state(&self) -> &MeshState {
         &self.state
     }

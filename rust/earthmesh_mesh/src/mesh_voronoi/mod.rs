@@ -175,6 +175,35 @@ impl MeshState {
         self.triangle_fan_from(site, seed)
     }
 
+    /// How many triangles meet at a site, which is how many neighbours it has.
+    ///
+    /// The gridfile carries seven and no more -- `ItabW`'s rows are `[i32; 7]`
+    /// -- so a backend that can raise this has to check it before committing.
+    pub fn vertex_degree(&self, site: usize) -> Result<usize, VoronoiError> {
+        self.triangle_fan(site).map(|fan| fan.len())
+    }
+
+    /// The sites cornering any of these triangles, each with a triangle that
+    /// names it.
+    ///
+    /// What a local change hands to whatever has to re-check the
+    /// neighbourhood: the cells to rebuild, the degrees to re-measure.
+    pub fn sites_touching(
+        &self,
+        triangles: &BTreeSet<usize>,
+    ) -> std::collections::BTreeMap<usize, usize> {
+        let mut seeds = std::collections::BTreeMap::new();
+        for &triangle in triangles {
+            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles().len() {
+                continue;
+            }
+            for corner in self.triangles()[triangle] {
+                seeds.entry(corner).or_insert(triangle);
+            }
+        }
+        seeds
+    }
+
     /// The Voronoi cell of one site, given a triangle it belongs to.
     pub fn voronoi_cell_from(&self, site: usize, seed: usize) -> Result<VoronoiCell, VoronoiError> {
         let triangles = self.triangle_fan_from(site, seed)?;
@@ -212,16 +241,7 @@ impl MeshState {
         &self,
         triangles: &BTreeSet<usize>,
     ) -> Result<Vec<VoronoiCell>, VoronoiError> {
-        let mut seeds: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-        for &triangle in triangles {
-            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles().len() {
-                continue;
-            }
-            for corner in self.triangles()[triangle] {
-                seeds.entry(corner).or_insert(triangle);
-            }
-        }
-        seeds
+        self.sites_touching(triangles)
             .into_iter()
             .map(|(site, seed)| self.voronoi_cell_from(site, seed))
             .collect()
