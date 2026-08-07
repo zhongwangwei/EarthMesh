@@ -32,7 +32,7 @@ use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
 use crate::report::{HarpDvRunReport, RejectionTally, StopReason};
 use crate::state::AdaptiveMesh;
-use crate::transaction::{DemandOutcome, HardGates, Rejection};
+use crate::transaction::{Acceptance, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
 
 /// What bounds a run, over and above the per-transaction gates.
@@ -186,6 +186,77 @@ fn unbalanced_pairs(mesh: &AdaptiveMesh, limits: CycleLimits) -> usize {
         }
     }
     over
+}
+
+/// The largest vertex degree in a site's fan, counting the site itself.
+///
+/// What a degree-relieving move has to lower. Section 11.13 measured the degree
+/// bound as 96% of everything this backend cannot do, and section 11.14 that
+/// motion alone cannot change a degree -- so the move this feeds is motion
+/// *and* legalization, and the flips are what redistribute degree.
+fn neighbourhood_max_degree(state: &MeshState, site: usize) -> usize {
+    let Ok(fan) = state.triangle_fan(site) else {
+        return usize::MAX;
+    };
+    let mut region: BTreeSet<usize> = BTreeSet::new();
+    for triangle in &fan {
+        for corner in state.triangles()[*triangle] {
+            region.insert(corner);
+        }
+    }
+    region
+        .iter()
+        .filter_map(|&member| state.vertex_degree(member).ok())
+        .max()
+        .unwrap_or(usize::MAX)
+}
+
+/// The centroid of a site's neighbours, on the sphere: one relaxation step.
+///
+/// Unweighted, unlike `balance_destination`. This move is not trying to even
+/// out scales -- it is trying to give the legalization that follows a
+/// configuration whose flips lower degree, and the even spacing is what does
+/// that.
+fn relaxation_destination(state: &MeshState, site: usize) -> Option<CartesianPoint> {
+    const STEP: f64 = 0.5;
+    let here = state.vertices()[site];
+    let radius = magnitude(here);
+    let fan = state.triangle_fan(site).ok()?;
+    let mut neighbours: BTreeSet<usize> = BTreeSet::new();
+    for triangle in &fan {
+        for corner in state.triangles()[*triangle] {
+            if corner != site {
+                neighbours.insert(corner);
+            }
+        }
+    }
+    if neighbours.is_empty() {
+        return None;
+    }
+    let mut centroid = CartesianPoint::new(0.0, 0.0, 0.0);
+    for &corner in &neighbours {
+        let point = state.vertices()[corner];
+        centroid = CartesianPoint::new(
+            centroid.x + point.x,
+            centroid.y + point.y,
+            centroid.z + point.z,
+        );
+    }
+    let count = neighbours.len() as f64;
+    let stepped = CartesianPoint::new(
+        here.x + (centroid.x / count - here.x) * STEP,
+        here.y + (centroid.y / count - here.y) * STEP,
+        here.z + (centroid.z / count - here.z) * STEP,
+    );
+    let length = magnitude(stepped);
+    if !length.is_finite() || length <= 0.0 {
+        return None;
+    }
+    Some(CartesianPoint::new(
+        stepped.x / length * radius,
+        stepped.y / length * radius,
+        stepped.z / length * radius,
+    ))
 }
 
 /// How badly the neighbourhood around a site breaks the scale bound.
@@ -450,6 +521,7 @@ pub fn run_cycles(
     let mut rolled_back = 0usize;
     let mut balanced = 0usize;
     let mut refusals = RejectionTally::default();
+    let mut relieved = 0usize;
     let mut unresolved_cells = Vec::new();
     let mut cycles = 0u32;
     let mut stop_reason = StopReason::MaximumCyclesReached;
@@ -495,6 +567,28 @@ pub fn run_cycles(
                     refusals: reasons, ..
                 } => {
                     rolled_back += reasons.len();
+                    // A demand the degree bound turned away is the one case
+                    // worth a second move: relax the neighbourhood and let the
+                    // legalization redistribute degree, so the next cycle can
+                    // try the same demand into a mesh with room. Only when
+                    // degree was the reason -- anything else is a different
+                    // problem and this would not touch it.
+                    if reasons
+                        .iter()
+                        .any(|(_, reason)| matches!(reason, Rejection::DegreeOverBudget { .. }))
+                    {
+                        if let Some(destination) = relaxation_destination(mesh.state(), site) {
+                            let before = neighbourhood_max_degree(mesh.state(), site);
+                            let improves =
+                                |state: &MeshState| neighbourhood_max_degree(state, site) < before;
+                            if let Ok(Acceptance::Committed(_)) =
+                                mesh.propose_move(site, destination, gates, &improves)
+                            {
+                                relieved += 1;
+                                accepted_this_cycle += 1;
+                            }
+                        }
+                    }
                     for (_, reason) in &reasons {
                         match reason {
                             Rejection::DegreeOverBudget { .. } => refusals.degree += 1,
@@ -544,6 +638,7 @@ pub fn run_cycles(
             transactions_rolled_back: rolled_back,
             balance_transactions_committed: balanced,
             refusals,
+            degree_relieving_moves: relieved,
             unbalanced_pairs_remaining,
             unresolved_count: unresolved_cells.len(),
             deterministic: true,

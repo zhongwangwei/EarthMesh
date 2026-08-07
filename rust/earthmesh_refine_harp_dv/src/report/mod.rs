@@ -84,6 +84,9 @@ pub struct HarpDvRunReport {
     /// Every refusal the run made, by kind. One demand can contribute several
     /// -- the ladder tries every rung before giving up.
     pub refusals: RejectionTally,
+    /// Moves that lowered a neighbourhood's maximum degree so a demand the
+    /// degree bound had turned away could be tried again.
+    pub degree_relieving_moves: usize,
     pub deterministic: bool,
 }
 
@@ -105,6 +108,7 @@ impl HarpDvRunReport {
             unbalanced_pairs_remaining: 0,
             unresolved_count: 0,
             refusals: RejectionTally::default(),
+            degree_relieving_moves: 0,
             deterministic: true,
         }
     }

@@ -1014,6 +1014,12 @@ fn refine_with_harp_dv(
             refusals.no_improvement,
             refusals.unmeasurable
         );
+        if outcome.report.degree_relieving_moves > 0 {
+            eprintln!(
+                "harp_dv: {} moves relieved a degree wall",
+                outcome.report.degree_relieving_moves
+            );
+        }
     }
 
     let refined = outcome
