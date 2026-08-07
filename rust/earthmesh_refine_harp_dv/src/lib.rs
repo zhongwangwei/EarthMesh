@@ -44,7 +44,7 @@ pub mod transaction;
 
 pub use api::{refine_harp_dv, HarpDvOutcome, HarpDvRequest};
 pub use config::HarpDvConfig;
-pub use criteria::{CellCriterion, CellView, TargetRegion, TargetScale};
+pub use criteria::{CellCriterion, CellView, MinAngle, TargetRegion, TargetScale};
 pub use cycle::{run_cycles, CycleLimits, CycleOutcome};
 pub use error::{HarpDvError, Result};
 // The criteria vocabulary is the refinement layer's, not this backend's. Three

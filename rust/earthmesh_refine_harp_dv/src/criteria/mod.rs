@@ -21,7 +21,8 @@
 //! measured in, and what neighbouring-scale balance compares.
 
 use earthmesh_mesh::{
-    lonlat_degrees_to_unit_xyz, xyz_to_lonlat_degrees, LonLatDegrees, MeshState, VoronoiCell,
+    lonlat_degrees_to_unit_xyz, xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees, MeshState,
+    VoronoiCell,
 };
 use earthmesh_refine::{CriterionSemantics, DemandEvidence, EvidenceStopReason};
 
@@ -163,6 +164,126 @@ impl CellCriterion for TargetScale {
             hard_requirement: false,
             satisfiable,
             stop_reason,
+        })
+    }
+}
+
+/// Refine while any triangle at a cell has an angle below `min_angle_deg`.
+///
+/// Section 8.2's `MeshQuality` semantics, and the reason it belongs here rather
+/// than in a post-processing pass: quality is a criterion like any other, so it
+/// goes through the same demands, the same ladder, the same gates.
+///
+/// This is Ruppert's algorithm expressed in this backend's terms. Ruppert
+/// refines by inserting at the circumcentre of a badly shaped triangle and
+/// proves an angle bound for the result; the ladder's second rung is the
+/// farthest cell corner, which *is* a circumcentre, and its third is an
+/// off-centre -- Ungor's refinement of the same idea, which reaches the bound
+/// with fewer points.
+///
+/// So the machinery for a quality guarantee was already here. What was missing
+/// was something to ask for it: with only `TargetScale` running, a badly shaped
+/// cell that is small enough never becomes a demand, and nothing downstream
+/// ever looks at its shape. Guide 11.12 measured the result -- min angle 17
+/// degrees against Method-C's 76.
+pub struct MinAngle {
+    pub id: String,
+    /// The angle every triangle at a cell must reach.
+    ///
+    /// **Measured to diverge above about 20 degrees, and not for the reason
+    /// the textbook bound suggests.** Ruppert terminates only if encroached
+    /// boundary segments are split before any circumcentre goes in; nothing
+    /// here does that, so near a refinement region's edge the refinement
+    /// subdivides without end. A run at 25 degrees produced 6649 degree
+    /// refusals, hit the cycle limit, and ended with a degenerate
+    /// circumcentre at the writer -- with the degree bound at 7, 9 and 12
+    /// alike, so it is the missing encroachment rule and not the degree wall.
+    ///
+    /// At 20 degrees it is safe and does almost nothing: min angle 32.35
+    /// against 32.33 without it. Guide 11.25.
+    pub min_angle_deg: f64,
+}
+
+/// The smallest angle of a spherical triangle, in degrees.
+fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
+    let mut smallest = f64::MAX;
+    for corner in 0..3 {
+        let apex = points[corner];
+        let a = points[(corner + 1) % 3];
+        let b = points[(corner + 2) % 3];
+        // The angle at `apex` between the two great-circle arcs leaving it, via
+        // the tangent directions there.
+        let to = |other: CartesianPoint| {
+            let dot = (apex.x * other.x + apex.y * other.y + apex.z * other.z)
+                / (apex.x * apex.x + apex.y * apex.y + apex.z * apex.z);
+            CartesianPoint::new(
+                other.x - apex.x * dot,
+                other.y - apex.y * dot,
+                other.z - apex.z * dot,
+            )
+        };
+        let (u, v) = (to(a), to(b));
+        let lengths =
+            (u.x * u.x + u.y * u.y + u.z * u.z).sqrt() * (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        if lengths <= 0.0 {
+            return 0.0;
+        }
+        let cosine = ((u.x * v.x + u.y * v.y + u.z * v.z) / lengths).clamp(-1.0, 1.0);
+        smallest = smallest.min(cosine.acos().to_degrees());
+    }
+    smallest
+}
+
+impl CellCriterion for MinAngle {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn semantics(&self) -> CriterionSemantics {
+        CriterionSemantics::MeshQuality
+    }
+
+    fn evaluate(&self, cell: &CellView<'_>) -> Result<DemandEvidence> {
+        let state = cell.state;
+        let mut worst = f64::MAX;
+        let mut worst_triangle = None;
+        for &triangle in &cell.cell.triangles {
+            let corners = state.triangles()[triangle];
+            let angle = smallest_angle_deg([
+                state.vertices()[corners[0]],
+                state.vertices()[corners[1]],
+                state.vertices()[corners[2]],
+            ]);
+            if angle < worst {
+                worst = angle;
+                worst_triangle = Some(triangle);
+            }
+        }
+        if worst >= self.min_angle_deg || worst_triangle.is_none() {
+            return Ok(DemandEvidence::satisfied(&self.id, self.semantics()));
+        }
+
+        // The witness is the offending triangle's circumcentre: Ruppert's
+        // insertion point, and the one that provably improves the angle rather
+        // than merely subdividing near it.
+        let witness = worst_triangle
+            .and_then(|triangle| state.circumcentre(triangle).ok())
+            .map(xyz_to_lonlat_degrees);
+
+        Ok(DemandEvidence {
+            criterion_id: self.id.clone(),
+            semantics: self.semantics(),
+            measured_value: worst,
+            threshold: self.min_angle_deg,
+            // Falls as the mesh improves, like every other criterion here.
+            normalized_violation: (self.min_angle_deg - worst) / self.min_angle_deg,
+            requested_scale_m: None,
+            witness,
+            confidence: 1.0,
+            source_resolution_m: None,
+            hard_requirement: false,
+            satisfiable: true,
+            stop_reason: None,
         })
     }
 }
