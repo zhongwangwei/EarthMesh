@@ -1,6 +1,6 @@
 # Mesh Quality Report — WARN
 
-- mesh: `/private/tmp/claude-501/-Users-zhongwangwei-Downloads-EarthMesh-3-0-0-alpha2/278d9a0f-5697-4b05-97c5-3549d4156fe7/scratchpad/run/cmp_harp_dv/result/gridfile_NXP0021_hex.nc4`
+- mesh: `/private/tmp/claude-501/-Users-zhongwangwei-Downloads-EarthMesh-3-0-0-alpha2/278d9a0f-5697-4b05-97c5-3549d4156fe7/scratchpad/run/c_300/result/gridfile_NXP0021_hex.nc4`
 - cell view: `tri`
 - tool: earthmesh_quality 3.0.0-alpha3
 
