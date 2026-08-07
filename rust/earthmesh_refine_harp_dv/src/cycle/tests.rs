@@ -487,3 +487,50 @@ fn the_refusals_are_counted_by_kind() {
         "the ladder always found somewhere legal to try: {refusals:?}"
     );
 }
+
+/// Raising the degree budget past nine buys nothing.
+///
+/// The measurement that decides whether widening `ItabW` -- the gridfile's
+/// `[i32; 7]` rows -- is worth the risk to the Fortran comparison path. It is
+/// not: this backend saturates at degree 9, and removing the bound entirely
+/// adds 3.6% cells and still stops as `NoAcceptedTransactions`. Guide 11.17.
+#[test]
+fn the_degree_budget_saturates() {
+    let run = |budget: usize| {
+        let mut mesh = sphere(6);
+        let criteria = steep_target(&mesh);
+        run_cycles(
+            &mut mesh,
+            &criteria,
+            CandidatePolicy::default(),
+            HardGates {
+                max_vertex_degree: budget,
+                ..HardGates::default()
+            },
+            limits(40, 100_000),
+        )
+        .expect("run");
+        let state = mesh.state();
+        let worst = (MESH_STATE_FIRST_ID..state.vertices().len())
+            .filter_map(|site| state.vertex_degree(site).ok())
+            .max()
+            .unwrap_or(0);
+        (mesh.active_site_count(), worst)
+    };
+    let (cells_nine, worst_nine) = run(9);
+    let (cells_sixteen, worst_sixteen) = run(16);
+    assert_eq!(
+        (cells_nine, worst_nine),
+        (cells_sixteen, worst_sixteen),
+        "a budget past nine changed the mesh, so the saturation this rests on is gone"
+    );
+    assert_eq!(worst_nine, 9);
+
+    let (cells_seven, worst_seven) = run(7);
+    assert_eq!(worst_seven, 7);
+    assert!(
+        (cells_nine as f64) < cells_seven as f64 * 1.10,
+        "removing the degree bound bought {cells_seven} -> {cells_nine} cells; if that is now a \
+         large gain, widening the gridfile rows is worth reconsidering"
+    );
+}
