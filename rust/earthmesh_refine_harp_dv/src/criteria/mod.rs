@@ -211,6 +211,15 @@ pub(crate) fn smallest_angle_deg_for_test(points: [CartesianPoint; 3]) -> f64 {
 }
 
 /// The smallest angle of a spherical triangle, in degrees.
+///
+/// Shared with the transaction gates: a sliver is what the gridfile writer
+/// refuses, so the gate that keeps one out measures the same thing the
+/// criterion does.
+pub(crate) fn smallest_triangle_angle_deg(points: [CartesianPoint; 3]) -> f64 {
+    smallest_angle_deg(points)
+}
+
+/// The smallest angle of a spherical triangle, in degrees.
 fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
     let mut smallest = f64::MAX;
     for corner in 0..3 {

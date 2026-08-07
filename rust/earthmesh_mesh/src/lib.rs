@@ -97,6 +97,7 @@ mod mesh_triangle_seed;
 pub use mesh_triangle_seed::MethodCTriangleSeed;
 mod mesh_flip;
 pub use mesh_flip::FlipError;
+pub use spherical_circumcenter_mesh::circumcenter_is_local_enough;
 mod mesh_insertion;
 mod mesh_patch;
 mod mesh_predicates;

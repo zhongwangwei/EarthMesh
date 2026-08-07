@@ -40,10 +40,21 @@ use crate::state::{AdaptiveMesh, SiteId};
 pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = 7;
 
 /// What a transaction must satisfy to be kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HardGates {
     /// The largest vertex degree the run will accept.
     pub max_vertex_degree: usize,
+    /// The smallest angle any triangle the change touches may have, in
+    /// degrees.
+    ///
+    /// A sliver is not a coarser answer to the same question. The gridfile
+    /// writer refuses a triangle whose circumcentre is not local to it -- which
+    /// is what a sliver has -- so a run that makes one has produced a mesh
+    /// nobody can write, and it finds out at the writer rather than at the
+    /// transaction that caused it.
+    ///
+    /// Zero disables the gate.
+    pub min_triangle_angle_deg: f64,
     /// Whether the mesh must still be closed afterwards.
     ///
     /// True for a sphere. A regional mesh with a real boundary sets it false
@@ -55,6 +66,10 @@ impl Default for HardGates {
     fn default() -> Self {
         Self {
             max_vertex_degree: GRIDFILE_MAX_VERTEX_DEGREE,
+            // Well below anything a healthy mesh has, so it only catches what
+            // the writer would refuse anyway -- and catches it where the cause
+            // is still known and still reversible.
+            min_triangle_angle_deg: 5.0,
             require_closed_surface: true,
         }
     }
@@ -79,6 +94,8 @@ pub enum Rejection {
     Unmeasurable(VoronoiError),
     /// The mesh could not be walked back to Delaunay after the move.
     CouldNotLegalize(String),
+    /// The change left a triangle too thin to write.
+    SliverTriangle { triangle: usize, angle_deg: f64 },
     /// One of the twelve pentagons stopped being a pentagon.
     ProtectedPentagonDisturbed { site: usize, degree: usize },
     /// Legal, and no better than what it replaced.
@@ -114,6 +131,14 @@ impl std::fmt::Display for Rejection {
             Self::Unmeasurable(error) => {
                 write!(formatter, "the neighbourhood could not be checked: {error}")
             }
+            Self::SliverTriangle {
+                triangle,
+                angle_deg,
+            } => write!(
+                formatter,
+                "triangle {triangle} would have an angle of {angle_deg:.2} degrees; the gridfile \
+                 writer refuses a triangle that thin, and refusing it here keeps the cause"
+            ),
             Self::ProtectedPentagonDisturbed { site, degree } => write!(
                 formatter,
                 "site {site} is one of the twelve pentagons and would have degree {degree}; the \
@@ -215,6 +240,47 @@ fn check(
             return Err(Rejection::SurfaceOpened { open_edges: open });
         }
     }
+    // Slivers, checked over the triangles the change actually made or moved.
+    if gates.min_triangle_angle_deg > 0.0 {
+        for &triangle in touched {
+            if triangle < MESH_STATE_FIRST_ID || triangle >= state.triangles().len() {
+                continue;
+            }
+            let corners = state.triangles()[triangle];
+            let points = [
+                state.vertices()[corners[0]],
+                state.vertices()[corners[1]],
+                state.vertices()[corners[2]],
+            ];
+            let angle = crate::criteria::smallest_triangle_angle_deg(points);
+            if angle < gates.min_triangle_angle_deg {
+                return Err(Rejection::SliverTriangle {
+                    triangle,
+                    angle_deg: angle,
+                });
+            }
+            // And the writer's own test, which an angle floor does not imply: a
+            // large obtuse triangle can clear five degrees and still have a
+            // circumcentre nowhere near it, which is what
+            // `circumcenter_spherical` refuses. Gating on the writer's
+            // predicate rather than on a proxy for it is the difference
+            // between a refused transaction and a run that dies at output.
+            let barycentre = CartesianPoint::new(
+                (points[0].x + points[1].x + points[2].x) / 3.0,
+                (points[0].y + points[1].y + points[2].y) / 3.0,
+                (points[0].z + points[1].z + points[2].z) / 3.0,
+            );
+            if let Ok(centre) = state.circumcentre(triangle) {
+                if !earthmesh_mesh::circumcenter_is_local_enough(barycentre, centre, points) {
+                    return Err(Rejection::SliverTriangle {
+                        triangle,
+                        angle_deg: angle,
+                    });
+                }
+            }
+        }
+    }
+
     let mut worst = 0;
     // Seeded, not scanned. `sites_touching` already knows a triangle at each
     // site, and looking for one instead is linear in the whole mesh -- which

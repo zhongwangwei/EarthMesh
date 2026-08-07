@@ -11,7 +11,12 @@ fn angular_distance_radians(a: CartesianPoint, b: CartesianPoint) -> Option<f64>
     Some((dot(a, b) / mag).clamp(-1.0, 1.0).acos())
 }
 
-pub(crate) fn circumcenter_is_local_enough(
+/// Whether a triangle's circumcentre is close enough to it to be usable.
+///
+/// The gridfile writer's own admissibility test. Exposed so a backend can
+/// refuse a transaction that would produce such a triangle, rather than
+/// discovering it at the writer with the cause long gone.
+pub fn circumcenter_is_local_enough(
     barycenter: CartesianPoint,
     circumcenter: CartesianPoint,
     vertices: [CartesianPoint; 3],

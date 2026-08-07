@@ -34,6 +34,8 @@ pub struct RejectionTally {
     pub not_insertable: usize,
     /// The change left the surface open or the adjacency wrong.
     pub topology: usize,
+    /// The change would have left a triangle too thin for the writer.
+    pub sliver: usize,
     /// Legal, and no better than what it replaced.
     pub no_improvement: usize,
     /// The neighbourhood could not be read to check it.
@@ -46,6 +48,7 @@ impl RejectionTally {
             + self.pentagon
             + self.not_insertable
             + self.topology
+            + self.sliver
             + self.no_improvement
             + self.unmeasurable
     }

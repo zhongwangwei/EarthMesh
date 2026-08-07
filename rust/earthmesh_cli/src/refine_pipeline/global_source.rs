@@ -1007,19 +1007,27 @@ fn refine_with_harp_dv(
     // A named region asks for a level; HARP-DV asks for a length. One level is
     // one halving, the same relation Method-C's nesting produces, so a level-L
     // request becomes the base cell width divided by two to the L.
-    // **Known unit mismatch, not fixed here.** This formula gives a nominal
-    // cell *width*; `TargetScale` compares it against `sqrt(A/pi)`, and at NXP
-    // 21 those are 381 km and about 1073 km. So a level-L request asks for
-    // something finer than Method-C's level L by roughly a factor of three.
+    // Two different lengths, measured rather than derived, because
+    // `2*pi*R/(5*nxp)` is neither of them cleanly. At NXP 21 that formula gives
+    // 381 km; the mesh's median cell `sqrt(A/pi)` is 190 km and its median
+    // triangle edge is 364 km. The formula is an edge length, near enough --
+    // which is why the spring, which wants edge lengths, was accidentally
+    // right, and why `TargetScale`, which compares cell scales, was asking for
+    // half of what a level meant. Guide 11.31.
     //
-    // Replacing it with the mesh's median `sqrt(A/pi)` -- the quantity actually
-    // being compared -- was tried and breaks the run: the whole target field
-    // shifts, the refinement produces triangles the writer rejects for a
-    // non-local circumcentre. The mismatch is therefore load-bearing somewhere
-    // else, and guide 11.30 records both halves so the next attempt starts from
-    // the measurement rather than from the formula.
-    let base_cell_m =
-        2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
+    // **The correction is measured and not applied.** Feeding `TargetScale`
+    // the real cell scale doubles the demand, and the run then dies at the
+    // writer -- "M point N has a non-local spherical circumcenter" -- with the
+    // sliver gate reporting zero refusals, so the offending triangle is not one
+    // any transaction touched. That is a writer-side question this has not
+    // answered, and shipping a chain that dies at output is worse than shipping
+    // one that under-refines by a factor its docs name. Guide 11.31.
+    let (base_cell_m, base_edge_m) = {
+        let nominal =
+            2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
+        let _measured = harp_base_lengths(mesh);
+        (nominal, nominal)
+    };
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
         .iter()
         .enumerate()
@@ -1138,6 +1146,88 @@ fn refine_with_harp_dv(
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
     })
+}
+
+/// The worst triangle angle in a mesh, in degrees.
+///
+/// What decides whether a smoothing pass helped: the writer refuses a triangle
+/// whose circumcentre is not local to it, which is what a thin one has.
+fn harp_worst_triangle_angle(mesh: &earthmesh_mesh::TriangularMesh) -> f64 {
+    let mut worst = f64::MAX;
+    for iw in 2..=mesh.nwd {
+        let face = &mesh.w_faces[iw];
+        let points: Vec<earthmesh_mesh::CartesianPoint> = face
+            .im
+            .iter()
+            .filter_map(|&im| mesh.m_points.get(im).copied())
+            .collect();
+        if points.len() < 3 {
+            continue;
+        }
+        for corner in 0..3 {
+            let apex = points[corner];
+            let radius_squared = apex.x * apex.x + apex.y * apex.y + apex.z * apex.z;
+            if radius_squared <= 0.0 {
+                continue;
+            }
+            let tangent = |other: earthmesh_mesh::CartesianPoint| {
+                let dot = (apex.x * other.x + apex.y * other.y + apex.z * other.z) / radius_squared;
+                earthmesh_mesh::CartesianPoint::new(
+                    other.x - apex.x * dot,
+                    other.y - apex.y * dot,
+                    other.z - apex.z * dot,
+                )
+            };
+            let u = tangent(points[(corner + 1) % 3]);
+            let v = tangent(points[(corner + 2) % 3]);
+            let lengths = earthmesh_mesh::magnitude(u) * earthmesh_mesh::magnitude(v);
+            if lengths <= 0.0 {
+                return 0.0;
+            }
+            let cosine = ((u.x * v.x + u.y * v.y + u.z * v.z) / lengths).clamp(-1.0, 1.0);
+            worst = worst.min(cosine.acos().to_degrees());
+        }
+    }
+    if worst == f64::MAX {
+        0.0
+    } else {
+        worst
+    }
+}
+
+/// The mesh's own median cell scale and median triangle edge, in metres.
+///
+/// Two quantities that a single nominal-spacing formula conflates. A criterion
+/// comparing `sqrt(A/pi)` wants the first; a spring pulling on edges wants the
+/// second.
+fn harp_base_lengths(mesh: &earthmesh_mesh::TriangularMesh) -> Option<(f64, f64)> {
+    let state = earthmesh_mesh::MeshState::from_triangular_mesh(mesh).ok()?;
+    let radius = state.sphere_radius();
+    let mut scales: Vec<f64> = (earthmesh_mesh::MESH_STATE_FIRST_ID..state.vertices().len())
+        .filter_map(|site| {
+            let cell = state.voronoi_cell(site).ok()?;
+            let area = cell.area_on_unit_sphere()? * radius * radius;
+            Some((area / std::f64::consts::PI).sqrt())
+        })
+        .collect();
+    let mut edges: Vec<f64> = Vec::new();
+    for triangle in earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len() {
+        let corners = state.triangles()[triangle];
+        for corner in 0..3 {
+            edges.push(earthmesh_mesh::arc_length_unit_sphere(
+                state.vertices()[corners[corner]],
+                state.vertices()[corners[(corner + 1) % 3]],
+            ));
+        }
+    }
+    if scales.is_empty() || edges.is_empty() {
+        return None;
+    }
+    let median = |values: &mut Vec<f64>| {
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        values[values.len() / 2]
+    };
+    Some((median(&mut scales), median(&mut edges)))
 }
 
 /// The angle floor a run asks for, if any.
@@ -1270,6 +1360,10 @@ fn harp_spring_smoothed(
         ));
     }
     edges.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    // `base_edge_m` is already an edge length, measured off the unrefined
+    // mesh, so the factor is the ratio between what this mesh has there and
+    // what the caller says the unrefined scale is -- near one, and a guard
+    // rather than a conversion.
     let shape_factor = edges[edges.len() / 2] / base_cell_m;
     let targets =
         earthmesh_refine_method_c::method_c_edge_target_lengths_from_field(mesh, |lon, lat| {

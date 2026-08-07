@@ -607,6 +607,7 @@ pub fn run_cycles(
                             Rejection::SurfaceOpened { .. }
                             | Rejection::TopologyInvalid { .. }
                             | Rejection::CouldNotLegalize(_) => refusals.topology += 1,
+                            Rejection::SliverTriangle { .. } => refusals.sliver += 1,
                             Rejection::NoImprovement { .. } => refusals.no_improvement += 1,
                             Rejection::Unmeasurable(_) => refusals.unmeasurable += 1,
                         }

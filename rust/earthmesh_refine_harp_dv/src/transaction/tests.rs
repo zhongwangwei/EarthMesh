@@ -94,6 +94,11 @@ fn a_refusal_says_which_site_and_by_how_much() {
                     assert!(*site >= MESH_STATE_FIRST_ID);
                     assert_ne!(*degree, 5);
                 }
+                // The writer's own admissibility test, refused here rather
+                // than at output.
+                Rejection::SliverTriangle { angle_deg, .. } => {
+                    assert!(*angle_deg >= 0.0);
+                }
                 other => panic!("unexpected refusal: {other}"),
             }
         }
