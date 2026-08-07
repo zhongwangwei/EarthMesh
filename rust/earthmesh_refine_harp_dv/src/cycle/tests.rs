@@ -14,6 +14,7 @@ fn limits(max_cycles: u32, max_sites: usize) -> CycleLimits {
         max_cycles,
         max_sites,
         minimum_cell_width_m: 1.0,
+        max_neighbour_scale_ratio: 1.75,
     }
 }
 
@@ -245,6 +246,7 @@ fn a_cell_at_the_minimum_width_stops_asking() {
             max_cycles: 8,
             max_sites: 100_000,
             minimum_cell_width_m: floor,
+            max_neighbour_scale_ratio: 1.75,
         },
     )
     .expect("run");
@@ -281,4 +283,165 @@ fn a_run_is_deterministic() {
     assert_eq!(first_state, second_state);
     assert_eq!(first_report, second_report);
     assert!(first_report.transactions_committed > 0);
+}
+
+/// The worst neighbour scale ratio a run leaves, and how many pairs are over.
+fn ratio_survey(mesh: &AdaptiveMesh, bound: f64) -> (f64, usize) {
+    let state = mesh.state();
+    let radius = state.sphere_radius();
+    let scale = |site: usize| {
+        let cell = state.voronoi_cell(site).ok()?;
+        CellView {
+            site,
+            cell: &cell,
+            state,
+            radius_m: radius,
+        }
+        .effective_scale_m()
+    };
+    let mut worst = 1.0_f64;
+    let mut over = 0usize;
+    for site in MESH_STATE_FIRST_ID..state.vertices().len() {
+        let Some(here) = scale(site) else { continue };
+        for triangle in state.triangle_fan(site).expect("fan") {
+            for corner in state.triangles()[triangle] {
+                if corner == site {
+                    continue;
+                }
+                let Some(there) = scale(corner) else { continue };
+                let ratio = here.max(there) / here.min(there);
+                worst = worst.max(ratio);
+                if ratio > bound {
+                    over += 1;
+                }
+            }
+        }
+    }
+    (worst, over)
+}
+
+fn steep_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
+    target(
+        coarsest_scale(mesh) * 0.3,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 1_200_000.0,
+        },
+    )
+}
+
+/// Balance closes most of the gap, and the run reports what it could not.
+///
+/// Measured on the same target with balance off: worst neighbour ratio 2.46,
+/// 58 adjacent pairs past 1.75. With it on: 1.96 and 16, and the run stops
+/// saying `NoAcceptedTransactions` rather than claiming to be finished.
+///
+/// It does not reach zero, and the reason is worth stating because it is not a
+/// tuning problem. The degree bound and the scale bound pull against each
+/// other: closing the last ratios needs cells the degree gate will not allow,
+/// and insertion is the only move this backend has. Section 8.1 puts
+/// r-adaptation -- moving sites -- ahead of h-adaptation for exactly this, and
+/// it is not implemented. Until it is, the residual is reported rather than
+/// hidden, because a mesh that quietly violates the bound it claims is the
+/// failure class this backend exists to avoid.
+#[test]
+fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates::default(),
+        CycleLimits {
+            max_cycles: 30,
+            max_sites: 100_000,
+            minimum_cell_width_m: 1.0,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    let (worst, over) = ratio_survey(&mesh, 1.75);
+    assert!(
+        over <= 20 && worst < 2.0,
+        "balance left {over} pairs past 1.75, worst {worst:.3}; without it the same target \
+         leaves 58 and 2.46, so this is no better than doing nothing"
+    );
+    assert!(
+        outcome.report.balance_transactions_committed > 0,
+        "and it took work to do it"
+    );
+    assert_eq!(
+        outcome.report.unbalanced_pairs_remaining, over,
+        "the report says what is left rather than leaving a caller to find out"
+    );
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::NoAcceptedTransactions,
+        "a run that could not finish balancing does not report having finished"
+    );
+    assert_eq!(mesh.state().open_edge_count(), 0);
+    mesh.state().validate().expect("still a triangulation");
+}
+
+/// Turning balance off reproduces the measurement it was built for.
+///
+/// Without this the previous test could pass because the target happens not to
+/// produce a steep gradient, and nobody would know.
+#[test]
+fn without_balance_the_same_target_breaks_the_bound() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates::default(),
+        CycleLimits {
+            max_cycles: 30,
+            max_sites: 100_000,
+            minimum_cell_width_m: 1.0,
+            // Beyond anything a run can reach, so no balance demand is raised.
+            max_neighbour_scale_ratio: 1.0e9,
+        },
+    )
+    .expect("run");
+
+    let (worst, over) = ratio_survey(&mesh, 1.75);
+    assert!(
+        over > 0 && worst > 1.75,
+        "this target was chosen because it breaks the bound; it no longer does \
+         ({over} over, worst {worst:.3}), so the balance test above proves nothing"
+    );
+}
+
+/// The report tells physical refinement from balance refinement.
+///
+/// Section 14 asks for the distinction by name: a reader has to be able to see
+/// what the run was asked for and what that cost in cells nobody requested.
+#[test]
+fn the_report_separates_balance_from_what_was_asked_for() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates::default(),
+        CycleLimits {
+            max_cycles: 30,
+            max_sites: 100_000,
+            minimum_cell_width_m: 1.0,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    let report = &outcome.report;
+    assert!(report.balance_transactions_committed > 0);
+    assert!(
+        report.balance_transactions_committed < report.transactions_committed,
+        "balance should be a cost of the refinement, not the whole of it: {report:?}"
+    );
 }

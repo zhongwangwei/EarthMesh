@@ -55,6 +55,7 @@ pub fn refine_harp_dv(
         max_cycles: request.config.max_cycles,
         max_sites: request.config.maximum_cells,
         minimum_cell_width_m: request.config.minimum_cell_width_m,
+        max_neighbour_scale_ratio: request.config.maximum_neighbor_scale_ratio,
     };
     let outcome = run_cycles(
         &mut mesh,

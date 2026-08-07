@@ -25,8 +25,12 @@
 //! measured. The hard gates of 13.2 are here; the discrete MVP the spec offers
 //! beside the continuous objective is what belongs next.
 //!
-//! Section 14's neighbouring-scale balance, and r-adaptation. A run today only
-//! inserts.
+//! Section 8.1's r-adaptation. A run today only inserts, and that is not a
+//! matter of scope: measured, the degree bound the gridfile imposes and
+//! section 14's scale bound pull against each other, and closing the last
+//! ratios needs cells the degree gate refuses. Moving sites is the move that
+//! would resolve it. Until it exists, `unbalanced_pairs_remaining` reports
+//! what balance could not close -- guide section 11.8 has the numbers.
 //!
 pub mod api;
 pub mod candidate;

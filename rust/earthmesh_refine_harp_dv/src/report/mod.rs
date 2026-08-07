@@ -27,6 +27,21 @@ pub struct HarpDvRunReport {
     pub transactions_attempted: usize,
     pub transactions_committed: usize,
     pub transactions_rolled_back: usize,
+    /// How many of the commits were the mesh balancing itself rather than a
+    /// criterion asking.
+    ///
+    /// Separate because the two mean different things to a reader: physical
+    /// refinement is the run doing what was asked, and balance refinement is
+    /// what that cost in cells nobody requested.
+    pub balance_transactions_committed: usize,
+    /// Adjacent cell pairs still past `max_neighbour_scale_ratio` when the run
+    /// stopped.
+    ///
+    /// Rarely zero. The degree bound and the scale bound pull against each
+    /// other, and closing the last ratios needs cells the degree gate refuses.
+    /// Section 8.1's r-adaptation is the move that would resolve it and is not
+    /// implemented; until it is, this number is what a caller decides on.
+    pub unbalanced_pairs_remaining: usize,
     /// Demands the run could not meet. Counted rather than dropped: a run that
     /// silently serves less than was asked is the failure mode this whole
     /// backend is arranged against.
@@ -48,6 +63,8 @@ impl HarpDvRunReport {
             transactions_attempted: 0,
             transactions_committed: 0,
             transactions_rolled_back: 0,
+            balance_transactions_committed: 0,
+            unbalanced_pairs_remaining: 0,
             unresolved_count: 0,
             deterministic: true,
         }
