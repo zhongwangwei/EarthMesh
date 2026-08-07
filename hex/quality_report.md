@@ -1,17 +1,17 @@
 # Mesh Quality Report — WARN
 
-- mesh: `/private/tmp/claude-501/-Users-zhongwangwei-Downloads-EarthMesh-3-0-0-alpha2/278d9a0f-5697-4b05-97c5-3549d4156fe7/scratchpad/run/g_500/result/gridfile_NXP0021_hex.nc4`
+- mesh: `/private/tmp/claude-501/-Users-zhongwangwei-Downloads-EarthMesh-3-0-0-alpha2/278d9a0f-5697-4b05-97c5-3549d4156fe7/scratchpad/run/g_100/result/gridfile_NXP0021_hex.nc4`
 - cell view: `tri`
 - tool: earthmesh_quality 3.0.0-alpha3
 
 ## Geometry
 
 - cells: 9942 · vertices: 4974 · edges: 14913
-- cell area (spherical km²): mean 5.1308e4, CV 0.337, max/min 18.13
-- edge length (km): min 71.735, mean 336.995; max per-cell edge CV 0.266
-- min angle: 29.61° · max angle: 109.67° · max angle deviation: 49.66° · max aspect: 1.95 · min compactness: 0.443
+- cell area (spherical km²): mean 5.1308e4, CV 0.317, max/min 16.11
+- edge length (km): min 82.319, mean 338.225; max per-cell edge CV 0.255
+- min angle: 32.33° · max angle: 112.06° · max angle deviation: 52.05° · max aspect: 1.84 · min compactness: 0.435
 - local shape metric samples: 9942 · excluded coarse cells: 0
-- local triangle quality: eta min 0.687 · NSR min 0.590
+- local triangle quality: eta min 0.675 · NSR min 0.566
 - zero-area: 0 · self-intersect: 0 · invalid: 0
 
 ## Topology
@@ -42,12 +42,12 @@
 | zero_area_cell_count | 0 | pass |
 | negative_area_cell_count | 0 | pass |
 | non_finite_cell_count | 0 | pass |
-| min_angle_deg | 29.614735631427155 | pass |
-| aspect_ratio_max | 1.952627123594245 | pass |
-| cell_edge_length_cv_max | 0.26625970249408704 | pass |
-| angle_deviation_deg_max | 49.66349669365955 | warn |
-| cell_area_cv | 0.3374755997232423 | pass |
-| cell_area_ratio | 18.126801947558832 | pass |
+| min_angle_deg | 32.32581641494327 | pass |
+| aspect_ratio_max | 1.835062931303399 | pass |
+| cell_edge_length_cv_max | 0.2554459864474142 | pass |
+| angle_deviation_deg_max | 52.05187755760762 | warn |
+| cell_area_cv | 0.3174294983662944 | pass |
+| cell_area_ratio | 16.111904513317413 | pass |
 | max_adjacent_resolution_ratio | 2 | pass |
 | transition_continuity_warning_count | 0 | pass |
 | isolated_refined_cell_count | 0 | pass |
@@ -56,9 +56,9 @@
 
 | Level | Cells | Area CV | Edge CV max | Angle dev max | Tri eta local min | Tri NSR local min |
 |-------|-------|---------|-------------|---------------|-------------|-------------|
-| 0 | 8470 | 0.087 | 0.194 | 32.047 | 0.839 | 0.802 |
-| 1 | 1472 | 0.536 | 0.266 | 49.663 | 0.687 | 0.590 |
+| 0 | 8470 | 0.060 | 0.213 | 34.155 | 0.808 | 0.764 |
+| 1 | 1472 | 0.550 | 0.255 | 52.052 | 0.675 | 0.566 |
 
 **Verdict: WARN**
 
-33 worst cell(s) in `worst_cells.geojson`.
+28 worst cell(s) in `worst_cells.geojson`.
