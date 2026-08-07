@@ -2,6 +2,6 @@
   "type": "FeatureCollection",
   "kind": "earthmesh_quality_repair_cells",
   "features": [
-    {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[95.52777206599782,49.491213476375975],[97.21668715164235,47.937524155049246],[97.14975045025821,49.12148050181056],[95.52777206599782,49.491213476375975]]]}, "properties": {"cell_id": "5944", "cell_index": 5944, "center_lon": 96.6314032226328, "center_lat": 48.85007271107859, "metric": "angle_deviation_deg"}}
+    {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[103.05399117988776,28.61511246845641],[104.71460173883506,28.362518265187155],[103.8918179720146,28.96706015642282],[103.05399117988776,28.61511246845641]]]}, "properties": {"cell_id": "9065", "cell_index": 9065, "center_lon": 103.88680363024581, "center_lat": 28.648230296688794, "metric": "angle_deviation_deg"}}
   ]
 }

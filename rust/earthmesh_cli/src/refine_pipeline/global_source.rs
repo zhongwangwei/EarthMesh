@@ -1030,8 +1030,23 @@ fn refine_with_harp_dv(
         })
         .collect();
 
-    let adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
+    let mut criteria = criteria;
+    let mut adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
         .map_err(|error| io::Error::other(error.to_string()))?;
+
+    // Quality as a criterion, with Ruppert's precondition satisfied: the sites
+    // ringing each refinement region are protected segments, so a circumcentre
+    // that encroaches on one splits it instead of being inserted. Without that
+    // the refinement does not terminate (guide 11.25); with it, it reaches
+    // Ruppert's angle bound (11.26).
+    if let Some(min_angle_deg) = harp_min_angle_target() {
+        let ring = harp_region_boundary_sites(&adaptive, regions, base_cell_m);
+        adaptive.protect_boundary_sites(ring);
+        criteria.push(Box::new(harp::MinAngle {
+            id: "min-angle".to_string(),
+            min_angle_deg,
+        }));
+    }
     let outcome = harp::refine_harp_dv(
         adaptive,
         &harp::HarpDvRequest {
@@ -1112,6 +1127,51 @@ fn refine_with_harp_dv(
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
     })
+}
+
+/// The angle floor a run asks for, if any.
+///
+/// Off unless asked: a quality criterion adds cells nobody requested, and
+/// Ruppert's bound is about 20.7 degrees -- above it the refinement is not
+/// guaranteed to terminate and a run can spend its whole budget.
+fn harp_min_angle_target() -> Option<f64> {
+    std::env::var("EARTHMESH_HARP_MIN_ANGLE")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|degrees| *degrees > 0.0)
+}
+
+/// The sites ringing a refinement region: Ruppert's protected segments.
+fn harp_region_boundary_sites(
+    mesh: &earthmesh_refine_harp_dv::AdaptiveMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+    band_m: f64,
+) -> Vec<usize> {
+    let state = mesh.state();
+    let radius = state.sphere_radius();
+    (earthmesh_mesh::MESH_STATE_FIRST_ID..state.vertices().len())
+        .filter(|&site| {
+            let point = state.vertices()[site];
+            let length = earthmesh_mesh::magnitude(point);
+            if length <= 0.0 {
+                return false;
+            }
+            regions.iter().any(|region| {
+                let earthmesh_mesh::RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } = region
+                else {
+                    return false;
+                };
+                let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+                let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
+                let distance = dot.clamp(-1.0, 1.0).acos() * radius;
+                (distance - *radius_meters).abs() <= band_m
+            })
+        })
+        .collect()
 }
 
 /// Smooth a HARP-DV mesh against the sizes the criteria asked for.
