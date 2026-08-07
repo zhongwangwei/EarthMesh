@@ -66,6 +66,33 @@ Method-C 的嵌套簿记，红绿和 HARP-DV 既用不上也维护不了。
 **HARP-DV 的 `AdaptiveMesh` 已改为包 `MeshState`**，不再包 `TriangularMesh`。这是中立类型
 成立的证明，也是让 HARP-DV 成为并列后端而不是建在某个后端之上的那一步。
 
+## Phase 2a 已完成：球面鲁棒谓词
+
+`earthmesh_mesh::mesh_predicates`。规格 §12 明令拓扑判定不得只靠固定 epsilon，实现的是它
+要求的三段式：
+
+```
+f64 快路 + 严格误差界（Shewchuk 静态过滤）
+  → 行列式离零足够远就直接返回
+  → 否则以双双精度重算同一个行列式
+  → 仍分不开零就返回 Ambiguous，绝不选分支
+```
+
+`orient3d`、`orientation_on_sphere`、`in_circle_on_sphere`。球面上三点的外接圆就是过它们
+那个平面与球面的交，所以"在圆内"即"在该平面背离球心的一侧"——与 `orient3d` 是同一个行列式，
+按三角形自身绕向去读。
+
+**精确为零与无法判定是两个答案，都会返回。** 四点真共面是关于输入的事实；分不开是关于算术
+的事实。`Ambiguous` 刻意不可转成符号：走到这里的调用方必须去做点什么（扰动候选点、扩大
+patch、拒绝事务），而不是靠掷硬币继续。
+
+乘积误差用 Dekker 拆分而不是 `mul_add`：后者只在真正融合时给出同样的答案，而是否融合取决于
+目标平台——一个在两台机器上判得不一样的谓词，正是这个模块要防的东西。
+
+**第二层是被实测触发过的**：2 万个近退化输入（第三点几乎落在前两点连线上）里，快路只settle
+了少数，其余全部走扩展精度并全部决断，零 ambiguous。正确性用一条算术伪造不了的不变量校验
+——**交换行列式两行必须变号**，累加里任何一处符号错都会被它抓到。9 个测试。
+
 ## 还没到位：`earthmesh_refine_method_c/`
 
 这是唯一没动的一格，原因在 `HARP_DV_REUSE_MAP.md`：
@@ -85,7 +112,8 @@ Method-C 的嵌套簿记，红绿和 HARP-DV 既用不上也维护不了。
 ```
 1. 后端中立网格状态                                    ✅ 已完成
 2. earthmesh_refine_method_c 搬出（现在是纯文件移动 + 依赖调整）
-3. HARP-DV Phase 2a/2c/2d：球面谓词、增量 Delaunay、patch
+3. HARP-DV Phase 2a：球面谓词                          ✅ 已完成
+4. HARP-DV Phase 2c/2d：增量 Delaunay、patch
 ```
 
 第 1 步曾是唯一的瓶颈，现已落成，2 与 3 都不再被它堵着。
