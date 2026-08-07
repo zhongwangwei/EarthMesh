@@ -993,12 +993,26 @@ fn refine_with_harp_dv(
     // What it could not do, on the run's own output rather than in a log line
     // nobody reads afterwards.
     if !outcome.unresolved_cells.is_empty() {
+        let refusals = outcome.report.refusals;
         eprintln!(
             "harp_dv: {} cells could not be refined further, and {} adjacent pairs are past the \
              neighbour scale bound; stopped because {:?}",
             outcome.unresolved_cells.len(),
             outcome.report.unbalanced_pairs_remaining,
             outcome.report.stop_reason
+        );
+        // By kind, because the three want different answers: a degree wall
+        // wants site motion, a pentagon wall wants the demand moved off it, and
+        // a ladder that ran out wants another rung.
+        eprintln!(
+            "harp_dv: refusals -- degree {}, pentagon {}, not insertable {}, topology {}, no \
+             improvement {}, unmeasurable {}",
+            refusals.degree,
+            refusals.pentagon,
+            refusals.not_insertable,
+            refusals.topology,
+            refusals.no_improvement,
+            refusals.unmeasurable
         );
     }
 

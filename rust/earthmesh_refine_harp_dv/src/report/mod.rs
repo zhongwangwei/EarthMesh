@@ -16,6 +16,41 @@ pub enum StopReason {
     MinimumScaleReached,
 }
 
+/// Why candidates were turned away, by kind.
+///
+/// A total tells a reader that the run fell short; it does not tell them what
+/// to change. These three want different answers -- a degree wall wants
+/// r-adaptation, a pentagon wall wants the demand moved off it, and a ladder
+/// that ran out wants another rung -- and a run reporting only "33 unresolved"
+/// leaves the choice to guesswork.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RejectionTally {
+    /// A site would have gone past the degree the gridfile carries.
+    pub degree: usize,
+    /// One of the twelve pentagons would have stopped being one.
+    pub pentagon: usize,
+    /// The point could not be inserted at all: duplicate, off-sphere, or a
+    /// cavity that was not a disk.
+    pub not_insertable: usize,
+    /// The change left the surface open or the adjacency wrong.
+    pub topology: usize,
+    /// Legal, and no better than what it replaced.
+    pub no_improvement: usize,
+    /// The neighbourhood could not be read to check it.
+    pub unmeasurable: usize,
+}
+
+impl RejectionTally {
+    pub fn total(&self) -> usize {
+        self.degree
+            + self.pentagon
+            + self.not_insertable
+            + self.topology
+            + self.no_improvement
+            + self.unmeasurable
+    }
+}
+
 /// The run, in the numbers a reader needs to trust it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarpDvRunReport {
@@ -46,6 +81,9 @@ pub struct HarpDvRunReport {
     /// silently serves less than was asked is the failure mode this whole
     /// backend is arranged against.
     pub unresolved_count: usize,
+    /// Every refusal the run made, by kind. One demand can contribute several
+    /// -- the ladder tries every rung before giving up.
+    pub refusals: RejectionTally,
     pub deterministic: bool,
 }
 
@@ -66,6 +104,7 @@ impl HarpDvRunReport {
             balance_transactions_committed: 0,
             unbalanced_pairs_remaining: 0,
             unresolved_count: 0,
+            refusals: RejectionTally::default(),
             deterministic: true,
         }
     }

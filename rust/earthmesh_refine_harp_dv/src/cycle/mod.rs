@@ -30,9 +30,9 @@ use earthmesh_refine::{
 use crate::candidate::CandidatePolicy;
 use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
-use crate::report::{HarpDvRunReport, StopReason};
+use crate::report::{HarpDvRunReport, RejectionTally, StopReason};
 use crate::state::AdaptiveMesh;
-use crate::transaction::{DemandOutcome, HardGates};
+use crate::transaction::{DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
 
 /// What bounds a run, over and above the per-transaction gates.
@@ -449,6 +449,7 @@ pub fn run_cycles(
     let mut committed = 0usize;
     let mut rolled_back = 0usize;
     let mut balanced = 0usize;
+    let mut refusals = RejectionTally::default();
     let mut unresolved_cells = Vec::new();
     let mut cycles = 0u32;
     let mut stop_reason = StopReason::MaximumCyclesReached;
@@ -490,8 +491,22 @@ pub fn run_cycles(
                         balanced += 1;
                     }
                 }
-                DemandOutcome::Unresolved { refusals } => {
-                    rolled_back += refusals.len();
+                DemandOutcome::Unresolved {
+                    refusals: reasons, ..
+                } => {
+                    rolled_back += reasons.len();
+                    for (_, reason) in &reasons {
+                        match reason {
+                            Rejection::DegreeOverBudget { .. } => refusals.degree += 1,
+                            Rejection::ProtectedPentagonDisturbed { .. } => refusals.pentagon += 1,
+                            Rejection::NotInsertable(_) => refusals.not_insertable += 1,
+                            Rejection::SurfaceOpened { .. }
+                            | Rejection::TopologyInvalid { .. }
+                            | Rejection::CouldNotLegalize(_) => refusals.topology += 1,
+                            Rejection::NoImprovement { .. } => refusals.no_improvement += 1,
+                            Rejection::Unmeasurable(_) => refusals.unmeasurable += 1,
+                        }
+                    }
                     unresolved_cells.push(site);
                 }
                 DemandOutcome::NotAttempted(_) => unresolved_cells.push(site),
@@ -528,6 +543,7 @@ pub fn run_cycles(
             transactions_committed: committed,
             transactions_rolled_back: rolled_back,
             balance_transactions_committed: balanced,
+            refusals,
             unbalanced_pairs_remaining,
             unresolved_count: unresolved_cells.len(),
             deterministic: true,

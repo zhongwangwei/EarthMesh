@@ -55,7 +55,7 @@ pub use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
     RefinementCause, RefinementDemand,
 };
-pub use report::{HarpDvRunReport, StopReason};
+pub use report::{HarpDvRunReport, RejectionTally, StopReason};
 pub use state::{AdaptiveMesh, AdaptiveSite, SiteId, SiteIdAllocator, SiteMobility};
 pub use transaction::{
     committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,

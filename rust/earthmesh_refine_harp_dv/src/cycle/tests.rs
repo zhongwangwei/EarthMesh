@@ -445,3 +445,45 @@ fn the_report_separates_balance_from_what_was_asked_for() {
         "balance should be a cost of the refinement, not the whole of it: {report:?}"
     );
 }
+
+/// The refusals are counted by kind, and one kind dominates.
+///
+/// Measured through the CLI at NXP 21, two levels: 786 refusals on the degree
+/// bound against 30 on the pentagons and zero everywhere else. That number is
+/// what says the remaining work is site motion rather than a better candidate
+/// ladder -- candidate generation never failed once.
+///
+/// Asserted as a shape rather than as those figures: that the tally adds up to
+/// what the run rolled back, and that degree is the largest kind. Pinning 786
+/// would make the next person to improve this edit the test first.
+#[test]
+fn the_refusals_are_counted_by_kind() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates::default(),
+        limits(20, 100_000),
+    )
+    .expect("run");
+
+    let refusals = outcome.report.refusals;
+    assert_eq!(
+        refusals.total(),
+        outcome.report.transactions_rolled_back,
+        "every rollback is accounted for by kind: {refusals:?}"
+    );
+    assert!(refusals.total() > 0);
+    assert!(
+        refusals.degree >= refusals.pentagon
+            && refusals.degree >= refusals.not_insertable
+            && refusals.degree >= refusals.topology,
+        "the degree bound is the wall this backend runs into: {refusals:?}"
+    );
+    assert_eq!(
+        refusals.not_insertable, 0,
+        "the ladder always found somewhere legal to try: {refusals:?}"
+    );
+}
