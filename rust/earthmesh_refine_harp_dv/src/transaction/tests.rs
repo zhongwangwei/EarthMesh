@@ -250,3 +250,143 @@ fn a_location_hint_does_not_change_the_outcome() {
         "an out-of-range hint is ignored"
     );
 }
+
+/// A demand nothing can satisfy is unresolved, and the mesh is untouched.
+///
+/// Section 13.4 in one assertion: the last rung of the ladder is not committed
+/// because it is the last. A mesh that kept a point every gate refused cannot
+/// be told apart from a mesh that was refined correctly, which is the whole
+/// class of failure this backend is supposed to avoid.
+#[test]
+fn a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone() {
+    let mut mesh = sphere(6);
+    let before = mesh.state().clone();
+    let before_sites = mesh.sites().len();
+    let gates = HardGates {
+        max_vertex_degree: 5,
+        ..HardGates::default()
+    };
+
+    let outcome = mesh
+        .refine_cell(40, None, CandidatePolicy::default(), gates)
+        .expect("refine");
+    match outcome {
+        DemandOutcome::Unresolved { refusals } => {
+            assert_eq!(refusals.len(), 3, "every rung was tried: {refusals:?}");
+            assert_eq!(
+                refusals
+                    .iter()
+                    .map(|(source, _)| *source)
+                    .collect::<Vec<_>>(),
+                vec![
+                    CandidateSource::FarthestPoint,
+                    CandidateSource::OffCentre,
+                    CandidateSource::LongestEdgeMidpoint,
+                ]
+            );
+        }
+        other => panic!("expected the ladder to run out, got {other:?}"),
+    }
+    assert_eq!(mesh.state(), &before, "and left nothing behind");
+    assert_eq!(mesh.sites().len(), before_sites);
+}
+
+/// A demand the ladder can satisfy stops at the first rung that passes.
+#[test]
+fn refining_a_cell_keeps_the_first_candidate_that_survives() {
+    let mut mesh = sphere(6);
+    let outcome = mesh
+        .refine_cell(40, None, CandidatePolicy::default(), HardGates::default())
+        .expect("refine");
+    match outcome {
+        DemandOutcome::Resolved { source, report } => {
+            assert_eq!(
+                source,
+                CandidateSource::FarthestPoint,
+                "the first rung with no witness"
+            );
+            assert!(report.max_degree_touched <= GRIDFILE_MAX_VERTEX_DEGREE);
+        }
+        other => panic!("expected a commit, got {other:?}"),
+    }
+    assert_eq!(mesh.state().open_edge_count(), 0);
+    mesh.state().validate().expect("still a triangulation");
+}
+
+/// A failed rung is rolled back before the next is tried.
+///
+/// Otherwise the ladder would stack attempts: rung two would be proposed into
+/// a mesh already carrying rung one, and a "first candidate that passes" would
+/// have committed several.
+#[test]
+fn each_rung_is_undone_before_the_next_is_tried() {
+    let mut mesh = sphere(6);
+    let before_triangles = mesh.state().triangle_count();
+    let before_sites = mesh.sites().len();
+
+    // Degree 6 lets some rungs through and refuses others, so at least one
+    // refusal precedes whatever is finally kept somewhere in this sweep.
+    let gates = HardGates {
+        max_vertex_degree: 6,
+        ..HardGates::default()
+    };
+    let mut resolved = 0;
+    for site in [7usize, 40, 120, 300] {
+        if mesh
+            .refine_cell(site, None, CandidatePolicy::default(), gates)
+            .expect("refine")
+            .resolved()
+            .is_some()
+        {
+            resolved += 1;
+        }
+    }
+    assert_eq!(
+        mesh.state().triangle_count(),
+        before_triangles + resolved * 2,
+        "each resolved demand added one site's worth of triangles and no more"
+    );
+    assert_eq!(mesh.sites().len(), before_sites + resolved);
+    assert_eq!(mesh.state().open_edge_count(), 0);
+}
+
+/// A witness the criterion supplied is tried before anything this module made
+/// up.
+#[test]
+fn a_witness_is_tried_first() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    // A point just off the site, inside its own cell: legal, and nothing the
+    // geometric rungs would have produced.
+    let centre = mesh.state().vertices()[site];
+    let neighbour = mesh.state().vertices()[mesh.state().triangles()
+        [mesh.state().triangle_fan(site).expect("fan")[0]]
+        .iter()
+        .copied()
+        .find(|&corner| corner != site)
+        .expect("a neighbour")];
+    let witness = CartesianPoint::new(
+        centre.x * 0.8 + neighbour.x * 0.2,
+        centre.y * 0.8 + neighbour.y * 0.2,
+        centre.z * 0.8 + neighbour.z * 0.2,
+    );
+    let radius = earthmesh_mesh::magnitude(centre);
+    let scale = radius / earthmesh_mesh::magnitude(witness);
+    let witness = CartesianPoint::new(witness.x * scale, witness.y * scale, witness.z * scale);
+
+    let outcome = mesh
+        .refine_cell(
+            site,
+            Some(witness),
+            CandidatePolicy::default(),
+            HardGates::default(),
+        )
+        .expect("refine");
+    match outcome {
+        DemandOutcome::Resolved { source, report } => {
+            assert_eq!(source, CandidateSource::Witness);
+            assert_eq!(mesh.state().vertices()[report.vertex], witness);
+        }
+        other => panic!("expected the witness to be kept, got {other:?}"),
+    }
+}

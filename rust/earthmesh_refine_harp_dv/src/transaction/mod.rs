@@ -32,6 +32,7 @@ use earthmesh_mesh::{
     CartesianPoint, InsertionError, MeshState, VoronoiError, MESH_STATE_FIRST_ID,
 };
 
+use crate::candidate::{candidates_for_site, CandidatePolicy, CandidateSource};
 use crate::error::{HarpDvError, Result};
 use crate::state::{AdaptiveMesh, SiteId};
 
@@ -259,6 +260,68 @@ impl AdaptiveMesh {
                 Ok(Acceptance::RolledBack(rejection))
             }
         }
+    }
+}
+
+/// What became of one demand after the whole ladder was tried.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DemandOutcome {
+    /// A candidate passed, and which rung produced it.
+    Resolved {
+        source: CandidateSource,
+        report: TransactionReport,
+    },
+    /// Every candidate was refused, and why each was.
+    ///
+    /// Specification section 13.4: the last candidate is not committed
+    /// unconditionally. A mesh that kept a point nothing accepted is worse than
+    /// a mesh that did not refine, because the first cannot be told from a mesh
+    /// that was refined correctly.
+    Unresolved {
+        refusals: Vec<(CandidateSource, Rejection)>,
+    },
+    /// The cell could not be read, so no candidate was generated.
+    NotAttempted(VoronoiError),
+}
+
+impl DemandOutcome {
+    pub fn resolved(&self) -> Option<&TransactionReport> {
+        match self {
+            Self::Resolved { report, .. } => Some(report),
+            _ => None,
+        }
+    }
+}
+
+impl AdaptiveMesh {
+    /// Refine one cell: try the ladder, keep the first candidate that passes.
+    ///
+    /// Every attempt that fails is rolled back before the next is tried, so at
+    /// most one of them is ever in the mesh, and none is if they all fail.
+    pub fn refine_cell(
+        &mut self,
+        site: usize,
+        witness: Option<CartesianPoint>,
+        policy: CandidatePolicy,
+        gates: HardGates,
+    ) -> Result<DemandOutcome> {
+        let ladder = match candidates_for_site(self.state(), site, witness, policy) {
+            Ok(ladder) => ladder,
+            Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
+        };
+        let mut refusals = Vec::with_capacity(ladder.len());
+        for candidate in ladder {
+            match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {
+                Acceptance::Committed(report) => {
+                    return Ok(DemandOutcome::Resolved {
+                        source: candidate.source,
+                        report,
+                    })
+                }
+                Acceptance::RolledBack(rejection) => refusals.push((candidate.source, rejection)),
+            }
+        }
+        Ok(DemandOutcome::Unresolved { refusals })
     }
 }
 

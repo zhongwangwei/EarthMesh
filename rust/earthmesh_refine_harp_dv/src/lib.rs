@@ -23,6 +23,7 @@
 //! it would produce something that compiles and cannot work.
 
 pub mod api;
+pub mod candidate;
 pub mod config;
 pub mod error;
 pub mod report;
@@ -35,6 +36,7 @@ pub use error::{HarpDvError, Result};
 // The criteria vocabulary is the refinement layer's, not this backend's. Three
 // backends reading the same evidence is the point; a private copy per backend
 // would be three vocabularies that drift.
+pub use candidate::{Candidate, CandidatePolicy, CandidateSource};
 pub use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
     RefinementCause, RefinementDemand,
@@ -42,7 +44,7 @@ pub use earthmesh_refine::{
 pub use report::{HarpDvRunReport, StopReason};
 pub use state::{AdaptiveMesh, AdaptiveSite, SiteId, SiteIdAllocator, SiteMobility};
 pub use transaction::{
-    committed_site_ids, Acceptance, HardGates, Rejection, TransactionReport,
+    committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,
     GRIDFILE_MAX_VERTEX_DEGREE,
 };
 
