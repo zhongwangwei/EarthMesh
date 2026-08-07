@@ -44,6 +44,28 @@ rust/
 是**同名、异义、分处两个 crate、且没有一句话说明**。现在它们是邻居，`criteria/mod.rs` 顶部
 就是那句说明。
 
+## 地基已经落成：`MeshState`
+
+`earthmesh_mesh::MeshState`（`mesh_state/`）是后端中立的三角剖分：**顶点、三角形、每条边
+对面的三角形**。它**不带** `mrlm`、`mrow`、`ngr`、`impent`、`boundary_rows`——那些是
+Method-C 的嵌套簿记，红绿和 HARP-DV 既用不上也维护不了。
+
+- `from_triangular_mesh` 取 Method-C 网格的中立部分（M 点即 site，W 面的 `im` 即三角形），
+  其余留在原处；
+- 邻接是**导出**的而不是接收的，边由"两端点排序"作键，同一条边从两侧看是同一个键；
+- 构造即校验：越界顶点、退化三角形（角点重复）、非流形边（三个三角形抢一条边）一次全报；
+- `validate` 另查邻接对称性——单向指认的邻接走不动；
+- `open_edge_count` 是闭合性的度量，闭合球面为零。
+
+索引沿用 canonical 一基、0/1 保留。中立类型是个丢掉这条约定的诱人位置，丢掉它只会把 bug
+搬进转换层：这个类型周围每一个读者、写者和测试都从 1 数起。
+
+测试 7 项，含一条 **Euler 校验**（V − E + F = 2）：它保证转换保住的是拓扑，不只是数字。
+基础网格与细化后的网格都通过。
+
+**HARP-DV 的 `AdaptiveMesh` 已改为包 `MeshState`**，不再包 `TriangularMesh`。这是中立类型
+成立的证明，也是让 HARP-DV 成为并列后端而不是建在某个后端之上的那一步。
+
 ## 还没到位：`earthmesh_refine_method_c/`
 
 这是唯一没动的一格，原因在 `HARP_DV_REUSE_MAP.md`：
@@ -61,9 +83,14 @@ rust/
 ## 建议顺序
 
 ```
-1. 后端中立网格状态（HARP-DV Phase 2b 与 Method-C 拆分的共同前提）
-2. earthmesh_refine_method_c 搬出（此时是纯文件移动 + 依赖调整）
+1. 后端中立网格状态                                    ✅ 已完成
+2. earthmesh_refine_method_c 搬出（现在是纯文件移动 + 依赖调整）
 3. HARP-DV Phase 2a/2c/2d：球面谓词、增量 Delaunay、patch
 ```
 
-第 1 步是唯一的瓶颈，两条路线都堵在它后面。
+第 1 步曾是唯一的瓶颈，现已落成，2 与 3 都不再被它堵着。
+
+第 2 步的剩余工作不再是设计而是搬迁：把 54 个 `method_c_*` 模块移入新 crate，把
+`TriangularMesh` 留在 `earthmesh_mesh` 还是随之搬走做一次决定（它是 Method-C 的类型，但
+`earthmesh_cli` 与 `earthmesh_refine_redgreen` 都直接消费它），再逐个修依赖。这是一次大的
+机械改动，值得单独一刀，且要求 CLI 与 GUI 的门禁全绿。

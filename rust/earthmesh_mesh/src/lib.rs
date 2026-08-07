@@ -79,6 +79,7 @@ mod mesh_cell_vertex_shared_edges;
 pub use mesh_cell_vertex_shared_edges::order_vertices_on_cell_by_shared_edges_one_based;
 mod mesh_cell_vertex_ordering;
 pub use mesh_cell_vertex_ordering::order_vertices_on_cell_one_based;
+mod mesh_state;
 mod mesh_triangle_topology;
 pub use mesh_triangle_topology::{
     cells_on_edge_from_neighbor_cells, is_ngrmm, triangle_neighbors_from_cell_membership_one_based,
@@ -275,6 +276,7 @@ pub use voronoi_pcvt::pcvt_adjust_voronoi_grid_state;
 mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
 mod method_c_mesh;
+pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
 pub use method_c_mesh::TriangularMesh;
 mod method_c_mesh_gridfile;
 pub use method_c_mesh_gridfile::MethodCGridfileMetadata;

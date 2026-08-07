@@ -115,7 +115,7 @@ fn site_ids_are_monotonic_and_never_reissued() {
 fn wrapping_a_mesh_gives_every_site_an_identity() {
     let mesh = base_mesh();
     let expected = mesh.nmd - 1;
-    let adaptive = AdaptiveMesh::from_triangular_mesh(mesh).expect("wrap");
+    let adaptive = AdaptiveMesh::from_triangular_mesh(&mesh).expect("wrap");
 
     assert_eq!(
         adaptive.sites().len(),
@@ -140,14 +140,32 @@ fn wrapping_a_mesh_gives_every_site_an_identity() {
     }
 }
 
-/// A mesh with no sites is refused rather than wrapped into an empty run.
+/// A mesh with no triangulation in it is refused rather than wrapped.
 #[test]
 fn a_mesh_with_no_sites_is_refused() {
     let mut mesh = base_mesh();
     mesh.nmd = 1;
-    let error = AdaptiveMesh::from_triangular_mesh(mesh)
+    let error = AdaptiveMesh::from_triangular_mesh(&mesh)
         .expect_err("a mesh with no sites carries nothing to adapt");
-    assert!(error.to_string().contains("no sites"), "{error}");
+    assert!(error.to_string().contains("no triangulation"), "{error}");
+}
+
+/// The wrapper takes the triangulation and leaves Method-C's bookkeeping.
+///
+/// This is what makes HARP-DV a sibling of the other backends rather than
+/// something built on one of them.
+#[test]
+fn wrapping_keeps_the_triangulation_and_drops_the_generations() {
+    let mesh = base_mesh();
+    let adaptive = AdaptiveMesh::from_triangular_mesh(&mesh).expect("wrap");
+    let state = adaptive.state();
+    assert_eq!(state.vertex_count(), mesh.nmd - 1);
+    assert_eq!(state.triangle_count(), mesh.nwd - 1);
+    assert_eq!(
+        state.open_edge_count(),
+        0,
+        "the triangulation still closes after the generations are dropped"
+    );
 }
 
 /// Phase 1's contract: nothing asked for, nothing changed, and it says so.
@@ -156,7 +174,7 @@ fn a_request_with_nothing_to_do_returns_the_mesh_it_was_given() {
     let mesh = base_mesh();
     let faces_before = mesh.nwd;
     let points_before = mesh.nmd;
-    let adaptive = AdaptiveMesh::from_triangular_mesh(mesh).expect("wrap");
+    let adaptive = AdaptiveMesh::from_triangular_mesh(&mesh).expect("wrap");
     let sites_before = adaptive.active_site_count();
 
     let outcome = refine_harp_dv(
@@ -179,16 +197,20 @@ fn a_request_with_nothing_to_do_returns_the_mesh_it_was_given() {
         HarpDvRunReport::SCHEMA_VERSION
     );
 
-    let returned = outcome.mesh.into_triangular_mesh();
-    assert_eq!(returned.nwd, faces_before, "the mesh came back untouched");
-    assert_eq!(returned.nmd, points_before);
+    let returned = outcome.mesh.into_state();
+    assert_eq!(
+        returned.triangle_count(),
+        faces_before - 1,
+        "the mesh came back untouched"
+    );
+    assert_eq!(returned.vertex_count(), points_before - 1);
 }
 
 /// The same request twice gives the same answer twice.
 #[test]
 fn two_identical_empty_runs_agree() {
     let run = || {
-        let adaptive = AdaptiveMesh::from_triangular_mesh(base_mesh()).expect("wrap");
+        let adaptive = AdaptiveMesh::from_triangular_mesh(&base_mesh()).expect("wrap");
         refine_harp_dv(
             adaptive,
             &HarpDvRequest {
@@ -210,7 +232,7 @@ fn two_identical_empty_runs_agree() {
 /// An invalid config is refused before any work, not partway through.
 #[test]
 fn a_run_validates_its_config_before_touching_the_mesh() {
-    let adaptive = AdaptiveMesh::from_triangular_mesh(base_mesh()).expect("wrap");
+    let adaptive = AdaptiveMesh::from_triangular_mesh(&base_mesh()).expect("wrap");
     let error = refine_harp_dv(
         adaptive,
         &HarpDvRequest {

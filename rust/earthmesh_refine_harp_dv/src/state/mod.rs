@@ -4,7 +4,7 @@ mod id_allocator;
 
 pub use id_allocator::SiteIdAllocator;
 
-use earthmesh_mesh::{xyz_to_lonlat_degrees, LonLatDegrees, TriangularMesh};
+use earthmesh_mesh::{xyz_to_lonlat_degrees, LonLatDegrees, MeshState, MESH_STATE_FIRST_ID};
 
 use crate::error::{HarpDvError, Result};
 
@@ -66,53 +66,70 @@ impl AdaptiveSite {
 
 /// The mesh HARP-DV adapts, with a stable identity for every site.
 ///
-/// Wraps `TriangularMesh` because that is the only mesh type the repository
-/// has. It is also Method-C's own type -- `mrow`, `ngr` and `mrlw` are its
-/// transition rows and generations -- so this wrapper is where a
-/// backend-neutral mesh state belongs once one exists. That type is the same
-/// one splitting Method-C into its own crate needs, and
-/// `docs/HARP_DV_REUSE_MAP.md` records why the two are one job.
+/// Wraps `MeshState`, the backend-neutral triangulation, rather than
+/// `TriangularMesh`. That matters more than it looks: `TriangularMesh` is
+/// Method-C's own type, and a backend built on it inherits generations,
+/// transition rows and grid numbers it has no use for and cannot maintain.
+/// What HARP-DV needs is sites, triangles and adjacency, which is what this
+/// carries.
 #[derive(Clone, Debug)]
 pub struct AdaptiveMesh {
-    mesh: TriangularMesh,
+    state: MeshState,
     sites: Vec<AdaptiveSite>,
     allocator: SiteIdAllocator,
     cycles_completed: u32,
 }
 
 impl AdaptiveMesh {
-    /// Take a mesh and give every one of its M points a stable id.
-    ///
-    /// M points are the Voronoi sites: the polygon centres the dual is built
-    /// around. Slots 0 and 1 are the canonical placeholders and are not sites,
-    /// so ids start at the first real point.
-    pub fn from_triangular_mesh(mesh: TriangularMesh) -> Result<Self> {
-        if mesh.nmd < 2 {
-            return Err(HarpDvError::InvalidMesh(format!(
-                "a mesh with {} M points carries no sites to adapt",
-                mesh.nmd
-            )));
+    /// Take a neutral triangulation and give every site a stable id.
+    pub fn from_mesh_state(state: MeshState) -> Result<Self> {
+        if state.vertex_count() == 0 {
+            return Err(HarpDvError::InvalidMesh(
+                "a triangulation with no sites carries nothing to adapt".to_string(),
+            ));
         }
+        state.validate().map_err(|errors| {
+            HarpDvError::InvalidMesh(format!(
+                "the triangulation does not hold together: {}",
+                errors
+                    .iter()
+                    .take(4)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ))
+        })?;
         let mut allocator = SiteIdAllocator::default();
-        let mut sites = Vec::with_capacity(mesh.nmd.saturating_sub(1));
-        for im in 2..=mesh.nmd {
-            let position = xyz_to_lonlat_degrees(mesh.m_points[im]);
+        let mut sites = Vec::with_capacity(state.vertex_count());
+        for vertex in MESH_STATE_FIRST_ID..state.vertices().len() {
+            let position = xyz_to_lonlat_degrees(state.vertices()[vertex]);
             sites.push(AdaptiveSite::inherited(allocator.allocate(), position));
         }
         Ok(Self {
-            mesh,
+            state,
             sites,
             allocator,
             cycles_completed: 0,
         })
     }
 
-    pub fn triangular_mesh(&self) -> &TriangularMesh {
-        &self.mesh
+    /// Take the neutral part of a Method-C mesh and adapt that.
+    ///
+    /// A convenience over `from_mesh_state`, because a Method-C mesh is what
+    /// the rest of the engine produces today. What arrives here is the
+    /// triangulation; the generations stay behind.
+    pub fn from_triangular_mesh(mesh: &earthmesh_mesh::TriangularMesh) -> Result<Self> {
+        let state = MeshState::from_triangular_mesh(mesh)
+            .map_err(|error| HarpDvError::InvalidMesh(error.to_string()))?;
+        Self::from_mesh_state(state)
     }
 
-    pub fn into_triangular_mesh(self) -> TriangularMesh {
-        self.mesh
+    pub fn state(&self) -> &MeshState {
+        &self.state
+    }
+
+    pub fn into_state(self) -> MeshState {
+        self.state
     }
 
     pub fn sites(&self) -> &[AdaptiveSite] {
