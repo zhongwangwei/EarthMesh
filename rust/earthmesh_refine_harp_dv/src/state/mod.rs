@@ -83,6 +83,13 @@ impl AdaptiveSite {
 #[derive(Clone, Debug)]
 pub struct AdaptiveMesh {
     state: MeshState,
+    /// The twelve pentagon ids of the mesh this one descends from.
+    ///
+    /// Carried rather than derived: a refined mesh has more than twelve
+    /// degree-5 sites, and site ids never move, so these keep naming the same
+    /// twelve however much refining happens. Without them a run cannot be
+    /// written out at all.
+    impent: [usize; 12],
     sites: Vec<AdaptiveSite>,
     allocator: SiteIdAllocator,
     cycles_completed: u32,
@@ -115,6 +122,7 @@ impl AdaptiveMesh {
         }
         Ok(Self {
             state,
+            impent: [MESH_STATE_FIRST_ID; 12],
             sites,
             allocator,
             cycles_completed: 0,
@@ -129,7 +137,36 @@ impl AdaptiveMesh {
     pub fn from_triangular_mesh(mesh: &earthmesh_mesh::TriangularMesh) -> Result<Self> {
         let state = MeshState::from_triangular_mesh(mesh)
             .map_err(|error| HarpDvError::InvalidMesh(error.to_string()))?;
-        Self::from_mesh_state(state)
+        let mut adaptive = Self::from_mesh_state(state)?;
+        adaptive.impent = mesh.impent;
+        Ok(adaptive)
+    }
+
+    /// The twelve pentagons, for whatever writes this mesh out.
+    pub fn pentagon_ids(&self) -> [usize; 12] {
+        self.impent
+    }
+
+    /// The three-table mesh the gridfile writers consume.
+    ///
+    /// The generation carried per face is the depth of the site that made it,
+    /// so a reader can tell an original face from one adaptation produced.
+    pub fn to_triangular_mesh(&self) -> Result<earthmesh_mesh::TriangularMesh> {
+        let mut levels = vec![1usize; self.state.triangles().len()];
+        for (triangle, level) in levels.iter_mut().enumerate().skip(MESH_STATE_FIRST_ID) {
+            *level = self.state.triangles()[triangle]
+                .iter()
+                .filter_map(|&corner| {
+                    self.sites
+                        .get(corner.checked_sub(MESH_STATE_FIRST_ID)?)
+                        .map(|site| usize::from(site.depth) + 1)
+                })
+                .max()
+                .unwrap_or(1);
+        }
+        self.state
+            .to_triangular_mesh(self.impent, Some(&levels))
+            .map_err(HarpDvError::Io)
     }
 
     /// The triangulation, to change.

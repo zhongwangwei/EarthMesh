@@ -101,6 +101,7 @@ mod mesh_insertion;
 mod mesh_patch;
 mod mesh_predicates;
 mod mesh_state;
+mod mesh_tables;
 mod mesh_triangle_topology;
 mod mesh_voronoi;
 pub use mesh_triangle_topology::{

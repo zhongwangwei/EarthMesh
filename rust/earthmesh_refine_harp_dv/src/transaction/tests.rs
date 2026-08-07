@@ -87,6 +87,13 @@ fn a_refusal_says_which_site_and_by_how_much() {
                     assert!(*site >= MESH_STATE_FIRST_ID);
                     assert!(degree > budget, "{degree} is not over {budget}");
                 }
+                // The twelve pentagons have to stay pentagons, so a candidate
+                // beside one is refused for that instead of for the general
+                // degree bound.
+                Rejection::ProtectedPentagonDisturbed { site, degree } => {
+                    assert!(*site >= MESH_STATE_FIRST_ID);
+                    assert_ne!(*degree, 5);
+                }
                 other => panic!("unexpected refusal: {other}"),
             }
         }
@@ -300,11 +307,10 @@ fn refining_a_cell_keeps_the_first_candidate_that_survives() {
         .expect("refine");
     match outcome {
         DemandOutcome::Resolved { source, report } => {
-            assert_eq!(
-                source,
-                CandidateSource::FarthestPoint,
-                "the first rung with no witness"
-            );
+            // Not necessarily the first rung: this cell's farthest corner sits
+            // beside a pentagon, and a pentagon has to stay one. Which rung
+            // wins is the ladder doing its job; that a rung won is the claim.
+            assert_ne!(source, CandidateSource::Witness, "none was supplied");
             assert!(report.max_degree_touched <= GRIDFILE_MAX_VERTEX_DEGREE);
         }
         other => panic!("expected a commit, got {other:?}"),

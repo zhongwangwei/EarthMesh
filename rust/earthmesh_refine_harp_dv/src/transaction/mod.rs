@@ -79,6 +79,8 @@ pub enum Rejection {
     Unmeasurable(VoronoiError),
     /// The mesh could not be walked back to Delaunay after the move.
     CouldNotLegalize(String),
+    /// One of the twelve pentagons stopped being a pentagon.
+    ProtectedPentagonDisturbed { site: usize, degree: usize },
     /// Legal, and no better than what it replaced.
     ///
     /// Section 13.3. A move that passes every hard gate and improves nothing
@@ -112,6 +114,11 @@ impl std::fmt::Display for Rejection {
             Self::Unmeasurable(error) => {
                 write!(formatter, "the neighbourhood could not be checked: {error}")
             }
+            Self::ProtectedPentagonDisturbed { site, degree } => write!(
+                formatter,
+                "site {site} is one of the twelve pentagons and would have degree {degree}; the \
+                 gridfile rebuild refuses a protected pentagon that is not degree five"
+            ),
             Self::NoImprovement { site } => write!(
                 formatter,
                 "the change at site {site} was legal and no better than what it replaced"
@@ -168,6 +175,7 @@ fn check(
     state: &MeshState,
     touched: &BTreeSet<usize>,
     gates: HardGates,
+    pentagons: &[usize; 12],
 ) -> std::result::Result<usize, Rejection> {
     // The region, not the mesh: the changed triangles plus the ring around
     // them. Everything else was closed and valid before and was not touched.
@@ -197,6 +205,15 @@ fn check(
         let degree = state
             .vertex_degree_from(site, seed)
             .map_err(Rejection::Unmeasurable)?;
+        // The twelve pentagons have to stay pentagons. Found by integration
+        // rather than from the design docs: the rebuild that produces the
+        // three tables refuses a protected pentagon whose degree has moved,
+        // and one insertion beside one is enough to move it to seven. Cheaper
+        // to refuse the transaction than to discover at the writer that a
+        // whole run cannot be written.
+        if pentagons.contains(&site) && degree != 5 {
+            return Err(Rejection::ProtectedPentagonDisturbed { site, degree });
+        }
         if degree > gates.max_vertex_degree {
             return Err(Rejection::DegreeOverBudget {
                 site,
@@ -258,7 +275,8 @@ impl AdaptiveMesh {
         };
         let touched: BTreeSet<usize> = report.created.iter().copied().collect();
 
-        match check(self.state(), &touched, gates) {
+        let pentagons = self.pentagon_ids();
+        match check(self.state(), &touched, gates, &pentagons) {
             Ok(max_degree_touched) => {
                 let site_id = self.adopt_inserted_site(report.site);
                 Ok(Acceptance::Committed(TransactionReport {
@@ -338,7 +356,8 @@ impl AdaptiveMesh {
             }
         };
 
-        let verdict = match check(self.state(), &touched, gates) {
+        let pentagons = self.pentagon_ids();
+        let verdict = match check(self.state(), &touched, gates, &pentagons) {
             Ok(max_degree_touched) if improves(self.state()) => Ok(max_degree_touched),
             Ok(_) => Err(Rejection::NoImprovement { site }),
             Err(rejection) => Err(rejection),

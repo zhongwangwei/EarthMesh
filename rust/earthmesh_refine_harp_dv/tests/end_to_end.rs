@@ -132,3 +132,61 @@ fn a_run_with_no_criteria_returns_the_mesh_it_was_given() {
     assert_eq!(outcome.report.transactions_attempted, 0);
     assert_eq!(outcome.mesh.state(), &before);
 }
+
+/// A run's mesh reaches the gridfile writers.
+///
+/// The question integration was meant to answer, and it is not one the unit
+/// tests could: everything above works on `MeshState`, and the writers want the
+/// three tables -- sites, edges with ids, faces with incidence and a generation
+/// per row. A backend that cannot produce those has produced nothing anyone can
+/// use.
+#[test]
+fn a_refined_run_converts_to_the_tables_the_writers_consume() {
+    let mesh = base();
+    let coarsest = coarsest_scale(&mesh);
+    let criteria: Vec<Box<dyn CellCriterion>> = vec![Box::new(TargetScale {
+        id: "regional-target".to_string(),
+        target_scale_m: coarsest * 0.7,
+        region: TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 2_500_000.0,
+        },
+        source_resolution_m: None,
+    })];
+
+    let outcome = refine_harp_dv(
+        mesh,
+        &HarpDvRequest {
+            config: HarpDvConfig::default(),
+            criteria: &criteria,
+            candidate_policy: CandidatePolicy::default(),
+            gates: HardGates::default(),
+        },
+    )
+    .expect("run");
+    assert!(outcome.report.transactions_committed > 0);
+
+    let tables = outcome.mesh.to_triangular_mesh().expect("three tables");
+    tables.validate_topology().expect("the writers' invariants");
+    assert_eq!(tables.nmd, outcome.mesh.state().vertex_count() + 1);
+    assert_eq!(tables.nwd, outcome.mesh.state().triangle_count() + 1);
+
+    // And on to the Voronoi state the gridfile writers actually take.
+    let grid = earthmesh_mesh::voronoi_grid_from_triangular_mesh(
+        &tables,
+        earthmesh_core::EARTH_RADIUS_METERS,
+    )
+    .expect("voronoi grid state");
+    assert_eq!(grid.grid.nwa, tables.nmd, "one Voronoi cell per site");
+    assert_eq!(grid.grid.nma, tables.nwd, "one Voronoi corner per face");
+    assert_eq!(grid.impent, outcome.mesh.pentagon_ids());
+
+    // Faces adaptation produced carry a later generation than the ones that
+    // came in, which is what a reader tells them apart by.
+    let generations: std::collections::BTreeSet<usize> =
+        (2..=tables.nwd).map(|iw| tables.w_faces[iw].mrlw).collect();
+    assert!(
+        generations.len() > 1,
+        "every face claims the same generation: {generations:?}"
+    );
+}
