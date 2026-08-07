@@ -265,6 +265,30 @@ impl MeshState {
         self.triangles.len() - 1
     }
 
+    /// Drop everything above these lengths.
+    ///
+    /// Truncation rather than deletion: ids below the cut keep their meaning,
+    /// which is the whole reason a rollback does not renumber the mesh.
+    pub(crate) fn truncate_to(&mut self, vertices: usize, triangles: usize) {
+        self.vertices.truncate(vertices);
+        self.triangles.truncate(triangles);
+        self.neighbours.truncate(triangles);
+    }
+
+    /// Write back one triangle's corners and adjacency together.
+    ///
+    /// Only a restore has both in hand and knows they are consistent; every
+    /// other caller writes corners and then owes the adjacency a repair.
+    pub(crate) fn restore_row(
+        &mut self,
+        triangle: usize,
+        corners: [usize; 3],
+        neighbours: [usize; 3],
+    ) {
+        self.triangles[triangle] = corners;
+        self.neighbours[triangle] = neighbours;
+    }
+
     /// Rebuild adjacency across exactly the given triangles.
     ///
     /// The set has to be supplied rather than grown from `self.neighbours`,

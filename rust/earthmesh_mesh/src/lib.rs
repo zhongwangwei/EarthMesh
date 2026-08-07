@@ -80,9 +80,11 @@ pub use mesh_cell_vertex_shared_edges::order_vertices_on_cell_by_shared_edges_on
 mod mesh_cell_vertex_ordering;
 pub use mesh_cell_vertex_ordering::order_vertices_on_cell_one_based;
 mod mesh_insertion;
+mod mesh_patch;
 mod mesh_predicates;
 mod mesh_state;
 mod mesh_triangle_topology;
+mod mesh_voronoi;
 pub use mesh_triangle_topology::{
     cells_on_edge_from_neighbor_cells, is_ngrmm, triangle_neighbors_from_cell_membership_one_based,
 };
@@ -279,8 +281,10 @@ mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
 mod method_c_mesh;
 pub use mesh_insertion::{InsertionError, InsertionReport};
+pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
 pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
+pub use mesh_voronoi::{VoronoiCell, VoronoiError};
 pub use method_c_mesh::TriangularMesh;
 mod method_c_mesh_gridfile;
 pub use method_c_mesh_gridfile::MethodCGridfileMetadata;
