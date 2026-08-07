@@ -116,9 +116,42 @@ patch、拒绝事务），而不是靠掷硬币继续。
 4. HARP-DV Phase 2c/2d：增量 Delaunay、patch
 ```
 
-第 1 步曾是唯一的瓶颈，现已落成，2 与 3 都不再被它堵着。
+第 1 步曾是唯一的瓶颈，现已落成，3 与 4 都不再被它堵着。
 
-第 2 步的剩余工作不再是设计而是搬迁：把 54 个 `method_c_*` 模块移入新 crate，把
-`TriangularMesh` 留在 `earthmesh_mesh` 还是随之搬走做一次决定（它是 Method-C 的类型，但
-`earthmesh_cli` 与 `earthmesh_refine_redgreen` 都直接消费它），再逐个修依赖。这是一次大的
-机械改动，值得单独一刀，且要求 CLI 与 GUI 的门禁全绿。
+## 第 2 步不是文件移动（2026-08-07 更正）
+
+上面那句「剩余工作不再是设计而是搬迁」是错的，写它的时候没有量。量过之后：
+
+**阻碍是孤儿规则，不是模块数。** Method-C 是 `TriangularMesh` 上 33 个 `impl` 块里的 97 个
+方法。Rust 不允许在别的 crate 里给外来类型写固有 impl，所以在这些方法挂到一个 Method-C
+自己拥有的类型上之前，搬文件搬不动任何东西。
+
+**`TriangularMesh` 不是 Method-C 的类型。** 这一点也量反了。看起来私有的字段里，`mrlm`、
+`mrlm_orig`、`ngr` 在 nesting 模块之外只被读一次——`voronoi_grid` 填 `ItabW`，因为 gridfile
+本身带这三个字段；两个 lineage 在外面一次都没被读。真正只属于 Method-C 的字段只有
+`boundary_rows`（mrow 过渡行），写它的只有 `method_c_perimeter_mrows`，生产代码里读它的只有
+CLI 的一个计数。所以类型留在 `earthmesh_mesh`，Method-C 需要的是一个包住它的自有类型。
+
+**`method_c_` 前缀不等于归属。** 92 个方法按 Method-C 词汇（thirdm / rad3 / mrow / perim /
+nest / spawn）扫描，21 个一个词都不含，其中包括 `spring_global` 与
+`spring_global_with_controls`——而中性的 `from_icosahedron` 直接调用后者。所以拆分要逐方法
+判断，不能按目录名批处理。
+
+**外部调用面很小。** `method_c_*` 之外的生产代码只调到 18 个方法名：11 个 `spawn_nest*`
+重载加 `boundary_rows` 是 Method-C 的，其余 6 个（`from_icosahedron`、`from_relaxed_icosahedron`、
+`from_voronoi_gridfile_tables_with_metadata`、`from_cart_hex`、`validate_topology`、
+`expand_by_factor`、两个 lineage 访问器）是任何后端都要的。
+
+### 修正后的顺序
+
+```
+2a. TriangularMesh 移出 method_c_mesh/，进 primal_dual_mesh/     ✅ 已完成
+2b. 逐方法划分 92 个方法：通用的留下，Method-C 的归拢
+2c. 新建 MethodCMesh 包住 primal-dual 网格，boundary_rows 挪进去，
+    33 个 impl 块改挂 MethodCMesh（Deref 让字段访问不用逐处改写）
+2d. 把 method_c_* 模块与 MethodCMesh 一起移入 earthmesh_refine_method_c，
+    pub(crate) 提升为 pub，修 CLI / project / GUI 的依赖
+```
+
+2c 是唯一有真实风险的一刀，也是唯一必须一次做完的：33 个 impl 块换宿主之后，中间状态编译
+不过。CLI 与 GUI 的门禁必须全绿。
