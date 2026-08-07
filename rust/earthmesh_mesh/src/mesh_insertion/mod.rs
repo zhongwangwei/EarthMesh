@@ -22,6 +22,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::coordinates::magnitude;
 use crate::mesh_predicates::{in_circle_on_sphere, orientation_on_sphere, Ambiguous, Sign};
 use crate::mesh_state::{MeshState, MESH_STATE_FIRST_ID};
 use crate::CartesianPoint;
@@ -198,12 +199,20 @@ impl MeshState {
         &mut self,
         point: CartesianPoint,
     ) -> Result<InsertionReport, InsertionError> {
+        let containing = self.locate_triangle(point, None)?;
+
         // A point off the sphere is the one bad input that does not announce
         // itself: it locates, it carves a cavity, it closes, and the mesh it
         // leaves is not Delaunay. Loose tolerance, because this is catching a
         // wrong unit rather than policing a projection.
-        let mesh_radius = self.sphere_radius();
-        let candidate_radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+        //
+        // Measured against a corner of the triangle the point landed in, not
+        // against the mesh's mean radius. Local for the same reason everything
+        // else here is -- `sphere_radius` walks every site, which makes one
+        // insertion cost the whole mesh -- and nearer the question anyway on a
+        // relaxed mesh, whose sites are not all at one radius.
+        let mesh_radius = magnitude(self.vertices()[self.triangles()[containing][0]]);
+        let candidate_radius = magnitude(point);
         if mesh_radius > 0.0 && ((candidate_radius - mesh_radius).abs() / mesh_radius) > 1.0e-3 {
             return Err(InsertionError::OffSphere {
                 candidate_radius,
@@ -211,7 +220,6 @@ impl MeshState {
             });
         }
 
-        let containing = self.locate_triangle(point, None)?;
         for corner in self.triangles()[containing] {
             if self.vertices()[corner] == point {
                 return Err(InsertionError::Duplicate { existing: corner });

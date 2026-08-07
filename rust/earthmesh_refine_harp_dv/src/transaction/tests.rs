@@ -190,3 +190,63 @@ fn a_candidate_off_the_sphere_is_refused() {
     }
     assert_eq!(mesh.sites().len(), mesh.state().vertex_count());
 }
+
+/// A proposal reads a neighbourhood, not a mesh.
+///
+/// The property behind the cost measurement in `propose_site_near`'s docs, and
+/// checkable without a clock: every gate is run over the triangles the change
+/// touched and the ring around them. When this held only by accident the
+/// gates called `open_edge_count` and `validate`, which walk everything, and
+/// one proposal into a 737k-triangle mesh cost 3 milliseconds instead of 275
+/// microseconds -- growth that is invisible on any fixture small enough to be
+/// a unit test.
+///
+/// Checked by counting how much of the mesh a proposal can see: the same
+/// proposal into a mesh sixty-four times larger must not read sixty-four times
+/// as much. Approximated by the triangles it reports touching, which is what
+/// every gate is handed.
+#[test]
+fn a_proposal_touches_a_neighbourhood_whatever_the_mesh_size() {
+    let mut touched = Vec::new();
+    for nxp in [6usize, 24, 48] {
+        let mut mesh = sphere(nxp);
+        let radius = mesh.state().sphere_radius();
+        let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(41.0, 19.0));
+        let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
+        let outcome = mesh
+            .propose_site(point, HardGates::default())
+            .expect("propose");
+        let report = outcome.committed().expect("this one passes");
+        touched.push(report.triangles_created + report.triangles_removed);
+    }
+    let largest = *touched.iter().max().expect("measured");
+    assert!(
+        largest <= 16,
+        "a proposal touched {largest} triangles; a Delaunay cavity is a handful whatever the \
+         mesh, so this is a gate reading past the change: {touched:?}"
+    );
+}
+
+/// A hint changes what the walk costs, not what it finds.
+#[test]
+fn a_location_hint_does_not_change_the_outcome() {
+    let build = |hint: Option<usize>| {
+        let mut mesh = sphere(12);
+        let radius = mesh.state().sphere_radius();
+        for (lon, lat) in candidates(12) {
+            let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat));
+            let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
+            mesh.propose_site_near(point, hint, HardGates::default())
+                .expect("propose");
+        }
+        mesh.state().clone()
+    };
+    let without = build(None);
+    assert_eq!(build(Some(MESH_STATE_FIRST_ID)), without);
+    assert_eq!(build(Some(200)), without);
+    assert_eq!(
+        build(Some(usize::MAX)),
+        without,
+        "an out-of-range hint is ignored"
+    );
+}

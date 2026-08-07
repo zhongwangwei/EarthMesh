@@ -175,6 +175,15 @@ impl MeshState {
         self.triangle_fan_from(site, seed)
     }
 
+    /// How many triangles meet at a site, starting from one that touches it.
+    ///
+    /// The seed is what makes this local. [`Self::vertex_degree`] has to scan
+    /// for one, which is linear in the mesh -- affordable once, and quadratic
+    /// for a caller measuring a neighbourhood per change.
+    pub fn vertex_degree_from(&self, site: usize, seed: usize) -> Result<usize, VoronoiError> {
+        self.triangle_fan_from(site, seed).map(|fan| fan.len())
+    }
+
     /// How many triangles meet at a site, which is how many neighbours it has.
     ///
     /// The gridfile carries seven and no more -- `ItabW`'s rows are `[i32; 7]`

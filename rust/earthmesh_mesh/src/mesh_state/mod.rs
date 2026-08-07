@@ -356,6 +356,76 @@ impl MeshState {
         total / count as f64
     }
 
+    /// Edges with nothing across them, among these triangles only.
+    ///
+    /// What a local change can afford. [`Self::open_edge_count`] answers for
+    /// the mesh, which costs the mesh -- and a change that touched nine
+    /// triangles paying for a million is the shape that makes a per-change
+    /// gate quadratic over a run.
+    ///
+    /// Sound for a local change on a surface that was closed: everything
+    /// outside the region was closed before and was not touched, so the region
+    /// and the ring around it are where an opening could be.
+    pub fn open_edges_in(&self, region: &std::collections::BTreeSet<usize>) -> usize {
+        region
+            .iter()
+            .filter(|&&triangle| triangle >= MESH_STATE_FIRST_ID && triangle < self.triangles.len())
+            .map(|&triangle| {
+                self.neighbours[triangle]
+                    .iter()
+                    .filter(|&&neighbour| neighbour == 0)
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Check the invariants over these triangles only.
+    ///
+    /// Same reasoning as [`Self::open_edges_in`], and the same soundness
+    /// condition: it says nothing about a mesh that was already broken outside
+    /// the region.
+    pub fn validate_region(
+        &self,
+        region: &std::collections::BTreeSet<usize>,
+    ) -> Result<(), Vec<MeshStateError>> {
+        let mut errors = Vec::new();
+        for &triangle in region {
+            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles.len() {
+                continue;
+            }
+            let corners = self.triangles[triangle];
+            for &corner in &corners {
+                if corner >= self.vertices.len() {
+                    errors.push(MeshStateError::UnknownVertex {
+                        triangle,
+                        vertex: corner,
+                    });
+                }
+            }
+            if corners[0] == corners[1] || corners[1] == corners[2] || corners[0] == corners[2] {
+                errors.push(MeshStateError::DegenerateTriangle { triangle, corners });
+            }
+            for &neighbour in &self.neighbours[triangle] {
+                if neighbour == 0 {
+                    continue;
+                }
+                if neighbour >= self.triangles.len()
+                    || !self.neighbours[neighbour].contains(&triangle)
+                {
+                    errors.push(MeshStateError::AsymmetricNeighbour {
+                        triangle,
+                        neighbour,
+                    });
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
     /// Check the invariants a consumer is entitled to assume.
     ///
     /// Adjacency is derived rather than supplied, so what this adds over
