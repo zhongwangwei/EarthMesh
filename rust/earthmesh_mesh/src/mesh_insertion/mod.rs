@@ -193,6 +193,65 @@ impl MeshState {
         }
         Ok(cavity)
     }
+}
+
+/// What inserting a point would do to the degrees around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DegreeForecast {
+    /// The degree the new site would have: the size of the cavity ring.
+    pub new_site: usize,
+    /// The largest degree any existing site would end with.
+    pub worst_neighbour: usize,
+}
+
+impl MeshState {
+    /// Predict the degrees an insertion would leave, without performing it.
+    ///
+    /// Cheap and exact rather than a heuristic. Bowyer-Watson fans the cavity
+    /// ring to the new point, so every site on that ring gains exactly one
+    /// neighbour and nothing else changes -- the new site's own degree is the
+    /// ring size. Both are known once the cavity is known, which is before
+    /// anything is written.
+    ///
+    /// This is what lets a caller *choose* where to insert on degree grounds.
+    /// Four attempts at fixing degree after the fact are recorded in guide
+    /// sections 11.9 and 11.15, all negative, and they share a cause: degree
+    /// distribution belongs to the Delaunay triangulation of the point set, so
+    /// the only lever is which points there are.
+    pub fn forecast_degrees(
+        &self,
+        point: CartesianPoint,
+        hint: Option<usize>,
+    ) -> Result<DegreeForecast, InsertionError> {
+        let containing = self.locate_triangle(point, hint)?;
+        let cavity = self.delaunay_cavity(point, containing)?;
+        let mut ring: BTreeSet<usize> = BTreeSet::new();
+        let mut ring_edges = 0usize;
+        for &triangle in &cavity {
+            let corners = self.triangles()[triangle];
+            for corner in 0..3 {
+                let neighbour = self.neighbours()[triangle][corner];
+                if neighbour != 0 && cavity.contains(&neighbour) {
+                    continue;
+                }
+                ring_edges += 1;
+                ring.insert(corners[(corner + 1) % 3]);
+                ring.insert(corners[(corner + 2) % 3]);
+            }
+        }
+        let mut worst = 0usize;
+        for &site in &ring {
+            // Every ring site gains exactly one neighbour: the new one.
+            let degree = self
+                .vertex_degree(site)
+                .map_err(|_| InsertionError::LocationWalkDidNotSettle { visited: 0 })?;
+            worst = worst.max(degree + 1);
+        }
+        Ok(DegreeForecast {
+            new_site: ring_edges,
+            worst_neighbour: worst,
+        })
+    }
 
     /// Insert a site, leaving everything outside the cavity as it was.
     pub fn insert_site(

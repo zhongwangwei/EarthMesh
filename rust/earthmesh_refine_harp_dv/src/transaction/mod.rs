@@ -430,6 +430,34 @@ impl AdaptiveMesh {
             Ok(ladder) => ladder,
             Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
         };
+        // Order the ladder by what each candidate would do to the degrees
+        // around it, before anything is written. Every site on an insertion's
+        // cavity ring gains exactly one neighbour, so a candidate that would
+        // push one past the budget is knowable in advance -- and the degree
+        // bound is 96% of everything this backend cannot do (guide 11.13).
+        //
+        // Sorting rather than filtering: the ladder's own order still decides
+        // among candidates that are equally safe, so a witness still leads
+        // when nothing separates them on degree. A stable sort is what keeps
+        // that true.
+        let mut ladder = ladder;
+        let mut forecasts: Vec<usize> = Vec::with_capacity(ladder.len());
+        for candidate in &ladder {
+            let worst = self
+                .state()
+                .forecast_degrees(candidate.point, Some(candidate.hint))
+                .map(|forecast| forecast.worst_neighbour.max(forecast.new_site))
+                .unwrap_or(usize::MAX);
+            forecasts.push(worst);
+        }
+        let mut order: Vec<usize> = (0..ladder.len()).collect();
+        order.sort_by_key(|&index| {
+            // Anything within budget is equally acceptable; only the ones that
+            // would break it are pushed back, worst last.
+            forecasts[index].max(gates.max_vertex_degree)
+        });
+        ladder = order.into_iter().map(|index| ladder[index]).collect();
+
         let mut refusals = Vec::with_capacity(ladder.len());
         for candidate in ladder {
             match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {

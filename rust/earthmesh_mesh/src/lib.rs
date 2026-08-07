@@ -300,7 +300,7 @@ pub use voronoi_pcvt::pcvt_adjust_voronoi_grid_state;
 mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
 mod primal_dual_mesh;
-pub use mesh_insertion::{InsertionError, InsertionReport};
+pub use mesh_insertion::{DegreeForecast, InsertionError, InsertionReport};
 pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
 pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
