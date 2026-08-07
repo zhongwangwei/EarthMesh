@@ -35,6 +35,25 @@ pub struct RefinePipelineRunReport {
     /// this can be lower than [`Self::max_level`]. Reporting only the requested
     /// depth made that outcome indistinguishable from a fully realized one.
     pub realized_max_level: usize,
+    /// The 2nd and 98th percentile cell width of the produced mesh, in km
+    /// across (`sqrt(A/pi)`, the radius of the disc with the cell's area).
+    ///
+    /// Percentiles rather than extremes: the mask carve leaves partial cells
+    /// at a coastline, and taking the minimum reported a 2.4 km sliver on a
+    /// mesh whose cells are nominally 300 km -- so `log2(max/min)` said twelve
+    /// halvings for a two-level request.
+    ///
+    /// Backend-neutral, because it is measured off the mesh rather than taken
+    /// from each backend's own bookkeeping. `realized_max_level` is not:
+    /// Method-C counts nesting passes, red-green reports zero meaning "not
+    /// measured", and HARP-DV counts site generations, and all three print
+    /// into that one field. A run that refined to 2.6 halvings reported level
+    /// 1 for several rounds because of it (guide 11.19).
+    ///
+    /// `log2(coarsest / finest)` is the halvings actually achieved, which is
+    /// what a request in levels was asking for.
+    pub finest_cell_km: f64,
+    pub coarsest_cell_km: f64,
     /// What the h-field asked for versus what survived Method-C legality, summed
     /// over passes. All zero for the geometric region paths.
     pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,

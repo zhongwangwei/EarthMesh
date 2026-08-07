@@ -487,6 +487,51 @@ pub fn run_refine_pipeline_namelist(
                 .max(0) as usize
         })
         .unwrap_or(0);
+    // Measured off the produced mesh, so it means the same thing whichever
+    // backend made it -- see the field docs for why `realized_max_level` does
+    // not.
+    // Percentiles, not extremes. The mask carve leaves partial cells at a
+    // coastline, and on this very run the smallest was 2.4 km against a
+    // nominal 300 km -- so a min/max pair reports the carve rather than the
+    // refinement, and `log2(max/min)` came out at 12 halvings for a two-level
+    // request.
+    let (finest_cell_km, coarsest_cell_km) = {
+        let mut across: Vec<f64> = Vec::with_capacity(output_mesh.w_to_m.len());
+        let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+        for corners in &output_mesh.w_to_m {
+            let polygon: Vec<earthmesh_mesh::LonLatDegrees> = corners
+                .iter()
+                .filter_map(|&im| {
+                    let row = usize::try_from(im).ok()?.checked_sub(1)?;
+                    let point = output_mesh.m_points.get(row)?;
+                    Some(earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
+                })
+                .collect();
+            if polygon.len() < 3 {
+                continue;
+            }
+            let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
+                continue;
+            };
+            if !steradians.is_finite() || steradians <= 0.0 {
+                continue;
+            }
+            across.push((steradians / std::f64::consts::PI).sqrt() * radius_km);
+        }
+        if across.is_empty() {
+            (0.0, 0.0)
+        } else {
+            across.sort_by(|left, right| {
+                left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let at = |fraction: f64| {
+                let index = ((across.len() - 1) as f64 * fraction).round() as usize;
+                across[index]
+            };
+            (at(0.02), at(0.98))
+        }
+    };
+
     // Which cells the run named outright. The carve's largest-component rule
     // would otherwise delete a refinement circle sitting on a small bay, and
     // nothing would report that the region asked for is gone.
@@ -571,6 +616,8 @@ pub fn run_refine_pipeline_namelist(
         regions,
         max_level,
         realized_max_level,
+        finest_cell_km,
+        coarsest_cell_km,
         hfield_diagnostics,
         transition_faces,
         spring_nest_passes,
