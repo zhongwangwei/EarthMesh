@@ -360,7 +360,7 @@ impl TriangularMesh {
         mesh.apply_method_c_perimeter_mrows(child_level, max_mrows)?;
         // Defense in depth: this function performs the densest parent->child
         // index remapping in the crate; validate the emitted topology like
-        // `method_c_spring`/`method_c_nest_spring` validate theirs, so an in-range but
+        // `mesh_spring`/`method_c_nest_spring` validate theirs, so an in-range but
         // wrong id cannot silently escape to callers.
         mesh.validate_topology()?;
         Ok(mesh)

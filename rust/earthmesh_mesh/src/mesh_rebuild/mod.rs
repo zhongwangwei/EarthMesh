@@ -1,5 +1,5 @@
 use super::*;
-use crate::method_c_rebuild_seeds::{
+use crate::mesh_rebuild_seeds::{
     assign_method_c_triangle_seed_w_ids, insert_or_attach_method_c_edge,
 };
 

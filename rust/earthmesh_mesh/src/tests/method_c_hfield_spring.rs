@@ -129,7 +129,7 @@ fn hfield_spring_with_level_derived_targets_tracks_compatibility_and_is_determin
         .spring_nest(6, niter, ngr, false)
         .expect("compatibility nest spring");
 
-    let radius = crate::method_c_spring::active_mesh_radius(&refined).expect("mesh radius");
+    let radius = crate::mesh_spring::active_mesh_radius(&refined).expect("mesh radius");
     let dist00 = canonical_global_dist00(1.0, radius, 6);
     let topology = icosahedron_spring_topology_canonical(
         refined.nmd,
@@ -186,7 +186,7 @@ fn hfield_spring_with_level_derived_targets_tracks_compatibility_and_is_determin
 fn edge_targets_sample_at_midpoints_and_move_only_transition_points() {
     let refined = refined_test_mesh();
     let ngr = max_ngr(&refined);
-    let radius = crate::method_c_spring::active_mesh_radius(&refined).expect("mesh radius");
+    let radius = crate::mesh_spring::active_mesh_radius(&refined).expect("mesh radius");
     let dist00 = canonical_global_dist00(1.0, radius, 6);
 
     let targets = method_c_edge_target_lengths_from_field(&refined, |_lon, _lat| dist00)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::method_c_incidence_ring::{
+use crate::mesh_incidence_ring::{
     method_c_face_incident_edges_for_m, order_method_c_m_ring_from_incidence,
 };
 

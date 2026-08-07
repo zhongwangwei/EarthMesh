@@ -287,36 +287,41 @@ pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, 
 pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
 pub use primal_dual_mesh::TriangularMesh;
-mod method_c_mesh_gridfile;
-pub use method_c_mesh_gridfile::MethodCGridfileMetadata;
+mod mesh_from_gridfile;
+pub use mesh_from_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
 pub use method_c_lattice_mask::METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS;
 pub use method_c_selection::method_c_connected_region_groups;
 pub use refine_regions::RefinementRegion;
 pub(crate) use refine_regions::*;
-mod method_c_region_geometry;
-mod method_c_region_selection;
-mod method_c_region_validation;
-pub(crate) use method_c_region_geometry::*;
-mod method_c_expansion;
-mod method_c_topology;
-pub use method_c_topology::MethodCTopologyValidation;
-mod method_c_cart_hex;
+mod refine_region_geometry;
+mod refine_region_selection;
+mod refine_region_validation;
+pub(crate) use refine_region_geometry::*;
+mod mesh_expansion;
+mod mesh_topology_validation;
+pub use mesh_topology_validation::MethodCTopologyValidation;
+mod mesh_cart_hex;
 mod method_c_cart_hex_neighbors;
 pub(crate) use method_c_cart_hex_neighbors::fill_cart_hex_w_face_neighbors_from_edges;
 mod method_c_cart_hex_outer_pair;
 pub(crate) use method_c_cart_hex_outer_pair::order_method_c_outer_w_pair_for_fill_rad3;
-mod method_c_cart_hex_incidence;
-mod method_c_checks;
-mod method_c_distance;
+mod mesh_cart_hex_incidence;
+mod mesh_incidence;
+mod mesh_incidence_ring;
+mod mesh_table_checks;
 mod method_c_dump;
 mod method_c_emit;
 mod method_c_full;
 mod method_c_geometry;
-mod method_c_incidence;
-mod method_c_incidence_ring;
 mod method_c_tables;
+mod refine_region_distance;
 pub(crate) use method_c_tables::*;
+mod mesh_point_interpolation;
+mod mesh_rebuild;
+mod mesh_rebuild_metadata;
+mod mesh_rebuild_neighbors;
+mod mesh_rebuild_seeds;
 mod method_c_lattice_mask;
 mod method_c_mask_annealing;
 mod method_c_parent_mrlw_validation;
@@ -328,12 +333,6 @@ mod method_c_perimeter_repair_candidates;
 mod method_c_perimeter_repair_grow;
 mod method_c_perimeter_repair_shrink;
 mod method_c_perimeter_selection;
-mod method_c_point_interpolation;
-mod method_c_rebuild;
-mod method_c_rebuild_metadata;
-mod method_c_rebuild_neighbors;
-mod method_c_rebuild_seeds;
-mod method_c_region_corridor;
 mod method_c_selection;
 mod method_c_selection_fill;
 mod method_c_selection_march;
@@ -341,60 +340,61 @@ mod method_c_selection_start;
 mod method_c_selection_topology;
 mod method_c_spawn;
 mod method_c_spawn_hfield;
+mod refine_region_corridor;
 pub use method_c_spawn_hfield::MethodCHfieldSpawnDiagnostics;
 mod method_c_spawn_internal;
 mod method_c_spawn_pass;
 mod method_c_spawn_retry;
 pub(crate) mod method_c_spawn_retry_scaled;
 mod method_c_table_helpers;
-pub(crate) use method_c_cart_hex_incidence::derive_cart_hex_m_neighbors_from_active_faces;
-pub(crate) use method_c_checks::{
-    require_method_c_id, require_method_c_len, require_unique_active_triplet,
+pub(crate) use mesh_cart_hex_incidence::derive_cart_hex_m_neighbors_from_active_faces;
+pub(crate) use mesh_incidence::derive_method_c_m_neighbors_from_incidence;
+pub(crate) use mesh_point_interpolation::{
+    normalized_face_center, normalized_weighted_point, weighted_point,
 };
-pub(crate) use method_c_distance::{
-    method_c_corridor_segment_distance_meters, method_c_ec_ps_distance_meters,
-    plane_segment_distance,
+pub(crate) use mesh_rebuild::method_c_mesh_from_triangle_seeds;
+pub(crate) use mesh_rebuild_metadata::{
+    default_method_c_m_metadata, derive_method_c_m_metadata_from_w_faces,
+    method_c_identity_prognostic_map,
+};
+pub(crate) use mesh_rebuild_neighbors::fill_method_c_w_face_neighbors_from_edges;
+pub(crate) use mesh_table_checks::{
+    require_method_c_id, require_method_c_len, require_unique_active_triplet,
 };
 pub(crate) use method_c_geometry::{
     face_following_two_vertices, face_following_vertex, lookup_method_c_midpoint,
     lookup_method_c_thirds, method_c_edge_key, validate_lonlat, validate_positive_distance,
 };
-pub(crate) use method_c_incidence::derive_method_c_m_neighbors_from_incidence;
-pub(crate) use method_c_point_interpolation::{
-    normalized_face_center, normalized_weighted_point, weighted_point,
-};
-pub(crate) use method_c_rebuild::method_c_mesh_from_triangle_seeds;
-pub(crate) use method_c_rebuild_metadata::{
-    default_method_c_m_metadata, derive_method_c_m_metadata_from_w_faces,
-    method_c_identity_prognostic_map,
-};
-pub(crate) use method_c_rebuild_neighbors::fill_method_c_w_face_neighbors_from_edges;
-pub(crate) use method_c_region_corridor::{
+pub(crate) use refine_region_corridor::{
     method_c_cartesian_xy_segment_distance, method_c_closed_corridor_contains_cartesian,
     method_c_corridor_radius_at_segment, method_c_open_corridor_contains_cartesian,
 };
-mod method_c_spring;
+pub(crate) use refine_region_distance::{
+    method_c_corridor_segment_distance_meters, method_c_ec_ps_distance_meters,
+    plane_segment_distance,
+};
+mod mesh_spring;
+pub(crate) use mesh_spring::active_mesh_radius;
 pub use method_c_nest_spring::method_c_edge_target_lengths_from_field;
 #[cfg(test)]
 pub(crate) use method_c_nest_spring::method_c_nest_movable_m_points;
-pub(crate) use method_c_spring::active_mesh_radius;
+mod mesh_spring_iteration;
 mod method_c_nest_spring;
-mod method_c_spring_iteration;
 #[cfg(test)]
 pub(crate) use method_c_nest_spring_iteration::method_c_nest_mrow_distance_multiplier;
 pub(crate) use method_c_nest_spring_iteration::{
     method_c_nest_spring_iteration_into, MethodCNestSpringScratch,
 };
 mod method_c_nest_spring_iteration;
-pub(crate) use method_c_spring_iteration::{
+pub(crate) use mesh_spring_iteration::{
     method_c_global_spring_iteration_into, MethodCGlobalSpringScratch,
 };
 pub(crate) use method_c_table_helpers::{
     canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_repairable_payload,
     method_c_split_outer_edges, other_edge_face, repairable_error, set_first_two, RepairableKind,
 };
-mod method_c_w_face_edge_replacement;
-pub(crate) use method_c_w_face_edge_replacement::{
+mod mesh_w_face_edge_replacement;
+pub(crate) use mesh_w_face_edge_replacement::{
     replace_w_face_edge_after, replace_w_face_edge_before, replace_w_face_edge_with_side_return,
     replace_w_face_edges_at,
 };
