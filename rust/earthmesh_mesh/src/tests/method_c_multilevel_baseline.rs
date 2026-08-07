@@ -134,6 +134,10 @@ fn multilevel_failures_are_counted_by_the_gate_that_produced_them() {
 /// not G2, so the number G2 gives is the answer to a different question. This
 /// sweeps the clearance and counts each gate, which is what a ladder should be
 /// built from.
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
 #[test]
 fn the_inter_level_clearance_is_swept_against_the_gate_that_fails() {
     println!("E0-1b clearance sweep (40 concentric cases per row, levels = 3)");
@@ -187,6 +191,10 @@ fn the_inter_level_clearance_is_swept_against_the_gate_that_fails() {
 /// not obviously the worse one: the admissible set is not upward closed, so a
 /// factor above one is a different alignment rather than a looser constraint.
 /// This counts, for the cases `spawn_nest` refuses, which side rescues them.
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
 #[test]
 fn refused_cases_are_offered_a_larger_parent_as_well_as_a_smaller_one() {
     println!("E0-1c rescue by direction (levels = 3, 60 cases per row)");
@@ -236,5 +244,65 @@ fn refused_cases_are_offered_a_larger_parent_as_well_as_a_smaller_one() {
             }
         }
         println!("{nxp:<5}{refused:<9}{smaller:<20}{larger:<19}{only_larger:<13}{neither}");
+    }
+}
+
+/// E0-1d: for what is left, does moving the *first* level help at all?
+///
+/// The single-step retry reaches the pass above the one that failed. Keeping
+/// every checkpoint would let a third-level refusal move the first level too,
+/// which is only worth its cost if moving the first level rescues anything.
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
+#[test]
+fn the_remaining_refusals_are_offered_a_moved_first_level() {
+    println!("E0-1d first-level rescue (levels = 3, 60 cases)");
+    for nxp in [21usize] {
+        let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mut rng = Lcg(0xE0_1D00_u64 + nxp as u64);
+        let (mut refused, mut rescued_head, mut rescued_all) = (0usize, 0usize, 0usize);
+        for _ in 0..60 {
+            let lon = rng.unit() * 360.0 - 180.0;
+            let lat = rng.unit() * 140.0 - 70.0;
+            let outer = 800_000.0 + rng.unit() * 2_200_000.0;
+            let chain = |head_scale: f64, all_scale: f64| -> Vec<RefinementRegion> {
+                (1..=3usize)
+                    .map(|level| RefinementRegion::Circle {
+                        center: LonLatDegrees::new(lon, lat),
+                        radius_meters: outer / 2f64.powi(level as i32 - 1)
+                            * if level == 1 { head_scale } else { 1.0 }
+                            * if level < 3 { all_scale } else { 1.0 },
+                        level,
+                    })
+                    .collect()
+            };
+            if mesh.spawn_nest(&chain(1.0, 1.0), 3).is_ok() {
+                continue;
+            }
+            refused += 1;
+            let head_only = (1..=12)
+                .flat_map(|step| {
+                    let delta = step as f64 * 0.05;
+                    [1.0 + delta, 1.0 - delta]
+                })
+                .any(|factor| mesh.spawn_nest(&chain(factor, 1.0), 3).is_ok());
+            let both = (1..=12)
+                .flat_map(|step| {
+                    let delta = step as f64 * 0.05;
+                    [1.0 + delta, 1.0 - delta]
+                })
+                .any(|factor| mesh.spawn_nest(&chain(1.0, factor), 3).is_ok());
+            if head_only {
+                rescued_head += 1;
+            }
+            if both {
+                rescued_all += 1;
+            }
+        }
+        println!(
+            "nxp={nxp} refused={refused} rescued_by_moving_level1_only={rescued_head} rescued_by_moving_levels_1_and_2={rescued_all}"
+        );
     }
 }

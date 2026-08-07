@@ -352,6 +352,10 @@ fn the_footprint_irregularity_is_located_against_the_pentagons() {
 /// interior, the compiler can still chain by staying clear of the band -- which
 /// is what G2's three-row clearance would then be for. If it is irregular
 /// throughout, the lattice cannot be reused across generations.
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
 #[test]
 fn the_lattice_is_measured_again_on_the_child_generation() {
     let probe = LatticeProbe::new(21);
@@ -450,6 +454,10 @@ fn the_lattice_is_measured_again_on_the_child_generation() {
 /// The single-footprint sweep said the clearance is what the irregularity is
 /// about. This asks whether that carries to unions, which is what a compiler
 /// would actually emit.
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
 #[test]
 fn unions_of_clear_footprints_are_measured_at_several_sizes() {
     for nxp in [21usize, 40] {

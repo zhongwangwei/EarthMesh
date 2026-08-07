@@ -2,6 +2,13 @@ use std::io;
 
 use super::*;
 
+/// Factors the whole-run retry may try per earlier level.
+///
+/// Each one is a complete re-run, so this is the cost of a refusal. Measured
+/// over the same forty-case rows: six recovers 232 of 240, twelve recovers 236,
+/// twenty four recovers 237 and takes the workspace suite to half an hour.
+const RESCALE_RETRY_FACTOR_BUDGET: usize = 12;
+
 impl TriangularMesh {
     pub(crate) fn spawn_nest_internal(
         &self,
@@ -10,6 +17,32 @@ impl TriangularMesh {
         max_mrows: usize,
         spring: Option<(usize, usize, Option<f64>)>,
         use_cartesian_xy: bool,
+    ) -> io::Result<(Self, usize)> {
+        self.spawn_nest_internal_rescaling(
+            regions,
+            max_level,
+            max_mrows,
+            spring,
+            use_cartesian_xy,
+            0,
+        )
+    }
+
+    /// The pass loop, with a note of whether it is already a retry.
+    ///
+    /// `rescale_depth` is zero for the run the caller asked for and one for a
+    /// run this function started itself after moving a level. It exists to stop
+    /// the retry recursing: one level of it is what the measurement supports,
+    /// and a second would multiply the cost of a refusal by twenty four again.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_nest_internal_rescaling(
+        &self,
+        regions: &[RefinementRegion],
+        max_level: usize,
+        max_mrows: usize,
+        spring: Option<(usize, usize, Option<f64>)>,
+        use_cartesian_xy: bool,
+        rescale_depth: usize,
     ) -> io::Result<(Self, usize)> {
         self.validate_topology()?;
         if regions.is_empty() || max_level == 0 {
@@ -47,13 +80,11 @@ impl TriangularMesh {
             .unwrap_or(1)
             .max(1)
             + 1;
-        let mut previous_pass_checkpoint: Option<(
-            Self,
-            Vec<bool>,
-            usize,
-            Vec<RefinementRegion>,
-            bool,
-        )> = None;
+        // Every completed pass, not only the last. A refusal at pass n can come
+        // from how pass 1's boundary landed, and with one pass remembered there
+        // was nothing to try for it.
+        let mut pass_checkpoints: Vec<(Self, Vec<bool>, usize, Vec<RefinementRegion>, bool)> =
+            Vec::new();
         let mut pass_levels = regions
             .iter()
             .filter_map(|region| (region.level() <= max_level).then_some(region.level()))
@@ -141,7 +172,7 @@ impl TriangularMesh {
                                 parent_grid_number,
                                 parent_region,
                                 parent_required_repair,
-                            )) = previous_pass_checkpoint.as_ref()
+                            )) = pass_checkpoints.last()
                             {
                                 // A parent that built cleanly used to end the
                                 // matter, on the reading that a good parent mask
@@ -180,7 +211,7 @@ impl TriangularMesh {
                                 {
                                     if let Some(refined) = rescued {
                                         mesh = refined;
-                                        previous_pass_checkpoint = Some((
+                                        pass_checkpoints.push((
                                             mesh_before_pass,
                                             selected_faces.clone(),
                                             grid_number,
@@ -192,6 +223,62 @@ impl TriangularMesh {
                                     }
                                 }
                             }
+                            // Nothing the pass above could do. A refusal here
+                            // can come from where an *earlier* level put its
+                            // boundary, and moving that one means everything
+                            // built on it has to be built again. Rather than
+                            // replay the passes by hand, which was measured to
+                            // rescue nothing because it denied the tail the
+                            // cascade the driver gives it, run the whole thing
+                            // again from the start with that level moved.
+                            //
+                            // Measured over sixty three-level cases at NXP 21:
+                            // eight refusals survived the single-step retry, and
+                            // moving the first level rescued all eight.
+                            //
+                            // Nearest level first, so the run disturbs the least
+                            // of what already worked.
+                            if rescale_depth == 0 {
+                                for moved in (1..pass).rev() {
+                                    // Bounded on purpose. Each factor is a
+                                    // whole re-run with its own cascades, for
+                                    // every earlier level. Unbounded at twenty
+                                    // four it took the workspace suite to
+                                    // thirty two minutes and rescued one case
+                                    // more than twelve does. The rescues that
+                                    // land, land near one.
+                                    for factor in
+                                        crate::method_c_spawn_retry_scaled::scaled_parent_retry_factors()
+                                            .take(RESCALE_RETRY_FACTOR_BUDGET)
+                                    {
+                                        let mut rescaled = Vec::with_capacity(regions.len());
+                                        let mut scalable = Vec::new();
+                                        for region in regions {
+                                            if region.level() == moved {
+                                                scalable.push(region.clone());
+                                            } else {
+                                                rescaled.push(region.clone());
+                                            }
+                                        }
+                                        let Some(scaled) =
+                                            scale_refinement_regions_radius(&scalable, factor)
+                                        else {
+                                            continue;
+                                        };
+                                        rescaled.extend(scaled);
+                                        if let Ok(result) = self.spawn_nest_internal_rescaling(
+                                            &rescaled,
+                                            max_level,
+                                            max_mrows,
+                                            spring,
+                                            use_cartesian_xy,
+                                            1,
+                                        ) {
+                                            return Ok(result);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         return Err(io::Error::new(
                             error.kind(),
@@ -200,7 +287,7 @@ impl TriangularMesh {
                     }
                 },
             }
-            previous_pass_checkpoint = Some((
+            pass_checkpoints.push((
                 mesh_before_pass,
                 selected_faces.clone(),
                 grid_number,

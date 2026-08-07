@@ -22,7 +22,7 @@ use super::*;
 /// than was asked at the parent level, which costs cells, while shrinking
 /// refines less, which loses what the run asked for. Nearest first so the parent
 /// moves as little as it can.
-fn scaled_parent_retry_factors() -> impl Iterator<Item = f64> {
+pub(crate) fn scaled_parent_retry_factors() -> impl Iterator<Item = f64> {
     (1..=12).flat_map(|step| {
         let delta = step as f64 * 0.05;
         [1.0 + delta, 1.0 - delta]

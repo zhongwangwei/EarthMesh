@@ -18,6 +18,10 @@ fn probe(nxp: usize) -> (TriangularMesh, Vec<IcosahedronMPointNeighbors>) {
     (mesh, m_neighbors)
 }
 
+// A sweep, not a regression. It is here so the numbers in
+// `docs/experiments/2026-08_lattice_invariants.md` can be reproduced, and
+// ignored so it does not tax every run: `cargo test -- --ignored`.
+#[ignore]
 #[test]
 fn greedy_footprint_accretion_is_measured_against_one_shot() {
     for nxp in [21usize, 40] {

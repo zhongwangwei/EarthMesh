@@ -334,7 +334,7 @@ pub use method_c_spawn_hfield::MethodCHfieldSpawnDiagnostics;
 mod method_c_spawn_internal;
 mod method_c_spawn_pass;
 mod method_c_spawn_retry;
-mod method_c_spawn_retry_scaled;
+pub(crate) mod method_c_spawn_retry_scaled;
 mod method_c_table_helpers;
 pub(crate) use method_c_cart_hex_incidence::derive_cart_hex_m_neighbors_from_active_faces;
 pub(crate) use method_c_checks::{
