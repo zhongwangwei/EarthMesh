@@ -181,6 +181,9 @@ fn a_request_with_nothing_to_do_returns_the_mesh_it_was_given() {
         adaptive,
         &HarpDvRequest {
             config: HarpDvConfig::default(),
+            criteria: &[],
+            candidate_policy: crate::CandidatePolicy::default(),
+            gates: crate::HardGates::default(),
         },
     )
     .expect("an empty request is a run with nothing to do, not an error");
@@ -215,6 +218,9 @@ fn two_identical_empty_runs_agree() {
             adaptive,
             &HarpDvRequest {
                 config: HarpDvConfig::default(),
+                criteria: &[],
+                candidate_policy: crate::CandidatePolicy::default(),
+                gates: crate::HardGates::default(),
             },
         )
         .expect("empty run")
@@ -240,6 +246,9 @@ fn a_run_validates_its_config_before_touching_the_mesh() {
                 max_cycles: 0,
                 ..HarpDvConfig::default()
             },
+            criteria: &[],
+            candidate_policy: crate::CandidatePolicy::default(),
+            gates: crate::HardGates::default(),
         },
     )
     .expect_err("a run that cannot be made must not start");

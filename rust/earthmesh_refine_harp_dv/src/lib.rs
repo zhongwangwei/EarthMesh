@@ -7,24 +7,32 @@
 //! against the cells that exist now, and changes the mesh locally where they
 //! are still unmet.
 //!
-//! # What this crate is at Phase 1
+//! # What is here
 //!
-//! The skeleton: stable site identity, a validated config, an error model, the
-//! evidence a criterion returns, and a run that correctly reports having done
-//! nothing. No criteria, no transactions, no insertion.
+//! The whole loop of specification section 8: read every Voronoi cell against
+//! the active criteria, build demands from the evidence, order them, and serve
+//! each with a transaction that either commits or restores the neighbourhood
+//! exactly as it was. The machinery underneath -- robust predicates, local
+//! insertion, patch rollback, local dual rebuild -- lives in `earthmesh_mesh`,
+//! where the other backends can reach it too.
 //!
-//! That is not modesty about scope. The machinery HARP-DV needs from
-//! `earthmesh_mesh` -- patch extraction, spherical point location, a Delaunay
-//! cavity, local insertion, edge legalization, local Voronoi rebuild, patch
-//! validation and replacement -- **does not exist**, and neither does the
-//! incremental spherical Delaunay kernel underneath it or the robust
-//! orientation predicates underneath that. `docs/HARP_DV_REUSE_MAP.md` records
-//! the audit, function by function. Building on top of that gap before closing
-//! it would produce something that compiles and cannot work.
-
+//! # What is not
+//!
+//! One criterion, `TargetScale`. The other three of section 8.2 need data
+//! sources this crate does not own yet.
+//!
+//! Section 13.3's continuous improvement gate, whose three weights nobody has
+//! measured. The hard gates of 13.2 are here; the discrete MVP the spec offers
+//! beside the continuous objective is what belongs next.
+//!
+//! Section 14's neighbouring-scale balance, and r-adaptation. A run today only
+//! inserts.
+//!
 pub mod api;
 pub mod candidate;
 pub mod config;
+pub mod criteria;
+pub mod cycle;
 pub mod error;
 pub mod report;
 pub mod state;
@@ -32,6 +40,8 @@ pub mod transaction;
 
 pub use api::{refine_harp_dv, HarpDvOutcome, HarpDvRequest};
 pub use config::HarpDvConfig;
+pub use criteria::{CellCriterion, CellView, TargetRegion, TargetScale};
+pub use cycle::{run_cycles, CycleLimits, CycleOutcome};
 pub use error::{HarpDvError, Result};
 // The criteria vocabulary is the refinement layer's, not this backend's. Three
 // backends reading the same evidence is the point; a private copy per backend

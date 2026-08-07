@@ -1,20 +1,24 @@
 //! What a caller hands in, and what comes back.
 
+use crate::candidate::CandidatePolicy;
 use crate::config::HarpDvConfig;
+use crate::criteria::CellCriterion;
+use crate::cycle::{run_cycles, CycleLimits};
 use crate::error::Result;
 use crate::report::{HarpDvRunReport, StopReason};
 use crate::state::AdaptiveMesh;
+use crate::transaction::HardGates;
 
 /// One run's worth of instruction.
-///
-/// Criteria are absent from this struct in Phase 1 because nothing can evaluate
-/// one yet: the local patch machinery a criterion's demand would be served by
-/// does not exist. The vocabulary they will speak is settled and lives in
-/// `earthmesh_refine::criteria`; the trait that produces it arrives with the
-/// machinery that can act on it.
-#[derive(Clone, Debug)]
-pub struct HarpDvRequest {
+pub struct HarpDvRequest<'a> {
     pub config: HarpDvConfig,
+    /// What the run is trying to satisfy. An empty list is a run with nothing
+    /// to do, which is a legitimate request and reports itself as satisfied.
+    pub criteria: &'a [Box<dyn CellCriterion>],
+    /// Where a candidate may go.
+    pub candidate_policy: CandidatePolicy,
+    /// What a transaction must satisfy to be kept.
+    pub gates: HardGates,
 }
 
 /// What the run produced, and the account of how.
@@ -22,22 +26,46 @@ pub struct HarpDvRequest {
 pub struct HarpDvOutcome {
     pub mesh: AdaptiveMesh,
     pub report: HarpDvRunReport,
+    /// Cells whose demand no candidate could serve.
+    ///
+    /// Returned rather than only counted: a caller deciding whether to accept
+    /// the mesh needs to know *where* it fell short, and a number cannot say.
+    pub unresolved_cells: Vec<usize>,
 }
 
 /// Adapt a mesh until every criterion is satisfied or the run has to stop.
 ///
-/// Phase 1 has no criteria to evaluate and no transaction machinery to run, so
-/// a request always describes a run with nothing to do: the mesh comes back as
-/// it went in, with a report saying so. That is the identity this phase is
-/// meant to establish, and the thing later phases must not break.
-///
-/// It is deliberately not a `todo!()`. A production path that panics is worse
-/// than one that says, truthfully, that it did nothing.
-pub fn refine_harp_dv(mesh: AdaptiveMesh, request: &HarpDvRequest) -> Result<HarpDvOutcome> {
+/// The config is validated before the mesh is touched, so a request that could
+/// never be honoured fails without having half-refined anything.
+pub fn refine_harp_dv(
+    mut mesh: AdaptiveMesh,
+    request: &HarpDvRequest<'_>,
+) -> Result<HarpDvOutcome> {
     request.config.validate()?;
-    let sites = mesh.active_site_count();
+    if request.criteria.is_empty() {
+        let sites = mesh.active_site_count();
+        return Ok(HarpDvOutcome {
+            mesh,
+            report: HarpDvRunReport::empty(sites, StopReason::AllSatisfied),
+            unresolved_cells: Vec::new(),
+        });
+    }
+
+    let limits = CycleLimits {
+        max_cycles: request.config.max_cycles,
+        max_sites: request.config.maximum_cells,
+        minimum_cell_width_m: request.config.minimum_cell_width_m,
+    };
+    let outcome = run_cycles(
+        &mut mesh,
+        request.criteria,
+        request.candidate_policy,
+        request.gates,
+        limits,
+    )?;
     Ok(HarpDvOutcome {
         mesh,
-        report: HarpDvRunReport::empty(sites, StopReason::AllSatisfied),
+        report: outcome.report,
+        unresolved_cells: outcome.unresolved_cells,
     })
 }
