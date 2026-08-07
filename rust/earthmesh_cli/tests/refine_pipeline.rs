@@ -3116,3 +3116,77 @@ fn redgreen_backend_refuses_to_run_without_its_transition_rows() {
         "unexpected error: {error}"
     );
 }
+
+/// What a harp_dv mesh actually measures, put through the quality gate.
+///
+/// The reason the pipeline was wired before the remaining tuning: section
+/// 13.3's improvement gate needs weights, and the only honest source for them
+/// is what a real mesh scores. Nothing before this point could produce a
+/// number -- the backend worked on `MeshState` and never reached a file.
+///
+/// This asserts the two things that decide whether the mesh is usable at all,
+/// and prints the rest so the numbers are visible when the gate is next
+/// touched.
+#[test]
+fn harp_dv_output_passes_the_mesh_quality_gate() {
+    let root = temp_root("harp_dv_quality");
+    let sources = root.join("sources");
+    std::fs::create_dir_all(&sources).expect("create sources");
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 2,
+            points: vec![LonLatPoint {
+                lon: 115.0,
+                lat: 25.0,
+            }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("mkgrd_harp_dv_quality.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    std::fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_harp_dv_quality'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+        ),
+    )
+    .expect("write harp_dv namelist");
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect("harp_dv backend should run");
+
+    let mesh = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+        .expect("read harp_dv gridfile mesh points");
+    let input = earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh)
+        .expect("hex quality input");
+    let report =
+        earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
+
+    println!(
+        "harp_dv quality: cells {}, min angle {:.2} deg, max angle {:.2} deg, area ratio {:.3}, \
+         edge km mean {:.1}",
+        report.geometry.cell_count,
+        report.geometry.min_angle_deg,
+        report.geometry.max_angle_deg,
+        report.geometry.cell_area_ratio,
+        report.geometry.edge_length_km.mean,
+    );
+
+    // A mesh with a degenerate cell is not a coarser answer to the same
+    // question; it is one a solver cannot use.
+    assert!(
+        report.geometry.min_angle_deg > 0.0,
+        "a cell has a zero or inverted angle: {:?}",
+        report.geometry
+    );
+    // Topology is the claim the whole transaction layer rests on. If any of
+    // these fails, every hard gate above it was measuring the wrong thing.
+    assert_eq!(report.topology.connected_component_count, 1);
+    assert_eq!(report.topology.non_manifold_vertex_fan_count, 0);
+    assert_eq!(report.topology.invalid_vertex_index_count, 0);
+    assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
+}
