@@ -408,7 +408,12 @@ pub fn run_refine_pipeline_namelist(
                 .transpose()?;
             refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
         }
-        "harp_dv" => refine_with_harp_dv(&mesh, &regions, method_c_nxp)?,
+        "harp_dv" => refine_with_harp_dv(
+            &mesh,
+            &regions,
+            method_c_nxp,
+            usize::try_from(refine.niter_refine).unwrap_or(0),
+        )?,
         _ => {
             let MethodCRefineOutcome {
                 mesh,
@@ -978,6 +983,7 @@ fn refine_with_harp_dv(
     mesh: &earthmesh_mesh::TriangularMesh,
     regions: &[earthmesh_mesh::RefinementRegion],
     nxp: usize,
+    spring_iterations: usize,
 ) -> io::Result<RefinedGrid> {
     use earthmesh_refine_harp_dv as harp;
 
@@ -1073,6 +1079,23 @@ fn refine_with_harp_dv(
         .mesh
         .to_triangular_mesh()
         .map_err(|error| io::Error::other(error.to_string()))?;
+
+    // Smooth with the nest spring, targeting each edge at what the *criteria*
+    // asked for there. Guide 11.21 records the version that took targets from
+    // the mesh's own current scale: that tells the spring to keep things as
+    // they are, and 5000 iterations under it made the angles worse.
+    let refined = if spring_iterations > 0 {
+        match harp_spring_smoothed(&refined, regions, base_cell_m, spring_iterations) {
+            Ok(mesh) => mesh,
+            // A smoothing pass that declines is not a reason to lose the mesh.
+            Err(error) => {
+                eprintln!("harp_dv: nest spring declined ({error}); writing the unsmoothed mesh");
+                refined
+            }
+        }
+    } else {
+        refined
+    };
     let state = spherical_voronoi_state(&refined)?;
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
@@ -1089,6 +1112,76 @@ fn refine_with_harp_dv(
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
     })
+}
+
+/// Smooth a HARP-DV mesh against the sizes the criteria asked for.
+///
+/// The targets come from the regions, not from the mesh -- which is what
+/// makes this different from the attempt in guide 11.21. A region asking for
+/// level L is asking for the base cell halved L times, and that is a length
+/// the spring can pull toward.
+///
+/// The conversion from a cell width to a triangle edge length is measured off
+/// this mesh rather than derived: the two differ by a shape factor that
+/// depends on the dual, and measuring it is both shorter and harder to get
+/// wrong than deriving it.
+fn harp_spring_smoothed(
+    mesh: &earthmesh_mesh::TriangularMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+    base_cell_m: f64,
+    iterations: usize,
+) -> io::Result<earthmesh_mesh::TriangularMesh> {
+    // Median triangle edge over median cell width, on this mesh.
+    let mut edges: Vec<f64> = Vec::new();
+    for iu in 2..=mesh.nud {
+        let [im1, im2] = mesh.u_edges[iu].im;
+        let (Some(a), Some(b)) = (mesh.m_points.get(im1), mesh.m_points.get(im2)) else {
+            continue;
+        };
+        let length = earthmesh_mesh::arc_length_unit_sphere(*a, *b);
+        if length.is_finite() && length > 0.0 {
+            edges.push(length);
+        }
+    }
+    if edges.is_empty() {
+        return Err(io::Error::other(
+            "no edges to measure a spring target against",
+        ));
+    }
+    edges.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let median_edge = edges[edges.len() / 2];
+    // The unrefined mesh's cell width, which the median edge belongs to.
+    let shape_factor = median_edge / base_cell_m;
+
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let targets =
+        earthmesh_refine_method_c::method_c_edge_target_lengths_from_field(mesh, |lon, lat| {
+            let here = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
+                earthmesh_mesh::LonLatDegrees::new(lon, lat),
+            );
+            // The finest thing any region asks for here; the base cell where
+            // none does.
+            let mut width = base_cell_m;
+            for region in regions {
+                if let earthmesh_mesh::RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    level,
+                } = region
+                {
+                    let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+                    let dot = (here.x * centre.x + here.y * centre.y + here.z * centre.z)
+                        .clamp(-1.0, 1.0);
+                    if dot.acos() * radius <= *radius_meters {
+                        width = width.min(base_cell_m / 2.0_f64.powi(*level as i32));
+                    }
+                }
+            }
+            width * shape_factor
+        })?;
+    Ok(earthmesh_refine_method_c::MethodCMesh::new(mesh.clone())
+        .spring_nest_with_edge_targets(iterations, 2, true, true, &targets)?
+        .into_inner())
 }
 
 /// The Voronoi/PCVT step, in lon/lat, for a mesh on the sphere.
