@@ -7,7 +7,7 @@
 //! something does, and a resolution-dependent criterion actually changes its
 //! mind between levels.
 
-use earthmesh_mesh::MethodCMesh;
+use earthmesh_refine_method_c::MethodCMesh;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -112,15 +112,15 @@ pub(crate) fn require_grid_coordinate_len(
     Ok(())
 }
 
-pub(crate) fn vector_between(from: CartesianPoint, to: CartesianPoint) -> CartesianPoint {
+pub fn vector_between(from: CartesianPoint, to: CartesianPoint) -> CartesianPoint {
     CartesianPoint::new(to.x - from.x, to.y - from.y, to.z - from.z)
 }
 
-pub(crate) fn dot(a: CartesianPoint, b: CartesianPoint) -> f64 {
+pub fn dot(a: CartesianPoint, b: CartesianPoint) -> f64 {
     a.x * b.x + a.y * b.y + a.z * b.z
 }
 
-pub(crate) fn cross(a: CartesianPoint, b: CartesianPoint) -> CartesianPoint {
+pub fn cross(a: CartesianPoint, b: CartesianPoint) -> CartesianPoint {
     CartesianPoint::new(
         a.y * b.z - a.z * b.y,
         a.z * b.x - a.x * b.z,
@@ -128,11 +128,11 @@ pub(crate) fn cross(a: CartesianPoint, b: CartesianPoint) -> CartesianPoint {
     )
 }
 
-pub(crate) fn magnitude(a: CartesianPoint) -> f64 {
+pub fn magnitude(a: CartesianPoint) -> f64 {
     (a.x * a.x + a.y * a.y + a.z * a.z).sqrt()
 }
 
-pub(crate) fn normalize_cartesian_to_radius(
+pub fn normalize_cartesian_to_radius(
     point: CartesianPoint,
     radius: f64,
 ) -> io::Result<CartesianPoint> {

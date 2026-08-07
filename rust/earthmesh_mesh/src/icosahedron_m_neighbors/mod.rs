@@ -14,7 +14,7 @@ pub fn derive_icosahedron_m_neighbors_canonical(
     derive_icosahedron_m_neighbors_canonical_checked(nmd, u_edges, w_faces).ok()
 }
 
-pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked(
+pub fn derive_icosahedron_m_neighbors_canonical_checked(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],
@@ -22,7 +22,7 @@ pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked(
     derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(nmd, u_edges, w_faces, None)
 }
 
-pub(crate) fn derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
+pub fn derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],

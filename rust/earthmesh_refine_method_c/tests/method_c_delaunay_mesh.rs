@@ -1,8 +1,8 @@
-use earthmesh_mesh::MethodCMesh;
 use earthmesh_mesh::METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
 use earthmesh_mesh::{
     method_c_gridinit_factorization_canonical, voronoi_grid_from_triangular_mesh, CartesianPoint,
 };
+use earthmesh_refine_method_c::MethodCMesh;
 
 fn magnitude(point: CartesianPoint) -> f64 {
     (point.x * point.x + point.y * point.y + point.z * point.z).sqrt()

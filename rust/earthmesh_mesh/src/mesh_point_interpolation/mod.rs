@@ -2,7 +2,7 @@ use std::io;
 
 use super::{normalize_cartesian_to_radius, CartesianPoint};
 
-pub(crate) fn normalized_weighted_point(
+pub fn normalized_weighted_point(
     point1: CartesianPoint,
     weight1: f64,
     point2: CartesianPoint,
@@ -26,7 +26,7 @@ pub(crate) fn normalized_weighted_point(
     )
 }
 
-pub(crate) fn weighted_point(
+pub fn weighted_point(
     point1: CartesianPoint,
     weight1: f64,
     point2: CartesianPoint,
@@ -46,7 +46,7 @@ pub(crate) fn weighted_point(
     ))
 }
 
-pub(crate) fn normalized_face_center(
+pub fn normalized_face_center(
     point1: CartesianPoint,
     point2: CartesianPoint,
     point3: CartesianPoint,

@@ -3,7 +3,7 @@ use crate::mesh_incidence_ring::{
     method_c_face_incident_edges_for_m, order_method_c_m_ring_from_incidence,
 };
 
-pub(crate) fn derive_cart_hex_m_neighbors_from_active_faces(
+pub fn derive_cart_hex_m_neighbors_from_active_faces(
     nmd: usize,
     u_edges: &[IcosahedronUEdge],
     w_faces: &[IcosahedronWFace],

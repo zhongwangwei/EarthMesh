@@ -2,15 +2,15 @@ use std::io;
 
 use super::*;
 
-pub(crate) fn default_method_c_m_metadata(nmd: usize) -> Vec<IcosahedronMPointMetadata> {
+pub fn default_method_c_m_metadata(nmd: usize) -> Vec<IcosahedronMPointMetadata> {
     vec![IcosahedronMPointMetadata::default(); nmd + 1]
 }
 
-pub(crate) fn method_c_identity_prognostic_map(max_id: usize) -> Vec<usize> {
+pub fn method_c_identity_prognostic_map(max_id: usize) -> Vec<usize> {
     (0..=max_id).collect()
 }
 
-pub(crate) fn derive_method_c_m_metadata_from_w_faces(
+pub fn derive_method_c_m_metadata_from_w_faces(
     nmd: usize,
     w_faces: &[IcosahedronWFace],
 ) -> io::Result<Vec<IcosahedronMPointMetadata>> {

@@ -7,7 +7,7 @@ use crate::{
 };
 
 impl RefinementRegion {
-    pub(crate) fn anchor_lonlat(&self) -> LonLatDegrees {
+    pub fn anchor_lonlat(&self) -> LonLatDegrees {
         match self {
             Self::Circle { center, .. } => *center,
             Self::Bbox {
@@ -19,7 +19,7 @@ impl RefinementRegion {
         }
     }
 
-    pub(crate) fn contains_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
+    pub fn contains_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
         match self {
             Self::Circle {
                 center,
@@ -76,7 +76,7 @@ impl RefinementRegion {
         )
     }
 
-    pub(crate) fn close_to_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
+    pub fn close_to_cartesian(&self, point: CartesianPoint, radius: f64) -> bool {
         match self {
             Self::Circle {
                 center,
@@ -128,7 +128,7 @@ impl RefinementRegion {
         }
     }
 
-    pub(crate) fn contains_cartesian_xy(&self, point: CartesianPoint) -> bool {
+    pub fn contains_cartesian_xy(&self, point: CartesianPoint) -> bool {
         match self {
             Self::Circle {
                 center,

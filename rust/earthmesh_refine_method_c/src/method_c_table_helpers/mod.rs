@@ -1,55 +1,7 @@
 use std::io;
 
 use crate::MethodCNestWd;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RepairableKind {
-    TransitionPatch,
-    Valence,
-    NonTripletPerimeter,
-}
-
-#[derive(Debug)]
-pub(crate) struct MethodCRepairableError {
-    pub(crate) kind: RepairableKind,
-    pub(crate) m_point: Option<usize>,
-    message: String,
-}
-
-impl std::fmt::Display for MethodCRepairableError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for MethodCRepairableError {}
-
-pub(crate) fn repairable_error(
-    kind: RepairableKind,
-    m_point: Option<usize>,
-    message: impl Into<String>,
-) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        MethodCRepairableError {
-            kind,
-            m_point,
-            message: message.into(),
-        },
-    )
-}
-
-pub(crate) fn method_c_repairable_payload(error: &io::Error) -> Option<&MethodCRepairableError> {
-    error.get_ref()?.downcast_ref::<MethodCRepairableError>()
-}
-
-use super::IcosahedronUEdge;
-
-pub(crate) fn set_first_two(mut values: [usize; 6], first: usize, second: usize) -> [usize; 6] {
-    values[0] = first;
-    values[1] = second;
-    values
-}
+use earthmesh_mesh::{repairable_error, IcosahedronUEdge, RepairableKind};
 
 pub(crate) fn other_edge_face(edge: IcosahedronUEdge, iw: usize) -> io::Result<usize> {
     if edge.iw[0] == iw {

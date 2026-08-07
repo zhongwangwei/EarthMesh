@@ -8,7 +8,8 @@
 //! so this pins down whether the geometry path carries the same demand without
 //! that window.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCMesh, RefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
+use earthmesh_refine_method_c::MethodCMesh;
 
 /// Coast blocks sampled at 1 degree from `landtype_igbp_update.nc` over
 /// 108-120E / 18-26N, using the engine's own land/sea rule (`landtype != 0`).

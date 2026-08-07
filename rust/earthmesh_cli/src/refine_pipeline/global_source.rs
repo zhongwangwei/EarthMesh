@@ -23,7 +23,7 @@ use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
 use crate::MethodCGridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
-use earthmesh_mesh::MethodCMesh;
+use earthmesh_refine_method_c::MethodCMesh;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -633,7 +633,7 @@ struct RefinedGrid {
     /// `realized_max_level` gives.
     transition_faces: usize,
     spring_nest_passes: usize,
-    hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
+    hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
@@ -864,7 +864,7 @@ fn refine_with_redgreen(
         pentagon_indices: mesh.impent,
         transition_faces: 0,
         spring_nest_passes: 0,
-        hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default(),
+        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         // Reported for the same two reasons Method-C reports it: the ocean
         // carve reads it to protect the cells a criterion demanded from its
         // largest-component rule, and the quality step reads the written file
@@ -922,7 +922,7 @@ struct MethodCRefineRequest<'a> {
 struct MethodCRefineOutcome {
     mesh: MethodCMesh,
     spring_nest_passes: usize,
-    hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
+    hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
@@ -969,7 +969,8 @@ fn refine_with_method_c(
     } = request;
     // Captured out of the h-field branch so every arm of this chain keeps the
     // same tuple shape; stays at its default for the geometric region paths.
-    let mut hfield_diagnostics = earthmesh_mesh::MethodCHfieldSpawnDiagnostics::default();
+    let mut hfield_diagnostics =
+        earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default();
     // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
     // it, carried out to the layer that knows where the run's outputs land.
     let mut adaptive_run: Option<AdaptiveRunRecord> = None;

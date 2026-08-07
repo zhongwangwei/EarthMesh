@@ -1,0 +1,25 @@
+[package]
+name = "earthmesh_refine_method_c"
+version = "3.0.0-alpha3"
+edition = "2021"
+description = "Method-C nested refinement for EarthMesh"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[lib]
+name = "earthmesh_refine_method_c"
+path = "src/lib.rs"
+
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_mesh = { path = "../earthmesh_mesh" }
+rayon = "1"
+
+# Same allowance as `earthmesh_mesh`, and for the same reason: these are
+# numeric kernels whose data flow follows the algorithm rather than Rust's
+# idiom -- multi-argument routines, 1-based loops over parallel connectivity
+# arrays, flattened tables.
+[lints.clippy]
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"

@@ -27,7 +27,7 @@ pub fn configure_global_thread_pool(thread_count: usize) -> io::Result<()> {
 }
 
 mod coordinates;
-use coordinates::{cross, dot, magnitude, normalize_cartesian_to_radius, vector_between};
+pub use coordinates::{cross, dot, magnitude, normalize_cartesian_to_radius, vector_between};
 pub use coordinates::{
     lonlat_degrees_to_unit_xyz, lonlat_points_to_unit_xyz, xyz_points_to_lonlat_degrees,
     xyz_to_lonlat_degrees, CartesianPoint, CartesianPointF32, LonLatDegrees,
@@ -79,6 +79,22 @@ mod mesh_cell_vertex_shared_edges;
 pub use mesh_cell_vertex_shared_edges::order_vertices_on_cell_by_shared_edges_one_based;
 mod mesh_cell_vertex_ordering;
 pub use mesh_cell_vertex_ordering::order_vertices_on_cell_one_based;
+mod mesh_cart_hex_neighbors;
+mod mesh_cart_hex_outer_pair;
+pub(crate) use mesh_cart_hex_neighbors::fill_cart_hex_w_face_neighbors_from_edges;
+pub(crate) use mesh_cart_hex_outer_pair::order_method_c_outer_w_pair_for_fill_rad3;
+mod mesh_geometry;
+pub use mesh_geometry::{
+    face_following_two_vertices, face_following_vertex, lookup_method_c_midpoint,
+    lookup_method_c_thirds, method_c_edge_key, validate_lonlat, validate_positive_distance,
+};
+mod mesh_repairable_error;
+pub use mesh_repairable_error::{
+    method_c_repairable_payload, repairable_error, set_first_two, MethodCRepairableError,
+    RepairableKind,
+};
+mod mesh_triangle_seed;
+pub use mesh_triangle_seed::MethodCTriangleSeed;
 mod mesh_insertion;
 mod mesh_patch;
 mod mesh_predicates;
@@ -178,7 +194,7 @@ pub use icosahedron_types::{
     IcosahedronSpringTopology, IcosahedronUEdge, IcosahedronWFace,
 };
 mod icosahedron_initial;
-pub(crate) use icosahedron_initial::canonical_global_dist00;
+pub use icosahedron_initial::canonical_global_dist00;
 pub use icosahedron_initial::{
     icosahedron_counts_canonical, icosahedron_diamond_corners_canonical,
     icosahedron_initial_grid_canonical, ICOSAHEDRON_MLOOPS, METHOD_C_CANONICAL_EARTH_RADIUS_METERS,
@@ -193,11 +209,12 @@ pub use icosahedron_spring_grid::{
 };
 mod icosahedron_m_neighbors;
 pub use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical;
-#[cfg(test)]
-pub(crate) use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical_checked;
+// Not test-gated: Method-C's selection calls it, and a `#[cfg(test)]` export
+// is invisible to another crate's tests as well as to its production code.
+pub use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical_checked;
 mod icosahedron_neighbors;
-pub(crate) use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical_checked_with_prognostic;
-pub(crate) use icosahedron_neighbors::tri_neighbors_outer_w_pair;
+pub use icosahedron_m_neighbors::derive_icosahedron_m_neighbors_canonical_checked_with_prognostic;
+pub use icosahedron_neighbors::tri_neighbors_outer_w_pair;
 pub use icosahedron_neighbors::{
     derive_icosahedron_tri_neighbors_canonical, derive_icosahedron_w_neighbors_canonical,
 };
@@ -279,92 +296,52 @@ mod voronoi_pcvt;
 pub use voronoi_pcvt::pcvt_adjust_voronoi_grid_state;
 mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
-mod method_c_mesh;
 mod primal_dual_mesh;
 pub use mesh_insertion::{InsertionError, InsertionReport};
 pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
 pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
-pub use method_c_mesh::MethodCMesh;
 pub use primal_dual_mesh::TriangularMesh;
 mod mesh_from_gridfile;
 pub use mesh_from_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
-pub use method_c_lattice_mask::METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS;
-pub use method_c_selection::method_c_connected_region_groups;
 pub use refine_regions::RefinementRegion;
-pub(crate) use refine_regions::*;
+pub use refine_regions::*;
 mod refine_region_geometry;
-mod refine_region_selection;
-mod refine_region_validation;
-pub(crate) use refine_region_geometry::*;
+pub use refine_region_geometry::{
+    refine_regions_close_to_method_c, refine_regions_contain_method_c,
+};
 mod mesh_expansion;
 mod mesh_topology_validation;
+mod refine_region_selection;
+mod refine_region_validation;
 pub use mesh_topology_validation::MethodCTopologyValidation;
 mod mesh_cart_hex;
-mod method_c_cart_hex_neighbors;
-pub(crate) use method_c_cart_hex_neighbors::fill_cart_hex_w_face_neighbors_from_edges;
-mod method_c_cart_hex_outer_pair;
-pub(crate) use method_c_cart_hex_outer_pair::order_method_c_outer_w_pair_for_fill_rad3;
 mod mesh_cart_hex_incidence;
 mod mesh_incidence;
 mod mesh_incidence_ring;
-mod mesh_table_checks;
-mod method_c_dump;
-mod method_c_emit;
-mod method_c_full;
-mod method_c_geometry;
-mod method_c_tables;
-mod refine_region_distance;
-pub(crate) use method_c_tables::*;
 mod mesh_point_interpolation;
 mod mesh_rebuild;
 mod mesh_rebuild_metadata;
 mod mesh_rebuild_neighbors;
 mod mesh_rebuild_seeds;
-mod method_c_lattice_mask;
-mod method_c_mask_annealing;
-mod method_c_parent_mrlw_validation;
-mod method_c_patch;
-mod method_c_perimeter;
-mod method_c_perimeter_mrows;
-mod method_c_perimeter_repair;
-mod method_c_perimeter_repair_candidates;
-mod method_c_perimeter_repair_grow;
-mod method_c_perimeter_repair_shrink;
-mod method_c_perimeter_selection;
-mod method_c_selection;
-mod method_c_selection_fill;
-mod method_c_selection_march;
-mod method_c_selection_start;
-mod method_c_selection_topology;
-mod method_c_spawn;
-mod method_c_spawn_hfield;
+mod mesh_table_checks;
 mod refine_region_corridor;
-pub use method_c_spawn_hfield::MethodCHfieldSpawnDiagnostics;
-mod method_c_spawn_internal;
-mod method_c_spawn_pass;
-mod method_c_spawn_retry;
-pub(crate) mod method_c_spawn_retry_scaled;
-mod method_c_table_helpers;
-pub(crate) use mesh_cart_hex_incidence::derive_cart_hex_m_neighbors_from_active_faces;
+mod refine_region_distance;
+pub use mesh_cart_hex_incidence::derive_cart_hex_m_neighbors_from_active_faces;
 pub(crate) use mesh_incidence::derive_method_c_m_neighbors_from_incidence;
-pub(crate) use mesh_point_interpolation::{
+pub use mesh_point_interpolation::{
     normalized_face_center, normalized_weighted_point, weighted_point,
 };
 pub(crate) use mesh_rebuild::method_c_mesh_from_triangle_seeds;
-pub(crate) use mesh_rebuild_metadata::{
+pub use mesh_rebuild_metadata::{
     default_method_c_m_metadata, derive_method_c_m_metadata_from_w_faces,
     method_c_identity_prognostic_map,
 };
 pub(crate) use mesh_rebuild_neighbors::fill_method_c_w_face_neighbors_from_edges;
-pub(crate) use mesh_table_checks::{
+pub use mesh_table_checks::{
     require_method_c_id, require_method_c_len, require_unique_active_triplet,
-};
-pub(crate) use method_c_geometry::{
-    face_following_two_vertices, face_following_vertex, lookup_method_c_midpoint,
-    lookup_method_c_thirds, method_c_edge_key, validate_lonlat, validate_positive_distance,
 };
 pub(crate) use refine_region_corridor::{
     method_c_cartesian_xy_segment_distance, method_c_closed_corridor_contains_cartesian,
@@ -375,27 +352,13 @@ pub(crate) use refine_region_distance::{
     plane_segment_distance,
 };
 mod mesh_spring;
-pub(crate) use mesh_spring::active_mesh_radius;
-pub use method_c_nest_spring::method_c_edge_target_lengths_from_field;
-#[cfg(test)]
-pub(crate) use method_c_nest_spring::method_c_nest_movable_m_points;
+pub use mesh_spring::active_mesh_radius;
 mod mesh_spring_iteration;
-mod method_c_nest_spring;
-#[cfg(test)]
-pub(crate) use method_c_nest_spring_iteration::method_c_nest_mrow_distance_multiplier;
-pub(crate) use method_c_nest_spring_iteration::{
-    method_c_nest_spring_iteration_into, MethodCNestSpringScratch,
-};
-mod method_c_nest_spring_iteration;
 pub(crate) use mesh_spring_iteration::{
     method_c_global_spring_iteration_into, MethodCGlobalSpringScratch,
 };
-pub(crate) use method_c_table_helpers::{
-    canonical_other_endpoint_by_first, fill_missing_endpoint, method_c_repairable_payload,
-    method_c_split_outer_edges, other_edge_face, repairable_error, set_first_two, RepairableKind,
-};
 mod mesh_w_face_edge_replacement;
-pub(crate) use mesh_w_face_edge_replacement::{
+pub use mesh_w_face_edge_replacement::{
     replace_w_face_edge_after, replace_w_face_edge_before, replace_w_face_edge_with_side_return,
     replace_w_face_edges_at,
 };

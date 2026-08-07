@@ -168,6 +168,7 @@ dependencies = [
  "earthmesh_mesh",
  "earthmesh_project",
  "earthmesh_quality",
+ "earthmesh_refine_method_c",
  "earthmesh_refine_planner",
  "earthmesh_refine_redgreen",
  "flate2",
@@ -243,6 +244,15 @@ dependencies = [
  "earthmesh_core",
  "earthmesh_mesh",
  "earthmesh_refine",
+]
+
+[[package]]
+name = "earthmesh_refine_method_c"
+version = "3.0.0-alpha3"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_mesh",
+ "rayon",
 ]
 
 [[package]]

@@ -132,31 +132,3 @@ fn a_method_c_mesh_converts_to_the_neutral_state_and_closes() {
         "V {vertices} - E {edges} + F {faces}"
     );
 }
-
-/// A refined mesh converts too, which is what a backend lifted onto this type
-/// would need.
-#[test]
-fn a_refined_method_c_mesh_also_converts() {
-    let mesh = crate::MethodCMesh::from_icosahedron(9, 0, 1.0, 0.25, 0).expect("base mesh");
-    let refined = mesh
-        .spawn_nest(
-            &[crate::RefinementRegion::Circle {
-                center: crate::LonLatDegrees::new(0.0, 0.0),
-                radius_meters: 2_000_000.0,
-                level: 1,
-            }],
-            1,
-        )
-        .expect("one level");
-    let state = MeshState::from_triangular_mesh(&refined).expect("convert refined");
-    assert_eq!(state.open_edge_count(), 0);
-    state
-        .validate()
-        .expect("still a valid state after refining");
-    assert!(
-        state.triangle_count()
-            > MeshState::from_triangular_mesh(&mesh)
-                .unwrap()
-                .triangle_count()
-    );
-}

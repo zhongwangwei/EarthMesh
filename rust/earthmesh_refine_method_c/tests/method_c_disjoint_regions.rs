@@ -10,7 +10,8 @@
 //! so the emit -- which is 99.5% of the cost of a pass and renumbers the whole
 //! mesh regardless of how many blocks it carries -- still runs once.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCMesh, RefinementRegion, TriangularMesh};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion, TriangularMesh};
+use earthmesh_refine_method_c::MethodCMesh;
 
 const NXP: usize = 81;
 

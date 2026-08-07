@@ -37,7 +37,7 @@ pub struct RefinePipelineRunReport {
     pub realized_max_level: usize,
     /// What the h-field asked for versus what survived Method-C legality, summed
     /// over passes. All zero for the geometric region paths.
-    pub hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
+    pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
     pub spring_nest_iterations: usize,

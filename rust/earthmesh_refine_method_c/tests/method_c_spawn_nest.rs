@@ -1,7 +1,6 @@
 use earthmesh_mesh::METHOD_C_CANONICAL_EARTH_RADIUS_METERS;
-use earthmesh_mesh::{
-    CartesianPoint, LonLatDegrees, MethodCMesh, RefinementRegion, TriangularMesh,
-};
+use earthmesh_mesh::{CartesianPoint, LonLatDegrees, RefinementRegion, TriangularMesh};
+use earthmesh_refine_method_c::MethodCMesh;
 
 fn magnitude(point: earthmesh_mesh::CartesianPoint) -> f64 {
     (point.x * point.x + point.y * point.y + point.z * point.z).sqrt()

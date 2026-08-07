@@ -6,8 +6,8 @@
 //! every depth the ceiling allows and asks how deep the mesh actually got.
 
 use earthmesh_cli::refinement_demand::ladder::nested_circle_radii_meters;
-use earthmesh_mesh::MethodCMesh;
 use earthmesh_mesh::{LonLatDegrees, RefinementRegion, TriangularMesh};
+use earthmesh_refine_method_c::MethodCMesh;
 
 const NXP: usize = 21;
 

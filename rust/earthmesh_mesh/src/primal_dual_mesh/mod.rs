@@ -67,7 +67,7 @@ pub struct TriangularMesh {
     pub nwd: usize,
     pub impent: [usize; 12],
     pub m_points: Vec<CartesianPoint>,
-    pub(crate) m_metadata: Vec<IcosahedronMPointMetadata>,
+    pub m_metadata: Vec<IcosahedronMPointMetadata>,
     pub u_edges: Vec<IcosahedronUEdge>,
     pub w_faces: Vec<IcosahedronWFace>,
     pub m_neighbors: Vec<IcosahedronMPointNeighbors>,
@@ -82,9 +82,9 @@ pub struct TriangularMesh {
     /// mesh the lineage is the identity. Refinement is the only thing that
     /// makes it differ, which is what makes it answer "where did this cell come
     /// from" after several passes and a renumbering have moved every row.
-    pub(crate) w_lineage: Vec<usize>,
+    pub w_lineage: Vec<usize>,
     /// The same for M points.
-    pub(crate) m_lineage: Vec<usize>,
+    pub m_lineage: Vec<usize>,
 }
 
 /// `[0, 1, 2, ..., count]`: every row descends from itself.

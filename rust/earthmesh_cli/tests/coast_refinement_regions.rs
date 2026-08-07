@@ -7,8 +7,8 @@
 use earthmesh_cli::coast_refinement_regions::{
     coastal_refinement_circles, materializable_radius_meters, CoastRefinementRequest,
 };
-use earthmesh_mesh::MethodCMesh;
 use earthmesh_mesh::RefinementRegion;
+use earthmesh_refine_method_c::MethodCMesh;
 
 /// Production land-type raster; skipped when the data is not mounted.
 fn landtype_path() -> Option<std::path::PathBuf> {

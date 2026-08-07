@@ -1,9 +1,6 @@
 use super::*;
 
-pub(crate) fn tri_neighbors_outer_w_pair(
-    current_iw: usize,
-    neighbor_inner: [usize; 3],
-) -> [usize; 2] {
+pub fn tri_neighbors_outer_w_pair(current_iw: usize, neighbor_inner: [usize; 3]) -> [usize; 2] {
     if current_iw == neighbor_inner[0] {
         [neighbor_inner[1], neighbor_inner[2]]
     } else if current_iw == neighbor_inner[1] {

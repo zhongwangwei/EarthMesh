@@ -4,7 +4,7 @@ use earthmesh_cli::{
     circle_close_mask_io::CircleMask, circle_close_mask_io::CloseMask,
     coordinate_types::LonLatPoint,
 };
-use earthmesh_mesh::MethodCMesh;
+use earthmesh_refine_method_c::MethodCMesh;
 use std::{fs, path::PathBuf};
 
 static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1011,7 +1011,7 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
         .regions
         .iter()
         .any(|region| matches!(region, earthmesh_mesh::RefinementRegion::Bbox { .. })));
-    let cartesian_base = earthmesh_mesh::MethodCMesh::from_cart_hex(18, 1_000_000.0)
+    let cartesian_base = earthmesh_refine_method_c::MethodCMesh::from_cart_hex(18, 1_000_000.0)
         .expect("build Cartesian base mesh");
     assert!(
         run.runtime_state.grid.nma > cartesian_base.nmd,
@@ -1060,7 +1060,7 @@ fn cartesian_native_method_c_samples_geographic_threshold_hfield_from_origin() {
     let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 100_000, None)
         .expect("geographic threshold hfield should refine Cartesian-XY mesh");
 
-    let cartesian_base = earthmesh_mesh::MethodCMesh::from_cart_hex(18, 1_000_000.0)
+    let cartesian_base = earthmesh_refine_method_c::MethodCMesh::from_cart_hex(18, 1_000_000.0)
         .expect("build Cartesian base mesh");
     assert!(run.regions.is_empty());
     assert_eq!(run.max_level, 1);

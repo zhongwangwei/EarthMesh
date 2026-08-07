@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn active_mesh_radius(mesh: &TriangularMesh) -> io::Result<f64> {
+pub fn active_mesh_radius(mesh: &TriangularMesh) -> io::Result<f64> {
     for point in mesh.m_points.iter().skip(2) {
         let radius = magnitude(*point);
         if radius.is_finite() && radius > 0.0 {

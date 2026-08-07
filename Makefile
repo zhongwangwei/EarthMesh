@@ -47,6 +47,10 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_quality/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_planner/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_project/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_boundary/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 
@@ -65,6 +69,10 @@ clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_project/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_boundary/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets -- -D warnings
 
 clippy-gui:
@@ -83,6 +91,10 @@ test-fast:
 	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_project/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_boundary/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_refine/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --all-targets
+	$(CARGO) test --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --all-targets
 	$(CARGO) test --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets
 
 check-gui-js:

@@ -27,7 +27,8 @@
 
 use std::io;
 
-use earthmesh_mesh::{MethodCMesh, RefinementRegion, TriangularMesh};
+use earthmesh_mesh::{RefinementRegion, TriangularMesh};
+use earthmesh_refine_method_c::MethodCMesh;
 
 use super::ladder::nested_circle_radii_meters;
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
@@ -238,7 +239,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
         // measured radius floor keeps affordable: it cut the circle count from
         // 114566 to 8190, so the groups are hundreds, not tens of thousands.
         let mut groups: Vec<Vec<RefinementRegion>> =
-            earthmesh_mesh::method_c_connected_region_groups(&regions, false)
+            earthmesh_refine_method_c::method_c_connected_region_groups(&regions, false)
                 .into_iter()
                 .flat_map(split_oversized_group)
                 .collect();

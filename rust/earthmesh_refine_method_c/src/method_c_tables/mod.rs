@@ -45,38 +45,3 @@ pub(crate) struct MethodCPerimeterPoint {
     pub(crate) nwdiv: usize,
     pub(crate) near_pentagon: bool,
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MethodCTriangleSeed {
-    pub(crate) im: [usize; 3],
-    pub(crate) mrlw: usize,
-    pub(crate) mrlw_orig: usize,
-    pub(crate) ngr: usize,
-    pub(crate) mrow: isize,
-    pub(crate) target_iw: usize,
-    pub(crate) target_iu: [usize; 3],
-}
-
-impl MethodCTriangleSeed {
-    pub(crate) fn new(im: [usize; 3], metadata: (usize, usize, usize)) -> Self {
-        Self {
-            im,
-            mrlw: metadata.0,
-            mrlw_orig: metadata.1,
-            ngr: metadata.2,
-            mrow: 0,
-            target_iw: 0,
-            target_iu: [0; 3],
-        }
-    }
-
-    pub(crate) fn with_mrow(mut self, mrow: isize) -> Self {
-        self.mrow = mrow;
-        self
-    }
-
-    pub(crate) fn with_target_iw(mut self, target_iw: usize) -> Self {
-        self.target_iw = target_iw;
-        self
-    }
-}

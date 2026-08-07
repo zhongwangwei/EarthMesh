@@ -13,7 +13,7 @@ pub(crate) fn method_c_region_contains_method_c(
     }
 }
 
-pub(crate) fn refine_regions_contain_method_c(
+pub fn refine_regions_contain_method_c(
     regions: &[RefinementRegion],
     point: CartesianPoint,
     radius: f64,
@@ -37,7 +37,7 @@ pub(crate) fn method_c_region_close_to_method_c(
     }
 }
 
-pub(crate) fn refine_regions_close_to_method_c(
+pub fn refine_regions_close_to_method_c(
     regions: &[RefinementRegion],
     point: CartesianPoint,
     radius: f64,

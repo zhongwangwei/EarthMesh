@@ -2,7 +2,7 @@ use std::io;
 
 use super::IcosahedronWFace;
 
-pub(crate) fn replace_w_face_edge_after(
+pub fn replace_w_face_edge_after(
     w_faces: &mut [IcosahedronWFace],
     iw: usize,
     old_iu: usize,
@@ -25,7 +25,7 @@ pub(crate) fn replace_w_face_edge_after(
     Ok(())
 }
 
-pub(crate) fn replace_w_face_edge_before(
+pub fn replace_w_face_edge_before(
     w_faces: &mut [IcosahedronWFace],
     iw: usize,
     old_iu: usize,
@@ -48,7 +48,7 @@ pub(crate) fn replace_w_face_edge_before(
     Ok(())
 }
 
-pub(crate) fn replace_w_face_edge_with_side_return(
+pub fn replace_w_face_edge_with_side_return(
     w_faces: &mut [IcosahedronWFace],
     iw: usize,
     old_iu: usize,
@@ -76,7 +76,7 @@ pub(crate) fn replace_w_face_edge_with_side_return(
     }
 }
 
-pub(crate) fn replace_w_face_edges_at(
+pub fn replace_w_face_edges_at(
     w_faces: &mut [IcosahedronWFace],
     iw: usize,
     old_iu: usize,

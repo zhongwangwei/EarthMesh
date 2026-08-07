@@ -4,7 +4,8 @@
 //! from" after passes and a renumbering have moved every row. It is only worth
 //! anything if it survives all three, so that is what these check.
 
-use earthmesh_mesh::{LonLatDegrees, MethodCMesh, RefinementRegion};
+use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
+use earthmesh_refine_method_c::MethodCMesh;
 
 const NXP: usize = 21;
 

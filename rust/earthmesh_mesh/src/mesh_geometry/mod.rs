@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io};
 
 use super::{IcosahedronWFace, LonLatDegrees};
 
-pub(crate) fn validate_lonlat(point: LonLatDegrees) -> io::Result<()> {
+pub fn validate_lonlat(point: LonLatDegrees) -> io::Result<()> {
     if !point.lon_degrees.is_finite()
         || !point.lat_degrees.is_finite()
         || point.lat_degrees < -90.0
@@ -16,7 +16,7 @@ pub(crate) fn validate_lonlat(point: LonLatDegrees) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_positive_distance(name: &str, value: f64) -> io::Result<()> {
+pub fn validate_positive_distance(name: &str, value: f64) -> io::Result<()> {
     if !value.is_finite() || value <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -26,7 +26,7 @@ pub(crate) fn validate_positive_distance(name: &str, value: f64) -> io::Result<(
     Ok(())
 }
 
-pub(crate) fn face_following_two_vertices(
+pub fn face_following_two_vertices(
     face: IcosahedronWFace,
     im: usize,
     iw: usize,
@@ -48,11 +48,7 @@ pub(crate) fn face_following_two_vertices(
     }
 }
 
-pub(crate) fn face_following_vertex(
-    face: IcosahedronWFace,
-    im: usize,
-    iw: usize,
-) -> io::Result<usize> {
+pub fn face_following_vertex(face: IcosahedronWFace, im: usize, iw: usize) -> io::Result<usize> {
     if face.im[0] == im {
         Ok(face.im[1])
     } else if face.im[1] == im {
@@ -70,7 +66,7 @@ pub(crate) fn face_following_vertex(
     }
 }
 
-pub(crate) fn method_c_edge_key(im1: usize, im2: usize) -> (usize, usize) {
+pub fn method_c_edge_key(im1: usize, im2: usize) -> (usize, usize) {
     if im1 <= im2 {
         (im1, im2)
     } else {
@@ -78,7 +74,7 @@ pub(crate) fn method_c_edge_key(im1: usize, im2: usize) -> (usize, usize) {
     }
 }
 
-pub(crate) fn lookup_method_c_midpoint(
+pub fn lookup_method_c_midpoint(
     midpoint_by_edge: &BTreeMap<(usize, usize), usize>,
     im1: usize,
     im2: usize,
@@ -95,7 +91,7 @@ pub(crate) fn lookup_method_c_midpoint(
         })
 }
 
-pub(crate) fn lookup_method_c_thirds(
+pub fn lookup_method_c_thirds(
     thirds_by_edge: &BTreeMap<(usize, usize), [usize; 2]>,
     im1: usize,
     im2: usize,

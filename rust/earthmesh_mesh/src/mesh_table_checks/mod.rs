@@ -1,6 +1,6 @@
 use std::io;
 
-pub(crate) fn require_method_c_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
+pub fn require_method_c_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
     if actual < required {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -10,7 +10,7 @@ pub(crate) fn require_method_c_len(name: &str, actual: usize, required: usize) -
     Ok(())
 }
 
-pub(crate) fn require_method_c_id(label: &str, id: usize, max: usize) -> io::Result<()> {
+pub fn require_method_c_id(label: &str, id: usize, max: usize) -> io::Result<()> {
     if id <= 1 || id > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -20,7 +20,7 @@ pub(crate) fn require_method_c_id(label: &str, id: usize, max: usize) -> io::Res
     Ok(())
 }
 
-pub(crate) fn require_unique_active_triplet(
+pub fn require_unique_active_triplet(
     label: &str,
     owner: usize,
     values: [usize; 3],

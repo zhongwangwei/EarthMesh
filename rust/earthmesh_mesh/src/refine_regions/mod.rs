@@ -35,7 +35,7 @@ pub enum RefinementRegion {
 
 pub(crate) const METHOD_C_MIN_GRID_SPACING_METERS: f64 = 0.001;
 
-pub(crate) fn scale_refinement_regions_radius(
+pub fn scale_refinement_regions_radius(
     regions: &[RefinementRegion],
     factor: f64,
 ) -> Option<Vec<RefinementRegion>> {
