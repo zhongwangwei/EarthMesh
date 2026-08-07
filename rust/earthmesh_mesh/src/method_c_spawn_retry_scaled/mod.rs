@@ -29,7 +29,7 @@ pub(crate) fn scaled_parent_retry_factors() -> impl Iterator<Item = f64> {
     })
 }
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn retry_child_with_scaled_parent_region(
         &self,
         parent_regions: &[RefinementRegion],

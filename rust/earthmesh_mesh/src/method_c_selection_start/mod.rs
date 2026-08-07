@@ -1,6 +1,6 @@
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     #[cfg(test)]
     pub(crate) fn method_c_refinement_start_point_with_neighbors(
         &self,

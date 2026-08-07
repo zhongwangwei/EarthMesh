@@ -1,7 +1,7 @@
 use super::super::*;
 
-fn base_mesh() -> TriangularMesh {
-    TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh")
+fn base_mesh() -> MethodCMesh {
+    MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh")
 }
 
 /// Great-circle distance in meters between two (lon, lat) degree points.
@@ -30,7 +30,7 @@ fn two_ring_levels(inner_m: f64, outer_m: f64) -> impl Fn(f64, f64) -> u8 {
     }
 }
 
-fn face_centroid_lonlat(mesh: &TriangularMesh, iw: usize) -> LonLatDegrees {
+fn face_centroid_lonlat(mesh: &MethodCMesh, iw: usize) -> LonLatDegrees {
     let face = mesh.w_faces[iw];
     let [im1, im2, im3] = face.im;
     let p1 = mesh.m_points[im1];
@@ -47,7 +47,7 @@ fn face_centroid_lonlat(mesh: &TriangularMesh, iw: usize) -> LonLatDegrees {
 fn canonical_thirdm_lattice_rad3_footprints_cover_active_base_faces() {
     for nxp in [6, 12, 80] {
         let mesh =
-            TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+            MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
         let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
         let start = mesh.impent[0];
         let mut jdone = vec![[false; 6]; mesh.nmd + 1];
@@ -132,7 +132,7 @@ fn edge_midpoint_demand_is_not_missed_between_hfield_vertex_samples() {
 
 #[test]
 fn cartesian_hfield_anchors_its_stride_phase_without_a_spherical_pentagon() {
-    let mesh = TriangularMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
     assert!(
         mesh.impent.iter().all(|&im| im == 1),
         "cart_hex intentionally has no spherical pentagon anchor"
@@ -151,7 +151,7 @@ fn cartesian_hfield_anchors_its_stride_phase_without_a_spherical_pentagon() {
 }
 
 fn first_materializable_cartesian_rad3_seed(
-    mesh: &TriangularMesh,
+    mesh: &MethodCMesh,
     neighbors: &[IcosahedronMPointNeighbors],
 ) -> (usize, usize, usize, usize, usize) {
     let seed = (2..=mesh.nmd)
@@ -178,7 +178,7 @@ fn first_materializable_cartesian_rad3_seed(
 
 #[test]
 fn cartesian_hfield_does_not_hide_non_seam_rad3_corruption() {
-    let mut mesh = TriangularMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let mut mesh = MethodCMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
     let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
     let (seed, _, imx, outer_iw, _) = first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
     let replacement = (2..=mesh.nmd)
@@ -202,7 +202,7 @@ fn cartesian_hfield_does_not_hide_non_seam_rad3_corruption() {
 
 #[test]
 fn cartesian_hfield_rejects_a_non_seam_outer_link_redirected_to_a_ghost() {
-    let mut mesh = TriangularMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let mut mesh = MethodCMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
     let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
     let (seed, sector_iw, imx, original_outer_iw, outer_slot) =
         first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
@@ -226,7 +226,7 @@ fn cartesian_hfield_rejects_a_non_seam_outer_link_redirected_to_a_ghost() {
 
 #[test]
 fn cartesian_hfield_rejects_self_consistent_ghost_inner_and_outer_redirects() {
-    let mut mesh = TriangularMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
+    let mut mesh = MethodCMesh::from_cart_hex(6, 1_000_000.0).expect("Cartesian Method-C mesh");
     let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
     let (seed, sector_iw, imx, original_outer_iw, outer_slot) =
         first_materializable_cartesian_rad3_seed(&mesh, &neighbors);
@@ -270,7 +270,7 @@ fn cartesian_hfield_rejects_self_consistent_ghost_inner_and_outer_redirects() {
 
 #[test]
 fn mixed_point_and_edge_midpoint_corridor_is_covered_without_truncation() {
-    let mesh = TriangularMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let first = (2..=mesh.nmd)
         .find(|im| !mesh.impent.contains(im))
         .expect("regular M point");
@@ -363,7 +363,7 @@ fn mixed_point_and_edge_midpoint_corridor_is_covered_without_truncation() {
     );
 
     let refined = mesh
-        .spawn_nest_from_target_levels(demand, 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(demand, 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("a stride-compatible edge corridor must refine atomically");
     for demanded in std::iter::once(first_ll).chain(midpoints.iter().copied()) {
         let nearest = (2..=refined.nmd)
@@ -453,7 +453,7 @@ fn disconnected_hfield_demands_select_every_component() {
         );
     }
     let refined = mesh
-        .spawn_nest_from_target_levels(demand, 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(demand, 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("disconnected h-field components must refine independently");
     refined
         .validate_topology()
@@ -487,7 +487,7 @@ fn disconnected_hfield_demands_select_every_component() {
 
 #[test]
 fn disconnected_hfield_preserves_every_demand_point() {
-    let mesh = TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(12, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let nearest_regular_m = |target_lon: f64, target_lat: f64| {
         (2..=mesh.nmd)
             .filter(|im| !mesh.impent.contains(im))
@@ -546,7 +546,7 @@ fn disconnected_hfield_preserves_every_demand_point() {
     }
 
     let refined = mesh
-        .spawn_nest_from_target_levels(demand, 1, TriangularMesh::METHOD_C_MAX_MROWS_ATMOS)
+        .spawn_nest_from_target_levels(demand, 1, MethodCMesh::MAX_MROWS_ATMOS)
         .expect("disconnected HField components must share one valid Method-C stride phase");
     for demanded in demanded_points {
         let (nearest, distance_m) = (2..=refined.nmd)
@@ -615,7 +615,7 @@ fn single_level_field_spawn_matches_region_spawn_footprint() {
     };
 
     let from_field = mesh
-        .spawn_nest_from_target_levels(field, 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(field, 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("h-field spawn");
     from_field
         .validate_topology()
@@ -628,7 +628,7 @@ fn single_level_field_spawn_matches_region_spawn_footprint() {
         level: 1,
     };
     let from_region = mesh
-        .spawn_nest_with_max_mrows(&[region], 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_with_max_mrows(&[region], 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("region spawn");
 
     // Same demand expressed two ways: footprints are built differently
@@ -643,7 +643,7 @@ fn single_level_field_spawn_matches_region_spawn_footprint() {
 
     // Every refined face stays near the demanded circle: selection radius plus
     // the transition apron (mrow rows of ~coarse-cell size).
-    let apron_m = (TriangularMesh::METHOD_C_MAX_MROWS_SURFACE as f64 + 2.0) * 1_500_000.0;
+    let apron_m = (MethodCMesh::MAX_MROWS_SURFACE as f64 + 2.0) * 1_500_000.0;
     let mut refined_faces = 0usize;
     for iw in 2..=from_field.nwd {
         if from_field.w_faces[iw].ngr >= 2 {
@@ -663,7 +663,7 @@ fn single_level_field_spawn_matches_region_spawn_footprint() {
 
     // Determinism: identical closure, identical mesh.
     let again = mesh
-        .spawn_nest_from_target_levels(field, 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(field, 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("h-field spawn rerun");
     assert_eq!(again.nmd, from_field.nmd);
     assert_eq!(again.nud, from_field.nud);
@@ -698,12 +698,12 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
         },
     ];
     let from_region = mesh
-        .spawn_nest_with_max_mrows(&regions, 2, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_with_max_mrows(&regions, 2, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("region-mode two-level spawn must be feasible on this fixture");
 
     let field = two_ring_levels(inner_m, outer_m);
     let two = mesh
-        .spawn_nest_from_target_levels(&field, 2, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(&field, 2, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("two-level h-field spawn");
 
     // Same demand, two expressions: footprints agree to within boundary rows.
@@ -720,7 +720,7 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
 
     // Inner-generation faces hug the inner circle (child cells are ~half the
     // coarse size, so the apron is tighter).
-    let child_apron_m = (TriangularMesh::METHOD_C_MAX_MROWS_SURFACE as f64 + 2.0) * 800_000.0;
+    let child_apron_m = (MethodCMesh::MAX_MROWS_SURFACE as f64 + 2.0) * 800_000.0;
     for iw in 2..=two.nwd {
         if two.w_faces[iw].ngr == 3 {
             let c = face_centroid_lonlat(&two, iw);
@@ -735,7 +735,7 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
     // Asking for deeper passes than the field demands stops cleanly after the
     // demanded depth: identical output tables.
     let five = mesh
-        .spawn_nest_from_target_levels(&field, 5, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(&field, 5, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("max_level 5 h-field spawn");
     assert_eq!(five.nmd, two.nmd);
     assert_eq!(five.nud, two.nud);
@@ -744,13 +744,13 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
 
 #[test]
 fn discontinuous_deeper_hfield_at_parent_boundary_is_rejected() {
-    let mesh = TriangularMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     // Equal radii make the level-1 branch unreachable, so this target jumps
     // directly from level 2 to 0. A gradient-limited HField never does this;
     // reject it rather than silently returning a partially satisfied mesh.
     let field = two_ring_levels(4_000_000.0, 4_000_000.0);
     let error = mesh
-        .spawn_nest_from_target_levels(&field, 2, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(&field, 2, MethodCMesh::MAX_MROWS_SURFACE)
         .expect_err("a discontinuous level-2 boundary must not be partially accepted");
     assert!(
         error.to_string().contains("parent boundary"),
@@ -765,7 +765,7 @@ fn persisted_parent_advances_to_the_next_absolute_target_level() {
         .spawn_nest_from_target_levels(
             |lon, lat| u8::from(gc_distance_m(lon, lat, 115.0, 25.0) <= 4_000_000.0),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+            MethodCMesh::MAX_MROWS_SURFACE,
         )
         .expect("level-1 parent");
     assert_eq!(
@@ -783,7 +783,7 @@ fn persisted_parent_advances_to_the_next_absolute_target_level() {
                 }
             },
             2,
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+            MethodCMesh::MAX_MROWS_SURFACE,
         )
         .expect("absolute level-2 target on persisted parent");
     assert_eq!(
@@ -799,7 +799,7 @@ fn boundary_only_persisted_target_is_rejected_instead_of_silent_noop() {
         .spawn_nest_from_target_levels(
             |lon, lat| u8::from(gc_distance_m(lon, lat, 115.0, 25.0) <= 4_000_000.0),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+            MethodCMesh::MAX_MROWS_SURFACE,
         )
         .expect("level-1 parent");
     let boundary = (2..=parent.nmd)
@@ -836,7 +836,7 @@ fn boundary_only_persisted_target_is_rejected_instead_of_silent_noop() {
                 }
             },
             2,
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+            MethodCMesh::MAX_MROWS_SURFACE,
         )
         .expect_err("boundary-only target must not return an unchanged success");
     assert!(
@@ -850,7 +850,7 @@ fn empty_field_is_identity_and_zero_level_rejected_paths() {
     let mesh = base_mesh();
     let silent = |_lon: f64, _lat: f64| 0u8;
     let out = mesh
-        .spawn_nest_from_target_levels(silent, 3, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+        .spawn_nest_from_target_levels(silent, 3, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("empty field spawn");
     assert_eq!(out.nmd, mesh.nmd);
     assert_eq!(out.nud, mesh.nud);

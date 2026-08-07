@@ -171,7 +171,6 @@ impl TriangularMesh {
             m_prognostic: self.m_prognostic.clone(),
             u_prognostic: self.u_prognostic.clone(),
             w_prognostic: self.w_prognostic.clone(),
-            boundary_rows: self.boundary_rows.clone(),
         };
         adjusted.validate_topology()?;
         Ok(adjusted)

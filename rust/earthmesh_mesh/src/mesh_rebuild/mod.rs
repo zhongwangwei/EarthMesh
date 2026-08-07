@@ -9,22 +9,6 @@ pub(crate) fn method_c_mesh_from_triangle_seeds(
     m_points: Vec<CartesianPoint>,
     face_seeds: &[MethodCTriangleSeed],
 ) -> io::Result<TriangularMesh> {
-    method_c_mesh_from_triangle_seeds_with_boundary_rows(
-        nmd,
-        impent,
-        m_points,
-        face_seeds,
-        Vec::new(),
-    )
-}
-
-fn method_c_mesh_from_triangle_seeds_with_boundary_rows(
-    nmd: usize,
-    impent: [usize; 12],
-    m_points: Vec<CartesianPoint>,
-    face_seeds: &[MethodCTriangleSeed],
-    boundary_rows: Vec<usize>,
-) -> io::Result<TriangularMesh> {
     require_method_c_len("m_points", m_points.len(), nmd + 1)?;
 
     let face_iw = assign_method_c_triangle_seed_w_ids(face_seeds)?;
@@ -119,7 +103,6 @@ fn method_c_mesh_from_triangle_seeds_with_boundary_rows(
         m_prognostic: method_c_identity_prognostic_map(nmd),
         u_prognostic: method_c_identity_prognostic_map(nud),
         w_prognostic: method_c_identity_prognostic_map(nwd),
-        boundary_rows,
         // Rebuilt from external tables, so there is no earlier mesh to descend
         // from: every row is its own ancestor until a refinement pass says
         // otherwise.

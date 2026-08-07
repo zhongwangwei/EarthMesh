@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn method_c_perimeters_from_selected_faces(
         &self,
         selected: &[bool],

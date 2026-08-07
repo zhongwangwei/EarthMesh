@@ -27,7 +27,7 @@
 
 use std::io;
 
-use earthmesh_mesh::{RefinementRegion, TriangularMesh};
+use earthmesh_mesh::{MethodCMesh, RefinementRegion, TriangularMesh};
 
 use super::ladder::nested_circle_radii_meters;
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
@@ -162,13 +162,13 @@ pub fn adaptive_demand_circles_for_level(
 }
 
 pub fn spawn_nest_adaptive_with_named_regions(
-    mesh: &TriangularMesh,
+    mesh: &MethodCMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
     named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
-) -> io::Result<(TriangularMesh, AdaptiveNestReport)> {
+) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
     if !base_cell_meters.is_finite() || base_cell_meters <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -448,12 +448,12 @@ fn deepest_mrlw(mesh: &TriangularMesh) -> usize {
 
 /// Adaptive refinement with no regions named outright.
 pub fn spawn_nest_adaptive(
-    mesh: &TriangularMesh,
+    mesh: &MethodCMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
     base_cell_meters: f64,
     max_level: usize,
-) -> io::Result<(TriangularMesh, AdaptiveNestReport)> {
+) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
     spawn_nest_adaptive_with_named_regions(mesh, refine, inputs, &[], base_cell_meters, max_level)
 }
 

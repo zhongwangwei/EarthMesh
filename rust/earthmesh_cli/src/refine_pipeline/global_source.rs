@@ -23,6 +23,7 @@ use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
 use crate::MethodCGridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
+use earthmesh_mesh::MethodCMesh;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -919,7 +920,7 @@ struct MethodCRefineRequest<'a> {
 /// What a Method-C refinement produced, and the three things the pipeline tail
 /// reports about how it got there.
 struct MethodCRefineOutcome {
-    mesh: TriangularMesh,
+    mesh: MethodCMesh,
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_mesh::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
@@ -939,6 +940,9 @@ fn refine_with_method_c(
     mesh: TriangularMesh,
     request: MethodCRefineRequest<'_>,
 ) -> io::Result<MethodCRefineOutcome> {
+    // Into the nesting here and back out at the boundary, so the transition
+    // rows exist exactly where they mean something.
+    let mesh = MethodCMesh::new(mesh);
     let MethodCRefineRequest {
         config,
         refine,
@@ -994,7 +998,7 @@ fn refine_with_method_c(
                     mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
                         native_atmosphere_regions,
                         atmosphere_max_level,
-                        TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                        MethodCMesh::MAX_MROWS_ATMOS,
                         nxp,
                         atmosphere_spring_iterations,
                         native_deltax,
@@ -1013,7 +1017,7 @@ fn refine_with_method_c(
                         mesh.spawn_nest_cartesian_xy_with_max_mrows(
                             native_atmosphere_regions,
                             atmosphere_max_level,
-                            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                            MethodCMesh::MAX_MROWS_ATMOS,
                         )?
                     } else {
                         mesh.spawn_nest_as_atmosmesh(
@@ -1028,7 +1032,10 @@ fn refine_with_method_c(
             (mesh, 0)
         };
         let mesh = if native_surface_global_expansion {
-            mesh.expand_by_factor(native_sfcgrid_res_factor)?
+            // A shared operation, so it hands back the shared mesh and the
+            // nesting has to be re-entered. Expansion emits no transition rows,
+            // so there are none to carry across.
+            MethodCMesh::new(mesh.expand_by_factor(native_sfcgrid_res_factor)?)
         } else {
             mesh
         };
@@ -1045,7 +1052,7 @@ fn refine_with_method_c(
                 mesh.spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
                     native_surface_regions,
                     surface_max_level,
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                    MethodCMesh::MAX_MROWS_SURFACE,
                     surface_nxp,
                     surface_spring_iterations,
                     native_deltax,
@@ -1064,7 +1071,7 @@ fn refine_with_method_c(
                     mesh.spawn_nest_cartesian_xy_with_max_mrows(
                         native_surface_regions,
                         surface_max_level,
-                        TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                        MethodCMesh::MAX_MROWS_SURFACE,
                     )?
                 } else {
                     mesh.spawn_nest_as_surface(native_surface_regions, surface_max_level)?
@@ -1149,9 +1156,9 @@ fn refine_with_method_c(
         });
         let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
         let max_mrows = if is_atmosmesh {
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+            MethodCMesh::MAX_MROWS_ATMOS
         } else {
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+            MethodCMesh::MAX_MROWS_SURFACE
         };
         if native_cartesian_xy && has_hydro_hfield_source {
             return Err(io::Error::new(
@@ -1258,9 +1265,9 @@ fn refine_with_method_c(
                 regions,
                 max_level,
                 if is_atmosmesh {
-                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+                    MethodCMesh::MAX_MROWS_ATMOS
                 } else {
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+                    MethodCMesh::MAX_MROWS_SURFACE
                 },
                 nxp,
                 spring_nest_iterations,
@@ -1270,7 +1277,7 @@ fn refine_with_method_c(
             mesh.spawn_nest_with_spring_and_max_mrows(
                 regions,
                 max_level,
-                TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+                MethodCMesh::MAX_MROWS_ATMOS,
                 nxp,
                 spring_nest_iterations,
             )?
@@ -1278,7 +1285,7 @@ fn refine_with_method_c(
             mesh.spawn_nest_with_spring_and_max_mrows(
                 regions,
                 max_level,
-                TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                MethodCMesh::MAX_MROWS_SURFACE,
                 nxp,
                 spring_nest_iterations,
             )?
@@ -1289,9 +1296,9 @@ fn refine_with_method_c(
                 regions,
                 max_level,
                 if is_atmosmesh {
-                    TriangularMesh::METHOD_C_MAX_MROWS_ATMOS
+                    MethodCMesh::MAX_MROWS_ATMOS
                 } else {
-                    TriangularMesh::METHOD_C_MAX_MROWS_SURFACE
+                    MethodCMesh::MAX_MROWS_SURFACE
                 },
             )?,
             0,

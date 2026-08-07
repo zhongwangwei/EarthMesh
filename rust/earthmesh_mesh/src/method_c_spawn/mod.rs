@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     /// Spawn specified Method-C refinement regions with independent per-region
     /// levels using Method-C. Each pass follows the compatibility perimeter
     /// grouping and transition-patch table updates instead of a generic local
@@ -12,7 +12,7 @@ impl TriangularMesh {
     /// and is therefore intended for non-atmosphere meshes unless callers pass
     /// an explicit width.
     pub fn spawn_nest(&self, regions: &[RefinementRegion], max_level: usize) -> io::Result<Self> {
-        self.spawn_nest_with_max_mrows(regions, max_level, Self::METHOD_C_MAX_MROWS_SURFACE)
+        self.spawn_nest_with_max_mrows(regions, max_level, Self::MAX_MROWS_SURFACE)
     }
 
     /// Spawn Method-C refinement with atmosphere-style transition width
@@ -22,7 +22,7 @@ impl TriangularMesh {
         regions: &[RefinementRegion],
         max_level: usize,
     ) -> io::Result<Self> {
-        self.spawn_nest_with_max_mrows(regions, max_level, Self::METHOD_C_MAX_MROWS_ATMOS)
+        self.spawn_nest_with_max_mrows(regions, max_level, Self::MAX_MROWS_ATMOS)
     }
 
     /// Spawn Method-C refinement with surface-style transition width
@@ -74,7 +74,7 @@ impl TriangularMesh {
         self.spawn_nest_with_spring_and_max_mrows(
             regions,
             max_level,
-            Self::METHOD_C_MAX_MROWS_SURFACE,
+            Self::MAX_MROWS_SURFACE,
             nxp,
             niter,
         )
@@ -92,7 +92,7 @@ impl TriangularMesh {
         self.spawn_nest_with_spring_and_max_mrows(
             regions,
             max_level,
-            Self::METHOD_C_MAX_MROWS_ATMOS,
+            Self::MAX_MROWS_ATMOS,
             nxp,
             niter,
         )

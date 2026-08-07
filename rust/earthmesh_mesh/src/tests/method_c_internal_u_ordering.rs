@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_internal_u_ids_follow_canonical_first_seen_w_order() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

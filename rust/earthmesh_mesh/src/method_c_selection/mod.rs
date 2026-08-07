@@ -1,6 +1,6 @@
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     #[cfg(test)]
     pub(crate) fn selected_region_faces(
         &self,

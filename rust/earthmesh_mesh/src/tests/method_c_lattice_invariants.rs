@@ -31,13 +31,13 @@ impl Lcg {
 }
 
 struct LatticeProbe {
-    mesh: TriangularMesh,
+    mesh: MethodCMesh,
     m_neighbors: Vec<IcosahedronMPointNeighbors>,
 }
 
 impl LatticeProbe {
     fn new(nxp: usize) -> Self {
-        let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
         let m_neighbors = derive_icosahedron_m_neighbors_canonical_checked(
             mesh.nmd,
             &mesh.u_edges,
@@ -91,9 +91,7 @@ impl LatticeProbe {
             .method_c_perimeters_from_selected_faces(&selected, &self.m_neighbors)
         {
             // G5: the walk closed. G4: every ring is a multiple of three.
-            Ok(perimeters) => Ok(TriangularMesh::method_c_perimeters_are_triplets(
-                &perimeters,
-            )),
+            Ok(perimeters) => Ok(MethodCMesh::method_c_perimeters_are_triplets(&perimeters)),
             Err(error) => Err(error.to_string()),
         }
     }
@@ -240,7 +238,7 @@ fn a_single_footprint_and_a_pair_are_measured_before_the_union_is_blamed() {
                 for perimeter in &perimeters {
                     ring_lengths.insert(perimeter.len());
                 }
-                if TriangularMesh::method_c_perimeters_are_triplets(&perimeters) {
+                if MethodCMesh::method_c_perimeters_are_triplets(&perimeters) {
                     single_clean += 1;
                 } else {
                     single_broken += 1;
@@ -321,7 +319,7 @@ fn the_footprint_irregularity_is_located_against_the_pentagons() {
         let clean = probe
             .mesh
             .method_c_perimeters_from_selected_faces(&selected, &probe.m_neighbors)
-            .map(|perimeters| TriangularMesh::method_c_perimeters_are_triplets(&perimeters))
+            .map(|perimeters| MethodCMesh::method_c_perimeters_are_triplets(&perimeters))
             .unwrap_or(false);
         let bucket = if distance[seed] <= 3 {
             &mut near
@@ -429,7 +427,7 @@ fn the_lattice_is_measured_again_on_the_child_generation() {
         let clean = child_probe
             .mesh
             .method_c_perimeters_from_selected_faces(&selected, &child_probe.m_neighbors)
-            .map(|perimeters| TriangularMesh::method_c_perimeters_are_triplets(&perimeters))
+            .map(|perimeters| MethodCMesh::method_c_perimeters_are_triplets(&perimeters))
             .unwrap_or(false);
         let bucket = if distance[seed] <= 3 {
             &mut near

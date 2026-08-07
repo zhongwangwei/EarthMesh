@@ -7,6 +7,7 @@
 //! something does, and a resolution-dependent criterion actually changes its
 //! mind between levels.
 
+use earthmesh_mesh::MethodCMesh;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,7 +16,6 @@ use earthmesh_cli::refinement_demand::{
     nest::spawn_nest_adaptive, plan::DemandPlanInputs, source_bounds_for_bbox,
 };
 use earthmesh_core::RefineConfig;
-use earthmesh_mesh::TriangularMesh;
 
 static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -64,8 +64,8 @@ fn plan_inputs<'a>(landtype: &'a Path, refine_coastline: bool) -> DemandPlanInpu
     }
 }
 
-fn base_mesh() -> TriangularMesh {
-    TriangularMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+fn base_mesh() -> MethodCMesh {
+    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
 }
 
 #[test]

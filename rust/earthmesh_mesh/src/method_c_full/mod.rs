@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn fill_method_c_full_subdivision(
         &self,
         iw: usize,

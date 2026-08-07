@@ -9,7 +9,7 @@ use super::*;
 /// twenty four recovers 237 and takes the workspace suite to half an hour.
 const RESCALE_RETRY_FACTOR_BUDGET: usize = 12;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn spawn_nest_internal(
         &self,
         regions: &[RefinementRegion],

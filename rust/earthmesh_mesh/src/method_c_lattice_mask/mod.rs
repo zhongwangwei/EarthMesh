@@ -40,7 +40,7 @@ use super::*;
 /// that grows with how many seeds they hold.
 pub const METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS: usize = 3;
 
-impl TriangularMesh {
+impl MethodCMesh {
     /// M rings from each point to the nearest defect.
     ///
     /// A defect is one of the twelve icosahedral pentagons or any point the

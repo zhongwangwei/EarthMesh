@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_public_spawn_entrypoints_use_same_table_path() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -77,7 +77,7 @@ fn method_c_public_spawn_entrypoints_use_same_table_path() {
         .validate_topology()
         .expect("spring Method-C topology");
 
-    let cart_mesh = TriangularMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
+    let cart_mesh = MethodCMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
     let cart_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
@@ -87,19 +87,14 @@ fn method_c_public_spawn_entrypoints_use_same_table_path() {
         .selected_region_faces(&cart_region, 1, true)
         .expect("selected Cartesian Method-C faces");
     let cart_expected = cart_mesh
-        .spawn_nest_pass_with_max_mrows(
-            &cart_selected,
-            2,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-            false,
-        )
+        .spawn_nest_pass_with_max_mrows(&cart_selected, 2, MethodCMesh::MAX_MROWS_ATMOS, false)
         .expect("direct Cartesian Method-C pass");
     let cart_expected_counts = (cart_expected.nmd, cart_expected.nud, cart_expected.nwd);
     let cart_public = cart_mesh
         .spawn_nest_cartesian_xy_with_max_mrows(
             std::slice::from_ref(&cart_region),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+            MethodCMesh::MAX_MROWS_ATMOS,
         )
         .expect("public Cartesian Method-C spawn");
     assert_eq!(
@@ -115,7 +110,7 @@ fn method_c_public_spawn_entrypoints_use_same_table_path() {
         .spawn_nest_cartesian_xy_with_spring_and_max_mrows(
             std::slice::from_ref(&cart_region),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+            MethodCMesh::MAX_MROWS_ATMOS,
             18,
             0,
         )
@@ -133,7 +128,7 @@ fn method_c_public_spawn_entrypoints_use_same_table_path() {
 
 #[test]
 fn method_c_spring_niter_keeps_table_path_and_closed_topology() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
@@ -174,7 +169,7 @@ fn method_c_spring_niter_keeps_table_path_and_closed_topology() {
 
 #[test]
 fn method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
-    let mesh = TriangularMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
@@ -184,19 +179,14 @@ fn method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
         .selected_region_faces(&region, 1, true)
         .expect("selected Cartesian Method-C faces");
     let expected = mesh
-        .spawn_nest_pass_with_max_mrows(
-            &selected,
-            2,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-            false,
-        )
+        .spawn_nest_pass_with_max_mrows(&selected, 2, MethodCMesh::MAX_MROWS_ATMOS, false)
         .expect("direct Cartesian Method-C pass");
 
     let (spring, spring_passes) = mesh
         .spawn_nest_cartesian_xy_with_spring_and_max_mrows(
             std::slice::from_ref(&region),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+            MethodCMesh::MAX_MROWS_ATMOS,
             18,
             1,
         )
@@ -225,7 +215,7 @@ fn method_c_cartesian_spring_niter_keeps_table_path_and_closed_topology() {
 #[test]
 fn method_c_cartesian_deltax_spring_niter_keeps_table_path_and_closed_topology() {
     let deltax = 1_000_000.0;
-    let mesh = TriangularMesh::from_cart_hex(18, deltax).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(18, deltax).expect("cart_hex Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,
@@ -235,19 +225,14 @@ fn method_c_cartesian_deltax_spring_niter_keeps_table_path_and_closed_topology()
         .selected_region_faces(&region, 1, true)
         .expect("selected Cartesian Method-C faces");
     let expected = mesh
-        .spawn_nest_pass_with_max_mrows(
-            &selected,
-            2,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
-            false,
-        )
+        .spawn_nest_pass_with_max_mrows(&selected, 2, MethodCMesh::MAX_MROWS_ATMOS, false)
         .expect("direct Cartesian Method-C pass");
 
     let (spring, spring_passes) = mesh
         .spawn_nest_cartesian_xy_with_spring_deltax_and_max_mrows(
             std::slice::from_ref(&region),
             1,
-            TriangularMesh::METHOD_C_MAX_MROWS_ATMOS,
+            MethodCMesh::MAX_MROWS_ATMOS,
             18,
             1,
             deltax,

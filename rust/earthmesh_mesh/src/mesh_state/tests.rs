@@ -137,7 +137,7 @@ fn a_method_c_mesh_converts_to_the_neutral_state_and_closes() {
 /// would need.
 #[test]
 fn a_refined_method_c_mesh_also_converts() {
-    let mesh = TriangularMesh::from_icosahedron(9, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = crate::MethodCMesh::from_icosahedron(9, 0, 1.0, 0.25, 0).expect("base mesh");
     let refined = mesh
         .spawn_nest(
             &[crate::RefinementRegion::Circle {

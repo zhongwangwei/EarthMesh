@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_projects_points_to_radius_before_neighbor_rebuild() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -28,7 +28,7 @@ fn method_c_projects_points_to_radius_before_neighbor_rebuild() {
 
 #[test]
 fn method_c_refinement_level_is_not_grid_number() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -83,7 +83,7 @@ fn method_c_refinement_level_is_not_grid_number() {
 
 #[test]
 fn method_c_keeps_canonical_linear_coordinates_before_projection() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -109,7 +109,7 @@ fn method_c_keeps_canonical_linear_coordinates_before_projection() {
 
 #[test]
 fn method_c_projection_matches_canonical_radius_expansion() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

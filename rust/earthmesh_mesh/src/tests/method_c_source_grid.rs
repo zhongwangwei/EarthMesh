@@ -2,9 +2,10 @@ use super::*;
 
 #[test]
 fn method_c_source_grid_style_multilevel_corridor_table_outputs_closed_mesh() {
-    let mesh = TriangularMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+    let mesh = MethodCMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
         .expect("base Method-C mesh")
         .expand_by_factor(2)
+        .map(MethodCMesh::new)
         .expect("Canonical expand_global2 base Method-C mesh");
     let path = vec![
         LonLatDegrees::new(-94.0, 25.0),
@@ -65,9 +66,10 @@ fn method_c_source_grid_style_multilevel_corridor_table_outputs_closed_mesh() {
 #[test]
 #[ignore = "runs three 5000-iteration atmosphere spring passes; use the table-only source-grid corridor test for default Method-C count/topology coverage"]
 fn method_c_source_grid_style_multilevel_corridor_outputs_closed_mesh() {
-    let mesh = TriangularMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
+    let mesh = MethodCMesh::from_icosahedron(33, 5000, 1.25, 0.035, 100)
         .expect("base Method-C mesh")
         .expand_by_factor(2)
+        .map(MethodCMesh::new)
         .expect("Canonical expand_global2 base Method-C mesh");
     let path = vec![
         LonLatDegrees::new(-94.0, 25.0),

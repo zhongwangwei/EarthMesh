@@ -3,7 +3,7 @@ use rayon::ThreadPoolBuilder;
 
 #[test]
 fn method_c_parallel_springs_match_single_worker_exactly() {
-    let base = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let base = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let one_worker = ThreadPoolBuilder::new()
         .num_threads(1)
         .build()

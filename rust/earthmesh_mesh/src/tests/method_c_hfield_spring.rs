@@ -3,14 +3,14 @@ use super::super::*;
 /// Small Method-C refined fixture shared by the h-field spring tests: an
 /// NXP-6 icosahedral base with one level-1 circular nest (same recipe as the
 /// mrow tests).
-fn refined_test_mesh() -> TriangularMesh {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+fn refined_test_mesh() -> MethodCMesh {
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
         level: 1,
     };
-    mesh.spawn_nest_with_max_mrows(&[region], 1, TriangularMesh::METHOD_C_MAX_MROWS_SURFACE)
+    mesh.spawn_nest_with_max_mrows(&[region], 1, MethodCMesh::MAX_MROWS_SURFACE)
         .expect("Method-C nest")
 }
 

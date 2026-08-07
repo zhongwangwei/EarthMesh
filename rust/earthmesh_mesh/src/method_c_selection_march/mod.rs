@@ -4,7 +4,7 @@ fn euclidean_distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
     magnitude(vector_between(a, b))
 }
 
-impl TriangularMesh {
+impl MethodCMesh {
     #[cfg(test)]
     pub(crate) fn method_c_march_from_nearby_pentagon_to_region_with_neighbors(
         &self,

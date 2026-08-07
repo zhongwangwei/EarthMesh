@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn ensure_method_c_selected_faces_share_parent_mrlw(
         &self,
         selected_faces: &[bool],

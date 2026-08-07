@@ -2,7 +2,7 @@ use super::super::*;
 
 #[test]
 fn method_c_suppresses_center_perimeter_segment_faces_like_canonical() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -135,7 +135,7 @@ fn method_c_suppresses_center_perimeter_segment_faces_like_canonical() {
 
 #[test]
 fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -180,7 +180,7 @@ fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
             .spawn_nest_pass_with_max_mrows(
                 &selected,
                 2,
-                TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+                MethodCMesh::MAX_MROWS_SURFACE,
                 true,
             )
             .unwrap_or_else(|error| {
@@ -195,7 +195,7 @@ fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
 
 #[test]
 fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -224,7 +224,7 @@ fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
         .spawn_nest_pass_method_c_preserving_demands(
             &selected,
             2,
-            TriangularMesh::METHOD_C_MAX_MROWS_SURFACE,
+            MethodCMesh::MAX_MROWS_SURFACE,
             true,
             &coverage,
         )
@@ -242,19 +242,23 @@ fn preserving_demand_spawn_rejects_a_shrink_that_uncovers_an_anchor() {
         vec![2, 3],
     )]);
     let mut candidate = vec![false; 4];
-    assert!(
-        !TriangularMesh::method_c_repair_candidate_preserves_coverage(Some(&coverage), &candidate,)
-    );
+    assert!(!MethodCMesh::method_c_repair_candidate_preserves_coverage(
+        Some(&coverage),
+        &candidate,
+    ));
     candidate[3] = true;
-    assert!(
-        TriangularMesh::method_c_repair_candidate_preserves_coverage(Some(&coverage), &candidate,)
-    );
-    assert!(TriangularMesh::method_c_repair_candidate_preserves_coverage(None, &candidate,));
+    assert!(MethodCMesh::method_c_repair_candidate_preserves_coverage(
+        Some(&coverage),
+        &candidate,
+    ));
+    assert!(MethodCMesh::method_c_repair_candidate_preserves_coverage(
+        None, &candidate,
+    ));
 }
 
 #[test]
 fn method_c_perim_ngr_matches_perimeter_next_point() {
-    let mesh = TriangularMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -311,7 +315,7 @@ fn method_c_perim_ngr_matches_perimeter_next_point() {
 
 #[test]
 fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
-    let mesh = TriangularMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let child_grid_number = 4;
     let mut refined_case = None;
 
@@ -372,7 +376,7 @@ fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
 
 #[test]
 fn method_c_pass_uses_canonical_table_numbering_counts() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

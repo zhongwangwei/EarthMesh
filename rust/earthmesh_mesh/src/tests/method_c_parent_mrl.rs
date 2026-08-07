@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_selected_faces_use_current_parent_mrl_inside_existing_nest() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let first_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,
@@ -48,7 +48,7 @@ fn method_c_selected_faces_use_current_parent_mrl_inside_existing_nest() {
 
 #[test]
 fn method_c_selected_faces_parent_halo_keeps_current_parent_mrl() {
-    let mesh = TriangularMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let first_region = RefinementRegion::Circle {
         center: LonLatDegrees::new(-120.0, 0.0),
         radius_meters: 500_000.0,

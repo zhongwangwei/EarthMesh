@@ -2,7 +2,7 @@ use super::super::*;
 
 #[test]
 fn method_c_selected_faces_close_sharp_concavity_around_m_point() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let point_id = (2..=mesh.nmd)
         .find(|id| !mesh.impent.contains(id) && mesh.m_neighbors[*id].npoly == 6)
         .expect("six-sided non-pentagon M point");
@@ -24,7 +24,7 @@ fn method_c_selected_faces_close_sharp_concavity_around_m_point() {
 
 #[test]
 fn method_c_concavity_fill_keeps_canonical_npoly_minus_one_threshold_at_pentagons() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let point_id = mesh.impent[0];
     let neighbors = mesh.m_neighbors[point_id];
     assert_eq!(
@@ -67,7 +67,7 @@ fn method_c_concavity_fill_keeps_canonical_npoly_minus_one_threshold_at_pentagon
 
 #[test]
 fn method_c_fill_rad3_marks_all_current_pentagon_faces_like_canonical() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
     let pentagon = mesh.impent[0];
     let neighbors = method_c_m_neighbors[pentagon];
@@ -92,7 +92,7 @@ fn method_c_fill_rad3_marks_all_current_pentagon_faces_like_canonical() {
 
 #[test]
 fn method_c_fill_rad3_marks_six_neighbors_of_three_distant_m_points_like_canonical() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -147,7 +147,7 @@ fn method_c_fill_rad3_marks_six_neighbors_of_three_distant_m_points_like_canonic
 
 #[test]
 fn method_c_cart_hex_initializes_m_metadata_like_canonical() {
-    let mesh = TriangularMesh::from_cart_hex(2, 1000.0).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(2, 1000.0).expect("cart_hex Method-C mesh");
 
     for im in 2..=mesh.nmd {
         assert_eq!(mesh.m_metadata[im].mrlm, 1);
@@ -158,7 +158,7 @@ fn method_c_cart_hex_initializes_m_metadata_like_canonical() {
 
 #[test]
 fn method_c_skips_cart_hex_periodic_copy_faces_like_canonical() {
-    let mesh = TriangularMesh::from_cart_hex(5, 1000.0).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(5, 1000.0).expect("cart_hex Method-C mesh");
     let ghost_iw = (2..=mesh.nwd)
         .find(|&iw| mesh.w_prognostic[iw] > 1 && mesh.w_prognostic[iw] != iw)
         .expect("Canonical cart_hex periodic W copy");
@@ -189,7 +189,7 @@ fn method_c_skips_cart_hex_periodic_copy_faces_like_canonical() {
 
 #[test]
 fn method_c_fill_rad3_skips_cart_hex_periodic_copy_faces_like_canonical() {
-    let mesh = TriangularMesh::from_cart_hex(5, 1000.0).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(5, 1000.0).expect("cart_hex Method-C mesh");
     let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
     let exposed_periodic_copies = (2..=mesh.nmd)
         .flat_map(|im| {
@@ -209,7 +209,7 @@ fn method_c_fill_rad3_skips_cart_hex_periodic_copy_faces_like_canonical() {
 
 #[test]
 fn method_c_selected_regions_skip_cart_hex_periodic_copy_faces_like_canonical() {
-    let mesh = TriangularMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
+    let mesh = MethodCMesh::from_cart_hex(18, 1_000_000.0).expect("cart_hex Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(10_200_000.0, -310_000.0),
         radius_meters: 500_000.0,

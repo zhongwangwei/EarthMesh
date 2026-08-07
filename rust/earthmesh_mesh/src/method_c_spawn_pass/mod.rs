@@ -1,6 +1,6 @@
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn method_c_repair_candidate_preserves_coverage(
         coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
         candidate: &[bool],

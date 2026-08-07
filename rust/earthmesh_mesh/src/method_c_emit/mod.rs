@@ -2,7 +2,7 @@ use std::io;
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn emit_method_c_tables(
         &self,
         perimeter: &[MethodCPerimeterPoint],
@@ -340,7 +340,7 @@ impl TriangularMesh {
             )?
         };
 
-        let mut mesh = TriangularMesh {
+        let mut mesh = MethodCMesh::new(TriangularMesh {
             nmd: nmd0,
             nud: nud0,
             nwd: nwd0,
@@ -353,10 +353,9 @@ impl TriangularMesh {
             m_prognostic,
             u_prognostic,
             w_prognostic,
-            boundary_rows: Vec::new(),
             w_lineage,
             m_lineage,
-        };
+        });
         mesh.apply_method_c_perimeter_mrows(child_level, max_mrows)?;
         // Defense in depth: this function performs the densest parent->child
         // index remapping in the crate; validate the emitted topology like

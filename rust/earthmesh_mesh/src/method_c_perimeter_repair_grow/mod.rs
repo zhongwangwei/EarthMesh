@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, io};
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn try_grow_method_c_non_triplet_perimeter_once(
         &self,
         selected: &[bool],

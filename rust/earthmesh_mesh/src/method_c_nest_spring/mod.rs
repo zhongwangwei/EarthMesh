@@ -1,6 +1,6 @@
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     /// Apply the core Method-C `spring_dynamics_nest` relaxation to a refined nest.
     ///
     /// With `move_interior=false` this mirrors Method-C's atmospheric nest call:
@@ -114,24 +114,26 @@ impl TriangularMesh {
             point.z = point.z as f32 as f64;
         }
 
-        let adjusted = Self {
-            // Nest spring moves points only; ancestry carries over.
-            w_lineage: self.w_lineage.clone(),
-            m_lineage: self.m_lineage.clone(),
-            nmd: self.nmd,
-            nud: self.nud,
-            nwd: self.nwd,
-            impent: self.impent,
-            m_points,
-            m_metadata: self.m_metadata.clone(),
-            u_edges: self.u_edges.clone(),
-            w_faces: self.w_faces.clone(),
-            m_neighbors: self.m_neighbors.clone(),
-            m_prognostic: self.m_prognostic.clone(),
-            u_prognostic: self.u_prognostic.clone(),
-            w_prognostic: self.w_prognostic.clone(),
-            boundary_rows: self.boundary_rows.clone(),
-        };
+        let adjusted = Self::with_boundary_rows(
+            TriangularMesh {
+                // Nest spring moves points only; ancestry carries over.
+                w_lineage: self.w_lineage.clone(),
+                m_lineage: self.m_lineage.clone(),
+                nmd: self.nmd,
+                nud: self.nud,
+                nwd: self.nwd,
+                impent: self.impent,
+                m_points,
+                m_metadata: self.m_metadata.clone(),
+                u_edges: self.u_edges.clone(),
+                w_faces: self.w_faces.clone(),
+                m_neighbors: self.m_neighbors.clone(),
+                m_prognostic: self.m_prognostic.clone(),
+                u_prognostic: self.u_prognostic.clone(),
+                w_prognostic: self.w_prognostic.clone(),
+            },
+            self.boundary_rows.clone(),
+        );
         adjusted.validate_topology()?;
         Ok(adjusted)
     }
@@ -237,24 +239,26 @@ impl TriangularMesh {
             point.z = point.z as f32 as f64;
         }
 
-        let adjusted = Self {
-            // Nest spring moves points only; ancestry carries over.
-            w_lineage: self.w_lineage.clone(),
-            m_lineage: self.m_lineage.clone(),
-            nmd: self.nmd,
-            nud: self.nud,
-            nwd: self.nwd,
-            impent: self.impent,
-            m_points,
-            m_metadata: self.m_metadata.clone(),
-            u_edges: self.u_edges.clone(),
-            w_faces: self.w_faces.clone(),
-            m_neighbors: self.m_neighbors.clone(),
-            m_prognostic: self.m_prognostic.clone(),
-            u_prognostic: self.u_prognostic.clone(),
-            w_prognostic: self.w_prognostic.clone(),
-            boundary_rows: self.boundary_rows.clone(),
-        };
+        let adjusted = Self::with_boundary_rows(
+            TriangularMesh {
+                // Nest spring moves points only; ancestry carries over.
+                w_lineage: self.w_lineage.clone(),
+                m_lineage: self.m_lineage.clone(),
+                nmd: self.nmd,
+                nud: self.nud,
+                nwd: self.nwd,
+                impent: self.impent,
+                m_points,
+                m_metadata: self.m_metadata.clone(),
+                u_edges: self.u_edges.clone(),
+                w_faces: self.w_faces.clone(),
+                m_neighbors: self.m_neighbors.clone(),
+                m_prognostic: self.m_prognostic.clone(),
+                u_prognostic: self.u_prognostic.clone(),
+                w_prognostic: self.w_prognostic.clone(),
+            },
+            self.boundary_rows.clone(),
+        );
         adjusted.validate_topology()?;
         Ok(adjusted)
     }

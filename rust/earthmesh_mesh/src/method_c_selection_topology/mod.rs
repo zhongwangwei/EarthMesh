@@ -1,6 +1,6 @@
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn method_c_thirdm_neighbors_canonical_with_neighbors(
         &self,
         im: usize,

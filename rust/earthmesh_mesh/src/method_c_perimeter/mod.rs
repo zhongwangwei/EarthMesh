@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, io};
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     #[cfg(test)]
     pub(crate) fn perim_map2_method_c(
         &self,

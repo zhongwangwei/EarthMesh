@@ -286,6 +286,7 @@ pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
 pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
+pub use method_c_mesh::MethodCMesh;
 pub use primal_dual_mesh::TriangularMesh;
 mod mesh_from_gridfile;
 pub use mesh_from_gridfile::MethodCGridfileMetadata;

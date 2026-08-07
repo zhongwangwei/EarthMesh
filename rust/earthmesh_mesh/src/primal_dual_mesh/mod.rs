@@ -74,7 +74,6 @@ pub struct TriangularMesh {
     pub m_prognostic: Vec<usize>,
     pub u_prognostic: Vec<usize>,
     pub w_prognostic: Vec<usize>,
-    pub(crate) boundary_rows: Vec<usize>,
     /// For each W face, the id it descended from in the mesh this one was
     /// refined out of. Indexed one-based like the faces; slot 0/1 are the
     /// canonical placeholders.
@@ -114,7 +113,6 @@ impl TriangularMesh {
             m_prognostic: method_c_identity_prognostic_map(relaxed.nmd),
             u_prognostic: method_c_identity_prognostic_map(relaxed.nud),
             w_prognostic: method_c_identity_prognostic_map(relaxed.nwd),
-            boundary_rows: Vec::new(),
             w_lineage: identity_lineage(relaxed.nwd),
             m_lineage: identity_lineage(relaxed.nmd),
         }
@@ -146,7 +144,6 @@ impl TriangularMesh {
             m_prognostic: method_c_identity_prognostic_map(initial.nmd),
             u_prognostic: method_c_identity_prognostic_map(initial.nud),
             w_prognostic: method_c_identity_prognostic_map(initial.nwd),
-            boundary_rows: Vec::new(),
             w_lineage: identity_lineage(initial.nwd),
             m_lineage: identity_lineage(initial.nmd),
         };

@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, io};
 
 use super::*;
 
-impl TriangularMesh {
+impl MethodCMesh {
     pub(crate) fn try_shrink_method_c_perimeter_once(
         &self,
         selected: &[bool],

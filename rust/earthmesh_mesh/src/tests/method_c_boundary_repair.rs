@@ -2,7 +2,7 @@ use super::super::*;
 
 #[test]
 fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Corridor {
             points: vec![
@@ -41,7 +41,7 @@ fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp6_two_circle_summary() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
@@ -92,7 +92,7 @@ fn method_c_matches_reduced_canonical_nxp6_two_circle_summary() {
 
 #[test]
 fn method_c_matches_reduced_canonical_nxp7_two_circle_summary() {
-    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
@@ -143,7 +143,7 @@ fn method_c_matches_reduced_canonical_nxp7_two_circle_summary() {
 
 #[test]
 fn method_c_repairs_nxp7_circle_parent_radius_that_canonical_overruns_perimeter() {
-    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 4_000_000.0,
@@ -166,7 +166,7 @@ fn method_c_repairs_nxp7_circle_parent_radius_that_canonical_overruns_perimeter(
 
 #[test]
 fn method_c_repairs_nxp7_corridor_parent_radius_that_canonical_overruns_perimeter() {
-    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [RefinementRegion::Corridor {
         points: vec![
             LonLatDegrees::new(115.0, 25.0),
@@ -192,7 +192,7 @@ fn method_c_repairs_nxp7_corridor_parent_radius_that_canonical_overruns_perimete
 
 #[test]
 fn method_c_anneals_nxp7_two_circle_after_repaired_parent() {
-    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),
@@ -222,7 +222,7 @@ fn method_c_anneals_nxp7_two_circle_after_repaired_parent() {
 
 #[test]
 fn method_c_anneals_nxp7_two_corridor_after_repaired_parent() {
-    let mesh = TriangularMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Corridor {
             points: vec![
@@ -271,7 +271,7 @@ fn method_c_moves_the_parent_halo_where_the_reduced_canonical_probe_gives_up() {
     // Only upward. Shrinking the parent also rescues some configurations and
     // refines less than the run asked for while doing it, which is the failure
     // that leaves a valid mesh nobody wanted.
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
     let regions = [
         RefinementRegion::Circle {
             center: LonLatDegrees::new(115.0, 25.0),

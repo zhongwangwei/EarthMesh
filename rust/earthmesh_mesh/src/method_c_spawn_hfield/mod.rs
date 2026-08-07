@@ -101,7 +101,7 @@ impl MethodCHfieldDemandCoverage {
 /// returns the mesh unchanged (a field that demands nothing is a no-op, not
 /// an error), an empty deeper pass simply stops descending, and the
 /// region-specific parent-erosion retry is not applicable.
-impl TriangularMesh {
+impl MethodCMesh {
     fn sample_target_level<F: Fn(f64, f64) -> u8>(
         &self,
         point: CartesianPoint,
@@ -1228,7 +1228,7 @@ impl TriangularMesh {
 }
 
 /// Demanded faces versus those the selection actually refines.
-impl TriangularMesh {
+impl MethodCMesh {
     /// `(demanded, unmet)` face counts for one pass.
     ///
     /// Demand narrower than a rad3 footprint cannot be selected: only the spots
