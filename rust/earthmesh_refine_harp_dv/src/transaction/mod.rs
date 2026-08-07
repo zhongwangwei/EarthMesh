@@ -168,8 +168,8 @@ impl Acceptance {
 
 impl AdaptiveMesh {
     /// Where a candidate should go instead, if it encroaches a segment.
-    fn encroachment_of(&self, candidate: &Candidate) -> Option<CartesianPoint> {
-        if self.protected.is_empty() {
+    fn encroachment_of(&self, candidate: &Candidate) -> Option<earthmesh_mesh::Encroachment> {
+        if self.segments_are_empty() {
             return None;
         }
         let state = self.state();
@@ -181,11 +181,9 @@ impl AdaptiveMesh {
                 .copied()
                 .filter(|&other| other >= MESH_STATE_FIRST_ID),
         );
-        state
-            .encroached_segment(candidate.point, &region, &|tail, head| {
-                self.is_protected_edge(tail, head)
-            })
-            .map(|encroachment| encroachment.split_at)
+        state.encroached_segment(candidate.point, &region, &|tail, head| {
+            self.is_protected_edge(tail, head)
+        })
     }
 }
 
@@ -502,19 +500,28 @@ impl AdaptiveMesh {
             // fact: a point inside a protected segment's diametral circle is
             // never inserted -- the segment is split at its midpoint instead,
             // and that split is what makes the refinement terminate.
-            let candidate = match self.encroachment_of(&candidate) {
+            // Ruppert's rule: a point inside a protected segment's diametral
+            // circle is never inserted -- the segment is split at its midpoint
+            // instead, and that split is what makes the refinement terminate.
+            let encroached = self.encroachment_of(&candidate);
+            let candidate = match &encroached {
                 Some(split) => Candidate {
-                    point: split,
+                    point: split.split_at,
                     ..candidate
                 },
                 None => candidate,
             };
             match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {
                 Acceptance::Committed(report) => {
+                    // The halves are segments too, or the induction stops
+                    // exactly where it was just applied.
+                    if let Some(split) = encroached {
+                        self.split_segment(split.tail, split.head, report.vertex);
+                    }
                     return Ok(DemandOutcome::Resolved {
                         source: candidate.source,
                         report,
-                    })
+                    });
                 }
                 Acceptance::RolledBack(rejection) => refusals.push((candidate.source, rejection)),
             }

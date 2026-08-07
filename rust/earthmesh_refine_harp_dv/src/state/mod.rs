@@ -96,25 +96,17 @@ pub struct AdaptiveMesh {
     /// The site whose demand is being served, so a new one can be recorded a
     /// generation deeper than it.
     pub(crate) refining: Option<usize>,
-    /// Sites on a protected boundary. An edge between two of them is treated
-    /// as a segment in Ruppert's sense, and a candidate that encroaches on one
-    /// is replaced by that segment's midpoint rather than inserted.
+    /// The boundary as a list of segments, each an edge of the mesh.
     ///
-    /// **This is an approximation, and an unsound one.** Ruppert's segments
-    /// are an explicit list -- a PSLG -- and "both endpoints are on the
-    /// boundary" is not the same predicate: two boundary sites that happen to
-    /// be adjacent across the region are not a boundary edge, and every split
-    /// adds more such pairs.
+    /// Ruppert's PSLG. An earlier version approximated this with a set of
+    /// boundary *sites* and called any edge between two of them a segment,
+    /// which is a different predicate -- two boundary sites adjacent without
+    /// lying on the curve read as a segment, and every split made more such
+    /// pairs. Guide 11.28 measured what that cost.
     ///
-    /// Guide 11.28 measures what that costs. Propagating protection to split
-    /// midpoints, which Ruppert's induction requires, takes the min triangle
-    /// angle from 21.09 degrees to 12.29 -- because the spurious segments
-    /// multiply and divert every candidate into splitting them. The 21.09
-    /// result therefore depends on *not* propagating, which is to say it
-    /// depends on the approximation staying broken.
-    ///
-    /// A sound implementation needs the segment list itself.
-    pub(crate) protected: std::collections::BTreeSet<usize>,
+    /// Keys are ordered pairs, smaller id first, so an edge is the same
+    /// segment from either side.
+    pub(crate) segments: std::collections::BTreeSet<(usize, usize)>,
 }
 
 impl AdaptiveMesh {
@@ -149,7 +141,7 @@ impl AdaptiveMesh {
             allocator,
             cycles_completed: 0,
             refining: None,
-            protected: std::collections::BTreeSet::new(),
+            segments: std::collections::BTreeSet::new(),
         })
     }
 
@@ -241,16 +233,38 @@ impl AdaptiveMesh {
         site.site_id
     }
 
-    /// Mark the sites that lie on a boundary the refinement must respect.
+    /// Give the refinement the boundary it must respect, as segments.
     ///
-    /// Ruppert's segments. Without them a quality-driven refinement subdivides
-    /// without end near a region's edge -- measured in guide 11.25.
-    pub fn protect_boundary_sites(&mut self, sites: impl IntoIterator<Item = usize>) {
-        self.protected = sites.into_iter().collect();
+    /// Without them a quality-driven refinement subdivides without end near a
+    /// region's edge -- guide 11.25.
+    pub fn protect_segments(&mut self, segments: impl IntoIterator<Item = (usize, usize)>) {
+        self.segments = segments
+            .into_iter()
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
     }
 
     pub(crate) fn is_protected_edge(&self, tail: usize, head: usize) -> bool {
-        self.protected.contains(&tail) && self.protected.contains(&head)
+        self.segments.contains(&(tail.min(head), tail.max(head)))
+    }
+
+    pub(crate) fn segments_are_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
+    /// Replace a segment with its two halves, once its midpoint exists.
+    ///
+    /// The induction Ruppert's proof runs on: a split segment is two segments,
+    /// so the rule that made the refinement terminate keeps applying where it
+    /// was just applied.
+    pub(crate) fn split_segment(&mut self, tail: usize, head: usize, midpoint: usize) {
+        let key = (tail.min(head), tail.max(head));
+        if self.segments.remove(&key) {
+            self.segments
+                .insert((tail.min(midpoint), tail.max(midpoint)));
+            self.segments
+                .insert((head.min(midpoint), head.max(midpoint)));
+        }
     }
 
     pub(crate) fn refining_site(&self) -> Option<usize> {
