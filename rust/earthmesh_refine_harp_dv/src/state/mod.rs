@@ -93,6 +93,9 @@ pub struct AdaptiveMesh {
     sites: Vec<AdaptiveSite>,
     allocator: SiteIdAllocator,
     cycles_completed: u32,
+    /// The site whose demand is being served, so a new one can be recorded a
+    /// generation deeper than it.
+    pub(crate) refining: Option<usize>,
 }
 
 impl AdaptiveMesh {
@@ -126,6 +129,7 @@ impl AdaptiveMesh {
             sites,
             allocator,
             cycles_completed: 0,
+            refining: None,
         })
     }
 
@@ -182,12 +186,22 @@ impl AdaptiveMesh {
     ///
     /// Called only after the gates pass, so an id is never spent on a site the
     /// run then rolled back.
-    pub(crate) fn adopt_inserted_site(&mut self, vertex: usize) -> SiteId {
+    /// Record a site an insertion just created, one generation deeper than the
+    /// cell it refined.
+    ///
+    /// `parent` is the site whose demand this served. Depth is a refinement
+    /// generation, so it counts halvings of the cell that asked -- not the
+    /// length of the chain of insertions that reached here, which is what
+    /// taking the deepest neighbour produced: a two-level request reported
+    /// thirteen.
+    pub(crate) fn adopt_inserted_site(&mut self, vertex: usize, parent: Option<usize>) -> SiteId {
         let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
         let site_id = self.allocator.allocate();
         let mut site = AdaptiveSite::inherited(site_id, position);
         site.birth_cycle = self.cycles_completed + 1;
-        site.depth = 1;
+        site.depth = parent
+            .and_then(|parent| self.sites.get(parent.checked_sub(MESH_STATE_FIRST_ID)?))
+            .map_or(1, |parent| parent.depth.saturating_add(1));
         self.sites.push(site);
         site_id
     }
@@ -201,6 +215,10 @@ impl AdaptiveMesh {
         site.cumulative_displacement_m += unit_from;
         site.position = position;
         site.site_id
+    }
+
+    pub(crate) fn refining_site(&self) -> Option<usize> {
+        self.refining
     }
 
     pub fn state(&self) -> &MeshState {

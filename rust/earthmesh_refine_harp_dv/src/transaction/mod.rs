@@ -241,6 +241,20 @@ impl AdaptiveMesh {
         self.propose_site_near(point, None, gates)
     }
 
+    /// The same, recording the new site one generation deeper than `parent`.
+    pub fn propose_site_for(
+        &mut self,
+        point: CartesianPoint,
+        hint: Option<usize>,
+        gates: HardGates,
+        parent: usize,
+    ) -> Result<Acceptance> {
+        self.refining = Some(parent);
+        let outcome = self.propose_site_near(point, hint, gates);
+        self.refining = None;
+        outcome
+    }
+
     /// The same, starting the search at a triangle already known to be near.
     ///
     /// Worth threading through. Locating a point from a fixed start walks
@@ -278,7 +292,8 @@ impl AdaptiveMesh {
         let pentagons = self.pentagon_ids();
         match check(self.state(), &touched, gates, &pentagons) {
             Ok(max_degree_touched) => {
-                let site_id = self.adopt_inserted_site(report.site);
+                let parent = self.refining_site();
+                let site_id = self.adopt_inserted_site(report.site, parent);
                 Ok(Acceptance::Committed(TransactionReport {
                     site_id,
                     vertex: report.site,
