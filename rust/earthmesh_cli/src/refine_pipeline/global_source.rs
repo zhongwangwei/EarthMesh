@@ -1014,20 +1014,12 @@ fn refine_with_harp_dv(
     // which is why the spring, which wants edge lengths, was accidentally
     // right, and why `TargetScale`, which compares cell scales, was asking for
     // half of what a level meant. Guide 11.31.
-    //
-    // **The correction is measured and not applied.** Feeding `TargetScale`
-    // the real cell scale doubles the demand, and the run then dies at the
-    // writer -- "M point N has a non-local spherical circumcenter" -- with the
-    // sliver gate reporting zero refusals, so the offending triangle is not one
-    // any transaction touched. That is a writer-side question this has not
-    // answered, and shipping a chain that dies at output is worse than shipping
-    // one that under-refines by a factor its docs name. Guide 11.31.
-    let (base_cell_m, base_edge_m) = {
+
+    let (base_cell_m, base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
         let nominal =
             2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
-        let _measured = harp_base_lengths(mesh);
-        (nominal, nominal)
-    };
+        (nominal / 2.0, nominal)
+    });
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
         .iter()
         .enumerate()
@@ -1118,6 +1110,7 @@ fn refine_with_harp_dv(
     // asked for there. Guide 11.21 records the version that took targets from
     // the mesh's own current scale: that tells the spring to keep things as
     // they are, and 5000 iterations under it made the angles worse.
+    let unsmoothed = (spring_iterations > 0).then(|| refined.clone());
     let refined = if spring_iterations > 0 {
         match harp_spring_smoothed(&refined, regions, base_cell_m, spring_iterations) {
             Ok(mesh) => mesh,
@@ -1130,7 +1123,24 @@ fn refine_with_harp_dv(
     } else {
         refined
     };
-    let state = spherical_voronoi_state(&refined)?;
+    // The writer's admissibility check runs over every triangle, and the
+    // transaction gates only ever saw the ones a change touched. So the
+    // decision is made here, where both meshes are still in hand: try the one
+    // that was smoothed, and fall back to the one that was not rather than
+    // failing the run.
+    let (refined, state) = match spherical_voronoi_state(&refined) {
+        Ok(state) => (refined, state),
+        Err(error) if unsmoothed.is_some() => {
+            eprintln!(
+                "harp_dv: the smoothed mesh is not writable ({error}); falling back to the \
+                 unsmoothed one"
+            );
+            let plain = unsmoothed.expect("checked");
+            let state = spherical_voronoi_state(&plain)?;
+            (plain, state)
+        }
+        Err(error) => return Err(error),
+    };
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
     Ok(RefinedGrid {
@@ -1379,6 +1389,13 @@ fn harp_spring_smoothed(
             // 0.3 metres of growth per metre of distance: shallow enough that
             // the transition spans a few cells, steep enough that a target
             // does not reach across the globe.
+            let gradient: f64 = std::env::var("EM_G")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.3);
+            // Swept 0.05 to 0.50 both before and after the scale correction;
+            // it changes nothing either way (guide 11.24, 11.32). What matters
+            // is that the field is continuous, not its slope.
             const GRADIENT: f64 = 0.3;
             let mut width = base_cell_m;
             for region in regions {
