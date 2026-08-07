@@ -32,15 +32,15 @@ jobs:
         run: make fmt
       - name: Lint gate — clippy -D warnings, no-netcdf crates (reproduce with `make clippy`)
         run: make clippy
-      - name: Fast tests — core/geometry/hfield/mesh/quality/refine_planner/project
+      - name: Fast tests — the twelve no-NetCDF crates, all three refine backends included
         run: make test-fast
       - name: How to reproduce a failure
         if: failure()
         run: |
           echo "::error::Fast gate failed. Reproduce locally:"
           echo "  make fmt        # formatting"
-          echo "  make clippy     # clippy -D warnings (core/geometry/hfield/mesh/quality/refine_planner/project)"
-          echo "  make test-fast  # core/geometry/hfield/mesh/quality/refine_planner/project (no NetCDF needed)"
+          echo "  make clippy     # clippy -D warnings (the twelve no-NetCDF crates, all three refine backends included)"
+          echo "  make test-fast  # the twelve no-NetCDF crates, all three refine backends included (no NetCDF needed)"
 
   gui:
     name: gui (JS + Tauri fmt/clippy/tests)

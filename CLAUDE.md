@@ -2,16 +2,18 @@
 
 ## There are two Rust workspaces, not one
 
-The root workspace holds nine crates, all under `rust/`.
+The root workspace holds thirteen crates, all under `rust/` -- including all
+three refinement backends (`earthmesh_refine_method_c`,
+`earthmesh_refine_redgreen`, `earthmesh_refine_harp_dv`).
 **`gui-tauri/src-tauri` is its own workspace and is not a member of it.**
 
 That means a root-level command silently covers only part of the repository:
 
 | command | covers | misses |
 |---|---|---|
-| `cargo test --workspace` | the nine engine crates | the Tauri crate |
-| `cargo fmt --all` | the nine engine crates | the Tauri crate |
-| `cargo clippy --workspace` | the nine engine crates | the Tauri crate |
+| `cargo test --workspace` | the thirteen engine crates | the Tauri crate |
+| `cargo fmt --all` | the thirteen engine crates | the Tauri crate |
+| `cargo clippy --workspace` | the thirteen engine crates | the Tauri crate |
 
 Nothing fails when the GUI is skipped — the command reports success for what it
 did run, which reads as "everything passed". After touching anything under
@@ -47,7 +49,11 @@ CI (`.github/workflows/ci.yml`) has three jobs. Reproduce them locally with:
 `make fmt` and `make clippy` list crates one by one rather than using
 `--workspace`, because `earthmesh_cli` needs NetCDF and the fast job has none.
 A crate added to the workspace is **not** automatically covered — add it to the
-Makefile lists too.
+Makefile lists too. This has already gone wrong once: `earthmesh_boundary`,
+`earthmesh_refine` and `earthmesh_refine_harp_dv` were skipped by the fast job
+for several commits while it reported success. The counts to check against are
+13 in `fmt` (every crate), 12 in `clippy` and `test-fast` (all but
+`earthmesh_cli`, which needs NetCDF), and 13 workspace members.
 
 ## End-to-end regressions
 
