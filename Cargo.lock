@@ -152,6 +152,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "earthmesh_boundary"
+version = "3.0.0-alpha3"
+dependencies = [
+ "earthmesh_core",
+]
+
+[[package]]
 name = "earthmesh_cli"
 version = "3.0.0-alpha3"
 dependencies = [
@@ -221,11 +228,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "earthmesh_refine"
+version = "3.0.0-alpha3"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_hfield",
+ "earthmesh_mesh",
+]
+
+[[package]]
 name = "earthmesh_refine_harp_dv"
 version = "3.0.0-alpha3"
 dependencies = [
  "earthmesh_core",
  "earthmesh_mesh",
+ "earthmesh_refine",
 ]
 
 [[package]]

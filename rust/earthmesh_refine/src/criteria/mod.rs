@@ -1,24 +1,48 @@
-//! What a criterion says, and what saying it means for when to stop.
+//! What a criterion says about a cell, and what saying it means for stopping.
+//!
+//! # Two traits, on purpose
+//!
+//! `earthmesh_refine_planner` also defines a `RefinementCriterion`. It is not
+//! this one and should not be merged into it. That one scores a cell *by index*
+//! against a precomputed feature table and allocates a budget across the
+//! result; this one evaluates a cell's *geometry* against a data source and
+//! returns evidence with a stopping semantics attached. Index-into-a-table and
+//! measure-this-polygon are different jobs, and a single trait covering both
+//! would serve neither.
+//!
+//! What was wrong was that they were in different crates with the same name and
+//! no note saying so. They are neighbours now, and this is the note.
+
+use earthmesh_mesh::LonLatDegrees;
 
 /// Why a criterion asks for a finer cell, which decides what satisfies it.
 ///
-/// The distinction is what makes multiple cycles terminate. A slope of twenty
-/// degrees stays twenty degrees however fine the mesh gets, so a criterion that
-/// reads it can only ever name a target size; treating it as an error to be
-/// driven down would refine for ever.
+/// This distinction is what makes repeated cycles terminate. A slope of twenty
+/// degrees stays twenty degrees however fine the mesh gets, so a criterion
+/// reading it can only name a target size; treating it as an error to drive
+/// down would refine for ever.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CriterionSemantics {
     /// The measured value does not fall as the mesh refines. Satisfied when the
     /// cell reaches the requested scale.
     TargetScale,
-    /// The measured value falls as the mesh refines. Satisfied when it is under
-    /// tolerance.
+    /// The measured value falls as the mesh refines. Satisfied under tolerance.
     ErrorTolerance,
-    /// A feature has to be resolved by enough cells across.
+    /// A feature has to be resolved by enough cells across it.
     FeatureCoverage,
     /// The mesh itself is the problem, and moving points may fix it without
     /// adding any.
     MeshQuality,
+}
+
+impl CriterionSemantics {
+    /// Whether refining can be expected to reduce the measured value.
+    ///
+    /// False for `TargetScale`, which is the case a naive loop refines for ever
+    /// on.
+    pub fn value_falls_with_refinement(self) -> bool {
+        matches!(self, Self::ErrorTolerance | Self::FeatureCoverage)
+    }
 }
 
 /// Why a criterion stopped asking.
@@ -49,7 +73,7 @@ pub struct DemandEvidence {
     /// The cell width this criterion wants, when it can name one.
     pub requested_scale_m: Option<f64>,
     /// Where in the cell the evidence points, for a candidate to be placed.
-    pub witness: Option<earthmesh_mesh::LonLatDegrees>,
+    pub witness: Option<LonLatDegrees>,
     pub confidence: f64,
     pub source_resolution_m: Option<f64>,
     /// A demand that must be met, not one that would be nice to meet.
@@ -78,7 +102,7 @@ impl DemandEvidence {
         }
     }
 
-    /// Whether this evidence asks the driver to do anything.
+    /// Whether this evidence asks a driver to do anything.
     pub fn demands_work(&self) -> bool {
         self.satisfiable && self.normalized_violation > 0.0
     }

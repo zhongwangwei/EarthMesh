@@ -7,12 +7,11 @@ use crate::state::AdaptiveMesh;
 
 /// One run's worth of instruction.
 ///
-/// Criteria are absent from this struct in Phase 1 because the trait they would
-/// implement needs a decision the audit raised and nobody has taken:
-/// `earthmesh_refine_planner` already carries a `RefinementCriterion` and a
-/// `CriterionContext`, with different semantics from the ones the spec asks
-/// for. Declaring a second trait of the same name before that is settled would
-/// be the confusion, not the fix. See `docs/HARP_DV_REUSE_MAP.md`.
+/// Criteria are absent from this struct in Phase 1 because nothing can evaluate
+/// one yet: the local patch machinery a criterion's demand would be served by
+/// does not exist. The vocabulary they will speak is settled and lives in
+/// `earthmesh_refine::criteria`; the trait that produces it arrives with the
+/// machinery that can act on it.
 #[derive(Clone, Debug)]
 pub struct HarpDvRequest {
     pub config: HarpDvConfig,

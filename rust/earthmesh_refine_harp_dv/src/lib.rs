@@ -24,15 +24,20 @@
 
 pub mod api;
 pub mod config;
-pub mod criteria;
 pub mod error;
 pub mod report;
 pub mod state;
 
 pub use api::{refine_harp_dv, HarpDvOutcome, HarpDvRequest};
 pub use config::HarpDvConfig;
-pub use criteria::{CriterionSemantics, DemandEvidence, EvidenceStopReason};
 pub use error::{HarpDvError, Result};
+// The criteria vocabulary is the refinement layer's, not this backend's. Three
+// backends reading the same evidence is the point; a private copy per backend
+// would be three vocabularies that drift.
+pub use earthmesh_refine::{
+    order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
+    RefinementCause, RefinementDemand,
+};
 pub use report::{HarpDvRunReport, StopReason};
 pub use state::{AdaptiveMesh, AdaptiveSite, SiteId, SiteIdAllocator, SiteMobility};
 

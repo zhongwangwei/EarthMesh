@@ -1,0 +1,19 @@
+[package]
+name = "earthmesh_refine"
+version = "3.0.0-alpha3"
+edition = "2021"
+description = "The layer above the refinement backends: how a request is expressed, what a criterion says, and what that becomes as demand."
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[lib]
+name = "earthmesh_refine"
+path = "src/lib.rs"
+
+# Below the backends and above the mesh. It must never depend on method_c,
+# redgreen or harp_dv: they depend on it, which is what makes them siblings
+# rather than a chain.
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_hfield = { path = "../earthmesh_hfield" }
+earthmesh_mesh = { path = "../earthmesh_mesh" }
