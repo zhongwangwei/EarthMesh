@@ -244,6 +244,94 @@ impl MeshState {
             .sum()
     }
 
+    /// Add a site and return its id.
+    pub(crate) fn push_vertex(&mut self, point: CartesianPoint) -> usize {
+        self.vertices.push(point);
+        self.vertices.len() - 1
+    }
+
+    /// Overwrite one triangle's corners, leaving its id alone.
+    ///
+    /// Reusing a slot rather than deleting is what keeps every other id stable
+    /// through an insertion. A caller doing this owes the adjacency a repair.
+    pub(crate) fn set_triangle(&mut self, triangle: usize, corners: [usize; 3]) {
+        self.triangles[triangle] = corners;
+    }
+
+    /// Add a triangle and return its id.
+    pub(crate) fn push_triangle(&mut self, corners: [usize; 3]) -> usize {
+        self.triangles.push(corners);
+        self.neighbours.push([0usize; 3]);
+        self.triangles.len() - 1
+    }
+
+    /// Rebuild adjacency across exactly the given triangles.
+    ///
+    /// The set has to be supplied rather than grown from `self.neighbours`,
+    /// because a caller calls this precisely when that array is stale: a
+    /// triangle written into a reused slot still carries the adjacency of what
+    /// was there, and a freshly pushed one carries none. Growing the set from
+    /// it would miss the triangles just outside the change, which is how an
+    /// insertion leaves open edges behind.
+    ///
+    /// Every edge that moved is incident to at least one changed triangle, so a
+    /// caller passing the changed triangles together with the ring immediately
+    /// outside them covers all of them.
+    /// `authoritative` names the triangles whose adjacency this region fully
+    /// describes. For those, an edge with no claimant here really has none and
+    /// is written as a boundary. For the rest -- the ring just outside a change
+    /// -- only edges that found a claimant are rewritten, because their outward
+    /// edges face triangles the region does not hold, and zeroing those is how
+    /// a repair opens the very holes it was called to close.
+    pub(crate) fn repair_adjacency_across(
+        &mut self,
+        region: &std::collections::BTreeSet<usize>,
+        authoritative: &std::collections::BTreeSet<usize>,
+    ) {
+        let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+        for &triangle in region {
+            let corners = self.triangles[triangle];
+            for corner in 0..3 {
+                let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+                claims.entry(key).or_default().push(triangle);
+            }
+        }
+        for &triangle in region {
+            let corners = self.triangles[triangle];
+            for corner in 0..3 {
+                let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+                let opposite = claims.get(&key).and_then(|claimants| {
+                    claimants.iter().copied().find(|&other| other != triangle)
+                });
+                match opposite {
+                    Some(other) => self.neighbours[triangle][corner] = other,
+                    None if authoritative.contains(&triangle) => {
+                        self.neighbours[triangle][corner] = 0
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The radius of the sphere the sites sit on, averaged over them.
+    ///
+    /// Not a constant of the type: a relaxed mesh's points are not exactly
+    /// equidistant, and the value here is only meant to answer "is this
+    /// candidate on the same sphere as the mesh", which is a question about
+    /// orders of magnitude rather than metres.
+    pub fn sphere_radius(&self) -> f64 {
+        let count = self.vertex_count();
+        if count == 0 {
+            return 0.0;
+        }
+        let total: f64 = self.vertices[MESH_STATE_FIRST_ID..]
+            .iter()
+            .map(|point| (point.x * point.x + point.y * point.y + point.z * point.z).sqrt())
+            .sum();
+        total / count as f64
+    }
+
     /// Check the invariants a consumer is entitled to assume.
     ///
     /// Adjacency is derived rather than supplied, so what this adds over

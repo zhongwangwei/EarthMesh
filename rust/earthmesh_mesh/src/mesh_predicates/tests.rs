@@ -114,14 +114,22 @@ fn a_point_inside_a_spherical_circumcircle_is_told_from_one_outside() {
     let b = unit(120.0, 80.0);
     let c = unit(240.0, 80.0);
 
-    let pole = in_circle_on_sphere(a, b, c, unit(0.0, 90.0)).expect("clear");
-    let equator = in_circle_on_sphere(a, b, c, unit(0.0, 0.0)).expect("clear");
-    assert_ne!(pole, Sign::Zero);
-    assert_ne!(equator, Sign::Zero);
-    assert_ne!(
-        pole, equator,
-        "the pole is inside the cap the three corners cut, the equator is not"
+    // Which sign means inside, not merely that the two differ. Asserting only
+    // that they differ passes under either polarity, and the wrong polarity
+    // makes every circumcircle appear to hold every point.
+    assert_eq!(
+        in_circle_on_sphere(a, b, c, unit(0.0, 90.0)).expect("clear"),
+        Sign::Positive,
+        "the pole is inside the cap those three corners cut"
     );
+    for outside in [unit(0.0, 0.0), unit(0.0, -90.0), unit(60.0, 10.0)] {
+        assert_eq!(
+            in_circle_on_sphere(a, b, c, outside).expect("clear"),
+            Sign::Negative,
+            "a point off the cap is outside the circumcircle"
+        );
+    }
+    let pole = in_circle_on_sphere(a, b, c, unit(0.0, 90.0)).expect("clear");
 
     // Reversing the triangle's winding must not change which points are inside
     // it. This is the reading the doc comment claims and the easiest one to get

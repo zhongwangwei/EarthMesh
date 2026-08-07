@@ -219,6 +219,17 @@ pub fn orientation_on_sphere(
 /// against the triangle's own winding. Getting that reading right is what the
 /// tests pin.
 ///
+/// Inside is the side of that plane *away* from the centre, which is the
+/// smaller cap -- the one the triangle sits on. So for a triangle wound
+/// counter-clockwise seen from outside, a point inside its circumcircle gives
+/// `orient3d` the opposite sign, and the two are combined accordingly.
+///
+/// Measured rather than reasoned: three corners at 80 degrees north wound
+/// counter-clockwise give a positive winding, and the north pole -- plainly
+/// inside their cap -- gives a negative `orient3d`, while the equator and the
+/// south pole give positive. Getting this backwards makes every triangle's
+/// circumcircle appear to hold every point, so a cavity swallows the mesh.
+///
 /// `Sign::Zero` means the four points are exactly cocircular, which is a
 /// legitimate answer and the case a Delaunay flip is free to break either way.
 pub fn in_circle_on_sphere(
@@ -232,8 +243,8 @@ pub fn in_circle_on_sphere(
     Ok(match (winding, side) {
         (_, Sign::Zero) => Sign::Zero,
         (Sign::Zero, _) => Sign::Zero,
-        (Sign::Positive, Sign::Positive) | (Sign::Negative, Sign::Negative) => Sign::Positive,
-        (Sign::Positive, Sign::Negative) | (Sign::Negative, Sign::Positive) => Sign::Negative,
+        (Sign::Positive, Sign::Negative) | (Sign::Negative, Sign::Positive) => Sign::Positive,
+        (Sign::Positive, Sign::Positive) | (Sign::Negative, Sign::Negative) => Sign::Negative,
     })
 }
 
