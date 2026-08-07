@@ -17,6 +17,7 @@ members = [
     # reference. Built and tested by the workspace; depended on by nothing in
     # the production engine (the dependency edge only points into rust/).
     "rust/earthmesh_refine_redgreen",
+    "rust/earthmesh_refine_harp_dv",
 ]
 
 # Release tuning for the numeric mesh pipeline. Thin LTO + single codegen unit

@@ -221,6 +221,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "earthmesh_refine_harp_dv"
+version = "3.0.0-alpha3"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_mesh",
+]
+
+[[package]]
 name = "earthmesh_refine_planner"
 version = "3.0.0-alpha3"
 dependencies = [

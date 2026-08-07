@@ -1,0 +1,18 @@
+[package]
+name = "earthmesh_refine_harp_dv"
+version = "3.0.0-alpha3"
+edition = "2021"
+description = "HARP-DV: threshold-driven, multi-cycle adaptive refinement of spherical Delaunay-Voronoi meshes. Phase 1 skeleton; not yet a runnable backend."
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[lib]
+name = "earthmesh_refine_harp_dv"
+path = "src/lib.rs"
+
+# Deliberately only these two. HARP-DV is a sibling of the other refinement
+# backends, not a layer over them, so it must not reach for method_c or
+# redgreen -- see the spec's dependency rule.
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_mesh = { path = "../earthmesh_mesh" }
