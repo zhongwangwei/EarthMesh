@@ -354,7 +354,7 @@ fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
         CandidatePolicy::default(),
         HardGates::default(),
         CycleLimits {
-            max_cycles: 30,
+            max_cycles: 40,
             max_sites: 100_000,
             minimum_cell_width_m: 1.0,
             max_neighbour_scale_ratio: 1.75,

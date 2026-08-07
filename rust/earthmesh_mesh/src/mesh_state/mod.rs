@@ -250,6 +250,15 @@ impl MeshState {
         self.vertices.len() - 1
     }
 
+    /// Move one site.
+    ///
+    /// Leaves the triangles alone, which is the point and also the hazard: the
+    /// mesh is still a triangulation and is very likely no longer Delaunay, so
+    /// a caller owes the neighbourhood a `legalize_around`.
+    pub fn move_vertex(&mut self, vertex: usize, point: CartesianPoint) {
+        self.vertices[vertex] = point;
+    }
+
     /// Overwrite one triangle's corners, leaving its id alone.
     ///
     /// Reusing a slot rather than deleting is what keeps every other id stable

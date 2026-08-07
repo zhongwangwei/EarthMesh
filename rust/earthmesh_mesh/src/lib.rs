@@ -95,6 +95,8 @@ pub use mesh_repairable_error::{
 };
 mod mesh_triangle_seed;
 pub use mesh_triangle_seed::MethodCTriangleSeed;
+mod mesh_flip;
+pub use mesh_flip::FlipError;
 mod mesh_insertion;
 mod mesh_patch;
 mod mesh_predicates;

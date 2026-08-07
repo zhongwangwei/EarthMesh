@@ -8,6 +8,14 @@ use earthmesh_mesh::{xyz_to_lonlat_degrees, LonLatDegrees, MeshState, MESH_STATE
 
 use crate::error::{HarpDvError, Result};
 
+/// How far apart two positions are along the sphere, in metres.
+fn displacement_metres(from: LonLatDegrees, to: LonLatDegrees) -> f64 {
+    let a = earthmesh_mesh::lonlat_degrees_to_unit_xyz(from);
+    let b = earthmesh_mesh::lonlat_degrees_to_unit_xyz(to);
+    let dot = (a.x * b.x + a.y * b.y + a.z * b.z).clamp(-1.0, 1.0);
+    dot.acos() * earthmesh_core::EARTH_RADIUS_METERS
+}
+
 /// A Voronoi site's identity, stable for the life of the run.
 ///
 /// Bound to the site rather than to a Delaunay face, because a face is not a
@@ -145,6 +153,17 @@ impl AdaptiveMesh {
         site.depth = 1;
         self.sites.push(site);
         site_id
+    }
+
+    /// Record that a site moved: its position, and what that cost its budget.
+    pub(crate) fn record_moved_site(&mut self, vertex: usize) -> SiteId {
+        let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
+        let row = vertex - MESH_STATE_FIRST_ID;
+        let site = &mut self.sites[row];
+        let unit_from = crate::state::displacement_metres(site.position, position);
+        site.cumulative_displacement_m += unit_from;
+        site.position = position;
+        site.site_id
     }
 
     pub fn state(&self) -> &MeshState {

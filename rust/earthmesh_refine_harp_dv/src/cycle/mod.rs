@@ -33,6 +33,7 @@ use crate::error::Result;
 use crate::report::{HarpDvRunReport, StopReason};
 use crate::state::AdaptiveMesh;
 use crate::transaction::{DemandOutcome, HardGates};
+use earthmesh_mesh::MeshState;
 
 /// What bounds a run, over and above the per-transaction gates.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,6 +186,131 @@ fn unbalanced_pairs(mesh: &AdaptiveMesh, limits: CycleLimits) -> usize {
         }
     }
     over
+}
+
+/// The worst neighbour scale ratio at one site.
+///
+/// Unused, like the destination rule below, and kept for the same reason: it
+/// is the local improvement gate the next attempt at r-adaptation will want,
+/// and section 11.9 records what it did when it was wired in.
+#[allow(dead_code)]
+///
+/// Local: the improvement gate compares this before and after a move, and a
+/// global objective would cost the mesh per transaction -- the shape guide
+/// section 11.7 records.
+fn worst_ratio_at(state: &MeshState, site: usize, limits: CycleLimits) -> f64 {
+    let radius_m = state.sphere_radius();
+    let scale = |site: usize| {
+        let cell = state.voronoi_cell(site).ok()?;
+        CellView {
+            site,
+            cell: &cell,
+            state,
+            radius_m,
+        }
+        .effective_scale_m()
+    };
+    let Some(here) = scale(site) else {
+        return f64::INFINITY;
+    };
+    let Ok(fan) = state.triangle_fan(site) else {
+        return f64::INFINITY;
+    };
+    let mut worst = 1.0_f64;
+    for triangle in fan {
+        for corner in state.triangles()[triangle] {
+            if corner == site {
+                continue;
+            }
+            if let Some(there) = scale(corner) {
+                worst = worst.max(here.max(there) / here.min(there));
+            }
+        }
+    }
+    let _ = limits;
+    worst
+}
+
+/// Where a site would move to even out the scales around it.
+///
+/// Not called. `propose_move` and this destination were built, wired into the
+/// balance path, and measured: r-adaptation made the residual worse and stopped
+/// the run converging (guide section 11.9). Kept because the measurement is
+/// about *this* destination rule and not about r-adaptation, and the next rule
+/// to try needs somewhere to go.
+#[allow(dead_code)]
+fn balance_destination_unused(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoint> {
+    balance_destination(mesh, site)
+}
+
+/// Where to move a site to even out the scales around it.
+#[allow(dead_code)]
+///
+/// Toward the centroid of its neighbours, weighted so the coarse side pulls
+/// harder: a site sitting between a fine neighbourhood and a coarse one is
+/// what makes the ratio, and moving it into the coarse side shrinks the coarse
+/// cell and grows the fine one at once.
+///
+/// A fraction of the way, not all of it. A site landing on the centroid would
+/// overshoot past the balance it was moving toward, and the next cycle would
+/// move it back.
+fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoint> {
+    const STEP: f64 = 0.25;
+    let state = mesh.state();
+    let here = state.vertices()[site];
+    let radius = magnitude(here);
+    let fan = state.triangle_fan(site).ok()?;
+    let mut neighbours = BTreeMap::new();
+    for triangle in &fan {
+        for corner in state.triangles()[*triangle] {
+            if corner != site {
+                neighbours.insert(corner, ());
+            }
+        }
+    }
+    if neighbours.is_empty() {
+        return None;
+    }
+    let scales = scales(mesh);
+    let mut total = 0.0;
+    let mut target = CartesianPoint::new(0.0, 0.0, 0.0);
+    for &corner in neighbours.keys() {
+        // A *fine* neighbour pulls hardest. The demand was raised on the
+        // coarser cell, so the ratio falls when this site moves toward the
+        // fine side: the coarse cell loses area there and the fine one gains
+        // it. Weighting the other way -- toward the coarse side -- was tried
+        // first and measured worse than doing nothing.
+        let scale = scales[corner].unwrap_or(0.0);
+        if scale <= 0.0 {
+            continue;
+        }
+        let weight = 1.0 / scale;
+        let point = state.vertices()[corner];
+        target = CartesianPoint::new(
+            target.x + point.x * weight,
+            target.y + point.y * weight,
+            target.z + point.z * weight,
+        );
+        total += weight;
+    }
+    if total <= 0.0 {
+        return None;
+    }
+    let centroid = CartesianPoint::new(target.x / total, target.y / total, target.z / total);
+    let stepped = CartesianPoint::new(
+        here.x + (centroid.x - here.x) * STEP,
+        here.y + (centroid.y - here.y) * STEP,
+        here.z + (centroid.z - here.z) * STEP,
+    );
+    let length = magnitude(stepped);
+    if !length.is_finite() || length <= 0.0 {
+        return None;
+    }
+    Some(CartesianPoint::new(
+        stepped.x / length * radius,
+        stepped.y / length * radius,
+        stepped.z / length * radius,
+    ))
 }
 
 /// Read every active cell once.

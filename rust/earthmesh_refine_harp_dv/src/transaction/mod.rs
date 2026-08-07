@@ -77,6 +77,14 @@ pub enum Rejection {
     TopologyInvalid { faults: Vec<String> },
     /// A fan could not be walked, so the neighbourhood could not be checked.
     Unmeasurable(VoronoiError),
+    /// The mesh could not be walked back to Delaunay after the move.
+    CouldNotLegalize(String),
+    /// Legal, and no better than what it replaced.
+    ///
+    /// Section 13.3. A move that passes every hard gate and improves nothing
+    /// is the one that makes a loop churn: it is accepted, so the driver reads
+    /// progress, and the next cycle finds the same violation.
+    NoImprovement { site: usize },
 }
 
 impl std::fmt::Display for Rejection {
@@ -104,6 +112,14 @@ impl std::fmt::Display for Rejection {
             Self::Unmeasurable(error) => {
                 write!(formatter, "the neighbourhood could not be checked: {error}")
             }
+            Self::NoImprovement { site } => write!(
+                formatter,
+                "the change at site {site} was legal and no better than what it replaced"
+            ),
+            Self::CouldNotLegalize(message) => write!(
+                formatter,
+                "the mesh could not be restored to Delaunay after the move: {message}"
+            ),
         }
     }
 }
@@ -254,6 +270,92 @@ impl AdaptiveMesh {
                 }))
             }
             Err(rejection) => {
+                self.state_mut()
+                    .restore_patch(patch)
+                    .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                Ok(Acceptance::RolledBack(rejection))
+            }
+        }
+    }
+}
+
+impl AdaptiveMesh {
+    /// Move a site, restore Delaunay around it, and keep it only if the gates
+    /// pass.
+    ///
+    /// Section 8.1 puts this ahead of insertion, and the measured reason is in
+    /// guide section 11.8: closing the last neighbour-scale ratios needs cells
+    /// the degree gate refuses, and moving a site changes scale without
+    /// changing anyone's degree.
+    ///
+    /// Unlike an insertion this is not local by construction. Moving a site
+    /// leaves its triangles in place and they may no longer be Delaunay, so a
+    /// legalization pass follows -- and a flip can make a neighbouring edge
+    /// illegal, so the repair reaches past the fan it started in. The patch is
+    /// taken over the whole fan and its ring for that reason.
+    /// `improves` is section 13.3's improvement gate, in the discrete form the
+    /// specification offers for the MVP: the hard gates say the mesh is legal,
+    /// and this says it is better than it was. Both are needed, and the
+    /// measurement that says so is in guide section 11.9 -- without it a
+    /// balance run committed 389 moves over 40 cycles and left more violations
+    /// than it started with, because every one of them was legal and the loop
+    /// read "something was accepted" as progress.
+    pub fn propose_move(
+        &mut self,
+        site: usize,
+        destination: CartesianPoint,
+        gates: HardGates,
+        improves: &dyn Fn(&MeshState) -> bool,
+    ) -> Result<Acceptance> {
+        let fan: BTreeSet<usize> = match self.state().triangle_fan(site) {
+            Ok(fan) => fan.into_iter().collect(),
+            Err(error) => return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(error))),
+        };
+        // Two rings of snapshot for one ring of flips. A flip rewrites the
+        // adjacency of both triangles *and* of everything across their edges,
+        // so a patch that covered only what may be flipped would leave those
+        // outside rewrites unrestorable -- and a rollback that puts most of a
+        // change back leaves a mesh that is neither the old one nor the new
+        // one, and that validates. Measured: without the extra ring, a balance
+        // run ends with four asymmetric neighbour pairs.
+        let reach: BTreeSet<usize> = self.state().snapshot_around(&fan).triangles().collect();
+        let patch = self.state().snapshot_around(&reach);
+        let origin = self.state().vertices()[site];
+
+        self.state_mut().move_vertex(site, destination);
+        let touched = match self.state_mut().legalize_within(&fan, Some(&reach)) {
+            // Everything a flip could have touched is inside `reach`, and so
+            // is everything the gates have to re-check.
+            Ok(_) => reach.clone(),
+            Err(error) => {
+                self.state_mut().move_vertex(site, origin);
+                self.state_mut()
+                    .restore_patch(patch)
+                    .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                return Ok(Acceptance::RolledBack(Rejection::CouldNotLegalize(
+                    error.to_string(),
+                )));
+            }
+        };
+
+        let verdict = match check(self.state(), &touched, gates) {
+            Ok(max_degree_touched) if improves(self.state()) => Ok(max_degree_touched),
+            Ok(_) => Err(Rejection::NoImprovement { site }),
+            Err(rejection) => Err(rejection),
+        };
+        match verdict {
+            Ok(max_degree_touched) => {
+                let site_id = self.record_moved_site(site);
+                Ok(Acceptance::Committed(TransactionReport {
+                    site_id,
+                    vertex: site,
+                    triangles_removed: 0,
+                    triangles_created: 0,
+                    max_degree_touched,
+                }))
+            }
+            Err(rejection) => {
+                self.state_mut().move_vertex(site, origin);
                 self.state_mut()
                     .restore_patch(patch)
                     .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
