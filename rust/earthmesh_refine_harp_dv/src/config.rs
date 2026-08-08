@@ -14,8 +14,14 @@ pub struct HarpDvConfig {
     pub minimum_cell_width_m: f64,
     /// The cell count the run may not exceed.
     pub maximum_cells: usize,
-    /// Rings of neighbours a patch takes around its seed.
-    pub patch_ring_depth: usize,
+    // A `patch_ring_depth` sat here, documented as "rings of neighbours a patch
+    // takes around its seed", defaulted to 2, validated by nothing and read by
+    // nothing. The depth is not one number anyway: an insertion snapshots the
+    // ring around its cavity, and a move snapshots the ring around that -- so
+    // even validating it against a constant would have encoded a value that is
+    // only half true. It is gone rather than documented, for the reason this
+    // file already gives about `deterministic`: a field accepted and ignored is
+    // a promise nothing keeps.
     /// The largest patch a single transaction may touch.
     pub maximum_patch_cells: usize,
     /// The widest ratio allowed between the effective scales of two adjacent
@@ -34,7 +40,6 @@ impl Default for HarpDvConfig {
             max_cycles: 20,
             minimum_cell_width_m: 1_000.0,
             maximum_cells: 5_000_000,
-            patch_ring_depth: 2,
             maximum_patch_cells: 10_000,
             maximum_neighbor_scale_ratio: 1.75,
             deterministic: true,

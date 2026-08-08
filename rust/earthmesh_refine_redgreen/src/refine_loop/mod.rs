@@ -95,8 +95,18 @@ pub struct RedGreenSettings {
     ///   segments (447), `weak_concav_pair_special` (450) and
     ///   `weak_concav_lop_judge` (477).
     ///
-    /// `false` is the default because that is the treatment that keeps the
-    /// concavity's shape rather than filling it in.
+    /// `false` keeps the concavity's shape rather than filling it in, which is
+    /// why it is this struct's default -- but it is not free, and the cost is
+    /// not visible from the shape argument alone. **A run that reaches the
+    /// gridfile writer with `false` produces a cell with eight incident
+    /// triangles**, one past the seven the format's `[i32; 7]` incidence rows
+    /// can hold, and stops. Measured through the CLI at NXP 15, 21 and 30: all
+    /// three fail with `false` and all three succeed with `true`.
+    ///
+    /// `RefineConfig::weak_concav_eliminate` therefore defaults to `true`, so
+    /// every namelist run overrides this. The two defaults disagree on purpose:
+    /// a caller who wants the concavity's shape and is not writing a gridfile
+    /// can still ask for it, and has to ask.
     pub eliminate_weak_concavity: bool,
     /// `HALO`: how far inside the previous level's refined region this level
     /// must stay.

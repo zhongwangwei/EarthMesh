@@ -1204,7 +1204,12 @@ fn refine_with_harp_dv(
     // right, and why `TargetScale`, which compares cell scales, was asking for
     // half of what a level meant. Guide 11.31.
 
-    let (base_cell_m, base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
+    // Only the cell scale is used here -- `TargetScale` compares cell scales,
+    // and the spring converts to edge lengths from this same number so the two
+    // cannot disagree. `harp_base_lengths` still measures both because the
+    // pair is what makes the distinction checkable: 190 km against 364 km at
+    // NXP 21 is why taking the nominal `2*pi*R/(5*nxp)` for either was wrong.
+    let (base_cell_m, _base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
         let nominal =
             2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
         (nominal / 2.0, nominal)
@@ -1589,10 +1594,14 @@ fn harp_spring_smoothed(
         ));
     }
     edges.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    // `base_edge_m` is already an edge length, measured off the unrefined
-    // mesh, so the factor is the ratio between what this mesh has there and
-    // what the caller says the unrefined scale is -- near one, and a guard
-    // rather than a conversion.
+    // A conversion, not a guard. `width` below is built from `base_cell_m` --
+    // a cell scale, `sqrt(A/pi)` -- and `spring_nest_with_edge_targets` wants
+    // edge lengths, so every target has to cross between the two. Measured at
+    // NXP 21: the median unrefined edge is 363 km against a 190 km cell scale,
+    // so the factor is 1.91. An earlier comment here called it "near one",
+    // which described a version whose divisor was the median *edge*; dividing
+    // by that would leave cell scales fed to an edge-target spring, which is
+    // the halved-target defect guide 11.31 records.
     let shape_factor = edges[edges.len() / 2] / base_cell_m;
     let targets =
         earthmesh_refine_method_c::method_c_edge_target_lengths_from_field(mesh, |lon, lat| {
@@ -1608,13 +1617,13 @@ fn harp_spring_smoothed(
             // 0.3 metres of growth per metre of distance: shallow enough that
             // the transition spans a few cells, steep enough that a target
             // does not reach across the globe.
-            let gradient: f64 = std::env::var("EM_G")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.3);
+            //
             // Swept 0.05 to 0.50 both before and after the scale correction;
             // it changes nothing either way (guide 11.24, 11.32). What matters
-            // is that the field is continuous, not its slope.
+            // is that the field is continuous, not its slope. The sweep left an
+            // `EM_G` environment override here that was read into a variable
+            // nothing used -- so the knob a reader would reach for did nothing,
+            // and the constant below is what the run has always used.
             const GRADIENT: f64 = 0.3;
             let mut width = base_cell_m;
             for region in regions {

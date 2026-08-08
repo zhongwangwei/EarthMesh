@@ -57,8 +57,14 @@ pub struct HardGates {
     pub min_triangle_angle_deg: f64,
     /// Whether the mesh must still be closed afterwards.
     ///
-    /// True for a sphere. A regional mesh with a real boundary sets it false
-    /// and gates on the boundary topology instead.
+    /// True for a sphere, and nothing sets it otherwise today.
+    ///
+    /// **Setting it false removes this gate and puts nothing in its place.** An
+    /// earlier version of this comment said a regional mesh "gates on the
+    /// boundary topology instead"; there is no such gate. A regional backend
+    /// needs one written before it can turn this off -- `earthmesh_boundary`
+    /// holds the model it would gate against, and no backend consumes that
+    /// crate yet.
     pub require_closed_surface: bool,
 }
 

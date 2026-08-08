@@ -1073,6 +1073,29 @@ check(
 log("atmosphere template labels match supported behavior");
 
 {
+  // Three expert controls are parsed from the namelist, validated, lowered and
+  // written back -- and read by no refinement code. Measured on all three
+  // backends with the relevant spring proven to be running: changing any of
+  // them leaves the mesh bit-identical. A number a user can set that does
+  // nothing has to say so, so each carries the reason in its help text. If one
+  // is ever implemented, that sentence is what has to come back out.
+  const inert = ["RL%set_dis_type", "RL%num_rc", "RL%vertex_pretect_layers"];
+  const missing = inert.filter((name) => {
+    const at = html.indexOf(`\${field("${name}"`);
+    if (at < 0) return true;
+    return !html
+      .slice(at, at + 900)
+      .includes("does not affect the mesh in this build");
+  });
+  check(
+    !missing.length,
+    "expert controls that no backend reads must say so in their help text",
+    missing,
+  );
+  log("inert expert controls are labelled as carried-for-fidelity");
+}
+
+{
   // Algorithm and route were two selects that knew nothing about each other, so
   // the pair `harp_dv` + h-field was one click away and the run refuses it.
   // Both halves are needed: disabling the option stops it being chosen, and the
