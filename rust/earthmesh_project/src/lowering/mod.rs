@@ -357,6 +357,7 @@ impl ProjectConfig {
         mkgrd.refine_backend = match backend {
             crate::RefinementBackend::MethodC => "method_c",
             crate::RefinementBackend::RedGreen => "red_green",
+            crate::RefinementBackend::HarpDv => "harp_dv",
         }
         .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);

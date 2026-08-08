@@ -866,3 +866,51 @@ fn runtime_state_records_data_preprocess_source_grid_globals() {
     invalid.config.gridnum_perdegree = 0;
     assert!(invalid.record_data_preprocess_source_grid(1).is_err());
 }
+
+/// A backend name that is not a backend is refused, not guessed at.
+///
+/// The pipeline used to match on this string with a `_` arm that ran Method-C,
+/// so `harpdv`, `harp-dv`, `redgreen`, `method-c` and `HARP_DV` all produced a
+/// Method-C mesh in silence -- a user asking for one backend and getting
+/// another.
+#[test]
+fn an_unknown_refine_backend_is_refused() {
+    for name in ["harpdv", "harp-dv", "redgreen", "method-c", "hex"] {
+        let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
+            .expect_err("this is not a refinement backend");
+        assert!(error.contains("refine_backend"), "{name}: {error}");
+    }
+}
+
+/// The three real names are accepted, in any case.
+#[test]
+fn the_three_backends_are_accepted_in_any_case() {
+    for name in ["method_c", "red_green", "harp_dv", "HARP_DV", "Red_Green"] {
+        EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
+            .unwrap_or_else(|error| panic!("{name} should be a backend: {error}"));
+    }
+}
+
+/// A grid mode that is not one is refused; the canonical unset placeholder is
+/// not.
+#[test]
+fn mode_grid_is_checked_but_the_canonical_placeholder_passes() {
+    for name in ["hex", "tri", "HEX", "/tmp"] {
+        EarthmeshConfig::from_mkgrd_namelist(&backend_namelist("method_c", name))
+            .unwrap_or_else(|error| panic!("{name} should be allowed: {error}"));
+    }
+    for name in ["hexx", "triangle", "quad"] {
+        let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist("method_c", name))
+            .expect_err("not a grid mode");
+        assert!(error.contains("mode_grid"), "{name}: {error}");
+    }
+}
+
+fn backend_namelist(backend: &str, mode_grid: &str) -> String {
+    format!(
+        "&mkgrd\n  NL%EXPNME='t'\n  NL%base_dir='/tmp/'\n  NL%mesh_type='landmesh'\n  \
+         NL%mode_grid='{mode_grid}'\n  NL%mode_file='none'\n  \
+         NL%mode_file_description='none'\n  NL%NXP=6\n  NL%refine_backend='{backend}'\n  \
+         NL%output_format='CoLM'\n/\n"
+    )
+}

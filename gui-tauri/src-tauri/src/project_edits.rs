@@ -690,9 +690,10 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
     cfg.refinement.backend = match backend.as_str() {
         "method_c" => earthmesh_project::RefinementBackend::MethodC,
         "red_green" => earthmesh_project::RefinementBackend::RedGreen,
+        "harp_dv" => earthmesh_project::RefinementBackend::HarpDv,
         other => {
             return Err(format!(
-                "unknown refinement backend {other}: expected method_c or red_green"
+                "unknown refinement backend {other}: expected method_c, red_green, or harp_dv"
             ))
         }
     };

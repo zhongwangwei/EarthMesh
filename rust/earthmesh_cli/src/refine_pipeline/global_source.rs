@@ -242,13 +242,20 @@ pub fn run_refine_pipeline_namelist(
     // `refine_cal` says a criterion decides where to refine. On red-green the
     // point+radius route is what reads one, so this only bites when that route
     // is off too: mask *files* are served either way, since a mask file is a
+    // Named before anything dispatches on it, because the dispatch used to end
+    // in a `_ =>` arm that ran Method-C. Measured: `harpdv`, `harp-dv`,
+    // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
+    // said nothing -- a user asking for one backend and silently getting
+    // another, which is the failure class guide 11.1 records.
+    let backend = refine_backend_name(&config.refine_backend)?;
+
     // named region by another name, but a criterion with neither a file nor
     // `&adaptive` behind it has nowhere to go.
     //
     // Said now rather than at the backend branch, because the reader below runs
     // first -- and on the unconfigured prefix it fails with a message about
     // Method-C and a `/tmp` path nobody typed.
-    if config.refine_backend.trim() == "red_green"
+    if backend == RefineBackend::RedGreen
         && refine.refine_cal
         && adaptive_options.is_none()
         && !has_configured_calculated_regions
@@ -351,8 +358,8 @@ pub fn run_refine_pipeline_namelist(
         spring_nest_passes,
         hfield_diagnostics,
         adaptive_run,
-    } = match config.refine_backend.trim() {
-        "red_green" => {
+    } = match backend {
+        RefineBackend::RedGreen => {
             // What this route does not read, said outright rather than served
             // quietly with less: any of these would simply be dropped, and the
             // run would still write a valid mesh that passes every quality check
@@ -408,13 +415,13 @@ pub fn run_refine_pipeline_namelist(
                 .transpose()?;
             refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
         }
-        "harp_dv" => refine_with_harp_dv(
+        RefineBackend::HarpDv => refine_with_harp_dv(
             &mesh,
             &regions,
             method_c_nxp,
             usize::try_from(refine.niter_refine).unwrap_or(0),
         )?,
-        _ => {
+        RefineBackend::MethodC => {
             let MethodCRefineOutcome {
                 mesh,
                 spring_nest_passes,
@@ -1342,6 +1349,36 @@ fn harp_base_lengths(mesh: &earthmesh_mesh::TriangularMesh) -> Option<(f64, f64)
         values[values.len() / 2]
     };
     Some((median(&mut scales), median(&mut edges)))
+}
+
+/// Which backend a run asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefineBackend {
+    MethodC,
+    RedGreen,
+    HarpDv,
+}
+
+/// Resolve `NL%refine_backend`, refusing anything that is not a backend.
+///
+/// Case-insensitive, because `HARP_DV` asks for HARP-DV by any reading. What it
+/// will not do is guess: the dispatch this replaced fell through to Method-C
+/// for every unrecognised value, so `redgreen`, `harp-dv` and `method-c` each
+/// produced a Method-C mesh in silence.
+fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
+    let name = requested.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "method_c" => Ok(RefineBackend::MethodC),
+        "red_green" => Ok(RefineBackend::RedGreen),
+        "harp_dv" => Ok(RefineBackend::HarpDv),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "NL%refine_backend = '{other}' is not a refinement backend; the choices are \
+                 method_c, red_green and harp_dv"
+            ),
+        )),
+    }
 }
 
 /// The angle floor a run asks for, if any.

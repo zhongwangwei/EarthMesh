@@ -169,6 +169,19 @@ pub enum RefinementBackend {
     /// marking it cannot take as given and never rejects a shape. This is the
     /// backend for a coastline.
     RedGreen,
+    /// Re-read the criteria against the cells that exist and change the mesh
+    /// locally where they are still unmet.
+    ///
+    /// Where the other two turn demand into geometry once and fit a mesh to it,
+    /// this measures each Voronoi cell every cycle, so a cell that has become
+    /// fine enough stops asking. It refuses any transaction that would leave a
+    /// thin triangle, which is what carries its worst angle past Method-C's on
+    /// the same request, and it reports what it could not do rather than
+    /// quietly serving less.
+    ///
+    /// It serves named circular regions. A region with a shape -- a bbox, a
+    /// polygon -- is refused rather than approximated.
+    HarpDv,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

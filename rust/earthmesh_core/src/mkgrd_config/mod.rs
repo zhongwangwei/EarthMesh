@@ -298,6 +298,37 @@ impl EarthmeshConfig {
             ));
         }
 
+        // Both of these were free-form strings that the pipeline matched on
+        // with a `_` arm, so a typo chose a different thing in silence:
+        // `redgreen`, `harp-dv` and `method-c` each produced a Method-C mesh,
+        // and an unrecognised `mode_grid` fell through to the hex reading.
+        // Named here rather than at each match, because there are a dozen
+        // matches on `mode_grid` alone and one of them will always be missed.
+        if !matches!(
+            self.refine_backend.trim().to_ascii_lowercase().as_str(),
+            "method_c" | "red_green" | "harp_dv"
+        ) {
+            return Err(format!(
+                "unsupported refine_backend {}; expected method_c, red_green, or harp_dv",
+                self.refine_backend
+            ));
+        }
+
+        // `/tmp` is Canonical's `oname_vars` placeholder for an unset string --
+        // `tests/constants.rs` pins that several fields carry it. The pipeline
+        // reads anything that is not `tri` as hex, so an unset `mode_grid` is
+        // hex and passes here; what is refused is a value that looks like a
+        // choice and is not one.
+        if !matches!(
+            self.mode_grid.trim().to_ascii_lowercase().as_str(),
+            "hex" | "tri" | "/tmp"
+        ) {
+            return Err(format!(
+                "unsupported mode_grid {}; expected hex or tri",
+                self.mode_grid
+            ));
+        }
+
         if !matches!(
             self.output_format.as_str(),
             "CoLM" | "FVCOM" | "ICON" | "MPAS" | "MPAS-Ocean" | "MPAS-Simple"

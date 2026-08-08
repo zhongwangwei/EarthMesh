@@ -2948,3 +2948,31 @@ fn the_summary_says_what_a_target_and_model_pairing_delivers() {
     assert_eq!(summary.model_format, "MPAS-Ocean");
     assert_eq!(summary.delivery_status, "full");
 }
+
+/// The GUI can select every backend the engine has.
+///
+/// It could not: `set_refinement_backend` knew `method_c` and `red_green`, and
+/// `RefinementBackend` had no HARP-DV variant at all, so the third backend was
+/// unreachable from a project file or the interface. The engine had shipped it
+/// and nothing above the CLI could ask for it.
+#[test]
+fn every_engine_backend_is_selectable_from_a_project() {
+    let base = circle_project("backend selection").to_yaml().expect("yaml");
+    for (name, expected) in [
+        ("method_c", earthmesh_project::RefinementBackend::MethodC),
+        ("red_green", earthmesh_project::RefinementBackend::RedGreen),
+        ("harp_dv", earthmesh_project::RefinementBackend::HarpDv),
+    ] {
+        let yaml = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
+            .unwrap_or_else(|error| panic!("{name} should be selectable: {error}"));
+        let parsed = ProjectConfig::from_yaml(&yaml).expect("round trip");
+        assert_eq!(parsed.refinement.backend, expected, "{name}");
+    }
+
+    let error = crate::project_edits::set_refinement_backend(base, "harpdv".to_string())
+        .expect_err("a typo is not a backend");
+    assert!(
+        error.contains("harp_dv"),
+        "the message should list it: {error}"
+    );
+}
