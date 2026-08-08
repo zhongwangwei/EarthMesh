@@ -84,7 +84,7 @@ fn a_ring_that_repeats_its_first_vertex_still_validates() {
 
     let model = boundary_model_from_closed_curves(&curves, &source).expect("model");
     model.validate().expect("no pinch");
-    assert_eq!(model.loops[0].vertices.len(), 4);
+    assert_eq!(model.loops[0].vertices().len(), 4);
 }
 
 /// A curve naming a vertex with no position is an error, not a dropped ring.

@@ -78,15 +78,109 @@ pub struct BoundaryVertex {
 }
 
 /// One closed ring of boundary vertices.
+///
+/// # Why `vertices` is not public
+///
+/// The order of this list *is* the loop's orientation, and orientation is what
+/// decides which side of the ring is inside -- see [`SphericalBoundaryModel::contains`].
+/// A ring walked off a mesh arrives with no orientation at all: the same edges
+/// collected in a different order come back the other way round. So a loop
+/// built by filling in this field would have an inside that depended on the
+/// order its edges happened to be found in, silently and consistently.
+///
+/// The two constructors are the two honest ways to supply what the data does
+/// not carry: [`Self::counter_clockwise`] for a caller that already knows the
+/// order is right, and [`Self::enclosing`] for one that knows a point the loop
+/// must contain and would rather be told than assert.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundaryLoop {
     pub loop_type: LoopType,
     pub role: BoundaryRole,
     /// Vertex indices in order. The ring closes implicitly; the first index is
     /// not repeated at the end.
-    pub vertices: Vec<usize>,
+    vertices: Vec<usize>,
     /// Which outer loop this hole sits in. `None` for an outer loop.
     pub parent: Option<usize>,
+}
+
+impl BoundaryLoop {
+    /// A loop whose vertex order is already counter-clockwise seen from outside
+    /// the sphere, so the region it encloses is the one on its left.
+    ///
+    /// The caller is asserting that. Nothing here can check it -- both sides of
+    /// a closed curve on a sphere are enclosed by it, so there is no property
+    /// of the ring alone that says which side was meant. Use [`Self::enclosing`]
+    /// where the caller has a point instead of a conviction.
+    pub fn counter_clockwise(
+        loop_type: LoopType,
+        role: BoundaryRole,
+        vertices: Vec<usize>,
+        parent: Option<usize>,
+    ) -> Self {
+        Self {
+            loop_type,
+            role,
+            vertices,
+            parent,
+        }
+    }
+
+    /// A loop oriented so that it encloses `interior`, whichever way its
+    /// vertices were given.
+    ///
+    /// This is the constructor to reach for after [`crate::closed_rings`],
+    /// which cannot supply an orientation and says so. `model_vertices` are the
+    /// positions the indices refer to; `interior` is a point the loop is known
+    /// to contain -- a site inside the region, not a point on the ring.
+    ///
+    /// Returns `None` when the ring is degenerate or `interior` lies on it, in
+    /// which case neither direction encloses the point and the caller has not
+    /// said what it meant.
+    pub fn enclosing(
+        loop_type: LoopType,
+        role: BoundaryRole,
+        vertices: Vec<usize>,
+        parent: Option<usize>,
+        model_vertices: &[BoundaryVertex],
+        interior: (f64, f64),
+    ) -> Option<Self> {
+        if vertices.len() < 3 {
+            return None;
+        }
+        let probe = |order: &[usize]| SphericalBoundaryModel {
+            vertices: model_vertices.to_vec(),
+            loops: vec![Self {
+                loop_type: LoopType::Outer,
+                role,
+                vertices: order.to_vec(),
+                parent: None,
+            }],
+        };
+        let forward = probe(&vertices).contains(interior.0, interior.1);
+        let reversed: Vec<usize> = vertices.iter().rev().copied().collect();
+        let backward = probe(&reversed).contains(interior.0, interior.1);
+        // Exactly one direction must enclose the point. Both, or neither, means
+        // the point is on the ring, and orienting against it would be picking a
+        // side the caller never chose.
+        match (forward, backward) {
+            (true, false) => Some(Self::counter_clockwise(loop_type, role, vertices, parent)),
+            (false, true) => Some(Self::counter_clockwise(loop_type, role, reversed, parent)),
+            _ => None,
+        }
+    }
+
+    /// The ring, in traversal order.
+    pub fn vertices(&self) -> &[usize] {
+        &self.vertices
+    }
+
+    /// The ring the other way round, which encloses the complementary side.
+    pub fn reversed(&self) -> Self {
+        Self {
+            vertices: self.vertices.iter().rev().copied().collect(),
+            ..self.clone()
+        }
+    }
 }
 
 /// Every boundary the run has to respect, as one model.
@@ -157,14 +251,14 @@ impl SphericalBoundaryModel {
     pub fn validate(&self) -> Result<(), Vec<BoundaryError>> {
         let mut errors = Vec::new();
         for (loop_index, ring) in self.loops.iter().enumerate() {
-            if ring.vertices.len() < 3 {
+            if ring.vertices().len() < 3 {
                 errors.push(BoundaryError::DegenerateLoop {
                     loop_index,
-                    vertices: ring.vertices.len(),
+                    vertices: ring.vertices().len(),
                 });
             }
             let mut seen = BTreeMap::new();
-            for &vertex in &ring.vertices {
+            for &vertex in ring.vertices() {
                 if vertex >= self.vertices.len() {
                     errors.push(BoundaryError::UnknownVertex { loop_index, vertex });
                     continue;
@@ -299,12 +393,12 @@ impl SphericalBoundaryModel {
         };
 
         let mut turned = 0.0_f64;
-        let count = ring.vertices.len();
+        let count = ring.vertices().len();
         for step in 0..count {
-            let Some(&from) = ring.vertices.get(step) else {
+            let Some(&from) = ring.vertices().get(step) else {
                 return false;
             };
-            let Some(&to) = ring.vertices.get((step + 1) % count) else {
+            let Some(&to) = ring.vertices().get((step + 1) % count) else {
                 return false;
             };
             let (Some(a), Some(b)) = (self.vertices.get(from), self.vertices.get(to)) else {
@@ -333,7 +427,7 @@ impl SphericalBoundaryModel {
     pub fn segments(&self) -> Vec<(usize, usize)> {
         let mut segments = Vec::new();
         for ring in &self.loops {
-            let count = ring.vertices.len();
+            let count = ring.vertices().len();
             for step in 0..count {
                 let (Some(&from), Some(&to)) = (
                     ring.vertices.get(step),

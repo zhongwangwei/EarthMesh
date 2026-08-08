@@ -329,3 +329,79 @@ fn the_winding_convention_is_the_right_hand_rule() {
         "and the same ring reversed encloses the rest of the sphere instead"
     );
 }
+
+/// `enclosing` supplies the orientation the ring itself cannot carry.
+///
+/// This is what `closed_rings` hands off to. Given the same vertices either way
+/// round and a point the loop must contain, both come back oriented the same --
+/// which is the property the caller wanted and the ring alone could never give.
+#[test]
+fn enclosing_orients_a_ring_whichever_way_it_arrives() {
+    let vertices = square();
+    let inside = (0.5, 0.5);
+
+    let forward = BoundaryLoop::enclosing(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![0, 1, 2, 3],
+        None,
+        &vertices,
+        inside,
+    )
+    .expect("a square encloses its middle");
+    let backward = BoundaryLoop::enclosing(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![3, 2, 1, 0],
+        None,
+        &vertices,
+        inside,
+    )
+    .expect("and so does the same square reversed");
+
+    assert_eq!(
+        forward.vertices(),
+        backward.vertices(),
+        "the same loop either way in"
+    );
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![forward],
+    };
+    assert!(model.contains(inside.0, inside.1));
+    assert!(!model.contains(40.0, 40.0), "and not the far side");
+}
+
+/// A point on the ring orients nothing, so the loop is refused.
+///
+/// Both directions "contain" a vertex of the ring -- the winding is undefined
+/// there -- so there is no answer to give, and inventing one would pick a side
+/// the caller never chose.
+#[test]
+fn enclosing_refuses_a_point_that_lies_on_the_ring() {
+    let vertices = square();
+    assert!(BoundaryLoop::enclosing(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![0, 1, 2, 3],
+        None,
+        &vertices,
+        (0.0, 0.0),
+    )
+    .is_none());
+}
+
+/// A ring of fewer than three vertices encloses nothing, whatever the point.
+#[test]
+fn enclosing_refuses_a_degenerate_ring() {
+    let vertices = square();
+    assert!(BoundaryLoop::enclosing(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![0, 1],
+        None,
+        &vertices,
+        (0.5, 0.5),
+    )
+    .is_none());
+}

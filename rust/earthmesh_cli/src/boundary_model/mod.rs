@@ -125,16 +125,18 @@ pub fn boundary_model_from_closed_curves(
     model.loops = oriented
         .into_iter()
         .enumerate()
-        .map(|(index, vertices)| BoundaryLoop {
-            loop_type: if parents[index].is_some() {
-                LoopType::Hole
-            } else {
-                LoopType::Outer
-            },
-            // The carved domain edge is a coastline: nothing may cross it.
-            role: BoundaryRole::HardDomain,
-            vertices,
-            parent: parents[index],
+        .map(|(index, vertices)| {
+            BoundaryLoop::counter_clockwise(
+                if parents[index].is_some() {
+                    LoopType::Hole
+                } else {
+                    LoopType::Outer
+                },
+                // The carved domain edge is a coastline: nothing may cross it.
+                BoundaryRole::HardDomain,
+                vertices,
+                parents[index],
+            )
         })
         .collect();
     // Parents are indices into `oriented`, which is the same order as `loops`,
@@ -156,12 +158,12 @@ pub fn boundary_model_from_closed_curves(
 fn ring_is_inside(model: &SphericalBoundaryModel, ring: &[usize], candidate: &[usize]) -> bool {
     let probe = SphericalBoundaryModel {
         vertices: model.vertices.clone(),
-        loops: vec![BoundaryLoop {
-            loop_type: LoopType::Outer,
-            role: BoundaryRole::HardDomain,
-            vertices: candidate.to_vec(),
-            parent: None,
-        }],
+        loops: vec![BoundaryLoop::counter_clockwise(
+            LoopType::Outer,
+            BoundaryRole::HardDomain,
+            candidate.to_vec(),
+            None,
+        )],
     };
     ring.iter().all(|&vertex| {
         model
