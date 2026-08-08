@@ -335,8 +335,16 @@ fn method_c_close_mask_reader_repeats_first_point_for_canonical_ngrdll() {
     .expect("write close mask source");
 
     let mut regions = Vec::new();
-    read_method_c_close_refinement_regions(&source, 1, &CloseBoundaryMode::Polyline, &mut regions)
-        .expect("read close refinement regions");
+    read_method_c_close_refinement_regions(
+        &source,
+        1,
+        &CloseBoundaryMode::Polyline,
+        &mut regions,
+        &RefineConfig::default(),
+        21,
+        true,
+    )
+    .expect("read close refinement regions");
 
     let RefinementRegion::Polygon { points, level } = &regions[0] else {
         panic!("close mask should produce Method-C polygon region");
@@ -373,6 +381,9 @@ fn method_c_close_mask_reader_applies_spherical_chaikin_before_polygon_membershi
             max_segment_angle_deg: 0.5,
         },
         &mut regions,
+        &RefineConfig::default(),
+        21,
+        true,
     )
     .expect("smooth close refinement regions");
 

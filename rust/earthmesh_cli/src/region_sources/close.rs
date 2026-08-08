@@ -18,6 +18,9 @@ pub(crate) fn read_method_c_close_refinement_regions(
     max_level: usize,
     boundary: &CloseBoundaryMode,
     regions: &mut Vec<RefinementRegion>,
+    refine: &earthmesh_core::RefineConfig,
+    nxp: usize,
+    apply_parent_halos: bool,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
         Some("nml") => parse_close_mask_nml(source, max_level)?,
@@ -41,10 +44,23 @@ pub(crate) fn read_method_c_close_refinement_regions(
     log_close_boundary_report(source, boundary, &transformed.report);
     match transformed.geometry {
         CloseBoundaryGeometry::Polygon(points) => {
-            regions.push(RefinementRegion::Polygon {
-                points: method_c_geometry_points_for_canonical_ngrdll(&points),
-                level: mask.refine_degree,
-            });
+            let points = method_c_geometry_points_for_canonical_ngrdll(&points);
+            // The h-field route settles every level from one field and wants
+            // the curve as given; only the nesting route needs the parents.
+            if apply_parent_halos {
+                push_close_polygon_region_with_parent_halos(
+                    regions,
+                    points,
+                    mask.refine_degree,
+                    refine,
+                    nxp,
+                )?;
+            } else {
+                regions.push(RefinementRegion::Polygon {
+                    points,
+                    level: mask.refine_degree,
+                });
+            }
         }
         CloseBoundaryGeometry::EnclosingCap { center, radius_km } => {
             regions.push(RefinementRegion::Circle {
@@ -141,4 +157,135 @@ fn method_c_geometry_points_for_canonical_ngrdll(points: &[GeometryPoint]) -> Ve
         }
     }
     converted
+}
+
+/// Emit a closed curve at its own level and at every level above it, each one
+/// grown outward by the transition band that level needs.
+///
+/// The counterpart of `push_method_c_circle_or_corridor_region_with_parent_halos`,
+/// which a circle has had all along and a closed curve had not. Method-C nests:
+/// a level-2 region must sit inside a level-1 one, or its perimeter has no
+/// ground to transition through, and `method_c_spawn_internal` refuses the pass
+/// by name -- `pass 2 polygon regions require explicit parent-level halo`.
+/// Measured before this: the same mask that red-green and HARP-DV both served
+/// stopped Method-C, which is the default backend.
+///
+/// # Growing a ring
+///
+/// A circle grows by adding to its radius. A ring grows by moving each vertex
+/// outward from the ring's centroid, which is the same operation and the same
+/// limitation: **on a concave ring the offset can cross itself**, and on one
+/// spanning a large arc the centroid is a poor centre. Both are refused rather
+/// than emitted, because a parent that self-intersects produces a perimeter
+/// Method-C cannot walk and the failure lands far from here.
+fn push_close_polygon_region_with_parent_halos(
+    regions: &mut Vec<RefinementRegion>,
+    points: Vec<LonLatDegrees>,
+    level: usize,
+    refine: &earthmesh_core::RefineConfig,
+    nxp: usize,
+) -> io::Result<()> {
+    if nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Method-C close polygon halo expansion requires positive NXP",
+        ));
+    }
+    let base_spacing =
+        std::f64::consts::PI * 2.0 * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
+    for parent_level in 1..level {
+        let mut halo_meters = 0.0;
+        for transition_level in parent_level..level {
+            let halo_rows = refine
+                .halo
+                .get(transition_level)
+                .copied()
+                .unwrap_or(0)
+                .max(
+                    refine
+                        .max_transition_row
+                        .get(transition_level)
+                        .copied()
+                        .unwrap_or(0),
+                )
+                .max(0) as usize;
+            if halo_rows > 0 {
+                halo_meters +=
+                    halo_rows as f64 * base_spacing / 2.0_f64.powi((transition_level - 1) as i32);
+            }
+        }
+        match grown_ring(&points, halo_meters) {
+            Some(grown) => regions.push(RefinementRegion::Polygon {
+                points: grown,
+                level: parent_level,
+            }),
+            // A ring this cannot grow honestly gets no parent, and the pass
+            // refusal downstream still names what is missing. Better than a
+            // parent that folds over itself.
+            None => break,
+        }
+    }
+    regions.push(RefinementRegion::Polygon { points, level });
+    Ok(())
+}
+
+/// Move every vertex outward from the ring's centroid by `halo_meters`.
+///
+/// `None` when the result would not be a simple ring: a vertex at the centroid
+/// has no outward direction, and a ring wider than a quarter of the sphere has
+/// no centroid worth measuring from.
+fn grown_ring(points: &[LonLatDegrees], halo_meters: f64) -> Option<Vec<LonLatDegrees>> {
+    if points.len() < 3 || !halo_meters.is_finite() || halo_meters <= 0.0 {
+        return None;
+    }
+    let radius = earthmesh_core::EARTH_RADIUS_METERS;
+    let unit: Vec<[f64; 3]> = points
+        .iter()
+        .map(|point| {
+            let p = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*point);
+            [p.x, p.y, p.z]
+        })
+        .collect();
+    let mut centroid = [0.0_f64; 3];
+    for p in &unit {
+        centroid[0] += p[0];
+        centroid[1] += p[1];
+        centroid[2] += p[2];
+    }
+    let length = (centroid[0].powi(2) + centroid[1].powi(2) + centroid[2].powi(2)).sqrt();
+    if length <= 1.0e-9 {
+        return None;
+    }
+    let centroid = [
+        centroid[0] / length,
+        centroid[1] / length,
+        centroid[2] / length,
+    ];
+    let mut grown = Vec::with_capacity(points.len());
+    for p in &unit {
+        let dot = (centroid[0] * p[0] + centroid[1] * p[1] + centroid[2] * p[2]).clamp(-1.0, 1.0);
+        let arc = dot.acos();
+        // A vertex on the centroid has no direction to grow along, and one more
+        // than a quarter-sphere away means the centroid is not inside the ring.
+        if arc <= 1.0e-9 || arc > std::f64::consts::FRAC_PI_2 {
+            return None;
+        }
+        let grown_arc = arc + halo_meters / radius;
+        if grown_arc >= std::f64::consts::FRAC_PI_2 {
+            return None;
+        }
+        // Slide along the great circle from the centroid through this vertex.
+        let tangent: Vec<f64> = (0..3).map(|i| p[i] - centroid[i] * dot).collect();
+        let tangent_length = (tangent[0].powi(2) + tangent[1].powi(2) + tangent[2].powi(2)).sqrt();
+        if tangent_length <= 1.0e-12 {
+            return None;
+        }
+        let moved = earthmesh_mesh::CartesianPoint::new(
+            centroid[0] * grown_arc.cos() + tangent[0] / tangent_length * grown_arc.sin(),
+            centroid[1] * grown_arc.cos() + tangent[1] / tangent_length * grown_arc.sin(),
+            centroid[2] * grown_arc.cos() + tangent[2] / tangent_length * grown_arc.sin(),
+        );
+        grown.push(earthmesh_mesh::xyz_to_lonlat_degrees(moved));
+    }
+    Some(grown)
 }

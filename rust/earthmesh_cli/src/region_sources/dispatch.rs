@@ -129,6 +129,9 @@ pub(crate) fn read_method_c_specified_refinement_regions(
                 max_level,
                 &close_boundary,
                 &mut regions,
+                refine,
+                nxp,
+                apply_parent_halos,
             )?,
             other => {
                 return Err(io::Error::new(
