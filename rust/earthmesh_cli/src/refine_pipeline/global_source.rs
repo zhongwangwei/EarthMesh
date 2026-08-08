@@ -257,6 +257,39 @@ pub fn run_refine_pipeline_namelist(
         ));
     }
 
+    // Same shape again, one branch earlier. The native `&ngrids`/`&nsfcgrids`
+    // spawn sits at the head of Method-C's chain and never consults either
+    // route, so a namelist carrying both gets the native mesh and no word about
+    // the other. Measured at NXP 6: `&nsfcgrids` alone and `&nsfcgrids` with
+    // `&adaptive` produced bit-identical 435-cell meshes, exit 0, and not one
+    // line of adaptive output.
+    //
+    // The condition is the branch's own, character for character, because
+    // "native regions are configured" is not the same thing. With `refine_spc`
+    // on, the native spawn stands down and the h-field branch runs -- which is
+    // how Cartesian-XY serves `&ngrids` *and* an h-field together, a
+    // combination this guard refused outright on its first attempt and 64 tests
+    // said so.
+    let native_spawn_takes_precedence = !is_atmosmesh
+        && (native_only_spawn || native_surface_global_expansion)
+        && !refine.refine_spc
+        && !refine.refine_cal;
+    if native_spawn_takes_precedence && (adaptive_options.is_some() || hfield_options.is_some()) {
+        let other = if adaptive_options.is_some() {
+            "&adaptive"
+        } else {
+            "&hfield"
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "native Method-C grids (NL%ngrids/NL%nsfcgrids) and {other} are both configured \
+                 and nothing composes them: the native spawn refines the grids it was given and \
+                 never reads the other route. Enable one"
+            ),
+        ));
+    }
+
     // Named before anything dispatches on it, because the dispatch used to end
     // in a `_ =>` arm that ran Method-C. Measured: `harpdv`, `harp-dv`,
     // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
@@ -1067,6 +1100,10 @@ fn refine_with_redgreen(
                     passes,
                     deepest_level,
                     stopped_on_empty_demand,
+                    // Red-green does not run the Method-C nest spring, and
+                    // says so rather than inheriting a number from the route
+                    // it shares the demand half with.
+                    spring_passes: 0,
                 },
                 max_level,
                 adaptive.base_cell_meters,
@@ -1803,9 +1840,26 @@ fn refine_with_method_c(
             mesh_type,
             refine_coastline: adaptive.coastline,
         };
+        // The spring the run configured, on the route that is the default.
+        // Without this the two `spawn_nest` calls inside were the bare overload
+        // and every point stayed where the nest put it, while the report went on
+        // printing the iteration count it had been asked for. Measured on the
+        // same namelist with and without `&adaptive`: the direct route moved
+        // 5182 of 7023 points in two passes, this one moved none. Guide 11.39.
+        let spring = (spring_nest_iterations > 0).then_some(
+            crate::refinement_demand::nest::AdaptiveNestSpring {
+                nxp: method_c_nxp,
+                iterations: spring_nest_iterations,
+                max_mrows: if is_atmosmesh {
+                    MethodCMesh::MAX_MROWS_ATMOS
+                } else {
+                    MethodCMesh::MAX_MROWS_SURFACE
+                },
+            },
+        );
         let (refined, report) =
             crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
-                &mesh, refine, &inputs, regions, base_m, depth,
+                &mesh, refine, &inputs, regions, base_m, depth, spring,
             )?;
         for pass in &report.passes {
             eprintln!(
@@ -1840,7 +1894,8 @@ fn refine_with_method_c(
             }
             eprintln!("adaptive refine: nothing asked for refinement; mesh left uniform");
         }
-        (refined, 0)
+        let sprang = report.spring_passes;
+        (refined, sprang)
     } else if let Some(hfield) = hfield_options {
         // H-field mode: compose the same specified regions into a
         // gradient-limited cell-width field and let quantized target levels

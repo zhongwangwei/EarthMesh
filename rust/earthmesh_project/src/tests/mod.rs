@@ -2432,3 +2432,35 @@ fn coupling_cama_root_round_trips_with_compatibility_alias() {
     let parsed: CoupledMeshConfig = serde_yaml::from_str(yaml).unwrap();
     assert_eq!(parsed.cama_root.as_deref(), Some("/data/cama"));
 }
+
+#[test]
+fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
+    // The run refuses this at the dispatch, but a project is edited and saved
+    // long before it is run. Without the refusal here, the GUI would happily
+    // save a project whose only symptom is a run that dies -- and before the
+    // dispatch grew its guard, harp_dv took the pair and produced 6450 cells
+    // having never read the field.
+    let mut p = sample();
+    p.refinement.hfield = Some(crate::HfieldRefinementRecipe {
+        enabled: true,
+        ..Default::default()
+    });
+
+    p.refinement.backend = crate::RefinementBackend::MethodC;
+    p.validate().expect("Method-C serves the h-field");
+
+    for (backend, name) in [
+        (crate::RefinementBackend::RedGreen, "red_green"),
+        (crate::RefinementBackend::HarpDv, "harp_dv"),
+    ] {
+        p.refinement.backend = backend;
+        let error = p.validate().expect_err("refused");
+        assert!(error.contains(name), "{error}");
+        assert!(error.contains("h-field"), "{error}");
+    }
+
+    // Turning the h-field off is what makes the project runnable again, and the
+    // refusal must not outlive the thing it objects to.
+    p.refinement.hfield = None;
+    p.validate().expect("no h-field, no objection");
+}

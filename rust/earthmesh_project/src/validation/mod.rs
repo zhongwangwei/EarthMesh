@@ -49,6 +49,7 @@ impl ProjectConfig {
         self.validate_landtype_requirements()?;
         self.refinement.validate()?;
         self.validate_refinement_sources()?;
+        self.validate_backend_serves_refinement_route()?;
         self.quality.validate()?;
         self.expert.validate()?;
         self.validate_expert_refinement_levels()?;
@@ -169,6 +170,38 @@ impl ProjectConfig {
                 "refinement is enabled but no refinement source is enabled (add a threshold or specified bbox/circle/close source, or disable refinement)"
                     .to_string(),
             )
+        }
+    }
+
+    /// A backend that cannot serve the h-field must not be paired with one.
+    ///
+    /// The run refuses this combination at the dispatch, which is the only
+    /// place that knows what each backend can do -- but a project is edited and
+    /// saved long before it is run, so the refusal has to exist here too or the
+    /// only way to learn is to start a run and watch it fail. Measured before
+    /// the dispatch grew its guard: `harp_dv` with an h-field configured
+    /// produced 6450 cells having never read the field.
+    fn validate_backend_serves_refinement_route(&self) -> Result<(), String> {
+        if !self.refinement.enabled {
+            return Ok(());
+        }
+        let wants_hfield = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
+        if !wants_hfield {
+            return Ok(());
+        }
+        match self.refinement.backend {
+            crate::RefinementBackend::MethodC => Ok(()),
+            crate::RefinementBackend::RedGreen => Err(
+                "refinement.backend red_green does not serve an h-field; it refines named regions \
+                 and the point+radius criteria. Use method_c, or turn refinement.hfield off"
+                    .to_string(),
+            ),
+            crate::RefinementBackend::HarpDv => Err(
+                "refinement.backend harp_dv does not serve an h-field; it re-reads a target scale \
+                 against the cells that exist and serves circular regions. Use method_c, or turn \
+                 refinement.hfield off"
+                    .to_string(),
+            ),
         }
     }
 

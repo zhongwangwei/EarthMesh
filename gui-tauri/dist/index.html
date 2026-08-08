@@ -2823,11 +2823,16 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const backend = specifiedRefine.route || "adaptive";
+    // Only the nested algorithm serves the h-field. The other two refuse a run
+    // that configures one, so offering it beside them builds a project that
+    // cannot run -- and before they grew the refusal, HARP-DV took the pair and
+    // quietly produced a mesh having never read the field.
+    const hfieldServed = (specifiedRefine.algorithm || "method_c") === "method_c";
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 细化方案" : "EXPERT — refinement backend"}</span>
       <div class="grid2" style="margin-top:10px">
         ${field(z?"细化算法":"Refinement algorithm",`<select class="select" id="refineAlgorithm"><option value="method_c" ${(specifiedRefine.algorithm||"method_c")==="method_c"?"selected":""}>Method-C${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="red_green" ${specifiedRefine.algorithm==="red_green"?"selected":""}>Red-Green${z?"（任意区域）":" (arbitrary regions)"}</option><option value="harp_dv" ${specifiedRefine.algorithm==="harp_dv"?"selected":""}>HARP-DV${z?"（逐单元重读判据）":" (re-reads criteria per cell)"}</option></select>`,z?"Method-C 只细化它造得出的块形，判据驱动的形状会被拒绝；Red-Green 把标记集扩张到可行，从不拒绝形状；HARP-DV 每轮对现有单元重新求值，只在仍不满足处局部改网格，并拒绝会留下瘦三角形的改动——目前只服务圆形区域":"Method-C refines only shapes it can build and refuses one that came from the data; Red-Green grows a marking until it is legal and never refuses a shape; HARP-DV re-reads the criteria against the cells that exist each cycle and changes the mesh only where they are still unmet, refusing any change that would leave a thin triangle -- it serves circular regions only")}
-        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点+半径（默认）":"Point+radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场":"H-field"}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"discrete 硬掩膜":"discrete mask"}</option></select>`,z?"默认点+半径：每细化一层前重新判据；H 场一次性定完；discrete 只为复现实验":"default point+radius: criteria re-asked before each pass; H-field settles once; discrete only for parity")}
+        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点+半径（默认）":"Point+radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""} ${hfieldServed?"":"disabled"}>${z?"H 场":"H-field"}${hfieldServed?"":(z?"（仅 Method-C）":" (Method-C only)")}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"discrete 硬掩膜":"discrete mask"}</option></select>`,z?"默认点+半径：每细化一层前重新判据；H 场一次性定完；discrete 只为复现实验":"default point+radius: criteria re-asked before each pass; H-field settles once; discrete only for parity")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
@@ -2960,8 +2965,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const algoSel = document.getElementById("refineAlgorithm");
       if (algoSel) algoSel.onchange = () => {
         specifiedRefine.algorithm = algoSel.value;
+        // Switching away from the nested algorithm with the h-field selected
+        // would leave a project the run refuses. Disabling the option is not
+        // enough on its own -- a browser keeps a disabled option selected if it
+        // already was.
+        if (specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield") {
+          specifiedRefine.route = "adaptive";
+          if (backendSel) backendSel.value = "adaptive";
+          syncBackend();
+        }
         expertEdit.enabled = expertEnabled();
         clearRunArtifacts();
+        enhanceRefinementStep();
       };
       const hfG = document.getElementById("hfieldG");
       if (hfG) hfG.addEventListener("input", () => { const v = parseFloat(hfG.value); specifiedRefine.hfieldG = Number.isFinite(v) ? v : null; });

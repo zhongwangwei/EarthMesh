@@ -61,6 +61,32 @@ pub struct AdaptiveNestReport {
     /// because it hit `max_level`. A caller that cares about resolution wants
     /// to know which.
     pub stopped_on_empty_demand: bool,
+    /// Nest spring passes actually run, summed over the levels.
+    ///
+    /// Zero when no spring was configured. The run report prints this beside
+    /// the iteration count it was asked for, and the two disagreeing is the
+    /// only way a caller can tell that a spring it configured did not run.
+    pub spring_passes: usize,
+}
+
+/// What the nest spring needs, when one is configured.
+///
+/// `None` at the call site means no spring, which is not the same as a spring
+/// of zero iterations: the first skips the spring-bearing `spawn_nest` overload
+/// entirely, and the second would ask it for a smoothing pass that does nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct AdaptiveNestSpring {
+    /// The base mesh's NXP, which sets the spring's target edge length.
+    pub nxp: usize,
+    /// Iterations per pass, from `method_c_spring_iterations`.
+    pub iterations: usize,
+    /// Transition width, `MAX_MROWS_SURFACE` or `MAX_MROWS_ATMOS`.
+    ///
+    /// Chosen by the caller because `is_atmosmesh` lives there. The
+    /// spring-free path reaches the same choice through bare `spawn_nest`,
+    /// which hard-codes the surface width -- so passing the atmosphere width
+    /// here is what finally makes the two routes agree for an atmosmesh.
+    pub max_mrows: usize,
 }
 
 /// Refine `mesh` up to `max_level`, re-planning demand before every pass.
@@ -169,6 +195,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
     named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
+    spring: Option<AdaptiveNestSpring>,
 ) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
     if !base_cell_meters.is_finite() || base_cell_meters <= 0.0 {
         return Err(io::Error::new(
@@ -199,6 +226,27 @@ pub fn spawn_nest_adaptive_with_named_regions(
     let mut passes = Vec::new();
     let mut deepest_level = 0usize;
     let mut stopped_on_empty_demand = false;
+    let mut spring_passes = 0usize;
+    // One place decides whether a pass springs, so the two call sites below --
+    // the grouped one and the single-group one -- cannot drift apart. They did:
+    // both called bare `spawn_nest`, and a run that configured
+    // `SpringRegional_type` got no spring at all on this route while the direct
+    // route sprang the same mesh. Guide 11.39.
+    let refine_once = |mesh: &MethodCMesh,
+                       regions: &[RefinementRegion],
+                       level: usize|
+     -> io::Result<(MethodCMesh, usize)> {
+        match spring {
+            Some(spring) => mesh.spawn_nest_with_spring_and_max_mrows(
+                regions,
+                level,
+                spring.max_mrows,
+                spring.nxp,
+                spring.iterations,
+            ),
+            None => mesh.spawn_nest(regions, level).map(|mesh| (mesh, 0)),
+        }
+    };
 
     for level in 1..=max_level {
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
@@ -283,10 +331,11 @@ pub fn spawn_nest_adaptive_with_named_regions(
                 }
                 group_started = std::time::Instant::now();
                 last_group_circles = group.len();
-                let outcome = current.spawn_nest(group, level);
+                let outcome = refine_once(&current, group, level);
                 let reason = match outcome {
-                    Ok(next) => {
+                    Ok((next, sprang)) => {
                         current = next;
+                        spring_passes += sprang;
                         None
                     }
                     Err(error) => {
@@ -364,8 +413,11 @@ pub fn spawn_nest_adaptive_with_named_regions(
                 );
             }
         } else {
-            current = match current.spawn_nest(&regions, level) {
-                Ok(refined) => refined,
+            current = match refine_once(&current, &regions, level) {
+                Ok((refined, sprang)) => {
+                    spring_passes += sprang;
+                    refined
+                }
                 // A level the geometry cannot carry ends the run at the depth it
                 // reached, rather than throwing away the levels that did work. The
                 // mesh so far is valid and is what the criteria asked for down to
@@ -430,6 +482,7 @@ pub fn spawn_nest_adaptive_with_named_regions(
             passes,
             deepest_level,
             stopped_on_empty_demand,
+            spring_passes,
         },
     ))
 }
@@ -455,7 +508,15 @@ pub fn spawn_nest_adaptive(
     base_cell_meters: f64,
     max_level: usize,
 ) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
-    spawn_nest_adaptive_with_named_regions(mesh, refine, inputs, &[], base_cell_meters, max_level)
+    spawn_nest_adaptive_with_named_regions(
+        mesh,
+        refine,
+        inputs,
+        &[],
+        base_cell_meters,
+        max_level,
+        None,
+    )
 }
 
 impl AdaptiveNestReport {

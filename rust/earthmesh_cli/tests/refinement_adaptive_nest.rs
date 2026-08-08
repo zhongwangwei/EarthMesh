@@ -176,6 +176,7 @@ fn a_named_region_is_refined_even_when_no_criterion_asks() {
             &named,
             base_cell_meters(),
             1,
+            None,
         )
         .expect("adaptive nest");
 
@@ -226,8 +227,84 @@ fn a_named_region_deeper_than_the_run_is_refused_rather_than_dropped() {
         &named,
         base_cell_meters(),
         2,
+        None,
     )
     .expect_err("a region beyond the ceiling must be refused");
     assert!(error.to_string().contains("level 3"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A configured spring runs on this route, and the report says how often.
+///
+/// It did not. Both `spawn_nest` calls in the loop were the spring-free
+/// overload and the branch returned a hard-coded zero, so a namelist setting
+/// `SpringRegional_type` got a mesh whose points were exactly where the nest
+/// put them -- while the run report went on printing the iteration count it had
+/// been asked for. The direct route, given the same namelist, sprang the same
+/// mesh in two passes and moved 5182 of its 7023 points.
+///
+/// Asserting on `spring_passes` alone would not have caught it, since a wrong
+/// number is as easy to produce as a right one. So this compares the meshes:
+/// with a spring, points move.
+#[test]
+fn a_configured_spring_moves_points_on_the_adaptive_route() {
+    let root = temp_root("adaptive_spring");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0);
+
+    let named = vec![earthmesh_mesh::RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+        radius_meters: 400_000.0,
+        level: 1,
+    }];
+    let refine = RefineConfig::default();
+    let run = |spring| {
+        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+            &base_mesh(),
+            &refine,
+            &plan_inputs(&path, true),
+            &named,
+            base_cell_meters(),
+            1,
+            spring,
+        )
+        .expect("adaptive nest")
+    };
+
+    let (still, still_report) = run(None);
+    let (sprung, sprung_report) = run(Some(
+        earthmesh_cli::refinement_demand::nest::AdaptiveNestSpring {
+            nxp: NXP,
+            iterations: 200,
+            max_mrows: MethodCMesh::MAX_MROWS_SURFACE,
+        },
+    ));
+
+    assert_eq!(still_report.spring_passes, 0, "no spring, no passes");
+    assert!(
+        sprung_report.spring_passes > 0,
+        "a spring that ran reports its passes: {sprung_report:?}"
+    );
+    assert_eq!(
+        still.m_points.len(),
+        sprung.m_points.len(),
+        "the spring moves points; it does not add or remove them"
+    );
+    let moved = still
+        .m_points
+        .iter()
+        .zip(sprung.m_points.iter())
+        .skip(2)
+        .filter(|(before, after)| {
+            (before.x - after.x).abs() > 1.0e-9
+                || (before.y - after.y).abs() > 1.0e-9
+                || (before.z - after.z).abs() > 1.0e-9
+        })
+        .count();
+    assert!(
+        moved > 0,
+        "{moved} of {} points moved: the spring was configured and did nothing",
+        still.m_points.len() - 2
+    );
     let _ = fs::remove_dir_all(root);
 }

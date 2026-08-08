@@ -3190,3 +3190,64 @@ fn harp_dv_output_passes_the_mesh_quality_gate() {
     assert_eq!(report.topology.invalid_vertex_index_count, 0);
     assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
 }
+
+/// The native spawn refuses a route it would otherwise swallow -- and only then.
+///
+/// It sits at the head of Method-C's branch chain and never consults `&adaptive`
+/// or `&hfield`, so a namelist carrying both used to get the native mesh in
+/// silence: measured at NXP 6, `&nsfcgrids` with and without `&adaptive`
+/// produced bit-identical 435-cell meshes, exit 0, and not one line of adaptive
+/// output.
+///
+/// The pair is not always a swallow, which is the part worth pinning. With
+/// `refine_spc` on, the native spawn stands down and the h-field branch runs --
+/// that is how Cartesian-XY serves `&ngrids` and an h-field together. A guard
+/// keyed on "native regions are configured" rather than on the branch's own
+/// condition refuses that too, and 64 tests said so.
+#[test]
+fn native_grids_refuse_a_route_they_would_swallow_and_not_one_they_share() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("native_route_composition");
+    let base_dir = format!("{}/", root.display());
+
+    let namelist_with = |name: &str, refine_spc: &str, extra: &str| {
+        let path = root.join(format!("{name}.nml"));
+        fs::write(
+            &path,
+            format!(
+                "&mkgrd\n  NL%EXPNME='{name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  \
+                 NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  \
+                 NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  \
+                 NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  \
+                 NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  \
+                 NL%output_format='CoLM'\n  NL%nsfcgrids=1\n  NL%nsfcgrdll(1)=1\n  \
+                 NL%sfcgrdrad(1,1)=2500000.0\n  NL%sfcgrdlat(1,1)=25.0\n  \
+                 NL%sfcgrdlon(1,1)=115.0\n/\n&mkrefine\n  RL%Istransition=.true.\n  \
+                 RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%niter_refine=0\n  \
+                 RL%refine_spc={refine_spc}\n  RL%refine_cal=.false.\n/\n{extra}",
+            ),
+        )
+        .expect("write namelist");
+        path
+    };
+
+    // Native alone: the spawn owns the run and nothing is refused.
+    let alone = namelist_with("native_alone", ".false.", "");
+    earthmesh_cli::run_refine_pipeline_namelist(&alone, &root, 20_000, None)
+        .expect("native grids alone");
+
+    // Native plus a route it never reads: refused by name rather than dropped.
+    let with_adaptive = namelist_with(
+        "native_with_adaptive",
+        ".false.",
+        "&adaptive\n  NL%adaptive_on = .true.\n  NL%adaptive_max_level = 2\n/\n",
+    );
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&with_adaptive, &root, 20_000, None)
+        .expect_err("refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(error.to_string().contains("&adaptive"), "{error}");
+    assert!(
+        error.to_string().contains("nothing composes them"),
+        "{error}"
+    );
+}

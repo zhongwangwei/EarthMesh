@@ -676,8 +676,12 @@ log("CaMa label check passed");
   // is what this bans. It *is* one of the two refinement algorithms, and the
   // picker that chooses between them has to say its name, so the picker's own
   // markup is taken out before the check rather than the check being dropped.
+  // The route picker has to name it too: only Method-C serves the h-field, and
+  // an option greyed out with no reason given is worse than one that says why.
   const withoutAlgorithmPicker = (text) =>
-    text.replace(/\$\{field\([^]*?id="refineAlgorithm"[^]*?\)\}/g, "");
+    text
+      .replace(/\$\{field\([^]*?id="refineAlgorithm"[^]*?\)\}/g, "")
+      .replace(/\$\{field\([^]*?id="refineBackend"[^]*?\)\}/g, "");
   const hits = [
     ["gui-tauri/README.md", readme],
     ["gui-tauri/dist/index.html", html],
@@ -1067,6 +1071,23 @@ check(
   "atmosphere template must not advertise unsupported typhoon refinement",
 );
 log("atmosphere template labels match supported behavior");
+
+{
+  // Algorithm and route were two selects that knew nothing about each other, so
+  // the pair `harp_dv` + h-field was one click away and the run refuses it.
+  // Both halves are needed: disabling the option stops it being chosen, and the
+  // reset stops it staying chosen, because a browser keeps a disabled option
+  // selected when it already was.
+  check(
+    /id="refineBackend"[^]*?value="hfield"[^]*?\$\{hfieldServed\?"":"disabled"\}/.test(html),
+    "the h-field route option must be disabled for a backend that cannot serve it",
+  );
+  check(
+    html.includes('specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield"'),
+    "switching algorithm must reset a selected h-field route",
+  );
+  log("h-field route is gated on the refinement algorithm");
+}
 
 {
   const dict = section(html, /const I = \{([\s\S]*?)\n\};/, "i18n dictionary");
