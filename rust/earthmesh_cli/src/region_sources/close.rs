@@ -173,11 +173,22 @@ fn method_c_geometry_points_for_canonical_ngrdll(points: &[GeometryPoint]) -> Ve
 /// # Growing a ring
 ///
 /// A circle grows by adding to its radius. A ring grows by moving each vertex
-/// outward from the ring's centroid, which is the same operation and the same
-/// limitation: **on a concave ring the offset can cross itself**, and on one
-/// spanning a large arc the centroid is a poor centre. Both are refused rather
-/// than emitted, because a parent that self-intersects produces a perimeter
-/// Method-C cannot walk and the failure lands far from here.
+/// outward from the ring's centroid -- the same operation, and it works while
+/// the ring is star-shaped about that centroid. When it is not, radial growth
+/// is not growth: a ray from the centroid leaves and re-enters the ring, and
+/// the "parent" comes back not containing the child.
+///
+/// Measured, and it is why the check below is on the property rather than on a
+/// proxy for it. A concave L runs fine, because it is still star-shaped. A deep
+/// C, whose centroid sits in its own mouth, produced a parent that failed far
+/// downstream with `Current nested grid crosses the parent boundary at M point
+/// 2795` -- a perimeter Method-C could not walk, reported nowhere near the
+/// place that built it.
+///
+/// So the grown ring is checked for what a parent has to do: contain every
+/// vertex of the child. A ring that fails gets no parent, and the pass refusal
+/// downstream still names what is missing -- which is a worse message but an
+/// honest one, in the right place.
 fn push_close_polygon_region_with_parent_halos(
     regions: &mut Vec<RefinementRegion>,
     points: Vec<LonLatDegrees>,
@@ -287,5 +298,108 @@ fn grown_ring(points: &[LonLatDegrees], halo_meters: f64) -> Option<Vec<LonLatDe
         );
         grown.push(earthmesh_mesh::xyz_to_lonlat_degrees(moved));
     }
+
+    // The property, not a proxy for it: "centroid is inside" does not imply
+    // star-shaped -- a spiral has its centroid inside and still fails -- and
+    // star-shapedness is only the reason this works, not the thing needed.
+    // What is needed is that the parent contains the child.
+    let parent = crate::boundary_model::boundary_model_from_regions(&[RefinementRegion::Polygon {
+        points: grown.clone(),
+        level: 1,
+    }]);
+    if parent.loops.is_empty() {
+        return None;
+    }
+    if !points
+        .iter()
+        .all(|point| parent.contains(point.lon_degrees, point.lat_degrees))
+    {
+        return None;
+    }
     Some(grown)
+}
+
+#[cfg(test)]
+mod grown_ring_tests {
+    use super::*;
+
+    /// The ring in the form production hands to `grown_ring`: closed, with the
+    /// first point repeated at the end.
+    ///
+    /// Measuring on the raw point list instead gave a different centroid and a
+    /// different answer -- an L that production grows came back refused. A test
+    /// that does not feed what the caller feeds is measuring another function.
+    fn ring(points: &[(f64, f64)]) -> Vec<LonLatDegrees> {
+        let mut ring: Vec<LonLatDegrees> = points
+            .iter()
+            .map(|&(lon, lat)| LonLatDegrees::new(lon, lat))
+            .collect();
+        if let Some(&first) = ring.first() {
+            ring.push(first);
+        }
+        ring
+    }
+
+    /// A convex ring grows, and the grown one contains the original.
+    #[test]
+    fn a_convex_ring_grows_around_its_child() {
+        let child = ring(&[(110.0, 15.0), (125.0, 15.0), (125.0, 30.0), (110.0, 30.0)]);
+        let parent = grown_ring(&child, 200_000.0).expect("a convex ring grows");
+        assert_eq!(parent.len(), child.len());
+
+        let model =
+            crate::boundary_model::boundary_model_from_regions(&[RefinementRegion::Polygon {
+                points: parent,
+                level: 1,
+            }]);
+        for point in &child {
+            assert!(
+                model.contains(point.lon_degrees, point.lat_degrees),
+                "the parent must contain {point:?}"
+            );
+        }
+    }
+
+    /// A concave ring that is still star-shaped about its centroid grows too.
+    ///
+    /// Concavity alone does not break radial growth, which is why the check is
+    /// on whether the parent contains the child rather than on whether the ring
+    /// is convex -- an L would have been refused for nothing.
+    #[test]
+    fn a_concave_but_star_shaped_ring_still_grows() {
+        let l_shape = ring(&[
+            (110.0, 15.0),
+            (125.0, 15.0),
+            (125.0, 22.0),
+            (117.0, 22.0),
+            (117.0, 30.0),
+            (110.0, 30.0),
+        ]);
+        assert!(grown_ring(&l_shape, 200_000.0).is_some());
+    }
+
+    /// A ring whose centroid sits in its own mouth gets no parent.
+    ///
+    /// Radial growth from a point the ring does not enclose is not growth: the
+    /// result comes back not containing the child. Measured before this check
+    /// existed, such a parent reached Method-C and failed with `Current nested
+    /// grid crosses the parent boundary at M point 2795` -- a perimeter it
+    /// could not walk, reported nowhere near the code that built it.
+    #[test]
+    fn a_deep_c_whose_centroid_is_outside_it_gets_no_parent() {
+        let deep_c = ring(&[
+            (110.0, 15.0),
+            (125.0, 15.0),
+            (125.0, 18.0),
+            (114.0, 18.0),
+            (114.0, 27.0),
+            (125.0, 27.0),
+            (125.0, 30.0),
+            (110.0, 30.0),
+        ]);
+        assert!(
+            grown_ring(&deep_c, 200_000.0).is_none(),
+            "no parent is better than one that does not contain its child"
+        );
+    }
 }
