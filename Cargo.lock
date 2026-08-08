@@ -162,6 +162,7 @@ dependencies = [
 name = "earthmesh_cli"
 version = "3.0.0-alpha3"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_geometry",
  "earthmesh_hfield",

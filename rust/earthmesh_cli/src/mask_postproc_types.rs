@@ -77,6 +77,15 @@ pub struct MaskPostprocOceanDomainReport {
     pub boundary_orders: Option<BoundaryOrders>,
     pub obc: Option<ObcBoundaryWriteReport>,
     pub obcv2: Option<Obcv2BoundaryWriteReport>,
+    /// Outer boundaries and holes in the carved domain, as the neutral model
+    /// counts them.
+    ///
+    /// On the report rather than only on stderr: this is the pair a refinement
+    /// must leave unchanged, and a diagnostic nothing can assert against is one
+    /// that regresses without anyone noticing. `None` means the boundary could
+    /// not be read as a model, which is itself worth telling apart from "no
+    /// boundaries".
+    pub boundary_topology: Option<(usize, usize)>,
 }
 
 /// Result of composing the tri-only ocean postprocess mask renewal routines

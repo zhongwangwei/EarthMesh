@@ -8,6 +8,7 @@ repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_hfield = { path = "../earthmesh_hfield" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }

@@ -16,6 +16,11 @@
 //! splitting, sliding, narrow-feature policy -- belong to whichever backend is
 //! doing the adapting.
 
+pub mod rings;
+pub mod segments;
+pub use rings::{closed_rings, RingError};
+pub use segments::SegmentList;
+
 use std::collections::BTreeMap;
 
 /// What a boundary means for the mesh that meets it.
@@ -193,6 +198,153 @@ impl SphericalBoundaryModel {
         } else {
             Err(errors)
         }
+    }
+
+    /// Whether a point is inside the domain this model describes.
+    ///
+    /// Inside an outer loop and not inside any of its holes. A lake in an
+    /// island is outside; the sea around the island is outside; the land
+    /// between them is inside. Getting that right is the whole reason holes are
+    /// their own loops rather than joined to the outer ring by a cut.
+    ///
+    /// # Why this is here and not in a backend
+    ///
+    /// It answers "what is this boundary", which is this crate's subject. What
+    /// a backend *does* with the answer -- refine inside it, refuse to cross
+    /// it, split a segment that encroaches -- stays with the backend.
+    ///
+    /// # On the sphere, "inside" is a choice, and the ring's direction makes it
+    ///
+    /// A closed curve on a plane has an inside and an outside. On a sphere it
+    /// has two sides and neither is smaller by nature -- the winding sum is
+    /// `+2*pi` on one side and `-2*pi` on the other, so its *magnitude* calls
+    /// both of them enclosed. Testing `abs(turn) > pi` therefore reports the
+    /// far side of the globe as inside, which is what the dateline test caught.
+    ///
+    /// So the sign is what decides, and the convention is:
+    ///
+    /// **every ring runs counter-clockwise seen from outside the sphere, and
+    /// the region it encloses is the one on its left.** An outer ring's left is
+    /// the domain; a hole's left is the void inside it -- the lake, not the
+    /// island around it. A ring given the other way round describes the
+    /// complementary region, and does so deliberately rather than by accident.
+    ///
+    /// Winding is summed on the sphere rather than cast as a ray in longitude,
+    /// so the dateline and the poles need no special case: a ring spanning 170
+    /// east to 170 west is a twenty-degree strip, not almost the whole globe.
+    pub fn contains(&self, lon_degrees: f64, lat_degrees: f64) -> bool {
+        let mut inside = false;
+        for (index, ring) in self.loops.iter().enumerate() {
+            if ring.loop_type != LoopType::Outer
+                || !self.loop_winds_around(ring, lon_degrees, lat_degrees)
+            {
+                continue;
+            }
+            let in_a_hole = self.loops.iter().any(|hole| {
+                hole.loop_type == LoopType::Hole
+                    && hole.parent == Some(index)
+                    && self.loop_winds_around(hole, lon_degrees, lat_degrees)
+            });
+            if !in_a_hole {
+                inside = true;
+                break;
+            }
+        }
+        inside
+    }
+
+    /// Whether this ring encloses the point, by spherical winding.
+    fn loop_winds_around(&self, ring: &BoundaryLoop, lon_degrees: f64, lat_degrees: f64) -> bool {
+        let to_unit = |lon: f64, lat: f64| {
+            let (lon, lat) = (lon.to_radians(), lat.to_radians());
+            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+        };
+        let here = to_unit(lon_degrees, lat_degrees);
+        // Each edge is projected into the plane tangent at the test point, and
+        // the angles it turns through there are summed. A ring that encloses
+        // the point turns a full circle; one that does not returns to zero.
+        let tangent = |point: [f64; 3]| -> Option<(f64, f64)> {
+            let dot = here[0] * point[0] + here[1] * point[1] + here[2] * point[2];
+            let flat = [
+                point[0] - here[0] * dot,
+                point[1] - here[1] * dot,
+                point[2] - here[2] * dot,
+            ];
+            let length = (flat[0] * flat[0] + flat[1] * flat[1] + flat[2] * flat[2]).sqrt();
+            if length <= 1.0e-12 {
+                // The test point sits on this vertex. Counting it as enclosed
+                // is the choice that keeps a boundary vertex inside its own
+                // domain rather than in neither.
+                return None;
+            }
+            // Any fixed basis in the tangent plane does; the sum of turns is
+            // independent of which.
+            let east = [-here[1], here[0], 0.0];
+            let east_length = (east[0] * east[0] + east[1] * east[1]).sqrt();
+            let east = if east_length > 1.0e-12 {
+                [east[0] / east_length, east[1] / east_length, 0.0]
+            } else {
+                // At a pole, east is undefined; any perpendicular will do.
+                [1.0, 0.0, 0.0]
+            };
+            let north = [
+                here[1] * east[2] - here[2] * east[1],
+                here[2] * east[0] - here[0] * east[2],
+                here[0] * east[1] - here[1] * east[0],
+            ];
+            Some((
+                (flat[0] * east[0] + flat[1] * east[1] + flat[2] * east[2]) / length,
+                (flat[0] * north[0] + flat[1] * north[1] + flat[2] * north[2]) / length,
+            ))
+        };
+
+        let mut turned = 0.0_f64;
+        let count = ring.vertices.len();
+        for step in 0..count {
+            let Some(&from) = ring.vertices.get(step) else {
+                return false;
+            };
+            let Some(&to) = ring.vertices.get((step + 1) % count) else {
+                return false;
+            };
+            let (Some(a), Some(b)) = (self.vertices.get(from), self.vertices.get(to)) else {
+                return false;
+            };
+            let (Some(a), Some(b)) = (
+                tangent(to_unit(a.lon_degrees, a.lat_degrees)),
+                tangent(to_unit(b.lon_degrees, b.lat_degrees)),
+            ) else {
+                return true;
+            };
+            let cross = a.0 * b.1 - a.1 * b.0;
+            let dot = a.0 * b.0 + a.1 * b.1;
+            turned += cross.atan2(dot);
+        }
+        // Signed, not absolute: see the convention on `contains`. The far side
+        // of the ring sums to the negative of this and must not count.
+        turned > std::f64::consts::PI
+    }
+
+    /// Every boundary edge, as ordered pairs of vertex indices.
+    ///
+    /// Rings close implicitly, so the last pair joins the final vertex to the
+    /// first. A backend that has to place these on a mesh -- as Ruppert's
+    /// segments, as edges no flip may remove -- starts here.
+    pub fn segments(&self) -> Vec<(usize, usize)> {
+        let mut segments = Vec::new();
+        for ring in &self.loops {
+            let count = ring.vertices.len();
+            for step in 0..count {
+                let (Some(&from), Some(&to)) = (
+                    ring.vertices.get(step),
+                    ring.vertices.get((step + 1) % count),
+                ) else {
+                    continue;
+                };
+                segments.push((from, to));
+            }
+        }
+        segments
     }
 
     /// Outer loops and holes, counted.

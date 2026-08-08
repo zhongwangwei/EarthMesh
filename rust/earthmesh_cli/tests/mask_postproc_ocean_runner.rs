@@ -174,3 +174,151 @@ fn ocean_runner_rejects_non_ocean_plan_before_writing_outputs() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+/// The carved domain's boundary topology is counted for hex too, not only tri.
+///
+/// The tri branch of the ocean renewal walks the boundary because isolated-ocean
+/// removal needs it; the hex branch returns `boundary: None` and does no renewal
+/// at all. That is a difference in what each carve *needs*, not in what each
+/// carve *has* -- the arrays the walk takes exist either way -- so the topology
+/// count computes its own rather than being available for one mode_grid only.
+///
+/// Written because the hex path was code-enabled and unmeasured: the fixture to
+/// hand lacked a contain file and the carve stopped before reaching it, so
+/// "the code path exists" was all that could honestly be said. This says more.
+/// A mesh whose corners each touch three cells, which is what hex requires.
+///
+/// `sample_ocean_source_mesh` is tri-shaped: its M point 6 sits in four W
+/// cells, and the hex layout refuses that by name. This is the dual of a
+/// tetrahedron -- four cells, four corners, every corner in exactly three
+/// cells -- which is the smallest arrangement that satisfies the rule.
+fn sample_hex_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 6];
+    for (index, point) in m_points.iter_mut().enumerate().skip(2) {
+        let angle = (index as f64 - 2.0) * std::f64::consts::TAU / 4.0;
+        point.lon = 10.0 * angle.cos();
+        point.lat = 10.0 * angle.sin();
+    }
+    let mut w_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 6];
+    for (index, point) in w_points.iter_mut().enumerate().skip(2) {
+        let angle = (index as f64 - 2.0) * std::f64::consts::TAU / 4.0 + 0.4;
+        point.lon = 6.0 * angle.cos();
+        point.lat = 6.0 * angle.sin();
+    }
+
+    // Corner -> its three cells, and cell -> its three corners.
+    let mut m_to_w = vec![[1, 1, 1]; 6];
+    m_to_w[2] = [2, 3, 4];
+    m_to_w[3] = [2, 3, 5];
+    m_to_w[4] = [2, 4, 5];
+    m_to_w[5] = [3, 4, 5];
+    let mut w_to_m = vec![vec![1; 7]; 6];
+    w_to_m[2] = vec![2, 3, 4, 1, 1, 1, 1];
+    w_to_m[3] = vec![2, 3, 5, 1, 1, 1, 1];
+    w_to_m[4] = vec![2, 4, 5, 1, 1, 1, 1];
+    w_to_m[5] = vec![3, 4, 5, 1, 1, 1, 1];
+    let mut n_w_to_m = vec![0; 6];
+    for cell in 2..6 {
+        n_w_to_m[cell] = 3;
+    }
+
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    }
+}
+
+#[test]
+fn the_carved_boundary_is_counted_for_hex_as_well_as_tri() {
+    let mut counts = Vec::new();
+    for mode_grid in ["tri", "hex"] {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_mask_postproc_ocean_topology_{mode_grid}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("result")).expect("create result dir");
+        fs::create_dir_all(root.join("contain")).expect("create contain dir");
+
+        let plan = earthmesh_cli::mask_postproc_domain::plan_mask_postproc_domain_io(
+            &root,
+            9,
+            mode_grid,
+            "oceanmesh",
+            false,
+        )
+        .expect("ocean plan");
+        if mode_grid == "tri" {
+            earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_refine_levels(
+                &plan.source_gridfile,
+                &sample_ocean_source_mesh(),
+                Some(&[0, 1, 2, 3, 4, 5, 6, 7]),
+                Some(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]),
+            )
+            .expect("write source mesh");
+        } else {
+            earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_refine_levels(
+                &plan.source_gridfile,
+                &sample_hex_source_mesh(),
+                Some(&[0, 1, 2, 3, 4, 5]),
+                Some(&[0, 1, 2, 3, 4, 5]),
+            )
+            .expect("write source mesh");
+        }
+        // The unstructured points a carve walks are the mesh's M points under
+        // tri and its W points under hex, so the containment array is a
+        // different length for each -- 8 against 14 here. Sizing it for tri and
+        // reusing it was the first attempt, and the runner refused it by name
+        // rather than reading past the end.
+        let (ustr_points, in_area): (usize, Vec<i32>) = if mode_grid == "tri" {
+            (8, vec![0, -1, 1, 1, 1, 1, -1, -1])
+        } else {
+            // Three of the four cells are the domain, so the boundary runs
+            // around the fourth and has three corners -- the fewest a ring can
+            // have. Two in-domain cells were the first attempt and left a
+            // two-point curve, which the walker refuses by name.
+            (6, vec![0, -1, 1, 1, 1, -1])
+        };
+        let contain = earthmesh_cli::contain_io::ContainMesh {
+            ustr_id: (0..ustr_points)
+                .map(|point| vec![i32::from(in_area[point] > 0), 0, 1])
+                .collect(),
+            ustr_ii: vec![vec![0, 0, 0]],
+            is_in_area_ustr: in_area,
+        };
+        earthmesh_cli::contain_io::write_contain_netcdf(&plan.contain_domain, &contain)
+            .expect("write contain domain");
+
+        let report = earthmesh_cli::mask_postproc_domain::run_mask_postproc_ocean_domain(
+            &plan,
+            earthmesh_cli::mask_postproc_types::MaskPostprocOceanRunOptions {
+                mask_sea_ratio: 0.5,
+                num_vertex: 1,
+            },
+        )
+        .expect("run ocean mask_postproc domain");
+
+        // Only tri computes the boundary for its own purposes, so this is the
+        // half that would go uncounted if the topology check took the renewal's
+        // word for whether a boundary exists.
+        assert_eq!(
+            report.renewal.boundary.is_some(),
+            mode_grid == "tri",
+            "{mode_grid}: the renewal's own boundary"
+        );
+        counts.push((
+            mode_grid,
+            report
+                .boundary_topology
+                .unwrap_or_else(|| panic!("{mode_grid}: no topology counted")),
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The same domain either way: one carved region, no lakes.
+    assert_eq!(counts[0].1, (1, 0), "tri: {counts:?}");
+    assert_eq!(counts[1].1, (1, 0), "hex: {counts:?}");
+}

@@ -177,6 +177,81 @@ pub fn run_mask_postproc_ocean_domain(
         final_levels.slices(),
     )?;
 
+    // The carved domain, as the neutral boundary model rather than as a list of
+    // curves. `topology_counts` is the pair a refinement must leave unchanged
+    // -- fewer outer loops means an island went, fewer holes means a lake was
+    // filled or a channel closed -- and until now nothing counted it.
+    //
+    // Outside the `tri` block on purpose. The tri branch of the ocean renewal
+    // computes the boundary connection because isolated-ocean removal needs it;
+    // the hex branch returns `boundary: None` and does no renewal at all. That
+    // is a difference in what each carve *needs*, not in what each carve *has*
+    // -- the four arrays the walk takes exist either way -- so the diagnostic
+    // computes its own rather than being available for one mode_grid only.
+    //
+    // Reported rather than enforced: there is no "before" to compare against on
+    // this path yet, and a threshold invented here would be a number nobody
+    // measured.
+    let mut boundary_topology = None;
+    {
+        let connection = renewal
+            .boundary
+            .as_ref()
+            .map(|boundary| Ok(boundary.clone()))
+            .unwrap_or_else(|| {
+                earthmesh_mesh::boundary_connection_one_based(
+                    &renewal.renewed.center_neighbors_next,
+                    &renewal.renewed.center_neighbor_counts_next,
+                    &inputs.layout.vertex_neighbor_counts,
+                    &renewal.renewed.vertex_neighbor_counts_next,
+                )
+            });
+        match connection {
+            Ok(connection) => {
+                match crate::boundary_model::boundary_model_from_closed_curves(
+                    &connection.curves.close_curves,
+                    &|vertex: usize| {
+                        inputs
+                            .layout
+                            .vertex_points
+                            .get(vertex)
+                            .map(|point| (point.lon, point.lat))
+                    },
+                ) {
+                    Ok(model) => {
+                        let (outer, holes) = model.topology_counts();
+                        boundary_topology = Some((outer, holes));
+                        if let Err(faults) = model.validate() {
+                            // Loud, because a model that does not validate means
+                            // the carve produced curves that are not a boundary,
+                            // and every count taken from them is meaningless.
+                            eprintln!(
+                                "mask_postproc: carved boundary is not a valid model ({} faults); \
+                                 first: {}",
+                                faults.len(),
+                                faults
+                                    .first()
+                                    .map(|fault| fault.to_string())
+                                    .unwrap_or_default()
+                            );
+                        } else {
+                            eprintln!(
+                                "mask_postproc: carved domain has {outer} outer boundaries and \
+                                 {holes} holes"
+                            );
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "mask_postproc: could not read the carved boundary as a model: {error}"
+                    ),
+                }
+            }
+            Err(error) => {
+                eprintln!("mask_postproc: could not walk the carved boundary: {error}")
+            }
+        }
+    }
+
     let mut boundary_orders = None;
     let mut obc = None;
     let mut obcv2 = None;
@@ -227,6 +302,7 @@ pub fn run_mask_postproc_ocean_domain(
         boundary_orders,
         obc,
         obcv2,
+        boundary_topology,
     })
 }
 

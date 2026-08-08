@@ -144,3 +144,117 @@ fn only_a_guide_may_be_flipped_away_and_only_hard_curves_block_the_mesh() {
         "cells live on both sides of an interface"
     );
 }
+
+fn ring(loop_type: LoopType, vertices: Vec<usize>, parent: Option<usize>) -> BoundaryLoop {
+    BoundaryLoop {
+        loop_type,
+        role: BoundaryRole::HardDomain,
+        vertices,
+        parent,
+    }
+}
+
+/// The island-with-a-lake case, asked the question it exists to answer.
+///
+/// Three places, three different answers: the sea outside the island, the land
+/// between coast and lake shore, and the lake itself. A model that joined the
+/// hole to the outer ring by a cut would have to call the lake land or the
+/// island sea; keeping the hole as its own loop is what makes all three
+/// answerable.
+#[test]
+fn a_lake_inside_an_island_is_outside_the_domain() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(0.25, 0.25),
+        vertex(0.75, 0.25),
+        vertex(0.75, 0.75),
+        vertex(0.25, 0.75),
+    ]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+    model.validate().expect("valid");
+
+    assert!(!model.contains(2.0, 2.0), "the sea outside the island");
+    assert!(
+        model.contains(0.1, 0.5),
+        "land between coast and lake shore"
+    );
+    assert!(!model.contains(0.5, 0.5), "the lake");
+}
+
+/// A coastline that crosses the dateline is inside-out to a planar ray cast.
+///
+/// This is the case a longitude-interval test gets wrong and the reason the
+/// winding is summed on the sphere: the ring below spans 170 east to 170 west,
+/// which as plain numbers looks like almost the whole globe rather than a
+/// twenty-degree strip.
+#[test]
+fn a_ring_across_the_dateline_still_knows_its_inside() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(170.0, -10.0),
+            vertex(-170.0, -10.0),
+            vertex(-170.0, 10.0),
+            vertex(170.0, 10.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    model.validate().expect("valid");
+
+    assert!(model.contains(180.0, 0.0), "the middle of the strip");
+    assert!(model.contains(-179.0, 5.0), "east of the seam");
+    assert!(model.contains(179.0, -5.0), "west of the seam");
+    assert!(!model.contains(0.0, 0.0), "the far side of the globe");
+    assert!(!model.contains(160.0, 0.0), "just outside the western edge");
+}
+
+/// A ring around the pole encloses the pole, which a latitude test denies.
+#[test]
+fn a_ring_around_the_pole_contains_it() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 80.0),
+            vertex(90.0, 80.0),
+            vertex(180.0, 80.0),
+            vertex(-90.0, 80.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    model.validate().expect("valid");
+
+    assert!(model.contains(0.0, 89.9), "the pole cap is inside");
+    assert!(
+        model.contains(137.0, 85.0),
+        "and so is any longitude above 80"
+    );
+    assert!(!model.contains(0.0, 70.0), "below the ring is outside");
+}
+
+/// Every ring contributes its edges, and the last one closes it.
+#[test]
+fn segments_close_each_ring() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(0.25, 0.25),
+        vertex(0.75, 0.25),
+        vertex(0.75, 0.75),
+        vertex(0.25, 0.75),
+    ]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+
+    let segments = model.segments();
+    assert_eq!(segments.len(), 8, "four edges per ring: {segments:?}");
+    assert!(segments.contains(&(3, 0)), "the outer ring closes");
+    assert!(segments.contains(&(7, 4)), "and so does the hole");
+}

@@ -1488,6 +1488,11 @@ fn harp_region_boundary_segments(
 ) -> Vec<(usize, usize)> {
     let state = mesh.state();
     let radius = state.sphere_radius();
+    // What "inside" means is the run's business; what a segment list *is*, and
+    // that a split replaces one with two, is `earthmesh_boundary`'s. Guide
+    // 11.28 asked for the list to live there rather than be rebuilt at each
+    // call site, because the version that lived here was a predicate wearing a
+    // list's name and 11.29 measured what that cost.
     let inside = |site: usize| {
         let point = state.vertices()[site];
         let length = earthmesh_mesh::magnitude(point);
@@ -1508,17 +1513,14 @@ fn harp_region_boundary_segments(
             dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
         })
     };
-    let mut segments = std::collections::BTreeSet::new();
-    for triangle in earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len() {
-        let corners = state.triangles()[triangle];
-        for corner in 0..3 {
-            let (a, b) = (corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
-            if inside(a) != inside(b) {
-                segments.insert((a.min(b), a.max(b)));
-            }
-        }
-    }
-    segments.into_iter().collect()
+    let edges =
+        (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len()).flat_map(|triangle| {
+            let corners = state.triangles()[triangle];
+            (0..3).map(move |corner| (corners[(corner + 1) % 3], corners[(corner + 2) % 3]))
+        });
+    earthmesh_boundary::SegmentList::from_straddling_edges(edges, inside)
+        .iter()
+        .collect()
 }
 
 /// Smooth a HARP-DV mesh against the sizes the criteria asked for.
