@@ -54,6 +54,19 @@ pub struct RefinePipelineRunReport {
     /// what a request in levels was asking for.
     pub finest_cell_km: f64,
     pub coarsest_cell_km: f64,
+    /// What a refinement level actually delivered: `log2` of the median cell
+    /// width outside the refinement regions over the median inside them.
+    ///
+    /// The operational definition of a level, and the only one comparable
+    /// between backends. `realized_max_level` counts each backend's own
+    /// bookkeeping and means three different things (guide 11.19); the global
+    /// percentiles above carry the icosahedron's own variation and the
+    /// coastline carve, and read near four halvings whatever was requested.
+    ///
+    /// Medians rather than sums or extremes: a few cells spanning a pole or the
+    /// dateline come back from `robust_spherical_area_unit` with the
+    /// complementary area, which wrecks a total and leaves a median alone.
+    pub realized_region_halvings: f64,
     /// What the h-field asked for versus what survived Method-C legality, summed
     /// over passes. All zero for the geometric region paths.
     pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,

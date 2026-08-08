@@ -162,6 +162,12 @@ pub(crate) fn print_refine_pipeline_report(
             "refine_realized_halvings={:.2}",
             (report.coarsest_cell_km / report.finest_cell_km).log2()
         );
+        // What the requested level actually delivered, in the region that
+        // asked for it. The line above spans the globe and is not a level.
+        println!(
+            "refine_realized_region_halvings={:.2}",
+            report.realized_region_halvings
+        );
     }
     let hfield = report.hfield_diagnostics;
     if hfield.requested_anchor_count > 0 {

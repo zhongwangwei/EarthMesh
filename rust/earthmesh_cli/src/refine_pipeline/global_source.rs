@@ -537,6 +537,109 @@ pub fn run_refine_pipeline_namelist(
         }
     };
 
+    // What a refinement level actually delivered: the median cell width inside
+    // the regions that asked, against the median outside them.
+    //
+    // The global percentiles above are not a level -- they carry the
+    // icosahedron's own variation and the coastline carve, and both backends
+    // read near four halvings there whatever was requested. A level is a claim
+    // about the refined region relative to the rest.
+    let realized_region_halvings = {
+        let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+        let mut inside: Vec<f64> = Vec::new();
+        let mut outside: Vec<f64> = Vec::new();
+        for (row, corners) in output_mesh.w_to_m.iter().enumerate() {
+            // `w_to_m` rows are the full seven-wide `itab_w.im`, and only the
+            // first `n_w_to_m` entries are corners of this cell. The rest are
+            // placeholders, and placeholder id 1 resolves to a real point
+            // somewhere else entirely -- which is what made four earlier
+            // attempts at this measure compute cell areas twenty-four times
+            // too large (guide 11.35).
+            let valid = output_mesh
+                .n_w_to_m
+                .get(row)
+                .and_then(|count| usize::try_from(*count).ok())
+                .unwrap_or(0)
+                .min(corners.len());
+            if valid < 3 {
+                continue;
+            }
+            let polygon: Vec<earthmesh_mesh::LonLatDegrees> = corners[..valid]
+                .iter()
+                .filter_map(|&im| {
+                    let index = usize::try_from(im).ok()?.checked_sub(1)?;
+                    let point = output_mesh.m_points.get(index)?;
+                    Some(earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
+                })
+                .collect();
+            if polygon.len() < 3 {
+                continue;
+            }
+            let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
+                continue;
+            };
+            // Absolute, because the sign is the winding and about half the
+            // cells wind the other way.
+            let steradians = steradians.abs();
+            if !steradians.is_finite() || steradians <= 0.0 {
+                continue;
+            }
+            let Some(centre) = output_mesh.w_points.get(row) else {
+                continue;
+            };
+            let across_km = (steradians / std::f64::consts::PI).sqrt() * radius_km;
+            let seat = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
+                earthmesh_mesh::LonLatDegrees::new(centre.lon, centre.lat),
+            );
+            let in_region = regions.iter().any(|region| {
+                let earthmesh_mesh::RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } = region
+                else {
+                    return false;
+                };
+                let target = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+                let dot =
+                    (seat.x * target.x + seat.y * target.y + seat.z * target.z).clamp(-1.0, 1.0);
+                dot.acos() * radius_km * 1000.0 <= *radius_meters
+            });
+            if in_region {
+                inside.push(across_km);
+            } else {
+                outside.push(across_km);
+            }
+        }
+        let median = |values: &mut Vec<f64>| -> Option<f64> {
+            if values.is_empty() {
+                return None;
+            }
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            Some(values[values.len() / 2])
+        };
+        let (fine, coarse) = (median(&mut inside), median(&mut outside));
+        if std::env::var("EM_DEBUG_LEVEL").is_ok() {
+            let total: f64 = inside
+                .iter()
+                .chain(outside.iter())
+                .map(|across| across * across * std::f64::consts::PI / (radius_km * radius_km))
+                .sum();
+            eprintln!(
+                "level-debug: cells={} in={} out={} in-median={fine:?} out-median={coarse:?} \
+                 area-sum={total:.4} (4pi={:.4})",
+                output_mesh.w_to_m.len(),
+                inside.len(),
+                outside.len(),
+                4.0 * std::f64::consts::PI
+            );
+        }
+        match (fine, coarse) {
+            (Some(fine), Some(coarse)) if fine > 0.0 && coarse > 0.0 => (coarse / fine).log2(),
+            _ => 0.0,
+        }
+    };
+
     // Which cells the run named outright. The carve's largest-component rule
     // would otherwise delete a refinement circle sitting on a small bay, and
     // nothing would report that the region asked for is gone.
@@ -622,6 +725,7 @@ pub fn run_refine_pipeline_namelist(
         max_level,
         realized_max_level,
         finest_cell_km,
+        realized_region_halvings,
         coarsest_cell_km,
         hfield_diagnostics,
         transition_faces,
