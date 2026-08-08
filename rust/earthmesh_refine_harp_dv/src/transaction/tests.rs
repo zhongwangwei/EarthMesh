@@ -411,10 +411,10 @@ fn a_witness_is_tried_first() {
 
 /// The sliver floor is the lever on mesh quality, not just a degeneracy guard.
 ///
-/// Measured through the CLI at NXP 21 (guide 11.33): a 5-degree floor leaves a
-/// worst angle of 17.07 and 7723 cells; 28 leaves 28.12 and 7371. Refusing an
-/// insertion that would make a thin triangle sends the ladder somewhere better,
-/// and the finished mesh tracks the floor.
+/// Measured through the CLI at NXP 21 (guide 11.33, 11.34): a 5-degree floor
+/// leaves a worst angle of 17.07 and 7723 cells; 30 leaves 30.00 and 7132.
+/// Refusing an insertion that would make a thin triangle sends the ladder to a
+/// later and more conservative rung, and the finished mesh tracks the floor.
 ///
 /// Asserted as the relation rather than those figures: a higher floor gives a
 /// better worst angle and costs cells. Pinning 28.12 would make the next person
@@ -451,14 +451,14 @@ fn a_higher_sliver_floor_buys_a_better_worst_angle() {
     };
 
     let (loose_sites, loose_angle) = run(1.0);
-    let (tight_sites, tight_angle) = run(28.0);
+    let (tight_sites, tight_angle) = run(30.0);
 
     assert!(
         tight_angle > loose_angle,
-        "a 28-degree floor left {tight_angle:.2} and a 1-degree floor {loose_angle:.2}"
+        "a 30-degree floor left {tight_angle:.2} and a 1-degree floor {loose_angle:.2}"
     );
     assert!(
-        tight_angle >= 28.0,
+        tight_angle >= 30.0,
         "the floor is a floor: {tight_angle:.2} is under it"
     );
     assert!(

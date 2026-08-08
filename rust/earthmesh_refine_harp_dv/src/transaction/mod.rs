@@ -68,19 +68,26 @@ impl Default for HardGates {
             max_vertex_degree: GRIDFILE_MAX_VERTEX_DEGREE,
             // Not merely a floor against degeneracy: measured, this *is* the
             // lever on mesh quality. Every insertion that would leave a thin
-            // triangle is refused and the ladder finds somewhere better, so the
-            // worst angle of the finished mesh tracks this number (guide
-            // 11.33):
+            // triangle is refused, the ladder moves to a later and more
+            // conservative rung, and the finished mesh's worst angle tracks
+            // this number (guide 11.33, 11.34):
             //
-            //      5 deg gate -> 17.07 worst, 7723 cells
-            //     22          -> 22.03,       7616
-            //     28          -> 28.12,       7371
+            //      5 deg -> 17.07 worst, 7723 cells
+            //     28     -> 28.12,       7371
+            //     30     -> 30.00,       7132
+            //     31     -> 31.01,       6162
+            //     32     -> 32.01,       4835
+            //     36     -> no refinement survives at all
             //
-            // 28 rather than the quality gate's 25-degree warn line: the gate
-            // is a floor on what is *accepted*, and the finished mesh lands a
-            // little above it, so setting it at the line leaves no margin --
-            // measured, 25 gives 25.01.
-            min_triangle_angle_deg: 28.0,
+            // 30 is the knee. Below it quality is left on the table; at 31 the
+            // cell count falls under Method-C's 7023 for the same request, so
+            // the mesh stops being the mesh that was asked for. At 30 it is
+            // 7132 cells at 30.00 degrees against Method-C's 7023 at 27.40 --
+            // ahead on both.
+            //
+            // That it lands on Chew's 30-degree bound is a coincidence; this
+            // number came from a sweep, not from the theory.
+            min_triangle_angle_deg: 30.0,
             require_closed_surface: true,
         }
     }
