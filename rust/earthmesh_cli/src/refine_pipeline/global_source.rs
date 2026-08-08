@@ -242,6 +242,21 @@ pub fn run_refine_pipeline_namelist(
     // `refine_cal` says a criterion decides where to refine. On red-green the
     // point+radius route is what reads one, so this only bites when that route
     // is off too: mask *files* are served either way, since a mask file is a
+    // Two demand sources with no defined composition. Method-C's branch chain
+    // takes `&adaptive` first, so `&hfield` would be skipped -- except that
+    // configuring it also changes how regions are gathered, so the pair
+    // produces a third mesh that is neither. Measured at NXP 21: adaptive alone
+    // 7023 cells, h-field alone 9510, both 4875 -- less refinement than either,
+    // in silence.
+    if adaptive_options.is_some() && hfield_options.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "&adaptive and &hfield are both enabled and nothing composes them: the h-field is a \
+             target-level field and &adaptive produces circles, and Method-C serves whichever \
+             branch it reaches first. Enable one",
+        ));
+    }
+
     // Named before anything dispatches on it, because the dispatch used to end
     // in a `_ =>` arm that ran Method-C. Measured: `harpdv`, `harp-dv`,
     // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
@@ -415,12 +430,38 @@ pub fn run_refine_pipeline_namelist(
                 .transpose()?;
             refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
         }
-        RefineBackend::HarpDv => refine_with_harp_dv(
-            &mesh,
-            &regions,
-            method_c_nxp,
-            usize::try_from(refine.niter_refine).unwrap_or(0),
-        )?,
+        RefineBackend::HarpDv => {
+            // The same list red-green refuses, and for the same reason: each of
+            // these would otherwise be dropped and the run would still write a
+            // valid mesh that is not the mesh that was asked for. Measured
+            // before this guard: `harp_dv` with `&hfield` configured produced
+            // 6450 cells and never read the field.
+            let unsupported = if active_hfield_options.is_some() {
+                Some("an h-field (&hfield)")
+            } else if native_cartesian_xy {
+                Some("a Cartesian-XY mesh")
+            } else if native_surface_global_expansion {
+                Some("the native surface expansion (NL%sfcgrid_res_factor)")
+            } else {
+                None
+            };
+            if let Some(unsupported) = unsupported {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "NL%refine_backend = harp_dv does not serve {unsupported}; it re-reads a \
+                         target scale against the cells that exist and serves circular regions. \
+                         Use method_c for this run"
+                    ),
+                ));
+            }
+            refine_with_harp_dv(
+                &mesh,
+                &regions,
+                method_c_nxp,
+                usize::try_from(refine.niter_refine).unwrap_or(0),
+            )?
+        }
         RefineBackend::MethodC => {
             let MethodCRefineOutcome {
                 mesh,
