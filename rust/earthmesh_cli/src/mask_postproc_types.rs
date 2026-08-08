@@ -93,6 +93,11 @@ pub struct MaskPostprocOceanDomainReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaskPostprocOceanRenewalReport {
     pub is_in_domain_ustr: Vec<i32>,
+    /// The boundary as the mask defined it, before renewal.
+    ///
+    /// The "before" half of the topology comparison. `None` when the walk
+    /// itself failed, which is worth telling apart from "no boundary".
+    pub boundary_before: Option<earthmesh_mesh::BoundaryConnection>,
     pub renewed: MaskPostprocRenewedData,
     pub boundary: Option<BoundaryConnection>,
     pub isolated: Option<IsolatedOceanRenewal>,

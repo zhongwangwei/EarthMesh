@@ -243,6 +243,7 @@ dependencies = [
 name = "earthmesh_refine_harp_dv"
 version = "3.0.0-alpha3"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_mesh",
  "earthmesh_refine",

@@ -26,6 +26,20 @@ pub struct RefineConfig {
     pub num_rc: i32,
     pub vertex_pretect_layers: i32,
     pub niter_refine: i32,
+    /// The angle HARP-DV's quality criterion asks every triangle to reach, in
+    /// degrees. Zero, the default, leaves the criterion off.
+    ///
+    /// This was an `EARTHMESH_HARP_MIN_ANGLE` environment variable, which no
+    /// document and no interface mentioned, so the feature it gates was
+    /// unreachable to anyone who had not read the source.
+    ///
+    /// **Measured at NXP 21, it buys nothing**: on at 20 degrees gives 7007
+    /// cells at a 30.002 degree worst angle, off gives 7132 at 30.004. What
+    /// sets the angle is the hard gate `min_triangle_angle_deg`, not this
+    /// criterion. Above about 20 the refinement diverges -- Ruppert's proof
+    /// reaches 20.7 and no further (guide 11.29) -- so the parser refuses a
+    /// larger number rather than letting a run spend its whole budget.
+    pub harp_min_angle_deg: f64,
     pub niter_refine_specified: bool,
     pub th_num_landtypes: i32,
     pub th_area_mainland: f64,
@@ -69,6 +83,7 @@ impl Default for RefineConfig {
             num_rc: 0,
             vertex_pretect_layers: 1,
             niter_refine: 200,
+            harp_min_angle_deg: 0.0,
             niter_refine_specified: false,
             th_num_landtypes: 12,
             th_area_mainland: 0.6,
@@ -133,6 +148,7 @@ impl RefineConfig {
                 "num_rc" => config.num_rc = parse_i32(field, value)?,
                 "set_dis_type" => config.set_dis_type = parse_canonical_string(value),
                 "vertex_pretect_layers" => config.vertex_pretect_layers = parse_i32(field, value)?,
+                "harp_min_angle_deg" => config.harp_min_angle_deg = parse_f64(field, value)?,
                 "niter_refine" => {
                     config.niter_refine = parse_i32(field, value)?;
                     config.niter_refine_specified = true;

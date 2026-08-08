@@ -258,3 +258,74 @@ fn segments_close_each_ring() {
     assert!(segments.contains(&(3, 0)), "the outer ring closes");
     assert!(segments.contains(&(7, 4)), "and so does the hole");
 }
+
+/// The unit vector of a lon/lat point, written out rather than borrowed.
+///
+/// `earthmesh_mesh` has one, and this crate deliberately does not depend on it
+/// -- the layout doc puts the two side by side, both feeding `refine`. Six
+/// lines here is the price of that, and it also means the reference below is
+/// independent of the code it is checking.
+fn unit(lon_degrees: f64, lat_degrees: f64) -> [f64; 3] {
+    let (lon, lat) = (lon_degrees.to_radians(), lat_degrees.to_radians());
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+/// `(a x b) . c > 0` exactly when a, b, c wind counter-clockwise seen from
+/// outside the sphere. The textbook right-hand rule, and nothing this crate
+/// computes goes into it.
+fn winds_counter_clockwise(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> bool {
+    let cross = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    cross[0] * c[0] + cross[1] * c[1] + cross[2] * c[2] > 0.0
+}
+
+/// `contains` reads the direction the right-hand rule defines, not some other one.
+///
+/// Everything else about orientation in this crate was checked as a
+/// *composition*: build a model, ask whether a lake is outside it, and the
+/// answer came out right. That leaves the possibility that the winding's
+/// handedness and the sign of whatever orients the ring are both wrong and
+/// cancel -- the pair works and either half alone misleads the next caller.
+///
+/// So this pins the half that lives here against an outside reference. A
+/// triangle the right-hand rule calls counter-clockwise must contain its own
+/// centroid, and reversed it must not.
+#[test]
+fn the_winding_convention_is_the_right_hand_rule() {
+    let corners = [(0.0, 0.0), (10.0, 0.0), (5.0, 8.0)];
+    let [a, b, c] = corners.map(|(lon, lat)| unit(lon, lat));
+    assert!(
+        winds_counter_clockwise(a, b, c),
+        "the fixture itself must be counter-clockwise, or this proves nothing"
+    );
+    assert!(
+        !winds_counter_clockwise(c, b, a),
+        "and its reverse must not be"
+    );
+
+    let vertices: Vec<BoundaryVertex> =
+        corners.iter().map(|&(lon, lat)| vertex(lon, lat)).collect();
+    let model = |order: Vec<usize>| SphericalBoundaryModel {
+        vertices: vertices.clone(),
+        loops: vec![BoundaryLoop {
+            loop_type: LoopType::Outer,
+            role: BoundaryRole::HardDomain,
+            vertices: order,
+            parent: None,
+        }],
+    };
+    // Inside the triangle by construction: a point near its centroid.
+    let (inside_lon, inside_lat) = (5.0, 2.5);
+
+    assert!(
+        model(vec![0, 1, 2]).contains(inside_lon, inside_lat),
+        "a counter-clockwise ring encloses what is on its left"
+    );
+    assert!(
+        !model(vec![2, 1, 0]).contains(inside_lon, inside_lat),
+        "and the same ring reversed encloses the rest of the sphere instead"
+    );
+}

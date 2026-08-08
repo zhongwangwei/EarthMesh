@@ -493,6 +493,7 @@ pub fn run_refine_pipeline_namelist(
                 &regions,
                 method_c_nxp,
                 usize::try_from(refine.niter_refine).unwrap_or(0),
+                &refine,
             )?
         }
         RefineBackend::MethodC => {
@@ -1173,6 +1174,7 @@ fn refine_with_harp_dv(
     regions: &[earthmesh_mesh::RefinementRegion],
     nxp: usize,
     spring_iterations: usize,
+    refine: &RefineConfig,
 ) -> io::Result<RefinedGrid> {
     use earthmesh_refine_harp_dv as harp;
 
@@ -1244,7 +1246,7 @@ fn refine_with_harp_dv(
     // that encroaches on one splits it instead of being inserted. Without that
     // the refinement does not terminate (guide 11.25); with it, it reaches
     // Ruppert's angle bound (11.26).
-    if let Some(min_angle_deg) = harp_min_angle_target() {
+    if let Some(min_angle_deg) = harp_min_angle_target(refine) {
         let segments = harp_region_boundary_segments(&adaptive, regions);
         adaptive.protect_segments(segments);
         criteria.push(Box::new(harp::MinAngle {
@@ -1469,11 +1471,14 @@ fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
 /// Off unless asked: a quality criterion adds cells nobody requested, and
 /// Ruppert's bound is about 20.7 degrees -- above it the refinement is not
 /// guaranteed to terminate and a run can spend its whole budget.
-fn harp_min_angle_target() -> Option<f64> {
-    std::env::var("EARTHMESH_HARP_MIN_ANGLE")
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|degrees| *degrees > 0.0)
+///
+/// From `RL%harp_min_angle_deg`. It used to come from an
+/// `EARTHMESH_HARP_MIN_ANGLE` environment variable that no document and no
+/// interface mentioned, so the only way to find the feature was to read this
+/// function. The namelist is where a run says what it wants, and the parser
+/// refuses anything above the bound rather than letting the run discover it.
+fn harp_min_angle_target(refine: &RefineConfig) -> Option<f64> {
+    (refine.harp_min_angle_deg > 0.0).then_some(refine.harp_min_angle_deg)
 }
 
 /// A refinement region's boundary, discretised as mesh edges.

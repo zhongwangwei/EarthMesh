@@ -31,6 +31,19 @@ impl RefineConfig {
         if self.spring_global_type > 0 {
             self.vertex_pretect_layers = 0;
         }
+        // Ruppert's proof reaches about 20.7 degrees and no further. Above it
+        // the refinement is not guaranteed to terminate, and a run at 25 spent
+        // its whole budget without converging (guide 11.29). Refused here
+        // rather than discovered there.
+        if !self.harp_min_angle_deg.is_finite() || self.harp_min_angle_deg < 0.0 {
+            return Err("harp_min_angle_deg must be a non-negative finite angle".to_string());
+        }
+        if self.harp_min_angle_deg > 20.7 {
+            return Err(format!(
+                "harp_min_angle_deg {} exceeds the 20.7 degrees Ruppert's argument reaches; above                  it the refinement is not known to terminate. Use 0 to leave the criterion off",
+                self.harp_min_angle_deg
+            ));
+        }
         if self.vertex_pretect_layers < 0 {
             return Err("vertex_pretect_layers must >= 0".to_string());
         }

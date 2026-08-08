@@ -149,3 +149,92 @@ fn a_single_carved_domain_reads_as_one_outer_loop_and_no_holes() {
     model.validate().expect("a carved domain is a valid model");
     assert_eq!(model.topology_counts(), (1, 0), "{:?}", model.loops);
 }
+
+/// The counts fall when a region goes, which is what the one-sided bound reads.
+///
+/// The carve is allowed to remove an isolated sea -- that is what it is for --
+/// so the check cannot demand the pair come out unchanged. What it can demand
+/// is that nothing appears: renewal takes regions away and never adds one. This
+/// pins both directions of that reading, so a bound written the other way round
+/// would fail here rather than in a production run.
+#[test]
+fn removing_a_region_lowers_the_count_and_adding_one_raises_it() {
+    let mut table: Vec<(usize, f64, f64)> = Vec::new();
+    for (island, centre) in [(0usize, 0.0_f64), (1, 60.0)] {
+        for step in 0..4 {
+            let angle = (step as f64) * std::f64::consts::TAU / 4.0;
+            table.push((
+                island * 4 + step + 1,
+                centre + 5.0 * angle.cos(),
+                5.0 * angle.sin(),
+            ));
+        }
+    }
+    let source = points(table);
+    let both = vec![Vec::new(), vec![1, 2, 3, 4], vec![5, 6, 7, 8]];
+    let one = vec![Vec::new(), vec![1, 2, 3, 4]];
+
+    let before = boundary_model_from_closed_curves(&both, &source).expect("model");
+    let after = boundary_model_from_closed_curves(&one, &source).expect("model");
+
+    assert_eq!(before.topology_counts(), (2, 0));
+    assert_eq!(after.topology_counts(), (1, 0));
+    let (outer_before, holes_before) = before.topology_counts();
+    let (outer_after, holes_after) = after.topology_counts();
+    assert!(
+        outer_after <= outer_before && holes_after <= holes_before,
+        "losing an island is allowed"
+    );
+    assert!(
+        outer_before > outer_after,
+        "and it is visible: the bound would catch the reverse"
+    );
+}
+
+/// `robust_spherical_area_unit` is negative on a right-hand-rule ring.
+///
+/// The other half of the check `earthmesh_boundary` makes on the winding. Both
+/// were only ever verified as a composition -- orient a ring, ask what contains
+/// what, get the right answer -- which two mistakes that cancel would also
+/// pass. This one asserts the area function's sign against the same outside
+/// reference the winding was checked against, so `orient_counter_clockwise`
+/// rests on two independently pinned facts rather than on their product.
+///
+/// The convention is worth stating because the name does not: **negative area
+/// means counter-clockwise seen from outside the sphere**, the opposite of the
+/// winding's sign. Reading it the other way produces a coastline that encloses
+/// the ocean, consistently, which is the hardest kind of wrong to notice.
+#[test]
+fn the_area_sign_is_the_opposite_of_the_winding_sign() {
+    let corners = [(0.0_f64, 0.0_f64), (10.0, 0.0), (5.0, 8.0)];
+    let unit = |lon: f64, lat: f64| {
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let [a, b, c] = corners.map(|(lon, lat)| unit(lon, lat));
+    let cross = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let counter_clockwise = cross[0] * c[0] + cross[1] * c[1] + cross[2] * c[2] > 0.0;
+    assert!(counter_clockwise, "the fixture must be counter-clockwise");
+
+    let points: Vec<earthmesh_mesh::LonLatDegrees> = corners
+        .iter()
+        .map(|&(lon, lat)| earthmesh_mesh::LonLatDegrees::new(lon, lat))
+        .collect();
+    let forward = earthmesh_mesh::robust_spherical_area_unit(&points).expect("area");
+    let reversed: Vec<_> = points.iter().rev().copied().collect();
+    let backward = earthmesh_mesh::robust_spherical_area_unit(&reversed).expect("area");
+
+    assert!(
+        forward < 0.0,
+        "counter-clockwise gives a negative area: {forward}"
+    );
+    assert!(backward > 0.0, "and its reverse a positive one: {backward}");
+    assert!(
+        (forward + backward).abs() < 1.0e-12,
+        "the two are the same magnitude: {forward} and {backward}"
+    );
+}

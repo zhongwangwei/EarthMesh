@@ -104,9 +104,11 @@ pub struct AdaptiveMesh {
     /// lying on the curve read as a segment, and every split made more such
     /// pairs. Guide 11.28 measured what that cost.
     ///
-    /// Keys are ordered pairs, smaller id first, so an edge is the same
-    /// segment from either side.
-    pub(crate) segments: std::collections::BTreeSet<(usize, usize)>,
+    /// The list and its split rule live in `earthmesh_boundary` -- the same
+    /// one Method-C and red-green can reach -- because the induction is not
+    /// this backend's. Nothing here has to undo a split: it happens only after
+    /// a transaction commits, so a rollback never sees one.
+    pub(crate) segments: earthmesh_boundary::SegmentList,
 }
 
 impl AdaptiveMesh {
@@ -141,7 +143,7 @@ impl AdaptiveMesh {
             allocator,
             cycles_completed: 0,
             refining: None,
-            segments: std::collections::BTreeSet::new(),
+            segments: earthmesh_boundary::SegmentList::default(),
         })
     }
 
@@ -251,14 +253,11 @@ impl AdaptiveMesh {
     /// Without them a quality-driven refinement subdivides without end near a
     /// region's edge -- guide 11.25.
     pub fn protect_segments(&mut self, segments: impl IntoIterator<Item = (usize, usize)>) {
-        self.segments = segments
-            .into_iter()
-            .map(|(a, b)| (a.min(b), a.max(b)))
-            .collect();
+        self.segments = earthmesh_boundary::SegmentList::from_pairs(segments);
     }
 
     pub(crate) fn is_protected_edge(&self, tail: usize, head: usize) -> bool {
-        self.segments.contains(&(tail.min(head), tail.max(head)))
+        self.segments.contains(tail, head)
     }
 
     pub(crate) fn segments_are_empty(&self) -> bool {
@@ -271,13 +270,7 @@ impl AdaptiveMesh {
     /// so the rule that made the refinement terminate keeps applying where it
     /// was just applied.
     pub(crate) fn split_segment(&mut self, tail: usize, head: usize, midpoint: usize) {
-        let key = (tail.min(head), tail.max(head));
-        if self.segments.remove(&key) {
-            self.segments
-                .insert((tail.min(midpoint), tail.max(midpoint)));
-            self.segments
-                .insert((head.min(midpoint), head.max(midpoint)));
-        }
+        self.segments.split(tail, head, midpoint);
     }
 
     pub(crate) fn refining_site(&self) -> Option<usize> {

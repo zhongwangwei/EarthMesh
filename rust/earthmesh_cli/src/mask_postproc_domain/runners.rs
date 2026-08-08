@@ -192,23 +192,32 @@ pub fn run_mask_postproc_ocean_domain(
     // Reported rather than enforced: there is no "before" to compare against on
     // this path yet, and a threshold invented here would be a number nobody
     // measured.
-    let mut boundary_topology = None;
-    {
-        let connection = renewal
-            .boundary
-            .as_ref()
-            .map(|boundary| Ok(boundary.clone()))
-            .unwrap_or_else(|| {
-                earthmesh_mesh::boundary_connection_one_based(
-                    &renewal.renewed.center_neighbors_next,
-                    &renewal.renewed.center_neighbor_counts_next,
-                    &inputs.layout.vertex_neighbor_counts,
-                    &renewal.renewed.vertex_neighbor_counts_next,
-                )
-            });
-        match connection {
-            Ok(connection) => {
-                match crate::boundary_model::boundary_model_from_closed_curves(
+    // The carved domain's boundary, as the neutral model rather than as a list
+    // of curves, checked across the carve rather than merely printed.
+    //
+    // Outside the `tri` block on purpose. The tri branch of the ocean renewal
+    // walks the boundary because isolated-ocean removal needs it; the hex
+    // branch returns `boundary: None` and does no renewal at all. That is a
+    // difference in what each carve *needs*, not in what each carve *has*.
+    //
+    // What is enforced, and why only this much:
+    //
+    // - The model must validate. A carved boundary with an orphan hole, a hole
+    //   inside a hole or a pinched ring is not a boundary, and every count
+    //   taken from it is meaningless -- so this is an error rather than a note.
+    // - Outer loops and holes may fall and may not rise. Renewal and
+    //   isolated-ocean removal only ever take a region away; nothing in the
+    //   carve adds an island or opens a lake. A count that grew is the carve
+    //   having invented a domain feature.
+    //
+    // Not enforced: equality. Removing an isolated sea is what the carve is
+    // *for*, so demanding the pair come out unchanged would refuse correct
+    // runs. A one-sided bound is what the mechanism actually promises, and a
+    // tighter number would be one nobody measured.
+    let boundary_topology = {
+        let walk = |connection: Option<&earthmesh_mesh::BoundaryConnection>| {
+            connection.and_then(|connection| {
+                crate::boundary_model::boundary_model_from_closed_curves(
                     &connection.curves.close_curves,
                     &|vertex: usize| {
                         inputs
@@ -217,40 +226,65 @@ pub fn run_mask_postproc_ocean_domain(
                             .get(vertex)
                             .map(|point| (point.lon, point.lat))
                     },
-                ) {
-                    Ok(model) => {
-                        let (outer, holes) = model.topology_counts();
-                        boundary_topology = Some((outer, holes));
-                        if let Err(faults) = model.validate() {
-                            // Loud, because a model that does not validate means
-                            // the carve produced curves that are not a boundary,
-                            // and every count taken from them is meaningless.
-                            eprintln!(
-                                "mask_postproc: carved boundary is not a valid model ({} faults); \
-                                 first: {}",
-                                faults.len(),
-                                faults
-                                    .first()
-                                    .map(|fault| fault.to_string())
-                                    .unwrap_or_default()
-                            );
-                        } else {
-                            eprintln!(
-                                "mask_postproc: carved domain has {outer} outer boundaries and \
-                                 {holes} holes"
-                            );
-                        }
-                    }
-                    Err(error) => eprintln!(
-                        "mask_postproc: could not read the carved boundary as a model: {error}"
-                    ),
+                )
+                .ok()
+            })
+        };
+        let after_connection = match renewal.boundary.clone() {
+            Some(boundary) => Some(boundary),
+            None => earthmesh_mesh::boundary_connection_one_based(
+                &renewal.renewed.center_neighbors_next,
+                &renewal.renewed.center_neighbor_counts_next,
+                &inputs.layout.vertex_neighbor_counts,
+                &renewal.renewed.vertex_neighbor_counts_next,
+            )
+            .ok(),
+        };
+        match walk(after_connection.as_ref()) {
+            Some(model) => {
+                if let Err(faults) = model.validate() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "the carved domain's boundary is not a valid boundary model ({} \
+                             faults); first: {}",
+                            faults.len(),
+                            faults
+                                .first()
+                                .map(|fault| fault.to_string())
+                                .unwrap_or_default()
+                        ),
+                    ));
                 }
+                let (outer, holes) = model.topology_counts();
+                if let Some((outer_before, holes_before)) =
+                    walk(renewal.boundary_before.as_ref()).map(|before| before.topology_counts())
+                {
+                    if outer > outer_before || holes > holes_before {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "the carve went from {outer_before} outer boundaries and \
+                                 {holes_before} holes to {outer} and {holes}; renewal and \
+                                 isolated-ocean removal only ever take a region away, so a count \
+                                 that grew means the domain gained a feature the mask never had"
+                            ),
+                        ));
+                    }
+                    eprintln!(
+                        "mask_postproc: carved domain has {outer} outer boundaries and {holes} \
+                         holes, from {outer_before} and {holes_before} before renewal"
+                    );
+                } else {
+                    eprintln!(
+                        "mask_postproc: carved domain has {outer} outer boundaries and {holes} holes"
+                    );
+                }
+                Some((outer, holes))
             }
-            Err(error) => {
-                eprintln!("mask_postproc: could not walk the carved boundary: {error}")
-            }
+            None => None,
         }
-    }
+    };
 
     let mut boundary_orders = None;
     let mut obc = None;

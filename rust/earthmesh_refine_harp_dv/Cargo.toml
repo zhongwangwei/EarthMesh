@@ -16,4 +16,5 @@ path = "src/lib.rs"
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
+earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_refine = { path = "../earthmesh_refine" }

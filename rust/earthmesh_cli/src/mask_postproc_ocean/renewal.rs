@@ -38,12 +38,25 @@ pub fn renew_mask_postproc_ocean_domain_one_based(
     let mode_grid = mode_grid.trim();
     let mut is_in_domain = is_in_domain_ustr[..layout.ustr_points].to_vec();
     let mut renewed = renew_mask_postproc_data_from_layout(layout, &is_in_domain, mode_grid)?;
+    // The domain as the mask defines it, before any renewal touches it. Kept so
+    // the caller can compare the boundary topology across the carve: renewal
+    // and isolated-ocean removal only ever *remove* a region, so a count that
+    // grew means the carve invented a domain feature, and nothing in it does.
+    // Computed for both mode_grids, because the comparison is not tri's alone.
+    let boundary_before = boundary_connection_one_based(
+        &renewed.center_neighbors_next,
+        &renewed.center_neighbor_counts_next,
+        &layout.vertex_neighbor_counts,
+        &renewed.vertex_neighbor_counts_next,
+    )
+    .ok();
 
     match mode_grid {
         "hex" => Ok(MaskPostprocOceanRenewalReport {
             is_in_domain_ustr: is_in_domain,
             renewed,
             boundary: None,
+            boundary_before,
             isolated: None,
         }),
         "tri" => {
@@ -137,6 +150,7 @@ pub fn renew_mask_postproc_ocean_domain_one_based(
                 is_in_domain_ustr: is_in_domain,
                 renewed,
                 boundary: Some(boundary),
+                boundary_before,
                 isolated: Some(isolated),
             })
         }
