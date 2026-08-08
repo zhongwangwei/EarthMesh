@@ -500,12 +500,32 @@ fn the_refusals_are_counted_by_kind() {
     );
 }
 
-/// Raising the degree budget past nine buys nothing.
+/// Raising the degree budget buys nothing once the bound stops binding.
 ///
 /// The measurement that decides whether widening `ItabW` -- the gridfile's
 /// `[i32; 7]` rows -- is worth the risk to the Fortran comparison path. It is
-/// not: this backend saturates at degree 9, and removing the bound entirely
-/// adds 3.6% cells and still stops as `NoAcceptedTransactions`. Guide 11.17.
+/// not: this backend saturates, and removing the bound entirely adds a few
+/// percent of cells and still stops as `NoAcceptedTransactions`. Guide 11.17.
+///
+/// # The saturation degree is platform-dependent, and was asserted anyway
+///
+/// This asserted `worst_nine == 9`, passed on macOS for months, and turned CI
+/// red the first time it ran on Linux, where the same run reaches **8**.
+/// Nothing was wrong with the mesh: budget 9 and budget 16 still produced the
+/// identical one. What differed is a discrete value -- the largest vertex
+/// degree -- read off geometry that is continuous, where a last-bit difference
+/// in one predicate moves an insertion and takes a degree with it.
+///
+/// `worst < budget` was the next guess and is also wrong: on macOS the worst
+/// degree *equals* the budget of nine, and raising the budget to sixteen still
+/// changes nothing. So the bound being reached does not mean the bound is what
+/// stopped the run.
+///
+/// **The equality below is the whole claim.** Two budgets, one mesh: raising
+/// the budget buys nothing. It needs no degree at all, and the exact figure
+/// belongs in the guide as a measurement rather than in an assertion as a
+/// constant -- a constant read off continuous geometry is an assertion about
+/// the machine that measured it.
 #[test]
 fn the_degree_budget_saturates() {
     let run = |budget: usize| {
@@ -536,10 +556,10 @@ fn the_degree_budget_saturates() {
         (cells_sixteen, worst_sixteen),
         "a budget past nine changed the mesh, so the saturation this rests on is gone"
     );
-    assert_eq!(worst_nine, 9);
+    // No assertion on `worst_nine` itself: measured 9 on macOS and 8 on Linux,
+    // and the claim does not rest on which.
 
-    let (cells_seven, worst_seven) = run(7);
-    assert_eq!(worst_seven, 7);
+    let (cells_seven, _worst_seven) = run(7);
     assert!(
         (cells_nine as f64) < cells_seven as f64 * 1.10,
         "removing the degree bound bought {cells_seven} -> {cells_nine} cells; if that is now a \
