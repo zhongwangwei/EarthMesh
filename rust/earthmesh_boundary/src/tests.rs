@@ -405,3 +405,90 @@ fn enclosing_refuses_a_degenerate_ring() {
     )
     .is_none());
 }
+
+/// This crate's signed area is positive on a right-hand-rule ring.
+///
+/// Pinned against `(a x b) . c > 0` and not against the other area function in
+/// the workspace, because the two disagree: `earthmesh_mesh`'s is negative
+/// where this one is positive. Checking them against each other would make
+/// either one's convention depend on the other staying put.
+#[test]
+fn the_area_sign_matches_the_winding_sign_here() {
+    let corners = [(0.0_f64, 0.0_f64), (10.0, 0.0), (5.0, 8.0)];
+    let [a, b, c] = corners.map(|(lon, lat)| unit(lon, lat));
+    assert!(winds_counter_clockwise(a, b, c), "fixture");
+
+    let vertices: Vec<BoundaryVertex> =
+        corners.iter().map(|&(lon, lat)| vertex(lon, lat)).collect();
+    let forward = signed_area_on_unit_sphere(&[0, 1, 2], &vertices).expect("area");
+    let backward = signed_area_on_unit_sphere(&[2, 1, 0], &vertices).expect("area");
+
+    assert!(
+        forward > 0.0,
+        "counter-clockwise is positive here: {forward}"
+    );
+    assert!(backward < 0.0, "and its reverse negative: {backward}");
+    assert!((forward + backward).abs() < 1.0e-12, "same magnitude");
+}
+
+/// `bounding_smaller_side` picks the island, not the ocean around it.
+///
+/// The constructor a ring walked off a mesh reaches for. Both ways in must give
+/// the same loop, and it must be the one that contains the small patch rather
+/// than the rest of the globe -- which is what makes a lake inside it nest.
+#[test]
+fn bounding_smaller_side_picks_the_island_either_way_in() {
+    let vertices = square();
+    let build = |order: Vec<usize>| {
+        BoundaryLoop::bounding_smaller_side(
+            LoopType::Outer,
+            BoundaryRole::HardDomain,
+            order,
+            None,
+            &vertices,
+        )
+        .expect("a square has a smaller side")
+    };
+    let forward = build(vec![0, 1, 2, 3]);
+    let backward = build(vec![3, 2, 1, 0]);
+    assert_eq!(forward.vertices(), backward.vertices());
+
+    let model = SphericalBoundaryModel {
+        vertices: vertices.clone(),
+        loops: vec![forward],
+    };
+    assert!(model.contains(0.5, 0.5), "the square's own middle");
+    assert!(
+        !model.contains(120.0, -40.0),
+        "and not the far side of the globe"
+    );
+}
+
+/// It agrees with `enclosing` where both apply.
+///
+/// Two constructors that answer the same question differently would be worse
+/// than one: a caller picking by which name reads better would get a different
+/// boundary. Where the caller has an interior point *and* the region is the
+/// smaller side, both must produce the same loop.
+#[test]
+fn the_two_orienting_constructors_agree_where_both_apply() {
+    let vertices = square();
+    let by_area = BoundaryLoop::bounding_smaller_side(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![3, 2, 1, 0],
+        None,
+        &vertices,
+    )
+    .expect("area");
+    let by_point = BoundaryLoop::enclosing(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![3, 2, 1, 0],
+        None,
+        &vertices,
+        (0.5, 0.5),
+    )
+    .expect("point");
+    assert_eq!(by_area.vertices(), by_point.vertices());
+}

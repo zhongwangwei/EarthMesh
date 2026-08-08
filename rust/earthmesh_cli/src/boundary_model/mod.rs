@@ -102,9 +102,23 @@ pub fn boundary_model_from_closed_curves(
         vertices,
         loops: Vec::new(),
     };
+    // Oriented by the type, not by a helper the caller has to remember. A ring
+    // walked off a mesh carries no direction, and `contains` reads direction to
+    // pick a side -- so the loop is built through the constructor that makes
+    // that choice rather than assembled and then corrected.
     let oriented: Vec<Vec<usize>> = rings
         .iter()
-        .map(|ring| orient_counter_clockwise(&model, ring))
+        .map(|ring| {
+            BoundaryLoop::bounding_smaller_side(
+                LoopType::Outer,
+                BoundaryRole::HardDomain,
+                ring.clone(),
+                None,
+                &model.vertices,
+            )
+            .map(|ring| ring.vertices().to_vec())
+            .unwrap_or_else(|| ring.clone())
+        })
         .collect();
     let mut parents: Vec<Option<usize>> = vec![None; oriented.len()];
     for (index, ring) in oriented.iter().enumerate() {
@@ -171,40 +185,6 @@ fn ring_is_inside(model: &SphericalBoundaryModel, ring: &[usize], candidate: &[u
             .get(vertex)
             .is_some_and(|point| probe.contains(point.lon_degrees, point.lat_degrees))
     })
-}
-
-/// Turn a ring so that it encloses the smaller of the two sides it divides.
-///
-/// A ring walked off a mesh has no direction, and on a sphere the direction is
-/// what picks a side -- both sides are enclosed by the same curve, so there is
-/// no "inside" until one is chosen. Choosing by area is what makes an island an
-/// island rather than the ocean around it, and it is what makes nesting mean
-/// anything: without it, an outer coastline could come back enclosing the rest
-/// of the globe, and the lake inside it would not be inside it at all. That is
-/// what the first version of this did -- it counted how many boundary vertices
-/// each direction enclosed, which is useless because a vertex on the ring is
-/// enclosed either way.
-fn orient_counter_clockwise(model: &SphericalBoundaryModel, ring: &[usize]) -> Vec<usize> {
-    let points: Vec<earthmesh_mesh::LonLatDegrees> = ring
-        .iter()
-        .filter_map(|&vertex| model.vertices.get(vertex))
-        .map(|point| earthmesh_mesh::LonLatDegrees::new(point.lon_degrees, point.lat_degrees))
-        .collect();
-    // Signed on the unit sphere, and its sign convention is the opposite of the
-    // winding `contains` reads: measured on a counter-clockwise lon/lat square,
-    // `robust_spherical_area_unit` returns -0.00487 and its reverse +0.00487.
-    // So negative is the direction that encloses the smaller side here. Taken
-    // from the measurement rather than from the name, because guessing it the
-    // other way round produces a coastline enclosing the ocean -- consistently,
-    // which is what would make it hard to see.
-    let Some(area) = earthmesh_mesh::robust_spherical_area_unit(&points) else {
-        return ring.to_vec();
-    };
-    if area < 0.0 {
-        ring.to_vec()
-    } else {
-        ring.iter().rev().copied().collect()
-    }
 }
 
 #[cfg(test)]

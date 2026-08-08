@@ -169,6 +169,42 @@ impl BoundaryLoop {
         }
     }
 
+    /// A loop oriented so that it bounds the *smaller* of the two regions it
+    /// divides the sphere into.
+    ///
+    /// The constructor for a ring walked off a mesh, where the caller has the
+    /// ring and no point to orient it against -- a coastline's rings and the
+    /// lakes inside them all want this, and a lake's interior point is exactly
+    /// what a carve does not have to hand.
+    ///
+    /// "Smaller" is what makes an island an island rather than the ocean around
+    /// it, and it is what makes nesting mean anything: an outer ring bounding
+    /// the rest of the globe would not contain the lake sitting in it.
+    ///
+    /// Returns `None` for a degenerate ring, or one whose two sides come out
+    /// equal, where there is no smaller side to pick.
+    pub fn bounding_smaller_side(
+        loop_type: LoopType,
+        role: BoundaryRole,
+        vertices: Vec<usize>,
+        parent: Option<usize>,
+        model_vertices: &[BoundaryVertex],
+    ) -> Option<Self> {
+        let area = signed_area_on_unit_sphere(&vertices, model_vertices)?;
+        if area == 0.0 {
+            return None;
+        }
+        // Positive is counter-clockwise seen from outside, which encloses the
+        // region on the left; a ring that comes back negative is drawn the way
+        // round that keeps the rest of the sphere.
+        let ordered = if area > 0.0 {
+            vertices
+        } else {
+            vertices.into_iter().rev().collect()
+        };
+        Some(Self::counter_clockwise(loop_type, role, ordered, parent))
+    }
+
     /// The ring, in traversal order.
     pub fn vertices(&self) -> &[usize] {
         &self.vertices
@@ -181,6 +217,48 @@ impl BoundaryLoop {
             ..self.clone()
         }
     }
+}
+
+/// The signed area a ring encloses on the unit sphere, in steradians.
+///
+/// Positive when the ring runs counter-clockwise seen from outside, which is
+/// the same convention [`SphericalBoundaryModel::contains`] reads. **Note that
+/// `earthmesh_mesh::robust_spherical_area_unit` is the opposite sign** --
+/// measured, a counter-clockwise lon/lat square gives -0.00487 there and
+/// +0.00487 here. Two functions with the same name-shape and opposite
+/// conventions is exactly how a coastline ends up enclosing the ocean, so both
+/// are pinned by tests against the right-hand rule rather than against each
+/// other.
+///
+/// Van Oosterom and Strackee's solid angle, summed over a fan from the first
+/// vertex. Chosen over the interior-angle formula because it needs no special
+/// case at the poles or the dateline, which is the same reason the winding is
+/// summed rather than ray-cast.
+fn signed_area_on_unit_sphere(ring: &[usize], vertices: &[BoundaryVertex]) -> Option<f64> {
+    if ring.len() < 3 {
+        return None;
+    }
+    let unit = |index: usize| -> Option<[f64; 3]> {
+        let point = vertices.get(index)?;
+        let (lon, lat) = (
+            point.lon_degrees.to_radians(),
+            point.lat_degrees.to_radians(),
+        );
+        Some([lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()])
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let apex = unit(ring[0])?;
+    let mut total = 0.0_f64;
+    for step in 1..ring.len() - 1 {
+        let b = unit(ring[step])?;
+        let c = unit(ring[step + 1])?;
+        let triple = apex[0] * (b[1] * c[2] - b[2] * c[1])
+            + apex[1] * (b[2] * c[0] - b[0] * c[2])
+            + apex[2] * (b[0] * c[1] - b[1] * c[0]);
+        let denominator = 1.0 + dot(apex, b) + dot(b, c) + dot(c, apex);
+        total += 2.0 * triple.atan2(denominator);
+    }
+    Some(total)
 }
 
 /// Every boundary the run has to respect, as one model.

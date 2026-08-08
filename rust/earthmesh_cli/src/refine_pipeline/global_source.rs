@@ -1354,53 +1354,6 @@ fn refine_with_harp_dv(
     })
 }
 
-/// The worst triangle angle in a mesh, in degrees.
-///
-/// What decides whether a smoothing pass helped: the writer refuses a triangle
-/// whose circumcentre is not local to it, which is what a thin one has.
-fn harp_worst_triangle_angle(mesh: &earthmesh_mesh::TriangularMesh) -> f64 {
-    let mut worst = f64::MAX;
-    for iw in 2..=mesh.nwd {
-        let face = &mesh.w_faces[iw];
-        let points: Vec<earthmesh_mesh::CartesianPoint> = face
-            .im
-            .iter()
-            .filter_map(|&im| mesh.m_points.get(im).copied())
-            .collect();
-        if points.len() < 3 {
-            continue;
-        }
-        for corner in 0..3 {
-            let apex = points[corner];
-            let radius_squared = apex.x * apex.x + apex.y * apex.y + apex.z * apex.z;
-            if radius_squared <= 0.0 {
-                continue;
-            }
-            let tangent = |other: earthmesh_mesh::CartesianPoint| {
-                let dot = (apex.x * other.x + apex.y * other.y + apex.z * other.z) / radius_squared;
-                earthmesh_mesh::CartesianPoint::new(
-                    other.x - apex.x * dot,
-                    other.y - apex.y * dot,
-                    other.z - apex.z * dot,
-                )
-            };
-            let u = tangent(points[(corner + 1) % 3]);
-            let v = tangent(points[(corner + 2) % 3]);
-            let lengths = earthmesh_mesh::magnitude(u) * earthmesh_mesh::magnitude(v);
-            if lengths <= 0.0 {
-                return 0.0;
-            }
-            let cosine = ((u.x * v.x + u.y * v.y + u.z * v.z) / lengths).clamp(-1.0, 1.0);
-            worst = worst.min(cosine.acos().to_degrees());
-        }
-    }
-    if worst == f64::MAX {
-        0.0
-    } else {
-        worst
-    }
-}
-
 /// The mesh's own median cell scale and median triangle edge, in metres.
 ///
 /// Two quantities that a single nominal-spacing formula conflates. A criterion
