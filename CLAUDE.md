@@ -74,7 +74,7 @@ The convention is **a branch per version**, not just a tag: `v1.0.0`, `v2.0.0`,
 pushing the branch is what builds the wheels. `master` is a separate lineage and
 is not where the v3 line lives.
 
-1. Bump the version everywhere. It appears in nine `Cargo.toml` files plus
+1. Bump the version everywhere. It appears in fourteen `Cargo.toml` files plus
    both `Cargo.lock` files (`cargo update -w` in the root and in
    `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
    title and changelog, and **four `--version` assertions in
@@ -85,8 +85,8 @@ is not where the v3 line lives.
    refspec — branch and tag share a name, so `git push origin v<version>` is
    ambiguous and fails:
    ```
-   git push origin refs/heads/v3.0.0-alpha3:refs/heads/v3.0.0-alpha3
-   git push origin refs/tags/v3.0.0-alpha3:refs/tags/v3.0.0-alpha3
+   git push origin refs/heads/v3.0.0-alpha4:refs/heads/v3.0.0-alpha4
+   git push origin refs/tags/v3.0.0-alpha4:refs/tags/v3.0.0-alpha4
    ```
 3. `gh release create v<version> --prerelease --notes-file …` for an alpha.
 

@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_hfield"
-version = "3.0.0-alpha3"
+version = "3.0.0-alpha4"
 edition = "2021"
 description = "Unified mesh cell-width field h(x): criterion/region composition, spherical gradient limiting, and level quantization for EarthMesh refinement"
 license = "GPL-2.0-only"

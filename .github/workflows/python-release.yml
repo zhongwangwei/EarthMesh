@@ -25,7 +25,7 @@ jobs:
         run: |
           python3 -m venv /tmp/earthmesh-wheel
           /tmp/earthmesh-wheel/bin/python -m pip install --no-deps dist/*.whl
-          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha3"
+          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha4"
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-linux-x86_64
@@ -48,7 +48,7 @@ jobs:
           py -m pip install --no-deps $wheel
           $scripts = py -c "import sysconfig; print(sysconfig.get_path('scripts'))"
           $cli = Join-Path $scripts "earthmesh_cli.exe"
-          if ((& $cli --version) -ne "3.0.0-alpha3") { exit 1 }
+          if ((& $cli --version) -ne "3.0.0-alpha4") { exit 1 }
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-windows-x64
@@ -76,7 +76,7 @@ jobs:
         run: |
           python3 -m venv /tmp/earthmesh-wheel
           /tmp/earthmesh-wheel/bin/python -m pip install --no-deps dist/*.whl
-          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha3"
+          test "$(/tmp/earthmesh-wheel/bin/earthmesh_cli --version)" = "3.0.0-alpha4"
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-macos-${{ matrix.platform.target }}
@@ -97,7 +97,7 @@ jobs:
           tar -tzf dist/*.tar.gz | grep -Eq '^[^/]+/Cargo\.lock$'
           python3 -m venv /tmp/earthmesh-sdist
           /tmp/earthmesh-sdist/bin/python -m pip install --no-deps dist/*.tar.gz
-          test "$(/tmp/earthmesh-sdist/bin/earthmesh_cli --version)" = "3.0.0-alpha3"
+          test "$(/tmp/earthmesh-sdist/bin/earthmesh_cli --version)" = "3.0.0-alpha4"
       - uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist

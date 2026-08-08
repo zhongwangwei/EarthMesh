@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_quality"
-version = "3.0.0-alpha3"
+version = "3.0.0-alpha4"
 edition = "2021"
 description = "Mesh quality metrics + reports (geometry/topology/refinement) for EarthMesh v3"
 license = "GPL-2.0-only"

@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_cli"
-version = "3.0.0-alpha3"
+version = "3.0.0-alpha4"
 edition = "2021"
 description = "mkgrd-compatible command-line adapter and workflow library for EarthMesh v3"
 license = "GPL-2.0-only"

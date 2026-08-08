@@ -436,7 +436,7 @@ use mkgrd_run_types::{
 mod native_grid_config;
 pub(crate) use native_grid_config::*;
 mod namelist_reader;
-mod region_sources;
+pub(crate) mod region_sources;
 pub(crate) use region_sources::*;
 mod refine_runtime;
 pub(crate) use refine_runtime::*;

@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha3
+# EarthMesh v3.0.0-alpha4
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -267,6 +267,9 @@ For questions or support, please contact:
   removed generic `io` writers. The diagnostic `run_manifest.json` contract is
   now explicitly versioned as schema 1; its current minimal fields replace the
   earlier experimental manifest shape.
+- 2026.08.08 - v3.0.0-alpha4 makes all three backends serve a closed curve, wires the
+  boundary subsystem into the carve, and fixes a spring the default refinement route
+  had been dropping in silence.
 - 2026.08.05 - v3.0.0-alpha3 makes point+radius the default refinement route,
   decouples the demand criteria from how they are covered, carries cell lineage
   through refinement, adds the ICON and MPAS-Ocean writers, and closes five
