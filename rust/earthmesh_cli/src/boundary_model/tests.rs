@@ -238,3 +238,84 @@ fn the_area_sign_is_the_opposite_of_the_winding_sign() {
         "the two are the same magnitude: {forward} and {backward}"
     );
 }
+
+fn polygon(points: &[(f64, f64)], level: usize) -> RefinementRegion {
+    RefinementRegion::Polygon {
+        points: points
+            .iter()
+            .map(|&(lon, lat)| earthmesh_mesh::LonLatDegrees::new(lon, lat))
+            .collect(),
+        level,
+    }
+}
+
+/// A run's own closed-curve masks become the model, nesting and all.
+///
+/// The producer the crate was missing: until this, a model could only be built
+/// from curves a carve had already walked, so it described results and
+/// constrained nothing.
+#[test]
+fn polygon_regions_become_loops_with_their_nesting() {
+    let outer = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+    let inner = [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)];
+    let model = boundary_model_from_regions(&[polygon(&outer, 1), polygon(&inner, 2)]);
+
+    model.validate().expect("a valid model");
+    assert_eq!(model.topology_counts(), (1, 1), "{:?}", model.loops);
+    assert!(model.contains(0.5, 2.0), "between the two curves");
+    assert!(!model.contains(2.0, 2.0), "inside the inner one");
+    assert!(!model.contains(40.0, 40.0), "far away");
+}
+
+/// The role is `RefinementGuide`, and the difference is load-bearing.
+///
+/// A refinement mask says "refine inside here". Nothing forbids a cell from
+/// crossing one, and an edge lying on one may be flipped away without losing
+/// anything -- which is what `permits_edge_flip` returns for a guide and for
+/// nothing else. Calling them `HardDomain` would claim a refinement must not
+/// cross its own refinement region, and something would eventually act on it.
+#[test]
+fn a_refinement_mask_is_a_guide_and_not_a_hard_domain() {
+    let square = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+    let model = boundary_model_from_regions(&[polygon(&square, 1)]);
+
+    let role = model.loops[0].role;
+    assert_eq!(role, earthmesh_boundary::BoundaryRole::RefinementGuide);
+    assert!(!role.is_impassable(), "a mesh may cross a refinement mask");
+    assert!(
+        role.permits_edge_flip(),
+        "and may flip an edge lying on one"
+    );
+}
+
+/// A ring that closes by repeating its first point is not a pinch.
+#[test]
+fn a_mask_that_repeats_its_first_point_still_validates() {
+    let closed = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)];
+    let model = boundary_model_from_regions(&[polygon(&closed, 1)]);
+
+    model.validate().expect("no pinch");
+    assert_eq!(model.loops[0].vertices().len(), 4);
+}
+
+/// Only polygons make loops; a circle's boundary was never discretised.
+///
+/// Inventing a ring for one would put a curve in the model that no data behind
+/// it agrees with, and every count taken from the model would include it.
+#[test]
+fn regions_without_a_discretised_boundary_contribute_no_loops() {
+    let circle = RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
+        radius_meters: 100_000.0,
+        level: 1,
+    };
+    let bbox = RefinementRegion::Bbox {
+        west_degrees: 0.0,
+        east_degrees: 1.0,
+        south_degrees: 0.0,
+        north_degrees: 1.0,
+        level: 1,
+    };
+    let model = boundary_model_from_regions(&[circle, bbox]);
+    assert_eq!(model.topology_counts(), (0, 0), "{:?}", model.loops);
+}

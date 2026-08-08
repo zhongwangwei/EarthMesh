@@ -1181,16 +1181,28 @@ fn refine_with_harp_dv(
     // Said outright rather than served quietly with less. Each of these would
     // otherwise be dropped and the run would still write a valid mesh that is
     // not the mesh that was asked for.
+    // Circles and closed curves are served; a box or a corridor is not, and is
+    // still said outright rather than dropped. A closed curve became servable
+    // when `SphericalBoundaryModel` arrived: the question a target scale asks
+    // is "is this cell inside the region", and for a curve with holes that is
+    // the model's subject rather than something to reimplement per backend.
     let unsupported = regions
         .iter()
-        .find(|region| !matches!(region, earthmesh_mesh::RefinementRegion::Circle { .. }))
-        .map(|_| "a region that is not a circle");
+        .find(|region| {
+            !matches!(
+                region,
+                earthmesh_mesh::RefinementRegion::Circle { .. }
+                    | earthmesh_mesh::RefinementRegion::Polygon { .. }
+            )
+        })
+        .map(|_| "a region that is not a circle or a closed curve");
     if let Some(unsupported) = unsupported {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!(
                 "NL%refine_backend = harp_dv does not serve {unsupported}; it reads a target \
-                 scale per cell, and only circles carry one today. Use method_c for this run"
+                 scale per cell, and a box or corridor carries no discretised boundary to read \
+                 one against. Use method_c for this run"
             ),
         ));
     }
@@ -1233,6 +1245,25 @@ fn refine_with_harp_dv(
                 },
                 source_resolution_m: None,
             }) as Box<dyn harp::CellCriterion>),
+            // One closed curve at a time: each mask is its own demand, and a
+            // model holding all of them at once would answer "inside" for a
+            // cell in any of them, which is a different question.
+            earthmesh_mesh::RefinementRegion::Polygon { level, .. } => {
+                let boundary = crate::boundary_model::boundary_model_from_regions(
+                    std::slice::from_ref(region),
+                );
+                // A curve too short to enclose anything produces no loop, and a
+                // criterion over an empty model is satisfied everywhere -- which
+                // would read as "this region wanted nothing".
+                (!boundary.loops.is_empty()).then(|| {
+                    Box::new(harp::TargetScale {
+                        id: format!("region-{index}"),
+                        target_scale_m: base_cell_m / 2.0_f64.powi(*level as i32),
+                        region: harp::TargetRegion::Polygon { boundary },
+                        source_resolution_m: None,
+                    }) as Box<dyn harp::CellCriterion>
+                })
+            }
             _ => None,
         })
         .collect();
@@ -1457,18 +1488,25 @@ fn harp_region_boundary_segments(
         if length <= 0.0 {
             return false;
         }
-        regions.iter().any(|region| {
-            let earthmesh_mesh::RefinementRegion::Circle {
+        regions.iter().any(|region| match region {
+            earthmesh_mesh::RefinementRegion::Circle {
                 center,
                 radius_meters,
                 ..
-            } = region
-            else {
-                return false;
-            };
-            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-            let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
-            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
+            } => {
+                let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+                let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
+                dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
+            }
+            // The same "inside" the criterion uses, from the same model, so a
+            // segment list and the demand that produced it cannot disagree
+            // about where the region is.
+            earthmesh_mesh::RefinementRegion::Polygon { .. } => {
+                let here = earthmesh_mesh::xyz_to_lonlat_degrees(point);
+                crate::boundary_model::boundary_model_from_regions(std::slice::from_ref(region))
+                    .contains(here.lon_degrees, here.lat_degrees)
+            }
+            _ => false,
         })
     };
     let edges =

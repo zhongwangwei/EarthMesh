@@ -24,6 +24,8 @@
 
 use std::io;
 
+use earthmesh_mesh::RefinementRegion;
+
 use earthmesh_boundary::{
     BoundaryLoop, BoundaryRole, BoundaryVertex, LoopType, SphericalBoundaryModel,
 };
@@ -95,15 +97,26 @@ pub fn boundary_model_from_closed_curves(
         }
     }
 
-    // Nesting: a ring inside another is that one's hole. Compared against a
-    // provisional single-ring model so `contains` is the one containment test
-    // in the system rather than a second one written here.
+    Ok(nest_and_orient(vertices, rings, BoundaryRole::HardDomain))
+}
+
+/// Nest the rings, orient each one, and give them all the same role.
+///
+/// Shared by the two producers because the shape of the answer is the same
+/// whichever curves came in: a ring inside another is that one's hole, and a
+/// ring walked off data carries no direction. Only the role differs, and it
+/// differs for a reason each caller states.
+fn nest_and_orient(
+    vertices: Vec<BoundaryVertex>,
+    rings: Vec<Vec<usize>>,
+    role: BoundaryRole,
+) -> SphericalBoundaryModel {
     let mut model = SphericalBoundaryModel {
         vertices,
         loops: Vec::new(),
     };
     // Oriented by the type, not by a helper the caller has to remember. A ring
-    // walked off a mesh carries no direction, and `contains` reads direction to
+    // read off data carries no direction, and `contains` reads direction to
     // pick a side -- so the loop is built through the constructor that makes
     // that choice rather than assembled and then corrected.
     let oriented: Vec<Vec<usize>> = rings
@@ -111,7 +124,7 @@ pub fn boundary_model_from_closed_curves(
         .map(|ring| {
             BoundaryLoop::bounding_smaller_side(
                 LoopType::Outer,
-                BoundaryRole::HardDomain,
+                role,
                 ring.clone(),
                 None,
                 &model.vertices,
@@ -146,17 +159,14 @@ pub fn boundary_model_from_closed_curves(
                 } else {
                     LoopType::Outer
                 },
-                // The carved domain edge is a coastline: nothing may cross it.
-                BoundaryRole::HardDomain,
+                role,
                 vertices,
                 parents[index],
             )
         })
         .collect();
-    // Parents are indices into `oriented`, which is the same order as `loops`,
-    // so they need no remapping -- but a hole whose parent turned out to be a
-    // hole would break the model's invariant, so it is promoted rather than
-    // emitted.
+    // A hole whose parent turned out to be a hole would break the model's
+    // invariant, so it is promoted rather than emitted.
     for index in 0..model.loops.len() {
         if let Some(parent) = model.loops[index].parent {
             if model.loops[parent].loop_type == LoopType::Hole {
@@ -165,7 +175,7 @@ pub fn boundary_model_from_closed_curves(
             }
         }
     }
-    Ok(model)
+    model
 }
 
 /// Whether every vertex of `ring` lies inside `candidate`.
@@ -185,6 +195,66 @@ fn ring_is_inside(model: &SphericalBoundaryModel, ring: &[usize], candidate: &[u
             .get(vertex)
             .is_some_and(|point| probe.contains(point.lon_degrees, point.lat_degrees))
     })
+}
+
+/// The boundary model a run's own regions describe.
+///
+/// The producer the crate was missing. Until now the model could only be built
+/// from curves a carve had already walked, so it could *describe* a carve's
+/// result and never *constrain* a refinement -- which is what a type carrying
+/// "this segment may be split but never crossed" exists for.
+///
+/// Closed-curve refinement masks are where a run's real curves come in: a
+/// `.nml` or `.nc4` close mask becomes a `RefinementRegion::Polygon`, and that
+/// is a ring of lon/lat points with a level attached.
+///
+/// # The role is `RefinementGuide`, and that is not a placeholder
+///
+/// These curves say "refine inside here". They are not coastlines: nothing
+/// forbids a cell from crossing one, and an edge lying on one may be flipped
+/// away without losing anything -- which is exactly what
+/// [`BoundaryRole::permits_edge_flip`] returns for a guide and for nothing
+/// else. Marking them `HardDomain` would claim the refinement must not cross
+/// its own refinement region, which is false and would eventually be acted on.
+///
+/// Only polygons produce loops. A circle, a box or a corridor is a region
+/// whose boundary the run never discretised, and inventing a ring for one here
+/// would put a curve in the model that no data behind it agrees with.
+pub fn boundary_model_from_regions(regions: &[RefinementRegion]) -> SphericalBoundaryModel {
+    let mut vertices: Vec<BoundaryVertex> = Vec::new();
+    let mut rings: Vec<Vec<usize>> = Vec::new();
+    for region in regions {
+        let RefinementRegion::Polygon { points, .. } = region else {
+            continue;
+        };
+        let mut ring = Vec::with_capacity(points.len());
+        for point in points {
+            let slot = vertices.len();
+            vertices.push(BoundaryVertex {
+                lon_degrees: point.lon_degrees,
+                lat_degrees: point.lat_degrees,
+                // A mask's vertices are where the data put them. Refinement may
+                // add points along the curve but must not slide these.
+                pinned: true,
+            });
+            // A mask often closes its ring by repeating the first point; the
+            // model closes implicitly, and the repeat would read as a pinch.
+            let repeats_first = ring.first().is_some_and(|&first: &usize| {
+                let (a, b) = (&vertices[first], &vertices[slot]);
+                (a.lon_degrees - b.lon_degrees).abs() < 1.0e-12
+                    && (a.lat_degrees - b.lat_degrees).abs() < 1.0e-12
+            });
+            if repeats_first {
+                vertices.pop();
+                continue;
+            }
+            ring.push(slot);
+        }
+        if ring.len() >= 3 {
+            rings.push(ring);
+        }
+    }
+    nest_and_orient(vertices, rings, BoundaryRole::RefinementGuide)
 }
 
 #[cfg(test)]

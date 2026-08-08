@@ -20,6 +20,7 @@
 //! radius of the disc with its area. It is what "this cell is too coarse" is
 //! measured in, and what neighbouring-scale balance compares.
 
+use earthmesh_boundary::SphericalBoundaryModel;
 use earthmesh_mesh::{
     lonlat_degrees_to_unit_xyz, xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees, MeshState,
     VoronoiCell,
@@ -100,12 +101,26 @@ pub enum TargetRegion {
         centre: LonLatDegrees,
         radius_m: f64,
     },
+    /// Inside a closed curve, holes and all.
+    ///
+    /// The shape a closed-curve refinement mask describes. Held as a
+    /// [`SphericalBoundaryModel`] rather than as a point list because the
+    /// question a criterion asks -- is this cell inside? -- is the model's
+    /// subject, and a lake inside an island has to answer "no" without the
+    /// criterion knowing what a lake is.
+    ///
+    /// Before this, a region that was not a circle was refused outright: the
+    /// backend served the one shape it could measure and said so rather than
+    /// quietly serving less. The model is what makes the other shape
+    /// measurable.
+    Polygon { boundary: SphericalBoundaryModel },
 }
 
 impl TargetRegion {
     fn contains(&self, point: LonLatDegrees, radius_m: f64) -> bool {
         match self {
             Self::Global => true,
+            Self::Polygon { boundary } => boundary.contains(point.lon_degrees, point.lat_degrees),
             Self::Circle {
                 centre,
                 radius_m: reach,
