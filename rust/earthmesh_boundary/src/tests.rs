@@ -263,7 +263,7 @@ fn segments_close_each_ring() {
 ///
 /// `earthmesh_mesh` has one, and this crate deliberately does not depend on it
 /// -- the layout doc puts the two side by side, both feeding `refine`. Six
-/// lines here is the price of that, and it also means the reference below is
+/// lines here is the price of that, and it also means the yardstick below is
 /// independent of the code it is checking.
 fn unit(lon_degrees: f64, lat_degrees: f64) -> [f64; 3] {
     let (lon, lat) = (lon_degrees.to_radians(), lat_degrees.to_radians());
@@ -290,7 +290,7 @@ fn winds_counter_clockwise(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> bool {
 /// handedness and the sign of whatever orients the ring are both wrong and
 /// cancel -- the pair works and either half alone misleads the next caller.
 ///
-/// So this pins the half that lives here against an outside reference. A
+/// So this pins the half that lives here against an outside yardstick. A
 /// triangle the right-hand rule calls counter-clockwise must contain its own
 /// centroid, and reversed it must not.
 #[test]

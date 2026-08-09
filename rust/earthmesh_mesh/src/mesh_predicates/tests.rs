@@ -175,7 +175,7 @@ fn the_predicates_are_deterministic() {
 /// through the first two, which is where the six products very nearly sum to
 /// nothing.
 ///
-/// Correctness is checked without a reference implementation, by an invariant
+/// Correctness is checked without a second implementation, by an invariant
 /// the arithmetic cannot fake: exchanging two rows of a determinant negates it.
 /// A sign error anywhere in the accumulation breaks it.
 #[test]

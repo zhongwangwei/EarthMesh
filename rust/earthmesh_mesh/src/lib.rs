@@ -310,8 +310,9 @@ pub use primal_dual_mesh::TriangularMesh;
 mod mesh_from_gridfile;
 pub use mesh_from_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
+pub use refine_regions::scale_refinement_regions_radius;
 pub use refine_regions::RefinementRegion;
-pub use refine_regions::*;
+pub(crate) use refine_regions::METHOD_C_MIN_GRID_SPACING_METERS;
 mod refine_region_geometry;
 pub use refine_region_geometry::{
     refine_regions_close_to_method_c, refine_regions_contain_method_c,

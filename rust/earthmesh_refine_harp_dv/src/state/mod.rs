@@ -51,7 +51,7 @@ pub struct AdaptiveSite {
     pub active: bool,
     /// Where it was when the run first saw it, which is what a displacement
     /// budget is measured against.
-    pub reference_position: LonLatDegrees,
+    pub origin_position: LonLatDegrees,
     pub cumulative_displacement_m: f64,
     pub mobility: SiteMobility,
 }
@@ -65,7 +65,7 @@ impl AdaptiveSite {
             birth_cycle: 0,
             depth: 0,
             active: true,
-            reference_position: position,
+            origin_position: position,
             cumulative_displacement_m: 0.0,
             mobility: SiteMobility::Interior,
         }

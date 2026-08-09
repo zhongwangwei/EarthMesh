@@ -2447,3 +2447,38 @@ CoLM 冒烟测试都在那里)。**只标 ignore 不接进 test-slow 就是「�
 
 **两个问题叠在一起,我修了一个就以为修完了。** 8 vs 9 那个断言在 1 分 06 秒就挂了,所以那一次没走
 到超时——一个失败**遮住**了另一个,而它们的症状(CI 红)完全一样。
+
+### 11.50 一个装作在检查的门禁(2026-08-09)
+
+外部审查报告说 `make check-architecture` 失败,有三处 wildcard re-export。核实下来**比那更糟**:
+本机没装 `rg`,于是
+
+```
+@if rg -n '...' rust --glob '*.rs'; then echo '...forbidden'; exit 1; fi
+```
+
+三条检查全部 `command not found`,`if` 取假分支,**target 退出 0 —— 报告成功**。它守着
+`release-check`。**一个报告成功却什么都没检查的门禁,比没有门禁更坏**:它让人以为查过了。
+
+这和 §11.38–11.41 是同一形状,只是这次长在门禁自己身上——而我这一整轮都在用门禁给自己背书。
+
+改成 `grep -r --include`(POSIX,处处都有),并加 `--exclude-dir=target`:grep 不像 ripgrep 那样
+读 `.gitignore`,不排除构建目录的话,六条来自 `target/` 的命中会把真正的三条淹掉。
+
+**打开之后,先前被完全掩盖的违规**:
+
+| 类别 | 数量 |
+|---|---|
+| wildcard public re-export | 3 |
+| source-origin reference 命名 | 15 |
+
+三处 wildcard 都换成具名导出。名字是**把导出收窄到编译不过为止**逐轮问出来的——第一轮只跑
+`cargo build` 漏掉了测试用到的两个,`--all-targets` 才补齐。`earthmesh_refine::hfield` 那处更直接:
+**没有任何调用方经由它引用**,一个 wildcard 转出整个 crate 的表面,却没有一个消费者。
+
+15 处 reference 命名里,**只有一处是规则真正要禁的意思**(红绿 lib.rs 的「the Fortran reference」),
+其余是英文里「参照物 / 基准」的普通用法,包括我这一轮自己写的两处。规则是个粗糙的正则,但把它们
+改成 `baseline` / `yardstick` / `原版` 比给正则开洞便宜。
+
+**这一条对本轮其余结论的意义**:我一路用「门禁全绿」给自己背书,而这道门禁从头到尾没在跑。
+**「门禁通过」只在门禁真的执行了检查时才是证据。**

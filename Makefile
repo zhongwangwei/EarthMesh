@@ -100,14 +100,22 @@ test-fast:
 check-gui-js:
 	node scripts/check_gui_js.js
 
+# `grep -r --include`, not `rg`: with ripgrep absent every `if rg ...` took its
+# false branch, so this target printed three "command not found" lines and
+# exited 0. A gate that reports success while checking nothing is worse than no
+# gate, and this one guards `release-check`.
+#
+# `--exclude-dir=target` because grep, unlike ripgrep, does not read
+# .gitignore: without it the build directories supply six matches of their own
+# and the real three are lost among them.
 check-architecture:
-	@if rg -n '^[[:space:]]*pub use .*\*' rust --glob '*.rs'; then \
+	@if grep -rn --include='*.rs' --exclude-dir=target -E '^[[:space:]]*pub use .*\*' rust; then \
 		echo 'wildcard public re-exports are forbidden'; exit 1; \
 	fi
-	@if rg -n '#\[deprecated' rust --glob '*.rs'; then \
+	@if grep -rn --include='*.rs' --exclude-dir=target -F '#[deprecated' rust; then \
 		echo 'deprecated compatibility facades are forbidden'; exit 1; \
 	fi
-	@if rg -n -i '\breference\b|reference_' rust --glob '*.rs'; then \
+	@if grep -rn --include='*.rs' --exclude-dir=target -iE '\breference\b|reference_' rust; then \
 		echo 'source-origin reference naming is forbidden'; exit 1; \
 	fi
 	@python3 scripts/check_architecture.py .
