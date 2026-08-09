@@ -61,6 +61,8 @@ fn classify(message: &str) -> Gate {
     }
 }
 
+#[ignore = "NXP 40 at four levels over random cases takes minutes in debug; \
+           run with make test-slow"]
 #[test]
 fn multilevel_failures_are_counted_by_the_gate_that_produced_them() {
     let mut rows: Vec<(

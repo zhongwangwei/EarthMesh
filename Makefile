@@ -133,6 +133,7 @@ test:
 # repository input/landtype_igbp_update.nc. Missing data is a hard failure.
 test-slow:
 	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml -- --ignored
+	$(CARGO) test --manifest-path rust/earthmesh_refine_method_c/Cargo.toml -- --ignored
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_mask_restart $(CLI_FEATURES) -- --ignored
 	CARGO="$(CARGO)" CLI_FEATURES="$(CLI_FEATURES)" scripts/run_slow_fixture_e2e.sh
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --test mkgrd_gridinit $(CLI_FEATURES) run_mkgrd_gridinit_global_matches_canonical_nxp64_gridfile_fixture -- --ignored
