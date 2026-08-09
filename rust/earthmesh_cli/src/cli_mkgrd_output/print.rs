@@ -204,6 +204,22 @@ pub(crate) fn print_refine_pipeline_report(
     }
     println!("refine_transition_faces={}", report.transition_faces);
     println!("refine_spring_passes={}", report.spring_nest_passes);
+    // Printed for HARP-DV only, because the other two backends have no cycles,
+    // no refusals and no stop reason to report. A line of `None` for them would
+    // be noise that trains people to skip the line that matters.
+    if let Some(harp) = &report.harp_dv_run {
+        println!("harp_dv_stop_reason={}", harp.stop_reason);
+        println!("harp_dv_cycles={}", harp.cycles_completed);
+        println!(
+            "harp_dv_transactions_committed={}",
+            harp.transactions_committed
+        );
+        println!("harp_dv_unresolved_cells={}", harp.unresolved_cells);
+        println!(
+            "harp_dv_unbalanced_pairs={}",
+            harp.unbalanced_pairs_remaining
+        );
+    }
     println!("refine_spring_iterations={}", report.spring_nest_iterations);
     if let Some(raw_output) = &report.raw_output {
         println!("refine_raw_gridfile={}", raw_output.output.display());

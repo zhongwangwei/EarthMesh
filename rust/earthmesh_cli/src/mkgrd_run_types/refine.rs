@@ -72,6 +72,12 @@ pub struct RefinePipelineRunReport {
     pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
+    /// HARP-DV's own ending, or `None` from the other two backends.
+    ///
+    /// On the record because a run that stopped at a budget or a scale floor
+    /// exits zero with a mesh written, exactly like one that met every demand.
+    /// Without this a caller cannot tell them apart.
+    pub harp_dv_run: Option<crate::refine_pipeline::HarpDvRunRecord>,
     pub spring_nest_iterations: usize,
     pub raw_output: Option<UnstructuredMeshWriteReport>,
     pub landtype_masked_cells: Option<usize>,

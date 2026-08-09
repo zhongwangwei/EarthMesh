@@ -752,3 +752,48 @@ fn protected_segments_make_a_quality_target_terminate() {
          {unprotected_worst:.2} degrees against {worst:.2}"
     );
 }
+
+/// A criterion covering nowhere does not read as "stopped at the floor".
+///
+/// The tally that tells the three endings apart was first counted *before* the
+/// criteria were read, so any cell below `minimum_cell_width_m` counted --
+/// including every cell outside the region, which wants nothing at all. A run
+/// with an empty region and no demand anywhere came back
+/// `MinimumScaleReached`, which is the same kind of wrong answer the tally was
+/// added to stop: a run that asked for nothing is satisfied, not thwarted.
+#[test]
+fn a_region_that_covers_no_cell_reports_satisfied_not_thwarted() {
+    let mut mesh = sphere(6);
+    // A circle of ten metres somewhere in the Pacific: no cell's centre is in
+    // it, so no criterion demands anything of any cell.
+    let criteria = target(
+        1.0,
+        TargetRegion::Circle {
+            centre: earthmesh_mesh::LonLatDegrees::new(-140.0, -30.0),
+            radius_m: 10.0,
+        },
+    );
+    // And a floor above every cell, so the old tally would have counted them all.
+    let floor = coarsest_scale(&mesh) * 2.0;
+
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        permissive(),
+        CycleLimits {
+            max_cycles: 8,
+            max_sites: 100_000,
+            minimum_cell_width_m: floor,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::AllSatisfied,
+        "nothing was ever asked, so nothing was left unmet"
+    );
+    assert_eq!(outcome.report.transactions_attempted, 0);
+}

@@ -494,13 +494,21 @@ fn evaluate(
             state,
             radius_m,
         };
-        if view
+        // Read the criteria first, even for a cell already at the floor.
+        //
+        // The floor used to short-circuit the whole cell, and the tally with
+        // it, so any small cell counted as "stopped short" -- including cells
+        // no criterion covers, which are simply outside the region and want
+        // nothing. That reported `MinimumScaleReached` for a run where nothing
+        // was ever asked, which is the same class of wrong answer the tally was
+        // added to stop.
+        //
+        // Evaluating and then declining to act costs one pass over criteria for
+        // the cells at the floor, and buys the distinction between "this cell
+        // wanted more and could not have it" and "this cell wanted nothing".
+        let at_floor = view
             .effective_scale_m()
-            .is_some_and(|scale| scale <= limits.minimum_cell_width_m)
-        {
-            tally.at_minimum_scale += 1;
-            continue;
-        }
+            .is_some_and(|scale| scale <= limits.minimum_cell_width_m);
         let mut evidences = Vec::with_capacity(criteria.len());
         for criterion in criteria {
             evidences.push(criterion.evaluate(&view)?);
@@ -525,10 +533,16 @@ fn evaluate(
         // opposite things to a caller.
         let unsatisfiable = evidences.iter().any(|evidence| !evidence.satisfiable);
         let demand = RefinementDemand::from_evidence(site as u64, evidences, cause);
-        if demand.demands_work() {
+        if !demand.demands_work() {
+            if unsatisfiable {
+                tally.unsatisfiable += 1;
+            }
+        } else if at_floor {
+            // It wanted work and cannot have it: the floor is what stopped it,
+            // and that is what the run should say when nothing else is left.
+            tally.at_minimum_scale += 1;
+        } else {
             demands.push(demand);
-        } else if unsatisfiable {
-            tally.unsatisfiable += 1;
         }
     }
     Ok((demands, tally))

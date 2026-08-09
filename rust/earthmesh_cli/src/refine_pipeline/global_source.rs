@@ -406,6 +406,7 @@ pub fn run_refine_pipeline_namelist(
         spring_nest_passes,
         hfield_diagnostics,
         adaptive_run,
+        harp_dv_run,
     } = match backend {
         RefineBackend::RedGreen => {
             // What this route does not read, said outright rather than served
@@ -554,6 +555,7 @@ pub fn run_refine_pipeline_namelist(
                 spring_nest_passes,
                 hfield_diagnostics,
                 adaptive_run,
+                harp_dv_run: None,
             }
         }
     };
@@ -845,6 +847,7 @@ pub fn run_refine_pipeline_namelist(
         hfield_diagnostics,
         transition_faces,
         spring_nest_passes,
+        harp_dv_run,
         spring_nest_iterations,
         raw_output: outputs.raw_output,
         landtype_masked_cells: outputs.landtype_masked_cells,
@@ -892,6 +895,24 @@ struct RefinedGrid {
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
+    /// What HARP-DV's own run reported, or `None` from the other two backends.
+    ///
+    /// It used to reach only stderr, so a caller reading the run record could
+    /// not tell a mesh that met its demands from one that stopped at a budget
+    /// or a scale floor -- both exited zero with a mesh written. `adaptive_run`
+    /// could not carry it: that is Method-C's per-level circle record and says
+    /// nothing about cycles, refusals or a stop reason.
+    harp_dv_run: Option<HarpDvRunRecord>,
+}
+
+/// The part of HARP-DV's report a run record can carry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HarpDvRunRecord {
+    pub stop_reason: String,
+    pub cycles_completed: u32,
+    pub transactions_committed: usize,
+    pub unresolved_cells: usize,
+    pub unbalanced_pairs_remaining: usize,
 }
 
 /// Most incident triangles a cell may have.
@@ -1144,6 +1165,7 @@ fn refine_with_redgreen(
                 adaptive.coastline,
             )
         }),
+        harp_dv_run: None,
     })
 }
 
@@ -1440,6 +1462,14 @@ fn refine_with_harp_dv(
         spring_nest_passes: 0,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
+        // HARP-DV's own ending, on the record rather than only on stderr.
+        harp_dv_run: Some(HarpDvRunRecord {
+            stop_reason: format!("{:?}", outcome.report.stop_reason),
+            cycles_completed: outcome.report.cycles_completed,
+            transactions_committed: outcome.report.transactions_committed,
+            unresolved_cells: outcome.unresolved_cells.len(),
+            unbalanced_pairs_remaining: outcome.report.unbalanced_pairs_remaining,
+        }),
     })
 }
 
