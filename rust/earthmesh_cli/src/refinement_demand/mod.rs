@@ -172,6 +172,17 @@ impl RefinementDemand {
         self.words.iter().all(|word| *word == 0)
     }
 
+    /// Clear demanded cells that do not pass `keep`.
+    pub(crate) fn retain_where(&mut self, keep: impl Fn(usize, usize) -> bool) {
+        for lat in self.bounds.maxlat_source..=self.bounds.minlat_source {
+            for lon in self.bounds.minlon_source..=self.bounds.maxlon_source {
+                if self.is_demanded(lon, lat) && !keep(lon, lat) {
+                    self.set(lon, lat, false);
+                }
+            }
+        }
+    }
+
     /// Fill the window from a per-cell predicate, one latitude row at a time,
     /// in parallel.
     ///

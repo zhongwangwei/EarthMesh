@@ -40,17 +40,6 @@ pub fn wrap_lon_degrees(lon: f64) -> f64 {
     x - 180.0
 }
 
-fn unwrap_near(lon: f64, anchor: f64) -> f64 {
-    let mut l = lon;
-    while l - anchor > 180.0 {
-        l -= 360.0;
-    }
-    while l - anchor < -180.0 {
-        l += 360.0;
-    }
-    l
-}
-
 fn lonlat_to_unit(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
     let lon = lon_deg.to_radians();
     let lat = lat_deg.to_radians();
@@ -129,6 +118,132 @@ fn point_segment_distance_and_fraction_m(p: [f64; 3], a: [f64; 3], b: [f64; 3]) 
     }
 }
 
+fn quantize_h_level(h: f64, h_base_m: f64, max_level: u8) -> io::Result<u8> {
+    if !h_base_m.is_finite() || h_base_m <= 0.0 {
+        return Err(invalid(format!(
+            "base cell size {h_base_m} must be positive and finite"
+        )));
+    }
+    if !h.is_finite() || h <= 0.0 {
+        return Err(invalid(format!(
+            "HField sample {h} must be positive and finite before quantization"
+        )));
+    }
+    if h >= h_base_m {
+        return Ok(0);
+    }
+    let raw = ((h_base_m / h).log2() - 1e-9).ceil();
+    if raw <= 0.0 {
+        Ok(0)
+    } else if raw >= max_level as f64 {
+        Ok(max_level)
+    } else {
+        Ok(raw as u8)
+    }
+}
+
+fn point_on_minor_arc_unit(a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> bool {
+    let ab = gc_angle(a, b);
+    if ab <= 1.0e-12 || (std::f64::consts::PI - ab).abs() <= 1.0e-10 {
+        return false;
+    }
+    let normal = cross3(a, b);
+    dot3(normal, p).abs() <= 1.0e-10 * norm3(normal).max(1.0)
+        && gc_angle(a, p) + gc_angle(p, b) <= ab + 1.0e-10
+}
+
+fn spherical_polygon_contains(points: &[(f64, f64)], lon_deg: f64, lat_deg: f64) -> bool {
+    if points.len() < 3
+        || !lon_deg.is_finite()
+        || !lat_deg.is_finite()
+        || !(-90.0..=90.0).contains(&lat_deg)
+    {
+        return false;
+    }
+    let Some(area) = spherical_polygon_signed_area(points) else {
+        return false;
+    };
+    if area.abs() <= 1.0e-14 {
+        return false;
+    }
+    let desired_sign = if area.abs() <= std::f64::consts::TAU {
+        area.signum()
+    } else {
+        -area.signum()
+    };
+
+    let here = lonlat_to_unit(lon_deg, lat_deg);
+    let tangent = |point: [f64; 3]| -> Option<(f64, f64)> {
+        let dot = dot3(here, point);
+        let flat = [
+            point[0] - here[0] * dot,
+            point[1] - here[1] * dot,
+            point[2] - here[2] * dot,
+        ];
+        let length = norm3(flat);
+        if length <= 1.0e-12 {
+            return None;
+        }
+        let east0 = [-here[1], here[0], 0.0];
+        let east_len = (east0[0] * east0[0] + east0[1] * east0[1]).sqrt();
+        let east = if east_len > 1.0e-12 {
+            [east0[0] / east_len, east0[1] / east_len, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let north = cross3(here, east);
+        Some((dot3(flat, east) / length, dot3(flat, north) / length))
+    };
+
+    let mut turned = 0.0_f64;
+    for i in 0..points.len() {
+        let a_unit = lonlat_to_unit(points[i].0, points[i].1);
+        let b_unit = lonlat_to_unit(
+            points[(i + 1) % points.len()].0,
+            points[(i + 1) % points.len()].1,
+        );
+        if dot3(here, a_unit) > 1.0 - 1.0e-12 || dot3(here, b_unit) > 1.0 - 1.0e-12 {
+            return true;
+        }
+        if dot3(here, a_unit) < -1.0 + 1.0e-12 || dot3(here, b_unit) < -1.0 + 1.0e-12 {
+            return false;
+        }
+        if point_on_minor_arc_unit(a_unit, b_unit, here) {
+            return true;
+        }
+        let (Some(a), Some(b)) = (tangent(a_unit), tangent(b_unit)) else {
+            return false;
+        };
+        turned += (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
+    }
+    if desired_sign > 0.0 {
+        turned > std::f64::consts::PI
+    } else {
+        turned < -std::f64::consts::PI
+    }
+}
+
+fn spherical_polygon_signed_area(points: &[(f64, f64)]) -> Option<f64> {
+    if points.len() < 3 {
+        return None;
+    }
+    for &(lon, lat) in points {
+        if !(lon.is_finite() && lat.is_finite()) || !(-90.0..=90.0).contains(&lat) {
+            return None;
+        }
+    }
+    let apex = lonlat_to_unit(points[0].0, points[0].1);
+    let mut total = 0.0;
+    for step in 1..points.len() - 1 {
+        let b = lonlat_to_unit(points[step].0, points[step].1);
+        let c = lonlat_to_unit(points[step + 1].0, points[step + 1].1);
+        let triple = dot3(apex, cross3(b, c));
+        let denominator = 1.0 + dot3(apex, b) + dot3(b, c) + dot3(c, apex);
+        total += 2.0 * triple.atan2(denominator);
+    }
+    total.is_finite().then_some(total)
+}
+
 fn corridor_radius_at_segment(radius_meters: &[f64], index: usize, t: f64) -> Option<f64> {
     let start = *radius_meters.get(index)?;
     let end = *radius_meters.get(index + 1)?;
@@ -148,11 +263,9 @@ pub enum HRegion {
     /// Great-circle disk. This metric is intentionally explicit and differs
     /// from the legacy Method-C polar-stereographic compatibility metric.
     Circle { lon: f64, lat: f64, radius_m: f64 },
-    /// Simple polygon (no self-intersection), vertices (lon, lat) in degrees.
-    /// This intentionally preserves Canonical planar lon/lat ray casting; its
-    /// edges are not spherical geodesics. Longitudes are unwrapped around the
-    /// first vertex, so polygons narrower than 180 degrees work across the
-    /// dateline, but callers should not use this representation for polar caps.
+    /// Simple spherical polygon (no self-intersection), vertices (lon, lat) in
+    /// degrees and edges following great circles. The contained side is the
+    /// smaller side of the ring, independent of vertex order.
     Polygon { points: Vec<(f64, f64)> },
     /// Polyline buffered by great-circle radii linearly interpolated between
     /// endpoints. `radius_meters` must contain one radius per point.
@@ -190,30 +303,7 @@ impl HRegion {
             HRegion::Circle { lon, lat, radius_m } => {
                 great_circle_distance_m(lon_deg, lat_deg, *lon, *lat) <= *radius_m
             }
-            HRegion::Polygon { points } => {
-                if points.len() < 3 {
-                    return false;
-                }
-                let anchor = points[0].0;
-                let x = unwrap_near(lon_deg, anchor);
-                let y = lat_deg;
-                let mut inside = false;
-                let mut jj = points.len() - 1;
-                for ii in 0..points.len() {
-                    let xi = unwrap_near(points[ii].0, anchor);
-                    let yi = points[ii].1;
-                    let xj = unwrap_near(points[jj].0, anchor);
-                    let yj = points[jj].1;
-                    if (yi > y) != (yj > y) {
-                        let x_int = xi + (y - yi) / (yj - yi) * (xj - xi);
-                        if x < x_int {
-                            inside = !inside;
-                        }
-                    }
-                    jj = ii;
-                }
-                inside
-            }
+            HRegion::Polygon { points } => spherical_polygon_contains(points, lon_deg, lat_deg),
             HRegion::Corridor {
                 points,
                 radius_meters,
@@ -371,9 +461,15 @@ impl HField {
         self.values[self.idx(ilon, jlat)]
     }
 
-    pub fn set(&mut self, ilon: usize, jlat: usize, h_meters: f64) {
+    pub fn set(&mut self, ilon: usize, jlat: usize, h_meters: f64) -> io::Result<()> {
+        if !h_meters.is_finite() || h_meters <= 0.0 {
+            return Err(invalid(format!(
+                "HField value {h_meters} must be positive and finite"
+            )));
+        }
         let k = self.idx(ilon, jlat);
         self.values[k] = h_meters;
+        Ok(())
     }
 
     pub fn values(&self) -> &[f64] {
@@ -507,6 +603,10 @@ impl HField {
     /// bottom rows, and a per-row `cos(lat)` metric. Returns the number of
     /// 4-ordering sweep rounds performed.
     pub fn limit_gradient(&mut self, g: f64) -> io::Result<usize> {
+        self.limit_gradient_with_max_rounds(g, 256)
+    }
+
+    fn limit_gradient_with_max_rounds(&mut self, g: f64, max_rounds: usize) -> io::Result<usize> {
         if !g.is_finite() || g <= 0.0 {
             return Err(invalid(format!(
                 "gradation g {g} must be positive and finite"
@@ -544,9 +644,8 @@ impl HField {
 
         let h_scale = self.values.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
         let tol = 1e-12 * h_scale;
-        let max_rounds = 256usize;
-
         let mut rounds = 0usize;
+        let mut converged = false;
         while rounds < max_rounds {
             rounds += 1;
             let mut max_change = 0.0_f64;
@@ -624,10 +723,17 @@ impl HField {
                 ));
             }
             if max_change <= tol {
+                converged = true;
                 break;
             }
         }
-        Ok(rounds)
+        if converged {
+            Ok(rounds)
+        } else {
+            Err(io::Error::other(format!(
+                "gradient limiter did not converge within {max_rounds} rounds"
+            )))
+        }
     }
 
     /// Quantize to discrete refinement levels: `level = ceil(log2(h_base / h))`
@@ -638,40 +744,34 @@ impl HField {
                 "base cell size {h_base_m} must be positive and finite"
             )));
         }
-        Ok(self
-            .values
-            .iter()
-            .map(|&h| {
-                if !h.is_finite() || h <= 0.0 || h >= h_base_m {
-                    0u8
-                } else {
-                    let raw = ((h_base_m / h).log2() - 1e-9).ceil();
-                    if raw <= 0.0 {
-                        0u8
-                    } else if raw >= max_level as f64 {
-                        max_level
-                    } else {
-                        raw as u8
-                    }
-                }
-            })
-            .collect())
+        let mut levels = Vec::with_capacity(self.values.len());
+        for &h in &self.values {
+            levels.push(quantize_h_level(h, h_base_m, max_level)?);
+        }
+        Ok(levels)
     }
 
     /// Level at a sampled point (bilinear h, then quantized).
     pub fn level_at(&self, lon_deg: f64, lat_deg: f64, h_base_m: f64, max_level: u8) -> u8 {
-        let h = self.sample(lon_deg, lat_deg);
-        if !h.is_finite() || h <= 0.0 || h >= h_base_m {
-            return 0;
+        self.try_level_at(lon_deg, lat_deg, h_base_m, max_level)
+            .expect("HField::level_at requires positive finite field values and base size")
+    }
+
+    /// Fallible form of [`Self::level_at`] for callers that handle invalid
+    /// persisted fields or bad base sizes without panicking.
+    pub fn try_level_at(
+        &self,
+        lon_deg: f64,
+        lat_deg: f64,
+        h_base_m: f64,
+        max_level: u8,
+    ) -> io::Result<u8> {
+        if !lon_deg.is_finite() || !lat_deg.is_finite() || !(-90.0..=90.0).contains(&lat_deg) {
+            return Err(invalid(format!(
+                "sample location ({lon_deg}, {lat_deg}) must be finite with latitude in [-90, 90]"
+            )));
         }
-        let raw = ((h_base_m / h).log2() - 1e-9).ceil();
-        if raw <= 0.0 {
-            0
-        } else if raw >= max_level as f64 {
-            max_level
-        } else {
-            raw as u8
-        }
+        quantize_h_level(self.sample(lon_deg, lat_deg), h_base_m, max_level)
     }
 }
 
@@ -743,6 +843,35 @@ mod tests {
     }
 
     #[test]
+    fn public_writes_and_quantization_reject_bad_h_values() {
+        let mut field = HField::uniform(4, 2, 100.0).unwrap();
+        assert!(field.set(0, 0, f64::NAN).is_err());
+        assert!(field.set(0, 0, f64::INFINITY).is_err());
+        assert!(field.set(0, 0, 0.0).is_err());
+
+        let bad = HField {
+            nlon: 1,
+            nlat: 1,
+            values: vec![f64::NAN],
+        };
+        assert!(bad.level_map(100.0, 3).is_err());
+        assert!(bad.try_level_at(0.0, 0.0, 100.0, 3).is_err());
+        assert!(field.try_level_at(f64::NAN, 0.0, 100.0, 3).is_err());
+        assert!(field.try_level_at(0.0, 91.0, 100.0, 3).is_err());
+    }
+
+    #[test]
+    fn limiter_reports_non_convergence() {
+        let mut field = HField::uniform(60, 30, 1_000_000.0).unwrap();
+        field.set(30, 15, 10_000.0).unwrap();
+        let mut short = field.clone();
+        let error = short.limit_gradient_with_max_rounds(0.2, 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(error.to_string().contains("did not converge"));
+        field.limit_gradient(0.2).expect("normal cap converges");
+    }
+
+    #[test]
     fn constructors_reject_overflow_and_unallocatable_grids() {
         assert!(HField::uniform(usize::MAX, 2, 42.0)
             .unwrap_err()
@@ -763,8 +892,8 @@ mod tests {
     fn bilinear_sample_wraps_dateline() {
         let mut f = HField::uniform(360, 180, 100_000.0).unwrap();
         // Cells straddling the dateline: i = 359 (lon 179.5) and i = 0 (lon -179.5).
-        f.set(359, 90, 50_000.0);
-        f.set(0, 90, 70_000.0);
+        f.set(359, 90, 50_000.0).unwrap();
+        f.set(0, 90, 70_000.0).unwrap();
         let v = f.sample(180.0, f.lat_center(90));
         // Midway between the two centers.
         assert!((v - 60_000.0).abs() < 1.0, "v={v}");
@@ -777,7 +906,7 @@ mod tests {
     fn gradient_limit_cone_matches_conservative_analytic_solution() {
         let mut f = HField::uniform(360, 180, 1_000_000.0).unwrap();
         let (si, sj) = (180usize, 90usize); // lon 0.5, lat 0.5
-        f.set(si, sj, 10_000.0);
+        f.set(si, sj, 10_000.0).unwrap();
         let g = 0.2;
         let raster_g = g / SQRT_2;
         f.limit_gradient(g).unwrap();
@@ -862,7 +991,7 @@ mod tests {
     fn polar_rows_obey_spherical_lipschitz_and_pole_samples_are_unique() {
         let mut field = HField::uniform(8, 4, 10_000_000.0).unwrap();
         let top = field.nlat() - 1;
-        field.set(0, top, 10_000.0);
+        field.set(0, top, 10_000.0).unwrap();
         let g = 0.2;
 
         field.limit_gradient(g).unwrap();
@@ -909,7 +1038,7 @@ mod tests {
     #[test]
     fn near_pole_samples_obey_spherical_lipschitz_for_arbitrary_longitudes() {
         let mut field = HField::uniform(12, 6, 10_000_000.0).unwrap();
-        field.set(0, 0, 10_000.0);
+        field.set(0, 0, 10_000.0).unwrap();
         let g = 0.2;
         field.limit_gradient(g).unwrap();
 
@@ -966,7 +1095,7 @@ mod tests {
     fn odd_longitude_count_checks_both_cross_pole_neighbors() {
         let mut field = HField::uniform(5, 4, 10_000_000.0).unwrap();
         let top = field.nlat() - 1;
-        field.set(0, top, 10_000.0);
+        field.set(0, top, 10_000.0).unwrap();
         let g = 0.2;
 
         field.limit_gradient(g).unwrap();
@@ -989,7 +1118,7 @@ mod tests {
     fn level_rings_have_width_h_over_g() {
         let mut f = HField::uniform(360, 180, 1_000_000.0).unwrap();
         let (si, sj) = (180usize, 90usize);
-        f.set(si, sj, 10_000.0);
+        f.set(si, sj, 10_000.0).unwrap();
         let g = 0.2;
         f.limit_gradient(g).unwrap();
         let h_base = 1_000_000.0;
@@ -1099,6 +1228,38 @@ mod tests {
         assert!(poly.contains(-179.5, 0.0));
         assert!(!poly.contains(170.0, 0.0));
         assert!(!poly.contains(179.5, 4.0));
+
+        let north_cap = HRegion::Polygon {
+            points: vec![(-120.0, 80.0), (0.0, 80.0), (120.0, 80.0)],
+        };
+        assert!(north_cap.contains(0.0, 89.0));
+        assert!(!north_cap.contains(0.0, 70.0));
+        assert!(
+            !north_cap.contains(0.0, -80.0),
+            "far side must not be inside"
+        );
+
+        let reversed_cap = HRegion::Polygon {
+            points: vec![(120.0, 80.0), (0.0, 80.0), (-120.0, 80.0)],
+        };
+        assert!(reversed_cap.contains(0.0, 89.0));
+        assert!(!reversed_cap.contains(0.0, -80.0));
+
+        let bad = HRegion::Polygon {
+            points: vec![(0.0, 0.0), (1.0, f64::NAN), (2.0, 0.0)],
+        };
+        assert!(!bad.contains(0.5, 0.1));
+        assert!(!poly.contains(179.5, f64::NAN));
+
+        let midlat = HRegion::Polygon {
+            points: vec![(0.0, 0.0), (10.0, 0.0), (5.0, 8.0)],
+        };
+        assert!(midlat.contains(5.0, 0.0), "boundary edge counts inside");
+        assert!(midlat.contains(5.0, 2.0));
+        assert!(
+            !midlat.contains(-120.0, -45.0),
+            "ordinary far side stays outside"
+        );
     }
 
     #[test]
@@ -1170,10 +1331,10 @@ mod tests {
     #[test]
     fn level_map_handles_exact_powers() {
         let mut f = HField::uniform(8, 4, 100_000.0).unwrap();
-        f.set(0, 0, 100_000.0);
-        f.set(1, 0, 50_000.0);
-        f.set(2, 0, 49_000.0);
-        f.set(3, 0, 25_000.0);
+        f.set(0, 0, 100_000.0).unwrap();
+        f.set(1, 0, 50_000.0).unwrap();
+        f.set(2, 0, 49_000.0).unwrap();
+        f.set(3, 0, 25_000.0).unwrap();
         let levels = f.level_map(100_000.0, 5).unwrap();
         assert_eq!(levels[0], 0);
         assert_eq!(levels[1], 1);

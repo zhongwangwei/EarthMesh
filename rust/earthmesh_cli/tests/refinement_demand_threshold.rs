@@ -53,6 +53,38 @@ fn warm_pool(boundary_lon_index: usize) -> impl Fn(usize, usize) -> f64 {
 }
 
 #[test]
+fn stddev_reads_neighbourhood_across_the_antimeridian() {
+    let root = temp_root("seam_stddev");
+    let path = root.join("sst.nc");
+    write_field(&path, "sst", |lon, _| if lon == 360 { 100.0 } else { 0.0 });
+
+    let bounds = source_bounds_for_bbox(179.0, 180.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = threshold_stddev_demand(&path, "sst", 1, bounds, 1, 1.0).expect("stddev");
+
+    assert!(
+        demand.is_demanded(360, 90),
+        "stddev at 180E must include wrapped 180W values"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn stddev_reads_west_neighbour_from_index_one_across_the_antimeridian() {
+    let root = temp_root("seam_stddev_west");
+    let path = root.join("sst.nc");
+    write_field(&path, "sst", |lon, _| if lon == 1 { 100.0 } else { 0.0 });
+
+    let bounds = source_bounds_for_bbox(-180.0, -179.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = threshold_stddev_demand(&path, "sst", 1, bounds, 1, 1.0).expect("stddev");
+
+    assert!(
+        demand.is_demanded(1, 90),
+        "index 1 stddev must include wrapped index 360 values"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn above_marks_only_the_cells_over_the_threshold() {
     let root = temp_root("above");
     let path = root.join("sst.nc");

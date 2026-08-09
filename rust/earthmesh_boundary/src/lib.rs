@@ -271,6 +271,12 @@ pub struct SphericalBoundaryModel {
 /// What is wrong with a boundary model, said precisely enough to fix.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BoundaryError {
+    /// A boundary vertex is not a finite lon/lat point on Earth.
+    InvalidVertexCoordinate {
+        vertex: usize,
+        lon_degrees: f64,
+        lat_degrees: f64,
+    },
     /// A loop names a vertex that is not in the model.
     UnknownVertex { loop_index: usize, vertex: usize },
     /// A ring of fewer than three vertices does not enclose anything.
@@ -284,11 +290,35 @@ pub enum BoundaryError {
     /// The same vertex twice in one ring, which makes it pinch rather than
     /// close.
     RepeatedVertex { loop_index: usize, vertex: usize },
+    /// A hole declares an outer parent, but one of its vertices is outside that parent.
+    HoleOutsideParent {
+        loop_index: usize,
+        parent: usize,
+        vertex: usize,
+    },
+    /// A ring crosses itself before it can enclose a single side.
+    RingSelfIntersection {
+        loop_index: usize,
+        first_edge: usize,
+        second_edge: usize,
+    },
+    /// A hole's direction describes the complement, not a finite void inside its parent.
+    HoleWrongOrientation { loop_index: usize },
+    /// A hole touches or crosses its declared outer parent.
+    HoleIntersectsParent { loop_index: usize, parent: usize },
 }
 
 impl std::fmt::Display for BoundaryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidVertexCoordinate {
+                vertex,
+                lon_degrees,
+                lat_degrees,
+            } => write!(
+                formatter,
+                "vertex {vertex} is not a valid finite lon/lat point: ({lon_degrees}, {lat_degrees})"
+            ),
             Self::UnknownVertex { loop_index, vertex } => write!(
                 formatter,
                 "loop {loop_index} names vertex {vertex}, which the model does not carry"
@@ -315,11 +345,104 @@ impl std::fmt::Display for BoundaryError {
                 formatter,
                 "loop {loop_index} visits vertex {vertex} twice, so it pinches rather than closes"
             ),
+            Self::HoleOutsideParent {
+                loop_index,
+                parent,
+                vertex,
+            } => write!(
+                formatter,
+                "hole loop {loop_index} names vertex {vertex}, which is outside parent outer loop {parent}"
+            ),
+            Self::RingSelfIntersection {
+                loop_index,
+                first_edge,
+                second_edge,
+            } => write!(
+                formatter,
+                "loop {loop_index} crosses itself between edges {first_edge} and {second_edge}"
+            ),
+            Self::HoleWrongOrientation { loop_index } => write!(
+                formatter,
+                "hole loop {loop_index} is oriented as the complement, not as a finite void"
+            ),
+            Self::HoleIntersectsParent { loop_index, parent } => write!(
+                formatter,
+                "hole loop {loop_index} touches or crosses parent outer loop {parent}"
+            ),
         }
     }
 }
 
 impl std::error::Error for BoundaryError {}
+
+fn valid_lon_lat(lon_degrees: f64, lat_degrees: f64) -> bool {
+    lon_degrees.is_finite() && lat_degrees.is_finite() && (-90.0..=90.0).contains(&lat_degrees)
+}
+
+fn unit_from_vertex(point: &BoundaryVertex) -> [f64; 3] {
+    let (lon, lat) = (
+        point.lon_degrees.to_radians(),
+        point.lat_degrees.to_radians(),
+    );
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+
+fn scale(a: [f64; 3], factor: f64) -> [f64; 3] {
+    [a[0] * factor, a[1] * factor, a[2] * factor]
+}
+
+fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
+    dot(a, b).clamp(-1.0, 1.0).acos()
+}
+
+fn point_on_minor_arc(a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> bool {
+    let ab = angle(a, b);
+    if ab <= 1.0e-12 || (std::f64::consts::PI - ab).abs() <= 1.0e-10 {
+        return false;
+    }
+    let normal = cross(a, b);
+    if dot(normal, p).abs() > 1.0e-10 * norm(normal).max(1.0) {
+        return false;
+    }
+    angle(a, p) + angle(p, b) <= ab + 1.0e-10
+}
+
+fn spherical_segments_intersect(a0: [f64; 3], a1: [f64; 3], b0: [f64; 3], b1: [f64; 3]) -> bool {
+    if point_on_minor_arc(a0, a1, b0)
+        || point_on_minor_arc(a0, a1, b1)
+        || point_on_minor_arc(b0, b1, a0)
+        || point_on_minor_arc(b0, b1, a1)
+    {
+        return true;
+    }
+    let na = cross(a0, a1);
+    let nb = cross(b0, b1);
+    let line = cross(na, nb);
+    let length = norm(line);
+    if length <= 1.0e-12 {
+        return false;
+    }
+    let p = scale(line, 1.0 / length);
+    (point_on_minor_arc(a0, a1, p) && point_on_minor_arc(b0, b1, p))
+        || (point_on_minor_arc(a0, a1, scale(p, -1.0))
+            && point_on_minor_arc(b0, b1, scale(p, -1.0)))
+}
 
 impl SphericalBoundaryModel {
     /// Check every invariant the rest of the system is entitled to assume.
@@ -328,6 +451,15 @@ impl SphericalBoundaryModel {
     /// in a way that surfaces much later as a mesh with a hole nobody asked for.
     pub fn validate(&self) -> Result<(), Vec<BoundaryError>> {
         let mut errors = Vec::new();
+        for (vertex_index, vertex) in self.vertices.iter().enumerate() {
+            if !valid_lon_lat(vertex.lon_degrees, vertex.lat_degrees) {
+                errors.push(BoundaryError::InvalidVertexCoordinate {
+                    vertex: vertex_index,
+                    lon_degrees: vertex.lon_degrees,
+                    lat_degrees: vertex.lat_degrees,
+                });
+            }
+        }
         for (loop_index, ring) in self.loops.iter().enumerate() {
             if ring.vertices().len() < 3 {
                 errors.push(BoundaryError::DegenerateLoop {
@@ -343,6 +475,15 @@ impl SphericalBoundaryModel {
                 }
                 if seen.insert(vertex, ()).is_some() {
                     errors.push(BoundaryError::RepeatedVertex { loop_index, vertex });
+                }
+            }
+            if self.ring_vertices_usable(ring) {
+                if let Some((first_edge, second_edge)) = self.ring_self_intersection(ring) {
+                    errors.push(BoundaryError::RingSelfIntersection {
+                        loop_index,
+                        first_edge,
+                        second_edge,
+                    });
                 }
             }
             match (ring.loop_type, ring.parent) {
@@ -365,11 +506,105 @@ impl SphericalBoundaryModel {
                 (LoopType::Outer, None) => {}
             }
         }
+        for (loop_index, ring) in self.loops.iter().enumerate() {
+            let (LoopType::Hole, Some(parent)) = (ring.loop_type, ring.parent) else {
+                continue;
+            };
+            let Some(parent_ring) = self.loops.get(parent) else {
+                continue;
+            };
+            if parent_ring.loop_type != LoopType::Outer
+                || !self.ring_vertices_usable(ring)
+                || !self.ring_vertices_usable(parent_ring)
+            {
+                continue;
+            }
+            if signed_area_on_unit_sphere(ring.vertices(), &self.vertices)
+                .is_some_and(|area| area <= 0.0)
+            {
+                errors.push(BoundaryError::HoleWrongOrientation { loop_index });
+            }
+            for &vertex in ring.vertices() {
+                let point = &self.vertices[vertex];
+                if self.point_on_ring(parent_ring, point)
+                    || !self.loop_winds_around(parent_ring, point.lon_degrees, point.lat_degrees)
+                {
+                    errors.push(BoundaryError::HoleOutsideParent {
+                        loop_index,
+                        parent,
+                        vertex,
+                    });
+                    break;
+                }
+            }
+            if self.rings_intersect(parent_ring, ring) {
+                errors.push(BoundaryError::HoleIntersectsParent { loop_index, parent });
+            }
+        }
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
         }
+    }
+
+    fn ring_vertices_usable(&self, ring: &BoundaryLoop) -> bool {
+        ring.vertices().len() >= 3
+            && ring.vertices().iter().all(|&index| {
+                self.vertices
+                    .get(index)
+                    .is_some_and(|vertex| valid_lon_lat(vertex.lon_degrees, vertex.lat_degrees))
+            })
+    }
+
+    fn point_on_ring(&self, ring: &BoundaryLoop, point: &BoundaryVertex) -> bool {
+        let p = unit_from_vertex(point);
+        let count = ring.vertices().len();
+        for step in 0..count {
+            let a = unit_from_vertex(&self.vertices[ring.vertices()[step]]);
+            let b = unit_from_vertex(&self.vertices[ring.vertices()[(step + 1) % count]]);
+            if point_on_minor_arc(a, b, p) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn ring_self_intersection(&self, ring: &BoundaryLoop) -> Option<(usize, usize)> {
+        let count = ring.vertices().len();
+        for first_edge in 0..count {
+            let a0 = unit_from_vertex(&self.vertices[ring.vertices()[first_edge]]);
+            let a1 = unit_from_vertex(&self.vertices[ring.vertices()[(first_edge + 1) % count]]);
+            for second_edge in first_edge + 1..count {
+                if first_edge + 1 == second_edge || (first_edge == 0 && second_edge + 1 == count) {
+                    continue;
+                }
+                let b0 = unit_from_vertex(&self.vertices[ring.vertices()[second_edge]]);
+                let b1 =
+                    unit_from_vertex(&self.vertices[ring.vertices()[(second_edge + 1) % count]]);
+                if spherical_segments_intersect(a0, a1, b0, b1) {
+                    return Some((first_edge, second_edge));
+                }
+            }
+        }
+        None
+    }
+
+    fn rings_intersect(&self, a: &BoundaryLoop, b: &BoundaryLoop) -> bool {
+        let a_count = a.vertices().len();
+        let b_count = b.vertices().len();
+        for a_step in 0..a_count {
+            let a0 = unit_from_vertex(&self.vertices[a.vertices()[a_step]]);
+            let a1 = unit_from_vertex(&self.vertices[a.vertices()[(a_step + 1) % a_count]]);
+            for b_step in 0..b_count {
+                let b0 = unit_from_vertex(&self.vertices[b.vertices()[b_step]]);
+                let b1 = unit_from_vertex(&self.vertices[b.vertices()[(b_step + 1) % b_count]]);
+                if spherical_segments_intersect(a0, a1, b0, b1) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Whether a point is inside the domain this model describes.

@@ -62,6 +62,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         landtype_file: Some(&landtype),
         mesh_type: "landmesh",
         refine_coastline: true,
+        domain_region: None,
     };
     let refine = earthmesh_core::RefineConfig {
         is_transition: true,

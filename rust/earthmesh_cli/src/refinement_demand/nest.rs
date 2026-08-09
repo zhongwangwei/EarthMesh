@@ -162,29 +162,46 @@ pub fn adaptive_demand_circles_for_level(
     base_cell_meters: f64,
     max_level: usize,
 ) -> io::Result<LevelCircles> {
+    adaptive_demand_circles_for_level_windows(
+        refine,
+        std::slice::from_ref(inputs),
+        level,
+        base_cell_meters,
+        max_level,
+    )
+}
+
+pub fn adaptive_demand_circles_for_level_windows(
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
+    level: usize,
+    base_cell_meters: f64,
+    max_level: usize,
+) -> io::Result<LevelCircles> {
     let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
     // The cell this pass refines away is the one the previous level left.
     let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-    let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
     let radius_meters = radii[level - 1];
-    if plan.is_empty() {
-        return Ok(LevelCircles {
-            demanded: false,
-            demanded_cells: 0,
-            radius_meters,
-            circles: Vec::new(),
-        });
-    }
-    Ok(LevelCircles {
-        demanded: true,
-        demanded_cells: plan.demand.demanded_count(),
-        radius_meters,
-        circles: reduce_demand_to_circles_on_blocks(
+    let mut demanded_cells = 0usize;
+    let mut circles = Vec::new();
+    for input in inputs {
+        let plan: LevelDemand = plan_demand_at_scale(refine, input, level, cell_meters)?;
+        if plan.is_empty() {
+            continue;
+        }
+        demanded_cells += plan.demand.demanded_count();
+        circles.extend(reduce_demand_to_circles_on_blocks(
             &plan.demand,
             level,
             radius_meters,
             radii[max_level - 1],
-        )?,
+        )?);
+    }
+    Ok(LevelCircles {
+        demanded: demanded_cells > 0,
+        demanded_cells,
+        radius_meters,
+        circles,
     })
 }
 
@@ -192,6 +209,26 @@ pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &MethodCMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
+    named_regions: &[RefinementRegion],
+    base_cell_meters: f64,
+    max_level: usize,
+    spring: Option<AdaptiveNestSpring>,
+) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
+    spawn_nest_adaptive_with_named_region_windows(
+        mesh,
+        refine,
+        std::slice::from_ref(inputs),
+        named_regions,
+        base_cell_meters,
+        max_level,
+        spring,
+    )
+}
+
+pub fn spawn_nest_adaptive_with_named_region_windows(
+    mesh: &MethodCMesh,
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
     named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
@@ -250,8 +287,13 @@ pub fn spawn_nest_adaptive_with_named_regions(
 
     for level in 1..=max_level {
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-        let demand =
-            adaptive_demand_circles_for_level(refine, inputs, level, base_cell_meters, max_level)?;
+        let demand = adaptive_demand_circles_for_level_windows(
+            refine,
+            inputs,
+            level,
+            base_cell_meters,
+            max_level,
+        )?;
         // Named regions are shapes Method-C can build and stay served; it is
         // demand whose shape came from the data that is suspended. Testing
         // whether a criterion asked at all is what separates them exactly -- a

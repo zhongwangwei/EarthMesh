@@ -1595,7 +1595,7 @@ pub(crate) fn constrain_hfield_to_domain(
     for j in 0..field.nlat() {
         for i in 0..field.nlon() {
             if !domain.is_active(i, j) {
-                field.set(i, j, base_m);
+                field.set(i, j, base_m)?;
             }
         }
     }

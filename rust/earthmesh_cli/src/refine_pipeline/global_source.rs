@@ -440,20 +440,13 @@ pub fn run_refine_pipeline_namelist(
                 .as_ref()
                 .map(|adaptive| -> io::Result<RedGreenAdaptive<'_>> {
                     Ok(RedGreenAdaptive {
-                        inputs: crate::refinement_demand::plan::DemandPlanInputs {
-                            bounds: adaptive_demand_bounds(domain_region.as_ref(), &config)?,
-                            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(
-                                |_| {
-                                    io::Error::new(
-                                        io::ErrorKind::InvalidInput,
-                                        "NL%gridnum_perdegree must fit usize",
-                                    )
-                                },
-                            )?,
-                            landtype_file: adaptive_landtype_file(&config),
+                        inputs: adaptive_demand_inputs(
+                            domain_region.as_ref(),
+                            &config,
+                            adaptive_landtype_file(&config),
                             mesh_type,
-                            refine_coastline: adaptive.coastline,
-                        },
+                            adaptive.coastline,
+                        )?,
                         base_cell_meters: adaptive.base_m.unwrap_or_else(|| {
                             2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
                                 / (5.0 * method_c_nxp as f64)
@@ -952,7 +945,7 @@ fn redgreen_open_edges(mesh: &earthmesh_refine_redgreen::RedGreenMesh) -> usize 
 
 /// The criteria half of the point+radius route, as red-green consumes it.
 struct RedGreenAdaptive<'a> {
-    inputs: crate::refinement_demand::plan::DemandPlanInputs<'a>,
+    inputs: Vec<crate::refinement_demand::plan::DemandPlanInputs<'a>>,
     base_cell_meters: f64,
     coastline: bool,
 }
@@ -1004,7 +997,7 @@ fn refine_with_redgreen(
         let mut level_regions: Vec<earthmesh_mesh::RefinementRegion> = named_regions.to_vec();
         let mut demanded_cells = 0usize;
         if let Some(adaptive) = &adaptive {
-            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level(
+            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
                 refine,
                 &adaptive.inputs,
                 level,
@@ -1923,18 +1916,13 @@ fn refine_with_method_c(
                 / (5.0 * method_c_nxp as f64)
         });
         let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
-        let inputs = crate::refinement_demand::plan::DemandPlanInputs {
-            bounds: adaptive_demand_bounds(domain_region, config)?,
-            gridnum_perdegree: usize::try_from(config.gridnum_perdegree).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "NL%gridnum_perdegree must fit usize",
-                )
-            })?,
-            landtype_file: adaptive_landtype_file(config),
+        let inputs = adaptive_demand_inputs(
+            domain_region,
+            config,
+            adaptive_landtype_file(config),
             mesh_type,
-            refine_coastline: adaptive.coastline,
-        };
+            adaptive.coastline,
+        )?;
         // The spring the run configured, on the route that is the default.
         // Without this the two `spawn_nest` calls inside were the bare overload
         // and every point stayed where the nest put it, while the report went on
@@ -1953,7 +1941,7 @@ fn refine_with_method_c(
             },
         );
         let (refined, report) =
-            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_region_windows(
                 &mesh, refine, &inputs, regions, base_m, depth, spring,
             )?;
         for pass in &report.passes {
@@ -2254,131 +2242,281 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
     Ok(level - 1)
 }
 
-/// The window the adaptive route evaluates criteria over.
+/// Source windows the adaptive route evaluates criteria over.
 ///
-/// A regional run judges its own domain; a global run judges the whole sphere,
-/// which is what `source_bounds_for_bbox` returns for the full range.
-///
-/// Every regional shape has to be covered here. A shape that fell through to the
-/// global range would raster the whole planet for a domain a few degrees across:
-/// the demand grid is `nlons * nlats` at `gridnum_perdegree`, so the 120 per
-/// degree the shipped examples use is 43200 x 21600 -- about 930 million cells
-/// to allocate and scan before the first refinement pass.
-fn adaptive_demand_bounds(
-    domain_region: Option<&GridRegion>,
-    config: &EarthmeshConfig,
-) -> io::Result<earthmesh_mesh::AreaJudgeSourceBounds> {
+/// A wrapped regional domain is two longitude intervals. Keeping those as two
+/// source windows avoids the old full-band scan, and the plan inputs still carry
+/// `domain_region` so cells inside the windows but outside the true shape cannot
+/// consume demand budget.
+fn adaptive_demand_inputs<'a>(
+    domain_region: Option<&'a GridRegion>,
+    config: &'a EarthmeshConfig,
+    landtype_file: Option<&'a std::path::Path>,
+    mesh_type: &'a str,
+    refine_coastline: bool,
+) -> io::Result<Vec<crate::refinement_demand::plan::DemandPlanInputs<'a>>> {
     let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "NL%gridnum_perdegree must fit usize",
         )
     })?;
-    let (west, east, south, north) = match domain_region.map(region_lonlat_bounds) {
-        Some(Some(bounds)) => bounds,
-        _ => (-180.0, 180.0, -90.0, 90.0),
-    };
-    crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, gridnum_perdegree)
+    adaptive_demand_windows(domain_region, config)?
+        .into_iter()
+        .map(|bounds| {
+            Ok(crate::refinement_demand::plan::DemandPlanInputs {
+                bounds,
+                gridnum_perdegree,
+                landtype_file,
+                mesh_type,
+                refine_coastline,
+                domain_region,
+            })
+        })
+        .collect()
 }
 
-/// Enclosing lon/lat box of a regional shape, or `None` when it has no bound.
-///
-/// # A window that crosses the antimeridian becomes the whole band
-///
-/// The window this feeds is a single rectangle in source indices -- a
-/// `minlon..maxlon` pair -- and no such pair can hold longitudes 170 east
-/// through 170 west, which is two intervals with the seam between them. So a
-/// shape that wraps returns the full longitude range instead.
-///
-/// That over-scans, and over-scanning is safe: what a criterion demands is
-/// decided per source cell afterwards, and `GridRegion::contains` already
-/// handles the seam correctly. Under-scanning is not safe, and both of the
-/// cases below were doing it:
-///
-/// - a bbox with `west > east` was passed straight through, and
-///   `source_bounds_for_bbox` refuses `east <= west` -- the run died with
-///   "refinement demand bounds must be non-empty" on a window the project
-///   layer explicitly permits;
-/// - a circle near the seam had its box clamped to 180, so the part of it on
-///   the other side was never scanned and its demand silently vanished.
-///
-/// A closed curve was already over-scanning here rather than under-scanning
-/// (plain min/max over its points spans nearly the globe when it crosses the
-/// seam), so its results were right and only its cost was wrong. Left as is:
-/// telling a wrapped curve from a genuinely global one needs the containment
-/// test, not the extent.
-fn region_lonlat_bounds(region: &GridRegion) -> Option<(f64, f64, f64, f64)> {
+fn adaptive_demand_windows(
+    domain_region: Option<&GridRegion>,
+    config: &EarthmeshConfig,
+) -> io::Result<Vec<earthmesh_mesh::AreaJudgeSourceBounds>> {
+    let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NL%gridnum_perdegree must fit usize",
+        )
+    })?;
+    let windows = match domain_region {
+        Some(region) => {
+            let windows = region_lonlat_windows(region).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "regional adaptive demand domain has no valid lon/lat extent",
+                )
+            })?;
+            if windows.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "regional adaptive demand domain has no non-empty source window",
+                ));
+            }
+            merge_lonlat_windows(windows)
+        }
+        None => vec![LonLatWindow {
+            west: -180.0,
+            east: 180.0,
+            south: -90.0,
+            north: 90.0,
+        }],
+    };
+    windows
+        .into_iter()
+        .map(|window| {
+            crate::refinement_demand::source_bounds_for_bbox(
+                window.west,
+                window.east,
+                window.south,
+                window.north,
+                gridnum_perdegree,
+            )
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LonLatWindow {
+    west: f64,
+    east: f64,
+    south: f64,
+    north: f64,
+}
+
+impl LonLatWindow {
+    fn new(west: f64, east: f64, south: f64, north: f64) -> Option<Self> {
+        (west.is_finite()
+            && east.is_finite()
+            && south.is_finite()
+            && north.is_finite()
+            && east > west
+            && north > south)
+            .then_some(Self {
+                west,
+                east,
+                south,
+                north,
+            })
+    }
+
+    fn touches(self, other: Self) -> bool {
+        self.west <= other.east
+            && other.west <= self.east
+            && self.south <= other.north
+            && other.south <= self.north
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            west: self.west.min(other.west),
+            east: self.east.max(other.east),
+            south: self.south.min(other.south),
+            north: self.north.max(other.north),
+        }
+    }
+}
+
+/// Enclosing lon/lat windows of a regional shape, or `None` when it has no bound.
+fn region_lonlat_windows(region: &GridRegion) -> Option<Vec<LonLatWindow>> {
     match region {
         GridRegion::Bbox {
             west,
             east,
             south,
             north,
-        } if west > east => Some((-180.0, 180.0, *south, *north)),
-        GridRegion::Bbox {
-            west,
-            east,
-            south,
-            north,
-        } => Some((*west, *east, *south, *north)),
+        } if west.is_finite()
+            && east.is_finite()
+            && south.is_finite()
+            && north.is_finite()
+            && south < north
+            && west != east =>
+        {
+            Some(split_lon_window(*west, *east, *south, *north))
+        }
+        GridRegion::Bbox { .. } => None,
         GridRegion::Circle {
             lon,
             lat,
             radius_km,
-        } => {
-            // A circle's enclosing box, clipped to the sphere. Demand outside
-            // the circle is harmless: the reduction only emits circles where a
-            // criterion actually asked for one.
-            let degrees = radius_km / 111.195;
-            let lat_pad = degrees;
-            let lon_pad = degrees / lat.to_radians().cos().abs().max(0.05);
-            let (west, east) = if lon - lon_pad < -180.0 || lon + lon_pad > 180.0 {
-                // Crosses the seam: clamping here would drop the far side.
-                (-180.0, 180.0)
-            } else {
-                (lon - lon_pad, lon + lon_pad)
-            };
-            Some((
-                west,
-                east,
-                (lat - lat_pad).max(-90.0),
-                (lat + lat_pad).min(90.0),
-            ))
-        }
-        // A closed curve -- a watershed, a coastline traced by hand -- is the
-        // shape a project most often draws, and its box is just its extent.
-        GridRegion::Close { points } => {
-            let mut bounds: Option<(f64, f64, f64, f64)> = None;
-            for point in points {
-                if !point.lon.is_finite() || !point.lat.is_finite() {
-                    continue;
-                }
-                bounds = Some(match bounds {
-                    None => (point.lon, point.lon, point.lat, point.lat),
-                    Some((west, east, south, north)) => (
-                        west.min(point.lon),
-                        east.max(point.lon),
-                        south.min(point.lat),
-                        north.max(point.lat),
-                    ),
-                });
+        } if lon.is_finite() && lat.is_finite() && radius_km.is_finite() && *radius_km > 0.0 => {
+            let angular = radius_km / (earthmesh_core::EARTH_RADIUS_METERS / 1000.0);
+            let lat_rad = lat.to_radians();
+            let lat_pad = angular.to_degrees();
+            let south = (lat - lat_pad).max(-90.0);
+            let north = (lat + lat_pad).min(90.0);
+            if angular >= std::f64::consts::PI
+                || lat_rad + angular >= std::f64::consts::FRAC_PI_2
+                || lat_rad - angular <= -std::f64::consts::FRAC_PI_2
+            {
+                return Some(vec![LonLatWindow::new(-180.0, 180.0, south, north)?]);
             }
-            bounds
+            let lon_pad = (angular.sin() / lat_rad.cos().abs())
+                .clamp(-1.0, 1.0)
+                .asin()
+                .abs()
+                .to_degrees();
+            let lon = normalize_lon_for_window(*lon);
+            Some(split_lon_window(lon - lon_pad, lon + lon_pad, south, north))
         }
-        // A union covers each member, so its box covers all of them.
+        GridRegion::Circle { .. } => None,
+        GridRegion::Close { points } => close_lonlat_windows(points),
         GridRegion::Any(regions) => {
-            regions
+            let windows = regions
                 .iter()
-                .filter_map(region_lonlat_bounds)
-                .reduce(|left, right| {
-                    (
-                        left.0.min(right.0),
-                        left.1.max(right.1),
-                        left.2.min(right.2),
-                        left.3.max(right.3),
-                    )
-                })
+                .filter_map(region_lonlat_windows)
+                .flatten()
+                .collect::<Vec<_>>();
+            (!windows.is_empty()).then_some(windows)
         }
+    }
+}
+
+fn split_lon_window(west: f64, east: f64, south: f64, north: f64) -> Vec<LonLatWindow> {
+    if !west.is_finite() || !east.is_finite() {
+        return Vec::new();
+    }
+    if (east - west).abs() >= 360.0 {
+        return LonLatWindow::new(-180.0, 180.0, south, north)
+            .into_iter()
+            .collect();
+    }
+    let west = normalize_lon_for_window(west);
+    let east = normalize_lon_for_window(east);
+    if west < east {
+        LonLatWindow::new(west, east, south, north)
+            .into_iter()
+            .collect()
+    } else {
+        [
+            LonLatWindow::new(west, 180.0, south, north),
+            LonLatWindow::new(-180.0, east, south, north),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+fn merge_lonlat_windows(windows: Vec<LonLatWindow>) -> Vec<LonLatWindow> {
+    let mut merged: Vec<LonLatWindow> = Vec::new();
+    'next: for window in windows {
+        let mut window = window;
+        loop {
+            let Some(index) = merged.iter().position(|existing| existing.touches(window)) else {
+                merged.push(window);
+                continue 'next;
+            };
+            let existing = merged.swap_remove(index);
+            window = existing.union(window);
+        }
+    }
+    merged.sort_by(|a, b| {
+        a.west
+            .partial_cmp(&b.west)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.south
+                    .partial_cmp(&b.south)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    merged
+}
+
+fn close_lonlat_windows(points: &[crate::LonLatPoint]) -> Option<Vec<LonLatWindow>> {
+    let mut lats = points
+        .iter()
+        .filter(|point| point.lon.is_finite() && point.lat.is_finite())
+        .peekable();
+    lats.peek()?;
+    let (mut south, mut north) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut lons = Vec::new();
+    for point in lats {
+        south = south.min(point.lat);
+        north = north.max(point.lat);
+        lons.push(normalize_lon_for_window(point.lon));
+    }
+    lons.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    lons.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
+    if lons.len() == 1 {
+        let lon = lons[0];
+        let west = (lon - 5.0e-10).max(-180.0);
+        let east = (lon + 5.0e-10).min(180.0);
+        return Some(vec![LonLatWindow::new(west, east, south, north)?]);
+    }
+    let mut largest_gap = -1.0;
+    let mut gap_after = 0usize;
+    for i in 0..lons.len() {
+        let next = if i + 1 == lons.len() {
+            lons[0] + 360.0
+        } else {
+            lons[i + 1]
+        };
+        let gap = next - lons[i];
+        if gap > largest_gap {
+            largest_gap = gap;
+            gap_after = i;
+        }
+    }
+    let start = lons[(gap_after + 1) % lons.len()];
+    let end = lons[gap_after];
+    Some(split_lon_window(start, end, south, north))
+}
+
+fn normalize_lon_for_window(lon: f64) -> f64 {
+    let normalized = ((lon + 180.0).rem_euclid(360.0)) - 180.0;
+    if (normalized + 180.0).abs() < 1.0e-12 && lon > 0.0 {
+        180.0
+    } else {
+        normalized
     }
 }
 
@@ -2392,15 +2530,56 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 mod tests {
     use super::*;
 
-    /// A demand grid is `nlons * nlats`, so this is the cost of the window.
+    /// A demand grid is `nlons * nlats`, so this is the cost of its windows.
     fn demand_cells(region: Option<&GridRegion>, per_degree: i32) -> usize {
         let config = EarthmeshConfig {
             gridnum_perdegree: per_degree,
             ..EarthmeshConfig::default()
         };
-        let bounds = adaptive_demand_bounds(region, &config).expect("bounds");
-        (bounds.maxlon_source - bounds.minlon_source + 1)
-            * (bounds.minlat_source - bounds.maxlat_source + 1)
+        adaptive_demand_windows(region, &config)
+            .expect("bounds")
+            .into_iter()
+            .map(|bounds| {
+                (bounds.maxlon_source - bounds.minlon_source + 1)
+                    * (bounds.minlat_source - bounds.maxlat_source + 1)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn invalid_regional_domains_do_not_fall_back_to_global_demand() {
+        let config = EarthmeshConfig {
+            gridnum_perdegree: 1,
+            ..EarthmeshConfig::default()
+        };
+        for region in [
+            GridRegion::Circle {
+                lon: 0.0,
+                lat: 0.0,
+                radius_km: 0.0,
+            },
+            GridRegion::Bbox {
+                west: 10.0,
+                east: 10.0,
+                south: 0.0,
+                north: 1.0,
+            },
+            GridRegion::Close {
+                points: vec![crate::LonLatPoint {
+                    lon: f64::NAN,
+                    lat: 0.0,
+                }],
+            },
+        ] {
+            let err = adaptive_demand_windows(Some(&region), &config)
+                .expect_err("invalid regional domain must fail");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        assert!(
+            adaptive_demand_windows(None, &config).is_ok(),
+            "only domain=None falls back to global"
+        );
     }
 
     #[test]
@@ -2452,8 +2631,24 @@ mod tests {
             north: 40.0,
         };
         let union = GridRegion::Any(vec![west, east]);
-        let (w, e, s, n) = region_lonlat_bounds(&union).expect("union bounds");
-        assert_eq!((w, e, s, n), (100.0, 140.0, 10.0, 40.0));
+        let windows = region_lonlat_windows(&union).expect("union bounds");
+        assert_eq!(
+            windows,
+            vec![
+                LonLatWindow {
+                    west: 100.0,
+                    east: 110.0,
+                    south: 10.0,
+                    north: 20.0,
+                },
+                LonLatWindow {
+                    west: 130.0,
+                    east: 140.0,
+                    south: 30.0,
+                    north: 40.0,
+                },
+            ]
+        );
     }
     use earthmesh_core::{GridMemory, IjTabs, ItabM, ItabW};
 
@@ -2500,34 +2695,50 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
-    /// A bbox that crosses the antimeridian is a window, not an error.
-    ///
-    /// The project layer permits `west > east` and documents it, and
-    /// `GridRegion::contains` reads it correctly. The demand window did not:
-    /// it passed the pair straight to `source_bounds_for_bbox`, which refuses
-    /// `east <= west`, so a run over the dateline died with "refinement demand
-    /// bounds must be non-empty".
+    /// A bbox that crosses the antimeridian is two source windows, not a
+    /// full-longitude band.
     #[test]
-    fn a_bbox_across_the_antimeridian_produces_a_window() {
+    fn a_bbox_across_the_antimeridian_produces_two_windows() {
         let wrapped = GridRegion::Bbox {
             west: 170.0,
             east: -170.0,
             south: -10.0,
             north: 10.0,
         };
-        let bounds = region_lonlat_bounds(&wrapped).expect("a wrapped bbox has bounds");
+        let windows = region_lonlat_windows(&wrapped).expect("a wrapped bbox has bounds");
         assert_eq!(
-            (bounds.0, bounds.1),
-            (-180.0, 180.0),
-            "no single rectangle holds both sides of the seam, so it takes the band"
-        );
-        assert_eq!(
-            (bounds.2, bounds.3),
-            (-10.0, 10.0),
-            "latitudes are untouched"
+            windows,
+            vec![
+                LonLatWindow {
+                    west: 170.0,
+                    east: 180.0,
+                    south: -10.0,
+                    north: 10.0,
+                },
+                LonLatWindow {
+                    west: -180.0,
+                    east: -170.0,
+                    south: -10.0,
+                    north: 10.0,
+                },
+            ]
         );
 
-        // And an ordinary bbox is left exactly as it was.
+        let global_band = demand_cells(
+            Some(&GridRegion::Bbox {
+                west: -180.0,
+                east: 180.0,
+                south: -10.0,
+                north: 10.0,
+            }),
+            120,
+        );
+        let wrapped_cells = demand_cells(Some(&wrapped), 120);
+        assert!(
+            wrapped_cells * 10 < global_band,
+            "wrapped 20-degree bbox must not scan the full band: {wrapped_cells} vs {global_band}"
+        );
+
         let plain = GridRegion::Bbox {
             west: 100.0,
             east: 120.0,
@@ -2535,8 +2746,117 @@ mod tests {
             north: 10.0,
         };
         assert_eq!(
-            region_lonlat_bounds(&plain),
-            Some((100.0, 120.0, -10.0, 10.0))
+            region_lonlat_windows(&plain),
+            Some(vec![LonLatWindow {
+                west: 100.0,
+                east: 120.0,
+                south: -10.0,
+                north: 10.0,
+            }])
+        );
+    }
+
+    #[test]
+    fn overlapping_any_windows_merge_even_with_different_latitudes() {
+        let union = GridRegion::Any(vec![
+            GridRegion::Bbox {
+                west: 10.0,
+                east: 20.0,
+                south: 0.0,
+                north: 10.0,
+            },
+            GridRegion::Bbox {
+                west: 15.0,
+                east: 25.0,
+                south: 5.0,
+                north: 15.0,
+            },
+        ]);
+        assert_eq!(
+            region_lonlat_windows(&union).map(merge_lonlat_windows),
+            Some(vec![LonLatWindow {
+                west: 10.0,
+                east: 25.0,
+                south: 0.0,
+                north: 15.0,
+            }])
+        );
+    }
+
+    #[test]
+    fn a_midlatitude_circle_uses_spherical_longitude_padding() {
+        let radius_km = (earthmesh_core::EARTH_RADIUS_METERS / 1000.0) * 30_f64.to_radians();
+        let circle = GridRegion::Circle {
+            lon: 0.0,
+            lat: 45.0,
+            radius_km,
+        };
+        let windows = region_lonlat_windows(&circle).expect("circle window");
+        assert_eq!(windows.len(), 1);
+        assert!(
+            windows[0].west < -44.9 && windows[0].east > 44.9,
+            "30-degree great-circle radius at 45N needs about ±45 degrees longitude, got {windows:?}"
+        );
+    }
+
+    #[test]
+    fn overlapping_any_windows_merge_before_planning() {
+        let config = EarthmeshConfig {
+            gridnum_perdegree: 10,
+            ..EarthmeshConfig::default()
+        };
+        let union = GridRegion::Any(vec![
+            GridRegion::Bbox {
+                west: 170.0,
+                east: -175.0,
+                south: -5.0,
+                north: 5.0,
+            },
+            GridRegion::Bbox {
+                west: 175.0,
+                east: -170.0,
+                south: -5.0,
+                north: 5.0,
+            },
+        ]);
+        let windows = adaptive_demand_windows(Some(&union), &config).expect("windows");
+        assert_eq!(windows.len(), 2, "overlapping seam halves are merged");
+        let cells: usize = windows
+            .iter()
+            .map(|b| {
+                (b.maxlon_source - b.minlon_source + 1) * (b.minlat_source - b.maxlat_source + 1)
+            })
+            .sum();
+        let full_band = demand_cells(
+            Some(&GridRegion::Bbox {
+                west: -180.0,
+                east: 180.0,
+                south: -5.0,
+                north: 5.0,
+            }),
+            10,
+        );
+        assert!(
+            cells * 10 < full_band,
+            "merged windows still avoid full-band scan"
+        );
+    }
+
+    #[test]
+    fn a_circle_touching_a_pole_uses_all_longitudes() {
+        let cap = GridRegion::Circle {
+            lon: 40.0,
+            lat: 89.0,
+            radius_km: 500.0,
+        };
+        assert_eq!(
+            region_lonlat_windows(&cap),
+            Some(vec![LonLatWindow {
+                west: -180.0,
+                east: 180.0,
+                south: 89.0 - (500.0 / (earthmesh_core::EARTH_RADIUS_METERS / 1000.0)).to_degrees(),
+                north: 90.0,
+            }])
         );
     }
 
@@ -2552,12 +2872,10 @@ mod tests {
             lat: 0.0,
             radius_km: 500.0,
         };
-        let bounds = region_lonlat_bounds(&straddling).expect("bounds");
-        assert_eq!(
-            (bounds.0, bounds.1),
-            (-180.0, 180.0),
-            "the far side is inside the window rather than clipped off"
-        );
+        let windows = region_lonlat_windows(&straddling).expect("bounds");
+        assert_eq!(windows.len(), 2, "the far side is a second tight window");
+        assert!(windows.iter().any(|w| w.west < -179.0 && w.east < -170.0));
+        assert!(windows.iter().any(|w| w.west > 170.0 && w.east == 180.0));
 
         // A circle well clear of the seam still gets its own tight box.
         let inland = GridRegion::Circle {
@@ -2565,10 +2883,11 @@ mod tests {
             lat: 0.0,
             radius_km: 500.0,
         };
-        let bounds = region_lonlat_bounds(&inland).expect("bounds");
+        let windows = region_lonlat_windows(&inland).expect("bounds");
+        assert_eq!(windows.len(), 1);
         assert!(
-            bounds.0 > 90.0 && bounds.1 < 110.0,
-            "an inland circle must not widen to the whole band: {bounds:?}"
+            windows[0].west > 90.0 && windows[0].east < 110.0,
+            "an inland circle must not widen to the whole band: {windows:?}"
         );
     }
 
@@ -2583,8 +2902,15 @@ mod tests {
             south: -10.0,
             north: 10.0,
         };
-        let (west, east, south, north) = region_lonlat_bounds(&wrapped).expect("bounds");
-        crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, 1)
+        for window in region_lonlat_windows(&wrapped).expect("bounds") {
+            crate::refinement_demand::source_bounds_for_bbox(
+                window.west,
+                window.east,
+                window.south,
+                window.north,
+                1,
+            )
             .expect("a wrapped window must produce source bounds");
+        }
     }
 }

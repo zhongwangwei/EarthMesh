@@ -61,6 +61,7 @@ fn plan_inputs<'a>(landtype: &'a Path, refine_coastline: bool) -> DemandPlanInpu
         landtype_file: Some(landtype),
         mesh_type: "earthmesh",
         refine_coastline,
+        domain_region: None,
     }
 }
 

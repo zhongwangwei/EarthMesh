@@ -58,6 +58,54 @@ fn meridional_coast(boundary_lon_index: usize) -> impl Fn(usize, usize) -> i8 {
 }
 
 #[test]
+fn coastline_reads_neighbour_across_the_antimeridian() {
+    let root = temp_root("seam_coast");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 360 { 1 } else { 0 });
+
+    let bounds = source_bounds_for_bbox(179.0, 180.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = coastal_demand(&path, 1, bounds).expect("coastal demand");
+
+    assert!(
+        demand.is_demanded(360, 90),
+        "180E cell must see 180W as its east neighbour"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn coastline_reads_west_neighbour_from_index_one_across_the_antimeridian() {
+    let root = temp_root("seam_coast_west");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 1 { 0 } else { 1 });
+
+    let bounds = source_bounds_for_bbox(-180.0, -179.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = coastal_demand(&path, 1, bounds).expect("coastal demand");
+
+    assert!(
+        demand.is_demanded(1, 90),
+        "index 1 must see index 360 as its west neighbour"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landcover_reads_neighbourhood_across_the_antimeridian() {
+    let root = temp_root("seam_landcover");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 360 { 1 } else { 0 });
+
+    let bounds = source_bounds_for_bbox(179.0, 180.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = landcover_heterogeneity_demand(&path, 1, bounds, 1, 1).expect("landcover");
+
+    assert!(
+        demand.is_demanded(360, 90),
+        "heterogeneity at 180E must include wrapped 180W cells"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_coast_marks_the_cells_on_both_of_its_sides() {
     let root = temp_root("coast_cells");
     let path = root.join("landtype.nc");

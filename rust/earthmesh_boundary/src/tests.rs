@@ -492,3 +492,210 @@ fn the_two_orienting_constructors_agree_where_both_apply() {
     .expect("point");
     assert_eq!(by_area.vertices(), by_point.vertices());
 }
+
+#[test]
+fn validation_refuses_non_finite_and_out_of_range_vertices() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(f64::NAN, 0.0),
+            vertex(0.0, f64::INFINITY),
+            vertex(0.0, 91.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2], None)],
+    };
+    let errors = model
+        .validate()
+        .expect_err("bad coordinates must not validate");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        BoundaryError::InvalidVertexCoordinate { vertex: 1, .. }
+    )));
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        BoundaryError::InvalidVertexCoordinate { vertex: 2, .. }
+    )));
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        BoundaryError::InvalidVertexCoordinate { vertex: 3, .. }
+    )));
+}
+
+#[test]
+fn validation_refuses_a_hole_outside_its_parent() {
+    let mut vertices = square();
+    vertices.extend([vertex(2.0, 2.0), vertex(3.0, 2.0), vertex(2.5, 3.0)]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a hole outside its island is invalid");
+    assert!(errors.contains(&BoundaryError::HoleOutsideParent {
+        loop_index: 1,
+        parent: 0,
+        vertex: 4,
+    }));
+}
+
+#[test]
+fn validation_refuses_a_hole_that_crosses_its_parent() {
+    let mut vertices = square();
+    vertices.extend([vertex(0.5, 0.5), vertex(1.5, 0.5), vertex(0.5, 0.8)]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a hole crossing its parent boundary is invalid");
+    assert!(errors.contains(&BoundaryError::HoleIntersectsParent {
+        loop_index: 1,
+        parent: 0,
+    }));
+}
+
+#[test]
+fn validation_accepts_a_hole_inside_a_dateline_parent() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(170.0, -10.0),
+            vertex(-170.0, -10.0),
+            vertex(-170.0, 10.0),
+            vertex(170.0, 10.0),
+            vertex(178.0, -2.0),
+            vertex(-178.0, -2.0),
+            vertex(-178.0, 2.0),
+            vertex(178.0, 2.0),
+        ],
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+    model
+        .validate()
+        .expect("spherical containment should handle the dateline");
+}
+
+#[test]
+fn validation_accepts_finite_longitudes_outside_canonical_range() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![vertex(190.0, 0.0), vertex(191.0, 0.0), vertex(190.5, 1.0)],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2], None)],
+    };
+    model
+        .validate()
+        .expect("finite longitudes are valid spherical coordinates");
+}
+
+#[test]
+fn validation_refuses_a_self_intersecting_ring() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(1.0, 1.0),
+            vertex(0.0, 1.0),
+            vertex(1.0, 0.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    let errors = model.validate().expect_err("bow-tie rings are invalid");
+    assert!(errors.contains(&BoundaryError::RingSelfIntersection {
+        loop_index: 0,
+        first_edge: 0,
+        second_edge: 2,
+    }));
+}
+
+#[test]
+fn validation_refuses_a_reversed_hole() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(0.25, 0.25),
+        vertex(0.75, 0.25),
+        vertex(0.75, 0.75),
+        vertex(0.25, 0.75),
+    ]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![7, 6, 5, 4], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a hole must describe the finite void, not the complement");
+    assert!(errors.contains(&BoundaryError::HoleWrongOrientation { loop_index: 1 }));
+}
+
+#[test]
+fn validation_refuses_a_hole_touching_parent_edge() {
+    let mut vertices = square();
+    vertices.extend([vertex(0.25, 0.0), vertex(0.75, 0.25), vertex(0.25, 0.5)]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a hole may not touch the parent edge");
+    assert!(errors.contains(&BoundaryError::HoleIntersectsParent {
+        loop_index: 1,
+        parent: 0,
+    }));
+}
+
+#[test]
+fn validation_refuses_a_hole_touching_parent_vertex() {
+    let mut vertices = square();
+    vertices.extend([vertex(0.0, 0.0), vertex(0.4, 0.2), vertex(0.2, 0.4)]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a hole may not touch the parent vertex");
+    assert!(errors.contains(&BoundaryError::HoleIntersectsParent {
+        loop_index: 1,
+        parent: 0,
+    }));
+}
+
+#[test]
+fn validation_accepts_a_polar_hole_inside_a_polar_parent() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 80.0),
+            vertex(90.0, 80.0),
+            vertex(180.0, 80.0),
+            vertex(-90.0, 80.0),
+            vertex(0.0, 85.0),
+            vertex(90.0, 85.0),
+            vertex(180.0, 85.0),
+            vertex(-90.0, 85.0),
+        ],
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+    model
+        .validate()
+        .expect("spherical validation should handle polar nesting");
+}
