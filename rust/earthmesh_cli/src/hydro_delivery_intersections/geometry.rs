@@ -313,7 +313,7 @@ mod equal_area_tests {
             "the lon/lat reading is exactly half: {planar}"
         );
 
-        let projection = LocalEqualArea::for_rings(&[cell.clone()]).expect("centre");
+        let projection = LocalEqualArea::for_rings(std::slice::from_ref(&cell)).expect("centre");
         let cell_flat = projection.project_ring(&cell).expect("cell");
         let poleward_flat = projection.project_ring(&poleward).expect("mask");
         let equal_area = intersection_area(&cell_flat, &poleward_flat)
@@ -338,7 +338,7 @@ mod equal_area_tests {
         let upper = ring(0.0, 10.0, 0.0, 5.0);
 
         let planar = intersection_area(&cell, &upper) / earthmesh_geometry::polygon_area(&cell);
-        let projection = LocalEqualArea::for_rings(&[cell.clone()]).expect("centre");
+        let projection = LocalEqualArea::for_rings(std::slice::from_ref(&cell)).expect("centre");
         let cell_flat = projection.project_ring(&cell).expect("cell");
         let upper_flat = projection.project_ring(&upper).expect("mask");
         let equal_area = intersection_area(&cell_flat, &upper_flat)

@@ -108,16 +108,25 @@ check-gui-js:
 # `--exclude-dir=target` because grep, unlike ripgrep, does not read
 # .gitignore: without it the build directories supply six matches of their own
 # and the real three are lost among them.
+EM_ARCH_GREP = grep -rn --include='*.rs' --exclude-dir=target
+EM_ARCH_OUT = /tmp/earthmesh_architecture_hits
+
+# grep says 0 for "found", 1 for "not found", and 2 or more for "I could not
+# look". The first version of this target treated every non-zero the same, so a
+# missing tool read as a clean result -- which is how it passed for months while
+# checking nothing. Anything above 1 is now a failure of the gate itself.
+define em_arch_verdict
+status=$$?; if [ "$$status" -eq 0 ]; then cat $(EM_ARCH_OUT); echo '$(1)'; exit 1; elif [ "$$status" -ne 1 ]; then echo "check-architecture: grep exited $$status, so it checked nothing"; exit 1; fi
+endef
+
 check-architecture:
-	@if grep -rn --include='*.rs' --exclude-dir=target -E '^[[:space:]]*pub use .*\*' rust; then \
-		echo 'wildcard public re-exports are forbidden'; exit 1; \
-	fi
-	@if grep -rn --include='*.rs' --exclude-dir=target -F '#[deprecated' rust; then \
-		echo 'deprecated compatibility facades are forbidden'; exit 1; \
-	fi
-	@if grep -rn --include='*.rs' --exclude-dir=target -iE '\breference\b|reference_' rust; then \
-		echo 'source-origin reference naming is forbidden'; exit 1; \
-	fi
+	@command -v grep >/dev/null || { echo 'check-architecture needs grep and cannot find it'; exit 1; }
+	@$(EM_ARCH_GREP) -E '^[[:space:]]*pub use .*\*' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+		$(call em_arch_verdict,wildcard public re-exports are forbidden)
+	@$(EM_ARCH_GREP) -F '#[deprecated' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+		$(call em_arch_verdict,deprecated compatibility facades are forbidden)
+	@$(EM_ARCH_GREP) -iE '\breference\b|reference_' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+		$(call em_arch_verdict,source-origin reference naming is forbidden)
 	@python3 scripts/check_architecture.py .
 
 check-mesh-quality-views:
