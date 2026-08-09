@@ -452,15 +452,35 @@ fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoin
     ))
 }
 
+/// What a pass over the cells found, beyond the demands themselves.
+///
+/// `AllSatisfied` used to be reported whenever the demand list came back
+/// empty, which folded three different endings into one: every cell is small
+/// enough, every cell that still wants something has hit the minimum width, and
+/// every remaining demand is one the data cannot support. Only the first is
+/// "satisfied"; the other two are the run stopping short, and a caller that
+/// cannot tell them apart cannot know whether it got what it asked for.
+#[derive(Clone, Copy, Debug, Default)]
+struct EvaluationTally {
+    /// Cells skipped because they already reached `minimum_cell_width_m`.
+    ///
+    /// Skipped whole, criteria and all -- so a cell at the floor stops being
+    /// asked about its *angles* too, not only its size.
+    at_minimum_scale: usize,
+    /// Cells whose only remaining evidence says the data cannot support it.
+    unsatisfiable: usize,
+}
+
 /// Read every active cell once.
 fn evaluate(
     mesh: &AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
     limits: CycleLimits,
-) -> Result<Vec<RefinementDemand>> {
+) -> Result<(Vec<RefinementDemand>, EvaluationTally)> {
     let state = mesh.state();
     let radius_m = state.sphere_radius();
     let mut demands = Vec::new();
+    let mut tally = EvaluationTally::default();
     for site in MESH_STATE_FIRST_ID..state.vertices().len() {
         // A cell that cannot be read is not a demand. Skipping it here keeps
         // evaluation total; the transaction layer reports the same cell as
@@ -478,6 +498,7 @@ fn evaluate(
             .effective_scale_m()
             .is_some_and(|scale| scale <= limits.minimum_cell_width_m)
         {
+            tally.at_minimum_scale += 1;
             continue;
         }
         let mut evidences = Vec::with_capacity(criteria.len());
@@ -499,12 +520,18 @@ fn evaluate(
                     criterion_id: evidence.criterion_id.clone(),
                 }
             });
+        // Counted before the filter, because `demands_work()` is false for an
+        // unsatisfiable demand and true for a satisfied one -- and the two mean
+        // opposite things to a caller.
+        let unsatisfiable = evidences.iter().any(|evidence| !evidence.satisfiable);
         let demand = RefinementDemand::from_evidence(site as u64, evidences, cause);
         if demand.demands_work() {
             demands.push(demand);
+        } else if unsatisfiable {
+            tally.unsatisfiable += 1;
         }
     }
-    Ok(demands)
+    Ok((demands, tally))
 }
 
 /// Run cycles until something says to stop, and say which.
@@ -527,14 +554,24 @@ pub fn run_cycles(
     let mut stop_reason = StopReason::MaximumCyclesReached;
 
     while cycles < limits.max_cycles {
-        let mut demands = evaluate(mesh, criteria, limits)?;
+        let (mut demands, tally) = evaluate(mesh, criteria, limits)?;
         // Section 14, folded into the same list rather than run as a pass of
         // its own: one loop serves both, and `RefinementCause` is what keeps
         // physical refinement and transition balance apart in the report --
         // which the spec says is the reason the distinction exists.
         demands.extend(balance_demands(mesh, limits));
         if demands.is_empty() {
-            stop_reason = StopReason::AllSatisfied;
+            // Three endings, told apart. A cell parked at the floor or asking
+            // for something the data cannot give is not a satisfied cell, and
+            // saying `AllSatisfied` for either is the report claiming the run
+            // delivered what was asked.
+            stop_reason = if tally.at_minimum_scale > 0 {
+                StopReason::MinimumScaleReached
+            } else if tally.unsatisfiable > 0 {
+                StopReason::SourceResolutionReached
+            } else {
+                StopReason::AllSatisfied
+            };
             break;
         }
         order_demands(&mut demands);

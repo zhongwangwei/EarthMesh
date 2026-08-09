@@ -240,7 +240,17 @@ fn the_cycle_limit_is_reported_as_the_cycle_limit() {
     assert!(outcome.report.transactions_committed > 0);
 }
 
-/// A cell already at the floor is not evaluated at all.
+/// A cell already at the floor is not evaluated, and the run says so.
+///
+/// This asserted `AllSatisfied`, which pinned the defect rather than the
+/// behaviour: a mesh every cell of which is parked at `minimum_cell_width_m`
+/// has not satisfied a target of one metre -- it has stopped short of it. The
+/// two endings need different answers from a caller, and `MinimumScaleReached`
+/// existed as a variant with nothing ever assigning it.
+///
+/// The skip is whole-cell, so it also stops the *quality* criteria being asked
+/// about that cell, not only the scale ones. That is worth knowing and is why
+/// the reason is reported rather than folded away.
 #[test]
 fn a_cell_at_the_minimum_width_stops_asking() {
     let mut mesh = sphere(6);
@@ -263,9 +273,43 @@ fn a_cell_at_the_minimum_width_stops_asking() {
     )
     .expect("run");
 
-    assert_eq!(outcome.report.stop_reason, StopReason::AllSatisfied);
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::MinimumScaleReached,
+        "every cell is at the floor, which is stopping short and not satisfying"
+    );
     assert_eq!(outcome.report.transactions_attempted, 0);
     assert_eq!(mesh.state(), &before);
+}
+
+/// A mesh that genuinely meets its target still reports `AllSatisfied`.
+///
+/// The other side of the change above: telling the endings apart is only worth
+/// anything if the satisfied one still says satisfied.
+#[test]
+fn a_mesh_that_meets_its_target_still_reports_all_satisfied() {
+    let mut mesh = sphere(6);
+    // Coarser than every cell, so every cell already meets it.
+    let target_scale = coarsest_scale(&mesh) * 2.0;
+    let criteria = target(target_scale, TargetRegion::Global);
+
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        permissive(),
+        CycleLimits {
+            max_cycles: 8,
+            max_sites: 100_000,
+            // Far below every cell, so nothing is parked at the floor.
+            minimum_cell_width_m: 1.0,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    assert_eq!(outcome.report.stop_reason, StopReason::AllSatisfied);
+    assert_eq!(outcome.report.transactions_attempted, 0);
 }
 
 /// The same run twice gives the same mesh and the same report.

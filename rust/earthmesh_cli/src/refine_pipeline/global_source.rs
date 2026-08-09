@@ -1317,6 +1317,31 @@ fn refine_with_harp_dv(
 
     // What it could not do, on the run's own output rather than in a log line
     // nobody reads afterwards.
+    //
+    // Gated on the stop reason and not only on `unresolved_cells`. A run can
+    // stop with that list empty and still not have delivered what was asked:
+    // the budget can run out mid-traversal, leaving the demands it never
+    // reached out of the list; the cycle limit can arrive with committed but
+    // still-unmet demands; and neighbour-scale imbalance is counted separately
+    // from unresolved cells altogether. Each of those used to exit silently,
+    // and a silent exit reads as "the mesh you asked for".
+    let finished_clean = matches!(
+        outcome.report.stop_reason,
+        harp::StopReason::AllSatisfied | harp::StopReason::NoAcceptedTransactions
+    ) && outcome.unresolved_cells.is_empty()
+        && outcome.report.unbalanced_pairs_remaining == 0;
+    // Only when the block below will not fire: it says the same things in more
+    // detail whenever there are unresolved cells, and two lines saying one
+    // thing trains people to read neither.
+    if !finished_clean && outcome.unresolved_cells.is_empty() {
+        eprintln!(
+            "harp_dv: stopped because {:?}; {} cells unresolved, {} adjacent pairs past the \
+             neighbour scale bound. The mesh below is what the run reached, not what was asked",
+            outcome.report.stop_reason,
+            outcome.unresolved_cells.len(),
+            outcome.report.unbalanced_pairs_remaining
+        );
+    }
     if !outcome.unresolved_cells.is_empty() {
         let refusals = outcome.report.refusals;
         eprintln!(
@@ -2213,8 +2238,39 @@ fn adaptive_demand_bounds(
 }
 
 /// Enclosing lon/lat box of a regional shape, or `None` when it has no bound.
+///
+/// # A window that crosses the antimeridian becomes the whole band
+///
+/// The window this feeds is a single rectangle in source indices -- a
+/// `minlon..maxlon` pair -- and no such pair can hold longitudes 170 east
+/// through 170 west, which is two intervals with the seam between them. So a
+/// shape that wraps returns the full longitude range instead.
+///
+/// That over-scans, and over-scanning is safe: what a criterion demands is
+/// decided per source cell afterwards, and `GridRegion::contains` already
+/// handles the seam correctly. Under-scanning is not safe, and both of the
+/// cases below were doing it:
+///
+/// - a bbox with `west > east` was passed straight through, and
+///   `source_bounds_for_bbox` refuses `east <= west` -- the run died with
+///   "refinement demand bounds must be non-empty" on a window the project
+///   layer explicitly permits;
+/// - a circle near the seam had its box clamped to 180, so the part of it on
+///   the other side was never scanned and its demand silently vanished.
+///
+/// A closed curve was already over-scanning here rather than under-scanning
+/// (plain min/max over its points spans nearly the globe when it crosses the
+/// seam), so its results were right and only its cost was wrong. Left as is:
+/// telling a wrapped curve from a genuinely global one needs the containment
+/// test, not the extent.
 fn region_lonlat_bounds(region: &GridRegion) -> Option<(f64, f64, f64, f64)> {
     match region {
+        GridRegion::Bbox {
+            west,
+            east,
+            south,
+            north,
+        } if west > east => Some((-180.0, 180.0, *south, *north)),
         GridRegion::Bbox {
             west,
             east,
@@ -2232,9 +2288,15 @@ fn region_lonlat_bounds(region: &GridRegion) -> Option<(f64, f64, f64, f64)> {
             let degrees = radius_km / 111.195;
             let lat_pad = degrees;
             let lon_pad = degrees / lat.to_radians().cos().abs().max(0.05);
+            let (west, east) = if lon - lon_pad < -180.0 || lon + lon_pad > 180.0 {
+                // Crosses the seam: clamping here would drop the far side.
+                (-180.0, 180.0)
+            } else {
+                (lon - lon_pad, lon + lon_pad)
+            };
             Some((
-                (lon - lon_pad).max(-180.0),
-                (lon + lon_pad).min(180.0),
+                west,
+                east,
                 (lat - lat_pad).max(-90.0),
                 (lat + lat_pad).min(90.0),
             ))
@@ -2392,5 +2454,93 @@ mod tests {
         let err = method_c_w_refine_levels_zero_based(&bad_w)
             .expect_err("zero Method-C W level must fail");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// A bbox that crosses the antimeridian is a window, not an error.
+    ///
+    /// The project layer permits `west > east` and documents it, and
+    /// `GridRegion::contains` reads it correctly. The demand window did not:
+    /// it passed the pair straight to `source_bounds_for_bbox`, which refuses
+    /// `east <= west`, so a run over the dateline died with "refinement demand
+    /// bounds must be non-empty".
+    #[test]
+    fn a_bbox_across_the_antimeridian_produces_a_window() {
+        let wrapped = GridRegion::Bbox {
+            west: 170.0,
+            east: -170.0,
+            south: -10.0,
+            north: 10.0,
+        };
+        let bounds = region_lonlat_bounds(&wrapped).expect("a wrapped bbox has bounds");
+        assert_eq!(
+            (bounds.0, bounds.1),
+            (-180.0, 180.0),
+            "no single rectangle holds both sides of the seam, so it takes the band"
+        );
+        assert_eq!(
+            (bounds.2, bounds.3),
+            (-10.0, 10.0),
+            "latitudes are untouched"
+        );
+
+        // And an ordinary bbox is left exactly as it was.
+        let plain = GridRegion::Bbox {
+            west: 100.0,
+            east: 120.0,
+            south: -10.0,
+            north: 10.0,
+        };
+        assert_eq!(
+            region_lonlat_bounds(&plain),
+            Some((100.0, 120.0, -10.0, 10.0))
+        );
+    }
+
+    /// A circle on the seam keeps the half that used to be clipped away.
+    ///
+    /// The box was clamped to 180, so for a circle centred near the dateline
+    /// the far side was never scanned and whatever a criterion asked for there
+    /// disappeared without a word.
+    #[test]
+    fn a_circle_on_the_antimeridian_keeps_both_sides() {
+        let straddling = GridRegion::Circle {
+            lon: 179.0,
+            lat: 0.0,
+            radius_km: 500.0,
+        };
+        let bounds = region_lonlat_bounds(&straddling).expect("bounds");
+        assert_eq!(
+            (bounds.0, bounds.1),
+            (-180.0, 180.0),
+            "the far side is inside the window rather than clipped off"
+        );
+
+        // A circle well clear of the seam still gets its own tight box.
+        let inland = GridRegion::Circle {
+            lon: 100.0,
+            lat: 0.0,
+            radius_km: 500.0,
+        };
+        let bounds = region_lonlat_bounds(&inland).expect("bounds");
+        assert!(
+            bounds.0 > 90.0 && bounds.1 < 110.0,
+            "an inland circle must not widen to the whole band: {bounds:?}"
+        );
+    }
+
+    /// The window a wrapped bbox asks for is one a run can actually build.
+    ///
+    /// The bounds alone are not the claim -- what broke was the call they feed.
+    #[test]
+    fn a_wrapped_window_reaches_source_bounds_without_an_error() {
+        let wrapped = GridRegion::Bbox {
+            west: 170.0,
+            east: -170.0,
+            south: -10.0,
+            north: 10.0,
+        };
+        let (west, east, south, north) = region_lonlat_bounds(&wrapped).expect("bounds");
+        crate::refinement_demand::source_bounds_for_bbox(west, east, south, north, 1)
+            .expect("a wrapped window must produce source bounds");
     }
 }

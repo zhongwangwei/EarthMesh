@@ -2515,3 +2515,60 @@ let outcome = run_cycles(..., request.gates, ...);   // ← 传的还是原来�
 
 赋了值,传的却是旧的——**正是这条修复要治的那个病**。clippy 的 `assigned to, but never used` 抓到了。
 写门禁的人自己也会犯门禁要防的错,这就是为什么门禁不能只靠自觉。
+
+### 11.52 外部审查剩下的五条(2026-08-09)
+
+**一、跨反子午线的窗口:一个报错、一个丢一半、一个只是过扫。**
+
+需求窗口是**源索引上的单个矩形**,而 170°E 到 170°W 是被接缝分开的**两段**——没有任何一个
+`minlon..maxlon` 能装下它。三处表现不同:
+
+| 形状 | 修前 | 性质 |
+|---|---|---|
+| Bbox `west > east` | `source_bounds_for_bbox` 拒绝 `east <= west`,运行直接死 | **真错**(项目层明确允许这种窗口) |
+| Circle 靠近接缝 | 盒子裁到 180,**另一侧从不扫描**,那边的需求无声消失 | **真错** |
+| Close 跨接缝 | 普通 min/max,扫约 358° | **只是过扫,结果正确** |
+
+修法:**跨接缝时退化为整条经度带**。这是超集,不丢东西;哪个源单元真的被需要,后面由
+`GridRegion::contains` 逐格判定,而它本来就正确处理接缝。**过扫是安全的,欠扫不是**,而前两处
+都在欠扫。Close 那处不动:把跨接缝的曲线和真正全球的曲线分开,要的是包含判定而不是外接范围。
+
+**二、高纬 overlay 把球面压成经纬度平面。**
+
+`complete-mask` 写出处用平面 shoelace 面积在**多个 surface class 之间**比大小选赢家。同一单元内
+不同 class 的纬度分布不同,所以畸变**不会抵消**:偏极侧的 class 被高估。复现审查给的数值——单元
+80°–89°N,掩膜覆盖其偏极那一半:
+
+```
+平面 fraction = 0.500
+球面 fraction = 0.296     (sin 差之比)
+高估          = 69%
+```
+
+两个 class 靠得近时,赢家会翻。改用 `LocalEqualArea`——**同一个 crate 里的 intersections 写出处
+早就为同样的理由在用它**。测试同时钉住赤道附近两种读数一致,以免这变成一个到处乱抹的"修正"。
+
+**三、HARP-DV 把三种结局合并成 `AllSatisfied`。**
+
+demand 列表为空就报 `AllSatisfied`,而空可能意味着三件事:每个单元都够小了;还想细化的单元**都
+触到了最小宽度**;剩下的需求**数据支撑不了**。只有第一件叫"满足"。
+
+`StopReason::MinimumScaleReached` 早就定义了,**却没有任何赋值点**。现在 `evaluate` 回报一个
+tally,三种结局分别对应 `AllSatisfied` / `MinimumScaleReached` / 新增的 `SourceResolutionReached`。
+
+**触底是整单元跳过的**——连 MinAngle 这类质量判据也一起不问。这一点值得报出来而不是抹平。
+
+**而原来有一个测试把错误语义钉死了**:`a_cell_at_the_minimum_width_stops_asking` 断言
+`AllSatisfied`。**测试固定的是缺陷而不是行为**。改成断言 `MinimumScaleReached`,并补一个反面
+测试:真正达标的网格仍报 `AllSatisfied`——区分三种结局,只在"满足"那种仍说满足时才有意义。
+
+**四、CLI 只在 `unresolved_cells` 非空时才说话。**
+
+于是 `BudgetReached`、`MaximumCyclesReached`、以及只有 `unbalanced_pairs_remaining` 的情形
+**完全静默**——而静默读起来就是"这就是你要的网格"。改为按**停止原因**判断,并且只在详细那段不会
+触发时打印:两行说同一件事,会训练人两行都不读。
+
+**五、架构文档写着「Two refinement backends」,且把 Method-C 放在 `earthmesh_mesh` 里。**
+
+两句都曾为真:HARP-DV 后来才有,Method-C 是我 `aa415d8` 搬走的。**标题里的数字是那种会在无人
+改动周围句子的情况下悄悄过期的事实**,所以改的同时把它为什么过期也写进去了。

@@ -56,6 +56,7 @@ pub fn write_complete_cell_mask_geojson(
     coast_geojson: Option<&Path>,
     surface_geojson: Option<&Path>,
 ) -> io::Result<usize> {
+    use crate::hydro_delivery_intersections::geometry::LocalEqualArea;
     use earthmesh_geometry::{intersection_area, Point};
     let read =
         |p: &Path| -> io::Result<JsonNode> { JsonParser::new(&read_text_maybe_gzip(p)?).parse() };
@@ -123,6 +124,19 @@ pub fn write_complete_cell_mask_geojson(
         };
         let mut surface_from_overlay = false;
         if !surface_polys.is_empty() && !cell_rings.is_empty() {
+            // Areas here are compared *between* classes to pick a winner, so a
+            // distortion that varied across the cell would tilt the vote. In
+            // lon/lat it does: a degree of longitude is a shorter distance the
+            // further poleward it sits, so the class occupying a cell's poleward
+            // half looks larger than it is. Measured on a cell spanning 80 to 89
+            // north with a mask covering its poleward half: the planar reading
+            // is 0.500 and the spherical one 0.296, a 69% overstatement, and the
+            // winner flips whenever two classes are that close.
+            //
+            // `LocalEqualArea` is the projection the intersections writer in
+            // this crate already uses for exactly this reason. Areas in it are
+            // proportional to real ones, which is all a comparison needs.
+            let projection = LocalEqualArea::for_rings(&cell_rings);
             let mut best_area = 0.0;
             for (class, rings) in &surface_polys {
                 let mut area = 0.0;
@@ -140,7 +154,18 @@ pub fn write_complete_cell_mask_geojson(
                                 .fold(f64::NEG_INFINITY, f64::max));
                     for sr in rings {
                         let surface_ring = unwrap_ring_near(sr, cell_anchor);
-                        area += intersection_area(&cell_ring, &surface_ring);
+                        // Both rings through the same projection, or the areas
+                        // are not comparable. Without one -- a degenerate cell
+                        // with no centre -- this falls back to the lon/lat
+                        // reading rather than dropping the cell's vote.
+                        area += match projection.as_ref().and_then(|p| {
+                            Some((p.project_ring(&cell_ring)?, p.project_ring(&surface_ring)?))
+                        }) {
+                            Some((cell_flat, surface_flat)) => {
+                                intersection_area(&cell_flat, &surface_flat)
+                            }
+                            None => intersection_area(&cell_ring, &surface_ring),
+                        };
                     }
                 }
                 if area > best_area {

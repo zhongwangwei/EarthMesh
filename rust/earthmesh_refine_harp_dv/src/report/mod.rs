@@ -13,7 +13,10 @@ pub enum StopReason {
     NoAcceptedTransactions,
     MaximumCyclesReached,
     BudgetReached,
+    /// Cells still wanted refining but had reached `minimum_cell_width_m`.
     MinimumScaleReached,
+    /// What remained was finer than the data behind the criterion can justify.
+    SourceResolutionReached,
 }
 
 /// Why candidates were turned away, by kind.
