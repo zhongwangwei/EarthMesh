@@ -491,6 +491,16 @@ impl AdaptiveMesh {
         // run ends with four asymmetric neighbour pairs.
         let reach: BTreeSet<usize> = self.state().snapshot_around(&fan).triangles().collect();
         let patch = self.state().snapshot_around(&reach);
+        // The same bound the insertion path checks. It covered only insertion
+        // when it went in, so a move could snapshot any amount and the config
+        // was half-honoured -- which is the shape it was meant to end.
+        let patch_size = patch.triangles().count();
+        if gates.max_patch_triangles > 0 && patch_size > gates.max_patch_triangles {
+            return Ok(Acceptance::RolledBack(Rejection::PatchTooLarge {
+                triangles: patch_size,
+                allowed: gates.max_patch_triangles,
+            }));
+        }
         let origin = self.state().vertices()[site];
 
         self.state_mut().move_vertex(site, destination);

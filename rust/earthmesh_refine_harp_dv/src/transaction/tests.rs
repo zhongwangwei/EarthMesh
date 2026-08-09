@@ -525,3 +525,35 @@ fn a_patch_over_budget_is_refused_by_name() {
         "a generous bound must not be what refuses it"
     );
 }
+
+/// The patch bound covers a move, not only an insertion.
+///
+/// It went in on the insertion path alone, so a move could snapshot any amount
+/// and the config was half-honoured -- which is exactly the shape the bound was
+/// added to end. A move snapshots more than an insertion does, too: the ring
+/// around the fan's ring, because a flip rewrites a whole ring and a rollback
+/// has to be able to put all of it back.
+#[test]
+fn the_patch_bound_covers_a_move_as_well_as_an_insertion() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    let here = mesh.state().vertices()[site];
+    // A destination a hair away: the move itself is trivial, so whatever
+    // refuses it is the bound and not the geometry.
+    let destination = CartesianPoint::new(here.x + 1.0, here.y, here.z);
+
+    let tight = HardGates {
+        max_patch_triangles: 1,
+        ..HardGates::default()
+    };
+    match mesh
+        .propose_move(site, destination, tight, &|_| true)
+        .expect("proposal")
+    {
+        Acceptance::RolledBack(Rejection::PatchTooLarge { triangles, allowed }) => {
+            assert_eq!(allowed, 1);
+            assert!(triangles > 1, "the patch really was larger: {triangles}");
+        }
+        other => panic!("a move must respect the patch bound, got {other:?}"),
+    }
+}

@@ -22,7 +22,12 @@ pub struct HarpDvConfig {
     // only half true. It is gone rather than documented, for the reason this
     // file already gives about `deterministic`: a field accepted and ignored is
     // a promise nothing keeps.
-    /// The largest patch a single transaction may touch.
+    /// The largest patch a single transaction may snapshot for rollback.
+    ///
+    /// **Counted in triangles, not cells**, despite the name: a patch is a set
+    /// of triangles and that is what a rollback has to put back. The name is
+    /// kept because it is public API; the unit is stated here because the two
+    /// disagreeing silently is worse than either.
     pub maximum_patch_cells: usize,
     /// The widest ratio allowed between the effective scales of two adjacent
     /// cells before the coarser one is forced to refine.

@@ -618,7 +618,21 @@ pub fn run_refine_pipeline_namelist(
             let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
                 continue;
             };
+            // A cell is a small patch, so its area is the *minor* one. A
+            // polygon containing a pole comes back as the complement instead:
+            // measured, a triangle whose three corners sit at 89 north returns
+            // 12.5654 sr against a true 0.00096 -- four pi minus almost
+            // nothing, and 13000 times too big. Taking `abs()` does not help;
+            // the sign only says which way the ring was walked.
+            //
+            // Every cell here is far smaller than a hemisphere, so the minor
+            // area is the one below 2*pi and the complement is the one above.
             let steradians = steradians.abs();
+            let steradians = if steradians > 2.0 * std::f64::consts::PI {
+                4.0 * std::f64::consts::PI - steradians
+            } else {
+                steradians
+            };
             if !steradians.is_finite() || steradians <= 0.0 {
                 continue;
             }
