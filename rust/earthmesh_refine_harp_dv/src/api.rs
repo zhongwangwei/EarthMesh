@@ -57,11 +57,13 @@ pub fn refine_harp_dv(
         minimum_cell_width_m: request.config.minimum_cell_width_m,
         max_neighbour_scale_ratio: request.config.maximum_neighbor_scale_ratio,
     };
+    let mut gates = request.gates;
+    gates.max_patch_triangles = request.config.maximum_patch_cells;
     let outcome = run_cycles(
         &mut mesh,
         request.criteria,
         request.candidate_policy,
-        request.gates,
+        gates,
         limits,
     )?;
     Ok(HarpDvOutcome {

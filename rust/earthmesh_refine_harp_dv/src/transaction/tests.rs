@@ -466,3 +466,62 @@ fn a_higher_sliver_floor_buys_a_better_worst_angle() {
         "refusing thin triangles cannot add sites: {tight_sites} against {loose_sites}"
     );
 }
+
+/// A patch bigger than the run allows is refused, not snapshotted anyway.
+///
+/// `maximum_patch_cells` was declared, validated, and passed to nothing --
+/// `api.rs` built `CycleLimits` without it and no transaction ever looked at a
+/// patch's size. A bound accepted and ignored is what this crate's own config
+/// note about `deterministic` says a flag must never be.
+///
+/// One is the tightest possible budget: an insertion's cavity plus its ring is
+/// always more than one triangle, so this must refuse, and refuse by name
+/// rather than by running out of something else.
+#[test]
+fn a_patch_over_budget_is_refused_by_name() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    let point = mesh.state().vertices()[site];
+    let gates = HardGates {
+        max_patch_triangles: 1,
+        ..HardGates::default()
+    };
+    let target = crate::candidate::candidates_for_site(
+        mesh.state(),
+        site,
+        None,
+        crate::CandidatePolicy::default(),
+    )
+    .expect("ladder")
+    .first()
+    .map(|candidate| candidate.point)
+    .unwrap_or(point);
+
+    match mesh
+        .propose_site_near(target, None, gates)
+        .expect("proposal")
+    {
+        Acceptance::RolledBack(Rejection::PatchTooLarge { triangles, allowed }) => {
+            assert_eq!(allowed, 1);
+            assert!(triangles > 1, "the patch really was larger: {triangles}");
+        }
+        other => panic!("expected the patch bound to refuse, got {other:?}"),
+    }
+
+    // And with the bound generous the same change is refused for some other
+    // reason or not at all -- either way not by the patch bound, so the refusal
+    // above is that bound and not the change being impossible.
+    let mut mesh = sphere(6);
+    let generous = HardGates {
+        max_patch_triangles: 10_000,
+        ..HardGates::default()
+    };
+    assert!(
+        !matches!(
+            mesh.propose_site_near(target, None, generous)
+                .expect("proposal"),
+            Acceptance::RolledBack(Rejection::PatchTooLarge { .. })
+        ),
+        "a generous bound must not be what refuses it"
+    );
+}

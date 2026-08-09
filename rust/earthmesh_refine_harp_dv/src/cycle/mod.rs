@@ -604,6 +604,10 @@ pub fn run_cycles(
                             Rejection::DegreeOverBudget { .. } => refusals.degree += 1,
                             Rejection::ProtectedPentagonDisturbed { .. } => refusals.pentagon += 1,
                             Rejection::NotInsertable(_) => refusals.not_insertable += 1,
+                            // Counted with topology: like the others there, it
+                            // is the change being too big to undo safely rather
+                            // than the demand being unreachable.
+                            Rejection::PatchTooLarge { .. } => refusals.topology += 1,
                             Rejection::SurfaceOpened { .. }
                             | Rejection::TopologyInvalid { .. }
                             | Rejection::CouldNotLegalize(_) => refusals.topology += 1,

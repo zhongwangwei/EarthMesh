@@ -585,9 +585,27 @@ pub fn run_refine_pipeline_namelist(
     let (finest_cell_km, coarsest_cell_km) = {
         let mut across: Vec<f64> = Vec::with_capacity(output_mesh.w_to_m.len());
         let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
-        for corners in &output_mesh.w_to_m {
+        // Two corrections the per-region metric already had and this did not.
+        //
+        // `n_w_to_m` gives how many of a row's seven slots are corners; the
+        // rest are placeholder id 1, which resolves to a real but unrelated
+        // point. Reading the whole row builds a polygon out of a cell plus a
+        // stranger, which is the defect guide 11.x records for the per-region
+        // count -- fixed there, missed here, in the same file.
+        //
+        // And the area is signed: about half the cells wind the other way, so
+        // discarding `steradians <= 0.0` threw away half the mesh and reported
+        // the extremes of what was left.
+        for (row_index, corners) in output_mesh.w_to_m.iter().enumerate() {
+            let valid = output_mesh
+                .n_w_to_m
+                .get(row_index)
+                .and_then(|&n| usize::try_from(n).ok())
+                .unwrap_or(corners.len())
+                .min(corners.len());
             let polygon: Vec<earthmesh_mesh::LonLatDegrees> = corners
                 .iter()
+                .take(valid)
                 .filter_map(|&im| {
                     let row = usize::try_from(im).ok()?.checked_sub(1)?;
                     let point = output_mesh.m_points.get(row)?;
@@ -600,6 +618,7 @@ pub fn run_refine_pipeline_namelist(
             let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
                 continue;
             };
+            let steradians = steradians.abs();
             if !steradians.is_finite() || steradians <= 0.0 {
                 continue;
             }

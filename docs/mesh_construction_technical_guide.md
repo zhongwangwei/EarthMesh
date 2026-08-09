@@ -2482,3 +2482,36 @@ CoLM 冒烟测试都在那里)。**只标 ignore 不接进 test-slow 就是「�
 
 **这一条对本轮其余结论的意义**:我一路用「门禁全绿」给自己背书,而这道门禁从头到尾没在跑。
 **「门禁通过」只在门禁真的执行了检查时才是证据。**
+
+### 11.51 外部审查指出的两处,都是我漏的同类第二例(2026-08-09)
+
+**一、全局 finest/coarsest 读整行 `w_to_m`,还丢掉一半单元。**
+
+我修过**区域指标**上一模一样的缺陷:`w_to_m` 每行固定七槽,只有前 `n_w_to_m` 个是角点,其余是
+placeholder id 1——它解析得到一个**真实但无关**的点,于是多边形由「一个单元 + 一个陌生人」构成。
+**同一个文件里的另一处我没查。**
+
+第二处还多一个毛病:`robust_spherical_area_unit` 返回**有符号**面积,而这里 `steradians <= 0.0`
+直接 `continue`——约一半单元 winding 相反,于是**被整批丢弃**,报告的极值只是剩下那一半的极值。
+区域指标那处的注释早就写明了这件事并用了 `abs()`。
+
+**二、`maximum_patch_cells` 声明了、校验了、传给了谁都没有。**
+
+`api.rs` 构造 `CycleLimits` 时不带它,事务处也从不检查补丁大小。这和我删掉的 `patch_ring_depth`
+是同一类,但这个量定义明确(补丁快照的三角形数),所以**实现而不是删除**:进 `HardGates`(逐事务
+门禁所在处),超限返回 `Rejection::PatchTooLarge`,计入 topology 类拒绝。
+
+**我审这个结构体时漏了它,方法上的原因值得记**:我只统计了每个字段的**引用次数**,看到
+`maximum_patch_cells` 有 3 次就放过——而那 3 次全是**校验**,没有一次是**消费**。
+**「被引用」不等于「被使用」;要数的是消费点。**
+
+**三、修这一条时我当场又犯了一次同样的错。** 在 `api.rs` 里写了
+
+```rust
+let mut gates = request.gates;
+gates.max_patch_triangles = request.config.maximum_patch_cells;
+let outcome = run_cycles(..., request.gates, ...);   // ← 传的还是原来那个
+```
+
+赋了值,传的却是旧的——**正是这条修复要治的那个病**。clippy 的 `assigned to, but never used` 抓到了。
+写门禁的人自己也会犯门禁要防的错,这就是为什么门禁不能只靠自觉。

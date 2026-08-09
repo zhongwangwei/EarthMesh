@@ -66,6 +66,17 @@ pub struct HardGates {
     /// holds the model it would gate against, and no backend consumes that
     /// crate yet.
     pub require_closed_surface: bool,
+    /// The largest patch one transaction may snapshot, in triangles.
+    ///
+    /// `HarpDvConfig::maximum_patch_cells` reaches the run through here.
+    /// Before this it was declared, validated and passed to nothing -- a bound
+    /// accepted and ignored, which the config's own note about `deterministic`
+    /// says a flag must never be.
+    ///
+    /// The bound is on what a rollback has to be able to put back, so it is
+    /// checked against the snapshot rather than against the cavity: those
+    /// differ, and it is the snapshot that is held in memory.
+    pub max_patch_triangles: usize,
 }
 
 impl Default for HardGates {
@@ -95,6 +106,7 @@ impl Default for HardGates {
             // number came from a sweep, not from the theory.
             min_triangle_angle_deg: 30.0,
             require_closed_surface: true,
+            max_patch_triangles: 10_000,
         }
     }
 }
@@ -102,6 +114,9 @@ impl Default for HardGates {
 /// Why a proposal was not kept.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rejection {
+    /// The change would have snapshotted more than the run allows to be held
+    /// for rollback.
+    PatchTooLarge { triangles: usize, allowed: usize },
     /// The point could not be inserted at all.
     NotInsertable(InsertionError),
     /// A site would have ended with more neighbours than the run allows.
@@ -133,6 +148,11 @@ pub enum Rejection {
 impl std::fmt::Display for Rejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PatchTooLarge { triangles, allowed } => write!(
+                formatter,
+                "the change would snapshot {triangles} triangles for rollback and the run allows \
+                 {allowed}"
+            ),
             Self::NotInsertable(error) => write!(formatter, "the site does not insert: {error}"),
             Self::DegreeOverBudget {
                 site,
@@ -389,6 +409,13 @@ impl AdaptiveMesh {
             Err(error) => return Ok(Acceptance::RolledBack(Rejection::NotInsertable(error))),
         };
         let patch = self.state().snapshot_around(&cavity);
+        let patch_size = patch.triangles().count();
+        if gates.max_patch_triangles > 0 && patch_size > gates.max_patch_triangles {
+            return Ok(Acceptance::RolledBack(Rejection::PatchTooLarge {
+                triangles: patch_size,
+                allowed: gates.max_patch_triangles,
+            }));
+        }
 
         let report = match self.state_mut().insert_site(point) {
             Ok(report) => report,
