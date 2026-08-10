@@ -1116,7 +1116,7 @@ log("atmosphere template labels match supported behavior");
 check(
   html.includes('["off", z?"关闭弹性调整":"Disable spring smoothing"]') &&
     html.includes('if(strategy==="off") return {springGlobalType:0,springRegionalType:0};') &&
-    html.includes('+ (strategyEnabled ? hfieldBlock : "") + expertRefine;') &&
+    html.includes('+ algorithmOptionsBlock\n        + expertRefine') &&
     !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")'),
   "common spring controls must stay visible for every refinement algorithm and allow disabling",
 );

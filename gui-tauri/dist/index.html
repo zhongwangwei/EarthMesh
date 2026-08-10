@@ -2974,7 +2974,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${z ? "专家 — 通用平滑控制" : "EXPERT — common smoothing controls"}</span>
+      <span class="expert-tag">⚙ ${z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)"}</span>
       <div class="grid2" style="margin-top:10px">
         ${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
         ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}
@@ -3058,9 +3058,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const mp = switches
         + algorithmBlock
         + algorithmOptionsBlock
+        + expertRefine
         + (specifiedRefine.enabled ? specified : "")
         + (thresholdRefine.enabled ? threshold : "")
-        + (strategyEnabled ? hfieldBlock : "") + expertRefine;
+        + (strategyEnabled ? hfieldBlock : "");
       anchor.insertAdjacentHTML("afterend", mp);
       const rows = document.getElementById("thresholdRows");
       if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));
