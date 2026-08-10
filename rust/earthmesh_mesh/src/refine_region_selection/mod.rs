@@ -6,6 +6,142 @@ use crate::{
     LonLatDegrees, RefinementRegion,
 };
 
+#[derive(Clone, Copy, Debug)]
+struct IndexedCircle {
+    region: usize,
+    center: CartesianPoint,
+    latitude_radians: f64,
+    angular_radius: f64,
+    radius_meters: f64,
+    level: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct RefinementRegionIndex<'a> {
+    regions: &'a [RefinementRegion],
+    circles_by_latitude: Vec<IndexedCircle>,
+    other_regions: Vec<usize>,
+    maximum_circle_radius: f64,
+}
+
+impl<'a> RefinementRegionIndex<'a> {
+    pub fn new(regions: &'a [RefinementRegion]) -> Self {
+        let mut circles_by_latitude = Vec::new();
+        let mut other_regions = Vec::new();
+        let mut maximum_circle_radius = 0.0f64;
+        for (region, candidate) in regions.iter().enumerate() {
+            match candidate {
+                RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } if center.lon_degrees.is_finite()
+                    && center.lat_degrees.is_finite()
+                    && (-90.0..=90.0).contains(&center.lat_degrees)
+                    && radius_meters.is_finite()
+                    && *radius_meters >= 0.0 =>
+                {
+                    let angular_radius = (radius_meters / earthmesh_core::EARTH_RADIUS_METERS
+                        + 64.0 * f64::EPSILON)
+                        .min(std::f64::consts::PI);
+                    maximum_circle_radius = maximum_circle_radius.max(angular_radius);
+                    circles_by_latitude.push(IndexedCircle {
+                        region,
+                        center: lonlat_degrees_to_unit_xyz(*center),
+                        latitude_radians: center.lat_degrees.to_radians(),
+                        angular_radius,
+                        radius_meters: *radius_meters,
+                        level: candidate.level(),
+                    });
+                }
+                _ => other_regions.push(region),
+            }
+        }
+        circles_by_latitude.sort_by(|left, right| {
+            left.latitude_radians
+                .total_cmp(&right.latitude_radians)
+                .then_with(|| left.region.cmp(&right.region))
+        });
+        Self {
+            regions,
+            circles_by_latitude,
+            other_regions,
+            maximum_circle_radius,
+        }
+    }
+
+    pub fn contains_lonlat_canonical(&self, point: LonLatDegrees, minimum_level: usize) -> bool {
+        if !point.lat_degrees.is_finite() || !(-90.0..=90.0).contains(&point.lat_degrees) {
+            return false;
+        }
+        let latitude = point.lat_degrees.to_radians();
+        let from = self.circles_by_latitude.partition_point(|circle| {
+            circle.latitude_radians < latitude - self.maximum_circle_radius
+        });
+        let to = self.circles_by_latitude.partition_point(|circle| {
+            circle.latitude_radians <= latitude + self.maximum_circle_radius
+        });
+        self.circles_by_latitude[from..to]
+            .iter()
+            .filter(|circle| self.regions[circle.region].level() >= minimum_level)
+            .any(|circle| {
+                (circle.latitude_radians - latitude).abs() <= circle.angular_radius
+                    && self.regions[circle.region].contains_lonlat_canonical(point)
+            })
+            || self.other_regions.iter().copied().any(|region| {
+                self.regions[region].level() >= minimum_level
+                    && self.regions[region].contains_lonlat_canonical(point)
+            })
+    }
+
+    /// Test only circle regions with the great-circle metric used by adaptive
+    /// demand reports. Latitude pruning changes no containment result.
+    pub fn contains_lonlat_great_circle(&self, point: LonLatDegrees, minimum_level: usize) -> bool {
+        if !point.lon_degrees.is_finite()
+            || !point.lat_degrees.is_finite()
+            || !(-90.0..=90.0).contains(&point.lat_degrees)
+        {
+            return false;
+        }
+        let latitude = point.lat_degrees.to_radians();
+        let from = self.circles_by_latitude.partition_point(|circle| {
+            circle.latitude_radians < latitude - self.maximum_circle_radius
+        });
+        let to = self.circles_by_latitude.partition_point(|circle| {
+            circle.latitude_radians <= latitude + self.maximum_circle_radius
+        });
+        let point = lonlat_degrees_to_unit_xyz(point);
+        self.circles_by_latitude[from..to]
+            .iter()
+            .filter(|circle| circle.level >= minimum_level)
+            .any(|circle| {
+                (circle.latitude_radians - latitude).abs() <= circle.angular_radius
+                    && great_circle_distance_meters(point, circle.center) <= circle.radius_meters
+            })
+            || self.other_regions.iter().copied().any(|region| {
+                self.regions[region].level() >= minimum_level
+                    && circle_contains_lonlat_great_circle(&self.regions[region], point)
+            })
+    }
+}
+
+fn great_circle_distance_meters(left: CartesianPoint, right: CartesianPoint) -> f64 {
+    let cross = crate::cross(left, right);
+    crate::magnitude(cross).atan2(crate::dot(left, right)) * earthmesh_core::EARTH_RADIUS_METERS
+}
+
+fn circle_contains_lonlat_great_circle(region: &RefinementRegion, point: CartesianPoint) -> bool {
+    let RefinementRegion::Circle {
+        center,
+        radius_meters,
+        ..
+    } = region
+    else {
+        return false;
+    };
+    great_circle_distance_meters(point, lonlat_degrees_to_unit_xyz(*center)) <= *radius_meters
+}
+
 impl RefinementRegion {
     pub fn anchor_lonlat(&self) -> LonLatDegrees {
         match self {
@@ -369,5 +505,82 @@ mod tests {
             assert!(!lonlat_in_bbox(point, -180.0, 180.0, -90.0, 90.0));
             assert!(!global.contains_lonlat_canonical(point));
         }
+    }
+
+    #[test]
+    fn region_index_matches_brute_force_at_dateline_poles_and_levels() {
+        let regions = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(179.0, 0.0),
+                radius_meters: 500_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(-45.0, 88.0),
+                radius_meters: 750_000.0,
+                level: 2,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 10.0,
+                east_degrees: 20.0,
+                south_degrees: -5.0,
+                north_degrees: 5.0,
+                level: 1,
+            },
+        ];
+        let index = RefinementRegionIndex::new(&regions);
+        for point in [
+            LonLatDegrees::new(-179.0, 0.0),
+            LonLatDegrees::new(120.0, 89.0),
+            LonLatDegrees::new(15.0, 0.0),
+            LonLatDegrees::new(0.0, -60.0),
+        ] {
+            for level in 0..=2 {
+                let expected = regions.iter().any(|region| {
+                    region.level() >= level && region.contains_lonlat_canonical(point)
+                });
+                assert_eq!(index.contains_lonlat_canonical(point, level), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn great_circle_index_handles_dateline_poles_and_ignores_other_shapes() {
+        let regions = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(179.0, 0.0),
+                radius_meters: 500_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(-45.0, 88.0),
+                radius_meters: 750_000.0,
+                level: 2,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 10.0,
+                east_degrees: 20.0,
+                south_degrees: -5.0,
+                north_degrees: 5.0,
+                level: 3,
+            },
+        ];
+        let index = RefinementRegionIndex::new(&regions);
+        for point in [
+            LonLatDegrees::new(-179.0, 0.0),
+            LonLatDegrees::new(120.0, 89.0),
+            LonLatDegrees::new(15.0, 0.0),
+            LonLatDegrees::new(0.0, -60.0),
+        ] {
+            let point_xyz = lonlat_degrees_to_unit_xyz(point);
+            for level in 0..=3 {
+                let expected = regions.iter().any(|region| {
+                    region.level() >= level
+                        && circle_contains_lonlat_great_circle(region, point_xyz)
+                });
+                assert_eq!(index.contains_lonlat_great_circle(point, level), expected);
+            }
+        }
+        assert!(!index.contains_lonlat_great_circle(LonLatDegrees::new(f64::NAN, 0.0), 1));
     }
 }

@@ -45,6 +45,7 @@ use earthmesh_mesh::{
     pcvt_adjust_voronoi_grid_state, voronoi_grid_from_triangular_mesh,
     voronoi_grid_from_triangular_mesh_cartesian, MeshState, TriangularMesh,
 };
+use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
@@ -787,6 +788,7 @@ pub fn run_refine_pipeline_namelist(
             regions.as_slice()
         };
         let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+        let measure_index = earthmesh_mesh::RefinementRegionIndex::new(measure_regions);
         let mut inside: Vec<f64> = Vec::new();
         let mut outside: Vec<f64> = Vec::new();
         for (row, corners) in output_mesh.w_to_m.iter().enumerate() {
@@ -827,9 +829,7 @@ pub fn run_refine_pipeline_namelist(
             };
             let across_km = (steradians / std::f64::consts::PI).sqrt() * radius_km;
             let centre = earthmesh_mesh::LonLatDegrees::new(centre.lon, centre.lat);
-            let in_region = measure_regions
-                .iter()
-                .any(|region| region.contains_lonlat_canonical(centre));
+            let in_region = measure_index.contains_lonlat_canonical(centre, 0);
             if in_region {
                 inside.push(across_km);
             } else {
@@ -1238,14 +1238,25 @@ fn adaptive_hard_center_demand(
     output_mesh: &crate::UnstructuredMesh,
 ) -> Option<Vec<bool>> {
     adaptive_run.map(|(report, _, _, _)| {
+        let regions = report
+            .passes
+            .iter()
+            .flat_map(|pass| pass.regions.iter().cloned())
+            .collect::<Vec<_>>();
+        let index = earthmesh_mesh::RefinementRegionIndex::new(&regions);
         let centers = if mode_grid == "tri" {
             &output_mesh.m_points
         } else {
             &output_mesh.w_points
         };
         centers
-            .iter()
-            .map(|point| report.target_level_at(point.lon, point.lat) > 0)
+            .par_iter()
+            .map(|point| {
+                index.contains_lonlat_great_circle(
+                    earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat),
+                    1,
+                )
+            })
             .collect()
     })
 }
@@ -1255,19 +1266,19 @@ fn region_center_demand(
     mode_grid: &str,
     output_mesh: &crate::UnstructuredMesh,
 ) -> Vec<bool> {
+    let index = earthmesh_mesh::RefinementRegionIndex::new(regions);
     let centers = if mode_grid == "tri" {
         &output_mesh.m_points
     } else {
         &output_mesh.w_points
     };
     centers
-        .iter()
+        .par_iter()
         .map(|point| {
-            regions.iter().any(|region| {
-                region.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(
-                    point.lon, point.lat,
-                ))
-            })
+            index.contains_lonlat_canonical(
+                earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat),
+                0,
+            )
         })
         .collect()
 }

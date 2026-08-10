@@ -202,6 +202,19 @@ fn drop_isolated_marks(
     isolated.len()
 }
 
+fn has_refinement_interface(
+    num_vertex: usize,
+    triangle_neighbors: &[Vec<usize>],
+    segment: &[i32],
+) -> bool {
+    (num_vertex + 1..segment.len()).any(|triangle| {
+        segment[triangle] == 1
+            && triangle_neighbors[triangle]
+                .iter()
+                .any(|&neighbor| segment.get(neighbor).copied().unwrap_or(0) != 1)
+    })
+}
+
 /// Erode the previous level's region inward and cancel what falls outside.
 ///
 /// Port of `MOD_refine.F90:113-152`. A cell is on the region's boundary when
@@ -512,6 +525,8 @@ pub fn refine_redgreen_round_inside(
     let refined_triangle_count = (mesh.num_vertex + 1..=sjx_points)
         .filter(|&triangle| segment[triangle] == 1)
         .count();
+    let needs_transition_boundary =
+        has_refinement_interface(mesh.num_vertex, &triangle_neighbors, &segment);
 
     // How much room the round needs, including the transition band the halo
     // sizing walks outward.
@@ -566,7 +581,7 @@ pub fn refine_redgreen_round_inside(
                 (length >= 3).then(|| row[..length.min(row.len())].to_vec())
             })
             .collect();
-        if closed_curves.is_empty() {
+        if closed_curves.is_empty() && needs_transition_boundary {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -575,19 +590,21 @@ pub fn refine_redgreen_round_inside(
                 ),
             ));
         }
-        flipped_triangle_count = close_transition_rows(
-            mesh,
-            settings,
-            weak_concavity_count,
-            &triangle_neighbors,
-            &closed_curves,
-            &mut mrl_new,
-            &mut num_mp,
-            &mut num_wp,
-            &mut triangle_points,
-            &mut cell_points,
-            &mut cells_on_triangle_new,
-        )?;
+        if needs_transition_boundary {
+            flipped_triangle_count = close_transition_rows(
+                mesh,
+                settings,
+                weak_concavity_count,
+                &triangle_neighbors,
+                &closed_curves,
+                &mut mrl_new,
+                &mut num_mp,
+                &mut num_wp,
+                &mut triangle_points,
+                &mut cell_points,
+                &mut cells_on_triangle_new,
+            )?;
+        }
     }
 
     let renewed = refine_ngr_renew_one_based(
@@ -999,6 +1016,52 @@ mod tests {
 
         assert_eq!(outcome.refined_triangle_count, 0);
         assert_eq!(outcome.mesh, mesh, "an empty marking must not move a point");
+    }
+
+    #[test]
+    fn uniform_refinement_needs_no_transition_boundary() {
+        let mesh = icosahedron(6);
+        let mut marking = vec![1i32; mesh.triangle_count() + 1];
+        marking[..=mesh.num_vertex].fill(0);
+
+        let outcome =
+            refine_redgreen_round_one_based(&mesh, &marking, &RedGreenSettings::default())
+                .expect("uniform refinement has no seam to transition across");
+
+        assert_eq!(
+            outcome.refined_triangle_count,
+            mesh.triangle_count() - mesh.num_vertex
+        );
+        assert_eq!(outcome.flipped_triangle_count, 0);
+        let neighbors = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
+            &outcome.mesh.cells_on_triangle,
+            &outcome.mesh.triangles_on_cell,
+            &outcome.mesh.n_triangles_on_cell,
+        )
+        .expect("uniformly refined mesh remains closed");
+        assert!(neighbors[outcome.mesh.num_vertex + 1..]
+            .iter()
+            .all(|row| !row.contains(&0)));
+    }
+
+    #[test]
+    fn transition_need_is_derived_from_the_refined_coarse_interface() {
+        let mesh = icosahedron(6);
+        let neighbors = triangle_neighbor_rows(&mesh).expect("closed mesh");
+        let mut marking = vec![1i32; mesh.triangle_count() + 1];
+        marking[..=mesh.num_vertex].fill(0);
+        assert!(!has_refinement_interface(
+            mesh.num_vertex,
+            &neighbors,
+            &marking
+        ));
+
+        marking[mesh.triangle_count()] = 0;
+        assert!(has_refinement_interface(
+            mesh.num_vertex,
+            &neighbors,
+            &marking
+        ));
     }
 
     #[test]

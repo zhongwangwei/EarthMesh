@@ -1,4 +1,16 @@
 use super::*;
+use std::collections::HashMap;
+
+fn coordinate_key(value: f64) -> Option<u64> {
+    (!value.is_nan()).then(|| if value == 0.0 { 0 } else { value.to_bits() })
+}
+
+fn point_key(point: LonLatDegrees) -> Option<(u64, u64)> {
+    Some((
+        coordinate_key(point.lon_degrees)?,
+        coordinate_key(point.lat_degrees)?,
+    ))
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RefineNgrRenewCore {
@@ -81,11 +93,11 @@ pub fn refine_ngr_renew_core_one_based(
         *mapping = idx;
     }
 
+    let mut accepted_new_vertices =
+        HashMap::<(u64, u64), usize>::with_capacity(final_wp - original_wp);
     for source_vertex in (original_wp + 1)..=final_wp {
-        let duplicate = ((original_wp + 1)..=num_dbx).find(|&candidate| {
-            cell_points[candidate].lon_degrees == cell_points_new[source_vertex].lon_degrees
-                && cell_points[candidate].lat_degrees == cell_points_new[source_vertex].lat_degrees
-        });
+        let key = point_key(cell_points_new[source_vertex]);
+        let duplicate = key.and_then(|key| accepted_new_vertices.get(&key).copied());
         if let Some(mapped) = duplicate {
             vertex_mapping[source_vertex] = mapped;
         } else {
@@ -98,6 +110,9 @@ pub fn refine_ngr_renew_core_one_based(
             }
             cell_points[num_dbx] = cell_points_new[source_vertex];
             vertex_mapping[source_vertex] = num_dbx;
+            if let Some(key) = key {
+                accepted_new_vertices.insert(key, num_dbx);
+            }
         }
     }
     cell_points.truncate(num_dbx + 1);

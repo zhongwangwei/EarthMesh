@@ -10,6 +10,7 @@
 use std::io;
 
 use earthmesh_refine_redgreen::RedGreenMesh;
+use rayon::prelude::*;
 
 use crate::coordinate_types::LonLatPoint;
 use crate::unstructured_mesh_support::UnstructuredMesh;
@@ -201,16 +202,15 @@ pub fn redgreen_marking_from_regions(
     if regions.is_empty() {
         return marking;
     }
-    for triangle in mesh.num_vertex + 1..=mesh.triangle_count() {
-        let centre = mesh.triangle_points[triangle];
-        let wanted = regions
-            .iter()
-            .filter(|region| region.level() >= level)
-            .any(|region| region.contains_lonlat_canonical(centre));
-        if wanted {
-            marking[triangle] = 1;
-        }
-    }
+    let region_index = earthmesh_mesh::RefinementRegionIndex::new(regions);
+    marking
+        .par_iter_mut()
+        .enumerate()
+        .skip(mesh.num_vertex + 1)
+        .for_each(|(triangle, mark)| {
+            let centre = mesh.triangle_points[triangle];
+            *mark = i32::from(region_index.contains_lonlat_canonical(centre, level));
+        });
     marking
 }
 
@@ -268,6 +268,32 @@ mod marking_tests {
         assert!(redgreen_marking_from_regions(&mesh, &regions, 2)
             .iter()
             .all(|&value| value == 0));
+    }
+
+    #[test]
+    fn marking_is_identical_across_thread_counts() {
+        let mesh = base();
+        let regions = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(179.0, 0.0),
+                radius_meters: 2_000_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(-45.0, 80.0),
+                radius_meters: 1_000_000.0,
+                level: 1,
+            },
+        ];
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| redgreen_marking_from_regions(&mesh, &regions, 1))
+        };
+
+        assert_eq!(run(1), run(4));
     }
 }
 

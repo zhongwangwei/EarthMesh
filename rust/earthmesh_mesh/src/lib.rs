@@ -322,6 +322,7 @@ pub use refine_region_geometry::{
 mod mesh_expansion;
 mod mesh_topology_validation;
 mod refine_region_selection;
+pub use refine_region_selection::RefinementRegionIndex;
 mod refine_region_validation;
 pub use mesh_topology_validation::MethodCTopologyValidation;
 mod mesh_cart_hex;
