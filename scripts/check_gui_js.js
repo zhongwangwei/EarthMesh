@@ -1149,12 +1149,13 @@ log("common spring controls are algorithm-independent");
 {
   // Algorithm and route were two selects that knew nothing about each other, so
   // the pair `harp_dv` + h-field was one click away and the run refuses it.
-  // Both halves are needed: disabling the option stops it being chosen, and the
-  // reset stops it staying chosen, because a browser keeps a disabled option
-  // selected when it already was.
+  // Both halves are needed: the non-Method-C DOM must not contain H-field
+  // controls, and stale projects must be reset before rendering or saving.
   check(
-    /id="refineBackend"[^]*?value="hfield"[^]*?\$\{hfieldServed\?"":"disabled"\}/.test(html),
-    "the h-field route option must be disabled for a backend that cannot serve it",
+    html.includes('${hfieldServed?`<option value="hfield"') &&
+      html.includes('${hfieldServed?`<div id="hfieldOptions"') &&
+      html.includes('if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";'),
+    "non-Method-C algorithms must not render or retain H-field controls",
   );
   check(
     html.includes('specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield"'),

@@ -2871,8 +2871,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:10px;margin-top:3px"><span>1</span><span>${z ? "上限 " : "max "}${nMax}</span></div>
       </div>
     </div>`;
-    const backend = specifiedRefine.route || "adaptive";
     const algorithm = specifiedRefine.algorithm || "method_c";
+    const hfieldServed = algorithm === "method_c";
+    if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";
+    const backend = specifiedRefine.route || "adaptive";
     const algorithmInfo = {
       method_c: z
         ? "经典 Method-C：规则嵌套细分并添加过渡行；保持 5/6/7 邻接，但只接受其格点结构能表达的区域。"
@@ -2954,21 +2956,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     // that configures one, so offering it beside them builds a project that
     // cannot run -- and before they grew the refusal, HARP-DV took the pair and
     // quietly produced a mesh having never read the field.
-    const hfieldServed = algorithm === "method_c";
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点 + 半径（默认）":"Point + radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""} ${hfieldServed?"":"disabled"}>${z?"H 场":"H-field"}${hfieldServed?"":(z?"（仅 Canonical Method-C）":" (Canonical Method-C only)")}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"离散硬掩膜":"Discrete hard mask"}</option></select>`,z?"这不是算法：它决定如何把指定区域和数据判据编译成算法需求。":"This is not an algorithm; it controls how regions and data criteria become algorithm demand.")}
+        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点 + 半径（默认）":"Point + radius (default)"}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场":"H-field"}</option>`:""}<option value="discrete" ${backend==="discrete"?"selected":""}>${z?"离散硬掩膜":"Discrete hard mask"}</option></select>`,z?"这不是算法：它决定如何把指定区域和数据判据编译成算法需求。":"This is not an algorithm; it controls how regions and data criteria become algorithm demand.")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
         ${field(z?"细化海岸线":"Refine coastline",`<select class="select" id="adaptiveCoastline"><option value="on" ${specifiedRefine.adaptiveCoastline!==false?"selected":""}>${z?"是":"Yes"}</option><option value="off" ${specifiedRefine.adaptiveCoastline===false?"selected":""}>${z?"否":"No"}</option></select>`,z?"把陆海边界本身作为一个判据":"treat the land/sea boundary as its own criterion")}
       </div>
-      <div id="hfieldOptions" class="grid2" style="margin-top:10px;${backend==="hfield"?"":"display:none"}">
+      ${hfieldServed?`<div id="hfieldOptions" class="grid2" style="margin-top:10px;${backend==="hfield"?"":"display:none"}">
         ${field(z?"梯度上限 g":"Gradation g",`<input class="input" type="number" id="hfieldG" min="0.01" max="1" step="0.01" value="${specifiedRefine.hfieldG ?? DEFAULT_HFIELD_G}">`,z?`默认 ${DEFAULT_HFIELD_G}；限制目标尺寸梯度，实际邻接比由质量检查确认`:`default ${DEFAULT_HFIELD_G}; limits target-size gradation; quality checks confirm actual neighbor ratios`)}
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="hfieldMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.hfieldMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
         ${field(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
-      </div>
+      </div>`:""}
       <div id="discreteOptions" class="grid2" style="margin-top:10px;${backend==="discrete"?"":"display:none"}">
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
