@@ -508,7 +508,14 @@ pub fn run_refine_pipeline_namelist(
                     })
                 })
                 .transpose()?;
-            refine_with_redgreen(&mesh, &regions, &refine, max_level, adaptive)?
+            refine_with_redgreen(
+                &mesh,
+                &regions,
+                &refine,
+                max_level,
+                adaptive,
+                config.mode_grid.trim() == "tri",
+            )?
         }
         RefineBackend::HarpDv => {
             // The same list red-green refuses, and for the same reason: each of
@@ -674,11 +681,9 @@ pub fn run_refine_pipeline_namelist(
         }
     };
 
-    // Measured from the produced mesh, not from the request: a pass whose demand
-    // is clipped away stops descending without failing, and `max_level` alone
-    // cannot show that. A backend that reports no levels has nothing measured
-    // here, which is honest -- zero says "not known from this mesh", and the
-    // requested `max_level` travels separately.
+    // Measured from backend output, not from the request: Method-C records face
+    // generations; criteria-driven Red-Green records the deepest pass it
+    // actually completed. A backend with neither still reports zero.
     let realized_max_level = method_c_metadata
         .as_ref()
         .map(|meta| {
@@ -688,6 +693,11 @@ pub fn run_refine_pipeline_namelist(
                 .max()
                 .unwrap_or(0)
                 .max(0) as usize
+        })
+        .or_else(|| {
+            adaptive_run
+                .as_ref()
+                .map(|(report, _, _, _)| report.deepest_level)
         })
         .unwrap_or(0);
     // Measured off the produced mesh, so it means the same thing whichever
@@ -1348,6 +1358,7 @@ fn refine_with_redgreen(
     refine: &RefineConfig,
     max_level: usize,
     adaptive: Option<RedGreenAdaptive<'_>>,
+    preserve_locality: bool,
 ) -> io::Result<RefinedGrid> {
     if !refine.is_transition {
         // Not only for a second level: the transition rows *are* red-green's
@@ -1382,12 +1393,14 @@ fn refine_with_redgreen(
         let mut level_regions: Vec<earthmesh_mesh::RefinementRegion> = named_regions.to_vec();
         let mut demanded_cells = 0usize;
         if let Some(adaptive) = &adaptive {
-            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
+            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
+            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
                 refine,
                 &adaptive.inputs,
                 level,
-                adaptive.base_cell_meters,
-                max_level,
+                cell_meters,
+                cell_meters,
+                cell_meters,
             )?;
             demanded_cells = demand.demanded_cells;
             eprintln!(
@@ -1411,6 +1424,7 @@ fn refine_with_redgreen(
             refine,
             level,
             previous_marks.as_deref(),
+            preserve_locality,
         )?;
         eprintln!(
             "red-green refine level {level}: {} triangles split, {} grown by the judges, \
@@ -1432,7 +1446,7 @@ fn refine_with_redgreen(
             .map(|cell| outcome.mesh.n_triangles_on_cell[cell])
             .max()
             .unwrap_or(0);
-        if widest_cell > REDGREEN_MAX_CELL_DEGREE {
+        if !preserve_locality && widest_cell > REDGREEN_MAX_CELL_DEGREE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(

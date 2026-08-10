@@ -77,10 +77,9 @@ pub struct RefinePipelineRunReport {
     ///
     /// Backend-neutral, because it is measured off the mesh rather than taken
     /// from each backend's own bookkeeping. `realized_max_level` is not:
-    /// Method-C counts nesting passes, red-green reports zero meaning "not
-    /// measured", and HARP-DV counts site generations, and all three print
-    /// into that one field. A run that refined to 2.6 halvings reported level
-    /// 1 for several rounds because of it (guide 11.19).
+    /// Method-C counts face generations, criteria-driven Red-Green counts
+    /// completed passes, and HARP-DV counts site generations. A run that
+    /// refined to 2.6 halvings can therefore report a different integer here.
     ///
     /// `log2(coarsest / finest)` is the halvings actually achieved, which is
     /// what a request in levels was asking for.
@@ -91,7 +90,7 @@ pub struct RefinePipelineRunReport {
     ///
     /// The operational definition of a level, and the only one comparable
     /// between backends. `realized_max_level` counts each backend's own
-    /// bookkeeping and means three different things (guide 11.19); the global
+    /// bookkeeping and is not directly comparable (guide 11.19); the global
     /// percentiles above carry the icosahedron's own variation and the
     /// coastline carve, and read near four halvings whatever was requested.
     ///

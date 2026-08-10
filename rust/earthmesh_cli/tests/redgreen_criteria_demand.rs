@@ -97,6 +97,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         &refine,
         1,
         None,
+        false,
     )
     .expect("red-green must build what the criterion asked for");
 
@@ -175,7 +176,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             .collect();
 
         let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
-            &mesh, &regions, &refine, 1, None,
+            &mesh, &regions, &refine, 1, None, false,
         )
         .unwrap_or_else(|error| panic!("{place} level 1: {error}"));
         assert_eq!(open_edges(&first.mesh), 0, "{place} level 1 left a hole");
@@ -190,6 +191,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             &refine,
             2,
             Some(&previous),
+            false,
         )
         .unwrap_or_else(|error| panic!("{place} level 2: {error}"));
         assert!(
@@ -247,9 +249,10 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         })
         .collect();
 
-    let (_, first) =
-        earthmesh_cli::redgreen_bridge::refine_redgreen_level(&mesh, &regions, &refine, 1, None)
-            .expect("level one");
+    let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+        &mesh, &regions, &refine, 1, None, false,
+    )
+    .expect("level one");
     assert!(
         first.flipped_triangle_count > 0,
         "a transition band leaves sharp corners; flipping them is not optional"
@@ -268,6 +271,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         &refine,
         2,
         Some(&previous),
+        false,
     )
     .expect("level two");
     assert!(second.flipped_triangle_count > 0);

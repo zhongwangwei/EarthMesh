@@ -311,15 +311,33 @@ pub fn refine_redgreen_level(
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
+    preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking_from_regions(mesh, regions, level);
-    let settings = redgreen_settings_for_level(refine, level);
-    let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+    let mut settings = redgreen_settings_for_level(refine, level);
+    let mut outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,
         &settings,
         previous_level_marks,
     )?;
+    let refinable = mesh.triangle_count().saturating_sub(mesh.num_vertex);
+    if preserve_locality
+        && settings.eliminate_weak_concavity
+        && outcome.grown_triangle_count > 0
+        && outcome.refined_triangle_count == refinable
+    {
+        settings.eliminate_weak_concavity = false;
+        outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+            mesh,
+            &marking,
+            &settings,
+            previous_level_marks,
+        )?;
+        eprintln!(
+            "earthmesh_cli: Red-Green weak-concavity elimination reached the whole triangular domain; carrying the boundary concavities instead"
+        );
+    }
     let written = unstructured_mesh_from_redgreen(&outcome.mesh)?;
     Ok((written, outcome))
 }
@@ -350,6 +368,7 @@ mod level_tests {
             &earthmesh_core::RefineConfig::default(),
             1,
             None,
+            false,
         )
         .expect("one red-green level");
 
@@ -402,6 +421,7 @@ mod level_tests {
             },
             1,
             None,
+            false,
         )
         .expect("one red-green level");
 
@@ -455,7 +475,7 @@ mod level_tests {
         };
 
         let (_, first) =
-            refine_redgreen_level(&mesh, &regions, &refine, 1, None).expect("level one");
+            refine_redgreen_level(&mesh, &regions, &refine, 1, None, false).expect("level one");
         let previous = redgreen_marking_from_regions(&first.mesh, &regions, 1);
         assert_eq!(
             previous.len(),
@@ -468,9 +488,10 @@ mod level_tests {
             "and cell_renumbering is not that mapping -- it is per cell"
         );
 
-        let (_, held) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous))
-            .expect("level two, held inside level one");
-        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None)
+        let (_, held) =
+            refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous), false)
+                .expect("level two, held inside level one");
+        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None, false)
             .expect("level two, free");
 
         assert!(
@@ -483,6 +504,57 @@ mod level_tests {
             "so it refines less: {} vs {}",
             held.refined_triangle_count,
             free.refined_triangle_count
+        );
+    }
+
+    #[test]
+    fn triangular_red_green_does_not_turn_distributed_demand_into_global_refinement() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("bridge in");
+        let refine = earthmesh_core::RefineConfig::default();
+        let refinable = mesh.triangle_count() - mesh.num_vertex;
+        let mut fixture = None;
+        'search: for step in [45, 30, 20] {
+            for radius_meters in [1_500_000.0, 2_000_000.0, 2_500_000.0] {
+                let regions = [-60.0, 0.0, 60.0]
+                    .into_iter()
+                    .flat_map(|lat| {
+                        (-180..180)
+                            .step_by(step)
+                            .map(move |lon| RefinementRegion::Circle {
+                                center: LonLatDegrees::new(f64::from(lon), lat),
+                                radius_meters,
+                                level: 1,
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                let (_, filled) = refine_redgreen_level(&mesh, &regions, &refine, 1, None, false)
+                    .expect("filled run");
+                if filled.refined_triangle_count == refinable && filled.grown_triangle_count > 0 {
+                    fixture = Some((regions, filled));
+                    break 'search;
+                }
+            }
+        }
+        let (regions, filled) = fixture.expect("a distributed marking must exercise the fallback");
+
+        let (written, local) =
+            refine_redgreen_level(&mesh, &regions, &refine, 1, None, true).expect("local run");
+        assert!(
+            local.refined_triangle_count < filled.refined_triangle_count,
+            "distributed local demand must retain a coarse exterior"
+        );
+        let topology = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&written);
+        assert!(
+            topology
+                .violations
+                .iter()
+                .all(|violation| !violation.starts_with("misoriented_shared_edge")),
+            "the carried transition must stay consistently oriented: {:?}",
+            topology.violations
         );
     }
 }

@@ -153,8 +153,8 @@ pub(crate) fn print_refine_pipeline_report(
     println!("refine_max_level={}", report.max_level);
     println!("refine_realized_max_level={}", report.realized_max_level);
     // Measured off the mesh, so it means the same thing whichever backend made
-    // it -- unlike the line above, which means nesting passes, or site
-    // generations, or nothing measured, depending on the backend.
+    // it -- unlike the line above, which means face generations, completed
+    // passes, site generations, or nothing measured, depending on the backend.
     if report.finest_cell_km > 0.0 {
         println!("refine_finest_cell_km={:.3}", report.finest_cell_km);
         println!("refine_coarsest_cell_km={:.3}", report.coarsest_cell_km);

@@ -146,8 +146,8 @@ pub struct RedGreenOutcome {
     /// Triangles rebuilt by Lawson flips while closing the seams.
     pub flipped_triangle_count: usize,
     /// Weak concavities this round found and did not refine away, because the
-    /// flag said to carry them through the transition rows. Nothing carries
-    /// them yet, so this is how often the unbuilt half would have been needed.
+    /// flag said to carry them through the transition rows. The count sizes
+    /// the weak boundary-segment tables used by the green step.
     pub weak_concavity_count: usize,
     /// Where each cell of the mesh that went in ended up in the mesh that came
     /// out, indexed by its old id.
@@ -213,6 +213,42 @@ fn has_refinement_interface(
                 .iter()
                 .any(|&neighbor| segment.get(neighbor).copied().unwrap_or(0) != 1)
     })
+}
+
+fn orient_triangles_outward(
+    cell_points: &[LonLatDegrees],
+    cells_on_triangle: &mut [[usize; 3]],
+) -> io::Result<()> {
+    for (triangle, corners) in cells_on_triangle.iter_mut().enumerate().skip(2) {
+        let points = corners.map(|cell| {
+            cell_points
+                .get(cell)
+                .copied()
+                .map(earthmesh_mesh::lonlat_degrees_to_unit_xyz)
+        });
+        let [Some(a), Some(b), Some(c)] = points else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("triangle {triangle} names a missing cell"),
+            ));
+        };
+        match earthmesh_mesh::orientation_on_sphere(a, b, c).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("triangle {triangle} orientation is ambiguous: {error}"),
+            )
+        })? {
+            earthmesh_mesh::Sign::Positive => {}
+            earthmesh_mesh::Sign::Negative => corners.swap(1, 2),
+            earthmesh_mesh::Sign::Zero => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("triangle {triangle} has zero spherical orientation"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Erode the previous level's region inward and cancel what falls outside.
@@ -619,13 +655,15 @@ pub fn refine_redgreen_round_inside(
         &sizing.halo.boundary_refine_transition,
     )?;
 
+    let mut cells_on_triangle = renewed.cells_on_triangle;
+    orient_triangles_outward(&renewed.cell_points, &mut cells_on_triangle)?;
     Ok(RedGreenOutcome {
         mesh: RedGreenMesh {
             num_vertex: mesh.num_vertex,
             num_center: mesh.num_center,
             triangle_points: renewed.triangle_points,
             cell_points: renewed.cell_points,
-            cells_on_triangle: renewed.cells_on_triangle,
+            cells_on_triangle,
             triangles_on_cell: renewed.triangles_on_cell,
             n_triangles_on_cell: renewed.n_triangles_on_cell,
         },

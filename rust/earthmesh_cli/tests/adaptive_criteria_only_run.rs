@@ -254,6 +254,10 @@ fn red_green_serves_the_criterion_method_c_suspends() {
         log.contains("triangles split"),
         "and must have split triangles the criterion asked for:\n{log}"
     );
+    assert!(
+        log.contains("refine_realized_max_level=2"),
+        "completed Red-Green passes must not be reported as level zero:\n{log}"
+    );
 
     // The same configuration on Method-C is refused, which is what makes the
     // run above worth having rather than a second way of doing the same thing.

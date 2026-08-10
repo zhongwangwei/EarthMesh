@@ -183,7 +183,29 @@ pub fn adaptive_demand_circles_for_level_windows(
     let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
     // The cell this pass refines away is the one the previous level left.
     let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-    let radius_meters = radii[level - 1];
+    adaptive_demand_circles_for_level_windows_at_radius(
+        refine,
+        inputs,
+        level,
+        cell_meters,
+        radii[level - 1],
+        radii[max_level - 1],
+    )
+}
+
+/// Re-ask the criteria and cover their source cells with caller-sized circles.
+///
+/// Method-C needs its measured 2.5-cell seed radius; Red-Green does not. Keeping
+/// the radius policy outside the shared raster scan prevents a backend's mesh
+/// constraint from broadening another backend's requested region.
+pub fn adaptive_demand_circles_for_level_windows_at_radius(
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
+    level: usize,
+    cell_meters: f64,
+    radius_meters: f64,
+    block_radius_meters: f64,
+) -> io::Result<LevelCircles> {
     let mut demanded_cells = 0usize;
     let mut circles = Vec::new();
     let mut criterion_ids = std::collections::BTreeSet::new();
@@ -203,7 +225,7 @@ pub fn adaptive_demand_circles_for_level_windows(
             &plan.demand,
             level,
             radius_meters,
-            radii[max_level - 1],
+            block_radius_meters,
         )?);
     }
     Ok(LevelCircles {
