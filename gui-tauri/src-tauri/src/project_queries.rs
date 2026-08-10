@@ -312,10 +312,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             .method_c
             .maximum_insertions_per_cycle,
         method_c_lepp_maximum_path_length: cfg.refinement.method_c.maximum_path_length,
-        method_c_lepp_stop_at_source_resolution: cfg
-            .refinement
-            .method_c
-            .stop_at_source_resolution,
+        method_c_lepp_stop_at_source_resolution: cfg.refinement.method_c.stop_at_source_resolution,
         method_c_lepp_minimum_triangle_angle_deg: cfg
             .refinement
             .method_c
@@ -324,20 +321,14 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         harp_dv_minimum_cell_width_m: cfg.refinement.harp_dv.minimum_cell_width_m,
         harp_dv_maximum_cells: cfg.refinement.harp_dv.maximum_cells,
         harp_dv_maximum_patch_cells: cfg.refinement.harp_dv.maximum_patch_cells,
-        harp_dv_maximum_neighbor_scale_ratio: cfg
-            .refinement
-            .harp_dv
-            .maximum_neighbor_scale_ratio,
+        harp_dv_maximum_neighbor_scale_ratio: cfg.refinement.harp_dv.maximum_neighbor_scale_ratio,
         harp_dv_minimum_candidate_separation_m: cfg
             .refinement
             .harp_dv
             .minimum_candidate_separation_m,
         harp_dv_maximum_vertex_degree: cfg.refinement.harp_dv.maximum_vertex_degree,
         harp_dv_minimum_triangle_angle_deg: cfg.refinement.harp_dv.minimum_triangle_angle_deg,
-        harp_dv_criterion_minimum_angle_deg: cfg
-            .refinement
-            .harp_dv
-            .criterion_minimum_angle_deg,
+        harp_dv_criterion_minimum_angle_deg: cfg.refinement.harp_dv.criterion_minimum_angle_deg,
         hydro_river_refine_enabled: hydro.is_some_and(|value| value.river_refinement_enabled),
         hydro_river_width_refine_enabled: hydro
             .is_some_and(HydroCoastConfig::river_width_refinement_active),

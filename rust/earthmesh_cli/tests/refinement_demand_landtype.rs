@@ -392,11 +392,11 @@ fn brute_force_demand(
 }
 
 #[test]
-fn the_prefix_sum_criteria_mark_exactly_the_cells_the_nested_loops_did() {
+fn the_sliding_criteria_mark_exactly_the_cells_the_nested_loops_did() {
     // The neighbourhood scan was O((2r+1)^2) per cell and could not finish on a
-    // production raster; the table answers in four reads. That is only a valid
-    // trade if the marked set is the same one, cell for cell -- so this compares
-    // against the loop it replaced rather than against a hand-written answer.
+    // production raster. Sliding counts and the landcover bitmask remove that
+    // radius factor; this compares both against the loop they replaced rather
+    // than against a hand-written answer.
     let root = temp_root("prefix_sum_equivalence");
     let path = root.join("landtype.nc");
     // A patchwork with several classes and real coastline, so heterogeneity,
@@ -409,7 +409,9 @@ fn the_prefix_sum_criteria_mark_exactly_the_cells_the_nested_loops_did() {
         }
     };
     write_landtype(&path, class_at);
-    let bounds = source_bounds_for_bbox(100.0, 112.0, 8.0, 20.0, 1).expect("bounds");
+    // More than 64 latitude rows crosses packed parallel-band boundaries; the
+    // width is deliberately not a power of two, so word alignment is tested too.
+    let bounds = source_bounds_for_bbox(100.0, 112.0, -60.0, 60.0, 1).expect("bounds");
 
     for radius in [1usize, 2, 4] {
         let heterogeneity =

@@ -11,7 +11,7 @@ use std::path::Path;
 
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
-use super::class_counts::ClassCounts;
+use super::class_counts::{for_each_count_row, ClassCounts};
 use super::RefinementDemand;
 use crate::mkgrd_data_preprocess_source::read_landtype_bbox_window_one_based;
 
@@ -139,97 +139,153 @@ fn wrap_lon_index(lon_index: isize, nlons_source: usize) -> usize {
     (lon_index - 1).rem_euclid(nlons_source as isize) as usize + 1
 }
 
-fn periodic_row_counts(
+fn periodic_for_each_row(
     lookup: &PeriodicLandtypeLookup,
-    lat_index: usize,
+    lat_from: usize,
+    lat_to: usize,
     lon_from: usize,
     lon_to: usize,
     radius_cells: usize,
     classes: &[i8],
     plane_of: &[u16],
-    out: &mut Vec<u32>,
-    totals: &mut Vec<u32>,
+    emit: impl FnMut(usize, &[u32], &[u32]),
 ) {
-    let class_count = classes.len();
-    let width = lon_to.saturating_sub(lon_from) + 1;
-    out.clear();
-    out.resize(width * class_count, 0);
-    totals.clear();
-    totals.resize(width, 0);
-    if class_count == 0 {
-        return;
-    }
-
     let Some(first) = lookup.windows.first() else {
         return;
     };
-    let lat_lo = lat_index
-        .saturating_sub(radius_cells)
-        .max(first.bounds.maxlat_source);
-    let lat_hi = lat_index
-        .saturating_add(radius_cells)
-        .min(first.bounds.minlat_source);
-    if lat_lo > lat_hi {
-        return;
-    }
-
     let scan_lo = lon_from as isize - radius_cells as isize;
     let scan_hi = lon_to as isize + radius_cells as isize;
-    let scan_width = (scan_hi - scan_lo + 1) as usize;
-    let mut column = vec![0u32; scan_width * class_count];
-    let mut column_total = vec![0u32; scan_width];
-    for logical_lon in scan_lo..=scan_hi {
-        let slot = (logical_lon - scan_lo) as usize;
-        for lat in lat_lo..=lat_hi {
-            let Some(value) = lookup.value_at_global(logical_lon, lat) else {
-                continue;
-            };
-            let plane = plane_of[value as isize as usize & 0xff] as usize;
-            column[slot * class_count + plane] += 1;
-            column_total[slot] += 1;
-        }
-    }
+    for_each_count_row(
+        lat_from,
+        lat_to,
+        lon_from,
+        lon_to,
+        first.bounds.maxlat_source,
+        first.bounds.minlat_source,
+        scan_lo,
+        scan_hi,
+        radius_cells,
+        classes.len(),
+        plane_of,
+        |lon, lat| lookup.value_at_global(lon, lat),
+        emit,
+    );
+}
 
-    let mut running = vec![0u32; class_count];
-    let mut running_total = 0u32;
-    let mut covered_lo = scan_lo;
-    let mut covered_hi = scan_lo;
-    let mut primed = false;
-    for lon in lon_from..=lon_to {
-        let want_lo = lon as isize - radius_cells as isize;
-        let want_hi = lon as isize + radius_cells as isize;
-        if !primed {
-            for column_index in want_lo..=want_hi {
-                let slot = (column_index - scan_lo) as usize;
-                for plane in 0..class_count {
-                    running[plane] += column[slot * class_count + plane];
-                }
-                running_total += column_total[slot];
+#[allow(clippy::too_many_arguments)]
+fn fill_landcover_bitmask(
+    demand: &mut RefinementDemand,
+    radius_cells: usize,
+    max_classes: usize,
+    class_count: usize,
+    plane_of: &[u16],
+    value_at: impl Fn(isize, isize) -> Option<i8> + Sync + Send,
+) -> io::Result<()> {
+    debug_assert!(class_count <= u32::BITS as usize);
+    let window_cells = radius_cells
+        .checked_mul(2)
+        .and_then(|diameter| diameter.checked_add(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "landcover radius overflows"))?;
+    demand.fill_packed_bands_par(|lat_from, lat_to, lon_from, lon_to, words| {
+        let height = lat_to - lat_from + 1;
+        let width = lon_to - lon_from + 1;
+        let scan_height = height + window_cells - 1;
+        let scan_width = width + window_cells - 1;
+        let logical_lat_from = lat_from as isize - radius_cells as isize;
+        let logical_lon_from = lon_from as isize - radius_cells as isize;
+
+        let mut raw = vec![0u32; scan_height];
+        let mut prefix = vec![0u32; scan_height];
+        let mut suffix = vec![0u32; scan_height];
+        let mut vertical = vec![0u32; height];
+        // Keep the last window of vertical class masks. When a column leaves,
+        // a bit is cleared only if that column was the class's latest sighting.
+        let mut ring = vec![0u32; window_cells.saturating_mul(height)];
+        let mut last_seen = vec![usize::MAX; height.saturating_mul(class_count)];
+        let mut present = vec![0u32; height];
+
+        for scan_lon_offset in 0..scan_width {
+            let logical_lon = logical_lon_from + scan_lon_offset as isize;
+            for (scan_lat_offset, cell) in raw.iter_mut().enumerate() {
+                let logical_lat = logical_lat_from + scan_lat_offset as isize;
+                *cell = value_at(logical_lon, logical_lat)
+                    .map(|value| {
+                        let plane = plane_of[value as isize as usize & 0xff] as usize;
+                        1u32 << plane
+                    })
+                    .unwrap_or(0);
             }
-            covered_lo = want_lo;
-            covered_hi = want_hi;
-            primed = true;
-        } else {
-            while covered_hi < want_hi {
-                covered_hi += 1;
-                let slot = (covered_hi - scan_lo) as usize;
-                for plane in 0..class_count {
-                    running[plane] += column[slot * class_count + plane];
+            fixed_window_or(&raw, window_cells, &mut prefix, &mut suffix, &mut vertical);
+
+            let slot = scan_lon_offset % window_cells;
+            let ring_from = slot * height;
+            if scan_lon_offset >= window_cells {
+                let expired = scan_lon_offset - window_cells;
+                for lat_offset in 0..height {
+                    let mut bits = ring[ring_from + lat_offset];
+                    while bits != 0 {
+                        let plane = bits.trailing_zeros() as usize;
+                        let bit = 1u32 << plane;
+                        if last_seen[lat_offset * class_count + plane] == expired {
+                            present[lat_offset] &= !bit;
+                        }
+                        bits &= bits - 1;
+                    }
                 }
-                running_total += column_total[slot];
             }
-            while covered_lo < want_lo {
-                let slot = (covered_lo - scan_lo) as usize;
-                for plane in 0..class_count {
-                    running[plane] -= column[slot * class_count + plane];
+
+            for lat_offset in 0..height {
+                let mask = vertical[lat_offset];
+                ring[ring_from + lat_offset] = mask;
+                let mut bits = mask;
+                while bits != 0 {
+                    let plane = bits.trailing_zeros() as usize;
+                    let bit = 1u32 << plane;
+                    last_seen[lat_offset * class_count + plane] = scan_lon_offset;
+                    present[lat_offset] |= bit;
+                    bits &= bits - 1;
                 }
-                running_total -= column_total[slot];
-                covered_lo += 1;
+            }
+
+            if scan_lon_offset + 1 >= window_cells {
+                let lon_offset = scan_lon_offset + 1 - window_cells;
+                if lon_offset < width {
+                    for (lat_offset, mask) in present.iter().copied().enumerate() {
+                        if mask.count_ones() as usize > max_classes {
+                            let bit = lat_offset * width + lon_offset;
+                            words[bit / 64] |= 1u64 << (bit % 64);
+                        }
+                    }
+                }
             }
         }
-        let base = (lon - lon_from) * class_count;
-        out[base..base + class_count].copy_from_slice(&running);
-        totals[lon - lon_from] = running_total;
+    });
+    Ok(())
+}
+
+fn fixed_window_or(
+    raw: &[u32],
+    window_cells: usize,
+    prefix: &mut [u32],
+    suffix: &mut [u32],
+    out: &mut [u32],
+) {
+    for index in 0..raw.len() {
+        prefix[index] = if index.is_multiple_of(window_cells) {
+            raw[index]
+        } else {
+            prefix[index - 1] | raw[index]
+        };
+    }
+    for index in (0..raw.len()).rev() {
+        suffix[index] = if index + 1 == raw.len() || (index + 1).is_multiple_of(window_cells) {
+            raw[index]
+        } else {
+            suffix[index + 1] | raw[index]
+        };
+    }
+    for (index, cell) in out.iter_mut().enumerate() {
+        *cell = suffix[index] | prefix[index + window_cells - 1];
     }
 }
 
@@ -309,28 +365,48 @@ pub fn landcover_heterogeneity_demand(
             PeriodicLandtypeLookup::read(landtype_file, gridnum_perdegree, bounds, radius_cells)?;
         let (classes, plane_of) = window.classes_and_planes();
         let class_count = classes.len();
-        demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-            let (mut cells, mut totals) = (Vec::new(), Vec::new());
-            periodic_row_counts(
+        if max_classes >= class_count {
+            return Ok(demand);
+        }
+        if class_count <= u32::BITS as usize {
+            fill_landcover_bitmask(
+                &mut demand,
+                radius_cells,
+                max_classes,
+                class_count,
+                &plane_of,
+                |lon, lat| {
+                    usize::try_from(lat)
+                        .ok()
+                        .and_then(|lat| window.value_at_global(lon, lat))
+                },
+            )?;
+            return Ok(demand);
+        }
+        demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+            let mut row = Vec::new();
+            periodic_for_each_row(
                 &window,
-                lat,
+                lat_from,
+                lat_to,
                 lon_from,
                 lon_to,
                 radius_cells,
                 &classes,
                 &plane_of,
-                &mut cells,
-                &mut totals,
+                |lat, cells, totals| {
+                    row.clear();
+                    for index in 0..totals.len() {
+                        let base = index * class_count;
+                        let present = cells[base..base + class_count]
+                            .iter()
+                            .filter(|count| **count > 0)
+                            .count();
+                        row.push(present > max_classes);
+                    }
+                    emit(lat, &row);
+                },
             );
-            row.clear();
-            for index in 0..totals.len() {
-                let base = index * class_count;
-                let present = cells[base..base + class_count]
-                    .iter()
-                    .filter(|count| **count > 0)
-                    .count();
-                row.push(present > max_classes);
-            }
         });
         return Ok(demand);
     }
@@ -339,18 +415,47 @@ pub fn landcover_heterogeneity_demand(
 
     let counts = ClassCounts::build(&window);
     let class_count = counts.classes().len();
-    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-        let (mut cells, mut totals) = (Vec::new(), Vec::new());
-        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
-        row.clear();
-        for index in 0..totals.len() {
-            let base = index * class_count;
-            let present = cells[base..base + class_count]
-                .iter()
-                .filter(|count| **count > 0)
-                .count();
-            row.push(present > max_classes);
-        }
+    if max_classes >= class_count {
+        return Ok(demand);
+    }
+    if class_count <= u32::BITS as usize {
+        fill_landcover_bitmask(
+            &mut demand,
+            radius_cells,
+            max_classes,
+            class_count,
+            counts.plane_of(),
+            |lon, lat| {
+                usize::try_from(lon).ok().and_then(|lon| {
+                    usize::try_from(lat)
+                        .ok()
+                        .and_then(|lat| window.value_at_global(lon, lat))
+                })
+            },
+        )?;
+        return Ok(demand);
+    }
+    demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+        let mut row = Vec::new();
+        counts.for_each_row(
+            lat_from,
+            lat_to,
+            lon_from,
+            lon_to,
+            radius_cells,
+            |lat, cells, totals| {
+                row.clear();
+                for index in 0..totals.len() {
+                    let base = index * class_count;
+                    let present = cells[base..base + class_count]
+                        .iter()
+                        .filter(|count| **count > 0)
+                        .count();
+                    row.push(present > max_classes);
+                }
+                emit(lat, &row);
+            },
+        );
     });
     Ok(demand)
 }
@@ -392,31 +497,33 @@ pub fn sea_ratio_demand(
         let (classes, plane_of) = window.classes_and_planes();
         let class_count = classes.len();
         let ocean_plane = classes.iter().position(|class| *class == 0);
-        demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-            let (mut cells, mut totals) = (Vec::new(), Vec::new());
-            periodic_row_counts(
+        demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+            let mut row = Vec::new();
+            periodic_for_each_row(
                 &window,
-                lat,
+                lat_from,
+                lat_to,
                 lon_from,
                 lon_to,
                 radius_cells,
                 &classes,
                 &plane_of,
-                &mut cells,
-                &mut totals,
+                |lat, cells, totals| {
+                    row.clear();
+                    for (index, total) in totals.iter().enumerate() {
+                        if *total == 0 {
+                            row.push(false);
+                            continue;
+                        }
+                        let ocean = ocean_plane
+                            .map(|plane| cells[index * class_count + plane] as usize)
+                            .unwrap_or(0);
+                        let ratio = ocean as f64 / *total as f64;
+                        row.push(ratio > low && ratio < high);
+                    }
+                    emit(lat, &row);
+                },
             );
-            row.clear();
-            for (index, total) in totals.iter().enumerate() {
-                if *total == 0 {
-                    row.push(false);
-                    continue;
-                }
-                let ocean = ocean_plane
-                    .map(|plane| cells[index * class_count + plane] as usize)
-                    .unwrap_or(0);
-                let ratio = ocean as f64 / *total as f64;
-                row.push(ratio > low && ratio < high);
-            }
         });
         return Ok(demand);
     }
@@ -426,21 +533,30 @@ pub fn sea_ratio_demand(
     let counts = ClassCounts::build(&window);
     let class_count = counts.classes().len();
     let ocean_plane = counts.classes().iter().position(|class| *class == 0);
-    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-        let (mut cells, mut totals) = (Vec::new(), Vec::new());
-        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
-        row.clear();
-        for (index, total) in totals.iter().enumerate() {
-            if *total == 0 {
-                row.push(false);
-                continue;
-            }
-            let ocean = ocean_plane
-                .map(|plane| cells[index * class_count + plane] as usize)
-                .unwrap_or(0);
-            let ratio = ocean as f64 / *total as f64;
-            row.push(ratio > low && ratio < high);
-        }
+    demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+        let mut row = Vec::new();
+        counts.for_each_row(
+            lat_from,
+            lat_to,
+            lon_from,
+            lon_to,
+            radius_cells,
+            |lat, cells, totals| {
+                row.clear();
+                for (index, total) in totals.iter().enumerate() {
+                    if *total == 0 {
+                        row.push(false);
+                        continue;
+                    }
+                    let ocean = ocean_plane
+                        .map(|plane| cells[index * class_count + plane] as usize)
+                        .unwrap_or(0);
+                    let ratio = ocean as f64 / *total as f64;
+                    row.push(ratio > low && ratio < high);
+                }
+                emit(lat, &row);
+            },
+        );
     });
     Ok(demand)
 }
@@ -481,37 +597,39 @@ pub fn dominant_class_demand(
             .enumerate()
             .filter_map(|(index, class)| (*class != 0).then_some(index))
             .collect();
-        demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-            let (mut cells, mut totals) = (Vec::new(), Vec::new());
-            periodic_row_counts(
+        demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+            let mut row = Vec::new();
+            periodic_for_each_row(
                 &window,
-                lat,
+                lat_from,
+                lat_to,
                 lon_from,
                 lon_to,
                 radius_cells,
                 &classes,
                 &plane_of,
-                &mut cells,
-                &mut totals,
+                |lat, cells, totals| {
+                    row.clear();
+                    for index in 0..totals.len() {
+                        let base = index * class_count;
+                        let land: usize = land_planes
+                            .iter()
+                            .map(|plane| cells[base + plane] as usize)
+                            .sum();
+                        if land == 0 {
+                            row.push(false);
+                            continue;
+                        }
+                        let dominant = land_planes
+                            .iter()
+                            .map(|plane| cells[base + plane] as usize)
+                            .max()
+                            .unwrap_or(0);
+                        row.push((dominant as f64 / land as f64) < min_dominant_share);
+                    }
+                    emit(lat, &row);
+                },
             );
-            row.clear();
-            for index in 0..totals.len() {
-                let base = index * class_count;
-                let land: usize = land_planes
-                    .iter()
-                    .map(|plane| cells[base + plane] as usize)
-                    .sum();
-                if land == 0 {
-                    row.push(false);
-                    continue;
-                }
-                let dominant = land_planes
-                    .iter()
-                    .map(|plane| cells[base + plane] as usize)
-                    .max()
-                    .unwrap_or(0);
-                row.push((dominant as f64 / land as f64) < min_dominant_share);
-            }
         });
         return Ok(demand);
     }
@@ -526,27 +644,36 @@ pub fn dominant_class_demand(
         .enumerate()
         .filter_map(|(index, class)| (*class != 0).then_some(index))
         .collect();
-    demand.fill_rows_par(|lat, lon_from, lon_to, row| {
-        let (mut cells, mut totals) = (Vec::new(), Vec::new());
-        counts.row_counts(lat, lon_from, lon_to, radius_cells, &mut cells, &mut totals);
-        row.clear();
-        for index in 0..totals.len() {
-            let base = index * class_count;
-            let land: usize = land_planes
-                .iter()
-                .map(|plane| cells[base + plane] as usize)
-                .sum();
-            if land == 0 {
-                row.push(false);
-                continue;
-            }
-            let dominant = land_planes
-                .iter()
-                .map(|plane| cells[base + plane] as usize)
-                .max()
-                .unwrap_or(0);
-            row.push((dominant as f64 / land as f64) < min_dominant_share);
-        }
+    demand.fill_row_bands_par(|lat_from, lat_to, lon_from, lon_to, emit| {
+        let mut row = Vec::new();
+        counts.for_each_row(
+            lat_from,
+            lat_to,
+            lon_from,
+            lon_to,
+            radius_cells,
+            |lat, cells, totals| {
+                row.clear();
+                for index in 0..totals.len() {
+                    let base = index * class_count;
+                    let land: usize = land_planes
+                        .iter()
+                        .map(|plane| cells[base + plane] as usize)
+                        .sum();
+                    if land == 0 {
+                        row.push(false);
+                        continue;
+                    }
+                    let dominant = land_planes
+                        .iter()
+                        .map(|plane| cells[base + plane] as usize)
+                        .max()
+                        .unwrap_or(0);
+                    row.push((dominant as f64 / land as f64) < min_dominant_share);
+                }
+                emit(lat, &row);
+            },
+        );
     });
     Ok(demand)
 }

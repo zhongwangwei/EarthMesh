@@ -3144,12 +3144,12 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
 
 #[test]
 fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
-    let base = circle_project("algorithm controls").to_yaml().expect("yaml");
-    let lepp = crate::project_edits::set_refinement_backend(
-        base.clone(),
-        "lepp_delaunay".to_string(),
-    )
-    .expect("LEPP algorithm");
+    let base = circle_project("algorithm controls")
+        .to_yaml()
+        .expect("yaml");
+    let lepp =
+        crate::project_edits::set_refinement_backend(base.clone(), "lepp_delaunay".to_string())
+            .expect("LEPP algorithm");
     let lepp = crate::project_edits::set_method_c_algorithm_options(
         lepp, 3, 1.1, 1.5, 9_000, 800, 700, false, 20.0,
     )
