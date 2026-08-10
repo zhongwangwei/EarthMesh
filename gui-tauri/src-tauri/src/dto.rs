@@ -32,6 +32,8 @@ pub(crate) struct ProjectCapabilities {
     pub(crate) default_beta: f64,
     pub(crate) default_relax: f64,
     pub(crate) default_hfield_g: f64,
+    pub(crate) method_c_defaults: earthmesh_project::MethodCRefinementRecipe,
+    pub(crate) harp_dv_defaults: earthmesh_project::HarpDvRefinementRecipe,
     pub(crate) method_c_spring_nxp1_km: f64,
     pub(crate) km_per_degree_equator: f64,
 }

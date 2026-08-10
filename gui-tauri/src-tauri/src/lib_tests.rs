@@ -773,6 +773,8 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.default_beta, 1.2);
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);
+    assert_eq!(capabilities.method_c_defaults, Default::default());
+    assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(
         capabilities.method_c_spring_nxp1_km,
         earthmesh_project::METHOD_C_SPRING_NXP1_KM
@@ -3162,8 +3164,13 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     let summary = project_summary(lepp).expect("LEPP summary");
     assert_eq!(summary.refinement_algorithm, "lepp_delaunay");
     assert_eq!(summary.method_c_lepp_max_cycles, 3);
+    assert_eq!(summary.method_c_lepp_target_size_tolerance, 1.1);
+    assert_eq!(summary.method_c_lepp_maximum_neighbor_size_ratio, 1.5);
     assert_eq!(summary.method_c_lepp_maximum_vertices, 9_000);
+    assert_eq!(summary.method_c_lepp_maximum_insertions_per_cycle, 800);
+    assert_eq!(summary.method_c_lepp_maximum_path_length, 700);
     assert!(!summary.method_c_lepp_stop_at_source_resolution);
+    assert_eq!(summary.method_c_lepp_minimum_triangle_angle_deg, 20.0);
 
     let harp = crate::project_edits::set_refinement_backend(base, "harp_dv".to_string())
         .expect("HARP-DV algorithm");
@@ -3174,7 +3181,12 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     let summary = project_summary(harp).expect("HARP-DV summary");
     assert_eq!(summary.refinement_algorithm, "harp_dv");
     assert_eq!(summary.harp_dv_max_cycles, 4);
+    assert_eq!(summary.harp_dv_minimum_cell_width_m, 2_000.0);
+    assert_eq!(summary.harp_dv_maximum_cells, 10_000);
     assert_eq!(summary.harp_dv_maximum_patch_cells, 900);
+    assert_eq!(summary.harp_dv_maximum_neighbor_scale_ratio, 1.5);
+    assert_eq!(summary.harp_dv_minimum_candidate_separation_m, 2.0);
     assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
+    assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
     assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
 }

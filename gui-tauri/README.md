@@ -105,8 +105,8 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts the four UI algorithm ids `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, and `harp_dv` |
 | `set_method_c_algorithm_options` | `yaml` plus the eight LEPP-Delaunay controls | updated **YAML** after validating cycle, tolerance, neighbor-ratio, vertex/insertion/path limits, source-resolution stop, and minimum angle |
 | `set_harp_dv_options` | `yaml` plus the nine HARP-DV controls | updated **YAML** after validating cycle, cell-width/budget, patch, neighbor-ratio, separation, degree, and angle limits |
-| `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (default h-field; `enabled=false` stores discrete mask mode) |
-| `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?` | updated **YAML** (expert overrides) |
+| `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (opt-in canonical H-field; point+radius is the GUI default) |
+| `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?, isolatedOcean?` | updated **YAML** (expert overrides; compatibility-only values remain preserved even when not editable in the GUI) |
 | `pick_data_file` | – | native file picker → path (or `null`) |
 | `pick_data_folder` | – | native folder picker → path (tiled layers) |
 | `open_project` | – | native open → `{path, yaml}` (or `null`) |

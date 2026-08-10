@@ -92,6 +92,8 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         default_beta: baseline.mkgrd.beta,
         default_relax: baseline.mkgrd.relax,
         default_hfield_g: HfieldRefinementRecipe::default().g,
+        method_c_defaults: Default::default(),
+        harp_dv_defaults: Default::default(),
         method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
         km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
     })
