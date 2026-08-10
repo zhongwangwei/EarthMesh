@@ -310,7 +310,48 @@ fn a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone() {
     assert_eq!(mesh.sites().len(), before_sites);
 }
 
-/// A demand the ladder can satisfy stops at the first rung that passes.
+/// A refinement records the generation of the cell it served.
+#[test]
+fn refining_a_refined_site_records_the_next_generation() {
+    let mut mesh = sphere(6);
+
+    let first = mesh
+        .refine_cell(40, None, CandidatePolicy::default(), permissive())
+        .expect("first refine")
+        .resolved()
+        .expect("first commit")
+        .clone();
+    assert_eq!(
+        mesh.sites()[first.vertex - MESH_STATE_FIRST_ID].depth,
+        1,
+        "a first-level demand records depth 1"
+    );
+
+    let second = mesh
+        .refine_cell(first.vertex, None, CandidatePolicy::default(), permissive())
+        .expect("second refine")
+        .resolved()
+        .expect("second commit")
+        .clone();
+    assert_eq!(
+        mesh.sites()[second.vertex - MESH_STATE_FIRST_ID].depth,
+        2,
+        "refining an inserted site must not be flattened back to depth 1"
+    );
+    let written = mesh.to_triangular_mesh().expect("writeable mesh");
+    let deepest = written
+        .w_faces
+        .iter()
+        .skip(2)
+        .map(|face| face.mrlw)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        deepest >= 3,
+        "face levels must carry the inserted site's depth"
+    );
+}
+
 #[test]
 fn refining_a_cell_keeps_the_first_candidate_that_survives() {
     let mut mesh = sphere(6);

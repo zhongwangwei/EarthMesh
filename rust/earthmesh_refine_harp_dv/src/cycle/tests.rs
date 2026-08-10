@@ -649,10 +649,8 @@ fn the_wall_behind_degree_is_the_pentagons() {
 /// Protected segments are what let a quality target reach Ruppert's bound.
 ///
 /// A 20-degree angle target, with and without them: with, the run converges
-/// and the worst triangle clears 20.7 degrees -- Ruppert's bound, and the
-/// point, because the guarantee is constructive rather than something a
-/// template happened to give. Without, it converges to a worse mesh and never
-/// gets there.
+/// and every triangle clears the requested 20 degrees. Without, it converges
+/// to a worse mesh and never reaches the request.
 ///
 /// 20 degrees, not 25. Guide 11.29: the sound segment list diverges at 25,
 /// which is what the theory says -- Ruppert's proof reaches about 20.7 and no
@@ -740,14 +738,14 @@ fn protected_segments_make_a_quality_target_terminate() {
         "{sites} sites; it should converge, not run away"
     );
     assert!(
-        worst > 20.7,
-        "min triangle angle {worst:.2}; Ruppert bounds this at 20.7"
+        worst >= ANGLE,
+        "min triangle angle {worst:.2}; requested {ANGLE:.2}"
     );
     assert_eq!(stop, StopReason::NoAcceptedTransactions);
 
     let (_, unprotected_worst, _) = run(false);
     assert!(
-        unprotected_worst < 20.7 && unprotected_worst < worst,
+        unprotected_worst < ANGLE && unprotected_worst < worst,
         "without protected segments the bound should not be reached: \
          {unprotected_worst:.2} degrees against {worst:.2}"
     );

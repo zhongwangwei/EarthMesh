@@ -4,11 +4,14 @@ use crate::{
 };
 
 /// Quality-gate thresholds + on-violation policy, carried in an optional
-/// `&quality` namelist block. **Purely additive**: the existing `&mkgrd` /
-/// `&mkrefine` parsers ignore this block, and nothing in mesh generation reads
-/// it — the CLI/GUI map it to `earthmesh_quality::QualityThresholds` and a
-/// Warn/Block policy when judging a finished mesh. Absent block ⇒ `default()`,
-/// which mirrors `earthmesh_quality::QualityThresholds::default()`.
+/// `&quality` namelist block. The existing `&mkgrd` / `&mkrefine` parsers ignore
+/// this block; the CLI/GUI map its ordinary fields to
+/// `earthmesh_quality::QualityThresholds` and a Warn/Block policy when judging
+/// a finished mesh. The explicitly enabled `lepp_post_quality` fields
+/// additionally request a bounded Method-C repair after its canonical mesh is
+/// complete. Absent block ⇒ `default()`, which
+/// mirrors `earthmesh_quality::QualityThresholds::default()` and leaves that
+/// repair off.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QualityNamelist {
     pub min_angle_warn_deg: f64,
@@ -21,6 +24,12 @@ pub struct QualityNamelist {
     pub max_adjacent_resolution_ratio_warn: f64,
     pub worst_cells_limit: i32,
     pub repair_batch_limit: i32,
+    /// Run the optional Method-C LEPP-Delaunay post-quality pass.
+    pub lepp_post_quality: bool,
+    /// Maximum committed terminal-edge insertions in that pass.
+    pub lepp_post_quality_max_insertions: i32,
+    /// Optional absolute edge-length target in kilometres; zero disables it.
+    pub lepp_post_quality_max_edge_km: f64,
     /// "warn" (report only) or "block" (a Fail verdict aborts the run).
     pub on_violation: String,
 }
@@ -39,6 +48,9 @@ impl Default for QualityNamelist {
             max_adjacent_resolution_ratio_warn: 2.0,
             worst_cells_limit: 50,
             repair_batch_limit: 1,
+            lepp_post_quality: false,
+            lepp_post_quality_max_insertions: 50,
+            lepp_post_quality_max_edge_km: 0.0,
             on_violation: String::from("warn"),
         }
     }
@@ -69,6 +81,15 @@ impl QualityNamelist {
                 }
                 "worst_cells_limit" => config.worst_cells_limit = parse_i32(field, value)?,
                 "repair_batch_limit" => config.repair_batch_limit = parse_i32(field, value)?,
+                "lepp_post_quality" => {
+                    config.lepp_post_quality = crate::parse_canonical_bool(field, value)?
+                }
+                "lepp_post_quality_max_insertions" => {
+                    config.lepp_post_quality_max_insertions = parse_i32(field, value)?
+                }
+                "lepp_post_quality_max_edge_km" => {
+                    config.lepp_post_quality_max_edge_km = parse_f64(field, value)?
+                }
                 "on_violation" => config.on_violation = parse_canonical_string(value),
                 _ => return Err(format!("unknown &quality field '{field}'")),
             }
@@ -131,6 +152,16 @@ impl QualityNamelist {
         if self.repair_batch_limit < 0 {
             return Err("quality repair_batch_limit must be non-negative".to_string());
         }
+        if self.lepp_post_quality_max_insertions <= 0 {
+            return Err("quality lepp_post_quality_max_insertions must be positive".to_string());
+        }
+        if !self.lepp_post_quality_max_edge_km.is_finite()
+            || self.lepp_post_quality_max_edge_km < 0.0
+        {
+            return Err(
+                "quality lepp_post_quality_max_edge_km must be finite and non-negative".to_string(),
+            );
+        }
         if !matches!(
             self.on_violation.trim().to_ascii_lowercase().as_str(),
             "warn" | "block" | "auto_refine"
@@ -182,6 +213,19 @@ impl QualityNamelist {
             "  NL%repair_batch_limit = {}\n",
             self.repair_batch_limit
         ));
+        if self.lepp_post_quality {
+            out.push_str("  NL%lepp_post_quality = .TRUE.\n");
+            out.push_str(&format!(
+                "  NL%lepp_post_quality_max_insertions = {}\n",
+                self.lepp_post_quality_max_insertions
+            ));
+            if self.lepp_post_quality_max_edge_km > 0.0 {
+                out.push_str(&format!(
+                    "  NL%lepp_post_quality_max_edge_km = {}\n",
+                    self.lepp_post_quality_max_edge_km
+                ));
+            }
+        }
         out.push_str(&format!(
             "  NL%on_violation = {}\n",
             canonical_quote(&self.on_violation)

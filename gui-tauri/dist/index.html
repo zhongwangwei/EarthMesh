@@ -2052,7 +2052,17 @@ if(MAP_WINDOW_MODE){
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-  let specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+  const defaultAlgorithmControls = () => ({
+    leppMaxCycles: 8, leppTargetSizeTolerance: 1.2, leppMaximumNeighborSizeRatio: 1.75,
+    leppMaximumVertices: 5000000, leppMaximumInsertionsPerCycle: 500000,
+    leppMaximumPathLength: 100000, leppStopAtSourceResolution: true,
+    leppMinimumTriangleAngleDeg: 0, harpMaxCycles: 20, harpMinimumCellWidthM: 1000,
+    harpMaximumCells: 5000000, harpMaximumPatchCells: 10000,
+    harpMaximumNeighborScaleRatio: 1.75, harpMinimumCandidateSeparationM: 1,
+    harpMaximumVertexDegree: 7, harpMinimumTriangleAngleDeg: 30,
+    harpCriterionMinimumAngleDeg: 0
+  });
+  let specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
   let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
@@ -2236,9 +2246,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
       maxPasses: refinementPasses
     });
-    yaml = await invoke("set_refinement_backend", {
-      yaml, backend: specifiedRefine.algorithm || "method_c"
-    });
     yaml = await invoke("set_adaptive_refinement", {
       yaml, enabled: (specifiedRefine.route || "adaptive") === "adaptive",
       maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
@@ -2250,6 +2257,39 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       maxLevel: specifiedRefine.hfieldMaxLevel ?? null,
       baseM: specifiedRefine.hfieldBaseM ?? null
     });
+    yaml = await invoke("set_refinement_backend", {
+      yaml, backend: specifiedRefine.algorithm || "method_c"
+    });
+    if (specifiedRefine.algorithm === "lepp_delaunay") {
+      yaml = await invoke("set_method_c_algorithm_options", {
+        yaml,
+        maxCycles: specifiedRefine.leppMaxCycles,
+        targetSizeTolerance: specifiedRefine.leppTargetSizeTolerance,
+        maximumNeighborSizeRatio: specifiedRefine.leppMaximumNeighborSizeRatio,
+        maximumVertices: specifiedRefine.leppMaximumVertices,
+        maximumInsertionsPerCycle: specifiedRefine.leppMaximumInsertionsPerCycle,
+        maximumPathLength: specifiedRefine.leppMaximumPathLength,
+        stopAtSourceResolution: specifiedRefine.leppStopAtSourceResolution,
+        minimumTriangleAngleDeg: specifiedRefine.leppMinimumTriangleAngleDeg
+      });
+    }
+    if (specifiedRefine.algorithm === "harp_dv") {
+      yaml = await invoke("set_harp_dv_options", {
+        yaml,
+        maxCycles: specifiedRefine.harpMaxCycles,
+        minimumCellWidthM: specifiedRefine.harpMinimumCellWidthM,
+        maximumCells: specifiedRefine.harpMaximumCells,
+        maximumPatchCells: specifiedRefine.harpMaximumPatchCells,
+        maximumNeighborScaleRatio: specifiedRefine.harpMaximumNeighborScaleRatio,
+        minimumCandidateSeparationM: specifiedRefine.harpMinimumCandidateSeparationM,
+        maximumVertexDegree: specifiedRefine.harpMaximumVertexDegree,
+        minimumTriangleAngleDeg: specifiedRefine.harpMinimumTriangleAngleDeg,
+        criterionMinimumAngleDeg: specifiedRefine.harpCriterionMinimumAngleDeg
+      });
+    }
+    if (baseProjectYaml) {
+      yaml = await invoke("preserve_unexposed_quality_fields", { baseYaml: baseProjectYaml, yaml });
+    }
     if (qualityEdit) {
       yaml = await invoke("set_quality",
         { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy, autoRefineBatchCells: qualityEdit.batchCells });
@@ -2361,7 +2401,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       if (t.maxPasses != null) maxPasses = t.maxPasses;
       if (t.specifiedClosePath) {
-        specifiedRefine = { enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+        specifiedRefine = { ...defaultAlgorithmControls(), enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
       }
       if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
       clearRunArtifacts();
@@ -2823,16 +2863,93 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const backend = specifiedRefine.route || "adaptive";
-    // Only the nested algorithm serves the h-field. The other two refuse a run
+    const algorithm = specifiedRefine.algorithm || "method_c";
+    const algorithmInfo = {
+      method_c: z
+        ? "经典 Method-C：规则嵌套细分并添加过渡行；保持 5/6/7 邻接，但只接受其格点结构能表达的区域。"
+        : "Canonical Method-C: regular nested subdivision with transition rows; preserves degree 5/6/7, but only accepts regions its lattice can represent.",
+      lepp_delaunay: z
+        ? "LEPP-Delaunay（AdaptiveHybrid）：沿最长边传播路径局部插点并恢复 Delaunay；支持物理目标尺寸、邻级平衡和受约束区域边界，不读取旧式 H 场。"
+        : "LEPP-Delaunay (AdaptiveHybrid): inserts locally along longest-edge propagation paths and restores Delaunay; supports physical target sizes, neighbor balance, and constrained region boundaries, but not the legacy H-field.",
+      red_green: z
+        ? "Red-Green：把标记三角形四分并闭合悬挂边；适合任意判据形状，最终邻接度由质量检查约束。"
+        : "Red-Green: quarters marked triangles and closes hanging edges; accepts arbitrary criterion shapes, with final vertex degree enforced by quality checks.",
+      harp_dv: z
+        ? "HARP-DV：每轮在当前 Voronoi 单元上重新检查目标尺度，只提交满足拓扑和最小角约束的局部事务。"
+        : "HARP-DV: re-evaluates target scales on current Voronoi cells each cycle and commits only local transactions that preserve topology and minimum angle."
+    }[algorithm];
+    const algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm;
+    const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
+      <div class="grid2">
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="harp_dv" ${algorithmFamily==="harp_dv"?"selected":""}>HARP-DV</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族，不是第四个独立后端。":"LEPP-Delaunay belongs to Method-C; it is not a fourth independent backend.")}
+        <div id="methodCAlgorithmChoice" style="${algorithmFamily==="method_c"?"":"display:none"}">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>
+      </div>
+      <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
+    </div>`;
+    const canonicalMethodCOptions = `<div id="canonicalMethodCOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">Method-C Canonical · ${z?"专属参数":"specific parameters"}</div>
+      <div class="grid2">
+        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"各细化级的判据外扩圈数":"criterion halo per refinement level")}
+        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"各级过渡行上限":"transition-row limit per level")}
+        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"引擎默认":"engine default"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"仅写入 namelist 保持 Canonical 兼容；本版不作用于网格（does not affect the mesh in this build）":"carried into the namelist for Canonical fidelity; does not affect the mesh in this build")}
+        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"仅写入 namelist 保持 Canonical 兼容；本版不作用于网格（does not affect the mesh in this build）":"carried into the namelist for Canonical fidelity; does not affect the mesh in this build")}
+        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="0" placeholder="1">`,z?"仅写入 namelist 保持 Canonical 兼容；本版不作用于网格（does not affect the mesh in this build）":"carried into the namelist for Canonical fidelity; does not affect the mesh in this build")}
+        ${field("RL%weak_concav_eliminate",`<select class="select" id="expertWeakConcav"><option value="">${z?"引擎默认（开）":"engine default (on)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"消除弱凹连接":"remove weak concavities")}
+      </div>
+    </div>`;
+    const leppOptions = `<div id="leppDelaunayOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">Method-C → LEPP-Delaunay / AdaptiveHybrid · ${z?"专属参数":"specific parameters"}</div>
+      <div class="grid2">
+        ${field(z?"最大循环数":"Max cycles",`<input class="input" type="number" id="leppMaxCycles" min="1" step="1" value="${specifiedRefine.leppMaxCycles}">`)}
+        ${field(z?"目标尺寸容差":"Target-size tolerance",`<input class="input" type="number" id="leppTargetSizeTolerance" min="1" step="0.01" value="${specifiedRefine.leppTargetSizeTolerance}">`,z?"当前/目标尺寸允许比例，≥1":"allowed current/target scale ratio, ≥1")}
+        ${field(z?"最大邻级尺寸比":"Max neighbor-size ratio",`<input class="input" type="number" id="leppMaximumNeighborSizeRatio" min="1.0001" step="0.05" value="${specifiedRefine.leppMaximumNeighborSizeRatio}">`)}
+        ${field(z?"最大顶点数":"Max vertices",`<input class="input" type="number" id="leppMaximumVertices" min="1" step="1" value="${specifiedRefine.leppMaximumVertices}">`)}
+        ${field(z?"每循环最大插点":"Max insertions/cycle",`<input class="input" type="number" id="leppMaximumInsertionsPerCycle" min="1" step="1" value="${specifiedRefine.leppMaximumInsertionsPerCycle}">`)}
+        ${field(z?"最长 LEPP 路径":"Max LEPP path length",`<input class="input" type="number" id="leppMaximumPathLength" min="1" step="1" value="${specifiedRefine.leppMaximumPathLength}">`)}
+        ${field(z?"到源分辨率停止":"Stop at source resolution",`<select class="select" id="leppStopAtSourceResolution"><option value="on" ${specifiedRefine.leppStopAtSourceResolution?"selected":""}>${z?"是":"Yes"}</option><option value="off" ${specifiedRefine.leppStopAtSourceResolution?"":"selected"}>${z?"否":"No"}</option></select>`)}
+        ${field(z?"最小三角形角 (°)":"Minimum triangle angle (°)",`<input class="input" type="number" id="leppMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.leppMinimumTriangleAngleDeg}">`,z?"0 关闭质量门":"0 disables the quality gate")}
+      </div>
+    </div>`;
+    const redGreenOptions = `<div id="redGreenOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">Red-Green · ${z?"专属参数":"specific parameters"}</div>
+      <div class="grid2">
+        ${field("HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"每级标记外扩圈数":"marking halo per level")}
+        ${field(z?"最大过渡行":"Max transition rows",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`)}
+        ${field(z?"构建过渡行":"Build transition rows",`<input class="input" value="${z?"开启（生产路径固定）":"On (production invariant)"}" disabled>`,z?"悬挂边闭合所需，不提供无效的关闭选项":"required to close hanging edges; no invalid off switch")}
+        ${field(z?"弱凹消除":"Weak-concavity elimination",`<select class="select" id="expertWeakConcav"><option value="">${z?"引擎默认（开）":"engine default (on)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭（可能超过 7 邻接）":"Off (may exceed degree 7)"}</option></select>`)}
+      </div>
+    </div>`;
+    const harpOptions = `<div id="harpDvOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">HARP-DV · ${z?"专属参数":"specific parameters"}</div>
+      <div class="grid2">
+        ${field(z?"最大循环数":"Max cycles",`<input class="input" type="number" id="harpMaxCycles" min="1" step="1" value="${specifiedRefine.harpMaxCycles}">`)}
+        ${field(z?"最小单元宽度 (m)":"Minimum cell width (m)",`<input class="input" type="number" id="harpMinimumCellWidthM" min="0.001" step="100" value="${specifiedRefine.harpMinimumCellWidthM}">`)}
+        ${field(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="harpMaximumCells" min="1" step="1" value="${specifiedRefine.harpMaximumCells}">`)}
+        ${field(z?"最大事务补丁三角形数":"Maximum patch triangles",`<input class="input" type="number" id="harpMaximumPatchCells" min="1" step="1" value="${specifiedRefine.harpMaximumPatchCells}">`,z?"schema 保留 maximum_patch_cells 名称，实际单位为三角形":"schema keeps maximum_patch_cells; the actual unit is triangles")}
+        ${field(z?"最大邻胞尺度比":"Max neighbor-scale ratio",`<input class="input" type="number" id="harpMaximumNeighborScaleRatio" min="1.0001" step="0.05" value="${specifiedRefine.harpMaximumNeighborScaleRatio}">`)}
+        ${field(z?"候选点最小间距 (m)":"Candidate minimum separation (m)",`<input class="input" type="number" id="harpMinimumCandidateSeparationM" min="0.001" step="0.1" value="${specifiedRefine.harpMinimumCandidateSeparationM}">`)}
+        ${field(z?"最大顶点邻接度":"Maximum vertex degree",`<input class="input" type="number" id="harpMaximumVertexDegree" min="3" max="7" step="1" value="${specifiedRefine.harpMaximumVertexDegree}">`,z?"gridfile 上限为 7":"gridfile limit is 7")}
+        ${field(z?"事务最小角硬门 (°)":"Transaction minimum-angle gate (°)",`<input class="input" type="number" id="harpMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.harpMinimumTriangleAngleDeg}">`)}
+        ${field(z?"Ruppert 最小角需求 (°)":"Ruppert minimum-angle criterion (°)",`<input class="input" type="number" id="harpCriterionMinimumAngleDeg" min="0" max="20.7" step="0.1" value="${specifiedRefine.harpCriterionMinimumAngleDeg}">`,z?"0 关闭；≤20.7° 保持终止性边界":"0 disables it; ≤20.7° preserves the termination bound")}
+        ${field(z?"执行约束":"Execution invariants",`<input class="input" value="${z?"确定性单线程；闭合球面":"deterministic single-thread; closed surface"}" disabled>`,z?"当前实现只有这一种有效模式，因此不伪造无效开关":"the implementation has only this valid mode, so no fake switches are exposed")}
+      </div>
+    </div>`;
+    const algorithmOptionsBlock = {
+      method_c: canonicalMethodCOptions,
+      lepp_delaunay: leppOptions,
+      red_green: redGreenOptions,
+      harp_dv: harpOptions
+    }[algorithm];
+    // Only the canonical nested algorithm serves the h-field. The others refuse a run
     // that configures one, so offering it beside them builds a project that
     // cannot run -- and before they grew the refusal, HARP-DV took the pair and
     // quietly produced a mesh having never read the field.
-    const hfieldServed = (specifiedRefine.algorithm || "method_c") === "method_c";
+    const hfieldServed = algorithm === "method_c";
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${z ? "专家 — 细化方案" : "EXPERT — refinement backend"}</span>
+      <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"细化算法":"Refinement algorithm",`<select class="select" id="refineAlgorithm"><option value="method_c" ${(specifiedRefine.algorithm||"method_c")==="method_c"?"selected":""}>Method-C${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="red_green" ${specifiedRefine.algorithm==="red_green"?"selected":""}>Red-Green${z?"（任意区域）":" (arbitrary regions)"}</option><option value="harp_dv" ${specifiedRefine.algorithm==="harp_dv"?"selected":""}>HARP-DV${z?"（逐单元重读判据）":" (re-reads criteria per cell)"}</option></select>`,z?"Method-C 只细化它造得出的块形，判据驱动的形状会被拒绝；Red-Green 把标记集扩张到可行，从不拒绝形状；HARP-DV 每轮对现有单元重新求值，只在仍不满足处局部改网格，并拒绝会留下瘦三角形的改动——目前只服务圆形区域":"Method-C refines only shapes it can build and refuses one that came from the data; Red-Green grows a marking until it is legal and never refuses a shape; HARP-DV re-reads the criteria against the cells that exist each cycle and changes the mesh only where they are still unmet, refusing any change that would leave a thin triangle -- it serves circular regions only")}
-        ${field(z?"细化方案":"Refinement backend",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点+半径（默认）":"Point+radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""} ${hfieldServed?"":"disabled"}>${z?"H 场":"H-field"}${hfieldServed?"":(z?"（仅 Method-C）":" (Method-C only)")}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"discrete 硬掩膜":"discrete mask"}</option></select>`,z?"默认点+半径：每细化一层前重新判据；H 场一次性定完；discrete 只为复现实验":"default point+radius: criteria re-asked before each pass; H-field settles once; discrete only for parity")}
+        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点 + 半径（默认）":"Point + radius (default)"}</option><option value="hfield" ${backend==="hfield"?"selected":""} ${hfieldServed?"":"disabled"}>${z?"H 场":"H-field"}${hfieldServed?"":(z?"（仅 Canonical Method-C）":" (Canonical Method-C only)")}</option><option value="discrete" ${backend==="discrete"?"selected":""}>${z?"离散硬掩膜":"Discrete hard mask"}</option></select>`,z?"这不是算法：它决定如何把指定区域和数据判据编译成算法需求。":"This is not an algorithm; it controls how regions and data criteria become algorithm demand.")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
@@ -2844,14 +2961,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
       </div>
       <div id="discreteOptions" class="grid2" style="margin-top:10px;${backend==="discrete"?"":"display:none"}">
-        <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散模式使用指定/阈值掩膜，不写 &hfield。以下参数只属于 discrete。":"Discrete mode uses specified/threshold masks and does not emit &hfield. The controls below are discrete-only."}</div>
-        ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
-        ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"discrete 默认 4,4,3":"discrete default 4,4,3")}
-        ${field("RL%set_dis_type",`<select class="select" id="expertSetDisType"><option value="">${z?"默认 /tmp":"default /tmp"}</option><option value="linear">linear</option><option value="nonlinear1">nonlinear1</option><option value="nonlinear2">nonlinear2</option><option value="nonlinear3">nonlinear3</option></select>`,z?"discrete 距离分布函数；本版不作用于网格，仅写入 namelist 以保持与 Canonical 一致":"discrete distance distribution; carried into the namelist for Canonical fidelity and does not affect the mesh in this build")}
-        ${field("RL%num_rc",`<input class="input" type="number" id="expertNumRc" min="0" placeholder="0">`,z?"discrete 默认 0；本版不作用于网格，仅写入 namelist 以保持与 Canonical 一致":"discrete default 0; carried into the namelist for Canonical fidelity and does not affect the mesh in this build")}
-        ${field("RL%vertex_pretect_layers",`<input class="input" type="number" id="expertVertexPretectLayers" min="1" placeholder="1">`,z?"discrete 默认 1；本版不作用于网格，仅写入 namelist 以保持与 Canonical 一致":"discrete default 1; carried into the namelist for Canonical fidelity and does not affect the mesh in this build")}
-        ${field("RL%weak_concav_eliminate",`<select class="select" id="expertWeakConcav"><option value="">${z?"默认（引擎决定）":"default (engine decides)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"未设置时用引擎默认；打开的项目原样保留。关闭它会让 Red-Green 产出 8 度单元，超出 gridfile 的 7 度上限，运行会中止（NXP 15/21/30 实测必然发生）":"engine default when unset; preserved exactly for opened projects. Turning it off makes Red-Green produce a degree-8 cell, past the gridfile's limit of 7, and the run stops -- measured at NXP 15, 21 and 30")}
-        ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"仅保留最大连通水体，剔除孤立单元与捏合顶点":"keep only the largest connected water body; drops orphan cells and pinched vertices")}
+        <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
     const expertRefine = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
@@ -2859,6 +2969,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div class="grid2" style="margin-top:10px">
         ${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
         ${field("RL%niter_refine",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?"留空由引擎按目标网格选择":"blank lets the engine choose for the target mesh")}
+        ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"通用输出清理：仅保留最大连通水体":"common output cleanup: keep only the largest connected water body")}
       </div>
     </div>`;
 
@@ -2936,6 +3047,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>`;
       const strategyEnabled = specifiedRefine.enabled || thresholdRefine.enabled;
       const mp = switches
+        + algorithmBlock
+        + algorithmOptionsBlock
         + (specifiedRefine.enabled ? specified : "")
         + (thresholdRefine.enabled ? threshold : "")
         + (strategyEnabled ? hfieldBlock + expertRefine : "");
@@ -2962,9 +3075,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         clearRunArtifacts();
       };
       if (backendSel) backendSel.onchange = syncBackend;
-      const algoSel = document.getElementById("refineAlgorithm");
-      if (algoSel) algoSel.onchange = () => {
-        specifiedRefine.algorithm = algoSel.value;
+      const familySel = document.getElementById("refineBackendFamily");
+      const methodCAlgorithmSel = document.getElementById("methodCAlgorithm");
+      const selectAlgorithm = (next) => {
+        specifiedRefine.algorithm = next;
         // Switching away from the nested algorithm with the h-field selected
         // would leave a project the run refuses. Disabling the option is not
         // enough on its own -- a browser keeps a disabled option selected if it
@@ -2978,12 +3092,54 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         clearRunArtifacts();
         enhanceRefinementStep();
       };
+      if (familySel) familySel.onchange = () => selectAlgorithm(
+        familySel.value === "method_c"
+          ? (methodCAlgorithmSel && methodCAlgorithmSel.value === "lepp_delaunay" ? "lepp_delaunay" : "method_c")
+          : familySel.value
+      );
+      if (methodCAlgorithmSel) methodCAlgorithmSel.onchange = () => selectAlgorithm(
+        methodCAlgorithmSel.value === "lepp_delaunay" ? "lepp_delaunay" : "method_c"
+      );
       const hfG = document.getElementById("hfieldG");
       if (hfG) hfG.addEventListener("input", () => { const v = parseFloat(hfG.value); specifiedRefine.hfieldG = Number.isFinite(v) ? v : null; });
       const hfMax = document.getElementById("hfieldMaxLevel");
       if (hfMax) hfMax.addEventListener("input", () => { const v = parseInt(hfMax.value, 10); specifiedRefine.hfieldMaxLevel = Number.isFinite(v) ? v : null; });
       const hfBase = document.getElementById("hfieldBaseM");
       if (hfBase) hfBase.addEventListener("input", () => { const v = parseFloat(hfBase.value); specifiedRefine.hfieldBaseM = Number.isFinite(v) ? v : null; });
+      const bindAlgorithmNumber = (id, key, integer=false) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const update = () => {
+          const value = integer ? parseInt(el.value, 10) : parseFloat(el.value);
+          specifiedRefine[key] = Number.isFinite(value) ? value : 0;
+          clearRunArtifacts();
+        };
+        el.oninput = update;
+        el.onchange = update;
+      };
+      [
+        ["leppMaxCycles","leppMaxCycles",true],
+        ["leppTargetSizeTolerance","leppTargetSizeTolerance",false],
+        ["leppMaximumNeighborSizeRatio","leppMaximumNeighborSizeRatio",false],
+        ["leppMaximumVertices","leppMaximumVertices",true],
+        ["leppMaximumInsertionsPerCycle","leppMaximumInsertionsPerCycle",true],
+        ["leppMaximumPathLength","leppMaximumPathLength",true],
+        ["leppMinimumTriangleAngleDeg","leppMinimumTriangleAngleDeg",false],
+        ["harpMaxCycles","harpMaxCycles",true],
+        ["harpMinimumCellWidthM","harpMinimumCellWidthM",false],
+        ["harpMaximumCells","harpMaximumCells",true],
+        ["harpMaximumPatchCells","harpMaximumPatchCells",true],
+        ["harpMaximumNeighborScaleRatio","harpMaximumNeighborScaleRatio",false],
+        ["harpMinimumCandidateSeparationM","harpMinimumCandidateSeparationM",false],
+        ["harpMaximumVertexDegree","harpMaximumVertexDegree",true],
+        ["harpMinimumTriangleAngleDeg","harpMinimumTriangleAngleDeg",false],
+        ["harpCriterionMinimumAngleDeg","harpCriterionMinimumAngleDeg",false]
+      ].forEach(([id,key,integer]) => bindAlgorithmNumber(id,key,integer));
+      const leppSourceStop = document.getElementById("leppStopAtSourceResolution");
+      if (leppSourceStop) leppSourceStop.onchange = () => {
+        specifiedRefine.leppStopAtSourceResolution = leppSourceStop.value === "on";
+        clearRunArtifacts();
+      };
     }
     // toggles (only for criteria that have data)
     critCard.querySelectorAll(".em-crit").forEach((row) => {
@@ -3307,6 +3463,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         n: sum.specified_refine_bbox ? sum.specified_refine_bbox[3] : null,
         path: sum.specified_refine_path ?? null,
         closeBoundary: normalizeCloseBoundary(sum.specified_refine_close_boundary),
+        algorithm: sum.refinement_algorithm || sum.refinement_backend || "method_c",
+        leppMaxCycles: sum.method_c_lepp_max_cycles ?? 8,
+        leppTargetSizeTolerance: sum.method_c_lepp_target_size_tolerance ?? 1.2,
+        leppMaximumNeighborSizeRatio: sum.method_c_lepp_maximum_neighbor_size_ratio ?? 1.75,
+        leppMaximumVertices: sum.method_c_lepp_maximum_vertices ?? 5000000,
+        leppMaximumInsertionsPerCycle: sum.method_c_lepp_maximum_insertions_per_cycle ?? 500000,
+        leppMaximumPathLength: sum.method_c_lepp_maximum_path_length ?? 100000,
+        leppStopAtSourceResolution: sum.method_c_lepp_stop_at_source_resolution !== false,
+        leppMinimumTriangleAngleDeg: sum.method_c_lepp_minimum_triangle_angle_deg ?? 0,
+        harpMaxCycles: sum.harp_dv_max_cycles ?? 20,
+        harpMinimumCellWidthM: sum.harp_dv_minimum_cell_width_m ?? 1000,
+        harpMaximumCells: sum.harp_dv_maximum_cells ?? 5000000,
+        harpMaximumPatchCells: sum.harp_dv_maximum_patch_cells ?? 10000,
+        harpMaximumNeighborScaleRatio: sum.harp_dv_maximum_neighbor_scale_ratio ?? 1.75,
+        harpMinimumCandidateSeparationM: sum.harp_dv_minimum_candidate_separation_m ?? 1,
+        harpMaximumVertexDegree: sum.harp_dv_maximum_vertex_degree ?? 7,
+        harpMinimumTriangleAngleDeg: sum.harp_dv_minimum_triangle_angle_deg ?? 30,
+        harpCriterionMinimumAngleDeg: sum.harp_dv_criterion_minimum_angle_deg ?? 0,
         route: sum.hfield_enabled ? "hfield" : (sum.adaptive_enabled ? "adaptive" : "discrete"),
         adaptiveMaxLevel: sum.adaptive_max_level ?? 0,
         adaptiveCoastline: sum.adaptive_coastline !== false,
@@ -3379,7 +3553,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
-    specifiedRefine = { enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
+    specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
     if (typeof setExpertMode === "function") setExpertMode(false);
     hiddenDomainShape = null;
     metadataEdit = { authors: [], description: "" };

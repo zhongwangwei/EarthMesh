@@ -74,7 +74,7 @@ pub struct CandidatePolicy {
 impl Default for CandidatePolicy {
     fn default() -> Self {
         Self {
-            min_separation_m: 1.0,
+            min_separation_m: earthmesh_core::DEFAULT_HARP_DV_MINIMUM_CANDIDATE_SEPARATION_M,
         }
     }
 }

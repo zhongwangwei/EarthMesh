@@ -57,7 +57,7 @@ CellFeatureTable      每单元的特征值表
 RefinementCriterion   判据 trait（已存在！）
 CriterionContext      判据上下文（已存在！）
 CellScore / CombineRule / CompositeScoreConfig
-RefinementBudget / AllocationMethod / QualityConstraint
+RefinementBudget / QualityConstraint
 TargetLevelMap        每单元目标层级（已存在！）
 RefinementDecision / RefinementReport
 ```

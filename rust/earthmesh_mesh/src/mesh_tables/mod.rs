@@ -38,10 +38,6 @@ use crate::TriangularMesh;
 impl MeshState {
     /// Build the three-table mesh, deriving edges, incidence and ordering.
     ///
-    /// `impent` is the twelve pentagon ids, carried from whatever mesh this
-    /// one descends from -- see the module docs for why they cannot be
-    /// derived.
-    ///
     /// `impent` is the twelve pentagon ids, carried from whatever mesh this one
     /// descends from -- see the module docs for why they cannot be derived.
     ///

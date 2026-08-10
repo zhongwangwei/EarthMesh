@@ -1,4 +1,9 @@
 use crate::error::{HarpDvError, Result};
+use earthmesh_core::{
+    DEFAULT_HARP_DV_MAXIMUM_CELLS, DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO,
+    DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS, DEFAULT_HARP_DV_MAX_CYCLES,
+    DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M,
+};
 
 /// What the run is allowed to do, and where it must stop.
 ///
@@ -42,11 +47,11 @@ pub struct HarpDvConfig {
 impl Default for HarpDvConfig {
     fn default() -> Self {
         Self {
-            max_cycles: 20,
-            minimum_cell_width_m: 1_000.0,
-            maximum_cells: 5_000_000,
-            maximum_patch_cells: 10_000,
-            maximum_neighbor_scale_ratio: 1.75,
+            max_cycles: DEFAULT_HARP_DV_MAX_CYCLES,
+            minimum_cell_width_m: DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M,
+            maximum_cells: DEFAULT_HARP_DV_MAXIMUM_CELLS,
+            maximum_patch_cells: DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
+            maximum_neighbor_scale_ratio: DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO,
             deterministic: true,
         }
     }

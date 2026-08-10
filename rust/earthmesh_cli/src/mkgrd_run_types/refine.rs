@@ -20,6 +20,38 @@ pub struct RefineCoupledOutputReport {
     pub counts: ColmSurfaceCounts,
 }
 
+/// The separately written LEPP-Delaunay repair of a canonical Method-C mesh.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeppPostQualityRunRecord {
+    pub stop_reason: String,
+    pub attempted: usize,
+    pub committed: usize,
+    pub rejected: usize,
+    pub violations_before: usize,
+    pub violations_after: usize,
+    pub worst_violation_before: f64,
+    pub worst_violation_after: f64,
+    pub report: PathBuf,
+    pub raw_output: Option<UnstructuredMeshWriteReport>,
+    pub landtype_masked_cells: Option<usize>,
+    pub coupled_outputs: Option<RefineCoupledOutputReport>,
+    pub output: UnstructuredMeshWriteReport,
+}
+
+/// Evidence from Method-C's LEPP-Delaunay AdaptiveHybrid algorithm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeppAdaptiveHybridRunRecord {
+    pub stop_reason: String,
+    pub cycles: usize,
+    pub physical_insertions: usize,
+    pub balance_insertions: usize,
+    pub quality_insertions: usize,
+    pub boundary_insertions: usize,
+    pub unresolved_demands: usize,
+    pub report: PathBuf,
+    pub unresolved_report: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinePipelineRunReport {
     pub gridinit: MkgrdGridinitRunReport,
@@ -78,6 +110,11 @@ pub struct RefinePipelineRunReport {
     /// exits zero with a mesh written, exactly like one that met every demand.
     /// Without this a caller cannot tell them apart.
     pub harp_dv_run: Option<crate::refine_pipeline::HarpDvRunRecord>,
+    /// Method-C AdaptiveHybrid evidence, or `None` for canonical Method-C and
+    /// the other refinement backends.
+    pub lepp_adaptive_hybrid: Option<LeppAdaptiveHybridRunRecord>,
+    /// Explicit optional repair output; the canonical `output` remains intact.
+    pub lepp_post_quality: Option<LeppPostQualityRunRecord>,
     pub spring_nest_iterations: usize,
     pub raw_output: Option<UnstructuredMeshWriteReport>,
     pub landtype_masked_cells: Option<usize>,

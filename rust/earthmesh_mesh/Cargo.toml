@@ -11,6 +11,7 @@ name = "earthmesh_mesh"
 path = "src/lib.rs"
 
 [dependencies]
+earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_core = { path = "../earthmesh_core" }
 rayon = "1"
 

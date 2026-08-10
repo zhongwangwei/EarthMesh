@@ -1,8 +1,13 @@
 use crate::final_quality_non_negative_usize;
 use crate::gridfile_mesh_from_one_based_state;
+use crate::harp_dv_options::{read_harp_dv_options, HarpDvRunOptions};
+use crate::method_c_algorithm::{
+    read_method_c_algorithm_options, MethodCAlgorithm, MethodCAlgorithmOptions,
+};
 use crate::method_c_delaunay_mesh_from_unstructured_gridfile;
 use crate::method_c_refinement_region_level;
 use crate::method_c_spring_iterations;
+use crate::mkgrd_run_types::{LeppAdaptiveHybridRunRecord, LeppPostQualityRunRecord};
 use crate::native_grid_refinement_depth;
 use crate::native_grid_refinement_requested;
 use crate::native_initial_delaunay_mesh;
@@ -23,16 +28,22 @@ use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
 use crate::MethodCGridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
-use earthmesh_refine_method_c::MethodCMesh;
+use earthmesh_refine_method_c::{
+    improve_lepp_post_quality, refine_adaptive_hybrid, refine_adaptive_hybrid_constrained,
+    AdaptiveHybridConfig, AdaptiveHybridDemand, AdaptiveHybridUnresolvedDemand,
+    AdaptiveHybridUnresolvedReason, LeppInsertionGates, LeppPostQualityConfig,
+    LeppPostQualityReport, LeppSearchConfig, MethodCMesh,
+};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, RefineConfig};
+use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, QualityNamelist, RefineConfig};
 use earthmesh_mesh::{
     grid_cartesian_xy_to_lonlat_placeholders_one_based_state, grid_xyz2lonlat_one_based_state,
     pcvt_adjust_voronoi_grid_state, voronoi_grid_from_triangular_mesh,
-    voronoi_grid_from_triangular_mesh_cartesian, TriangularMesh,
+    voronoi_grid_from_triangular_mesh_cartesian, MeshState, TriangularMesh,
 };
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
@@ -49,6 +60,10 @@ pub fn run_refine_pipeline_namelist(
     let contents = fs::read_to_string(namelist_source)?;
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let quality = QualityNamelist::from_quality_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
+    let harp_dv_options = read_harp_dv_options(&contents)?;
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(&contents)?;
     let native_deltax = read_native_grid_deltax(&contents)?;
@@ -209,6 +224,14 @@ pub fn run_refine_pipeline_namelist(
         config.mask_domain_global,
         native_only_spawn,
     ) || native_mdomain == Some(5);
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay
+        && (native_cartesian_xy || native_surface_global_expansion)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LEPP AdaptiveHybrid requires the spherical Method-C base mesh; Cartesian-XY and native surface expansion are unsupported",
+        ));
+    }
     let method_c_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
     let active_hfield_options = hfield_options.as_ref();
@@ -296,6 +319,32 @@ pub fn run_refine_pipeline_namelist(
     // said nothing -- a user asking for one backend and silently getting
     // another, which is the failure class guide 11.1 records.
     let backend = refine_backend_name(&config.refine_backend)?;
+    if quality.lepp_post_quality && backend != RefineBackend::MethodC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NL%lepp_post_quality requires NL%refine_backend='method_c'",
+        ));
+    }
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay
+        && backend != RefineBackend::MethodC
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "&method_c algorithm='lepp_delaunay' requires NL%refine_backend='method_c'",
+        ));
+    }
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay && quality.lepp_post_quality {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LEPP AdaptiveHybrid and LEPP post-quality cannot both own the same Method-C run",
+        ));
+    }
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay && hfield_options.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LEPP AdaptiveHybrid does not consume &hfield; use &adaptive or named regions",
+        ));
+    }
 
     // named region by another name, but a criterion with neither a file nor
     // `&adaptive` behind it has nowhere to go.
@@ -407,6 +456,9 @@ pub fn run_refine_pipeline_namelist(
         hfield_diagnostics,
         adaptive_run,
         harp_dv_run,
+        lepp_hard_regions,
+        lepp_adaptive_hybrid,
+        lepp_post_quality,
     } = match backend {
         RefineBackend::RedGreen => {
             // What this route does not read, said outright rather than served
@@ -485,70 +537,138 @@ pub fn run_refine_pipeline_namelist(
             refine_with_harp_dv(
                 &mesh,
                 &regions,
+                adaptive_options.as_ref(),
+                &config,
+                domain_region.as_ref(),
+                mesh_type,
                 method_c_nxp,
+                max_level,
                 usize::try_from(refine.niter_refine).unwrap_or(0),
                 &refine,
+                harp_dv_options,
             )?
         }
         RefineBackend::MethodC => {
-            let MethodCRefineOutcome {
-                mesh,
-                spring_nest_passes,
-                hfield_diagnostics,
-                adaptive_run,
-            } = refine_with_method_c(
-                mesh,
-                MethodCRefineRequest {
-                    config: &config,
-                    refine: &refine,
+            if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay {
+                refine_with_method_c_lepp(
+                    mesh,
+                    &regions,
+                    adaptive_options.as_ref(),
+                    &refine,
+                    &config,
+                    domain_region.as_ref(),
                     mesh_type,
-                    regions: &regions,
-                    native_atmosphere_regions: &native_atmosphere_regions,
-                    native_surface_regions: &native_surface_regions,
-                    domain_region: domain_region.as_ref(),
-                    hfield_options: active_hfield_options,
-                    adaptive_options: adaptive_options.as_ref(),
-                    is_atmosmesh,
-                    native_only_spawn,
-                    native_surface_global_expansion,
-                    native_cartesian_xy,
-                    native_deltax,
-                    native_sfcgrid_res_factor,
-                    nxp,
                     method_c_nxp,
                     max_level,
-                    max_cal_level,
-                    has_hydro_hfield_source,
-                    has_threshold_hfield_sources,
-                    spring_nest_iterations,
-                },
-            )?;
-            let state = if native_cartesian_xy {
-                let mut state = voronoi_grid_from_triangular_mesh_cartesian(
-                    &mesh,
-                    earthmesh_core::EARTH_RADIUS_METERS,
-                )?;
-                grid_cartesian_xy_to_lonlat_placeholders_one_based_state(&mut state.grid)?;
-                state
+                    method_c_algorithm,
+                )?
             } else {
-                spherical_voronoi_state(&mesh)?
-            };
-            let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-            let method_c_metadata = Some(gridfile_metadata(&state, &mesh)?);
-            RefinedGrid {
-                transition_faces: mesh.boundary_rows().len(),
-                // The twelve pentagons are the icosahedron's, taken here off the
-                // refined mesh -- which is the numbering the run record wants --
-                // rather than off the Voronoi `state`, which not every backend
-                // has.
-                pentagon_indices: mesh.impent,
-                state: Some(state),
-                output_mesh,
-                method_c_metadata,
-                spring_nest_passes,
-                hfield_diagnostics,
-                adaptive_run,
-                harp_dv_run: None,
+                let MethodCRefineOutcome {
+                    mesh,
+                    spring_nest_passes,
+                    hfield_diagnostics,
+                    adaptive_run,
+                } = refine_with_method_c(
+                    mesh,
+                    MethodCRefineRequest {
+                        config: &config,
+                        refine: &refine,
+                        mesh_type,
+                        regions: &regions,
+                        native_atmosphere_regions: &native_atmosphere_regions,
+                        native_surface_regions: &native_surface_regions,
+                        domain_region: domain_region.as_ref(),
+                        hfield_options: active_hfield_options,
+                        adaptive_options: adaptive_options.as_ref(),
+                        is_atmosmesh,
+                        native_only_spawn,
+                        native_surface_global_expansion,
+                        native_cartesian_xy,
+                        native_deltax,
+                        native_sfcgrid_res_factor,
+                        nxp,
+                        method_c_nxp,
+                        max_level,
+                        max_cal_level,
+                        has_hydro_hfield_source,
+                        has_threshold_hfield_sources,
+                        spring_nest_iterations,
+                    },
+                )?;
+                let lepp_post_quality = if quality.lepp_post_quality {
+                    if native_cartesian_xy || domain_region.is_some() {
+                        return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "NL%lepp_post_quality currently requires a global spherical closed mesh",
+                    ));
+                    }
+                    let mut post_quality_mesh = MeshState::from_triangular_mesh(mesh.mesh())?;
+                    let post_quality_config = LeppPostQualityConfig {
+                        maximum_edge_length: (quality.lepp_post_quality_max_edge_km > 0.0)
+                            .then_some(quality.lepp_post_quality_max_edge_km * 1000.0),
+                        minimum_spherical_triangle_angle_degrees: Some(quality.min_angle_warn_deg),
+                        maximum_insertions: usize::try_from(
+                            quality.lepp_post_quality_max_insertions,
+                        )
+                        .map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "NL%lepp_post_quality_max_insertions must fit usize",
+                            )
+                        })?,
+                        gates: LeppInsertionGates::for_method_c(mesh.impent),
+                        ..LeppPostQualityConfig::default()
+                    };
+                    let report =
+                        improve_lepp_post_quality(&mut post_quality_mesh, &post_quality_config)
+                            .map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("LEPP post-quality failed: {error}"),
+                                )
+                            })?;
+                    let optimized = post_quality_mesh.to_triangular_mesh(mesh.impent, None)?;
+                    let optimized_state = spherical_voronoi_state(&optimized)?;
+                    Some(LeppPostQualityGrid {
+                        output_mesh: gridfile_mesh_from_one_based_state(
+                            &optimized_state.grid,
+                            &optimized_state.tabs,
+                        )?,
+                        report,
+                    })
+                } else {
+                    None
+                };
+                let state = if native_cartesian_xy {
+                    let mut state = voronoi_grid_from_triangular_mesh_cartesian(
+                        &mesh,
+                        earthmesh_core::EARTH_RADIUS_METERS,
+                    )?;
+                    grid_cartesian_xy_to_lonlat_placeholders_one_based_state(&mut state.grid)?;
+                    state
+                } else {
+                    spherical_voronoi_state(&mesh)?
+                };
+                let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+                let method_c_metadata = Some(gridfile_metadata(&state, &mesh)?);
+                RefinedGrid {
+                    transition_faces: mesh.boundary_rows().len(),
+                    // The twelve pentagons are the icosahedron's, taken here off the
+                    // refined mesh -- which is the numbering the run record wants --
+                    // rather than off the Voronoi `state`, which not every backend
+                    // has.
+                    pentagon_indices: mesh.impent,
+                    state: Some(state),
+                    output_mesh,
+                    method_c_metadata,
+                    spring_nest_passes,
+                    hfield_diagnostics,
+                    adaptive_run,
+                    harp_dv_run: None,
+                    lepp_hard_regions: Vec::new(),
+                    lepp_adaptive_hybrid: None,
+                    lepp_post_quality,
+                }
             }
         }
     };
@@ -622,15 +742,9 @@ pub fn run_refine_pipeline_namelist(
             //
             // Every cell here is far smaller than a hemisphere, so the minor
             // area is the one below 2*pi and the complement is the one above.
-            let steradians = steradians.abs();
-            let steradians = if steradians > 2.0 * std::f64::consts::PI {
-                4.0 * std::f64::consts::PI - steradians
-            } else {
-                steradians
-            };
-            if !steradians.is_finite() || steradians <= 0.0 {
+            let Some(steradians) = minor_cell_steradians(steradians) else {
                 continue;
-            }
+            };
             across.push((steradians / std::f64::consts::PI).sqrt() * radius_km);
         }
         if across.is_empty() {
@@ -655,6 +769,23 @@ pub fn run_refine_pipeline_namelist(
     // read near four halvings there whatever was requested. A level is a claim
     // about the refined region relative to the rest.
     let realized_region_halvings = {
+        let adaptive_regions = adaptive_run
+            .as_ref()
+            .map(|(report, _, _, _)| {
+                report
+                    .passes
+                    .iter()
+                    .flat_map(|pass| pass.regions.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let measure_regions = if !lepp_hard_regions.is_empty() {
+            lepp_hard_regions.as_slice()
+        } else if !adaptive_regions.is_empty() {
+            adaptive_regions.as_slice()
+        } else {
+            regions.as_slice()
+        };
         let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
         let mut inside: Vec<f64> = Vec::new();
         let mut outside: Vec<f64> = Vec::new();
@@ -688,33 +819,17 @@ pub fn run_refine_pipeline_namelist(
             let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
                 continue;
             };
-            // Absolute, because the sign is the winding and about half the
-            // cells wind the other way.
-            let steradians = steradians.abs();
-            if !steradians.is_finite() || steradians <= 0.0 {
+            let Some(steradians) = minor_cell_steradians(steradians) else {
                 continue;
-            }
+            };
             let Some(centre) = output_mesh.w_points.get(row) else {
                 continue;
             };
             let across_km = (steradians / std::f64::consts::PI).sqrt() * radius_km;
-            let seat = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
-                earthmesh_mesh::LonLatDegrees::new(centre.lon, centre.lat),
-            );
-            let in_region = regions.iter().any(|region| {
-                let earthmesh_mesh::RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    ..
-                } = region
-                else {
-                    return false;
-                };
-                let target = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-                let dot =
-                    (seat.x * target.x + seat.y * target.y + seat.z * target.z).clamp(-1.0, 1.0);
-                dot.acos() * radius_km * 1000.0 <= *radius_meters
-            });
+            let centre = earthmesh_mesh::LonLatDegrees::new(centre.lon, centre.lat);
+            let in_region = measure_regions
+                .iter()
+                .any(|region| region.contains_lonlat_canonical(centre));
             if in_region {
                 inside.push(across_km);
             } else {
@@ -759,16 +874,15 @@ pub fn run_refine_pipeline_namelist(
     // Sampling the wrong array does not fail loudly -- the lookup is bounds
     // checked -- it protects unrelated cells and leaves the demanded ones to be
     // carved away, which is the failure this array exists to prevent.
-    let hard_center_demand = adaptive_run.as_ref().map(|(report, _, _, _)| {
-        let centers = match config.mode_grid.trim() {
-            "tri" => &output_mesh.m_points,
-            _ => &output_mesh.w_points,
-        };
-        centers
-            .iter()
-            .map(|point| report.target_level_at(point.lon, point.lat) > 0)
-            .collect::<Vec<bool>>()
-    });
+    let hard_center_demand = if lepp_hard_regions.is_empty() {
+        adaptive_hard_center_demand(adaptive_run.as_ref(), config.mode_grid.trim(), &output_mesh)
+    } else {
+        Some(region_center_demand(
+            &lepp_hard_regions,
+            config.mode_grid.trim(),
+            &output_mesh,
+        ))
+    };
     let outputs = write_refined_outputs(
         &contents,
         &config,
@@ -791,7 +905,203 @@ pub fn run_refine_pipeline_namelist(
                 w_ngr: &meta.w_ngr,
             }),
         hard_center_demand.as_deref(),
+        "",
     )?;
+
+    let lepp_adaptive_hybrid = if let Some(report) = lepp_adaptive_hybrid {
+        let result_dir = file_dir.join("result");
+        let report_path = result_dir.join("method_c_lepp_report.json");
+        let unresolved_path = result_dir.join("unresolved_demand.json");
+        let unresolved = report
+            .unresolved_demands
+            .iter()
+            .map(|demand| {
+                serde_json::json!({
+                    "criterion_id": demand.criterion_id,
+                    "face": demand.face.map(|face| serde_json::json!({
+                        "slot": face.slot,
+                        "generation": face.generation,
+                    })),
+                    "hard": demand.hard,
+                    "reason": format!("{:?}", demand.reason),
+                    "message": demand.message,
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            &unresolved_path,
+            serde_json::to_vec_pretty(&unresolved).map_err(io::Error::other)?,
+        )?;
+        let report_json = serde_json::json!({
+            "algorithm": "lepp_delaunay",
+            "mode": "adaptive_hybrid",
+            "canonical_method_c_compatible": false,
+            "transition_model": "lepp_natural_gradation",
+            "stop_reason": format!("{:?}", report.stop_reason),
+            "cycles": report.cycles,
+            "counts": {
+                "initial_vertices": report.initial_vertices,
+                "final_vertices": report.final_vertices,
+                "initial_faces": report.initial_faces,
+                "final_faces": report.final_faces,
+            },
+            "insertions": {
+                "physical": report.insertion_counts.physical,
+                "balance": report.insertion_counts.balance,
+                "quality": report.insertion_counts.quality,
+                "boundary": report.insertion_counts.boundary,
+            },
+            "lepp_paths": {
+                "attempted": report.path_stats.attempted,
+                "committed": report.path_stats.committed,
+                "rejected": report.path_stats.rejected,
+                "total_faces": report.path_stats.total_path_faces,
+                "maximum": report.path_stats.max_path_faces,
+                "mean": report.path_stats.mean_path_faces,
+                "p95": report.path_stats.p95_path_faces,
+            },
+            "target_satisfaction": {
+                "target_faces": report.target_satisfaction.target_faces,
+                "satisfied_faces": report.target_satisfaction.satisfied_faces,
+                "unsatisfied_faces": report.target_satisfaction.unsatisfied_faces,
+            },
+            "unresolved_demands": report.unresolved_demand_count,
+            "sampled_unresolved_demand_details": unresolved.len(),
+            "unresolved_demand_file": unresolved_path.display().to_string(),
+            "rejections": report.rejections.iter().map(|rejection| serde_json::json!({
+                "criterion_id": rejection.criterion_id,
+                "face": {
+                    "slot": rejection.face.slot,
+                    "generation": rejection.face.generation,
+                },
+                "hard": rejection.hard,
+                "error": rejection.error.to_string(),
+            })).collect::<Vec<_>>(),
+            "sampled_rejection_details": report.rejections.len(),
+            "output": outputs.output.output.display().to_string(),
+            "config": {
+                "max_cycles": method_c_algorithm.max_cycles,
+                "target_size_tolerance": method_c_algorithm.target_size_tolerance,
+                "maximum_neighbor_size_ratio": method_c_algorithm.maximum_neighbor_size_ratio,
+                "maximum_vertices": method_c_algorithm.maximum_vertices,
+                "maximum_insertions_per_cycle": method_c_algorithm.maximum_insertions_per_cycle,
+                "maximum_path_length": method_c_algorithm.maximum_path_length,
+                "stop_at_source_resolution": method_c_algorithm.stop_at_source_resolution,
+                "minimum_triangle_angle_deg": method_c_algorithm.minimum_triangle_angle_deg,
+            },
+        });
+        fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&report_json).map_err(io::Error::other)?,
+        )?;
+        Some(LeppAdaptiveHybridRunRecord {
+            stop_reason: format!("{:?}", report.stop_reason),
+            cycles: report.cycles,
+            physical_insertions: report.insertion_counts.physical,
+            balance_insertions: report.insertion_counts.balance,
+            quality_insertions: report.insertion_counts.quality,
+            boundary_insertions: report.insertion_counts.boundary,
+            unresolved_demands: report.unresolved_demand_count,
+            report: report_path,
+            unresolved_report: unresolved_path,
+        })
+    } else {
+        None
+    };
+
+    let lepp_post_quality = if let Some(lepp) = lepp_post_quality {
+        let hard_center_demand = adaptive_hard_center_demand(
+            adaptive_run.as_ref(),
+            config.mode_grid.trim(),
+            &lepp.output_mesh,
+        );
+        let lepp_outputs = write_refined_outputs(
+            &contents,
+            &config,
+            source_gridnum_perdegree,
+            &file_dir,
+            nxp,
+            max_level,
+            &lepp.output_mesh,
+            None,
+            None,
+            hard_center_demand.as_deref(),
+            "_lepp",
+        )?;
+        let report_path = file_dir
+            .join("result")
+            .join("method_c_lepp_post_quality.json");
+        let report_json = serde_json::json!({
+            "algorithm": "lepp_delaunay_post_quality",
+            "canonical_output": outputs.output.output.display().to_string(),
+            "optimized_output": lepp_outputs.output.output.display().to_string(),
+            "config": {
+                "maximum_insertions": quality.lepp_post_quality_max_insertions,
+                "maximum_edge_km": quality.lepp_post_quality_max_edge_km,
+                "minimum_spherical_triangle_angle_degrees": quality.min_angle_warn_deg,
+            },
+            "before": {
+                "violating_faces": lepp.report.before.violating_faces,
+                "worst_violation": lepp.report.before.worst_violation,
+                "total_violation": lepp.report.before.total_violation,
+            },
+            "after": {
+                "violating_faces": lepp.report.after.violating_faces,
+                "worst_violation": lepp.report.after.worst_violation,
+                "total_violation": lepp.report.after.total_violation,
+            },
+            "attempted": lepp.report.attempted,
+            "committed": lepp.report.committed,
+            "rejected": lepp.report.rejected,
+            "sampled_insertion_details": lepp.report.insertions.len(),
+            "sampled_rejection_details": lepp.report.rejections.len(),
+            "stop_reason": format!("{:?}", lepp.report.stop_reason),
+            "insertions": lepp.report.insertions.iter().map(|insertion| serde_json::json!({
+                "start_face": insertion.path.faces.first(),
+                "terminal": format!("{:?}", insertion.path.terminal),
+                "path_faces": insertion.path.faces,
+                "site": {
+                    "slot": insertion.insertion.site_id.slot,
+                    "generation": insertion.insertion.site_id.generation,
+                },
+                "created_faces": insertion.created_faces.iter().map(|face| serde_json::json!({
+                    "slot": face.slot,
+                    "generation": face.generation,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "rejections": lepp.report.rejections.iter().map(|rejection| serde_json::json!({
+                "face": {
+                    "slot": rejection.face.slot,
+                    "generation": rejection.face.generation,
+                },
+                "error": rejection.error.to_string(),
+            })).collect::<Vec<_>>(),
+        });
+        let encoded = serde_json::to_vec_pretty(&report_json).map_err(io::Error::other)?;
+        fs::write(&report_path, encoded).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("write {}: {error}", report_path.display()),
+            )
+        })?;
+        Some(LeppPostQualityRunRecord {
+            stop_reason: format!("{:?}", lepp.report.stop_reason),
+            attempted: lepp.report.attempted,
+            committed: lepp.report.committed,
+            rejected: lepp.report.rejected,
+            violations_before: lepp.report.before.violating_faces,
+            violations_after: lepp.report.after.violating_faces,
+            worst_violation_before: lepp.report.before.worst_violation,
+            worst_violation_after: lepp.report.after.worst_violation,
+            report: report_path,
+            raw_output: lepp_outputs.raw_output,
+            landtype_masked_cells: lepp_outputs.landtype_masked_cells,
+            coupled_outputs: lepp_outputs.coupled_outputs,
+            output: lepp_outputs.output,
+        })
+    } else {
+        None
+    };
 
     // Beside the final gridfile, where the quality step can find it: both it and
     // the saved namelist live in `<case>/result/`.
@@ -841,6 +1151,8 @@ pub fn run_refine_pipeline_namelist(
         transition_faces,
         spring_nest_passes,
         harp_dv_run,
+        lepp_adaptive_hybrid,
+        lepp_post_quality,
         spring_nest_iterations,
         raw_output: outputs.raw_output,
         landtype_masked_cells: outputs.landtype_masked_cells,
@@ -848,6 +1160,16 @@ pub fn run_refine_pipeline_namelist(
         output: outputs.output,
         runtime_state,
     })
+}
+
+fn minor_cell_steradians(area: f64) -> Option<f64> {
+    let area = area.abs();
+    let area = if area > 2.0 * std::f64::consts::PI {
+        4.0 * std::f64::consts::PI - area
+    } else {
+        area
+    };
+    (area.is_finite() && area > 0.0).then_some(area)
 }
 
 /// Everything the gridfile carries that only Method-C can say.
@@ -896,6 +1218,58 @@ struct RefinedGrid {
     /// could not carry it: that is Method-C's per-level circle record and says
     /// nothing about cycles, refusals or a stop reason.
     harp_dv_run: Option<HarpDvRunRecord>,
+    /// Hard regions the LEPP driver consumed, used by output carving and
+    /// backend-neutral achieved-resolution measurements.
+    lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
+    /// LEPP-Delaunay AdaptiveHybrid's own run report.
+    lepp_adaptive_hybrid: Option<earthmesh_refine_method_c::AdaptiveHybridReport>,
+    /// Optional repair derived from, but never replacing, the canonical mesh.
+    lepp_post_quality: Option<LeppPostQualityGrid>,
+}
+
+struct LeppPostQualityGrid {
+    output_mesh: crate::UnstructuredMesh,
+    report: LeppPostQualityReport,
+}
+
+fn adaptive_hard_center_demand(
+    adaptive_run: Option<&AdaptiveRunRecord>,
+    mode_grid: &str,
+    output_mesh: &crate::UnstructuredMesh,
+) -> Option<Vec<bool>> {
+    adaptive_run.map(|(report, _, _, _)| {
+        let centers = if mode_grid == "tri" {
+            &output_mesh.m_points
+        } else {
+            &output_mesh.w_points
+        };
+        centers
+            .iter()
+            .map(|point| report.target_level_at(point.lon, point.lat) > 0)
+            .collect()
+    })
+}
+
+fn region_center_demand(
+    regions: &[earthmesh_mesh::RefinementRegion],
+    mode_grid: &str,
+    output_mesh: &crate::UnstructuredMesh,
+) -> Vec<bool> {
+    let centers = if mode_grid == "tri" {
+        &output_mesh.m_points
+    } else {
+        &output_mesh.w_points
+    };
+    centers
+        .iter()
+        .map(|point| {
+            regions.iter().any(|region| {
+                region.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(
+                    point.lon, point.lat,
+                ))
+            })
+        })
+        .collect()
 }
 
 /// The part of HARP-DV's report a run record can carry.
@@ -1158,6 +1532,9 @@ fn refine_with_redgreen(
                 adaptive.coastline,
             )
         }),
+        lepp_hard_regions: Vec::new(),
+        lepp_adaptive_hybrid: None,
+        lepp_post_quality: None,
         harp_dv_run: None,
     })
 }
@@ -1210,6 +1587,232 @@ type AdaptiveRunRecord = (
     bool,
 );
 
+fn refine_with_method_c_lepp(
+    mesh: TriangularMesh,
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    adaptive: Option<&crate::adaptive_refine::AdaptiveRefineOptions>,
+    refine: &RefineConfig,
+    config: &EarthmeshConfig,
+    domain_region: Option<&GridRegion>,
+    mesh_type: &str,
+    method_c_nxp: usize,
+    max_level: usize,
+    options: MethodCAlgorithmOptions,
+) -> io::Result<RefinedGrid> {
+    let pentagons = mesh.impent;
+    let mut state = MeshState::from_triangular_mesh(&mesh)?;
+    for (index, region) in named_regions.iter().enumerate() {
+        region.validate().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("LEPP refinement region {index} is invalid: {error}"),
+            )
+        })?;
+    }
+    let mut demands = named_regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            AdaptiveHybridDemand::user_region(format!("named-region-{index}"), region.clone())
+        })
+        .collect::<Vec<_>>();
+    let mut hard_regions = named_regions.to_vec();
+    let mut pre_unresolved = Vec::new();
+
+    if let Some(adaptive) = adaptive {
+        let base_m = adaptive.base_m.unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                / (5.0 * method_c_nxp as f64)
+        });
+        let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
+        let inputs = adaptive_demand_inputs(
+            domain_region,
+            config,
+            adaptive_landtype_file(config),
+            mesh_type,
+            adaptive.coastline,
+        )?;
+        let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NL%gridnum_perdegree must fit usize",
+            )
+        })?;
+        if gridnum_perdegree == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NL%gridnum_perdegree must be positive for LEPP source-resolution stopping",
+            ));
+        }
+        // `gridnum_perdegree` applies to both source axes. The meridional cell
+        // dimension is latitude-independent and is the conservative resolvable
+        // scale; shrinking only the zonal dimension by cos(latitude) would
+        // claim resolution the north-south sampling does not have.
+        let source_resolution_m =
+            earthmesh_core::KM_PER_DEGREE_EQUATOR * 1000.0 / gridnum_perdegree as f64;
+        for level in 1..=depth {
+            let target_edge_m = base_m / 2f64.powi(level as i32);
+            let level_started = std::time::Instant::now();
+            eprintln!(
+                "earthmesh_cli: LEPP AdaptiveHybrid planning demand level {level}/{depth} (target edge {:.1} km)",
+                target_edge_m / 1000.0
+            );
+            let level_demand =
+                crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
+                    refine, &inputs, level, base_m, depth,
+                )?;
+            eprintln!(
+                "earthmesh_cli: LEPP AdaptiveHybrid demand level {level}/{depth} complete: {} source cells -> {} circles in {:.1}s",
+                level_demand.demanded_cells,
+                level_demand.circles.len(),
+                level_started.elapsed().as_secs_f64()
+            );
+            let criterion_id = if level_demand.criterion_ids.is_empty() {
+                format!("adaptive-level-{level}")
+            } else {
+                format!("{}-level-{level}", level_demand.criterion_ids.join("+"))
+            };
+            if level_demand.demanded && level_demand.circles.is_empty() {
+                pre_unresolved.push(AdaptiveHybridUnresolvedDemand {
+                    criterion_id,
+                    face: None,
+                    hard: true,
+                    reason: AdaptiveHybridUnresolvedReason::Rejection,
+                    message: format!(
+                        "{} demanded source cells at level {level}, but circle reduction produced no region",
+                        level_demand.demanded_cells
+                    ),
+                });
+                continue;
+            }
+            for circle in level_demand.circles {
+                let mut demand =
+                    AdaptiveHybridDemand::physical_region(criterion_id.clone(), circle.clone());
+                demand.source_resolution_m = Some(source_resolution_m);
+                demand.target_edge_m = Some(target_edge_m);
+                demands.push(demand);
+                hard_regions.push(circle);
+            }
+        }
+    }
+
+    let adaptive_config = AdaptiveHybridConfig {
+        max_cycles: options.max_cycles,
+        target_size_tolerance: options.target_size_tolerance,
+        stop_at_source_resolution: options.stop_at_source_resolution,
+        maximum_neighbor_size_ratio: options.maximum_neighbor_size_ratio,
+        maximum_vertices: options.maximum_vertices,
+        maximum_insertions_per_cycle: options.maximum_insertions_per_cycle,
+        minimum_triangle_angle: options.minimum_triangle_angle_deg,
+        search: LeppSearchConfig {
+            maximum_path_length: options.maximum_path_length,
+            ..LeppSearchConfig::default()
+        },
+        gates: LeppInsertionGates::for_method_c(pentagons),
+    };
+    let mut boundary_segments = lepp_region_boundary_segments(&state, named_regions, domain_region);
+    let refinement_started = std::time::Instant::now();
+    eprintln!(
+        "earthmesh_cli: LEPP AdaptiveHybrid mesh refinement started: {} demands, {} protected boundary segments, at most {} cycles",
+        demands.len(),
+        boundary_segments.len(),
+        adaptive_config.max_cycles
+    );
+    let mut report = if boundary_segments.is_empty() {
+        refine_adaptive_hybrid(&mut state, &demands, &adaptive_config)
+    } else {
+        refine_adaptive_hybrid_constrained(
+            &mut state,
+            &mut boundary_segments,
+            &demands,
+            &adaptive_config,
+        )
+    }
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    eprintln!(
+        "earthmesh_cli: LEPP AdaptiveHybrid mesh refinement complete: {} cycles, {} committed insertions, {} -> {} faces, stop={:?}, {:.1}s",
+        report.cycles,
+        report.path_stats.committed,
+        report.initial_faces,
+        report.final_faces,
+        report.stop_reason,
+        refinement_started.elapsed().as_secs_f64()
+    );
+    if !pre_unresolved.is_empty() {
+        for unresolved in pre_unresolved {
+            report.add_unresolved_demand(unresolved);
+        }
+        if matches!(
+            report.stop_reason,
+            earthmesh_refine_method_c::AdaptiveHybridStopReason::Satisfied
+        ) {
+            report.stop_reason =
+                earthmesh_refine_method_c::AdaptiveHybridStopReason::NoCommittableInsertion;
+        }
+    }
+    let refined = state.to_triangular_mesh(pentagons, None)?;
+    let voronoi = spherical_voronoi_state(&refined)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+    Ok(RefinedGrid {
+        state: Some(voronoi),
+        output_mesh,
+        method_c_metadata: None,
+        pentagon_indices: pentagons,
+        transition_faces: 0,
+        spring_nest_passes: 0,
+        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        adaptive_run: None,
+        harp_dv_run: None,
+        lepp_hard_regions: hard_regions,
+        lepp_adaptive_hybrid: Some(report),
+        lepp_post_quality: None,
+    })
+}
+
+fn lepp_region_boundary_segments(
+    state: &MeshState,
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    domain_region: Option<&GridRegion>,
+) -> earthmesh_boundary::SegmentList {
+    if named_regions.is_empty() && domain_region.is_none() {
+        return earthmesh_boundary::SegmentList::default();
+    }
+    let edges = (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len())
+        .flat_map(|face| {
+            let corners = state.triangles()[face];
+            (0..3).map(move |corner| {
+                let a = corners[(corner + 1) % 3];
+                let b = corners[(corner + 2) % 3];
+                (a.min(b), a.max(b))
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    let radius = state.sphere_radius();
+    let mut protected = Vec::new();
+    for region in named_regions {
+        protected.extend(
+            earthmesh_boundary::SegmentList::from_straddling_edges(
+                edges.iter().copied(),
+                |vertex| region.contains_cartesian(state.vertices()[vertex], radius),
+            )
+            .iter(),
+        );
+    }
+    if let Some(domain) = domain_region {
+        protected.extend(
+            earthmesh_boundary::SegmentList::from_straddling_edges(
+                edges.iter().copied(),
+                |vertex| {
+                    let point = earthmesh_mesh::xyz_to_lonlat_degrees(state.vertices()[vertex]);
+                    domain.contains(point.lon_degrees, point.lat_degrees)
+                },
+            )
+            .iter(),
+        );
+    }
+    earthmesh_boundary::SegmentList::from_pairs(protected)
+}
+
 /// Refine `mesh` the Method-C way: native spawn, adaptive point+radius, h-field
 /// target levels, or plain specified regions, whichever the request selects.
 /// Refine by re-reading the criteria against the cells that exist.
@@ -1220,9 +1823,15 @@ type AdaptiveRunRecord = (
 fn refine_with_harp_dv(
     mesh: &earthmesh_mesh::TriangularMesh,
     regions: &[earthmesh_mesh::RefinementRegion],
+    adaptive_options: Option<&crate::adaptive_refine::AdaptiveRefineOptions>,
+    config: &EarthmeshConfig,
+    domain_region: Option<&GridRegion>,
+    mesh_type: &str,
     nxp: usize,
+    max_level: usize,
     spring_iterations: usize,
     refine: &RefineConfig,
+    options: HarpDvRunOptions,
 ) -> io::Result<RefinedGrid> {
     use earthmesh_refine_harp_dv as harp;
 
@@ -1276,47 +1885,153 @@ fn refine_with_harp_dv(
             2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
         (nominal / 2.0, nominal)
     });
+    let boundaries = harp_region_boundaries(regions)?;
+    let mut spring_boundaries = boundaries.clone();
+    let mut spring_target_scales = regions
+        .iter()
+        .map(|region| base_cell_m / 2.0_f64.powi(region.level() as i32))
+        .collect::<Vec<_>>();
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
         .iter()
+        .zip(&boundaries)
         .enumerate()
-        .filter_map(|(index, region)| match region {
-            earthmesh_mesh::RefinementRegion::Circle {
-                center,
-                radius_meters,
-                level,
-            } => Some(Box::new(harp::TargetScale {
-                id: format!("region-{index}"),
-                target_scale_m: base_cell_m / 2.0_f64.powi(*level as i32),
-                region: harp::TargetRegion::Circle {
-                    centre: *center,
-                    radius_m: *radius_meters,
-                },
-                source_resolution_m: None,
-            }) as Box<dyn harp::CellCriterion>),
-            // One closed curve at a time: each mask is its own demand, and a
-            // model holding all of them at once would answer "inside" for a
-            // cell in any of them, which is a different question.
-            earthmesh_mesh::RefinementRegion::Polygon { level, .. } => {
-                let boundary = crate::boundary_model::boundary_model_from_regions(
-                    std::slice::from_ref(region),
-                );
-                // A curve too short to enclose anything produces no loop, and a
-                // criterion over an empty model is satisfied everywhere -- which
-                // would read as "this region wanted nothing".
-                (!boundary.loops.is_empty()).then(|| {
-                    Box::new(harp::TargetScale {
-                        id: format!("region-{index}"),
-                        target_scale_m: base_cell_m / 2.0_f64.powi(*level as i32),
-                        region: harp::TargetRegion::Polygon { boundary },
-                        source_resolution_m: None,
-                    }) as Box<dyn harp::CellCriterion>
+        .map(|(index, (region, boundary))| {
+            let target_scale_m = base_cell_m / 2.0_f64.powi(region.level() as i32);
+            match boundary {
+                HarpRegionBoundary::Circle {
+                    center,
+                    radius_meters,
+                } => Box::new(harp::TargetScale {
+                    id: format!("region-{index}"),
+                    target_scale_m,
+                    region: harp::TargetRegion::Circle {
+                        centre: *center,
+                        radius_m: *radius_meters,
+                    },
+                    source_resolution_m: None,
+                }) as Box<dyn harp::CellCriterion>,
+                // One closed curve at a time: each mask is its own demand, and a
+                // model holding all of them at once would answer "inside" for a
+                // cell in any of them, which is a different question.
+                HarpRegionBoundary::Polygon(boundary) => Box::new(harp::TargetScale {
+                    id: format!("region-{index}"),
+                    target_scale_m,
+                    region: harp::TargetRegion::Polygon {
+                        boundary: boundary.clone(),
+                    },
+                    source_resolution_m: None,
                 })
+                    as Box<dyn harp::CellCriterion>,
             }
-            _ => None,
         })
         .collect();
 
     let mut criteria = criteria;
+    let mut adaptive_run: Option<AdaptiveRunRecord> = None;
+    if let Some(adaptive_options) = adaptive_options {
+        let adaptive_base_m = adaptive_options.base_m.unwrap_or(base_cell_m);
+        let adaptive_inputs = adaptive_demand_inputs(
+            domain_region,
+            config,
+            adaptive_landtype_file(config),
+            mesh_type,
+            adaptive_options.coastline,
+        )?;
+        let adaptive_depth = adaptive_options.max_level.unwrap_or(max_level).clamp(1, 5);
+        let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NL%gridnum_perdegree must fit usize",
+            )
+        })?;
+        if gridnum_perdegree == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NL%gridnum_perdegree must be positive for HARP-DV source-resolution stopping",
+            ));
+        }
+        let source_resolution_m =
+            earthmesh_core::KM_PER_DEGREE_EQUATOR * 1000.0 / gridnum_perdegree as f64;
+        let mut passes = Vec::new();
+        let mut deepest_level = 0usize;
+        let mut stopped_on_empty_demand = false;
+        for level in 1..=adaptive_depth {
+            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
+                refine,
+                &adaptive_inputs,
+                level,
+                adaptive_base_m,
+                adaptive_depth,
+            )?;
+            eprintln!(
+                "harp_dv adaptive level {level} judging {:.0} m cells: {} circles over {} demanded source cells",
+                adaptive_base_m / 2f64.powi((level - 1) as i32),
+                demand.circles.len(),
+                demand.demanded_cells,
+            );
+            if demand.circles.is_empty() {
+                if demand.demanded {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "{} demanded source cells at HARP-DV adaptive level {level}, but circle reduction produced no region",
+                            demand.demanded_cells
+                        ),
+                    ));
+                }
+                stopped_on_empty_demand = true;
+                break;
+            }
+            let criterion_id = if demand.criterion_ids.is_empty() {
+                format!("adaptive-level-{level}")
+            } else {
+                format!("{}-level-{level}", demand.criterion_ids.join("+"))
+            };
+            spring_boundaries.extend(harp_region_boundaries(&demand.circles)?);
+            let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
+            spring_target_scales.extend(std::iter::repeat_n(target_scale_m, demand.circles.len()));
+            for (circle_index, circle) in demand.circles.iter().enumerate() {
+                let earthmesh_mesh::RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } = circle
+                else {
+                    continue;
+                };
+                criteria.push(Box::new(harp::TargetScale {
+                    id: format!("{criterion_id}-{circle_index}"),
+                    target_scale_m,
+                    region: harp::TargetRegion::Circle {
+                        centre: *center,
+                        radius_m: *radius_meters,
+                    },
+                    source_resolution_m: Some(source_resolution_m),
+                }));
+            }
+            deepest_level = level;
+            passes.push(crate::refinement_demand::nest::NestPassReport {
+                level,
+                cell_meters: adaptive_base_m / 2f64.powi((level - 1) as i32),
+                circle_count: demand.circles.len(),
+                regions: demand.circles,
+                demanded_cells: demand.demanded_cells,
+                faces_before: mesh.nwd,
+                faces_after: mesh.nwd,
+            });
+        }
+        adaptive_run = Some((
+            crate::refinement_demand::nest::AdaptiveNestReport {
+                passes,
+                deepest_level,
+                stopped_on_empty_demand,
+                spring_passes: 0,
+            },
+            adaptive_depth,
+            adaptive_base_m,
+            adaptive_options.coastline,
+        ));
+    }
     let mut adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
         .map_err(|error| io::Error::other(error.to_string()))?;
 
@@ -1326,7 +2041,7 @@ fn refine_with_harp_dv(
     // the refinement does not terminate (guide 11.25); with it, it reaches
     // Ruppert's angle bound (11.26).
     if let Some(min_angle_deg) = harp_min_angle_target(refine) {
-        let segments = harp_region_boundary_segments(&adaptive, regions);
+        let segments = harp_region_boundary_segments(&adaptive, &spring_boundaries);
         adaptive.protect_segments(segments);
         criteria.push(Box::new(harp::MinAngle {
             id: "min-angle".to_string(),
@@ -1336,10 +2051,10 @@ fn refine_with_harp_dv(
     let outcome = harp::refine_harp_dv(
         adaptive,
         &harp::HarpDvRequest {
-            config: harp::HarpDvConfig::default(),
+            config: options.config,
             criteria: &criteria,
-            candidate_policy: harp::CandidatePolicy::default(),
-            gates: harp::HardGates::default(),
+            candidate_policy: options.candidate_policy,
+            gates: options.gates,
         },
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
@@ -1405,6 +2120,15 @@ fn refine_with_harp_dv(
         .mesh
         .to_triangular_mesh()
         .map_err(|error| io::Error::other(error.to_string()))?;
+    if let Some((report, _, _, _)) = &mut adaptive_run {
+        // HARP-DV evaluates every requested level together rather than running
+        // one topology pass per level. Each row is therefore a demand level,
+        // and the only honest topology counts are the shared run boundaries.
+        for pass in &mut report.passes {
+            pass.faces_before = mesh.nwd;
+            pass.faces_after = refined.nwd;
+        }
+    }
 
     // Smooth with the nest spring, targeting each edge at what the *criteria*
     // asked for there. Guide 11.21 records the version that took targets from
@@ -1412,7 +2136,13 @@ fn refine_with_harp_dv(
     // they are, and 5000 iterations under it made the angles worse.
     let unsmoothed = (spring_iterations > 0).then(|| refined.clone());
     let refined = if spring_iterations > 0 {
-        match harp_spring_smoothed(&refined, regions, base_cell_m, spring_iterations) {
+        match harp_spring_smoothed(
+            &refined,
+            &spring_boundaries,
+            &spring_target_scales,
+            base_cell_m,
+            spring_iterations,
+        ) {
             Ok(mesh) => mesh,
             // A smoothing pass that declines is not a reason to lose the mesh.
             Err(error) => {
@@ -1454,7 +2184,7 @@ fn refine_with_harp_dv(
         method_c_metadata,
         spring_nest_passes: 0,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
-        adaptive_run: None,
+        adaptive_run,
         // HARP-DV's own ending, on the record rather than only on stderr.
         harp_dv_run: Some(HarpDvRunRecord {
             stop_reason: format!("{:?}", outcome.report.stop_reason),
@@ -1463,6 +2193,9 @@ fn refine_with_harp_dv(
             unresolved_cells: outcome.unresolved_cells.len(),
             unbalanced_pairs_remaining: outcome.report.unbalanced_pairs_remaining,
         }),
+        lepp_hard_regions: Vec::new(),
+        lepp_adaptive_hybrid: None,
+        lepp_post_quality: None,
     })
 }
 
@@ -1546,6 +2279,74 @@ fn harp_min_angle_target(refine: &RefineConfig) -> Option<f64> {
     (refine.harp_min_angle_deg > 0.0).then_some(refine.harp_min_angle_deg)
 }
 
+#[derive(Clone)]
+enum HarpRegionBoundary {
+    Circle {
+        center: earthmesh_mesh::LonLatDegrees,
+        radius_meters: f64,
+    },
+    Polygon(earthmesh_boundary::SphericalBoundaryModel),
+}
+
+/// Validate and compile region geometry once per HARP-DV run.
+///
+/// Both the demand criterion and protected-segment scan consume this result;
+/// rebuilding a spherical boundary once per mesh vertex made polygon runs
+/// quadratic in input-ring size and let invalid rings silently mean no demand.
+fn harp_region_boundaries(
+    regions: &[earthmesh_mesh::RefinementRegion],
+) -> io::Result<Vec<HarpRegionBoundary>> {
+    regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            region.validate().map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("HARP-DV region {index} is invalid: {error}"),
+                )
+            })?;
+            match region {
+                earthmesh_mesh::RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } => Ok(HarpRegionBoundary::Circle {
+                    center: *center,
+                    radius_meters: *radius_meters,
+                }),
+                earthmesh_mesh::RefinementRegion::Polygon { .. } => {
+                    let boundary = crate::boundary_model::boundary_model_from_regions(
+                        std::slice::from_ref(region),
+                    );
+                    if boundary.loops.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("HARP-DV polygon region {index} does not enclose a loop"),
+                        ));
+                    }
+                    if let Err(errors) = boundary.validate() {
+                        let details = errors
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("HARP-DV polygon region {index} is invalid: {details}"),
+                        ));
+                    }
+                    Ok(HarpRegionBoundary::Polygon(boundary))
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("HARP-DV region {index} is not a circle or closed curve"),
+                )),
+            }
+        })
+        .collect()
+}
+
 /// A refinement region's boundary, discretised as mesh edges.
 ///
 /// The edges that straddle it -- one endpoint inside, one outside -- which is
@@ -1554,7 +2355,7 @@ fn harp_min_angle_target(refine: &RefineConfig) -> Option<f64> {
 /// (guide 11.28).
 fn harp_region_boundary_segments(
     mesh: &earthmesh_refine_harp_dv::AdaptiveMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
+    regions: &[HarpRegionBoundary],
 ) -> Vec<(usize, usize)> {
     let state = mesh.state();
     let radius = state.sphere_radius();
@@ -1565,30 +2366,9 @@ fn harp_region_boundary_segments(
     // list's name and 11.29 measured what that cost.
     let inside = |site: usize| {
         let point = state.vertices()[site];
-        let length = earthmesh_mesh::magnitude(point);
-        if length <= 0.0 {
-            return false;
-        }
-        regions.iter().any(|region| match region {
-            earthmesh_mesh::RefinementRegion::Circle {
-                center,
-                radius_meters,
-                ..
-            } => {
-                let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-                let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
-                dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
-            }
-            // The same "inside" the criterion uses, from the same model, so a
-            // segment list and the demand that produced it cannot disagree
-            // about where the region is.
-            earthmesh_mesh::RefinementRegion::Polygon { .. } => {
-                let here = earthmesh_mesh::xyz_to_lonlat_degrees(point);
-                crate::boundary_model::boundary_model_from_regions(std::slice::from_ref(region))
-                    .contains(here.lon_degrees, here.lat_degrees)
-            }
-            _ => false,
-        })
+        regions
+            .iter()
+            .any(|region| harp_region_contains(region, point, radius))
     };
     let edges =
         (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len()).flat_map(|triangle| {
@@ -1600,12 +2380,37 @@ fn harp_region_boundary_segments(
         .collect()
 }
 
+fn harp_region_contains(
+    region: &HarpRegionBoundary,
+    point: earthmesh_mesh::CartesianPoint,
+    radius: f64,
+) -> bool {
+    let length = earthmesh_mesh::magnitude(point);
+    if length <= 0.0 {
+        return false;
+    }
+    match region {
+        HarpRegionBoundary::Circle {
+            center,
+            radius_meters,
+        } => {
+            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+            let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
+            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
+        }
+        HarpRegionBoundary::Polygon(boundary) => {
+            let here = earthmesh_mesh::xyz_to_lonlat_degrees(point);
+            boundary.contains(here.lon_degrees, here.lat_degrees)
+        }
+    }
+}
+
 /// Smooth a HARP-DV mesh against the sizes the criteria asked for.
 ///
-/// The targets come from the regions, not from the mesh -- which is what
-/// makes this different from the attempt in guide 11.21. A region asking for
-/// level L is asking for the base cell halved L times, and that is a length
-/// the spring can pull toward.
+/// The targets come from the criteria, not from the mesh -- which is what
+/// makes this different from the attempt in guide 11.21. They are passed
+/// beside the compiled boundaries so an explicit `adaptive_base_m` reaches
+/// the spring instead of being silently replaced by the measured base scale.
 ///
 /// The conversion from a cell width to a triangle edge length is measured off
 /// this mesh rather than derived: the two differ by a shape factor that
@@ -1613,10 +2418,17 @@ fn harp_region_boundary_segments(
 /// wrong than deriving it.
 fn harp_spring_smoothed(
     mesh: &earthmesh_mesh::TriangularMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
+    boundaries: &[HarpRegionBoundary],
+    target_scales_m: &[f64],
     base_cell_m: f64,
     iterations: usize,
 ) -> io::Result<earthmesh_mesh::TriangularMesh> {
+    if boundaries.len() != target_scales_m.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "HARP-DV spring regions and target scales must have the same length",
+        ));
+    }
     let radius = earthmesh_core::EARTH_RADIUS_METERS;
 
     // The factor from a cell width to a triangle edge length, measured on the
@@ -1634,23 +2446,9 @@ fn harp_spring_smoothed(
             (a.y + b.y) / 2.0,
             (a.z + b.z) / 2.0,
         );
-        let length = earthmesh_mesh::magnitude(middle);
-        if length <= 0.0 {
-            return false;
-        }
-        regions.iter().any(|region| {
-            let earthmesh_mesh::RefinementRegion::Circle {
-                center,
-                radius_meters,
-                ..
-            } = region
-            else {
-                return false;
-            };
-            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-            let dot = (middle.x * centre.x + middle.y * centre.y + middle.z * centre.z) / length;
-            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
-        })
+        boundaries
+            .iter()
+            .any(|region| harp_region_contains(region, middle, radius))
     };
     let mut edges: Vec<f64> = Vec::new();
     for iu in 2..=mesh.nud {
@@ -1687,7 +2485,7 @@ fn harp_spring_smoothed(
             let here = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
                 earthmesh_mesh::LonLatDegrees::new(lon, lat),
             );
-            // Gradient-limited, not a step at the circle's edge. A target that
+            // Gradient-limited, not a step at the region boundary. A target that
             // jumps from base to base/4 across one edge asks the spring for a
             // discontinuity it can only answer with a sliver; letting it grow
             // back at a bounded rate is what an h-field does and what a circle
@@ -1705,20 +2503,30 @@ fn harp_spring_smoothed(
             // and the constant below is what the run has always used.
             const GRADIENT: f64 = 0.3;
             let mut width = base_cell_m;
-            for region in regions {
-                if let earthmesh_mesh::RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    level,
-                } = region
-                {
-                    let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-                    let dot = (here.x * centre.x + here.y * centre.y + here.z * centre.z)
-                        .clamp(-1.0, 1.0);
-                    let outside = (dot.acos() * radius - *radius_meters).max(0.0);
-                    let asked = base_cell_m / 2.0_f64.powi(*level as i32);
-                    width = width.min(asked + GRADIENT * outside);
-                }
+            for (boundary, asked) in boundaries.iter().zip(target_scales_m) {
+                let outside = match boundary {
+                    HarpRegionBoundary::Circle {
+                        center,
+                        radius_meters,
+                    } => {
+                        let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
+                        let dot = (here.x * centre.x + here.y * centre.y + here.z * centre.z)
+                            .clamp(-1.0, 1.0);
+                        (dot.acos() * radius - *radius_meters).max(0.0)
+                    }
+                    HarpRegionBoundary::Polygon(boundary) => {
+                        let here = earthmesh_mesh::xyz_to_lonlat_degrees(here);
+                        if boundary.contains(here.lon_degrees, here.lat_degrees) {
+                            0.0
+                        } else {
+                            boundary
+                                .distance_to_boundary_radians(here.lon_degrees, here.lat_degrees)
+                                .unwrap_or(std::f64::consts::PI)
+                                * radius
+                        }
+                    }
+                };
+                width = width.min(*asked + GRADIENT * outside);
             }
             width * shape_factor
         })?;
@@ -2302,12 +3110,40 @@ fn adaptive_demand_windows(
             }
             merge_lonlat_windows(windows)
         }
-        None => vec![LonLatWindow {
-            west: -180.0,
-            east: 180.0,
-            south: -90.0,
-            north: 90.0,
-        }],
+        None => {
+            let nlons = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "global source longitude overflows",
+                )
+            })?;
+            let nlats = gridnum_perdegree.checked_mul(180).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "global source latitude overflows",
+                )
+            })?;
+            // ponytail: 30-degree tiles bound peak raster memory; make this
+            // adaptive only if profiling shows file-open overhead dominates.
+            let tile = gridnum_perdegree.checked_mul(30).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "global source tile size overflows",
+                )
+            })?;
+            let mut bounds = Vec::new();
+            for lat_start in (1..=nlats).step_by(tile) {
+                for lon_start in (1..=nlons).step_by(tile) {
+                    bounds.push(earthmesh_mesh::AreaJudgeSourceBounds {
+                        minlon_source: lon_start,
+                        maxlon_source: (lon_start + tile - 1).min(nlons),
+                        maxlat_source: lat_start,
+                        minlat_source: (lat_start + tile - 1).min(nlats),
+                    });
+                }
+            }
+            return Ok(bounds);
+        }
     };
     windows
         .into_iter()
@@ -2407,11 +3243,37 @@ fn region_lonlat_windows(region: &GridRegion) -> Option<Vec<LonLatWindow>> {
             Some(split_lon_window(lon - lon_pad, lon + lon_pad, south, north))
         }
         GridRegion::Circle { .. } => None,
-        GridRegion::Close { points } => close_lonlat_windows(points),
+        GridRegion::Close { points } => {
+            let mut windows = close_lonlat_windows(points)?;
+            let contains_north_pole = region.contains(0.0, 90.0);
+            let contains_south_pole = region.contains(0.0, -90.0);
+            if contains_north_pole || contains_south_pole {
+                let south = if contains_south_pole {
+                    -90.0
+                } else {
+                    windows
+                        .iter()
+                        .map(|window| window.south)
+                        .fold(90.0, f64::min)
+                };
+                let north = if contains_north_pole {
+                    90.0
+                } else {
+                    windows
+                        .iter()
+                        .map(|window| window.north)
+                        .fold(-90.0, f64::max)
+                };
+                windows = vec![LonLatWindow::new(-180.0, 180.0, south, north)?];
+            }
+            Some(windows)
+        }
         GridRegion::Any(regions) => {
             let windows = regions
                 .iter()
-                .filter_map(region_lonlat_windows)
+                .map(region_lonlat_windows)
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
             (!windows.is_empty()).then_some(windows)
@@ -2472,18 +3334,29 @@ fn merge_lonlat_windows(windows: Vec<LonLatWindow>) -> Vec<LonLatWindow> {
 }
 
 fn close_lonlat_windows(points: &[crate::LonLatPoint]) -> Option<Vec<LonLatWindow>> {
-    let mut lats = points
-        .iter()
-        .filter(|point| point.lon.is_finite() && point.lat.is_finite())
-        .peekable();
-    lats.peek()?;
+    if points.len() < 3
+        || points.iter().any(|point| {
+            !point.lon.is_finite() || !point.lat.is_finite() || !(-90.0..=90.0).contains(&point.lat)
+        })
+    {
+        return None;
+    }
+    let points = if points.len() > 1 && close_points_coincide(points[0], points[points.len() - 1]) {
+        &points[..points.len() - 1]
+    } else {
+        points
+    };
+    if points.len() < 3 {
+        return None;
+    }
     let (mut south, mut north) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut lons = Vec::new();
-    for point in lats {
+    for point in points {
         south = south.min(point.lat);
         north = north.max(point.lat);
         lons.push(normalize_lon_for_window(point.lon));
     }
+    expand_close_latitude_bounds(points, &mut south, &mut north)?;
     lons.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     lons.dedup_by(|a, b| (*a - *b).abs() < 1.0e-12);
     if lons.len() == 1 {
@@ -2511,6 +3384,88 @@ fn close_lonlat_windows(points: &[crate::LonLatPoint]) -> Option<Vec<LonLatWindo
     Some(split_lon_window(start, end, south, north))
 }
 
+fn close_points_coincide(a: crate::LonLatPoint, b: crate::LonLatPoint) -> bool {
+    let (a_lon, a_lat, b_lon, b_lat) = (
+        a.lon.to_radians(),
+        a.lat.to_radians(),
+        b.lon.to_radians(),
+        b.lat.to_radians(),
+    );
+    let a = [
+        a_lat.cos() * a_lon.cos(),
+        a_lat.cos() * a_lon.sin(),
+        a_lat.sin(),
+    ];
+    let b = [
+        b_lat.cos() * b_lon.cos(),
+        b_lat.cos() * b_lon.sin(),
+        b_lat.sin(),
+    ];
+    let cross = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let cross_norm = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    cross_norm.atan2(dot) <= 1.0e-12
+}
+
+/// Include latitude extrema reached between ring vertices by minor great-circle arcs.
+fn expand_close_latitude_bounds(
+    points: &[crate::LonLatPoint],
+    south: &mut f64,
+    north: &mut f64,
+) -> Option<()> {
+    let unit = |point: crate::LonLatPoint| {
+        let (lon, lat) = (point.lon.to_radians(), point.lat.to_radians());
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let norm = |point: [f64; 3]| dot(point, point).sqrt();
+    let angle = |a: [f64; 3], b: [f64; 3]| norm(cross(a, b)).atan2(dot(a, b));
+
+    for edge in 0..points.len() {
+        let a = unit(points[edge]);
+        let b = unit(points[(edge + 1) % points.len()]);
+        let edge_angle = angle(a, b);
+        if edge_angle <= 1.0e-12 || (std::f64::consts::PI - edge_angle).abs() <= 1.0e-10 {
+            return None;
+        }
+        let normal = cross(a, b);
+        let normal_squared = dot(normal, normal);
+        let projected = [
+            -normal[0] * normal[2] / normal_squared,
+            -normal[1] * normal[2] / normal_squared,
+            1.0 - normal[2] * normal[2] / normal_squared,
+        ];
+        let projected_length = norm(projected);
+        if projected_length <= 1.0e-12 {
+            continue;
+        }
+        let maximum = [
+            projected[0] / projected_length,
+            projected[1] / projected_length,
+            projected[2] / projected_length,
+        ];
+        for candidate in [maximum, [-maximum[0], -maximum[1], -maximum[2]]] {
+            if angle(a, candidate) + angle(candidate, b) <= edge_angle + 1.0e-10 {
+                let latitude = candidate[2].clamp(-1.0, 1.0).asin().to_degrees();
+                *south = south.min(latitude);
+                *north = north.max(latitude);
+            }
+        }
+    }
+    Some(())
+}
+
 fn normalize_lon_for_window(lon: f64) -> f64 {
     let normalized = ((lon + 180.0).rem_euclid(360.0)) - 180.0;
     if (normalized + 180.0).abs() < 1.0e-12 && lon > 0.0 {
@@ -2529,6 +3484,105 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_area_metrics_always_use_the_minor_spherical_patch() {
+        let tiny = 1.0e-3;
+        assert_eq!(minor_cell_steradians(tiny), Some(tiny));
+        assert!(
+            (minor_cell_steradians(4.0 * std::f64::consts::PI - tiny).unwrap() - tiny).abs()
+                < 1.0e-12
+        );
+        assert_eq!(minor_cell_steradians(f64::NAN), None);
+    }
+
+    #[test]
+    fn lepp_region_constraints_are_real_mesh_edges() {
+        let method_c =
+            MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+        let state = MeshState::from_triangular_mesh(method_c.mesh()).expect("mesh state");
+        let region = earthmesh_mesh::RefinementRegion::Bbox {
+            west_degrees: -20.0,
+            east_degrees: 20.0,
+            south_degrees: -90.0,
+            north_degrees: 90.0,
+            level: 1,
+        };
+        let segments = lepp_region_boundary_segments(&state, &[region], None);
+        assert!(!segments.is_empty());
+        let mesh_edges = (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len())
+            .flat_map(|face| {
+                let corners = state.triangles()[face];
+                (0..3).map(move |corner| {
+                    let a = corners[(corner + 1) % 3];
+                    let b = corners[(corner + 2) % 3];
+                    (a.min(b), a.max(b))
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        assert!(segments.iter().all(|edge| mesh_edges.contains(&edge)));
+    }
+
+    #[test]
+    fn harp_rejects_invalid_polygon_geometry_before_refinement() {
+        let crossing = earthmesh_mesh::RefinementRegion::Polygon {
+            points: vec![
+                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
+                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
+                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
+            ],
+            level: 1,
+        };
+        let error = match harp_region_boundaries(&[crossing]) {
+            Ok(_) => panic!("self-intersecting HARP polygon must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("crosses itself"));
+
+        let valid = earthmesh_mesh::RefinementRegion::Polygon {
+            points: vec![
+                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
+                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
+            ],
+            level: 1,
+        };
+        let compiled = harp_region_boundaries(&[valid]).expect("valid polygon");
+        assert!(harp_region_contains(
+            &compiled[0],
+            earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
+                5.0, 5.0
+            )),
+            earthmesh_core::EARTH_RADIUS_METERS,
+        ));
+    }
+
+    #[test]
+    fn harp_polygon_targets_reach_the_spring_path() {
+        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh")
+            .into_inner();
+        let region = earthmesh_mesh::RefinementRegion::Polygon {
+            points: vec![
+                earthmesh_mesh::LonLatDegrees::new(-20.0, -20.0),
+                earthmesh_mesh::LonLatDegrees::new(20.0, -20.0),
+                earthmesh_mesh::LonLatDegrees::new(20.0, 20.0),
+                earthmesh_mesh::LonLatDegrees::new(-20.0, 20.0),
+            ],
+            level: 1,
+        };
+        let boundaries = harp_region_boundaries(std::slice::from_ref(&region)).expect("boundary");
+        let (base_cell_m, _) = harp_base_lengths(&mesh).expect("base scale");
+        let smoothed =
+            harp_spring_smoothed(&mesh, &boundaries, &[base_cell_m / 2.0], base_cell_m, 1)
+                .expect("polygon target spring");
+        assert_eq!(smoothed.nmd, mesh.nmd);
+        assert_eq!(smoothed.nud, mesh.nud);
+        assert_eq!(smoothed.nwd, mesh.nwd);
+    }
 
     /// A demand grid is `nlons * nlats`, so this is the cost of its windows.
     fn demand_cells(region: Option<&GridRegion>, per_degree: i32) -> usize {
@@ -2580,6 +3634,22 @@ mod tests {
             adaptive_demand_windows(None, &config).is_ok(),
             "only domain=None falls back to global"
         );
+
+        let partly_invalid = GridRegion::Any(vec![
+            GridRegion::Bbox {
+                west: 0.0,
+                east: 1.0,
+                south: 0.0,
+                north: 1.0,
+            },
+            GridRegion::Close { points: vec![] },
+        ]);
+        assert_eq!(
+            adaptive_demand_windows(Some(&partly_invalid), &config)
+                .expect_err("an invalid union member must not be silently dropped")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]
@@ -2613,6 +3683,85 @@ mod tests {
         assert!(
             regional * 100 < global,
             "a 16 by 16 degree domain must not cost the globe: {regional} vs {global}"
+        );
+    }
+
+    #[test]
+    fn global_adaptive_demand_is_complete_but_memory_bounded() {
+        let config = EarthmeshConfig {
+            gridnum_perdegree: 240,
+            ..EarthmeshConfig::default()
+        };
+        let windows = adaptive_demand_windows(None, &config).expect("global windows");
+        let cells = |bounds: &earthmesh_mesh::AreaJudgeSourceBounds| {
+            (bounds.maxlon_source - bounds.minlon_source + 1)
+                * (bounds.minlat_source - bounds.maxlat_source + 1)
+        };
+        assert_eq!(
+            windows.iter().map(cells).sum::<usize>(),
+            360 * 240 * 180 * 240,
+            "tiling must neither drop nor duplicate a source cell"
+        );
+        assert!(
+            windows.iter().map(cells).max().unwrap_or(0) <= (30usize * 240).pow(2),
+            "no individual demand allocation may cover the whole globe"
+        );
+    }
+
+    #[test]
+    fn spherical_close_windows_cover_poles_and_great_circle_bulges() {
+        let polar = GridRegion::Close {
+            points: vec![
+                crate::LonLatPoint {
+                    lon: -120.0,
+                    lat: 80.0,
+                },
+                crate::LonLatPoint {
+                    lon: 0.0,
+                    lat: 80.0,
+                },
+                crate::LonLatPoint {
+                    lon: 120.0,
+                    lat: 80.0,
+                },
+            ],
+        };
+        let windows = region_lonlat_windows(&polar).expect("polar close window");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(
+            (windows[0].west, windows[0].east, windows[0].north),
+            (-180.0, 180.0, 90.0)
+        );
+
+        let bulging_edge = [
+            crate::LonLatPoint {
+                lon: -45.0,
+                lat: 45.0,
+            },
+            crate::LonLatPoint {
+                lon: 45.0,
+                lat: 45.0,
+            },
+            crate::LonLatPoint { lon: 0.0, lat: 0.0 },
+        ];
+        let windows = close_lonlat_windows(&bulging_edge).expect("great-circle bounds");
+        assert!(
+            windows.iter().any(|window| window.north > 54.7),
+            "the minor arc rises above its 45-degree endpoints: {windows:?}"
+        );
+
+        let explicitly_closed = [
+            crate::LonLatPoint { lon: 0.0, lat: 0.0 },
+            crate::LonLatPoint { lon: 4.0, lat: 0.0 },
+            crate::LonLatPoint { lon: 0.0, lat: 4.0 },
+            crate::LonLatPoint {
+                lon: 360.0,
+                lat: 0.0,
+            },
+        ];
+        assert!(
+            close_lonlat_windows(&explicitly_closed).is_some(),
+            "a repeated physical first point is an accepted explicit closure"
         );
     }
 

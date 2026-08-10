@@ -87,24 +87,63 @@ fn canonical_lonlat_entrypoint_makes_radius_metric_explicit() {
 }
 
 #[test]
-fn canonical_polygon_exposes_planar_high_latitude_warning_without_changing_semantics() {
+fn geographic_polygon_is_spherical_at_the_pole_and_antimeridian() {
     let polygon = RefinementRegion::Polygon {
         points: vec![
-            LonLatDegrees::new(-20.0, 80.0),
-            LonLatDegrees::new(20.0, 80.0),
-            LonLatDegrees::new(0.0, 85.0),
+            LonLatDegrees::new(170.0, 80.0),
+            LonLatDegrees::new(-170.0, 80.0),
+            LonLatDegrees::new(0.0, 89.0),
         ],
         level: 1,
     };
 
-    polygon
-        .validate()
-        .expect("legacy planar polygon stays valid");
-    let warning = polygon
-        .canonical_geometry_warning()
-        .expect("Canonical polygons must disclose planar lon/lat semantics");
-    assert!(warning.contains("planar"));
-    assert!(warning.contains("pole"));
+    polygon.validate().expect("valid spherical polar polygon");
+    assert!(polygon.contains_lonlat_canonical(LonLatDegrees::new(180.0, 85.0)));
+    assert!(!polygon.contains_lonlat_canonical(LonLatDegrees::new(0.0, 0.0)));
+    assert_eq!(polygon.canonical_geometry_warning(), None);
+}
+
+#[test]
+fn geographic_polygon_accepts_an_explicit_physical_closure() {
+    let open = RefinementRegion::Polygon {
+        points: vec![
+            LonLatDegrees::new(0.0, 0.0),
+            LonLatDegrees::new(4.0, 0.0),
+            LonLatDegrees::new(0.0, 4.0),
+        ],
+        level: 1,
+    };
+    let closed = RefinementRegion::Polygon {
+        points: vec![
+            LonLatDegrees::new(0.0, 0.0),
+            LonLatDegrees::new(4.0, 0.0),
+            LonLatDegrees::new(0.0, 4.0),
+            LonLatDegrees::new(360.0, 0.0),
+        ],
+        level: 1,
+    };
+    let inside = LonLatDegrees::new(1.0, 1.0);
+
+    closed.validate().expect("explicit closure is valid");
+    assert_eq!(
+        closed.contains_lonlat_canonical(inside),
+        open.contains_lonlat_canonical(inside)
+    );
+}
+
+#[test]
+fn geographic_polygon_rejects_a_self_intersection() {
+    let bow_tie = RefinementRegion::Polygon {
+        points: vec![
+            LonLatDegrees::new(0.0, 0.0),
+            LonLatDegrees::new(2.0, 2.0),
+            LonLatDegrees::new(0.0, 2.0),
+            LonLatDegrees::new(2.0, 0.0),
+        ],
+        level: 1,
+    };
+
+    assert!(bow_tie.validate().is_err());
 }
 
 #[test]
@@ -367,7 +406,7 @@ fn method_c_native_cartesian_corridor_uses_canonical_linesegdist2_radius_interpo
 }
 
 #[test]
-fn method_c_polygon_near_edge_uses_canonical_segment_polar_stereographic_distance() {
+fn method_c_polygon_uses_minor_great_circle_edges() {
     let region = RefinementRegion::Polygon {
         points: vec![
             LonLatDegrees::new(-80.0, 40.0),
@@ -379,10 +418,8 @@ fn method_c_polygon_near_edge_uses_canonical_segment_polar_stereographic_distanc
     };
     let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(0.0, 45.0));
 
-    assert!(
-        !region.close_to_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS),
-        "polygon near-edge halo should use the same Canonical PS segment distance as ngr_area"
-    );
+    assert!(region.contains_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS));
+    assert!(region.close_to_cartesian(point, earthmesh_core::EARTH_RADIUS_METERS));
 }
 
 #[test]

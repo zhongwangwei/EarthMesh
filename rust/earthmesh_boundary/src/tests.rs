@@ -145,6 +145,29 @@ fn only_a_guide_may_be_flipped_away_and_only_hard_curves_block_the_mesh() {
     );
 }
 
+#[test]
+fn containment_rejects_nonphysical_query_coordinates() {
+    let points = square();
+    let model = SphericalBoundaryModel {
+        vertices: points.clone(),
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    for query in [
+        (f64::NAN, 0.5),
+        (0.5, f64::INFINITY),
+        (0.5, -90.1),
+        (0.5, 90.1),
+    ] {
+        assert!(!model.contains(query.0, query.1));
+        assert!(!spherical_ring_contains_minor(
+            &points,
+            query.0,
+            query.1,
+            |point| (point.lon_degrees, point.lat_degrees),
+        ));
+    }
+}
+
 fn ring(loop_type: LoopType, vertices: Vec<usize>, parent: Option<usize>) -> BoundaryLoop {
     BoundaryLoop {
         loop_type,
@@ -211,6 +234,27 @@ fn a_ring_across_the_dateline_still_knows_its_inside() {
     assert!(model.contains(179.0, -5.0), "west of the seam");
     assert!(!model.contains(0.0, 0.0), "the far side of the globe");
     assert!(!model.contains(160.0, 0.0), "just outside the western edge");
+}
+
+#[test]
+fn distance_to_boundary_uses_minor_great_circle_segments() {
+    let model = SphericalBoundaryModel {
+        vertices: square(),
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    model.validate().expect("valid");
+
+    assert!(model
+        .distance_to_boundary_radians(0.0, 0.0)
+        .is_some_and(|distance| distance <= 1.0e-12));
+    let outside = model
+        .distance_to_boundary_radians(2.0, 0.5)
+        .expect("distance");
+    assert!(
+        (outside.to_degrees() - 1.0).abs() < 0.01,
+        "nearest point is on the one-degree east edge, got {} degrees",
+        outside.to_degrees()
+    );
 }
 
 /// A ring around the pole encloses the pole, which a latitude test denies.
@@ -464,6 +508,76 @@ fn bounding_smaller_side_picks_the_island_either_way_in() {
     );
 }
 
+#[test]
+fn smaller_side_selection_handles_a_ring_whose_left_side_exceeds_a_hemisphere() {
+    let points = [(0.0, -10.0), (90.0, -10.0), (180.0, -10.0), (-90.0, -10.0)];
+    let vertices = points
+        .iter()
+        .map(|&(lon, lat)| vertex(lon, lat))
+        .collect::<Vec<_>>();
+    let boundary = BoundaryLoop::bounding_smaller_side(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![0, 1, 2, 3],
+        None,
+        &vertices,
+    )
+    .expect("non-degenerate ring");
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![boundary],
+    };
+
+    assert!(model.contains(0.0, -90.0));
+    assert!(!model.contains(0.0, 90.0));
+    assert!(spherical_ring_contains_minor(
+        &points,
+        0.0,
+        -90.0,
+        |point| *point
+    ));
+    assert!(!spherical_ring_contains_minor(
+        &points,
+        0.0,
+        90.0,
+        |point| *point
+    ));
+}
+
+#[test]
+fn spherical_ring_does_not_treat_a_vertex_antipode_as_inside() {
+    let points = [(0.0, 0.0), (10.0, 0.0), (5.0, 8.0)];
+
+    assert!(spherical_ring_contains_minor(&points, 0.0, 0.0, |point| {
+        *point
+    }));
+    assert!(!spherical_ring_contains_minor(
+        &points,
+        180.0,
+        0.0,
+        |point| *point
+    ));
+
+    let vertices = points
+        .iter()
+        .map(|&(lon, lat)| vertex(lon, lat))
+        .collect::<Vec<_>>();
+    let boundary = BoundaryLoop::bounding_smaller_side(
+        LoopType::Outer,
+        BoundaryRole::HardDomain,
+        vec![0, 1, 2],
+        None,
+        &vertices,
+    )
+    .expect("non-degenerate ring");
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![boundary],
+    };
+    assert!(model.contains(0.0, 0.0));
+    assert!(!model.contains(180.0, 0.0));
+}
+
 /// It agrees with `enclosing` where both apply.
 ///
 /// Two constructors that answer the same question differently would be worse
@@ -491,6 +605,82 @@ fn the_two_orienting_constructors_agree_where_both_apply() {
     )
     .expect("point");
     assert_eq!(by_area.vertices(), by_point.vertices());
+}
+
+fn wavy_global_ring_vertices() -> Vec<BoundaryVertex> {
+    (0..240)
+        .map(|index| {
+            let lon = -180.0 + 1.5 * index as f64;
+            let phase = 2.0 * std::f64::consts::PI * index as f64 / 240.0;
+            vertex(lon, -30.0 + 40.0 * (2.0 * phase).sin())
+        })
+        .collect()
+}
+
+fn rotated_indices(count: usize, start: usize) -> Vec<usize> {
+    (0..count).map(|offset| (start + offset) % count).collect()
+}
+
+#[test]
+fn spherical_area_is_independent_of_fan_start_vertex() {
+    let vertices = wavy_global_ring_vertices();
+    let baseline =
+        signed_area_on_unit_sphere(&rotated_indices(vertices.len(), 0), &vertices).expect("area");
+
+    for start in 1..vertices.len() {
+        let area = signed_area_on_unit_sphere(&rotated_indices(vertices.len(), start), &vertices)
+            .unwrap_or_else(|| panic!("area for start {start}"));
+        assert!(
+            (area - baseline).abs() < 1.0e-10,
+            "same ring changed signed area when fan started at {start}: {baseline} vs {area}"
+        );
+    }
+}
+
+#[test]
+fn smaller_side_orientation_is_independent_of_fan_start_vertex() {
+    let vertices = wavy_global_ring_vertices();
+
+    for start in 0..vertices.len() {
+        let boundary = BoundaryLoop::bounding_smaller_side(
+            LoopType::Outer,
+            BoundaryRole::HardDomain,
+            rotated_indices(vertices.len(), start),
+            None,
+            &vertices,
+        )
+        .unwrap_or_else(|| panic!("boundary for start {start}"));
+        let model = SphericalBoundaryModel {
+            vertices: vertices.clone(),
+            loops: vec![boundary],
+        };
+
+        assert!(model.contains(0.0, -80.0), "south cap, start {start}");
+        assert!(!model.contains(0.0, 80.0), "north side, start {start}");
+    }
+}
+
+#[test]
+fn hole_orientation_uses_the_normalized_area_sign() {
+    let vertices = wavy_global_ring_vertices();
+
+    for start in [0, 54, 120, 186, 239] {
+        let hole = BoundaryLoop::bounding_smaller_side(
+            LoopType::Hole,
+            BoundaryRole::HardDomain,
+            rotated_indices(vertices.len(), start),
+            Some(0),
+            &vertices,
+        )
+        .unwrap_or_else(|| panic!("hole for start {start}"));
+        let area = signed_area_on_unit_sphere(hole.vertices(), &vertices)
+            .unwrap_or_else(|| panic!("hole area for start {start}"));
+
+        assert!(
+            area > 0.0,
+            "holes describe their finite void, start {start}: {area}"
+        );
+    }
 }
 
 #[test]
@@ -698,4 +888,137 @@ fn validation_accepts_a_polar_hole_inside_a_polar_parent() {
     model
         .validate()
         .expect("spherical validation should handle polar nesting");
+}
+
+#[test]
+fn validation_refuses_consecutive_endpoints_that_are_the_same_point() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![vertex(-180.0, 0.0), vertex(180.0, 0.0), vertex(179.0, 1.0)],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2], None)],
+    };
+    let errors = model
+        .validate()
+        .expect_err("different ids and wrapped longitudes can still be one point");
+    assert!(errors.contains(&BoundaryError::CoincidentEdgeEndpoints {
+        loop_index: 0,
+        edge: 0,
+        from: 0,
+        to: 1,
+    }));
+}
+
+#[test]
+fn validation_refuses_antipodal_edge_endpoints() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![vertex(0.0, 0.0), vertex(180.0, 0.0), vertex(90.0, 10.0)],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2], None)],
+    };
+    let errors = model
+        .validate()
+        .expect_err("an antipodal edge has no unique minor great-circle arc");
+    assert!(errors.contains(&BoundaryError::AntipodalEdgeEndpoints {
+        loop_index: 0,
+        edge: 0,
+        from: 0,
+        to: 1,
+    }));
+}
+
+#[test]
+fn validation_refuses_sibling_holes_that_touch_or_overlap() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(10.0, 0.0),
+            vertex(10.0, 10.0),
+            vertex(0.0, 10.0),
+            vertex(1.0, 1.0),
+            vertex(4.0, 1.0),
+            vertex(4.0, 4.0),
+            vertex(1.0, 4.0),
+            vertex(4.0, 2.0),
+            vertex(7.0, 2.0),
+            vertex(7.0, 5.0),
+            vertex(4.0, 5.0),
+        ],
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+            ring(LoopType::Hole, vec![8, 9, 10, 11], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("sibling holes may not touch or overlap");
+    assert!(errors.contains(&BoundaryError::SiblingHolesIntersect {
+        parent: 0,
+        first_loop: 1,
+        second_loop: 2,
+    }));
+}
+
+#[test]
+fn validation_refuses_sibling_holes_that_nest() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 0.0),
+            vertex(10.0, 0.0),
+            vertex(10.0, 10.0),
+            vertex(0.0, 10.0),
+            vertex(1.0, 1.0),
+            vertex(5.0, 1.0),
+            vertex(5.0, 5.0),
+            vertex(1.0, 5.0),
+            vertex(2.0, 2.0),
+            vertex(3.0, 2.0),
+            vertex(3.0, 3.0),
+            vertex(2.0, 3.0),
+        ],
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+            ring(LoopType::Hole, vec![8, 9, 10, 11], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("a nested hole needs an outer island, not another hole");
+    assert!(errors.contains(&BoundaryError::SiblingHoleNested {
+        parent: 0,
+        outer_loop: 1,
+        inner_loop: 2,
+    }));
+}
+
+#[test]
+fn sibling_hole_validation_is_dateline_safe_and_keeps_finite_longitudes() {
+    let model = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(170.0, -10.0),
+            vertex(190.0, -10.0),
+            vertex(190.0, 10.0),
+            vertex(170.0, 10.0),
+            vertex(175.0, -5.0),
+            vertex(185.0, -5.0),
+            vertex(185.0, 5.0),
+            vertex(175.0, 5.0),
+            vertex(178.0, -2.0),
+            vertex(182.0, -2.0),
+            vertex(182.0, 2.0),
+            vertex(178.0, 2.0),
+        ],
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+            ring(LoopType::Hole, vec![8, 9, 10, 11], Some(0)),
+        ],
+    };
+    let errors = model
+        .validate()
+        .expect_err("dateline wrapping must not hide nested sibling holes");
+    assert!(errors.contains(&BoundaryError::SiblingHoleNested {
+        parent: 0,
+        outer_loop: 1,
+        inner_loop: 2,
+    }));
 }

@@ -62,6 +62,21 @@ pub use earthmesh_mesh::{
     LonLatDegrees, MethodCGridfileMetadata, RefinementRegion, RepairableKind, TriangularMesh,
 };
 
+mod lepp_delaunay;
+pub use lepp_delaunay::{
+    adaptive_hybrid_target_edge_from_level, find_lepp, improve_lepp_post_quality,
+    insert_lepp_terminal_midpoint, insert_lepp_terminal_midpoint_constrained,
+    refine_adaptive_hybrid, refine_adaptive_hybrid_constrained, refine_adaptive_hybrid_regions,
+    spherical_edge_length, terminal_edge_midpoint, AdaptiveHybridConfig, AdaptiveHybridDemand,
+    AdaptiveHybridError, AdaptiveHybridInsertionCounts, AdaptiveHybridPathStats,
+    AdaptiveHybridRejection, AdaptiveHybridReport, AdaptiveHybridStopReason,
+    AdaptiveHybridTargetSatisfaction, AdaptiveHybridUnresolvedDemand,
+    AdaptiveHybridUnresolvedReason, FaceId, LeppEdgeId, LeppInsertionError, LeppInsertionGates,
+    LeppInsertionReport, LeppInsertionSplitReason, LeppPath, LeppPostQualityConfig,
+    LeppPostQualityError, LeppPostQualityRejection, LeppPostQualityReport,
+    LeppPostQualityStopReason, LeppQualitySnapshot, LeppSearchConfig, LeppSearchError,
+    LeppSearchReport, LeppTerminal,
+};
 mod method_c_mesh;
 pub use method_c_lattice_mask::METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS;
 pub use method_c_mesh::MethodCMesh;

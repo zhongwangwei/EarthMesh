@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build build-python build-gui-bundle clean test test-fast test-gui check-gui-js check-architecture check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
+.PHONY: all build build-python build-gui-bundle clean test test-fast test-gui check-gui-js check-architecture check-architecture-selftest check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -84,18 +84,7 @@ clippy-full: clippy
 # Fast regression gate: no NetCDF, no GUI — pure Rust crates only. Used by CI's
 # `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
 test-fast:
-	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_hfield/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_project/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_boundary/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets
+	$(CARGO) test --workspace --exclude earthmesh_cli --all-targets
 
 check-gui-js:
 	node scripts/check_gui_js.js
@@ -116,18 +105,36 @@ EM_ARCH_OUT = /tmp/earthmesh_architecture_hits
 # missing tool read as a clean result -- which is how it passed for months while
 # checking nothing. Anything above 1 is now a failure of the gate itself.
 define em_arch_verdict
-status=$$?; if [ "$$status" -eq 0 ]; then cat $(EM_ARCH_OUT); echo '$(1)'; exit 1; elif [ "$$status" -ne 1 ]; then echo "check-architecture: grep exited $$status, so it checked nothing"; exit 1; fi
+if [ "$$status" -eq 0 ]; then \
+	cat "$$tmp" > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; \
+	cat "$(EM_ARCH_OUT)"; echo '$(1)'; rm -f "$$tmp"; exit 1; \
+elif [ "$$status" -eq 1 ]; then \
+	: > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; rm -f "$$tmp"; \
+else \
+	echo "check-architecture: grep exited $$status, so it checked nothing"; rm -f "$$tmp"; exit 1; \
+fi
 endef
 
 check-architecture:
 	@command -v grep >/dev/null || { echo 'check-architecture needs grep and cannot find it'; exit 1; }
-	@$(EM_ARCH_GREP) -E '^[[:space:]]*pub use .*\*' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
+		$(EM_ARCH_GREP) -E '^[[:space:]]*pub use .*\*' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,wildcard public re-exports are forbidden)
-	@$(EM_ARCH_GREP) -F '#[deprecated' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
+		$(EM_ARCH_GREP) -F '#[deprecated' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,deprecated compatibility facades are forbidden)
-	@$(EM_ARCH_GREP) -iE '\breference\b|reference_' rust > $(EM_ARCH_OUT) 2>/dev/null; \
+	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
+		$(EM_ARCH_GREP) -iE '\breference\b|reference_' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,source-origin reference naming is forbidden)
 	@python3 scripts/check_architecture.py .
+
+check-architecture-selftest:
+	@probe=$$(mktemp -d /tmp/earthmesh_arch_probe.XXXXXX); log="$$probe.log"; \
+		if $(MAKE) --no-print-directory check-architecture EM_ARCH_OUT="$$probe" >"$$log" 2>&1; then \
+			cat "$$log"; rm -rf "$$probe"; rm -f "$$log"; echo 'check-architecture must fail when EM_ARCH_OUT is not writable as a file'; exit 1; \
+		fi; \
+		rm -rf "$$probe"; rm -f "$$log"; \
+		echo 'check-architecture fail-closed selftest PASSED'
 
 check-mesh-quality-views:
 	CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh
@@ -136,14 +143,7 @@ test-gui: check-gui-js
 	CARGO_TARGET_DIR=$(GUI_TARGET_DIR) $(CARGO) test --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets
 
 # Full crate tests (includes cli with static-netcdf — slow first build).
-test:
-	$(CARGO) test --manifest-path rust/earthmesh_core/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_hfield/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_mesh/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_quality/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_refine_planner/Cargo.toml --all-targets
-	$(CARGO) test --manifest-path rust/earthmesh_project/Cargo.toml --all-targets
+test: test-fast
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES)
 
 # Fixture-backed slow tests require EARTHMESH_LANDTYPE, defaulting to the
@@ -167,7 +167,7 @@ release-full-real: test-full test-real-hydro
 # Release fast gate: format + no-netcdf crates. Run before tagging a release; the
 # full gate adds `make test-full` (GUI + CLI/static-netcdf + ignored slow tests) on top.
 release-check: check-architecture fmt test-fast
-	@echo 'Release fast gate PASSED: fmt clean + core/geometry/hfield/mesh/quality/refine_planner/project green.'
+	@echo 'Release fast gate PASSED: fmt clean + all non-CLI Rust crates green.'
 	@echo 'Full gate (needs NetCDF): make test-full'
 
 # End-to-end acceptance on real meshes: run the case, measure quality, assert

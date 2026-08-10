@@ -37,7 +37,7 @@ use crate::error::{HarpDvError, Result};
 use crate::state::{AdaptiveMesh, SiteId};
 
 /// The most neighbours a cell can have and still be written to a gridfile.
-pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = 7;
+pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE;
 
 /// What a transaction must satisfy to be kept.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -104,9 +104,9 @@ impl Default for HardGates {
             //
             // That it lands on Chew's 30-degree bound is a coincidence; this
             // number came from a sweep, not from the theory.
-            min_triangle_angle_deg: 30.0,
+            min_triangle_angle_deg: earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG,
             require_closed_surface: true,
-            max_patch_triangles: 10_000,
+            max_patch_triangles: earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
         }
     }
 }
@@ -594,10 +594,11 @@ impl AdaptiveMesh {
             Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
         };
         // Order the ladder by what each candidate would do to the degrees
-        // around it, before anything is written. Every site on an insertion's
-        // cavity ring gains exactly one neighbour, so a candidate that would
-        // push one past the budget is knowable in advance -- and the degree
-        // bound is 96% of everything this backend cannot do (guide 11.13).
+        // around it, before anything is written. The forecast accounts for the
+        // new neighbour and for cavity-internal edges that disappear (notably
+        // an on-edge split), so a candidate that would push one past the budget
+        // is knowable in advance -- and the degree bound is 96% of everything
+        // this backend cannot do (guide 11.13).
         //
         // Sorting rather than filtering: the ladder's own order still decides
         // among candidates that are equally safe, so a witness still leads
@@ -623,10 +624,6 @@ impl AdaptiveMesh {
 
         let mut refusals = Vec::with_capacity(ladder.len());
         for candidate in ladder {
-            // Ruppert's rule, applied to the candidate rather than after the
-            // fact: a point inside a protected segment's diametral circle is
-            // never inserted -- the segment is split at its midpoint instead,
-            // and that split is what makes the refinement terminate.
             // Ruppert's rule: a point inside a protected segment's diametral
             // circle is never inserted -- the segment is split at its midpoint
             // instead, and that split is what makes the refinement terminate.
@@ -638,7 +635,7 @@ impl AdaptiveMesh {
                 },
                 None => candidate,
             };
-            match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {
+            match self.propose_site_for(candidate.point, Some(candidate.hint), gates, site)? {
                 Acceptance::Committed(report) => {
                     // The halves are segments too, or the induction stops
                     // exactly where it was just applied.

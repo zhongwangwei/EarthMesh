@@ -57,6 +57,17 @@ use std::io;
 
 use earthmesh_mesh::{AreaJudgeSourceBounds, LonLatDegrees, RefinementRegion};
 
+const RASTER_PROGRESS_MIN_CELLS: usize = 10_000_000;
+
+fn row_progress_percent(completed: usize, total: usize) -> Option<usize> {
+    if completed == 0 || total == 0 || completed > total {
+        return None;
+    }
+    let step = (total / 20).max(1);
+    (completed == total || completed.is_multiple_of(step))
+        .then_some(completed.saturating_mul(100) / total)
+}
+
 /// Refinement demand over a window of the source raster.
 ///
 /// Indices are the engine's global one-based source indices: index 1 sits at
@@ -237,16 +248,34 @@ impl RefinementDemand {
         decide_row: impl Fn(usize, usize, usize, &mut Vec<bool>) + Sync + Send,
     ) {
         use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (minlon, nlons) = (self.bounds.minlon_source, self.nlons);
         let maxlat = self.bounds.maxlat_source;
         let nlats = self.nlats;
+        let report_progress = self.len >= RASTER_PROGRESS_MIN_CELLS;
+        let started = std::time::Instant::now();
+        let completed_rows = AtomicUsize::new(0);
+        if report_progress {
+            eprintln!(
+                "earthmesh_cli: raster demand row evaluation started: {nlats} rows x {nlons} columns ({} cells)",
+                self.len
+            );
+        }
         let rows: Vec<Vec<bool>> = (0..nlats)
             .into_par_iter()
             .map(|lat_offset| {
                 let mut row = Vec::new();
                 decide_row(maxlat + lat_offset, minlon, minlon + nlons - 1, &mut row);
                 debug_assert_eq!(row.len(), nlons, "a row must cover the window width");
+                let completed = completed_rows.fetch_add(1, Ordering::Relaxed) + 1;
+                if report_progress {
+                    if let Some(percent) = row_progress_percent(completed, nlats) {
+                        eprintln!(
+                            "earthmesh_cli: raster demand row evaluation {percent}% ({completed}/{nlats} rows)"
+                        );
+                    }
+                }
                 row
             })
             .collect();
@@ -258,6 +287,20 @@ impl RefinementDemand {
                     self.words[offset / 64] |= 1u64 << (offset % 64);
                 }
             }
+            if report_progress {
+                if let Some(percent) = row_progress_percent(lat_offset + 1, nlats) {
+                    eprintln!(
+                        "earthmesh_cli: raster demand bit packing {percent}% ({}/{nlats} rows)",
+                        lat_offset + 1
+                    );
+                }
+            }
+        }
+        if report_progress {
+            eprintln!(
+                "earthmesh_cli: raster demand scan complete in {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
         }
     }
 

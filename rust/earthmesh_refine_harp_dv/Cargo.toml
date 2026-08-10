@@ -2,7 +2,7 @@
 name = "earthmesh_refine_harp_dv"
 version = "3.0.0-alpha4"
 edition = "2021"
-description = "HARP-DV: threshold-driven, multi-cycle adaptive refinement of spherical Delaunay-Voronoi meshes. Phase 1 skeleton; not yet a runnable backend."
+description = "HARP-DV: threshold-driven, multi-cycle adaptive refinement of spherical Delaunay-Voronoi meshes."
 license = "GPL-2.0-only"
 repository = "https://github.com/zhongwangwei/EarthMesh"
 

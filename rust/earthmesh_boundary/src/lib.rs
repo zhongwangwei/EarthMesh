@@ -23,6 +23,11 @@ pub use segments::SegmentList;
 
 use std::collections::BTreeMap;
 
+use earthmesh_geometry::{
+    try_spherical_polygon_area, try_spherical_polygon_signed_minor_excess_fast, Point,
+    SphericalArea, SphericalPolygonError,
+};
+
 /// What a boundary means for the mesh that meets it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BoundaryRole {
@@ -190,14 +195,17 @@ impl BoundaryLoop {
         parent: Option<usize>,
         model_vertices: &[BoundaryVertex],
     ) -> Option<Self> {
-        let area = signed_area_on_unit_sphere(&vertices, model_vertices)?;
-        if area == 0.0 {
+        let points = points_for_ring(&vertices, model_vertices)?;
+        let area =
+            try_spherical_polygon_signed_minor_excess_fast(&points, |point| (point.x, point.y))
+                .ok()?;
+        if (area.abs() - std::f64::consts::TAU).abs() <= 64.0 * f64::EPSILON {
             return None;
         }
-        // Positive is counter-clockwise seen from outside, which encloses the
-        // region on the left; a ring that comes back negative is drawn the way
-        // round that keeps the rest of the sphere.
-        let ordered = if area > 0.0 {
+        // The signed-minor excess is already normalized by `earthmesh_geometry`,
+        // so this does not depend on which vertex the fan starts at.
+        let smaller_side_is_left = area > 0.0;
+        let ordered = if smaller_side_is_left {
             vertices
         } else {
             vertices.into_iter().rev().collect()
@@ -219,46 +227,135 @@ impl BoundaryLoop {
     }
 }
 
-/// The signed area a ring encloses on the unit sphere, in steradians.
+fn points_for_ring(ring: &[usize], vertices: &[BoundaryVertex]) -> Option<Vec<Point>> {
+    ring.iter()
+        .map(|&index| {
+            vertices
+                .get(index)
+                .map(|point| Point::new(point.lon_degrees, point.lat_degrees))
+        })
+        .collect()
+}
+
+fn area_for_ring(
+    ring: &[usize],
+    vertices: &[BoundaryVertex],
+) -> Result<SphericalArea, SphericalPolygonError> {
+    let points = points_for_ring(ring, vertices)
+        .ok_or(SphericalPolygonError::TooFewVertices { found: ring.len() })?;
+    try_spherical_polygon_area(&points)
+}
+
+/// The signed minor area a ring encloses on the unit sphere, in steradians.
 ///
 /// Positive when the ring runs counter-clockwise seen from outside, which is
-/// the same convention [`SphericalBoundaryModel::contains`] reads. **Note that
-/// `earthmesh_mesh::robust_spherical_area_unit` is the opposite sign** --
-/// measured, a counter-clockwise lon/lat square gives -0.00487 there and
-/// +0.00487 here. Two functions with the same name-shape and opposite
-/// conventions is exactly how a coastline ends up enclosing the ocean, so both
-/// are pinned by tests against the right-hand rule rather than against each
-/// other.
-///
-/// Van Oosterom and Strackee's solid angle, summed over a fan from the first
-/// vertex. Chosen over the interior-angle formula because it needs no special
-/// case at the poles or the dateline, which is the same reason the winding is
-/// summed rather than ray-cast.
+/// the same convention [`SphericalBoundaryModel::contains`] reads. The geometry
+/// crate owns the fan triangulation and `4π` normalization; this crate only
+/// interprets the signed result as boundary topology.
 fn signed_area_on_unit_sphere(ring: &[usize], vertices: &[BoundaryVertex]) -> Option<f64> {
-    if ring.len() < 3 {
-        return None;
+    area_for_ring(ring, vertices)
+        .ok()
+        .map(|area| area.signed_minor_sr)
+}
+
+/// Whether a geodesic ring contains a point on its smaller spherical side.
+///
+/// Unlike a longitude ray-cast, the tangent-plane winding used here is valid
+/// across the antimeridian and at either pole. Input order does not choose the
+/// complementary side: reversing the ring still describes the same smaller
+/// region. Points on a ring vertex count as contained.
+pub fn spherical_ring_contains_minor<T>(
+    ring: &[T],
+    lon_degrees: f64,
+    lat_degrees: f64,
+    coordinates: impl Copy + Fn(&T) -> (f64, f64),
+) -> bool {
+    if !valid_lon_lat(lon_degrees, lat_degrees) {
+        return false;
     }
-    let unit = |index: usize| -> Option<[f64; 3]> {
-        let point = vertices.get(index)?;
-        let (lon, lat) = (
-            point.lon_degrees.to_radians(),
-            point.lat_degrees.to_radians(),
-        );
-        Some([lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()])
+    let Some(signed_minor_area) = signed_minor_area_for_coordinates(ring, coordinates) else {
+        return false;
     };
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let apex = unit(ring[0])?;
-    let mut total = 0.0_f64;
-    for step in 1..ring.len() - 1 {
-        let b = unit(ring[step])?;
-        let c = unit(ring[step + 1])?;
-        let triple = apex[0] * (b[1] * c[2] - b[2] * c[1])
-            + apex[1] * (b[2] * c[0] - b[0] * c[2])
-            + apex[2] * (b[0] * c[1] - b[1] * c[0]);
-        let denominator = 1.0 + dot(apex, b) + dot(b, c) + dot(c, apex);
-        total += 2.0 * triple.atan2(denominator);
+    let Some(turn) = spherical_winding_turn(ring, lon_degrees, lat_degrees, coordinates) else {
+        return true;
+    };
+    let desired_sign = signed_minor_area.signum();
+    if desired_sign > 0.0 {
+        turn > std::f64::consts::PI
+    } else {
+        turn < -std::f64::consts::PI
     }
-    Some(total)
+}
+
+fn signed_minor_area_for_coordinates<T>(
+    ring: &[T],
+    coordinates: impl Copy + Fn(&T) -> (f64, f64),
+) -> Option<f64> {
+    try_spherical_polygon_signed_minor_excess_fast(ring, coordinates).ok()
+}
+
+fn spherical_winding_turn<T>(
+    ring: &[T],
+    lon_degrees: f64,
+    lat_degrees: f64,
+    coordinates: impl Copy + Fn(&T) -> (f64, f64),
+) -> Option<f64> {
+    if ring.len() < 3 || !lon_degrees.is_finite() || !lat_degrees.is_finite() {
+        return Some(0.0);
+    }
+    let to_unit = |lon: f64, lat: f64| {
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let here = to_unit(lon_degrees, lat_degrees);
+    let east = [-here[1], here[0], 0.0];
+    let east_length = (east[0] * east[0] + east[1] * east[1]).sqrt();
+    let east = if east_length > 1.0e-12 {
+        [east[0] / east_length, east[1] / east_length, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let north = [
+        here[1] * east[2] - here[2] * east[1],
+        here[2] * east[0] - here[0] * east[2],
+        here[0] * east[1] - here[1] * east[0],
+    ];
+    let tangent = |point: [f64; 3]| -> Option<(f64, f64)> {
+        let dot = here[0] * point[0] + here[1] * point[1] + here[2] * point[2];
+        let flat = [
+            point[0] - here[0] * dot,
+            point[1] - here[1] * dot,
+            point[2] - here[2] * dot,
+        ];
+        let length = (flat[0] * flat[0] + flat[1] * flat[1] + flat[2] * flat[2]).sqrt();
+        if length <= 1.0e-12 {
+            return None;
+        }
+        Some((
+            (flat[0] * east[0] + flat[1] * east[1] + flat[2] * east[2]) / length,
+            (flat[0] * north[0] + flat[1] * north[1] + flat[2] * north[2]) / length,
+        ))
+    };
+    let mut turned = 0.0;
+    for step in 0..ring.len() {
+        let (a_lon, a_lat) = coordinates(&ring[step]);
+        let (b_lon, b_lat) = coordinates(&ring[(step + 1) % ring.len()]);
+        let a_unit = to_unit(a_lon, a_lat);
+        let b_unit = to_unit(b_lon, b_lat);
+        let query_dot =
+            |point: [f64; 3]| here[0] * point[0] + here[1] * point[1] + here[2] * point[2];
+        if query_dot(a_unit) > 1.0 - 1.0e-12 || query_dot(b_unit) > 1.0 - 1.0e-12 {
+            return None;
+        }
+        if query_dot(a_unit) < -1.0 + 1.0e-12 || query_dot(b_unit) < -1.0 + 1.0e-12 {
+            return Some(0.0);
+        }
+        let (Some(a), Some(b)) = (tangent(a_unit), tangent(b_unit)) else {
+            return Some(0.0);
+        };
+        turned += (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
+    }
+    turned.is_finite().then_some(turned)
 }
 
 /// Every boundary the run has to respect, as one model.
@@ -304,8 +401,36 @@ pub enum BoundaryError {
     },
     /// A hole's direction describes the complement, not a finite void inside its parent.
     HoleWrongOrientation { loop_index: usize },
+    /// A usable ring still has no unambiguous spherical area.
+    UnresolvedRingArea { loop_index: usize },
+    /// A boundary edge has the same physical point at both ends.
+    CoincidentEdgeEndpoints {
+        loop_index: usize,
+        edge: usize,
+        from: usize,
+        to: usize,
+    },
+    /// A boundary edge joins antipodal points, so there is no unique minor arc.
+    AntipodalEdgeEndpoints {
+        loop_index: usize,
+        edge: usize,
+        from: usize,
+        to: usize,
+    },
     /// A hole touches or crosses its declared outer parent.
     HoleIntersectsParent { loop_index: usize, parent: usize },
+    /// Two holes under the same outer parent touch or cross.
+    SiblingHolesIntersect {
+        parent: usize,
+        first_loop: usize,
+        second_loop: usize,
+    },
+    /// One hole under an outer parent sits inside another hole.
+    SiblingHoleNested {
+        parent: usize,
+        outer_loop: usize,
+        inner_loop: usize,
+    },
 }
 
 impl std::fmt::Display for BoundaryError {
@@ -365,9 +490,47 @@ impl std::fmt::Display for BoundaryError {
                 formatter,
                 "hole loop {loop_index} is oriented as the complement, not as a finite void"
             ),
+            Self::UnresolvedRingArea { loop_index } => write!(
+                formatter,
+                "loop {loop_index} has no unambiguous spherical area"
+            ),
+            Self::CoincidentEdgeEndpoints {
+                loop_index,
+                edge,
+                from,
+                to,
+            } => write!(
+                formatter,
+                "loop {loop_index} edge {edge} has coincident endpoints {from} and {to}"
+            ),
+            Self::AntipodalEdgeEndpoints {
+                loop_index,
+                edge,
+                from,
+                to,
+            } => write!(
+                formatter,
+                "loop {loop_index} edge {edge} joins antipodal endpoints {from} and {to}, so the minor great-circle arc is undefined"
+            ),
             Self::HoleIntersectsParent { loop_index, parent } => write!(
                 formatter,
                 "hole loop {loop_index} touches or crosses parent outer loop {parent}"
+            ),
+            Self::SiblingHolesIntersect {
+                parent,
+                first_loop,
+                second_loop,
+            } => write!(
+                formatter,
+                "hole loops {first_loop} and {second_loop} under parent {parent} touch or cross"
+            ),
+            Self::SiblingHoleNested {
+                parent,
+                outer_loop,
+                inner_loop,
+            } => write!(
+                formatter,
+                "hole loop {inner_loop} sits inside sibling hole {outer_loop} under parent {parent}"
             ),
         }
     }
@@ -408,7 +571,7 @@ fn scale(a: [f64; 3], factor: f64) -> [f64; 3] {
 }
 
 fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
-    dot(a, b).clamp(-1.0, 1.0).acos()
+    norm(cross(a, b)).atan2(dot(a, b))
 }
 
 fn point_on_minor_arc(a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> bool {
@@ -421,6 +584,35 @@ fn point_on_minor_arc(a: [f64; 3], b: [f64; 3], p: [f64; 3]) -> bool {
         return false;
     }
     angle(a, p) + angle(p, b) <= ab + 1.0e-10
+}
+
+fn edge_endpoint_error(
+    loop_index: usize,
+    edge: usize,
+    from: usize,
+    to: usize,
+    vertices: &[BoundaryVertex],
+) -> Option<BoundaryError> {
+    let a = unit_from_vertex(&vertices[from]);
+    let b = unit_from_vertex(&vertices[to]);
+    let separation = angle(a, b);
+    if separation <= 1.0e-12 {
+        Some(BoundaryError::CoincidentEdgeEndpoints {
+            loop_index,
+            edge,
+            from,
+            to,
+        })
+    } else if (std::f64::consts::PI - separation).abs() <= 1.0e-10 {
+        Some(BoundaryError::AntipodalEdgeEndpoints {
+            loop_index,
+            edge,
+            from,
+            to,
+        })
+    } else {
+        None
+    }
 }
 
 fn spherical_segments_intersect(a0: [f64; 3], a1: [f64; 3], b0: [f64; 3], b1: [f64; 3]) -> bool {
@@ -478,12 +670,28 @@ impl SphericalBoundaryModel {
                 }
             }
             if self.ring_vertices_usable(ring) {
+                for edge in 0..ring.vertices().len() {
+                    let from = ring.vertices()[edge];
+                    let to = ring.vertices()[(edge + 1) % ring.vertices().len()];
+                    if let Some(error) =
+                        edge_endpoint_error(loop_index, edge, from, to, &self.vertices)
+                    {
+                        errors.push(error);
+                    }
+                }
                 if let Some((first_edge, second_edge)) = self.ring_self_intersection(ring) {
                     errors.push(BoundaryError::RingSelfIntersection {
                         loop_index,
                         first_edge,
                         second_edge,
                     });
+                }
+                if matches!(
+                    area_for_ring(ring.vertices(), &self.vertices),
+                    Err(SphericalPolygonError::DegenerateArea
+                        | SphericalPolygonError::AmbiguousTriangulation { .. })
+                ) {
+                    errors.push(BoundaryError::UnresolvedRingArea { loop_index });
                 }
             }
             match (ring.loop_type, ring.parent) {
@@ -539,6 +747,52 @@ impl SphericalBoundaryModel {
             }
             if self.rings_intersect(parent_ring, ring) {
                 errors.push(BoundaryError::HoleIntersectsParent { loop_index, parent });
+            }
+        }
+        let mut holes_by_parent: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (loop_index, ring) in self.loops.iter().enumerate() {
+            if ring.loop_type == LoopType::Hole {
+                if let Some(parent) = ring.parent {
+                    if self
+                        .loops
+                        .get(parent)
+                        .is_some_and(|parent_ring| parent_ring.loop_type == LoopType::Outer)
+                        && self.ring_vertices_usable(ring)
+                    {
+                        holes_by_parent.entry(parent).or_default().push(loop_index);
+                    }
+                }
+            }
+        }
+        for (parent, holes) in holes_by_parent {
+            for first in 0..holes.len() {
+                for second in first + 1..holes.len() {
+                    let first_loop = holes[first];
+                    let second_loop = holes[second];
+                    let a = &self.loops[first_loop];
+                    let b = &self.loops[second_loop];
+                    if self.rings_intersect(a, b) {
+                        errors.push(BoundaryError::SiblingHolesIntersect {
+                            parent,
+                            first_loop,
+                            second_loop,
+                        });
+                        continue;
+                    }
+                    if self.ring_contains_ring(a, b) {
+                        errors.push(BoundaryError::SiblingHoleNested {
+                            parent,
+                            outer_loop: first_loop,
+                            inner_loop: second_loop,
+                        });
+                    } else if self.ring_contains_ring(b, a) {
+                        errors.push(BoundaryError::SiblingHoleNested {
+                            parent,
+                            outer_loop: second_loop,
+                            inner_loop: first_loop,
+                        });
+                    }
+                }
             }
         }
         if errors.is_empty() {
@@ -607,6 +861,63 @@ impl SphericalBoundaryModel {
         false
     }
 
+    fn ring_contains_ring(&self, outer: &BoundaryLoop, inner: &BoundaryLoop) -> bool {
+        inner.vertices().iter().any(|&vertex| {
+            let point = &self.vertices[vertex];
+            self.loop_winds_around(outer, point.lon_degrees, point.lat_degrees)
+        })
+    }
+
+    /// Shortest angular distance from a point to any boundary segment.
+    ///
+    /// The result is in radians on the unit sphere. Multiply by the mesh's
+    /// sphere radius for a physical distance. `None` means the query or model
+    /// has no usable boundary segment.
+    pub fn distance_to_boundary_radians(&self, lon_degrees: f64, lat_degrees: f64) -> Option<f64> {
+        if !valid_lon_lat(lon_degrees, lat_degrees) {
+            return None;
+        }
+        let query = unit_from_vertex(&BoundaryVertex {
+            lon_degrees,
+            lat_degrees,
+            pinned: false,
+        });
+        let mut best = f64::INFINITY;
+        for ring in &self.loops {
+            for edge in 0..ring.vertices().len() {
+                let a = unit_from_vertex(self.vertices.get(ring.vertices()[edge])?);
+                let b = unit_from_vertex(
+                    self.vertices
+                        .get(ring.vertices()[(edge + 1) % ring.vertices().len()])?,
+                );
+                best = best.min(angle(query, a)).min(angle(query, b));
+
+                let normal = cross(a, b);
+                let normal_length = norm(normal);
+                if normal_length <= 1.0e-12 {
+                    continue;
+                }
+                let normal = scale(normal, 1.0 / normal_length);
+                let projected = [
+                    query[0] - normal[0] * dot(query, normal),
+                    query[1] - normal[1] * dot(query, normal),
+                    query[2] - normal[2] * dot(query, normal),
+                ];
+                let projected_length = norm(projected);
+                if projected_length <= 1.0e-12 {
+                    continue;
+                }
+                let projected = scale(projected, 1.0 / projected_length);
+                for candidate in [projected, scale(projected, -1.0)] {
+                    if point_on_minor_arc(a, b, candidate) {
+                        best = best.min(angle(query, candidate));
+                    }
+                }
+            }
+        }
+        best.is_finite().then_some(best)
+    }
+
     /// Whether a point is inside the domain this model describes.
     ///
     /// Inside an outer loop and not inside any of its holes. A lake in an
@@ -640,6 +951,9 @@ impl SphericalBoundaryModel {
     /// so the dateline and the poles need no special case: a ring spanning 170
     /// east to 170 west is a twenty-degree strip, not almost the whole globe.
     pub fn contains(&self, lon_degrees: f64, lat_degrees: f64) -> bool {
+        if !valid_lon_lat(lon_degrees, lat_degrees) {
+            return false;
+        }
         let mut inside = false;
         for (index, ring) in self.loops.iter().enumerate() {
             if ring.loop_type != LoopType::Outer
@@ -717,11 +1031,18 @@ impl SphericalBoundaryModel {
             let (Some(a), Some(b)) = (self.vertices.get(from), self.vertices.get(to)) else {
                 return false;
             };
-            let (Some(a), Some(b)) = (
-                tangent(to_unit(a.lon_degrees, a.lat_degrees)),
-                tangent(to_unit(b.lon_degrees, b.lat_degrees)),
-            ) else {
+            let a_unit = to_unit(a.lon_degrees, a.lat_degrees);
+            let b_unit = to_unit(b.lon_degrees, b.lat_degrees);
+            let query_dot =
+                |point: [f64; 3]| here[0] * point[0] + here[1] * point[1] + here[2] * point[2];
+            if query_dot(a_unit) > 1.0 - 1.0e-12 || query_dot(b_unit) > 1.0 - 1.0e-12 {
                 return true;
+            }
+            if query_dot(a_unit) < -1.0 + 1.0e-12 || query_dot(b_unit) < -1.0 + 1.0e-12 {
+                return false;
+            }
+            let (Some(a), Some(b)) = (tangent(a_unit), tangent(b_unit)) else {
+                return false;
             };
             let cross = a.0 * b.1 - a.1 * b.0;
             let dot = a.0 * b.0 + a.1 * b.1;

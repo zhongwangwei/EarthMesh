@@ -28,9 +28,10 @@ pub use capability_registry::{
 pub use schema::{
     auto_refine_level_cap, default_mask_sea_ratio, degree_to_nxp, effective_auto_refine_pass,
     km_to_nxp, next_auto_refine_pass, nxp_to_km, AdaptiveRefinementRecipe, CloseMaskFormat,
-    CoupledMeshConfig, DomainConfig, ExpertOverrides, FractionMethod, HfieldRefinementRecipe,
-    HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, MeshTargetConfig,
-    ModelFormat, ProjectConfig, ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig,
+    CoupledMeshConfig, DomainConfig, ExpertOverrides, FractionMethod, HarpDvRefinementRecipe,
+    HfieldRefinementRecipe, HydroCoastConfig, LeppPostQualityConfig, MeshCellKind, MeshDomainKind,
+    MeshIntentPreset, MeshTargetConfig, MethodCAlgorithm, MethodCRefinementRecipe, ModelFormat,
+    ProjectConfig, ProjectDataLayer, ProjectLayerRole, ProjectMetadata, QualityConfig,
     RefinementBackend, RefinementRecipe, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
     SpecifiedCircleRefinement, SpecifiedCircleRefinements, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_AUTO_REFINE_BATCH_CELLS,

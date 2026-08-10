@@ -27,14 +27,60 @@ use crate::{CartesianPoint, TriangularMesh};
 /// canonical placeholder.
 pub const MESH_STATE_FIRST_ID: usize = 2;
 
+/// Stable site id. The slot keeps raw table compatibility; the generation
+/// invalidates ids whose slot was created, removed, then created again.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct VertexId {
+    pub slot: usize,
+    pub generation: u64,
+}
+
+/// Stable triangle id. Reusing a triangle slot for a new triangle bumps the
+/// generation, so ids held before an insertion do not silently name new faces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct FaceId {
+    pub slot: usize,
+    pub generation: u64,
+}
+
+/// Stable canonical edge id, independent of incident face winding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct EdgeId {
+    pub vertices: [VertexId; 2],
+}
+
+impl EdgeId {
+    pub fn new(a: VertexId, b: VertexId) -> Self {
+        if a <= b {
+            Self { vertices: [a, b] }
+        } else {
+            Self { vertices: [b, a] }
+        }
+    }
+}
+
 /// Sites, triangles, and what is across each edge.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct MeshState {
     vertices: Vec<CartesianPoint>,
     triangles: Vec<[usize; 3]>,
     /// `neighbours[t][i]` is the triangle across the edge opposite corner `i`
     /// of triangle `t`, or zero where no triangle is.
     neighbours: Vec<[usize; 3]>,
+    vertex_generations: Vec<u64>,
+    triangle_generations: Vec<u64>,
+    next_vertex_generation: u64,
+    next_triangle_generation: u64,
+}
+
+impl PartialEq for MeshState {
+    fn eq(&self, other: &Self) -> bool {
+        self.vertices == other.vertices
+            && self.triangles == other.triangles
+            && self.neighbours == other.neighbours
+            && self.vertex_generations == other.vertex_generations
+            && self.triangle_generations == other.triangle_generations
+    }
 }
 
 /// What is wrong with a triangulation, named precisely enough to act on.
@@ -97,6 +143,10 @@ fn edge_key(left: usize, right: usize) -> (usize, usize) {
     }
 }
 
+fn valid_vertex_slot(slot: usize, vertices_len: usize) -> bool {
+    (MESH_STATE_FIRST_ID..vertices_len).contains(&slot)
+}
+
 impl MeshState {
     /// Build from vertices and triangles, deriving adjacency.
     ///
@@ -110,7 +160,7 @@ impl MeshState {
         let mut errors = Vec::new();
         for (triangle, corners) in triangles.iter().enumerate().skip(MESH_STATE_FIRST_ID) {
             for &corner in corners {
-                if corner >= vertices.len() {
+                if !valid_vertex_slot(corner, vertices.len()) {
                     errors.push(MeshStateError::UnknownVertex {
                         triangle,
                         vertex: corner,
@@ -162,10 +212,16 @@ impl MeshState {
             }
         }
 
+        let vertex_generations = vec![0; vertices.len()];
+        let triangle_generations = vec![0; triangles.len()];
         Ok(Self {
             vertices,
             triangles,
             neighbours,
+            vertex_generations,
+            triangle_generations,
+            next_vertex_generation: 1,
+            next_triangle_generation: 1,
         })
     }
 
@@ -184,10 +240,33 @@ impl MeshState {
                 ),
             ));
         }
-        let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); mesh.nmd + 1];
+        let required_points = mesh.nmd + 1;
+        if mesh.m_points.len() < required_points {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "m_points has {} rows but nmd={} requires at least {required_points}",
+                    mesh.m_points.len(),
+                    mesh.nmd
+                ),
+            ));
+        }
+        let required_faces = mesh.nwd + 1;
+        if mesh.w_faces.len() < required_faces {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "w_faces has {} rows but nwd={} requires at least {required_faces}",
+                    mesh.w_faces.len(),
+                    mesh.nwd
+                ),
+            ));
+        }
+
+        let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); required_points];
         vertices[MESH_STATE_FIRST_ID..=mesh.nmd]
             .clone_from_slice(&mesh.m_points[MESH_STATE_FIRST_ID..=mesh.nmd]);
-        let mut triangles = vec![[1usize; 3]; mesh.nwd + 1];
+        let mut triangles = vec![[1usize; 3]; required_faces];
         for iw in MESH_STATE_FIRST_ID..=mesh.nwd {
             triangles[iw] = mesh.w_faces[iw].im;
         }
@@ -219,6 +298,40 @@ impl MeshState {
         &self.neighbours
     }
 
+    pub fn vertex_id(&self, slot: usize) -> Option<VertexId> {
+        (slot >= MESH_STATE_FIRST_ID && slot < self.vertices.len()).then(|| VertexId {
+            slot,
+            generation: self.vertex_generations[slot],
+        })
+    }
+
+    pub fn face_id(&self, slot: usize) -> Option<FaceId> {
+        (slot >= MESH_STATE_FIRST_ID && slot < self.triangles.len()).then(|| FaceId {
+            slot,
+            generation: self.triangle_generations[slot],
+        })
+    }
+
+    pub fn edge_id(&self, a: usize, b: usize) -> Option<EdgeId> {
+        Some(EdgeId::new(self.vertex_id(a)?, self.vertex_id(b)?))
+    }
+
+    pub fn contains_vertex_id(&self, id: VertexId) -> bool {
+        self.vertex_id(id.slot) == Some(id)
+    }
+
+    pub fn contains_face_id(&self, id: FaceId) -> bool {
+        self.face_id(id.slot) == Some(id)
+    }
+
+    pub(crate) fn triangle_generations(&self) -> &[u64] {
+        &self.triangle_generations
+    }
+
+    pub(crate) fn restore_triangle_generation(&mut self, triangle: usize, generation: u64) {
+        self.triangle_generations[triangle] = generation;
+    }
+
     /// Real sites, not counting the two reserved slots.
     pub fn vertex_count(&self) -> usize {
         self.vertices.len().saturating_sub(MESH_STATE_FIRST_ID)
@@ -247,6 +360,8 @@ impl MeshState {
     /// Add a site and return its id.
     pub(crate) fn push_vertex(&mut self, point: CartesianPoint) -> usize {
         self.vertices.push(point);
+        self.vertex_generations.push(self.next_vertex_generation);
+        self.next_vertex_generation += 1;
         self.vertices.len() - 1
     }
 
@@ -265,12 +380,17 @@ impl MeshState {
     /// through an insertion. A caller doing this owes the adjacency a repair.
     pub(crate) fn set_triangle(&mut self, triangle: usize, corners: [usize; 3]) {
         self.triangles[triangle] = corners;
+        self.triangle_generations[triangle] = self.next_triangle_generation;
+        self.next_triangle_generation += 1;
     }
 
     /// Add a triangle and return its id.
     pub(crate) fn push_triangle(&mut self, corners: [usize; 3]) -> usize {
         self.triangles.push(corners);
         self.neighbours.push([0usize; 3]);
+        self.triangle_generations
+            .push(self.next_triangle_generation);
+        self.next_triangle_generation += 1;
         self.triangles.len() - 1
     }
 
@@ -280,8 +400,10 @@ impl MeshState {
     /// which is the whole reason a rollback does not renumber the mesh.
     pub(crate) fn truncate_to(&mut self, vertices: usize, triangles: usize) {
         self.vertices.truncate(vertices);
+        self.vertex_generations.truncate(vertices);
         self.triangles.truncate(triangles);
         self.neighbours.truncate(triangles);
+        self.triangle_generations.truncate(triangles);
     }
 
     /// Write back one triangle's corners and adjacency together.
@@ -402,31 +524,8 @@ impl MeshState {
             if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles.len() {
                 continue;
             }
-            let corners = self.triangles[triangle];
-            for &corner in &corners {
-                if corner >= self.vertices.len() {
-                    errors.push(MeshStateError::UnknownVertex {
-                        triangle,
-                        vertex: corner,
-                    });
-                }
-            }
-            if corners[0] == corners[1] || corners[1] == corners[2] || corners[0] == corners[2] {
-                errors.push(MeshStateError::DegenerateTriangle { triangle, corners });
-            }
-            for &neighbour in &self.neighbours[triangle] {
-                if neighbour == 0 {
-                    continue;
-                }
-                if neighbour >= self.triangles.len()
-                    || !self.neighbours[neighbour].contains(&triangle)
-                {
-                    errors.push(MeshStateError::AsymmetricNeighbour {
-                        triangle,
-                        neighbour,
-                    });
-                }
-            }
+            self.validate_triangle_row(triangle, &mut errors);
+            self.validate_neighbour_edges_for_triangle(triangle, &mut errors);
         }
         if errors.is_empty() {
             Ok(())
@@ -437,24 +536,40 @@ impl MeshState {
 
     /// Check the invariants a consumer is entitled to assume.
     ///
-    /// Adjacency is derived rather than supplied, so what this adds over
-    /// construction is the symmetry check: a triangle that names a neighbour
-    /// must be named back, and a state where that fails cannot be walked.
+    /// Adjacency is derived rather than supplied, so this checks table rows,
+    /// non-manifold claims, and that neighbour rows point back across the same
+    /// canonical edge.
     pub fn validate(&self) -> Result<(), Vec<MeshStateError>> {
         let mut errors = Vec::new();
+        let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
         for triangle in MESH_STATE_FIRST_ID..self.triangles.len() {
-            for &neighbour in &self.neighbours[triangle] {
-                if neighbour == 0 {
-                    continue;
+            self.validate_triangle_row(triangle, &mut errors);
+            let corners = self.triangles[triangle];
+            if corners
+                .iter()
+                .all(|&corner| valid_vertex_slot(corner, self.vertices.len()))
+                && corners[0] != corners[1]
+                && corners[1] != corners[2]
+                && corners[0] != corners[2]
+            {
+                for corner in 0..3 {
+                    claims
+                        .entry(edge_key(
+                            corners[(corner + 1) % 3],
+                            corners[(corner + 2) % 3],
+                        ))
+                        .or_default()
+                        .push(triangle);
                 }
-                if neighbour >= self.triangles.len()
-                    || !self.neighbours[neighbour].contains(&triangle)
-                {
-                    errors.push(MeshStateError::AsymmetricNeighbour {
-                        triangle,
-                        neighbour,
-                    });
-                }
+            }
+            self.validate_neighbour_edges_for_triangle(triangle, &mut errors);
+        }
+        for (vertices, claimants) in claims {
+            if claimants.len() > 2 {
+                errors.push(MeshStateError::NonManifoldEdge {
+                    vertices,
+                    triangles: claimants.len(),
+                });
             }
         }
         if errors.is_empty() {
@@ -462,6 +577,72 @@ impl MeshState {
         } else {
             Err(errors)
         }
+    }
+
+    fn validate_triangle_row(&self, triangle: usize, errors: &mut Vec<MeshStateError>) {
+        let corners = self.triangles[triangle];
+        for &corner in &corners {
+            if !valid_vertex_slot(corner, self.vertices.len()) {
+                errors.push(MeshStateError::UnknownVertex {
+                    triangle,
+                    vertex: corner,
+                });
+            }
+        }
+        if corners[0] == corners[1] || corners[1] == corners[2] || corners[0] == corners[2] {
+            errors.push(MeshStateError::DegenerateTriangle { triangle, corners });
+        }
+    }
+
+    fn validate_neighbour_edges_for_triangle(
+        &self,
+        triangle: usize,
+        errors: &mut Vec<MeshStateError>,
+    ) {
+        let corners = self.triangles[triangle];
+        if corners
+            .iter()
+            .any(|&corner| !valid_vertex_slot(corner, self.vertices.len()))
+        {
+            return;
+        }
+        for corner in 0..3 {
+            let neighbour = self.neighbours[triangle][corner];
+            if neighbour == 0 {
+                continue;
+            }
+            let edge = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+            if neighbour >= self.triangles.len()
+                || !self.neighbour_points_back_across_edge(neighbour, triangle, edge)
+            {
+                errors.push(MeshStateError::AsymmetricNeighbour {
+                    triangle,
+                    neighbour,
+                });
+            }
+        }
+    }
+
+    fn neighbour_points_back_across_edge(
+        &self,
+        neighbour: usize,
+        triangle: usize,
+        edge: (usize, usize),
+    ) -> bool {
+        let corners = self.triangles[neighbour];
+        if corners
+            .iter()
+            .any(|&corner| !valid_vertex_slot(corner, self.vertices.len()))
+        {
+            return false;
+        }
+        for corner in 0..3 {
+            let candidate = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+            if candidate == edge && self.neighbours[neighbour][corner] == triangle {
+                return true;
+            }
+        }
+        false
     }
 }
 

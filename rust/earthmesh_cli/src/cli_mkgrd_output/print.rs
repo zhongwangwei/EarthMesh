@@ -220,6 +220,74 @@ pub(crate) fn print_refine_pipeline_report(
             harp.unbalanced_pairs_remaining
         );
     }
+    if let Some(lepp) = &report.lepp_adaptive_hybrid {
+        println!("lepp_adaptive_stop_reason={}", lepp.stop_reason);
+        println!("lepp_adaptive_cycles={}", lepp.cycles);
+        println!(
+            "lepp_adaptive_physical_insertions={}",
+            lepp.physical_insertions
+        );
+        println!(
+            "lepp_adaptive_balance_insertions={}",
+            lepp.balance_insertions
+        );
+        println!(
+            "lepp_adaptive_quality_insertions={}",
+            lepp.quality_insertions
+        );
+        println!(
+            "lepp_adaptive_boundary_insertions={}",
+            lepp.boundary_insertions
+        );
+        println!(
+            "lepp_adaptive_unresolved_demands={}",
+            lepp.unresolved_demands
+        );
+        println!("lepp_adaptive_report={}", lepp.report.display());
+        println!(
+            "lepp_adaptive_unresolved_report={}",
+            lepp.unresolved_report.display()
+        );
+    }
+    if let Some(lepp) = &report.lepp_post_quality {
+        println!("lepp_post_quality_stop_reason={}", lepp.stop_reason);
+        println!("lepp_post_quality_attempted={}", lepp.attempted);
+        println!("lepp_post_quality_committed={}", lepp.committed);
+        println!("lepp_post_quality_rejected={}", lepp.rejected);
+        println!(
+            "lepp_post_quality_violations_before={}",
+            lepp.violations_before
+        );
+        println!(
+            "lepp_post_quality_violations_after={}",
+            lepp.violations_after
+        );
+        println!(
+            "lepp_post_quality_worst_violation_before={}",
+            lepp.worst_violation_before
+        );
+        println!(
+            "lepp_post_quality_worst_violation_after={}",
+            lepp.worst_violation_after
+        );
+        println!(
+            "lepp_post_quality_gridfile={}",
+            lepp.output.output.display()
+        );
+        println!("lepp_post_quality_report={}", lepp.report.display());
+        if let Some(raw_output) = &lepp.raw_output {
+            println!(
+                "lepp_post_quality_raw_gridfile={}",
+                raw_output.output.display()
+            );
+        }
+        if let Some(masked_cells) = lepp.landtype_masked_cells {
+            println!("lepp_post_quality_landtype_masked_cells={masked_cells}");
+        }
+        if let Some(coupled) = &lepp.coupled_outputs {
+            print_coupled_outputs("lepp_post_quality", coupled);
+        }
+    }
     println!("refine_spring_iterations={}", report.spring_nest_iterations);
     if let Some(raw_output) = &report.raw_output {
         println!("refine_raw_gridfile={}", raw_output.output.display());
@@ -228,24 +296,31 @@ pub(crate) fn print_refine_pipeline_report(
         println!("refine_landtype_masked_cells={landtype_masked_cells}");
     }
     if let Some(coupled) = &report.coupled_outputs {
-        println!(
-            "refine_land_gridfile={}",
-            coupled.land_output.output.display()
-        );
-        println!(
-            "refine_ocean_gridfile={}",
-            coupled.ocean_output.output.display()
-        );
-        println!("refine_coupling_csv={}", coupled.coupling_csv.display());
-        println!(
-            "refine_coupling_netcdf={}",
-            coupled.coupling_netcdf.output.display()
-        );
-        println!(
-            "refine_coupling_quality={}",
-            coupled.coupling_quality.display()
-        );
-        println!("refine_coupling_manifest={}", coupled.manifest.display());
-        println!("refine_coupling_rows={}", coupled.coupling_netcdf.rows);
+        print_coupled_outputs("refine", coupled);
     }
+}
+
+fn print_coupled_outputs(
+    prefix: &str,
+    coupled: &earthmesh_cli::mkgrd_run_types::RefineCoupledOutputReport,
+) {
+    println!(
+        "{prefix}_land_gridfile={}",
+        coupled.land_output.output.display()
+    );
+    println!(
+        "{prefix}_ocean_gridfile={}",
+        coupled.ocean_output.output.display()
+    );
+    println!("{prefix}_coupling_csv={}", coupled.coupling_csv.display());
+    println!(
+        "{prefix}_coupling_netcdf={}",
+        coupled.coupling_netcdf.output.display()
+    );
+    println!(
+        "{prefix}_coupling_quality={}",
+        coupled.coupling_quality.display()
+    );
+    println!("{prefix}_coupling_manifest={}", coupled.manifest.display());
+    println!("{prefix}_coupling_rows={}", coupled.coupling_netcdf.rows);
 }

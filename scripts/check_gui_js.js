@@ -203,6 +203,35 @@ check(
 log("refinement strategies open independent panels");
 
 check(
+  html.includes('id="refinementAlgorithmPanel"') &&
+    html.includes('id="refineBackendFamily"') &&
+    html.includes('id="methodCAlgorithm"') &&
+    html.includes('value="lepp_delaunay"') &&
+    html.includes("LEPP-Delaunay / AdaptiveHybrid") &&
+    html.includes('algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm') &&
+    html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
+    html.includes("+ algorithmBlock") &&
+    !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
+  "Method-C must visibly own Canonical and LEPP-Delaunay while Red-Green and HARP-DV remain independent backends",
+);
+log("algorithm hierarchy shows LEPP-Delaunay AdaptiveHybrid under Method-C");
+
+check(
+  html.includes('id="canonicalMethodCOptions"') &&
+    html.includes('id="leppDelaunayOptions"') &&
+    html.includes('id="redGreenOptions"') &&
+    html.includes('id="harpDvOptions"') &&
+    html.includes("const algorithmOptionsBlock = {") &&
+    html.includes("+ algorithmOptionsBlock") &&
+    html.includes('id="leppMaximumPathLength"') &&
+    html.includes('id="harpMaximumPatchCells"') &&
+    html.includes('invoke("set_method_c_algorithm_options"') &&
+    html.includes('invoke("set_harp_dv_options"'),
+  "the selected algorithm must be the only one whose complete production controls are rendered and saved",
+);
+log("algorithm-specific parameter panels are conditional and wired to Rust");
+
+check(
   html.includes('id="qualityAutoRefineOn"') &&
     html.includes('id="qualityViolationPolicy"') &&
     html.includes('<div class="quality-detail"><span class="quality-tag">') &&
@@ -475,7 +504,14 @@ log("target kind/model are editable canonical state");
       !compose.includes("catch (err)"),
     "compose must surface data-layer and criterion validation errors",
   );
-  log("hidden expert overrides survive compose and edit validation errors propagate");
+  check(
+    compose.indexOf('invoke("set_adaptive_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.indexOf('invoke("set_hfield_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.includes('invoke("preserve_unexposed_quality_fields"') &&
+      reflect.includes('algorithm: sum.refinement_algorithm || sum.refinement_backend || "method_c"'),
+    "opened GUI projects must restore backend choice after route setters and preserve hidden LEPP quality only after compatibility is known",
+  );
+  log("opened project backend/route/hidden-LEPP round-trip is ordered safely");
 }
 
 check(

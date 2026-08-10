@@ -54,7 +54,9 @@ impl RefinementRegion {
                     distance < method_c_corridor_radius_at_segment(radius_meters, idx, t)
                 })
             }
-            Self::Polygon { points, .. } => lonlat_in_polygon(xyz_to_lonlat_degrees(point), points),
+            Self::Polygon { points, .. } => {
+                spherical_lonlat_in_polygon(xyz_to_lonlat_degrees(point), points)
+            }
         }
     }
 
@@ -62,14 +64,19 @@ impl RefinementRegion {
     ///
     /// Circle radii use the legacy `ec_ps` polar-stereographic distance and
     /// corridor radii use the legacy per-segment stereographic projection with
-    /// endpoint-radius interpolation. Bboxes and polygons preserve Canonical
-    /// lon/lat containment; polygon edges are planar after longitude unwrapping,
-    /// not spherical geodesics, and are unsuitable for polar-cap geometry.
+    /// endpoint-radius interpolation. Bboxes preserve directed lon/lat bounds;
+    /// polygon edges are minor great-circle arcs and use spherical winding.
     ///
     /// This entry point intentionally fixes the Earth radius to EarthMesh's
     /// shared core constant so feature toggles cannot silently change the
     /// interpretation of `radius_meters`.
     pub fn contains_lonlat_canonical(&self, point: LonLatDegrees) -> bool {
+        if !point.lon_degrees.is_finite()
+            || !point.lat_degrees.is_finite()
+            || !(-90.0..=90.0).contains(&point.lat_degrees)
+        {
+            return false;
+        }
         self.contains_cartesian(
             lonlat_degrees_to_unit_xyz(point),
             earthmesh_core::EARTH_RADIUS_METERS,
@@ -285,19 +292,13 @@ fn cartesian_xy_in_polygon(point: CartesianPoint, polygon: &[LonLatDegrees]) -> 
     inside
 }
 
-fn normalize_lon_around(lon: f64, anchor: f64) -> f64 {
-    let mut lon = lon;
-    while lon - anchor > 180.0 {
-        lon -= 360.0;
-    }
-    while lon - anchor < -180.0 {
-        lon += 360.0;
-    }
-    lon
-}
-
 fn lonlat_in_bbox(point: LonLatDegrees, west: f64, east: f64, south: f64, north: f64) -> bool {
-    if point.lat_degrees < south || point.lat_degrees > north {
+    if !point.lon_degrees.is_finite()
+        || !point.lat_degrees.is_finite()
+        || !(-90.0..=90.0).contains(&point.lat_degrees)
+        || point.lat_degrees < south
+        || point.lat_degrees > north
+    {
         return false;
     }
     if (east - west).abs() >= 360.0 - 1.0e-12 {
@@ -336,37 +337,37 @@ fn directed_bbox_boundary(west: f64, east: f64, south: f64, north: f64) -> Vec<L
     boundary
 }
 
-fn lonlat_in_polygon(point: LonLatDegrees, polygon: &[LonLatDegrees]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let x = normalize_lon_around(point.lon_degrees, polygon[0].lon_degrees);
-    let y = point.lat_degrees;
-    let mut inside = false;
-    for (a, b) in polygon
-        .iter()
-        .zip(polygon.iter().cycle().skip(1))
-        .take(polygon.len())
-    {
-        let ax = normalize_lon_around(a.lon_degrees, x);
-        let bx = normalize_lon_around(b.lon_degrees, x);
-        let ay = a.lat_degrees;
-        let by = b.lat_degrees;
-        let cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
-        if cross.abs() <= 1e-12
-            && x >= ax.min(bx) - 1e-12
-            && x <= ax.max(bx) + 1e-12
-            && y >= ay.min(by) - 1e-12
-            && y <= ay.max(by) + 1e-12
-        {
-            return true;
+fn spherical_lonlat_in_polygon(point: LonLatDegrees, polygon: &[LonLatDegrees]) -> bool {
+    earthmesh_boundary::spherical_ring_contains_minor(
+        polygon,
+        point.lon_degrees,
+        point.lat_degrees,
+        |point| (point.lon_degrees, point.lat_degrees),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lonlat_bbox_rejects_nonfinite_and_invalid_query_coordinates() {
+        let global = RefinementRegion::Bbox {
+            west_degrees: -180.0,
+            east_degrees: 180.0,
+            south_degrees: -90.0,
+            north_degrees: 90.0,
+            level: 1,
+        };
+        for point in [
+            LonLatDegrees::new(f64::NAN, 0.0),
+            LonLatDegrees::new(f64::INFINITY, 0.0),
+            LonLatDegrees::new(0.0, f64::NAN),
+            LonLatDegrees::new(0.0, f64::NEG_INFINITY),
+            LonLatDegrees::new(0.0, 91.0),
+        ] {
+            assert!(!lonlat_in_bbox(point, -180.0, 180.0, -90.0, 90.0));
+            assert!(!global.contains_lonlat_canonical(point));
         }
-        if (ay > y) != (by > y) {
-            let x_intersect = ax + (y - ay) * (bx - ax) / (by - ay);
-            if x_intersect >= x {
-                inside = !inside;
-            }
-        }
     }
-    inside
 }

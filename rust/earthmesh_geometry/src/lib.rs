@@ -125,46 +125,86 @@ pub fn normalize_delta_lon_radians(delta: f64) -> f64 {
     }
 }
 
-fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonError> {
-    for (vertex, point) in ring.iter().enumerate() {
-        if !point.x.is_finite() || !point.y.is_finite() {
-            return Err(SphericalPolygonError::NonFiniteCoordinate { vertex });
-        }
-        if !(-90.0..=90.0).contains(&point.y) {
-            return Err(SphericalPolygonError::LatitudeOutOfRange { vertex });
-        }
+fn unit_from_lon_lat(vertex: usize, lon: f64, lat: f64) -> Result<[f64; 3], SphericalPolygonError> {
+    if !lon.is_finite() || !lat.is_finite() {
+        return Err(SphericalPolygonError::NonFiniteCoordinate { vertex });
     }
-    let to_unit = |point: Point| {
-        let lon = point.x.to_radians();
-        let lat = point.y.to_radians();
-        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
-    };
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let determinant = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
-        a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-            + a[2] * (b[0] * c[1] - b[1] * c[0])
-    };
-    let cross = |a: [f64; 3], b: [f64; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let norm = |a: [f64; 3]| dot(a, a).sqrt();
-    let angle = |a: [f64; 3], b: [f64; 3]| dot(a, b).clamp(-1.0, 1.0).acos();
+    if !(-90.0..=90.0).contains(&lat) {
+        return Err(SphericalPolygonError::LatitudeOutOfRange { vertex });
+    }
+    let lon = lon.to_radians();
+    let lat = lat.to_radians();
+    Ok([lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()])
+}
 
-    let mut vertices = ring.iter().copied().map(to_unit).collect::<Vec<_>>();
-    if vertices.len() > 1 && dot(vertices[0], *vertices.last().unwrap()) >= 1.0 - 1.0e-14 {
-        vertices.pop();
-    }
-    if vertices.len() < 3 {
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm3(a: [f64; 3]) -> f64 {
+    dot3(a, a).sqrt()
+}
+
+fn determinant3(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+        + a[2] * (b[0] * c[1] - b[1] * c[0])
+}
+
+fn angle3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    dot3(a, b).clamp(-1.0, 1.0).acos()
+}
+
+fn checked_spherical_polygon_units<T>(
+    ring: &[T],
+    coordinates: impl Copy + Fn(&T) -> (f64, f64),
+) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
+    let count = effective_ring_len(ring.len(), |index| {
+        let (lon, lat) = coordinates(&ring[index]);
+        unit_from_lon_lat(index, lon, lat)
+    })?;
+    (0..count)
+        .map(|index| {
+            let (lon, lat) = coordinates(&ring[index]);
+            unit_from_lon_lat(index, lon, lat)
+        })
+        .collect()
+}
+
+fn effective_ring_len(
+    original_len: usize,
+    unit_at: impl Copy + Fn(usize) -> Result<[f64; 3], SphericalPolygonError>,
+) -> Result<usize, SphericalPolygonError> {
+    if original_len < 3 {
         return Err(SphericalPolygonError::TooFewVertices {
-            found: vertices.len(),
+            found: original_len,
         });
     }
-    for index in 0..vertices.len() {
-        let edge_dot = dot(vertices[index], vertices[(index + 1) % vertices.len()]);
+    let mut count = original_len;
+    if count > 1 && dot3(unit_at(0)?, unit_at(count - 1)?) >= 1.0 - 1.0e-14 {
+        count -= 1;
+    }
+    if count < 3 {
+        Err(SphericalPolygonError::TooFewVertices { found: count })
+    } else {
+        Ok(count)
+    }
+}
+
+fn raw_spherical_polygon_excess_by_index(
+    original_len: usize,
+    unit_at: impl Copy + Fn(usize) -> Result<[f64; 3], SphericalPolygonError>,
+) -> Result<f64, SphericalPolygonError> {
+    let count = effective_ring_len(original_len, unit_at)?;
+    for index in 0..count {
+        let edge_dot = dot3(unit_at(index)?, unit_at((index + 1) % count)?);
         if edge_dot >= 1.0 - 1.0e-14 {
             return Err(SphericalPolygonError::DuplicateConsecutiveVertex {
                 start_vertex: index,
@@ -176,9 +216,36 @@ fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonE
             });
         }
     }
+
+    let anchor = unit_at(0)?;
+    let mut raw = 0.0;
+    for index in 1..count - 1 {
+        let b = unit_at(index)?;
+        let c = unit_at(index + 1)?;
+        let numerator = determinant3(anchor, b, c);
+        let denominator = 1.0 + dot3(anchor, b) + dot3(b, c) + dot3(c, anchor);
+        if numerator.abs() <= 64.0 * f64::EPSILON && denominator.abs() <= 64.0 * f64::EPSILON {
+            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
+        }
+        let excess = 2.0 * numerator.atan2(denominator);
+        if !excess.is_finite() {
+            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
+        }
+        raw += excess;
+    }
+    Ok(raw)
+}
+
+fn raw_spherical_polygon_excess_from_units(
+    vertices: &[[f64; 3]],
+) -> Result<f64, SphericalPolygonError> {
+    raw_spherical_polygon_excess_by_index(vertices.len(), |index| Ok(vertices[index]))
+}
+
+fn ring_has_self_intersection(vertices: &[[f64; 3]]) -> Option<(usize, usize)> {
     let on_minor_arc = |point: [f64; 3], start: [f64; 3], end: [f64; 3]| {
-        let total = angle(start, end);
-        (angle(start, point) + angle(point, end) - total).abs() <= 1.0e-10
+        let total = angle3(start, end);
+        (angle3(start, point) + angle3(point, end) - total).abs() <= 1.0e-10
     };
     for first in 0..vertices.len() {
         let first_next = (first + 1) % vertices.len();
@@ -187,10 +254,10 @@ fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonE
             if first_next == second || second_next == first {
                 continue;
             }
-            let normal1 = cross(vertices[first], vertices[first_next]);
-            let normal2 = cross(vertices[second], vertices[second_next]);
-            let intersections = cross(normal1, normal2);
-            let intersection_norm = norm(intersections);
+            let normal1 = cross3(vertices[first], vertices[first_next]);
+            let normal2 = cross3(vertices[second], vertices[second_next]);
+            let intersections = cross3(normal1, normal2);
+            let intersection_norm = norm3(intersections);
             let mut intersects = false;
             if intersection_norm > 64.0 * f64::EPSILON {
                 let candidate = [
@@ -215,37 +282,26 @@ fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonE
                         .any(|point| on_minor_arc(point, vertices[first], vertices[first_next]));
             }
             if intersects {
-                return Err(SphericalPolygonError::SelfIntersection {
-                    first_edge: first,
-                    second_edge: second,
-                });
+                return Some((first, second));
             }
         }
     }
-
-    let anchor = vertices[0];
-    let mut raw = 0.0;
-    for index in 1..vertices.len() - 1 {
-        let b = vertices[index];
-        let c = vertices[index + 1];
-        let numerator = determinant(anchor, b, c);
-        let denominator = 1.0 + dot(anchor, b) + dot(b, c) + dot(c, anchor);
-        if numerator.abs() <= 64.0 * f64::EPSILON && denominator.abs() <= 64.0 * f64::EPSILON {
-            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
-        }
-        let excess = 2.0 * numerator.atan2(denominator);
-        if !excess.is_finite() {
-            return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
-        }
-        raw += excess;
-    }
-    Ok(raw)
+    None
 }
 
-/// Validate a directed ring and return both spherical complement candidates.
-pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, SphericalPolygonError> {
-    let raw = raw_spherical_polygon_excess(ring)?;
-    if raw.abs() <= 64.0 * f64::EPSILON {
+fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonError> {
+    let vertices = checked_spherical_polygon_units(ring, |point| (point.x, point.y))?;
+    if let Some((first_edge, second_edge)) = ring_has_self_intersection(&vertices) {
+        return Err(SphericalPolygonError::SelfIntersection {
+            first_edge,
+            second_edge,
+        });
+    }
+    raw_spherical_polygon_excess_from_units(&vertices)
+}
+
+fn normalized_signed_minor_excess(raw: f64) -> Result<f64, SphericalPolygonError> {
+    if !raw.is_finite() {
         return Err(SphericalPolygonError::DegenerateArea);
     }
     let half_sphere = 2.0 * std::f64::consts::PI;
@@ -256,6 +312,41 @@ pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, Spher
     } else {
         normalized
     };
+    if signed_minor.abs() <= 64.0 * f64::EPSILON {
+        Err(SphericalPolygonError::DegenerateArea)
+    } else {
+        Ok(signed_minor)
+    }
+}
+
+/// Fast signed-minor spherical excess for a ring that has already been checked
+/// for simplicity by the caller.
+///
+/// This keeps the hot path O(n): it validates coordinates and invalid geodesic
+/// edges, detects ambiguous fan triangles, and performs the same `4π` branch
+/// normalization as [`try_spherical_polygon_area`], but deliberately skips the
+/// O(n²) self-intersection scan. Use [`try_spherical_polygon_area`] when taking
+/// untrusted polygon input.
+pub fn try_spherical_polygon_signed_minor_excess_fast<T>(
+    ring: &[T],
+    coordinates: impl Copy + Fn(&T) -> (f64, f64),
+) -> Result<f64, SphericalPolygonError> {
+    let unit_at = |index: usize| {
+        let (lon, lat) = coordinates(&ring[index]);
+        unit_from_lon_lat(index, lon, lat)
+    };
+    normalized_signed_minor_excess(raw_spherical_polygon_excess_by_index(ring.len(), unit_at)?)
+}
+
+/// Validate a directed ring and return both spherical complement candidates.
+pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, SphericalPolygonError> {
+    let raw = raw_spherical_polygon_excess(ring)?;
+    if raw.abs() <= 64.0 * f64::EPSILON {
+        return Err(SphericalPolygonError::DegenerateArea);
+    }
+    let half_sphere = 2.0 * std::f64::consts::PI;
+    let full_sphere = 2.0 * half_sphere;
+    let signed_minor = normalized_signed_minor_excess(raw)?;
     let minor = signed_minor.abs();
     Ok(SphericalArea {
         signed_minor_sr: signed_minor,
@@ -968,8 +1059,8 @@ mod tests {
         intersection_area, normalize_delta_lon_radians, polygon_area,
         polygon_triple_intersection_area_even_odd, polygon_union_area,
         signed_spherical_polygon_excess, spherical_polygon_area_km2, try_spherical_polygon_area,
-        try_spherical_polygon_excess, Point, SphericalAreaBranch, SphericalPolygonError,
-        SphericalWinding, EARTH_RADIUS_KM,
+        try_spherical_polygon_excess, try_spherical_polygon_signed_minor_excess_fast, Point,
+        SphericalAreaBranch, SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
     };
 
     #[test]
@@ -1104,6 +1195,59 @@ mod tests {
             0.0
         );
     }
+
+    fn wavy_global_ring() -> Vec<Point> {
+        (0..240)
+            .map(|index| {
+                let lon = -180.0 + 1.5 * index as f64;
+                let phase = 2.0 * std::f64::consts::PI * index as f64 / 240.0;
+                Point::new(lon, -30.0 + 40.0 * (2.0 * phase).sin())
+            })
+            .collect()
+    }
+
+    fn rotated<T: Copy>(items: &[T], start: usize) -> Vec<T> {
+        (0..items.len())
+            .map(|offset| items[(start + offset) % items.len()])
+            .collect()
+    }
+
+    #[test]
+    fn fast_spherical_signed_minor_excess_normalizes_fan_start() {
+        let ring = wavy_global_ring();
+        let baseline =
+            try_spherical_polygon_signed_minor_excess_fast(&ring, |point| (point.x, point.y))
+                .expect("fast area");
+        let full = try_spherical_polygon_area(&ring).expect("full area");
+        assert!((baseline - full.signed_minor_sr).abs() < 1.0e-12);
+
+        for start in [1, 54, 120, 186, 239] {
+            let shifted = rotated(&ring, start);
+            let area = try_spherical_polygon_signed_minor_excess_fast(&shifted, |point| {
+                (point.x, point.y)
+            })
+            .unwrap_or_else(|error| panic!("fast area at start {start}: {error}"));
+            assert!(
+                (area - baseline).abs() < 1.0e-10,
+                "same ring changed signed area at start {start}: {baseline} vs {area}"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_spherical_signed_minor_excess_rejects_ambiguous_fan_triangle() {
+        let ring = [
+            Point::new(0.0, 0.0),
+            Point::new(90.0, 0.0),
+            Point::new(180.0, 0.0),
+            Point::new(0.0, 80.0),
+        ];
+        assert_eq!(
+            try_spherical_polygon_signed_minor_excess_fast(&ring, |point| (point.x, point.y)),
+            Err(SphericalPolygonError::AmbiguousTriangulation { vertex: 2 })
+        );
+    }
+
     #[test]
     fn spherical_area_handles_dateline_and_latitude() {
         let equator = vec![

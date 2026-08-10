@@ -258,6 +258,9 @@ const SAMPLE_QUALITY: &str = "\
   NL%area_cv_warn = 1.2
   NL%max_adjacent_resolution_ratio_warn = 1.8
   NL%worst_cells_limit = 100
+  NL%lepp_post_quality = .true.
+  NL%lepp_post_quality_max_insertions = 12
+  NL%lepp_post_quality_max_edge_km = 75
   NL%on_violation = 'block'
 /
 ";
@@ -275,6 +278,9 @@ fn quality_namelist_round_trips_through_writer() {
     assert_eq!(original.cell_edge_cv_warn, 0.3);
     assert_eq!(original.worst_cells_limit, 100);
     assert_eq!(original.repair_batch_limit, 1);
+    assert!(original.lepp_post_quality);
+    assert_eq!(original.lepp_post_quality_max_insertions, 12);
+    assert_eq!(original.lepp_post_quality_max_edge_km, 75.0);
 }
 
 #[test]
@@ -300,6 +306,9 @@ fn quality_namelist_absent_block_yields_defaults() {
     assert_eq!(parsed.cell_edge_cv_warn, 0.35);
     assert_eq!(parsed.worst_cells_limit, 50);
     assert_eq!(parsed.repair_batch_limit, 1);
+    assert!(!parsed.lepp_post_quality);
+    assert_eq!(parsed.lepp_post_quality_max_insertions, 50);
+    assert_eq!(parsed.lepp_post_quality_max_edge_km, 0.0);
     assert_eq!(parsed.on_violation, "warn");
 }
 
@@ -325,6 +334,14 @@ fn quality_namelist_rejects_semantically_invalid_gates() {
         (
             "&quality NL%aspect_ratio_warn=5, NL%aspect_ratio_fail=4 /",
             "aspect_ratio_warn must not exceed aspect_ratio_fail",
+        ),
+        (
+            "&quality NL%lepp_post_quality_max_insertions=0 /",
+            "lepp_post_quality_max_insertions must be positive",
+        ),
+        (
+            "&quality NL%lepp_post_quality_max_edge_km=-1 /",
+            "lepp_post_quality_max_edge_km must be finite and non-negative",
         ),
     ] {
         let error = QualityNamelist::from_quality_namelist(input)

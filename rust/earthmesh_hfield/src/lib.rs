@@ -244,6 +244,54 @@ fn spherical_polygon_signed_area(points: &[(f64, f64)]) -> Option<f64> {
     total.is_finite().then_some(total)
 }
 
+fn validate_lonlat(lon: f64, lat: f64, label: &str) -> io::Result<()> {
+    if !lon.is_finite() || !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        return Err(invalid(format!(
+            "{label} ({lon}, {lat}) must be finite with latitude in [-90, 90]"
+        )));
+    }
+    Ok(())
+}
+
+fn polygon_points_without_closure(points: &[(f64, f64)]) -> &[(f64, f64)] {
+    if points.len() > 1 {
+        let first = lonlat_to_unit(points[0].0, points[0].1);
+        let last = lonlat_to_unit(points[points.len() - 1].0, points[points.len() - 1].1);
+        if gc_angle(first, last) <= 1.0e-12 {
+            return &points[..points.len() - 1];
+        }
+    }
+    points
+}
+
+fn validate_minor_arc(a: (f64, f64), b: (f64, f64), label: &str) -> io::Result<()> {
+    let angle = gc_angle(lonlat_to_unit(a.0, a.1), lonlat_to_unit(b.0, b.1));
+    if angle <= 1.0e-12 {
+        return Err(invalid(format!("{label} has coincident endpoints")));
+    }
+    if (PI - angle).abs() <= 1.0e-10 {
+        return Err(invalid(format!("{label} has antipodal endpoints")));
+    }
+    Ok(())
+}
+
+fn arcs_intersect(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> bool {
+    let n1 = cross3(a, b);
+    let n2 = cross3(c, d);
+    let x = cross3(n1, n2);
+    let xn = norm3(x);
+    if xn <= 1.0e-14 {
+        return point_on_minor_arc_unit(a, b, c)
+            || point_on_minor_arc_unit(a, b, d)
+            || point_on_minor_arc_unit(c, d, a)
+            || point_on_minor_arc_unit(c, d, b);
+    }
+    let p = [x[0] / xn, x[1] / xn, x[2] / xn];
+    let q = [-p[0], -p[1], -p[2]];
+    (point_on_minor_arc_unit(a, b, p) && point_on_minor_arc_unit(c, d, p))
+        || (point_on_minor_arc_unit(a, b, q) && point_on_minor_arc_unit(c, d, q))
+}
+
 fn corridor_radius_at_segment(radius_meters: &[f64], index: usize, t: f64) -> Option<f64> {
     let start = *radius_meters.get(index)?;
     let end = *radius_meters.get(index + 1)?;
@@ -276,7 +324,122 @@ pub enum HRegion {
 }
 
 impl HRegion {
+    pub fn validate(&self) -> io::Result<()> {
+        match self {
+            HRegion::Bbox {
+                west,
+                east,
+                south,
+                north,
+            } => {
+                if !west.is_finite() || !east.is_finite() || west == east {
+                    return Err(invalid(format!(
+                        "bbox longitudes ({west}, {east}) must be finite and enclose a nonzero span"
+                    )));
+                }
+                if !south.is_finite()
+                    || !north.is_finite()
+                    || !(-90.0..=90.0).contains(south)
+                    || !(-90.0..=90.0).contains(north)
+                    || south >= north
+                {
+                    return Err(invalid(format!(
+                        "bbox latitudes south={south} north={north} must be finite, strictly ordered, and in [-90, 90]"
+                    )));
+                }
+            }
+            HRegion::Circle { lon, lat, radius_m } => {
+                validate_lonlat(*lon, *lat, "circle center")?;
+                if !radius_m.is_finite() || *radius_m <= 0.0 {
+                    return Err(invalid(format!(
+                        "circle radius {radius_m} must be positive and finite"
+                    )));
+                }
+            }
+            HRegion::Polygon { points } => {
+                let points = polygon_points_without_closure(points);
+                if points.len() < 3 {
+                    return Err(invalid(format!(
+                        "polygon must have at least 3 distinct points, got {}",
+                        points.len()
+                    )));
+                }
+                for (index, &(lon, lat)) in points.iter().enumerate() {
+                    validate_lonlat(lon, lat, &format!("polygon point {index}"))?;
+                }
+                for i in 0..points.len() {
+                    validate_minor_arc(
+                        points[i],
+                        points[(i + 1) % points.len()],
+                        &format!("polygon edge {i}"),
+                    )?;
+                }
+                let area = spherical_polygon_signed_area(points).ok_or_else(|| {
+                    invalid("polygon spherical area could not be computed".into())
+                })?;
+                if area.abs() <= 1.0e-14 {
+                    return Err(invalid("polygon spherical area must be nonzero".into()));
+                }
+                let units = points
+                    .iter()
+                    .map(|&(lon, lat)| lonlat_to_unit(lon, lat))
+                    .collect::<Vec<_>>();
+                let n = units.len();
+                for i in 0..n {
+                    for j in i + 1..n {
+                        if i == j || (i + 1) % n == j || (j + 1) % n == i {
+                            continue;
+                        }
+                        if arcs_intersect(
+                            units[i],
+                            units[(i + 1) % n],
+                            units[j],
+                            units[(j + 1) % n],
+                        ) {
+                            return Err(invalid(format!(
+                                "polygon edges {i} and {j} self-intersect"
+                            )));
+                        }
+                    }
+                }
+            }
+            HRegion::Corridor {
+                points,
+                radius_meters,
+            } => {
+                if points.is_empty() || points.len() != radius_meters.len() {
+                    return Err(invalid(format!(
+                        "corridor must have one positive radius per point ({} points, {} radii)",
+                        points.len(),
+                        radius_meters.len()
+                    )));
+                }
+                for (index, &(lon, lat)) in points.iter().enumerate() {
+                    validate_lonlat(lon, lat, &format!("corridor point {index}"))?;
+                }
+                for (index, radius) in radius_meters.iter().enumerate() {
+                    if !radius.is_finite() || *radius <= 0.0 {
+                        return Err(invalid(format!(
+                            "corridor radius {index} value {radius} must be positive and finite"
+                        )));
+                    }
+                }
+                for (index, segment) in points.windows(2).enumerate() {
+                    validate_minor_arc(
+                        segment[0],
+                        segment[1],
+                        &format!("corridor segment {index}"),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn contains(&self, lon_deg: f64, lat_deg: f64) -> bool {
+        if !lon_deg.is_finite() || !lat_deg.is_finite() || !(-90.0..=90.0).contains(&lat_deg) {
+            return false;
+        }
         match self {
             HRegion::Bbox {
                 west,
@@ -551,6 +714,7 @@ impl HField {
     /// Impose `h <= h_inside` inside a region (sharp edge; the gradient
     /// limiter turns it into a slope-`g` transition afterwards).
     pub fn min_with_region(&mut self, region: &HRegion, h_inside_m: f64) -> io::Result<()> {
+        region.validate()?;
         if !h_inside_m.is_finite() || h_inside_m <= 0.0 {
             return Err(invalid(format!(
                 "region target size {h_inside_m} must be positive and finite"
@@ -1260,6 +1424,128 @@ mod tests {
             !midlat.contains(-120.0, -45.0),
             "ordinary far side stays outside"
         );
+    }
+
+    #[test]
+    fn all_regions_reject_nonfinite_query_coordinates() {
+        let regions = [
+            HRegion::Bbox {
+                west: -180.0,
+                east: 180.0,
+                south: -90.0,
+                north: 90.0,
+            },
+            HRegion::Circle {
+                lon: 0.0,
+                lat: 0.0,
+                radius_m: 1_000_000.0,
+            },
+            HRegion::Polygon {
+                points: vec![(-10.0, -10.0), (10.0, -10.0), (0.0, 10.0)],
+            },
+            HRegion::Corridor {
+                points: vec![(0.0, 0.0), (10.0, 0.0)],
+                radius_meters: vec![100_000.0, 100_000.0],
+            },
+        ];
+        for region in regions {
+            for (lon, lat) in [
+                (f64::NAN, 0.0),
+                (f64::INFINITY, 0.0),
+                (0.0, f64::NAN),
+                (0.0, f64::NEG_INFINITY),
+                (0.0, 91.0),
+            ] {
+                assert!(
+                    !region.contains(lon, lat),
+                    "{region:?} accepted ({lon}, {lat})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn region_validation_rejects_degenerate_shapes_before_apply() {
+        assert!(HRegion::Bbox {
+            west: 0.0,
+            east: 1.0,
+            south: 5.0,
+            north: 4.0,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("latitudes"));
+        assert!(HRegion::Bbox {
+            west: 0.0,
+            east: 0.0,
+            south: 0.0,
+            north: 1.0,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("nonzero span"));
+        assert!(HRegion::Circle {
+            lon: 0.0,
+            lat: 0.0,
+            radius_m: 0.0,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("radius"));
+        assert!(HRegion::Corridor {
+            points: vec![(0.0, 0.0), (1.0, 0.0)],
+            radius_meters: vec![10.0],
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("one positive radius per point"));
+        assert!(HRegion::Polygon {
+            points: vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)],
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("area"));
+        assert!(HRegion::Polygon {
+            points: vec![(0.0, 0.0), (180.0, 0.0), (0.0, 1.0)],
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("antipodal"));
+        assert!(HRegion::Polygon {
+            points: vec![(0.0, 0.0), (10.0, 10.0), (0.0, 10.0), (10.0, 0.0)],
+        }
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("self-intersect"));
+
+        let mut field = HField::uniform(4, 2, 100.0).unwrap();
+        let before = field.values().to_vec();
+        let error = field
+            .min_with_region(
+                &HRegion::Polygon {
+                    points: vec![(0.0, 0.0), (1.0, 0.0), (1.0, 0.0)],
+                },
+                10.0,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(field.values(), before);
+    }
+
+    #[test]
+    fn closed_polygon_rings_are_validated_without_breaking_containment() {
+        let polygon = HRegion::Polygon {
+            points: vec![(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)],
+        };
+        polygon.validate().unwrap();
+        assert!(polygon.contains(1.0, 1.0));
     }
 
     #[test]

@@ -1,10 +1,11 @@
 use crate::{
     criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
-    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, ProjectConfig,
-    ProjectDataLayer, ProjectLayerRole, ProjectTargetTriple, QualityConfig, RefinementRecipe,
-    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
-    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ThresholdStatistic,
-    LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, MethodCAlgorithm,
+    MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
+    ProjectTargetTriple, QualityConfig, RefinementRecipe, RegionShape, ResolutionSpec,
+    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
+    ThresholdCriterionConfig, ThresholdField, ThresholdStatistic, LANDCOVER_CRITERION_ID,
+    METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
 };
 use std::collections::HashSet;
 
@@ -48,9 +49,41 @@ impl ProjectConfig {
         self.validate_data_layers()?;
         self.validate_landtype_requirements()?;
         self.refinement.validate()?;
+        if self.refinement.method_c.algorithm == MethodCAlgorithm::LeppDelaunay
+            && self.refinement.backend != crate::RefinementBackend::MethodC
+        {
+            return Err(
+                "refinement.method_c.algorithm=lepp_delaunay requires refinement.backend=method_c"
+                    .to_string(),
+            );
+        }
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
         self.quality.validate()?;
+        if self.quality.lepp_post_quality.is_some() {
+            if !self.refinement.enabled {
+                return Err(
+                    "quality lepp_post_quality requires refinement.enabled=true".to_string()
+                );
+            }
+            if self.refinement.backend != crate::RefinementBackend::MethodC {
+                return Err(
+                    "quality lepp_post_quality requires refinement.backend=method_c".to_string(),
+                );
+            }
+            if !matches!(self.domain, DomainConfig::Global) {
+                return Err(
+                    "quality lepp_post_quality currently requires a global closed domain"
+                        .to_string(),
+                );
+            }
+            if self.refinement.method_c.algorithm == MethodCAlgorithm::LeppDelaunay {
+                return Err(
+                    "quality lepp_post_quality cannot be combined with the Method-C lepp_delaunay algorithm; the latter already owns refinement"
+                        .to_string(),
+                );
+            }
+        }
         self.expert.validate()?;
         self.validate_expert_refinement_levels()?;
         if let Some(hydro_coast) = &self.hydro_coast {
@@ -188,6 +221,14 @@ impl ProjectConfig {
         let wants_hfield = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
         if !wants_hfield {
             return Ok(());
+        }
+        if self.refinement.backend == crate::RefinementBackend::MethodC
+            && self.refinement.method_c.algorithm == MethodCAlgorithm::LeppDelaunay
+        {
+            return Err(
+                "refinement.method_c.algorithm lepp_delaunay does not consume the legacy h-field; use refinement.adaptive or named regions"
+                    .to_string(),
+            );
         }
         match self.refinement.backend {
             crate::RefinementBackend::MethodC => Ok(()),
@@ -405,6 +446,23 @@ impl QualityConfig {
         if self.auto_refine_batch_cells > i32::MAX as usize {
             return Err("quality auto_refine_batch_cells exceeds the engine limit".to_string());
         }
+        if let Some(lepp) = &self.lepp_post_quality {
+            if lepp.maximum_insertions == 0 {
+                return Err("quality lepp_post_quality maximum_insertions must be > 0".to_string());
+            }
+            if lepp.maximum_insertions > i32::MAX as usize {
+                return Err(
+                    "quality lepp_post_quality maximum_insertions exceeds the engine limit"
+                        .to_string(),
+                );
+            }
+            if matches!(lepp.maximum_edge_km, Some(value) if !value.is_finite() || value <= 0.0) {
+                return Err(
+                    "quality lepp_post_quality maximum_edge_km must be positive when set"
+                        .to_string(),
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -472,6 +530,8 @@ impl ThresholdCriterionConfig {
 
 impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
+        self.method_c.validate()?;
+        self.harp_dv.validate()?;
         if let Some(circles) = &self.specified_circle {
             let circles = circles.as_slice();
             if circles.is_empty() {
@@ -508,6 +568,103 @@ impl RefinementRecipe {
             return Err(format!(
                 "refinement max_passes must be <= {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
             ));
+        }
+        Ok(())
+    }
+}
+
+impl MethodCRefinementRecipe {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_cycles == 0 {
+            return Err("refinement.method_c max_cycles must be > 0".to_string());
+        }
+        if !self.target_size_tolerance.is_finite() || self.target_size_tolerance < 1.0 {
+            return Err(
+                "refinement.method_c target_size_tolerance must be finite and >= 1".to_string(),
+            );
+        }
+        if !self.maximum_neighbor_size_ratio.is_finite() || self.maximum_neighbor_size_ratio <= 1.0
+        {
+            return Err(
+                "refinement.method_c maximum_neighbor_size_ratio must be finite and > 1"
+                    .to_string(),
+            );
+        }
+        if self.maximum_vertices == 0 {
+            return Err("refinement.method_c maximum_vertices must be > 0".to_string());
+        }
+        if self.maximum_insertions_per_cycle == 0 {
+            return Err("refinement.method_c maximum_insertions_per_cycle must be > 0".to_string());
+        }
+        if self.maximum_path_length == 0 {
+            return Err("refinement.method_c maximum_path_length must be > 0".to_string());
+        }
+        if !self.minimum_triangle_angle_deg.is_finite()
+            || !(0.0..60.0).contains(&self.minimum_triangle_angle_deg)
+        {
+            return Err(
+                "refinement.method_c minimum_triangle_angle_deg must be finite and in [0, 60)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl crate::HarpDvRefinementRecipe {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_cycles == 0 {
+            return Err("refinement.harp_dv max_cycles must be > 0".to_string());
+        }
+        if !self.minimum_cell_width_m.is_finite() || self.minimum_cell_width_m <= 0.0 {
+            return Err(
+                "refinement.harp_dv minimum_cell_width_m must be positive and finite".to_string(),
+            );
+        }
+        if self.maximum_cells == 0 {
+            return Err("refinement.harp_dv maximum_cells must be > 0".to_string());
+        }
+        if self.maximum_patch_cells == 0 || self.maximum_patch_cells > self.maximum_cells {
+            return Err(
+                "refinement.harp_dv maximum_patch_cells must be in 1..=maximum_cells".to_string(),
+            );
+        }
+        if !self.maximum_neighbor_scale_ratio.is_finite()
+            || self.maximum_neighbor_scale_ratio <= 1.0
+        {
+            return Err(
+                "refinement.harp_dv maximum_neighbor_scale_ratio must be finite and > 1"
+                    .to_string(),
+            );
+        }
+        if !self.minimum_candidate_separation_m.is_finite()
+            || self.minimum_candidate_separation_m <= 0.0
+        {
+            return Err(
+                "refinement.harp_dv minimum_candidate_separation_m must be positive and finite"
+                    .to_string(),
+            );
+        }
+        if !(3..=earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE)
+            .contains(&self.maximum_vertex_degree)
+        {
+            return Err("refinement.harp_dv maximum_vertex_degree must be in 3..=7".to_string());
+        }
+        if !self.minimum_triangle_angle_deg.is_finite()
+            || !(0.0..60.0).contains(&self.minimum_triangle_angle_deg)
+        {
+            return Err(
+                "refinement.harp_dv minimum_triangle_angle_deg must be finite and in [0, 60)"
+                    .to_string(),
+            );
+        }
+        if !self.criterion_minimum_angle_deg.is_finite()
+            || !(0.0..=20.7).contains(&self.criterion_minimum_angle_deg)
+        {
+            return Err(
+                "refinement.harp_dv criterion_minimum_angle_deg must be finite and in [0, 20.7]"
+                    .to_string(),
+            );
         }
         Ok(())
     }

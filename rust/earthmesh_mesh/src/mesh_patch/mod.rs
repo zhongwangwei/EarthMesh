@@ -34,8 +34,8 @@ use crate::mesh_state::{MeshState, MESH_STATE_FIRST_ID};
 /// Rows of a triangulation, kept so they can be put back.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshPatch {
-    /// Triangle id, its corners, and what was across each of its edges.
-    rows: Vec<(usize, [usize; 3], [usize; 3])>,
+    /// Triangle id, its corners, what was across each edge, and its generation.
+    rows: Vec<(usize, [usize; 3], [usize; 3], u64)>,
     vertex_len: usize,
     triangle_len: usize,
 }
@@ -43,7 +43,7 @@ pub struct MeshPatch {
 impl MeshPatch {
     /// The triangles this patch can restore.
     pub fn triangles(&self) -> impl Iterator<Item = usize> + '_ {
-        self.rows.iter().map(|&(triangle, _, _)| triangle)
+        self.rows.iter().map(|&(triangle, _, _, _)| triangle)
     }
 
     pub fn len(&self) -> usize {
@@ -116,6 +116,7 @@ impl MeshState {
                         triangle,
                         self.triangles()[triangle],
                         self.neighbours()[triangle],
+                        self.triangle_generations()[triangle],
                     )
                 })
                 .collect(),
@@ -135,8 +136,9 @@ impl MeshState {
             });
         }
         self.truncate_to(patch.vertex_len, patch.triangle_len);
-        for (triangle, corners, neighbours) in patch.rows {
+        for (triangle, corners, neighbours, generation) in patch.rows {
             self.restore_row(triangle, corners, neighbours);
+            self.restore_triangle_generation(triangle, generation);
         }
         Ok(())
     }

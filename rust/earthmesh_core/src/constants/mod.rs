@@ -10,6 +10,28 @@ pub const EARTH_RADIUS_METERS: f64 = 6_371_229.0;
 /// Shared default warning threshold for minimum mesh angles.
 pub const DEFAULT_MIN_ANGLE_WARN_DEG: f64 = 25.0;
 
+/// One source of truth for the bounded Method-C LEPP AdaptiveHybrid defaults.
+pub const DEFAULT_METHOD_C_LEPP_MAX_CYCLES: usize = 8;
+pub const DEFAULT_METHOD_C_LEPP_TARGET_SIZE_TOLERANCE: f64 = 1.20;
+pub const DEFAULT_METHOD_C_LEPP_MAXIMUM_NEIGHBOR_SIZE_RATIO: f64 = 1.75;
+pub const DEFAULT_METHOD_C_LEPP_MAXIMUM_VERTICES: usize = 5_000_000;
+pub const DEFAULT_METHOD_C_LEPP_MAXIMUM_INSERTIONS_PER_CYCLE: usize = 500_000;
+pub const DEFAULT_METHOD_C_LEPP_MAXIMUM_PATH_LENGTH: usize = 100_000;
+pub const DEFAULT_METHOD_C_LEPP_MINIMUM_TRIANGLE_ANGLE_DEGREES: f64 = 0.0;
+pub const DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION: bool = true;
+
+/// One source of truth for the production HARP-DV controls exposed through
+/// project files, namelists, and the GUI.
+pub const DEFAULT_HARP_DV_MAX_CYCLES: u32 = 20;
+pub const DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M: f64 = 1_000.0;
+pub const DEFAULT_HARP_DV_MAXIMUM_CELLS: usize = 5_000_000;
+pub const DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS: usize = 10_000;
+pub const DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO: f64 = 1.75;
+pub const DEFAULT_HARP_DV_MINIMUM_CANDIDATE_SEPARATION_M: f64 = 1.0;
+pub const DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE: usize = 7;
+pub const DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG: f64 = 30.0;
+pub const DEFAULT_HARP_DV_CRITERION_MINIMUM_ANGLE_DEG: f64 = 0.0;
+
 /// Equatorial kilometers per degree on EarthMesh's configured sphere.
 pub const KM_PER_DEGREE_EQUATOR: f64 =
     2.0 * std::f64::consts::PI * (EARTH_RADIUS_METERS / 1000.0) / 360.0;

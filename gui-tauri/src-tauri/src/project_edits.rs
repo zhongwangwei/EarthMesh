@@ -330,6 +330,7 @@ pub(crate) fn set_domain_bbox(
         shape: RegionShape::Bbox { w, e, n, s },
         sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
     };
+    cfg.quality.lepp_post_quality = None;
     validated_yaml(cfg)
 }
 
@@ -345,6 +346,7 @@ pub(crate) fn set_domain_shapefile(
         shape: RegionShape::Shapefile { path },
         sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
     };
+    cfg.quality.lepp_post_quality = None;
     validated_yaml(cfg)
 }
 
@@ -372,6 +374,7 @@ pub(crate) fn set_domain_close(
         },
         sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
     };
+    cfg.quality.lepp_post_quality = None;
     validated_yaml(cfg)
 }
 
@@ -412,6 +415,9 @@ pub(crate) fn set_refinement(
     cfg.refinement.enabled = enabled;
     cfg.refinement.threshold_enabled = threshold_enabled;
     cfg.refinement.max_passes = if enabled { max_passes } else { 0 };
+    if !enabled {
+        cfg.quality.lepp_post_quality = None;
+    }
     validated_yaml(cfg)
 }
 
@@ -431,9 +437,8 @@ pub(crate) fn set_specified_refinement(
     path: Option<String>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    let existing_circle_count = cfg
-        .refinement
-        .specified_circle
+    let existing_circles = cfg.refinement.specified_circle.clone();
+    let existing_circle_count = existing_circles
         .as_ref()
         .map(|circles| circles.as_slice().len())
         .unwrap_or(0);
@@ -449,20 +454,28 @@ pub(crate) fn set_specified_refinement(
             n: n.unwrap_or(1.0),
         });
     } else if enabled && kind == "radius" {
-        // Writing a single circle over a chain would drop every member past the
-        // first, and the panel that sends this has no way to show that. Refuse
-        // instead of quietly deleting the rest of a coastline.
+        let requested = SpecifiedCircleRefinement {
+            lon: lon.unwrap_or(0.0),
+            lat: lat.unwrap_or(0.0),
+            radius_km: radius_km.unwrap_or(100.0),
+        };
+        // Open -> save/run sends the visible head of a chain back through this
+        // one-circle command. Keep the chain if the head is unchanged; reject
+        // only edits that would silently delete the tail.
         if existing_circle_count > 1 {
+            let unchanged_head = existing_circles
+                .as_ref()
+                .and_then(|circles| circles.as_slice().first())
+                .is_some_and(|head| head == &requested);
+            if unchanged_head {
+                cfg.refinement.specified_circle = existing_circles;
+                return validated_yaml(cfg);
+            }
             return Err(format!(
                 "this project refines with a chain of {existing_circle_count} circles, which the single-circle control cannot edit; edit specified_circle in the project file, or switch the refinement source"
             ));
         }
-        cfg.refinement.specified_circle =
-            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
-                lon: lon.unwrap_or(0.0),
-                lat: lat.unwrap_or(0.0),
-                radius_km: radius_km.unwrap_or(100.0),
-            }));
+        cfg.refinement.specified_circle = Some(SpecifiedCircleRefinements::One(requested));
     } else if enabled && kind == "close" {
         cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
             path: path.unwrap_or_default(),
@@ -671,12 +684,11 @@ pub(crate) fn set_expert(
     validated_yaml(cfg)
 }
 
-/// Choose the refinement algorithm.
+/// Choose one of the four user-facing refinement algorithms.
 ///
-/// Method-C subdivides a closed region and surrounds it with transition rows,
-/// refusing a region it cannot build; red-green splits any marked triangle and
-/// closes the seams, growing a marking it cannot take as given rather than
-/// rejecting it.
+/// Canonical Method-C and LEPP-Delaunay share the Method-C project backend;
+/// LEPP-Delaunay selects its AdaptiveHybrid local-refinement implementation.
+/// Red-Green and HARP-DV are independent backends.
 ///
 /// Orthogonal to `set_adaptive_refinement` with one exception. The point+radius
 /// route's criteria half is shared -- both backends consume the circles it
@@ -688,14 +700,85 @@ pub(crate) fn set_expert(
 pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
     cfg.refinement.backend = match backend.as_str() {
-        "method_c" => earthmesh_project::RefinementBackend::MethodC,
-        "red_green" => earthmesh_project::RefinementBackend::RedGreen,
-        "harp_dv" => earthmesh_project::RefinementBackend::HarpDv,
+        "method_c" => {
+            cfg.refinement.method_c.algorithm = earthmesh_project::MethodCAlgorithm::Canonical;
+            earthmesh_project::RefinementBackend::MethodC
+        }
+        "lepp_delaunay" => {
+            cfg.quality.lepp_post_quality = None;
+            cfg.refinement.method_c.algorithm =
+                earthmesh_project::MethodCAlgorithm::LeppDelaunay;
+            earthmesh_project::RefinementBackend::MethodC
+        }
+        "red_green" => {
+            cfg.quality.lepp_post_quality = None;
+            cfg.refinement.method_c = Default::default();
+            earthmesh_project::RefinementBackend::RedGreen
+        }
+        "harp_dv" => {
+            cfg.quality.lepp_post_quality = None;
+            cfg.refinement.method_c = Default::default();
+            earthmesh_project::RefinementBackend::HarpDv
+        }
         other => {
             return Err(format!(
-                "unknown refinement backend {other}: expected method_c, red_green, or harp_dv"
+                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, or harp_dv"
             ))
         }
     };
-    cfg.to_yaml()
+    validated_yaml(cfg)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_method_c_algorithm_options(
+    yaml: String,
+    max_cycles: usize,
+    target_size_tolerance: f64,
+    maximum_neighbor_size_ratio: f64,
+    maximum_vertices: usize,
+    maximum_insertions_per_cycle: usize,
+    maximum_path_length: usize,
+    stop_at_source_resolution: bool,
+    minimum_triangle_angle_deg: f64,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.method_c.max_cycles = max_cycles;
+    cfg.refinement.method_c.target_size_tolerance = target_size_tolerance;
+    cfg.refinement.method_c.maximum_neighbor_size_ratio = maximum_neighbor_size_ratio;
+    cfg.refinement.method_c.maximum_vertices = maximum_vertices;
+    cfg.refinement.method_c.maximum_insertions_per_cycle = maximum_insertions_per_cycle;
+    cfg.refinement.method_c.maximum_path_length = maximum_path_length;
+    cfg.refinement.method_c.stop_at_source_resolution = stop_at_source_resolution;
+    cfg.refinement.method_c.minimum_triangle_angle_deg = minimum_triangle_angle_deg;
+    validated_yaml(cfg)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_harp_dv_options(
+    yaml: String,
+    max_cycles: u32,
+    minimum_cell_width_m: f64,
+    maximum_cells: usize,
+    maximum_patch_cells: usize,
+    maximum_neighbor_scale_ratio: f64,
+    minimum_candidate_separation_m: f64,
+    maximum_vertex_degree: usize,
+    minimum_triangle_angle_deg: f64,
+    criterion_minimum_angle_deg: f64,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.harp_dv = earthmesh_project::HarpDvRefinementRecipe {
+        max_cycles,
+        minimum_cell_width_m,
+        maximum_cells,
+        maximum_patch_cells,
+        maximum_neighbor_scale_ratio,
+        minimum_candidate_separation_m,
+        maximum_vertex_degree,
+        minimum_triangle_angle_deg,
+        criterion_minimum_angle_deg,
+    };
+    validated_yaml(cfg)
 }
