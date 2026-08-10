@@ -229,12 +229,115 @@ struct TargetSpec {
     target_edge: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CircleTarget {
+    index: usize,
+    latitude_radians: f64,
+    angular_radius: f64,
+}
+
+#[derive(Clone, Debug)]
+struct TargetLookup {
+    circles_by_latitude: Vec<CircleTarget>,
+    non_circles: Vec<usize>,
+    max_circle_radius: f64,
+    representatives_by_face: BTreeMap<FaceId, Vec<usize>>,
+}
+
+impl TargetLookup {
+    fn new(targets: &[TargetSpec], representative_faces: &[Option<FaceId>], radius: f64) -> Self {
+        let mut circles_by_latitude = Vec::new();
+        let mut non_circles = Vec::new();
+        let mut max_circle_radius = 0.0f64;
+        for (index, target) in targets.iter().enumerate() {
+            match &target.demand.region {
+                RefinementRegion::Circle {
+                    center,
+                    radius_meters,
+                    ..
+                } => {
+                    // Stereographic distance is never shorter than the central
+                    // arc, so radius/R is a conservative latitude cutoff.
+                    let angular_radius =
+                        (radius_meters / radius + 64.0 * f64::EPSILON).min(std::f64::consts::PI);
+                    max_circle_radius = max_circle_radius.max(angular_radius);
+                    circles_by_latitude.push(CircleTarget {
+                        index,
+                        latitude_radians: center.lat_degrees.to_radians(),
+                        angular_radius,
+                    });
+                }
+                _ => non_circles.push(index),
+            }
+        }
+        circles_by_latitude.sort_by(|left, right| {
+            left.latitude_radians
+                .partial_cmp(&right.latitude_radians)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| left.index.cmp(&right.index))
+        });
+        let mut representatives_by_face = BTreeMap::<FaceId, Vec<usize>>::new();
+        for (index, face) in representative_faces.iter().copied().enumerate() {
+            if let Some(face) = face {
+                representatives_by_face.entry(face).or_default().push(index);
+            }
+        }
+        Self {
+            circles_by_latitude,
+            non_circles,
+            max_circle_radius,
+            representatives_by_face,
+        }
+    }
+
+    fn matching_targets(
+        &self,
+        targets: &[TargetSpec],
+        face: FaceId,
+        center: CartesianPoint,
+        radius: f64,
+    ) -> Vec<usize> {
+        let point_radius = magnitude(center);
+        let latitude = (center.z / point_radius).clamp(-1.0, 1.0).asin();
+        let from = self
+            .circles_by_latitude
+            .partition_point(|circle| circle.latitude_radians < latitude - self.max_circle_radius);
+        let to = self
+            .circles_by_latitude
+            .partition_point(|circle| circle.latitude_radians <= latitude + self.max_circle_radius);
+        let mut matches = Vec::new();
+        for circle in &self.circles_by_latitude[from..to] {
+            if (circle.latitude_radians - latitude).abs() <= circle.angular_radius
+                && targets[circle.index]
+                    .demand
+                    .region
+                    .contains_cartesian(center, radius)
+            {
+                matches.push(circle.index);
+            }
+        }
+        matches.extend(self.non_circles.iter().copied().filter(|&index| {
+            targets[index]
+                .demand
+                .region
+                .contains_cartesian(center, radius)
+        }));
+        if let Some(representatives) = self.representatives_by_face.get(&face) {
+            matches.extend(representatives);
+        }
+        matches.sort_unstable();
+        matches.dedup();
+        matches
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Evaluation {
     candidates: Vec<Candidate>,
     source_unresolved: Vec<AdaptiveHybridUnresolvedDemand>,
     source_unresolved_count: usize,
     target_satisfaction: AdaptiveHybridTargetSatisfaction,
+    lookup: TargetLookup,
 }
 
 #[derive(Default)]
@@ -321,7 +424,7 @@ pub fn adaptive_hybrid_target_edge_from_level(
     let radius = mesh_radius(initial_mesh)?;
     let mut lengths = longest_edges_in_region(initial_mesh, region, radius)?;
     if lengths.is_empty() {
-        let face = locate_region_representative_face(initial_mesh, region, radius)?;
+        let face = locate_region_representative_face(initial_mesh, region, radius, None)?;
         lengths.push(face_longest_edge(initial_mesh, face, radius)?);
     }
     lengths.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
@@ -489,6 +592,7 @@ fn refine_adaptive_hybrid_impl(
 
         report.cycles += 1;
         let mut committed_this_cycle = 0usize;
+        let lookup = evaluation.lookup;
         for candidate in evaluation.candidates {
             if committed_this_cycle >= config.maximum_insertions_per_cycle
                 || mesh.vertex_count() >= config.maximum_vertices
@@ -502,6 +606,7 @@ fn refine_adaptive_hybrid_impl(
                 mesh,
                 &candidate,
                 &targets,
+                &lookup,
                 config,
                 &rejected_this_mesh,
             )? {
@@ -702,21 +807,10 @@ fn evaluate(
 ) -> Result<Evaluation, AdaptiveHybridError> {
     let radius = mesh_radius(mesh)?;
     let representative_faces = representative_faces(mesh, targets, radius);
-    // ponytail: O(faces * demands); add a spherical region index only when
-    // profiles show many simultaneous demands dominate this parallel scan.
+    let lookup = TargetLookup::new(targets, &representative_faces, radius);
     let mut acc = (earthmesh_mesh::MESH_STATE_FIRST_ID..mesh.triangles().len())
         .into_par_iter()
-        .map(|face| {
-            evaluate_face(
-                mesh,
-                face,
-                radius,
-                targets,
-                &representative_faces,
-                config,
-                rejected,
-            )
-        })
+        .map(|face| evaluate_face(mesh, face, radius, targets, &lookup, config, rejected))
         .try_fold(EvaluationAccumulator::default, |mut acc, item| {
             acc.push(item?);
             Ok::<_, AdaptiveHybridError>(acc)
@@ -731,6 +825,7 @@ fn evaluate(
         source_unresolved: acc.source_unresolved,
         source_unresolved_count: acc.source_unresolved_count,
         target_satisfaction: acc.target_satisfaction,
+        lookup,
     })
 }
 
@@ -739,7 +834,7 @@ fn evaluate_face(
     face: FaceId,
     radius: f64,
     targets: &[TargetSpec],
-    representative_faces: &[Option<FaceId>],
+    lookup: &TargetLookup,
     config: &AdaptiveHybridConfig,
     rejected: &BTreeSet<(String, StableFaceId)>,
 ) -> Result<FaceEvaluation, AdaptiveHybridError> {
@@ -754,12 +849,8 @@ fn evaluate_face(
     let mut unresolved = Vec::new();
     let mut satisfaction = AdaptiveHybridTargetSatisfaction::default();
 
-    for (target_index, spec) in targets.iter().enumerate() {
-        if !spec.demand.region.contains_cartesian(center, radius)
-            && representative_faces.get(target_index).copied().flatten() != Some(face)
-        {
-            continue;
-        }
+    for target_index in lookup.matching_targets(targets, face, center, radius) {
+        let spec = &targets[target_index];
         satisfaction.target_faces += 1;
         let violation = longest / (config.target_size_tolerance * spec.target_edge) - 1.0;
         if violation > 0.0 {
@@ -857,17 +948,17 @@ fn candidate_is_still_actionable(
     mesh: &MeshState,
     candidate: &Candidate,
     targets: &[TargetSpec],
+    lookup: &TargetLookup,
     config: &AdaptiveHybridConfig,
     rejected: &BTreeSet<(String, StableFaceId)>,
 ) -> Result<bool, AdaptiveHybridError> {
     let radius = mesh_radius(mesh)?;
-    let representatives = representative_faces(mesh, targets, radius);
     let current = evaluate_face(
         mesh,
         candidate.stable.slot,
         radius,
         targets,
-        &representatives,
+        lookup,
         config,
         rejected,
     )?
@@ -922,6 +1013,7 @@ fn append_final_unresolved(
 ) -> Result<(), AdaptiveHybridError> {
     let radius = mesh_radius(mesh)?;
     let representative_faces = representative_faces(mesh, targets, radius);
+    let lookup = TargetLookup::new(targets, &representative_faces, radius);
     for face in earthmesh_mesh::MESH_STATE_FIRST_ID..mesh.triangles().len() {
         let stable = mesh
             .face_id(face)
@@ -936,12 +1028,8 @@ fn append_final_unresolved(
             }
             _ => AdaptiveHybridUnresolvedReason::Limit,
         };
-        for (target_index, spec) in targets.iter().enumerate() {
-            if !spec.demand.region.contains_cartesian(center, radius)
-                && representative_faces.get(target_index).copied().flatten() != Some(face)
-            {
-                continue;
-            }
+        for target_index in lookup.matching_targets(targets, face, center, radius) {
+            let spec = &targets[target_index];
             let violation = longest / (config.target_size_tolerance * spec.target_edge) - 1.0;
             let already_source_limited = config.stop_at_source_resolution
                 && spec
@@ -994,9 +1082,34 @@ fn representative_faces(
     targets: &[TargetSpec],
     radius: f64,
 ) -> Vec<Option<FaceId>> {
+    let chunk_size = targets
+        .len()
+        .div_ceil(rayon::current_num_threads().saturating_mul(4))
+        .max(1);
     targets
-        .iter()
-        .map(|target| locate_region_representative_face(mesh, &target.demand.region, radius).ok())
+        .par_chunks(chunk_size)
+        .map(|chunk| {
+            let mut hint = None;
+            chunk
+                .iter()
+                .map(|target| {
+                    let face = locate_region_representative_face(
+                        mesh,
+                        &target.demand.region,
+                        radius,
+                        hint,
+                    )
+                    .ok();
+                    if face.is_some() {
+                        hint = face;
+                    }
+                    face
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
         .collect()
 }
 
@@ -1004,11 +1117,12 @@ fn locate_region_representative_face(
     mesh: &MeshState,
     region: &RefinementRegion,
     radius: f64,
+    hint: Option<FaceId>,
 ) -> Result<FaceId, AdaptiveHybridError> {
     let unit = lonlat_degrees_to_unit_xyz(region_representative(region));
     let point = CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius);
     if region.contains_cartesian(point, radius) {
-        return mesh.locate_triangle(point, None).map_err(|error| {
+        return mesh.locate_triangle(point, hint).map_err(|error| {
             AdaptiveHybridError::InvalidMesh {
                 message: format!("could not locate representative point: {error}"),
             }
@@ -1248,6 +1362,61 @@ fn unit(point: CartesianPoint) -> Result<CartesianPoint, AdaptiveHybridError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_lookup_matches_brute_force_at_dateline_and_poles() {
+        let radius = 1.0;
+        let targets = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(179.0, 0.0),
+                radius_meters: 0.08,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(-45.0, 88.0),
+                radius_meters: 0.12,
+                level: 1,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 10.0,
+                east_degrees: 20.0,
+                south_degrees: -5.0,
+                north_degrees: 5.0,
+                level: 1,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, region)| TargetSpec {
+            demand: AdaptiveHybridDemand::user_region(index.to_string(), region),
+            target_edge: 0.01,
+        })
+        .collect::<Vec<_>>();
+        let representatives = vec![Some(7), None, None];
+        let lookup = TargetLookup::new(&targets, &representatives, radius);
+
+        for (face, lon, lat) in [
+            (1, -179.0, 0.0),
+            (2, 120.0, 89.0),
+            (3, 15.0, 0.0),
+            (7, 0.0, -60.0),
+        ] {
+            let point = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat));
+            let expected = targets
+                .iter()
+                .enumerate()
+                .filter_map(|(index, target)| {
+                    (target.demand.region.contains_cartesian(point, radius)
+                        || representatives[index] == Some(face))
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                lookup.matching_targets(&targets, face, point, radius),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn encroached_segment_commit_counts_as_boundary_work() {

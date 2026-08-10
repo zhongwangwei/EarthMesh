@@ -57,8 +57,6 @@ use std::io;
 
 use earthmesh_mesh::{AreaJudgeSourceBounds, LonLatDegrees, RefinementRegion};
 
-const RASTER_PROGRESS_MIN_CELLS: usize = 10_000_000;
-
 /// Refinement demand over a window of the source raster.
 ///
 /// Indices are the engine's global one-based source indices: index 1 sits at
@@ -243,14 +241,6 @@ impl RefinementDemand {
         let (minlon, nlons) = (self.bounds.minlon_source, self.nlons);
         let maxlat = self.bounds.maxlat_source;
         let nlats = self.nlats;
-        let report_progress = self.len >= RASTER_PROGRESS_MIN_CELLS;
-        let started = std::time::Instant::now();
-        if report_progress {
-            eprintln!(
-                "earthmesh_cli: raster demand row evaluation started: {nlats} rows x {nlons} columns ({} cells)",
-                self.len
-            );
-        }
         let rows: Vec<Vec<bool>> = (0..nlats)
             .into_par_iter()
             .map(|lat_offset| {
@@ -268,12 +258,6 @@ impl RefinementDemand {
                     self.words[offset / 64] |= 1u64 << (offset % 64);
                 }
             }
-        }
-        if report_progress {
-            eprintln!(
-                "earthmesh_cli: raster demand scan complete in {:.1}s",
-                started.elapsed().as_secs_f64()
-            );
         }
     }
 
@@ -321,14 +305,6 @@ impl RefinementDemand {
         // raster width, so Rayon can hand out disjoint word slices directly.
         let band_rows = target_rows.div_ceil(64).saturating_mul(64).max(64);
         let words_per_band = band_rows.saturating_mul(nlons) / 64;
-        let report_progress = self.len >= RASTER_PROGRESS_MIN_CELLS;
-        let started = std::time::Instant::now();
-        if report_progress {
-            eprintln!(
-                "earthmesh_cli: raster demand band evaluation started: {nlats} rows x {nlons} columns ({} cells, {band_rows} rows/band)",
-                self.len
-            );
-        }
 
         self.words.fill(0);
         self.words
@@ -345,12 +321,6 @@ impl RefinementDemand {
                     words,
                 );
             });
-        if report_progress {
-            eprintln!(
-                "earthmesh_cli: raster demand scan complete in {:.1}s",
-                started.elapsed().as_secs_f64()
-            );
-        }
     }
 
     /// Union with another demand over the same window, so several criteria can
