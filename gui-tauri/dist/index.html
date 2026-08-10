@@ -2883,7 +2883,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       <div class="grid2">
         ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="harp_dv" ${algorithmFamily==="harp_dv"?"selected":""}>HARP-DV</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族，不是第四个独立后端。":"LEPP-Delaunay belongs to Method-C; it is not a fourth independent backend.")}
-        <div id="methodCAlgorithmChoice" style="${algorithmFamily==="method_c"?"":"display:none"}">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>
+        ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
     </div>`;

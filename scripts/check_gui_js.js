@@ -209,6 +209,8 @@ check(
     html.includes('value="lepp_delaunay"') &&
     html.includes("LEPP-Delaunay / AdaptiveHybrid") &&
     html.includes('algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm') &&
+    html.includes('${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">') &&
+    !html.includes('id="methodCAlgorithmChoice" style=') &&
     html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
     html.includes("+ algorithmBlock") &&
     !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
