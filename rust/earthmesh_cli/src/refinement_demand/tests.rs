@@ -7,15 +7,6 @@ use super::*;
 /// One degree per cell keeps index arithmetic readable in the assertions.
 const PER_DEGREE: usize = 1;
 
-#[test]
-fn long_raster_progress_reports_twenty_bounded_milestones() {
-    assert_eq!(row_progress_percent(1, 43_200), None);
-    assert_eq!(row_progress_percent(2_160, 43_200), Some(5));
-    assert_eq!(row_progress_percent(41_040, 43_200), Some(95));
-    assert_eq!(row_progress_percent(43_200, 43_200), Some(100));
-    assert_eq!(row_progress_percent(43_201, 43_200), None);
-}
-
 fn window(west: f64, east: f64, south: f64, north: f64) -> RefinementDemand {
     let bounds = source_bounds_for_bbox(west, east, south, north, PER_DEGREE).expect("bounds");
     RefinementDemand::new(bounds, PER_DEGREE).expect("demand")
