@@ -251,6 +251,10 @@ pub fn insert_lepp_terminal_midpoint(
     config: &LeppSearchConfig,
     gates: &LeppInsertionGates,
 ) -> Result<LeppInsertionReport, LeppInsertionError> {
+    let open_edges = mesh.open_edge_count();
+    if open_edges != 0 {
+        return Err(LeppInsertionError::RequiresClosedMesh { open_edges });
+    }
     insert_lepp_terminal_midpoint_with_postcondition(mesh, start, config, gates, |_, _| true)
 }
 
@@ -280,6 +284,8 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
     gates: &LeppInsertionGates,
     postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
 ) -> Result<LeppInsertionReport, LeppInsertionError> {
+    // Batch drivers validate the closed mesh once before their insertion loop;
+    // the public one-shot wrapper performs the same check for standalone use.
     if gates.maximum_vertex_degree < 3 {
         return Err(LeppInsertionError::InvalidGates {
             message: "maximum_vertex_degree must be at least three".to_string(),
@@ -293,10 +299,6 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
         return Err(LeppInsertionError::InvalidGates {
             message: format!("protected vertex {vertex} is not in the mesh"),
         });
-    }
-    let open_edges = mesh.open_edge_count();
-    if open_edges != 0 {
-        return Err(LeppInsertionError::RequiresClosedMesh { open_edges });
     }
     let path = find_lepp(mesh, start, config)?;
     let edge = match path.terminal {
@@ -319,13 +321,13 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
         .collect::<Result<Vec<_>, _>>()?;
     let failure = Cell::new(None);
     let transaction = mesh.insert_site_transactionally(point, |state, report| {
-        let open_edges = state.open_edge_count();
+        let changed: BTreeSet<_> = report.created.iter().copied().collect();
+        let open_edges = state.open_edges_in(&changed);
         if open_edges != 0 {
             failure.set(Some(GateFailure::OpenEdges(open_edges)));
             return false;
         }
 
-        let changed: BTreeSet<_> = report.created.iter().copied().collect();
         for (vertex, seed) in state.sites_touching(&changed) {
             let Ok(degree) = state.vertex_degree_from(vertex, seed) else {
                 failure.set(Some(GateFailure::UnmeasurableDegree { vertex }));

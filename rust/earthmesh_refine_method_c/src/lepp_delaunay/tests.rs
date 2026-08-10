@@ -670,6 +670,29 @@ fn post_quality_rejects_unimproving_attempts_without_mutating() {
 }
 
 #[test]
+fn unconstrained_lepp_rejects_an_open_mesh_before_search() {
+    let original = mesh(
+        vec![p(0.0, 0.0), p(120.0, 0.0), p(60.0, 20.0)],
+        vec![[2, 3, 4]],
+    );
+    let mut state = original.clone();
+
+    let error = insert_lepp_terminal_midpoint(
+        &mut state,
+        2,
+        &default_config(),
+        &LeppInsertionGates::default(),
+    )
+    .expect_err("unconstrained LEPP needs a closed mesh");
+
+    assert!(matches!(
+        error,
+        LeppInsertionError::RequiresClosedMesh { open_edges: 3 }
+    ));
+    assert_eq!(state, original);
+}
+
+#[test]
 fn constrained_lepp_refuses_unlisted_boundary_terminal_without_changes() {
     let original = mesh(
         vec![p(0.0, 0.0), p(120.0, 0.0), p(60.0, 20.0)],

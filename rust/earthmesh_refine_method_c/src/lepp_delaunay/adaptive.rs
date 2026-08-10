@@ -23,9 +23,9 @@ use super::insertion::{
 };
 use super::post_quality::{quality_snapshot, strictly_improves_quality_snapshot};
 use super::{
-    insert_lepp_terminal_midpoint, insert_lepp_terminal_midpoint_constrained, push_report_detail,
-    spherical_edge_length, FaceId, LeppInsertionError, LeppInsertionGates, LeppInsertionReport,
-    LeppPostQualityConfig, LeppSearchConfig, LEPP_REPORT_DETAIL_LIMIT,
+    insert_lepp_terminal_midpoint_constrained, push_report_detail, spherical_edge_length, FaceId,
+    LeppInsertionError, LeppInsertionGates, LeppInsertionReport, LeppPostQualityConfig,
+    LeppSearchConfig, LEPP_REPORT_DETAIL_LIMIT,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -553,11 +553,12 @@ fn refine_adaptive_hybrid_impl(
                     &config.gates,
                 )
             } else {
-                insert_lepp_terminal_midpoint(
+                insert_lepp_terminal_midpoint_with_postcondition(
                     mesh,
                     candidate.stable.slot,
                     &config.search,
                     &config.gates,
+                    |_, _| true,
                 )
             };
             match insertion {

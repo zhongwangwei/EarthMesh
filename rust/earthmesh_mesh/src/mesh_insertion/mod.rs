@@ -410,7 +410,9 @@ impl MeshState {
                 return Err(InsertionTransactionError::Insert(error));
             }
         };
-        if let Err(errors) = self.validate() {
+        let mut affected: BTreeSet<_> = patch.triangles().collect();
+        affected.extend(report.created.iter().copied());
+        if let Err(errors) = self.validate_region(&affected) {
             self.restore_patch(patch)
                 .map_err(InsertionTransactionError::Rollback)?;
             return Err(InsertionTransactionError::Topology(errors));
@@ -453,7 +455,9 @@ impl MeshState {
                 return Err(InsertionTransactionError::Insert(error));
             }
         };
-        if let Err(errors) = self.validate() {
+        let mut affected: BTreeSet<_> = patch.triangles().collect();
+        affected.extend(report.created.iter().copied());
+        if let Err(errors) = self.validate_region(&affected) {
             self.restore_patch(patch)
                 .map_err(InsertionTransactionError::Rollback)?;
             return Err(InsertionTransactionError::Topology(errors));
