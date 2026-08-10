@@ -27,6 +27,8 @@ pub(crate) struct ProjectCapabilities {
     pub(crate) method_c_max_refinement_level: u8,
     pub(crate) default_openmp: i32,
     pub(crate) default_niter: i32,
+    pub(crate) default_surface_refine_spring_iterations: usize,
+    pub(crate) default_atmosphere_refine_spring_iterations: usize,
     pub(crate) default_beta: f64,
     pub(crate) default_relax: f64,
     pub(crate) default_hfield_g: f64,

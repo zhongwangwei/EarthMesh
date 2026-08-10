@@ -78,7 +78,7 @@ pub struct AdaptiveNestReport {
 pub struct AdaptiveNestSpring {
     /// The base mesh's NXP, which sets the spring's target edge length.
     pub nxp: usize,
-    /// Iterations per pass, from `method_c_spring_iterations`.
+    /// Iterations per pass, from `refinement_spring_iterations`.
     pub iterations: usize,
     /// Transition width, `MAX_MROWS_SURFACE` or `MAX_MROWS_ATMOS`.
     ///

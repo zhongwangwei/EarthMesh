@@ -1,5 +1,4 @@
 use crate::method_c_calculated_region_level;
-use crate::method_c_spring_iterations;
 use crate::native_initial_delaunay_mesh;
 use crate::native_spawn_spring_iterations;
 use crate::native_spawn_uses_cartesian_xy;
@@ -10,6 +9,7 @@ use crate::read_method_c_close_refinement_regions;
 use crate::read_method_c_domain_region;
 use crate::read_method_c_specified_refinement_regions;
 use crate::read_native_grid_deltax;
+use crate::refinement_spring_iterations;
 use crate::validate_native_spawn_mdomain;
 use earthmesh_mesh::RefinementRegion;
 use std::fs;
@@ -27,11 +27,11 @@ fn method_c_uses_canonical_spring_defaults_when_niter_refine_is_unspecified() {
     };
 
     assert_eq!(
-        method_c_spring_iterations(&refine, false).expect("surface iterations"),
+        refinement_spring_iterations(&refine, false).expect("surface iterations"),
         2000
     );
     assert_eq!(
-        method_c_spring_iterations(&refine, true).expect("atmos iterations"),
+        refinement_spring_iterations(&refine, true).expect("atmos iterations"),
         5000
     );
 }
@@ -46,7 +46,7 @@ fn method_c_respects_explicit_niter_refine_for_fast_or_custom_runs() {
     };
 
     assert_eq!(
-        method_c_spring_iterations(&refine, false).expect("explicit iterations"),
+        refinement_spring_iterations(&refine, false).expect("explicit iterations"),
         2
     );
 }
@@ -62,7 +62,7 @@ fn method_c_accepts_regional_spring_type() {
     };
 
     assert_eq!(
-        method_c_spring_iterations(&refine, false).expect("regional spring iterations"),
+        refinement_spring_iterations(&refine, false).expect("regional spring iterations"),
         2
     );
 }
@@ -77,7 +77,7 @@ fn method_c_skips_spring_when_no_spring_type_is_enabled() {
     };
 
     assert_eq!(
-        method_c_spring_iterations(&refine, true).expect("disabled spring"),
+        refinement_spring_iterations(&refine, true).expect("disabled spring"),
         0
     );
 }

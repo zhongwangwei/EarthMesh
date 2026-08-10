@@ -10,6 +10,10 @@ pub const EARTH_RADIUS_METERS: f64 = 6_371_229.0;
 /// Shared default warning threshold for minimum mesh angles.
 pub const DEFAULT_MIN_ANGLE_WARN_DEG: f64 = 25.0;
 
+/// Canonical refinement-spring budgets when `RL%niter_refine` is omitted.
+pub const DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS: usize = 2_000;
+pub const DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS: usize = 5_000;
+
 /// One source of truth for the bounded Method-C LEPP AdaptiveHybrid defaults.
 pub const DEFAULT_METHOD_C_LEPP_MAX_CYCLES: usize = 8;
 pub const DEFAULT_METHOD_C_LEPP_TARGET_SIZE_TOLERANCE: f64 = 1.20;

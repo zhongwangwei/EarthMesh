@@ -6,7 +6,6 @@ use crate::method_c_algorithm::{
 };
 use crate::method_c_delaunay_mesh_from_unstructured_gridfile;
 use crate::method_c_refinement_region_level;
-use crate::method_c_spring_iterations;
 use crate::mkgrd_run_types::{LeppAdaptiveHybridRunRecord, LeppPostQualityRunRecord};
 use crate::native_grid_refinement_depth;
 use crate::native_grid_refinement_requested;
@@ -23,6 +22,7 @@ use crate::read_native_grid_refinement_regions;
 use crate::read_native_grid_refinement_regions_for_grid;
 use crate::read_native_grid_sfcgrid_res_factor;
 use crate::read_unstructured_mesh_netcdf;
+use crate::refinement_spring_iterations;
 use crate::run_mkgrd_gridinit_global_namelist;
 use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
@@ -439,7 +439,7 @@ pub fn run_refine_pipeline_namelist(
     {
         0
     } else {
-        method_c_spring_iterations(&refine, is_atmosmesh)?
+        refinement_spring_iterations(&refine, is_atmosmesh)?
     };
     let file_dir = PathBuf::from(config.file_dir());
     // The choice of backend, at the one place where it is a choice. Method-C
@@ -515,6 +515,7 @@ pub fn run_refine_pipeline_namelist(
                 max_level,
                 adaptive,
                 config.mode_grid.trim() == "tri",
+                spring_nest_iterations,
             )?
         }
         RefineBackend::HarpDv => {
@@ -551,7 +552,7 @@ pub fn run_refine_pipeline_namelist(
                 mesh_type,
                 method_c_nxp,
                 max_level,
-                usize::try_from(refine.niter_refine).unwrap_or(0),
+                spring_nest_iterations,
                 &refine,
                 harp_dv_options,
             )?
@@ -569,6 +570,7 @@ pub fn run_refine_pipeline_namelist(
                     method_c_nxp,
                     max_level,
                     method_c_algorithm,
+                    spring_nest_iterations,
                 )?
             } else {
                 let MethodCRefineOutcome {
@@ -1338,6 +1340,221 @@ fn redgreen_open_edges(mesh: &earthmesh_refine_redgreen::RedGreenMesh) -> usize 
         .count()
 }
 
+/// Move only cells safely inside a requested refinement region.
+///
+/// A cell touching the refined/coarse interface is pinned automatically: one
+/// outside corner on any incident triangle clears the move bit for all three.
+/// That keeps a backend-neutral spring from drifting the transition boundary.
+fn spring_region_interior_mask(
+    mesh: &crate::UnstructuredMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+) -> io::Result<Vec<bool>> {
+    let cells_on_triangle = crate::cells_on_triangle_one_based_from_mesh(mesh)?;
+    let index = earthmesh_mesh::RefinementRegionIndex::new(regions);
+    let inside = mesh
+        .w_points
+        .iter()
+        .map(|point| {
+            index.contains_lonlat_canonical(
+                earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat),
+                1,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut movable = inside.clone();
+    movable.iter_mut().take(2).for_each(|value| *value = false);
+    for corners in cells_on_triangle.iter().skip(2) {
+        if corners.iter().any(|&cell| !inside[cell]) {
+            for &cell in corners {
+                movable[cell] = false;
+            }
+        }
+    }
+    Ok(movable)
+}
+
+/// Apply the existing spherical regional spring without requiring Method-C
+/// boundary-row metadata. Red-Green and LEPP both preserve connectivity here;
+/// only cell coordinates and their derived triangle centres are replaced.
+fn spring_unstructured_region_interiors(
+    mesh: &crate::UnstructuredMesh,
+    regions: &[earthmesh_mesh::RefinementRegion],
+    iterations: usize,
+) -> io::Result<(crate::UnstructuredMesh, usize)> {
+    if iterations == 0 || regions.is_empty() {
+        return Ok((mesh.clone(), 0));
+    }
+    let spring_mesh = unstructured_mesh_with_one_based_rows(mesh);
+    let move_mask = spring_region_interior_mask(&spring_mesh, regions)?;
+    if move_mask.iter().skip(2).all(|&movable| !movable) {
+        eprintln!(
+            "earthmesh_cli: refinement spring skipped: no cell lies safely inside the requested regions"
+        );
+        return Ok((mesh.clone(), 0));
+    }
+    let movable_cells = move_mask.iter().skip(2).filter(|&&movable| movable).count();
+    let baseline_angles = match unstructured_triangle_angle_range(&spring_mesh) {
+        Ok(angles) => angles,
+        Err(error) => {
+            eprintln!(
+                "earthmesh_cli: warning: refinement spring skipped because the input mesh cannot be quality-checked ({error})"
+            );
+            return Ok((mesh.clone(), 0));
+        }
+    };
+    let started = std::time::Instant::now();
+    eprintln!(
+        "earthmesh_cli: refinement spring started: {movable_cells} movable cells, {iterations} iterations"
+    );
+    let report = match crate::springjustment_gridfile_adapters::run_springjustment_regional_from_unstructured_mesh(
+        &spring_mesh,
+        crate::SpringjustmentRegionalRunOptions {
+            move_mask: &move_mask,
+            niter_refine: iterations,
+            radius: earthmesh_core::EARTH_RADIUS_METERS,
+            diagnostic_every: 100,
+        },
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!(
+                "earthmesh_cli: warning: refinement spring declined ({error}); keeping the unsmoothed mesh"
+            );
+            return Ok((mesh.clone(), 0));
+        }
+    };
+    let topology = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&report.mesh);
+    if !topology.is_consistent() {
+        eprintln!(
+            "earthmesh_cli: warning: refinement spring produced inconsistent connectivity ({}); keeping the unsmoothed mesh",
+            topology
+                .violations
+                .iter()
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        return Ok((mesh.clone(), 0));
+    }
+    let candidate_angles = match unstructured_triangle_angle_range(&report.mesh) {
+        Ok(angles) => angles,
+        Err(error) => {
+            eprintln!(
+                "earthmesh_cli: warning: refinement spring produced invalid triangle geometry ({error}); keeping the unsmoothed mesh"
+            );
+            return Ok((mesh.clone(), 0));
+        }
+    };
+    let tolerance = 1.0e-4;
+    if candidate_angles.0 < baseline_angles.0 - tolerance
+        || candidate_angles.1 > baseline_angles.1 + tolerance
+    {
+        eprintln!(
+            "earthmesh_cli: warning: refinement spring worsened triangle angles ({:.3}..{:.3} -> {:.3}..{:.3} degrees); keeping the unsmoothed mesh",
+            baseline_angles.0, baseline_angles.1, candidate_angles.0, candidate_angles.1
+        );
+        return Ok((mesh.clone(), 0));
+    }
+    eprintln!(
+        "earthmesh_cli: refinement spring complete in {:.1}s",
+        started.elapsed().as_secs_f64()
+    );
+    Ok((report.mesh, 1))
+}
+
+fn unstructured_mesh_with_one_based_rows(
+    mesh: &crate::UnstructuredMesh,
+) -> crate::UnstructuredMesh {
+    let mut normalized = mesh.clone();
+    if !crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(
+        &normalized.m_points,
+    ) {
+        normalized
+            .m_points
+            .insert(0, crate::LonLatPoint { lon: 0.0, lat: 0.0 });
+        normalized.m_to_w.insert(0, [0; 3]);
+    }
+    if !crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(
+        &normalized.w_points,
+    ) {
+        normalized
+            .w_points
+            .insert(0, crate::LonLatPoint { lon: 0.0, lat: 0.0 });
+        normalized.w_to_m.insert(0, Vec::new());
+        normalized.n_w_to_m.insert(0, 0);
+    }
+    normalized
+}
+
+fn unstructured_triangle_angle_range(mesh: &crate::UnstructuredMesh) -> io::Result<(f64, f64)> {
+    let triangles = crate::cells_on_triangle_one_based_from_mesh(mesh)?;
+    let points = mesh
+        .w_points
+        .iter()
+        .map(|point| earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
+        .collect::<Vec<_>>();
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
+    for corners in triangles.iter().skip(2) {
+        let triangle = [points[corners[0]], points[corners[1]], points[corners[2]]];
+        let metrics = earthmesh_mesh::polygon_length_angle_metrics(&triangle).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "refinement spring encountered a degenerate triangle",
+            )
+        })?;
+        for angle in metrics.angles_degrees {
+            if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "refinement spring encountered a non-finite or degenerate triangle angle",
+                ));
+            }
+            minimum = minimum.min(angle);
+            maximum = maximum.max(angle);
+        }
+    }
+    if !minimum.is_finite() || !maximum.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "refinement spring mesh contains no physical triangles",
+        ));
+    }
+    Ok((minimum, maximum))
+}
+
+fn triangular_mesh_from_unstructured(
+    mesh: &crate::UnstructuredMesh,
+    pentagons: [usize; 12],
+) -> io::Result<TriangularMesh> {
+    let vertices = mesh
+        .w_points
+        .iter()
+        .map(|point| {
+            earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
+                point.lon, point.lat,
+            ))
+        })
+        .collect();
+    let triangles = crate::cells_on_triangle_one_based_from_mesh(mesh)?;
+    let state = MeshState::from_parts(vertices, triangles).map_err(|errors| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "smoothed mesh does not convert back to a triangulation: {}",
+                errors
+                    .iter()
+                    .take(4)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )
+    })?;
+    state.to_triangular_mesh(pentagons, None)
+}
+
 /// The criteria half of the point+radius route, as red-green consumes it.
 struct RedGreenAdaptive<'a> {
     inputs: Vec<crate::refinement_demand::plan::DemandPlanInputs<'a>>,
@@ -1359,6 +1576,7 @@ fn refine_with_redgreen(
     max_level: usize,
     adaptive: Option<RedGreenAdaptive<'_>>,
     preserve_locality: bool,
+    spring_iterations: usize,
 ) -> io::Result<RefinedGrid> {
     if !refine.is_transition {
         // Not only for a second level: the transition rows *are* red-green's
@@ -1382,6 +1600,7 @@ fn refine_with_redgreen(
     let mut previous_marks: Option<Vec<i32>> = None;
     let mut split_triangles = 0usize;
     let mut passes = Vec::new();
+    let mut spring_regions = named_regions.to_vec();
     let mut deepest_level = 0usize;
     let mut stopped_on_empty_demand = false;
     for level in 1..=max_level {
@@ -1410,6 +1629,7 @@ fn refine_with_redgreen(
                 demand.circles.len(),
                 demand.demanded_cells,
             );
+            spring_regions.extend(demand.circles.iter().cloned());
             level_regions.extend(demand.circles);
         }
         // Nothing asks at this depth, and nothing deeper will either: the
@@ -1524,6 +1744,8 @@ fn refine_with_redgreen(
             ),
         ));
     }
+    let (output_mesh, spring_nest_passes) =
+        spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
     Ok(RefinedGrid {
         state: None,
         output_mesh,
@@ -1533,7 +1755,7 @@ fn refine_with_redgreen(
         // every level. The pentagons are base-mesh cells.
         pentagon_indices: mesh.impent,
         transition_faces: 0,
-        spring_nest_passes: 0,
+        spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         // Reported for the same two reasons Method-C reports it: the ocean
         // carve reads it to protect the cells a criterion demanded from its
@@ -1547,10 +1769,7 @@ fn refine_with_redgreen(
                     passes,
                     deepest_level,
                     stopped_on_empty_demand,
-                    // Red-green does not run the Method-C nest spring, and
-                    // says so rather than inheriting a number from the route
-                    // it shares the demand half with.
-                    spring_passes: 0,
+                    spring_passes: spring_nest_passes,
                 },
                 max_level,
                 adaptive.base_cell_meters,
@@ -1623,6 +1842,7 @@ fn refine_with_method_c_lepp(
     method_c_nxp: usize,
     max_level: usize,
     options: MethodCAlgorithmOptions,
+    spring_iterations: usize,
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
     let mut state = MeshState::from_triangular_mesh(&mesh)?;
@@ -1776,15 +1996,26 @@ fn refine_with_method_c_lepp(
         }
     }
     let refined = state.to_triangular_mesh(pentagons, None)?;
-    let voronoi = spherical_voronoi_state(&refined)?;
-    let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+    let initial_voronoi = spherical_voronoi_state(&refined)?;
+    let initial_output =
+        gridfile_mesh_from_one_based_state(&initial_voronoi.grid, &initial_voronoi.tabs)?;
+    let (output_mesh, spring_nest_passes) =
+        spring_unstructured_region_interiors(&initial_output, &hard_regions, spring_iterations)?;
+    let (voronoi, output_mesh) = if spring_nest_passes > 0 {
+        let refined = triangular_mesh_from_unstructured(&output_mesh, pentagons)?;
+        let voronoi = spherical_voronoi_state(&refined)?;
+        let output = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+        (voronoi, output)
+    } else {
+        (initial_voronoi, output_mesh)
+    };
     Ok(RefinedGrid {
         state: Some(voronoi),
         output_mesh,
         method_c_metadata: None,
         pentagon_indices: pentagons,
         transition_faces: 0,
-        spring_nest_passes: 0,
+        spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
         harp_dv_run: None,
@@ -2160,6 +2391,7 @@ fn refine_with_harp_dv(
     // the mesh's own current scale: that tells the spring to keep things as
     // they are, and 5000 iterations under it made the angles worse.
     let unsmoothed = (spring_iterations > 0).then(|| refined.clone());
+    let mut spring_nest_passes = 0usize;
     let refined = if spring_iterations > 0 {
         match harp_spring_smoothed(
             &refined,
@@ -2168,7 +2400,10 @@ fn refine_with_harp_dv(
             base_cell_m,
             spring_iterations,
         ) {
-            Ok(mesh) => mesh,
+            Ok(mesh) => {
+                spring_nest_passes = 1;
+                mesh
+            }
             // A smoothing pass that declines is not a reason to lose the mesh.
             Err(error) => {
                 eprintln!("harp_dv: nest spring declined ({error}); writing the unsmoothed mesh");
@@ -2190,12 +2425,16 @@ fn refine_with_harp_dv(
                 "harp_dv: the smoothed mesh is not writable ({error}); falling back to the \
                  unsmoothed one"
             );
+            spring_nest_passes = 0;
             let plain = unsmoothed.expect("checked");
             let state = spherical_voronoi_state(&plain)?;
             (plain, state)
         }
         Err(error) => return Err(error),
     };
+    if let Some((report, _, _, _)) = &mut adaptive_run {
+        report.spring_passes = spring_nest_passes;
+    }
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
     Ok(RefinedGrid {
@@ -2207,7 +2446,7 @@ fn refine_with_harp_dv(
         state: Some(state),
         output_mesh,
         method_c_metadata,
-        spring_nest_passes: 0,
+        spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run,
         // HARP-DV's own ending, on the record rather than only on stderr.
@@ -2865,7 +3104,7 @@ fn refine_with_method_c(
             // An explicit h-field is a mkrefine request, not the implicit
             // native ngrids-only path; honor its niter_refine controls instead
             // of forcing Method-C's 5000-iteration native spawn default.
-            let hfield_spring_iterations = method_c_spring_iterations(refine, is_atmosmesh)?;
+            let hfield_spring_iterations = refinement_spring_iterations(refine, is_atmosmesh)?;
             let (refined, passes, diagnostics) = mesh
                 .spawn_nest_from_cartesian_xy_target_levels_with_spring_deltax(
                     |x, y| {
@@ -3607,6 +3846,89 @@ mod tests {
         assert_eq!(smoothed.nmd, mesh.nmd);
         assert_eq!(smoothed.nud, mesh.nud);
         assert_eq!(smoothed.nwd, mesh.nwd);
+    }
+
+    #[test]
+    fn backend_neutral_regional_spring_moves_only_safe_region_interiors() {
+        let base = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh")
+            .into_inner();
+        let neighbors = base.m_neighbors.clone();
+        let redgreen = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("red-green bridge");
+        let mut mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)
+            .expect("unstructured mesh");
+        let region = earthmesh_mesh::RefinementRegion::Bbox {
+            west_degrees: -120.0,
+            east_degrees: 120.0,
+            south_degrees: -70.0,
+            north_degrees: 70.0,
+            level: 1,
+        };
+        let mask =
+            spring_region_interior_mask(&mesh, std::slice::from_ref(&region)).expect("spring mask");
+        let moved = (2..mask.len())
+            .find(|&cell| mask[cell])
+            .expect("movable cell");
+        let fixed = (2..mask.len())
+            .find(|&cell| !mask[cell])
+            .expect("fixed boundary cell");
+        let original = mesh.clone();
+        mesh.w_points[moved].lon += 5.0;
+        let before_moved = mesh.w_points[moved];
+        let before_fixed = mesh.w_points[fixed];
+
+        let (smoothed, passes) =
+            spring_unstructured_region_interiors(&mesh, std::slice::from_ref(&region), 1)
+                .expect("regional spring");
+
+        assert_eq!(passes, 1);
+        assert_ne!(smoothed.w_points[moved], before_moved);
+        assert_eq!(smoothed.w_points[fixed], before_fixed);
+        assert_eq!(smoothed.m_to_w, mesh.m_to_w);
+        assert_eq!(smoothed.w_to_m, mesh.w_to_m);
+        assert!(
+            crate::unstructured_mesh_support::check_unstructured_mesh_topology(&smoothed)
+                .is_consistent()
+        );
+
+        let mut slightly_worse = original;
+        slightly_worse.w_points[moved].lon += 0.25;
+        let (kept, passes) =
+            spring_unstructured_region_interiors(&slightly_worse, std::slice::from_ref(&region), 1)
+                .expect("quality fallback");
+        assert_eq!(passes, 0);
+        assert_eq!(kept, slightly_worse);
+    }
+
+    #[test]
+    fn redgreen_consumes_the_configured_refinement_spring() {
+        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh")
+            .into_inner();
+        let region = earthmesh_mesh::RefinementRegion::Bbox {
+            west_degrees: -120.0,
+            east_degrees: 120.0,
+            south_degrees: -70.0,
+            north_degrees: 70.0,
+            level: 1,
+        };
+        let refine = RefineConfig {
+            is_transition: true,
+            weak_concav_eliminate: false,
+            ..RefineConfig::default()
+        };
+
+        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, true, 1)
+            .expect("red-green with spring");
+
+        assert_eq!(refined.spring_nest_passes, 1);
+        assert!(
+            crate::unstructured_mesh_support::check_unstructured_mesh_topology(
+                &refined.output_mesh
+            )
+            .is_consistent()
+        );
     }
 
     /// A demand grid is `nlons * nlats`, so this is the cost of its windows.

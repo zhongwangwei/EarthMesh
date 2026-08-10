@@ -9,7 +9,10 @@
 //! Owns the project schema, validation, intent presets, criteria catalog, and
 //! lowering into engine namelists.
 
-pub use earthmesh_core::KM_PER_DEGREE_EQUATOR;
+pub use earthmesh_core::{
+    DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS, DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS,
+    KM_PER_DEGREE_EQUATOR,
+};
 
 mod capability_registry;
 mod schema;

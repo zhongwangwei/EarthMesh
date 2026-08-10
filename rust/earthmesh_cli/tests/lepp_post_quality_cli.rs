@@ -177,7 +177,6 @@ fn cli_lepp_adaptive_hybrid_is_the_selected_method_c_production_path() {
         "method_c",
         "&method_c\n  NL%algorithm='lepp_delaunay'\n  NL%max_cycles=1\n  NL%maximum_insertions_per_cycle=1\n  NL%maximum_neighbor_size_ratio=10.0\n/",
     );
-
     let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
         .arg(&namelist)
         .arg("--max-tris")
@@ -197,6 +196,11 @@ fn cli_lepp_adaptive_hybrid_is_the_selected_method_c_production_path() {
     let gridfile = root.join(format!("{case_name}/result/gridfile_NXP0006_hex.nc4"));
     assert!(gridfile.is_file(), "missing LEPP output: {gridfile:?}");
     assert_eq!(stdout_value(&stdout, "lepp_adaptive_cycles"), "1");
+    assert_eq!(stdout_value(&stdout, "refine_spring_iterations"), "1");
+    assert!(
+        stderr.contains("refinement spring started"),
+        "LEPP must consume the common spring controls: {stderr}"
+    );
     assert_eq!(
         stdout_value(&stdout, "lepp_adaptive_physical_insertions"),
         "1"

@@ -566,6 +566,8 @@ const STATIC_BROWSER_CAPABILITIES={
   method_c_max_refinement_level:5,
   default_openmp:16,
   default_niter:5000,
+  default_surface_refine_spring_iterations:2000,
+  default_atmosphere_refine_spring_iterations:5000,
   default_beta:1.2,
   default_relax:0.04,
   default_hfield_g:0.2,
@@ -583,6 +585,8 @@ let outputPath=""; // base output folder; outputs go to <outputPath>/<project na
 let DEFAULT_MIN_ANGLE_DEG=STATIC_BROWSER_CAPABILITIES.default_min_angle_deg;
 let DEFAULT_OPENMP=STATIC_BROWSER_CAPABILITIES.default_openmp;
 let DEFAULT_NITER=STATIC_BROWSER_CAPABILITIES.default_niter;
+let DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS=STATIC_BROWSER_CAPABILITIES.default_surface_refine_spring_iterations;
+let DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS=STATIC_BROWSER_CAPABILITIES.default_atmosphere_refine_spring_iterations;
 let DEFAULT_BETA=STATIC_BROWSER_CAPABILITIES.default_beta;
 let DEFAULT_RELAX=STATIC_BROWSER_CAPABILITIES.default_relax;
 let DEFAULT_HFIELD_G=STATIC_BROWSER_CAPABILITIES.default_hfield_g;
@@ -602,7 +606,7 @@ function templateDefaultCell(){
   return cellEdit || templateDefaultTarget().cell || "hex";
 }
 function autoSpringStrategyLabel(cell, regionalDomain, z){
-  if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（嵌套弹性平滑）" : "Auto (nested spring smoothing)";
+  if(String(cell || templateDefaultCell()).toLowerCase()==="tri") return z ? "自动（约束弹性平滑）" : "Auto (constrained spring smoothing)";
   return regionalDomain ? (z ? "自动（区域平滑）" : "Auto (regional smoothing)") : (z ? "自动（全局平滑）" : "Auto (global smoothing)" );
 }
 function qualityModeLabel(mode, cell){
@@ -614,6 +618,7 @@ function qualityModeLabel(mode, cell){
 function springStrategyOptions(selected,z){
   const opts=[
     ["", z?"自动（按网格/区域）":"Auto (mesh/domain)"],
+    ["off", z?"关闭弹性调整":"Disable spring smoothing"],
     ["global", z?"全局弹性 SpringGlobal=1":"Global spring (SpringGlobal=1)"],
     ["regional1", z?"区域弹性 SpringRegional=1":"Regional spring (SpringRegional=1)"],
     ["regional2", z?"区域弹性 SpringRegional=2":"Regional spring (SpringRegional=2)"],
@@ -621,12 +626,14 @@ function springStrategyOptions(selected,z){
   return opts.map(([v,label])=>`<option value="${v}" ${String(selected||"")===v?"selected":""}>${label}</option>`).join("");
 }
 function springTypesFor(strategy){
+  if(strategy==="off") return {springGlobalType:0,springRegionalType:0};
   if(strategy==="global") return {springGlobalType:1,springRegionalType:0};
   if(strategy==="regional1") return {springGlobalType:0,springRegionalType:1};
   if(strategy==="regional2") return {springGlobalType:0,springRegionalType:2};
   return {springGlobalType:null,springRegionalType:null};
 }
 function springStrategyFromTypes(globalType,regionalType){
+  if(globalType===0 && regionalType===0) return "off";
   if(globalType===1 && regionalType===0) return "global";
   if(globalType===0 && regionalType===1) return "regional1";
   if(globalType===0 && regionalType===2) return "regional2";
@@ -1988,6 +1995,8 @@ if(MAP_WINDOW_MODE){
     METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level;
     DEFAULT_OPENMP = capabilities.default_openmp;
     DEFAULT_NITER = capabilities.default_niter;
+    DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS = capabilities.default_surface_refine_spring_iterations;
+    DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS = capabilities.default_atmosphere_refine_spring_iterations;
     DEFAULT_BETA = capabilities.default_beta;
     DEFAULT_RELAX = capabilities.default_relax;
     DEFAULT_HFIELD_G = capabilities.default_hfield_g;
@@ -2968,7 +2977,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <span class="expert-tag">⚙ ${z ? "专家 — 通用平滑控制" : "EXPERT — common smoothing controls"}</span>
       <div class="grid2" style="margin-top:10px">
         ${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
-        ${field("RL%niter_refine",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?"留空由引擎按目标网格选择":"blank lets the engine choose for the target mesh")}
+        ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}
         ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"通用输出清理：仅保留最大连通水体":"common output cleanup: keep only the largest connected water body")}
       </div>
     </div>`;
@@ -3051,7 +3060,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         + algorithmOptionsBlock
         + (specifiedRefine.enabled ? specified : "")
         + (thresholdRefine.enabled ? threshold : "")
-        + (strategyEnabled ? hfieldBlock + expertRefine : "");
+        + (strategyEnabled ? hfieldBlock : "") + expertRefine;
       anchor.insertAdjacentHTML("afterend", mp);
       const rows = document.getElementById("thresholdRows");
       if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));

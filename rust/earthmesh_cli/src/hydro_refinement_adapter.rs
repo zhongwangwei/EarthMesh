@@ -855,11 +855,11 @@ mod tests {
         apply_minimum_spring_iterations(&mut canonical, Some(20));
         assert!(!canonical.niter_refine_specified);
         assert_eq!(
-            crate::method_c_spring_iterations(&canonical, true).unwrap(),
+            crate::refinement_spring_iterations(&canonical, true).unwrap(),
             5000
         );
         assert_eq!(
-            crate::method_c_spring_iterations(&canonical, false).unwrap(),
+            crate::refinement_spring_iterations(&canonical, false).unwrap(),
             2000
         );
 

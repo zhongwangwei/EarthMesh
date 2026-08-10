@@ -765,6 +765,8 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     );
     assert_eq!(capabilities.default_openmp, 16);
     assert_eq!(capabilities.default_niter, 5000);
+    assert_eq!(capabilities.default_surface_refine_spring_iterations, 2000);
+    assert_eq!(capabilities.default_atmosphere_refine_spring_iterations, 5000);
     assert_eq!(capabilities.default_beta, 1.2);
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);

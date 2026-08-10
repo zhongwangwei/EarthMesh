@@ -93,7 +93,8 @@ log("project paths render as text");
 check(
   !html.includes("defaultMethodCSpringNestIterations") &&
     html.includes("niterRefine: expertEdit.niterRefine") &&
-    html.includes("blank lets the engine choose for the target mesh"),
+    html.includes("blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface") &&
+    html.includes("DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS"),
   "niter_refine must remain unset unless the user explicitly overrides it",
 );
 log("niter_refine default remains engine-owned");
@@ -455,6 +456,8 @@ log("resolution slider ticks are self-describing");
       body.includes("capabilities.target_compatibility") &&
       body.includes("capabilities.method_c_min_base_nxp") &&
       body.includes("capabilities.method_c_max_refinement_level") &&
+      body.includes("capabilities.default_surface_refine_spring_iterations") &&
+      body.includes("capabilities.default_atmosphere_refine_spring_iterations") &&
       body.includes("capabilities.method_c_spring_nxp1_km") &&
       body.includes("capabilities.km_per_degree_equator") &&
       html.includes("Promise.all([api.capabilities(), api.listCriteria()])") &&
@@ -1109,6 +1112,15 @@ check(
   "atmosphere template must not advertise unsupported typhoon refinement",
 );
 log("atmosphere template labels match supported behavior");
+
+check(
+  html.includes('["off", z?"关闭弹性调整":"Disable spring smoothing"]') &&
+    html.includes('if(strategy==="off") return {springGlobalType:0,springRegionalType:0};') &&
+    html.includes('+ (strategyEnabled ? hfieldBlock : "") + expertRefine;') &&
+    !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")'),
+  "common spring controls must stay visible for every refinement algorithm and allow disabling",
+);
+log("common spring controls are algorithm-independent");
 
 {
   // Three expert controls are parsed from the namelist, validated, lowered and

@@ -9,6 +9,7 @@ use earthmesh_project::{
     DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshIntentPreset,
     ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
     DEFAULT_LANDCOVER_CLASS_THRESHOLD, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS, DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS,
     KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
     METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
 };
@@ -86,6 +87,8 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         method_c_max_refinement_level: METHOD_C_MAX_AUTO_REFINE_LEVEL,
         default_openmp: baseline.mkgrd.openmp,
         default_niter: baseline.mkgrd.niter,
+        default_surface_refine_spring_iterations: DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS,
+        default_atmosphere_refine_spring_iterations: DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS,
         default_beta: baseline.mkgrd.beta,
         default_relax: baseline.mkgrd.relax,
         default_hfield_g: HfieldRefinementRecipe::default().g,
