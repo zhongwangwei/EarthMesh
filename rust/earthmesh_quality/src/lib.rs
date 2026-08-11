@@ -1043,6 +1043,7 @@ pub fn compute_with_options(
     let mut triangle_nsrs = Vec::new();
     let mut aspects = Vec::new();
     let mut compactnesses = Vec::new();
+    let mut cell_scales = vec![None; input.cells.len()];
     let mut min_angle = f64::INFINITY;
     let mut max_angle = f64::NEG_INFINITY;
 
@@ -1147,6 +1148,7 @@ pub fn compute_with_options(
             if !area.is_finite() || area <= 1.0e-12 {
                 geom.zero_area_cell_count += 1;
             } else {
+                cell_scales[ci] = Some(area.sqrt());
                 areas.push(area);
                 let group = refine_groups.entry(cell.refine_level).or_default();
                 group.areas.push(area);
@@ -1329,7 +1331,10 @@ pub fn compute_with_options(
         }
     }
 
-    // neighbor reciprocity + transition + isolated refined
+    // Neighbor reciprocity plus the physical resolution jump across each
+    // shared edge. Refinement generations are provenance, not a length scale:
+    // arbitrary Delaunay insertion can advance generations without halving a
+    // cell, so 2^level_diff overstates HARP-DV transitions.
     for (ci, cell) in input.cells.iter().enumerate() {
         for &nb in &cell.neighbors {
             if nb >= input.cells.len() {
@@ -1338,11 +1343,13 @@ pub fn compute_with_options(
             if !input.cells[nb].neighbors.contains(&ci) {
                 topo.neighbor_reciprocity_failure_count += 1;
             }
-            if let (Some(la), Some(lb)) = (cell.refine_level, input.cells[nb].refine_level) {
-                let diff = la.abs_diff(lb);
-                let ratio = 2f64.powi(diff as i32);
+            if nb > ci {
+                let (Some(here), Some(there)) = (cell_scales[ci], cell_scales[nb]) else {
+                    continue;
+                };
+                let ratio = here.max(there) / here.min(there);
                 topo.max_adjacent_resolution_ratio = topo.max_adjacent_resolution_ratio.max(ratio);
-                if diff > 1 {
+                if ratio > thresholds.max_adjacent_resolution_ratio_warn {
                     topo.transition_continuity_warning_count += 1;
                 }
             }
@@ -2575,10 +2582,10 @@ mod tests {
     #[test]
     fn abrupt_transition_warns() {
         let mut m = two_square_mesh();
-        m.cells[0].refine_level = Some(0);
-        m.cells[1].refine_level = Some(3);
+        m.vertices[4].x = 10.0;
+        m.vertices[5].x = 10.0;
         let r = compute(&m, &QualityThresholds::default());
-        assert!(r.topology.max_adjacent_resolution_ratio >= 4.0);
+        assert!(r.topology.max_adjacent_resolution_ratio > 2.0);
         assert!(r.topology.transition_continuity_warning_count >= 1);
         assert_ne!(r.verdict, QualityLevel::Pass); // at least Warn
     }

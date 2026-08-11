@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use earthmesh_project::{MeshCellKind, ProjectConfig};
+use earthmesh_project::{MeshCellKind, ProjectConfig, RefinementBackend};
 
 /// Which mesh survives comparison of an AutoRefine candidate with its baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,11 +137,32 @@ pub fn write_project_quality_report_with_namelist(
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let mesh = crate::grid_quality_pipeline::read_gridfile_mesh_points(gridfile)
         .map_err(|err| format!("project quality read {}: {err}", gridfile.display()))?;
-    let input = match project.target.cell {
+    let mut input = match project.target.cell {
         MeshCellKind::Hex => crate::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh),
         MeshCellKind::Tri => crate::grid_quality_pipeline::quality_input_from_gridfile(&mesh),
     }
     .map_err(|err| format!("project quality validate {}: {err}", gridfile.display()))?;
+    let target_namelist_text = target_namelist
+        .map(|path| {
+            fs::read_to_string(path)
+                .map_err(|err| format!("project quality read {}: {err}", path.display()))
+        })
+        .transpose()?;
+    let harp_dv = target_namelist_text
+        .as_deref()
+        .and_then(|text| earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(text).ok())
+        .map_or(
+            project.refinement.backend == RefinementBackend::HarpDv,
+            |config| config.refine_backend.eq_ignore_ascii_case("harp_dv"),
+        );
+    // HARP's stored generations describe insertion ancestry, not dyadic cell
+    // sizes. Physical adjacent-size ratios are still measured from geometry.
+    if harp_dv {
+        input
+            .cells
+            .iter_mut()
+            .for_each(|cell| cell.refine_level = None);
+    }
     let target_nxp = project.try_lower()?.mkgrd.nxp;
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     let thresholds = earthmesh_quality::QualityThresholds {
@@ -163,9 +184,7 @@ pub fn write_project_quality_report_with_namelist(
         MeshCellKind::Tri => "tri",
     };
     report.cell_view = cell_view.to_string();
-    if let Some(path) = target_namelist {
-        let namelist = fs::read_to_string(path)
-            .map_err(|err| format!("project quality read {}: {err}", path.display()))?;
+    if let (Some(path), Some(namelist)) = (target_namelist, target_namelist_text) {
         crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
             &mut report,
             &input,

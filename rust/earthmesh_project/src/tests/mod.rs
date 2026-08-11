@@ -2064,11 +2064,19 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
     project.refinement.threshold_enabled = true;
     project.refinement.max_passes = 3;
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::LeppDelaunay;
+    assert_eq!(project.lower().mkgrd.nxp, 81);
+
+    project.quality.on_violation = ViolationPolicy::Warn;
     assert_eq!(
         project.lower().mkgrd.nxp,
         80,
-        "LEPP bypasses Method-C's stride-three lattice"
+        "LEPP without canonical quality repair bypasses Method-C's stride-three lattice"
     );
+
+    project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
+    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.quality.on_violation = ViolationPolicy::AutoRefine;
+    assert_eq!(project.lower().mkgrd.nxp, 81);
 }
 
 #[test]
@@ -2076,6 +2084,7 @@ fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
     let mut project = sample();
     project.target.resolution = ResolutionSpec::Nxp(80);
     project.quality.on_violation = ViolationPolicy::Warn;
+    project.refinement.backend = crate::RefinementBackend::HarpDv;
     project.data_layers = vec![
         ProjectDataLayer {
             id: "merit".into(),

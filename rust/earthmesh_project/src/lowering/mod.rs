@@ -438,9 +438,8 @@ impl ProjectConfig {
             None
         };
 
-        // Method-C local refinement advances on a stride-3 lattice. Build the
-        // parent mesh on that lattice from the start so HField and later
-        // quality AutoRefine passes share one physically compatible topology.
+        // Canonical Method-C plus hydro/quality Method-C adapters advance on a
+        // stride-3 lattice. Build their parent mesh on it from the start.
         // Rounding upward preserves or slightly improves the requested spatial
         // resolution; uniform meshes without AutoRefine remain unchanged.
         let hydro_local_refinement = self
@@ -448,17 +447,15 @@ impl ProjectConfig {
             .is_some_and(|plan| plan.max_level > 0);
         let canonical_method_c = backend == crate::RefinementBackend::MethodC
             && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical;
-        if canonical_method_c
-            && (hfield.is_some()
-                || adaptive.is_some()
-                || hydro_local_refinement
-                || self.quality.on_violation == ViolationPolicy::AutoRefine)
+        if (canonical_method_c && (hfield.is_some() || adaptive.is_some()))
+            || hydro_local_refinement
+            || self.quality.on_violation == ViolationPolicy::AutoRefine
         {
             let increment = (3 - mkgrd.nxp.rem_euclid(3)) % 3;
             mkgrd.nxp = mkgrd
                 .nxp
                 .checked_add(increment)
-                .ok_or_else(|| "Method-C effective NXP overflows i32".to_string())?;
+                .ok_or_else(|| "stride-compatible effective NXP overflows i32".to_string())?;
         }
 
         Ok(LoweredProject {

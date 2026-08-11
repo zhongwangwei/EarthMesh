@@ -736,6 +736,7 @@ fn run_refinement_adapter_with_controls(
     // grid from NXP/niter invalidates cell identity and degrades the far field.
     config.mode_file = initial_gridfile.display().to_string();
     config.mode_file_description = "EarthMesh".to_string();
+    config.refine_backend = "method_c".to_string();
     config.refine = true;
     if config.mode_grid.trim() != "tri" {
         refine.is_transition = true;
