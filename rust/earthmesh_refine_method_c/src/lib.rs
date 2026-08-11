@@ -38,8 +38,45 @@ pub(crate) use method_c_nest_spring_iteration::method_c_nest_mrow_distance_multi
 #[cfg(test)]
 use std::collections::BTreeMap;
 
-pub use earthmesh_mesh::*;
+// Was `pub use earthmesh_mesh::*;`. Named now: a wildcard makes this crate's
+// public surface whatever `earthmesh_mesh` happens to hold, growing and
+// shrinking without anyone editing this file, which is what the architecture
+// gate forbids. The list is what callers actually reach through here, found by
+// narrowing the export until the workspace stopped compiling.
+pub use earthmesh_mesh::{
+    active_mesh_radius, canonical_global_dist00, default_method_c_m_metadata,
+    derive_cart_hex_m_neighbors_from_active_faces,
+    derive_icosahedron_m_neighbors_canonical_checked,
+    derive_icosahedron_m_neighbors_canonical_checked_with_prognostic,
+    derive_icosahedron_u_neighbors_canonical, derive_icosahedron_w_neighbors_canonical, dot,
+    face_following_two_vertices, face_following_vertex, icosahedron_spring_topology_canonical,
+    lonlat_degrees_to_unit_xyz, magnitude, method_c_identity_prognostic_map,
+    method_c_repairable_payload, normalize_cartesian_to_radius, normalized_face_center,
+    refine_regions_close_to_method_c, refine_regions_contain_method_c, repairable_error,
+    replace_w_face_edge_after, replace_w_face_edge_before, replace_w_face_edge_with_side_return,
+    replace_w_face_edges_at, require_method_c_id, require_method_c_len,
+    scale_refinement_regions_radius, set_first_two, tri_neighbors_outer_w_pair, vector_between,
+    voronoi_grid_from_triangular_mesh, weighted_point, xyz_to_lonlat_degrees, CartesianPoint,
+    IcosahedronDiamondConnectivity, IcosahedronMPointMetadata, IcosahedronMPointNeighbors,
+    IcosahedronRelaxedGrid, IcosahedronSpringTopology, IcosahedronUEdge, IcosahedronWFace,
+    LonLatDegrees, MethodCGridfileMetadata, RefinementRegion, RepairableKind, TriangularMesh,
+};
 
+mod lepp_delaunay;
+pub use lepp_delaunay::{
+    adaptive_hybrid_target_edge_from_level, find_lepp, improve_lepp_post_quality,
+    insert_lepp_terminal_midpoint, insert_lepp_terminal_midpoint_constrained,
+    refine_adaptive_hybrid, refine_adaptive_hybrid_constrained, refine_adaptive_hybrid_regions,
+    spherical_edge_length, terminal_edge_midpoint, AdaptiveHybridConfig, AdaptiveHybridDemand,
+    AdaptiveHybridError, AdaptiveHybridInsertionCounts, AdaptiveHybridPathStats,
+    AdaptiveHybridRejection, AdaptiveHybridReport, AdaptiveHybridStopReason,
+    AdaptiveHybridTargetSatisfaction, AdaptiveHybridUnresolvedDemand,
+    AdaptiveHybridUnresolvedReason, FaceId, LeppEdgeId, LeppInsertionError, LeppInsertionGates,
+    LeppInsertionReport, LeppInsertionSplitReason, LeppPath, LeppPostQualityConfig,
+    LeppPostQualityError, LeppPostQualityRejection, LeppPostQualityReport,
+    LeppPostQualityStopReason, LeppQualitySnapshot, LeppSearchConfig, LeppSearchError,
+    LeppSearchReport, LeppTerminal,
+};
 mod method_c_mesh;
 pub use method_c_lattice_mask::METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS;
 pub use method_c_mesh::MethodCMesh;

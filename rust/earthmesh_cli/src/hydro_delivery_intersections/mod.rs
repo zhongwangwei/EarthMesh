@@ -1,4 +1,4 @@
-mod geometry;
+pub(crate) mod geometry;
 mod json;
 mod writer;
 

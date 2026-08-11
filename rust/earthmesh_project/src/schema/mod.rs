@@ -332,6 +332,14 @@ pub struct RefinementRecipe {
     /// Which refinement algorithm builds the mesh.
     #[serde(default)]
     pub backend: RefinementBackend,
+    /// Method-C's internal algorithm. `Canonical` preserves the Walko/Avissar
+    /// lattice route; `LeppDelaunay` keeps Method-C's demand semantics but lets
+    /// LEPP-Delaunay perform the local refinement.
+    #[serde(default)]
+    pub method_c: MethodCRefinementRecipe,
+    /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
+    #[serde(default)]
+    pub harp_dv: HarpDvRefinementRecipe,
     /// Default refinement backend: ask every enabled criterion again before
     /// each pass and cover what it demands with circles (emits the `&adaptive`
     /// namelist group). Absent means enabled.
@@ -343,6 +351,163 @@ pub struct RefinementRecipe {
     /// adaptive route off, because a run refines one way or the other.
     #[serde(default)]
     pub hfield: Option<HfieldRefinementRecipe>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MethodCAlgorithm {
+    #[default]
+    Canonical,
+    LeppDelaunay,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MethodCRefinementRecipe {
+    #[serde(default)]
+    pub algorithm: MethodCAlgorithm,
+    #[serde(default = "default_method_c_lepp_max_cycles")]
+    pub max_cycles: usize,
+    #[serde(default = "default_method_c_lepp_target_size_tolerance")]
+    pub target_size_tolerance: f64,
+    #[serde(default = "default_method_c_lepp_maximum_neighbor_size_ratio")]
+    pub maximum_neighbor_size_ratio: f64,
+    #[serde(default = "default_method_c_lepp_maximum_vertices")]
+    pub maximum_vertices: usize,
+    #[serde(default = "default_method_c_lepp_maximum_insertions_per_cycle")]
+    pub maximum_insertions_per_cycle: usize,
+    #[serde(default = "default_method_c_lepp_maximum_path_length")]
+    pub maximum_path_length: usize,
+    #[serde(default = "default_method_c_lepp_stop_at_source_resolution")]
+    pub stop_at_source_resolution: bool,
+    #[serde(default = "default_method_c_lepp_minimum_triangle_angle_deg")]
+    pub minimum_triangle_angle_deg: f64,
+}
+
+impl Default for MethodCRefinementRecipe {
+    fn default() -> Self {
+        Self {
+            algorithm: MethodCAlgorithm::Canonical,
+            max_cycles: default_method_c_lepp_max_cycles(),
+            target_size_tolerance: default_method_c_lepp_target_size_tolerance(),
+            maximum_neighbor_size_ratio: default_method_c_lepp_maximum_neighbor_size_ratio(),
+            maximum_vertices: default_method_c_lepp_maximum_vertices(),
+            maximum_insertions_per_cycle: default_method_c_lepp_maximum_insertions_per_cycle(),
+            maximum_path_length: default_method_c_lepp_maximum_path_length(),
+            stop_at_source_resolution:
+                earthmesh_core::DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION,
+            minimum_triangle_angle_deg: default_method_c_lepp_minimum_triangle_angle_deg(),
+        }
+    }
+}
+
+fn default_method_c_lepp_max_cycles() -> usize {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MAX_CYCLES
+}
+
+fn default_method_c_lepp_target_size_tolerance() -> f64 {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_TARGET_SIZE_TOLERANCE
+}
+
+fn default_method_c_lepp_maximum_neighbor_size_ratio() -> f64 {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MAXIMUM_NEIGHBOR_SIZE_RATIO
+}
+
+fn default_method_c_lepp_maximum_vertices() -> usize {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MAXIMUM_VERTICES
+}
+
+fn default_method_c_lepp_maximum_insertions_per_cycle() -> usize {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MAXIMUM_INSERTIONS_PER_CYCLE
+}
+
+fn default_method_c_lepp_maximum_path_length() -> usize {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MAXIMUM_PATH_LENGTH
+}
+
+fn default_method_c_lepp_minimum_triangle_angle_deg() -> f64 {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_MINIMUM_TRIANGLE_ANGLE_DEGREES
+}
+
+fn default_method_c_lepp_stop_at_source_resolution() -> bool {
+    earthmesh_core::DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarpDvRefinementRecipe {
+    #[serde(default = "default_harp_dv_max_cycles")]
+    pub max_cycles: u32,
+    #[serde(default = "default_harp_dv_minimum_cell_width_m")]
+    pub minimum_cell_width_m: f64,
+    #[serde(default = "default_harp_dv_maximum_cells")]
+    pub maximum_cells: usize,
+    #[serde(default = "default_harp_dv_maximum_patch_cells")]
+    pub maximum_patch_cells: usize,
+    #[serde(default = "default_harp_dv_maximum_neighbor_scale_ratio")]
+    pub maximum_neighbor_scale_ratio: f64,
+    #[serde(default = "default_harp_dv_minimum_candidate_separation_m")]
+    pub minimum_candidate_separation_m: f64,
+    #[serde(default = "default_harp_dv_maximum_vertex_degree")]
+    pub maximum_vertex_degree: usize,
+    #[serde(default = "default_harp_dv_minimum_triangle_angle_deg")]
+    pub minimum_triangle_angle_deg: f64,
+    /// Optional Ruppert-style angle demand. Zero disables it; the independent
+    /// transaction gate above remains active.
+    #[serde(default = "default_harp_dv_criterion_minimum_angle_deg")]
+    pub criterion_minimum_angle_deg: f64,
+}
+
+impl Default for HarpDvRefinementRecipe {
+    fn default() -> Self {
+        Self {
+            max_cycles: default_harp_dv_max_cycles(),
+            minimum_cell_width_m: default_harp_dv_minimum_cell_width_m(),
+            maximum_cells: default_harp_dv_maximum_cells(),
+            maximum_patch_cells: default_harp_dv_maximum_patch_cells(),
+            maximum_neighbor_scale_ratio: default_harp_dv_maximum_neighbor_scale_ratio(),
+            minimum_candidate_separation_m: default_harp_dv_minimum_candidate_separation_m(),
+            maximum_vertex_degree: default_harp_dv_maximum_vertex_degree(),
+            minimum_triangle_angle_deg: default_harp_dv_minimum_triangle_angle_deg(),
+            criterion_minimum_angle_deg: default_harp_dv_criterion_minimum_angle_deg(),
+        }
+    }
+}
+
+fn default_harp_dv_max_cycles() -> u32 {
+    earthmesh_core::DEFAULT_HARP_DV_MAX_CYCLES
+}
+
+fn default_harp_dv_minimum_cell_width_m() -> f64 {
+    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M
+}
+
+fn default_harp_dv_maximum_cells() -> usize {
+    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_CELLS
+}
+
+fn default_harp_dv_maximum_patch_cells() -> usize {
+    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS
+}
+
+fn default_harp_dv_maximum_neighbor_scale_ratio() -> f64 {
+    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO
+}
+
+fn default_harp_dv_minimum_candidate_separation_m() -> f64 {
+    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_CANDIDATE_SEPARATION_M
+}
+
+fn default_harp_dv_maximum_vertex_degree() -> usize {
+    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE
+}
+
+fn default_harp_dv_minimum_triangle_angle_deg() -> f64 {
+    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG
+}
+
+fn default_harp_dv_criterion_minimum_angle_deg() -> f64 {
+    earthmesh_core::DEFAULT_HARP_DV_CRITERION_MINIMUM_ANGLE_DEG
 }
 
 /// Point+radius refinement, re-planned before every pass.
@@ -540,6 +705,23 @@ pub struct QualityConfig {
     pub auto_refine_batch_cells: usize,
     #[serde(default = "default_violation_policy")]
     pub on_violation: ViolationPolicy,
+    /// Optional LEPP-Delaunay repair of the completed canonical Method-C mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lepp_post_quality: Option<LeppPostQualityConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LeppPostQualityConfig {
+    #[serde(default = "default_lepp_post_quality_max_insertions")]
+    pub maximum_insertions: usize,
+    /// Optional absolute great-circle edge target in kilometres.
+    #[serde(default)]
+    pub maximum_edge_km: Option<f64>,
+}
+
+fn default_lepp_post_quality_max_insertions() -> usize {
+    50
 }
 
 fn default_auto_refine_batch_cells() -> usize {
@@ -556,6 +738,7 @@ impl Default for QualityConfig {
             min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
             auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
             on_violation: ViolationPolicy::AutoRefine,
+            lepp_post_quality: None,
         }
     }
 }

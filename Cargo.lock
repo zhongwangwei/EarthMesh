@@ -156,6 +156,7 @@ name = "earthmesh_boundary"
 version = "3.0.0-alpha4"
 dependencies = [
  "earthmesh_core",
+ "earthmesh_geometry",
 ]
 
 [[package]]
@@ -204,6 +205,7 @@ dependencies = [
 name = "earthmesh_mesh"
 version = "3.0.0-alpha4"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "rayon",
 ]
@@ -253,8 +255,10 @@ dependencies = [
 name = "earthmesh_refine_method_c"
 version = "3.0.0-alpha4"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_mesh",
+ "earthmesh_refine",
  "rayon",
 ]
 

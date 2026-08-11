@@ -10,6 +10,7 @@ pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source
 pub mod coordinate_types;
 use coordinate_types::{GridRegion, LonLatPoint};
 mod fs_support;
+mod harp_dv_options;
 pub(crate) use fs_support::ensure_parent_dir;
 #[doc(hidden)]
 pub use fs_support::resolve_project_path;
@@ -401,6 +402,7 @@ use data_preprocess_types::{DataPreprocessAreaJudgeSourceReport, MkgrdDataPrepro
 pub mod adaptive_refine;
 pub mod boundary_model;
 pub mod coast_refinement_regions;
+pub mod method_c_algorithm;
 pub mod mkgrd_data_preprocess_source;
 pub mod redgreen_bridge;
 pub mod refinement_demand;

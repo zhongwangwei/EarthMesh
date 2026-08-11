@@ -1409,7 +1409,7 @@ fn hfield_cells_for_meters(field: &HField, meters: f64) -> usize {
 /// answer depends on how big the cell is. Asking it once over an h-field raster
 /// cell gives the same answer at every level, because that cell's size comes
 /// from the base resolution and has nothing to do with the cell being decided;
-/// the reference algorithm asks it per triangle instead.
+/// the original algorithm asks it per triangle instead.
 ///
 /// So the question is put once per level, over a block of h-field cells the size
 /// of that level's parent cell: "would a cell of the size this level refines
@@ -1595,7 +1595,7 @@ pub(crate) fn constrain_hfield_to_domain(
     for j in 0..field.nlat() {
         for i in 0..field.nlon() {
             if !domain.is_active(i, j) {
-                field.set(i, j, base_m);
+                field.set(i, j, base_m)?;
             }
         }
     }

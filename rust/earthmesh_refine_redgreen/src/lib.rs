@@ -26,7 +26,7 @@
 //!
 //! Ported from `MOD_grid_preprocess.F90` / `MOD_refine.F90` (EarthMesh v2)
 //! kernel by kernel, which is what makes table-level exact comparison against
-//! the Fortran reference possible: `nmd`/`nud`/`nwd`, per-level W face counts
+//! the Fortran original possible: `nmd`/`nud`/`nwd`, per-level W face counts
 //! and mrow envelopes all match row for row. Method-C and the h-field path can
 //! only be checked at the topology and statistics level.
 //!

@@ -163,7 +163,6 @@ pub struct CriterionContext<'a> {
 pub struct CellScore {
     pub raw: f64,
     pub demand: f64,
-    pub confidence: f64,
     pub reason: String,
 }
 
@@ -191,17 +190,10 @@ pub struct CompositeScoreConfig {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum AllocationMethod {
-    /// Keep the highest-composite cells until the budget is spent.
-    TopByScore,
-}
-
-#[derive(Clone, Copy, Debug)]
 pub struct RefinementBudget {
     /// Max number of cells allowed to be refined (target_level > 0); None = unlimited.
     pub max_refined_cells: Option<usize>,
     pub max_adjacent_level_jump: u32,
-    pub allocation: AllocationMethod,
 }
 
 impl Default for RefinementBudget {
@@ -209,7 +201,6 @@ impl Default for RefinementBudget {
         Self {
             max_refined_cells: None,
             max_adjacent_level_jump: 1,
-            allocation: AllocationMethod::TopByScore,
         }
     }
 }
@@ -299,7 +290,6 @@ impl RefinementCriterion for SpecifiedRegionCriterion {
         CellScore {
             raw: inside as i32 as f64,
             demand: if inside { 1.0 } else { 0.0 },
-            confidence: 1.0,
             reason: if inside {
                 "inside specified region".into()
             } else {
@@ -335,7 +325,6 @@ impl RefinementCriterion for ColumnCriterion {
         CellScore {
             raw,
             demand,
-            confidence: 1.0,
             reason: format!("{}={:.3}", self.column, raw),
         }
     }
@@ -376,7 +365,6 @@ impl RefinementCriterion for DistanceCriterion {
         CellScore {
             raw,
             demand,
-            confidence: 1.0,
             reason: format!("{}={:.2}km", self.column, raw),
         }
     }
@@ -652,12 +640,6 @@ pub fn plan(
             if !(0.0..=1.0).contains(&s.demand) {
                 return Err(format!(
                     "criterion '{}' cell {cell} demand must be between 0 and 1",
-                    meta.id
-                ));
-            }
-            if !s.confidence.is_finite() {
-                return Err(format!(
-                    "criterion '{}' cell {cell} confidence must be finite",
                     meta.id
                 ));
             }
@@ -1001,7 +983,6 @@ mod tests {
             (
                 CellScore {
                     demand: f64::NAN,
-                    confidence: 1.0,
                     ..Default::default()
                 },
                 "demand must be finite",
@@ -1009,7 +990,6 @@ mod tests {
             (
                 CellScore {
                     demand: -0.1,
-                    confidence: 1.0,
                     ..Default::default()
                 },
                 "demand must be between 0 and 1",
@@ -1017,18 +997,9 @@ mod tests {
             (
                 CellScore {
                     demand: 1.1,
-                    confidence: 1.0,
                     ..Default::default()
                 },
                 "demand must be between 0 and 1",
-            ),
-            (
-                CellScore {
-                    demand: 0.5,
-                    confidence: f64::NAN,
-                    ..Default::default()
-                },
-                "confidence must be finite",
             ),
         ] {
             let criteria: Vec<Box<dyn RefinementCriterion>> =
@@ -1097,7 +1068,6 @@ mod tests {
             &RefinementBudget {
                 max_refined_cells: Some(2),
                 max_adjacent_level_jump: 4,
-                ..Default::default()
             },
             &QualityConstraint {
                 no_isolated_refined: false,
@@ -1321,7 +1291,6 @@ mod tests {
             &RefinementBudget {
                 max_refined_cells: Some(2),
                 max_adjacent_level_jump: 1,
-                ..Default::default()
             },
             &QualityConstraint {
                 no_isolated_refined: false,

@@ -80,10 +80,11 @@ pub(super) fn write_refined_outputs(
     domain_region: Option<&GridRegion>,
     metadata: Option<MethodCMetadataSlices<'_>>,
     hard_center_demand: Option<&[bool]>,
+    name_suffix: &str,
 ) -> io::Result<MethodCRefinedOutputReports> {
     let output_path = file_dir.join("result").join(format!(
-        "gridfile_NXP{nxp:04}_{}.nc4",
-        config.mode_grid.trim()
+        "gridfile_NXP{nxp:04}_{}{name_suffix}.nc4",
+        config.mode_grid.trim(),
     ));
     let has_landtype_file = namelist_sets_landtype_file(namelist_contents)
         && landtype_file_is_real(&config.landtype_file);
@@ -100,7 +101,7 @@ pub(super) fn write_refined_outputs(
             file_dir,
             nxp,
             max_level,
-            &format!("refine_raw_{}", config.mode_grid.trim()),
+            &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
         let raw_output = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
             &raw_path,
@@ -135,7 +136,7 @@ pub(super) fn write_refined_outputs(
                 file_dir,
                 nxp,
                 max_level,
-                &format!("refine_domain_{}", config.mode_grid.trim()),
+                &format!("refine_domain_{}{name_suffix}", config.mode_grid.trim()),
             );
             let kept = write_regional_gridfile_with_refine_levels(
                 &raw_output.output,
@@ -191,7 +192,7 @@ pub(super) fn write_refined_outputs(
             file_dir,
             nxp,
             max_level,
-            &format!("refine_raw_{}", config.mode_grid.trim()),
+            &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
         let (raw_output, output) = write_method_c_mesh_with_optional_domain_and_metadata(
             output_mesh,
@@ -205,12 +206,12 @@ pub(super) fn write_refined_outputs(
                 .unwrap_or_default(),
         )?;
         let land_output_path = file_dir.join("result").join(format!(
-            "gridfile_NXP{nxp:04}_{}_landmesh.nc4",
-            config.mode_grid.trim()
+            "gridfile_NXP{nxp:04}_{}{name_suffix}_landmesh.nc4",
+            config.mode_grid.trim(),
         ));
         let ocean_output_path = file_dir.join("result").join(format!(
-            "gridfile_NXP{nxp:04}_{}_oceanmesh.nc4",
-            config.mode_grid.trim()
+            "gridfile_NXP{nxp:04}_{}{name_suffix}_oceanmesh.nc4",
+            config.mode_grid.trim(),
         ));
         let land_kept = write_landtype_masked_gridfile_with_refine_levels(
             &output.output,
@@ -253,7 +254,12 @@ pub(super) fn write_refined_outputs(
         let output_stem = output_path
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("gridfile_NXP{nxp:04}_{}", config.mode_grid.trim()));
+            .unwrap_or_else(|| {
+                format!(
+                    "gridfile_NXP{nxp:04}_{}{name_suffix}",
+                    config.mode_grid.trim()
+                )
+            });
         let standard_dir = file_dir.join("standard");
         let coupling_csv = standard_dir.join(format!("CoLM_{output_stem}_cells.csv"));
         let coupling_netcdf_path = standard_dir.join(format!("CoLM_{output_stem}_coupling.nc4"));
@@ -318,7 +324,7 @@ pub(super) fn write_refined_outputs(
             file_dir,
             nxp,
             max_level,
-            &format!("refine_raw_{}", config.mode_grid.trim()),
+            &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
         let (raw_output, output) = write_method_c_mesh_with_optional_domain_and_metadata(
             output_mesh,

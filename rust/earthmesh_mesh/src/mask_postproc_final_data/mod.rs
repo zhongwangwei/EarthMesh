@@ -1,5 +1,5 @@
 use super::*;
-use crate::mask_postproc_data::mask_postproc_neighbor_widths;
+use crate::mask_postproc_data::mask_postproc_neighbor_widths_for_data;
 
 /// Result of `MOD_mask_postproc.F90:Data_Finial`.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,7 +29,6 @@ pub fn finalize_mask_postproc_data_one_based(
     center_neighbor_counts: &[usize],
     ustr_bounds: usize,
 ) -> io::Result<MaskPostprocFinalData> {
-    let (center_width, vertex_width) = mask_postproc_neighbor_widths(mode_grid)?;
     if active_centers.len() < center_neighbors.len()
         || center_coordinates.len() < center_neighbors.len()
         || center_neighbor_counts.len() < center_neighbors.len()
@@ -39,6 +38,13 @@ pub fn finalize_mask_postproc_data_one_based(
             "active_centers, center_coordinates, and center_neighbor_counts must cover center_neighbors",
         ));
     }
+    let (center_width, vertex_width) = mask_postproc_neighbor_widths_for_data(
+        mode_grid,
+        active_centers,
+        center_neighbors,
+        center_neighbor_counts,
+        ustr_bounds,
+    )?;
     if vertex_coordinates.len() <= ustr_bounds {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

@@ -24,7 +24,6 @@ pub fn renew_mask_postproc_data_one_based(
     center_neighbor_counts: &[usize],
     ustr_bounds: usize,
 ) -> io::Result<MaskPostprocRenewedData> {
-    let (center_width, vertex_width) = mask_postproc_neighbor_widths(mode_grid)?;
     if active_centers.len() < center_neighbors.len()
         || center_neighbor_counts.len() < center_neighbors.len()
     {
@@ -33,6 +32,13 @@ pub fn renew_mask_postproc_data_one_based(
             "active_centers and center_neighbor_counts must cover center_neighbors",
         ));
     }
+    let (center_width, vertex_width) = mask_postproc_neighbor_widths_for_data(
+        mode_grid,
+        active_centers,
+        center_neighbors,
+        center_neighbor_counts,
+        ustr_bounds,
+    )?;
 
     let points_next = 1 + active_centers
         .iter()
@@ -115,5 +121,65 @@ pub(crate) fn mask_postproc_neighbor_widths(mode_grid: &str) -> io::Result<(usiz
             io::ErrorKind::InvalidInput,
             format!("unsupported mask_postproc mode_grid {other}"),
         )),
+    }
+}
+
+pub(crate) fn mask_postproc_neighbor_widths_for_data(
+    mode_grid: &str,
+    active_centers: &[bool],
+    center_neighbors: &[Vec<usize>],
+    center_neighbor_counts: &[usize],
+    ustr_bounds: usize,
+) -> io::Result<(usize, usize)> {
+    let (mut center_width, mut vertex_width) = mask_postproc_neighbor_widths(mode_grid)?;
+    let mut vertex_counts = vec![0usize; ustr_bounds + 1];
+    for center in 2..center_neighbors.len() {
+        if !active_centers[center] {
+            continue;
+        }
+        let count = center_neighbor_counts[center];
+        if count > center_neighbors[center].len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("center {center} neighbor count {count} exceeds available row width"),
+            ));
+        }
+        center_width = center_width.max(count);
+        for &vertex in center_neighbors[center].iter().take(count) {
+            if vertex > ustr_bounds {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "center {center} canonicals vertex {vertex}, outside 0..={ustr_bounds}"
+                    ),
+                ));
+            }
+            vertex_counts[vertex] += 1;
+            vertex_width = vertex_width.max(vertex_counts[vertex]);
+        }
+    }
+    Ok((center_width, vertex_width))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triangular_postprocess_sizes_vertex_rows_from_the_mesh() {
+        let mut neighbors = vec![vec![1; 3]; 10];
+        let mut counts = vec![0usize; 10];
+        let mut active = vec![false; 10];
+        for center in 2..10 {
+            neighbors[center] = vec![2, center + 9, center + 10];
+            counts[center] = 3;
+            active[center] = true;
+        }
+
+        let renewed = renew_mask_postproc_data_one_based("tri", &active, &neighbors, &counts, 20)
+            .expect("a triangular vertex may have more than seven incident faces");
+
+        assert_eq!(renewed.vertex_neighbor_counts_next[2], 8);
+        assert_eq!(renewed.vertex_neighbors_next[2].len(), 8);
     }
 }

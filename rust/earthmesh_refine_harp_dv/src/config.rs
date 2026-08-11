@@ -1,4 +1,9 @@
 use crate::error::{HarpDvError, Result};
+use earthmesh_core::{
+    DEFAULT_HARP_DV_MAXIMUM_CELLS, DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO,
+    DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS, DEFAULT_HARP_DV_MAX_CYCLES,
+    DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M,
+};
 
 /// What the run is allowed to do, and where it must stop.
 ///
@@ -22,7 +27,12 @@ pub struct HarpDvConfig {
     // only half true. It is gone rather than documented, for the reason this
     // file already gives about `deterministic`: a field accepted and ignored is
     // a promise nothing keeps.
-    /// The largest patch a single transaction may touch.
+    /// The largest patch a single transaction may snapshot for rollback.
+    ///
+    /// **Counted in triangles, not cells**, despite the name: a patch is a set
+    /// of triangles and that is what a rollback has to put back. The name is
+    /// kept because it is public API; the unit is stated here because the two
+    /// disagreeing silently is worse than either.
     pub maximum_patch_cells: usize,
     /// The widest ratio allowed between the effective scales of two adjacent
     /// cells before the coarser one is forced to refine.
@@ -37,11 +47,11 @@ pub struct HarpDvConfig {
 impl Default for HarpDvConfig {
     fn default() -> Self {
         Self {
-            max_cycles: 20,
-            minimum_cell_width_m: 1_000.0,
-            maximum_cells: 5_000_000,
-            maximum_patch_cells: 10_000,
-            maximum_neighbor_scale_ratio: 1.75,
+            max_cycles: DEFAULT_HARP_DV_MAX_CYCLES,
+            minimum_cell_width_m: DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M,
+            maximum_cells: DEFAULT_HARP_DV_MAXIMUM_CELLS,
+            maximum_patch_cells: DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
+            maximum_neighbor_scale_ratio: DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO,
             deterministic: true,
         }
     }

@@ -132,3 +132,79 @@ fn a_method_c_mesh_converts_to_the_neutral_state_and_closes() {
         "V {vertices} - E {edges} + F {faces}"
     );
 }
+
+#[test]
+fn stable_ids_track_slot_and_generation() {
+    let (vertices, triangles) = tetrahedron();
+    let mut state = MeshState::from_parts(vertices, triangles).expect("mesh");
+    let vertex = state.vertex_id(2).expect("vertex id");
+    let face = state.face_id(2).expect("face id");
+    let edge = state.edge_id(2, 3).expect("edge id");
+
+    assert!(state.contains_vertex_id(vertex));
+    assert!(state.contains_face_id(face));
+    assert_eq!(edge, EdgeId::new(state.vertex_id(3).unwrap(), vertex));
+
+    state.set_triangle(2, [2, 3, 5]);
+    assert!(!state.contains_face_id(face));
+    assert!(state.contains_vertex_id(vertex));
+}
+
+#[test]
+fn validation_requires_reverse_neighbour_on_the_same_edge() {
+    let (vertices, triangles) = tetrahedron();
+    let mut state = MeshState::from_parts(vertices, triangles).expect("mesh");
+    state.neighbours[2][0] = 3;
+
+    let errors = state
+        .validate()
+        .expect_err("wrong-edge reciprocal neighbour is asymmetric");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        MeshStateError::AsymmetricNeighbour {
+            triangle: 2,
+            neighbour: 3
+        }
+    )));
+}
+
+#[test]
+fn reserved_vertex_slots_are_rejected_as_unknown_vertices() {
+    let (vertices, mut triangles) = tetrahedron();
+    triangles[2] = [1, 3, 4];
+
+    let errors = MeshState::from_parts(vertices, triangles)
+        .expect_err("reserved slots are not active vertices");
+    assert!(errors.contains(&MeshStateError::UnknownVertex {
+        triangle: 2,
+        vertex: 1
+    }));
+
+    let (vertices, triangles) = tetrahedron();
+    let mut state = MeshState::from_parts(vertices, triangles).expect("mesh");
+    state.triangles[2] = [0, 3, 4];
+    let errors = state
+        .validate()
+        .expect_err("validation also rejects reserved slots");
+    assert!(errors.contains(&MeshStateError::UnknownVertex {
+        triangle: 2,
+        vertex: 0
+    }));
+}
+
+#[test]
+fn triangular_mesh_conversion_rejects_short_tables_before_indexing() {
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base mesh");
+
+    let mut short_points = mesh.clone();
+    short_points.m_points.truncate(short_points.nmd);
+    let error =
+        MeshState::from_triangular_mesh(&short_points).expect_err("short point table is malformed");
+    assert!(error.to_string().contains("m_points"));
+
+    let mut short_faces = mesh;
+    short_faces.w_faces.truncate(short_faces.nwd);
+    let error =
+        MeshState::from_triangular_mesh(&short_faces).expect_err("short face table is malformed");
+    assert!(error.to_string().contains("w_faces"));
+}

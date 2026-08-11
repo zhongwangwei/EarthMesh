@@ -159,6 +159,9 @@ pub fn refine_weak_concav_lop_judge_one_based(
             }
             let m1 = weak_concav_segment_old[segment_id_weak][old_slot];
             let w0 = weak_concav_segment[segment_id_weak][j];
+            if w0 == 1 {
+                break;
+            }
             if w0 == 0 || w0 >= triangle_neighbors.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,

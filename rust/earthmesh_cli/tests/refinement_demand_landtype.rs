@@ -58,6 +58,54 @@ fn meridional_coast(boundary_lon_index: usize) -> impl Fn(usize, usize) -> i8 {
 }
 
 #[test]
+fn coastline_reads_neighbour_across_the_antimeridian() {
+    let root = temp_root("seam_coast");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 360 { 1 } else { 0 });
+
+    let bounds = source_bounds_for_bbox(179.0, 180.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = coastal_demand(&path, 1, bounds).expect("coastal demand");
+
+    assert!(
+        demand.is_demanded(360, 90),
+        "180E cell must see 180W as its east neighbour"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn coastline_reads_west_neighbour_from_index_one_across_the_antimeridian() {
+    let root = temp_root("seam_coast_west");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 1 { 0 } else { 1 });
+
+    let bounds = source_bounds_for_bbox(-180.0, -179.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = coastal_demand(&path, 1, bounds).expect("coastal demand");
+
+    assert!(
+        demand.is_demanded(1, 90),
+        "index 1 must see index 360 as its west neighbour"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn landcover_reads_neighbourhood_across_the_antimeridian() {
+    let root = temp_root("seam_landcover");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |lon, _| if lon == 360 { 1 } else { 0 });
+
+    let bounds = source_bounds_for_bbox(179.0, 180.0, -1.0, 1.0, 1).expect("bounds");
+    let demand = landcover_heterogeneity_demand(&path, 1, bounds, 1, 1).expect("landcover");
+
+    assert!(
+        demand.is_demanded(360, 90),
+        "heterogeneity at 180E must include wrapped 180W cells"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_coast_marks_the_cells_on_both_of_its_sides() {
     let root = temp_root("coast_cells");
     let path = root.join("landtype.nc");
@@ -344,11 +392,11 @@ fn brute_force_demand(
 }
 
 #[test]
-fn the_prefix_sum_criteria_mark_exactly_the_cells_the_nested_loops_did() {
+fn the_sliding_criteria_mark_exactly_the_cells_the_nested_loops_did() {
     // The neighbourhood scan was O((2r+1)^2) per cell and could not finish on a
-    // production raster; the table answers in four reads. That is only a valid
-    // trade if the marked set is the same one, cell for cell -- so this compares
-    // against the loop it replaced rather than against a hand-written answer.
+    // production raster. Sliding counts and the landcover bitmask remove that
+    // radius factor; this compares both against the loop they replaced rather
+    // than against a hand-written answer.
     let root = temp_root("prefix_sum_equivalence");
     let path = root.join("landtype.nc");
     // A patchwork with several classes and real coastline, so heterogeneity,
@@ -361,7 +409,9 @@ fn the_prefix_sum_criteria_mark_exactly_the_cells_the_nested_loops_did() {
         }
     };
     write_landtype(&path, class_at);
-    let bounds = source_bounds_for_bbox(100.0, 112.0, 8.0, 20.0, 1).expect("bounds");
+    // More than 64 latitude rows crosses packed parallel-band boundaries; the
+    // width is deliberately not a power of two, so word alignment is tested too.
+    let bounds = source_bounds_for_bbox(100.0, 112.0, -60.0, 60.0, 1).expect("bounds");
 
     for radius in [1usize, 2, 4] {
         let heterogeneity =

@@ -1,5 +1,6 @@
 use crate::coordinates::{magnitude, vector_between};
 use crate::{CartesianPoint, SpringDiagnosticMaxDisplacement, SpringDynamicsRegionalOutput};
+use rayon::prelude::*;
 
 /// Rust port of `MOD_grid_preprocess:spring_dynamics_regionalv2`.
 ///
@@ -47,50 +48,60 @@ pub fn spring_dynamics_regional_one_based(
         .collect::<Vec<_>>();
 
     let mut current_cell_points = cell_points.to_vec();
+    let mut next_cell_points = cell_points.to_vec();
     let mut diagnostic_max_displacements = Vec::new();
 
     for iteration in 1..=niter_refine {
-        let previous_cell_points = current_cell_points.clone();
-        for &cell_id in &moved_cells {
-            let edge_count = n_edges_on_cell[cell_id];
-            let neighbors = cells_on_cell.get(cell_id)?;
-            if edge_count == 0 || edge_count > neighbors.len() {
-                return None;
-            }
-
-            let mut averaged = CartesianPoint::new(0.0, 0.0, 0.0);
-            for &neighbor_id in neighbors.iter().take(edge_count) {
-                let neighbor = *previous_cell_points.get(neighbor_id)?;
-                averaged.x += neighbor.x / edge_count as f64;
-                averaged.y += neighbor.y / edge_count as f64;
-                averaged.z += neighbor.z / edge_count as f64;
-            }
-
-            let norm = magnitude(averaged);
-            if norm == 0.0 {
-                return None;
-            }
-            let expansion = radius / norm;
-            current_cell_points[cell_id] = CartesianPoint::new(
-                averaged.x * expansion,
-                averaged.y * expansion,
-                averaged.z * expansion,
-            );
-        }
+        next_cell_points
+            .par_iter_mut()
+            .enumerate()
+            .skip(2)
+            .try_for_each(|(cell_id, next)| {
+                if !move_mask[cell_id] {
+                    *next = current_cell_points[cell_id];
+                    return Some(());
+                }
+                let edge_count = n_edges_on_cell[cell_id];
+                let neighbors = cells_on_cell.get(cell_id)?;
+                if edge_count == 0 || edge_count > neighbors.len() {
+                    return None;
+                }
+                let mut averaged = CartesianPoint::new(0.0, 0.0, 0.0);
+                for &neighbor_id in neighbors.iter().take(edge_count) {
+                    let neighbor = *current_cell_points.get(neighbor_id)?;
+                    averaged.x += neighbor.x / edge_count as f64;
+                    averaged.y += neighbor.y / edge_count as f64;
+                    averaged.z += neighbor.z / edge_count as f64;
+                }
+                let norm = magnitude(averaged);
+                if norm == 0.0 {
+                    return None;
+                }
+                let expansion = radius / norm;
+                *next = CartesianPoint::new(
+                    averaged.x * expansion,
+                    averaged.y * expansion,
+                    averaged.z * expansion,
+                );
+                Some(())
+            })?;
 
         if iteration == 1 || iteration % diagnostic_every == 0 {
-            let mut max_displacement = 0.0_f64;
-            for &cell_id in &moved_cells {
-                let before = previous_cell_points[cell_id];
-                let after = current_cell_points[cell_id];
-                let displacement = magnitude(vector_between(before, after));
-                max_displacement = max_displacement.max(displacement);
-            }
+            let max_displacement = moved_cells
+                .par_iter()
+                .map(|&cell_id| {
+                    magnitude(vector_between(
+                        current_cell_points[cell_id],
+                        next_cell_points[cell_id],
+                    ))
+                })
+                .reduce(|| 0.0_f64, f64::max);
             diagnostic_max_displacements.push(SpringDiagnosticMaxDisplacement {
                 iteration,
                 max_displacement,
             });
         }
+        std::mem::swap(&mut current_cell_points, &mut next_cell_points);
     }
 
     Some(SpringDynamicsRegionalOutput {

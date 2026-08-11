@@ -30,12 +30,21 @@ Arrows indicate the normal direction toward higher-level orchestration, not a
 complete Cargo dependency graph. Shared physical constants live in
 `earthmesh_core`; geometry and h-field code reuse that source of truth.
 
-## Two refinement backends
+## Three refinement backends
 
 `earthmesh_refine_redgreen` is red-green refinement: mark any set of triangles,
 split each of them into four, and close the seams by halving the neighbours the
-split left hanging. `earthmesh_mesh`'s `method_c_*` modules are Method-C, which
-subdivides a closed region and surrounds it with transition rows.
+split left hanging. `earthmesh_refine_method_c` is Method-C, which subdivides a
+closed region and surrounds it with transition rows. `earthmesh_refine_harp_dv`
+is HARP-DV, which re-reads the criteria against the cells that exist after every
+cycle and changes the mesh only where they are still unmet, refusing any change
+that would leave a thin triangle.
+
+The name of this section said "Two" and the paragraph placed Method-C in
+`earthmesh_mesh`'s `method_c_*` modules until 2026-08-09. Both were true once:
+HARP-DV arrived later, and Method-C moved into its own crate. A count in a
+heading is the kind of fact that goes stale without anyone editing the sentence
+around it.
 
 The difference that decides which to use is what happens to a marking the
 algorithm cannot take as given. Red-green's judge chain *grows* it until it is

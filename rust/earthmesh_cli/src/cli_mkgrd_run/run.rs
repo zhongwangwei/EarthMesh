@@ -415,7 +415,7 @@ fn run_prepared_mkgrd(
                     let repair_dir = quality_dir
                         .join("quality_auto_refine")
                         .join(format!("pass_{next_pass}"));
-                    let adapter =
+                    let adapter = match
                         earthmesh_cli::hydro_refinement_adapter::run_quality_refinement_adapter(
                             PathBuf::from(&namelist),
                             parent_gridfile,
@@ -426,11 +426,33 @@ fn run_prepared_mkgrd(
                             max_tris,
                             source_gridnum_perdegree,
                         )
-                        .map_err(|error| {
-                            format!(
+                    {
+                        Ok(adapter) => adapter,
+                        Err(error) if keep_mesh_after_repair_error(verdict) => {
+                            let reason = format!("local quality repair unavailable: {error}");
+                            record_auto_refine_decision(
+                                current_pass,
+                                "kept",
+                                &reason,
+                                None,
+                                gridfile,
+                                gridfile,
+                                None,
+                                verdict,
+                                verdict,
+                                &[],
+                            )?;
+                            eprintln!(
+                                "earthmesh_cli: warning: {reason}; keeping the current mesh"
+                            );
+                            break report;
+                        }
+                        Err(error) => {
+                            return Err(format!(
                                 "auto_refine local quality repair pass {next_pass} failed: {error}"
-                            )
-                        })?;
+                            ));
+                        }
+                    };
                     eprintln!(
                         "earthmesh_cli: auto_refine applying {} local quality targets at pass {next_pass}",
                         quality.repair_cells.len()
@@ -782,6 +804,10 @@ fn project_quality_report_with_namelist(
     )
 }
 
+fn keep_mesh_after_repair_error(verdict: earthmesh_quality::QualityLevel) -> bool {
+    verdict == earthmesh_quality::QualityLevel::Warn
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_auto_refine_decision(
     pass: u8,
@@ -856,6 +882,12 @@ mod tests {
         let err =
             enforce_project_quality_policy(ViolationPolicy::Block, QualityLevel::Fail).unwrap_err();
         assert!(err.contains("quality gate failed"));
+    }
+
+    #[test]
+    fn auto_refine_keeps_warn_but_not_fail_when_repair_is_unavailable() {
+        assert!(keep_mesh_after_repair_error(QualityLevel::Warn));
+        assert!(!keep_mesh_after_repair_error(QualityLevel::Fail));
     }
 
     #[test]

@@ -24,12 +24,12 @@
 //! Vertices are opaque ids. What they index -- a `MeshState`'s sites, a
 //! gridfile's rows -- is the caller's business, and so is what "inside" means.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 /// The boundary edges a refinement must respect, and may only split.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SegmentList {
-    segments: BTreeSet<(usize, usize)>,
+    segments: BTreeMap<(usize, usize), usize>,
 }
 
 impl SegmentList {
@@ -46,7 +46,7 @@ impl SegmentList {
         mut inside: impl FnMut(usize) -> bool,
     ) -> Self {
         let mut known: std::collections::BTreeMap<usize, bool> = std::collections::BTreeMap::new();
-        let mut segments = BTreeSet::new();
+        let mut segments = BTreeMap::new();
         for (a, b) in edges {
             if a == b {
                 continue;
@@ -54,7 +54,7 @@ impl SegmentList {
             let a_in = *known.entry(a).or_insert_with(|| inside(a));
             let b_in = *known.entry(b).or_insert_with(|| inside(b));
             if a_in != b_in {
-                segments.insert((a.min(b), a.max(b)));
+                segments.insert((a.min(b), a.max(b)), 0);
             }
         }
         Self { segments }
@@ -66,14 +66,30 @@ impl SegmentList {
             segments: pairs
                 .into_iter()
                 .filter(|(a, b)| a != b)
-                .map(|(a, b)| (a.min(b), a.max(b)))
+                .map(|(a, b)| ((a.min(b), a.max(b)), 0))
+                .collect(),
+        }
+    }
+
+    /// Take explicit marked segments. Splits inherit this marker.
+    pub fn from_marked_pairs(pairs: impl IntoIterator<Item = (usize, usize, usize)>) -> Self {
+        Self {
+            segments: pairs
+                .into_iter()
+                .filter(|(a, b, _)| a != b)
+                .map(|(a, b, marker)| ((a.min(b), a.max(b)), marker))
                 .collect(),
         }
     }
 
     /// Whether this edge is a segment, either way round.
     pub fn contains(&self, a: usize, b: usize) -> bool {
-        self.segments.contains(&(a.min(b), a.max(b)))
+        self.segments.contains_key(&(a.min(b), a.max(b)))
+    }
+
+    /// Marker carried by this segment. Unmarked constructors use marker zero.
+    pub fn marker(&self, a: usize, b: usize) -> Option<usize> {
+        self.segments.get(&(a.min(b), a.max(b))).copied()
     }
 
     /// Replace a segment with its two halves, once the midpoint exists.
@@ -85,11 +101,17 @@ impl SegmentList {
     /// own work.
     pub fn split(&mut self, a: usize, b: usize, midpoint: usize) -> bool {
         let key = (a.min(b), a.max(b));
-        if midpoint == a || midpoint == b || !self.segments.remove(&key) {
+        let Some(marker) = self.segments.remove(&key) else {
+            return false;
+        };
+        if midpoint == a || midpoint == b {
+            self.segments.insert(key, marker);
             return false;
         }
-        self.segments.insert((a.min(midpoint), a.max(midpoint)));
-        self.segments.insert((b.min(midpoint), b.max(midpoint)));
+        self.segments
+            .insert((a.min(midpoint), a.max(midpoint)), marker);
+        self.segments
+            .insert((b.min(midpoint), b.max(midpoint)), marker);
         true
     }
 
@@ -103,7 +125,7 @@ impl SegmentList {
 
     /// Every segment, in a fixed order.
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.segments.iter().copied()
+        self.segments.keys().copied()
     }
 }
 

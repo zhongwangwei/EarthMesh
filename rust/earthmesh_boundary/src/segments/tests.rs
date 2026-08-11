@@ -71,3 +71,15 @@ fn the_inside_predicate_is_asked_once_per_vertex() {
     unique.dedup();
     assert_eq!(asked.len(), unique.len(), "asked more than once: {asked:?}");
 }
+
+/// Open-boundary metadata follows Ruppert's split induction too.
+#[test]
+fn split_inherits_segment_marker() {
+    let mut list = SegmentList::from_marked_pairs([(1, 2, 17)]);
+
+    assert!(list.split(2, 1, 9));
+
+    assert_eq!(list.marker(1, 9), Some(17));
+    assert_eq!(list.marker(9, 2), Some(17));
+    assert_eq!(list.marker(1, 2), None);
+}

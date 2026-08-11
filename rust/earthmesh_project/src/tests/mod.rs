@@ -46,6 +46,8 @@ fn sample() -> ProjectConfig {
             threshold_enabled: true,
             max_passes: 3,
             threshold_criteria: Vec::new(),
+            method_c: Default::default(),
+            harp_dv: Default::default(),
             adaptive: None,
             specified_circle: None,
             specified_bbox: None,
@@ -56,6 +58,7 @@ fn sample() -> ProjectConfig {
             min_angle_deg: 28.0,
             auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
             on_violation: ViolationPolicy::Block,
+            lepp_post_quality: None,
         },
         expert: ExpertOverrides {
             nxp: None,
@@ -2056,6 +2059,16 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
 
     project.quality.on_violation = ViolationPolicy::AutoRefine;
     assert_eq!(project.lower().mkgrd.nxp, 81);
+
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = true;
+    project.refinement.max_passes = 3;
+    project.refinement.method_c.algorithm = crate::MethodCAlgorithm::LeppDelaunay;
+    assert_eq!(
+        project.lower().mkgrd.nxp,
+        80,
+        "LEPP bypasses Method-C's stride-three lattice"
+    );
 }
 
 #[test]
@@ -2449,6 +2462,14 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     p.refinement.backend = crate::RefinementBackend::MethodC;
     p.validate().expect("Method-C serves the h-field");
 
+    p.refinement.method_c.algorithm = crate::MethodCAlgorithm::LeppDelaunay;
+    let error = p.validate().expect_err("LEPP does not read the h-field");
+    assert!(
+        error.contains("does not consume the legacy h-field"),
+        "{error}"
+    );
+    p.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
+
     for (backend, name) in [
         (crate::RefinementBackend::RedGreen, "red_green"),
         (crate::RefinementBackend::HarpDv, "harp_dv"),
@@ -2463,4 +2484,149 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     // refusal must not outlive the thing it objects to.
     p.refinement.hfield = None;
     p.validate().expect("no h-field, no objection");
+}
+
+#[test]
+fn lepp_post_quality_is_explicit_global_method_c_configuration() {
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.quality.lepp_post_quality = Some(crate::LeppPostQualityConfig {
+        maximum_insertions: 12,
+        maximum_edge_km: Some(75.0),
+    });
+
+    let lowered = project.try_lower().expect("global Method-C post-quality");
+    assert!(lowered.quality.lepp_post_quality);
+    assert_eq!(lowered.quality.lepp_post_quality_max_insertions, 12);
+    assert_eq!(lowered.quality.lepp_post_quality_max_edge_km, 75.0);
+    let reparsed = earthmesh_core::QualityNamelist::from_quality_namelist(&lowered.to_namelist())
+        .expect("lowered quality block");
+    assert_eq!(reparsed, lowered.quality);
+
+    project.refinement.backend = crate::RefinementBackend::RedGreen;
+    assert!(project
+        .validate()
+        .expect_err("backend mismatch")
+        .contains("requires refinement.backend=method_c"));
+
+    project.refinement.backend = crate::RefinementBackend::MethodC;
+    project.domain = DomainConfig::Regional {
+        shape: RegionShape::Bbox {
+            w: 112.0,
+            e: 115.0,
+            s: 21.0,
+            n: 24.0,
+        },
+        sea_ratio: None,
+    };
+    assert!(project
+        .validate()
+        .expect_err("boundary phase is later")
+        .contains("requires a global closed domain"));
+}
+
+#[test]
+fn lepp_post_quality_limits_are_validated() {
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.quality.lepp_post_quality = Some(crate::LeppPostQualityConfig {
+        maximum_insertions: 0,
+        maximum_edge_km: None,
+    });
+    assert!(project
+        .validate()
+        .expect_err("zero limit")
+        .contains("maximum_insertions must be > 0"));
+
+    project.quality.lepp_post_quality = Some(crate::LeppPostQualityConfig {
+        maximum_insertions: 1,
+        maximum_edge_km: Some(f64::NAN),
+    });
+    assert!(project
+        .validate()
+        .expect_err("non-finite target")
+        .contains("maximum_edge_km must be positive"));
+}
+
+#[test]
+fn method_c_lepp_algorithm_lowers_explicit_bounded_config() {
+    let mut project = sample();
+    project.refinement.method_c = crate::MethodCRefinementRecipe {
+        algorithm: crate::MethodCAlgorithm::LeppDelaunay,
+        max_cycles: 6,
+        maximum_insertions_per_cycle: 123,
+        minimum_triangle_angle_deg: 20.0,
+        ..Default::default()
+    };
+
+    let lowered = project.try_lower().expect("Method-C LEPP project");
+    let namelist = lowered.to_namelist();
+    assert!(namelist.contains("&method_c"));
+    assert!(namelist.contains("NL%algorithm = 'lepp_delaunay'"));
+    assert!(namelist.contains("NL%max_cycles = 6"));
+    assert!(namelist.contains("NL%maximum_insertions_per_cycle = 123"));
+    assert!(namelist.contains("NL%minimum_triangle_angle_deg = 20"));
+
+    project.refinement.backend = crate::RefinementBackend::RedGreen;
+    assert!(project
+        .validate()
+        .expect_err("backend mismatch")
+        .contains("requires refinement.backend=method_c"));
+}
+
+#[test]
+fn method_c_lepp_algorithm_rejects_invalid_limits_and_post_quality_composition() {
+    let mut project = sample();
+    project.refinement.method_c.algorithm = crate::MethodCAlgorithm::LeppDelaunay;
+    project.refinement.method_c.max_cycles = 0;
+    assert!(project
+        .validate()
+        .expect_err("zero cycles")
+        .contains("max_cycles must be > 0"));
+
+    project.refinement.method_c.max_cycles = 1;
+    project.domain = DomainConfig::Global;
+    project.quality.lepp_post_quality = Some(crate::LeppPostQualityConfig {
+        maximum_insertions: 1,
+        maximum_edge_km: None,
+    });
+    assert!(project
+        .validate()
+        .expect_err("two LEPP owners")
+        .contains("cannot be combined"));
+}
+
+#[test]
+fn harp_dv_algorithm_lowers_every_exposed_control() {
+    let mut project = sample();
+    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.harp_dv = crate::HarpDvRefinementRecipe {
+        max_cycles: 3,
+        minimum_cell_width_m: 2_000.0,
+        maximum_cells: 9_000,
+        maximum_patch_cells: 800,
+        maximum_neighbor_scale_ratio: 1.5,
+        minimum_candidate_separation_m: 2.0,
+        maximum_vertex_degree: 6,
+        minimum_triangle_angle_deg: 25.0,
+        criterion_minimum_angle_deg: 10.0,
+    };
+
+    let namelist = project.try_lower().expect("HARP-DV project").to_namelist();
+    assert!(namelist.contains("&harp_dv"));
+    assert!(namelist.contains("NL%max_cycles = 3"));
+    assert!(namelist.contains("NL%minimum_cell_width_m = 2000"));
+    assert!(namelist.contains("NL%maximum_cells = 9000"));
+    assert!(namelist.contains("NL%maximum_patch_cells = 800"));
+    assert!(namelist.contains("NL%maximum_neighbor_scale_ratio = 1.5"));
+    assert!(namelist.contains("NL%minimum_candidate_separation_m = 2"));
+    assert!(namelist.contains("NL%maximum_vertex_degree = 6"));
+    assert!(namelist.contains("NL%minimum_triangle_angle_deg = 25"));
+    assert!(namelist.contains("RL%harp_min_angle_deg = 10"));
+
+    project.refinement.harp_dv.maximum_patch_cells = 9_001;
+    assert!(project
+        .validate()
+        .expect_err("patch budget exceeds mesh budget")
+        .contains("maximum_patch_cells"));
 }

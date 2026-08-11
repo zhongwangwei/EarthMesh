@@ -197,7 +197,7 @@ fn removing_a_region_lowers_the_count_and_adding_one_raises_it() {
 /// were only ever verified as a composition -- orient a ring, ask what contains
 /// what, get the right answer -- which two mistakes that cancel would also
 /// pass. This one asserts the area function's sign against the same outside
-/// reference the winding was checked against, so `orient_counter_clockwise`
+/// yardstick the winding was checked against, so `orient_counter_clockwise`
 /// rests on two independently pinned facts rather than on their product.
 ///
 /// The convention is worth stating because the name does not: **negative area

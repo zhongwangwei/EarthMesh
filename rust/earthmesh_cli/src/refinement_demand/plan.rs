@@ -28,6 +28,7 @@ use super::RefinementDemand;
 use crate::area_judge_threshold_inputs::{
     enabled_mean_threshold_field_specs, enabled_std_threshold_field_specs,
 };
+use crate::GridRegion;
 
 /// What a demand plan needs to know that the namelist does not say.
 #[derive(Clone, Debug)]
@@ -46,6 +47,10 @@ pub struct DemandPlanInputs<'a> {
     /// demand through `th_sea_ratio`, and the caller decides whether the circle
     /// route should chase the boundary directly.
     pub refine_coastline: bool,
+    /// Optional project domain. Source windows are just cheap read bounds; this
+    /// is the semantic gate that prevents cells outside a regional domain from
+    /// consuming demand budget or becoming refinement circles.
+    pub domain_region: Option<&'a GridRegion>,
 }
 
 /// One criterion's contribution, kept separate so a caller can say which
@@ -90,9 +95,10 @@ pub fn plan_demand_at_scale(
     let mut contributions = Vec::new();
     let add = |demand: &mut RefinementDemand,
                criterion: &str,
-               contribution: RefinementDemand,
+               mut contribution: RefinementDemand,
                contributions: &mut Vec<DemandContribution>|
      -> io::Result<()> {
+        filter_to_domain(&mut contribution, inputs.domain_region);
         let demanded_cells = contribution.demanded_count();
         demand.union_with(&contribution)?;
         contributions.push(DemandContribution {
@@ -128,7 +134,7 @@ pub fn plan_demand_at_scale(
     // not where it is large. The h-field applies both halves; reading only the
     // mean half here made the two routes disagree about what the same namelist
     // asked for, in silence.
-    let stddev_radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0);
+    let stddev_radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0)?;
     for spec in enabled_std_threshold_field_specs(refine, inputs.mesh_type) {
         let file = threshold_dir.join(format!("{}.nc", spec.file_stem));
         let contribution = threshold_stddev_demand(
@@ -161,7 +167,7 @@ pub fn plan_demand_at_scale(
         // Without it the two routes would disagree about whether a land-type
         // criterion applies to a given mesh, and a project switching backends
         // would silently get a different mesh for no stated reason.
-        let radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0);
+        let radius_cells = source_cells_for_meters(inputs.gridnum_perdegree, cell_meters / 2.0)?;
         if supports_landtype_criteria(inputs.mesh_type) {
             if refine.refine_num_landtypes {
                 let contribution = landcover_heterogeneity_demand(
@@ -209,6 +215,18 @@ pub fn plan_demand_at_scale(
     })
 }
 
+fn filter_to_domain(demand: &mut RefinementDemand, domain: Option<&GridRegion>) {
+    let Some(domain) = domain else {
+        return;
+    };
+    let per_degree = demand.gridnum_perdegree() as f64;
+    demand.retain_where(|lon_index, lat_index| {
+        let lon = (lon_index as f64 - 1.0) / per_degree - 180.0;
+        let lat = 90.0 - (lat_index as f64 - 1.0) / per_degree;
+        domain.contains(lon, lat)
+    });
+}
+
 /// Mesh types the land-type criteria apply to.
 ///
 /// Kept identical to the h-field's `supports_threshold_hfield`; the two routes
@@ -221,13 +239,32 @@ fn supports_landtype_criteria(mesh_type: &str) -> bool {
 }
 
 /// How many source cells span `meters`, at least one.
-fn source_cells_for_meters(gridnum_perdegree: usize, meters: f64) -> usize {
-    let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
-    let cell_meters = meters_per_degree / gridnum_perdegree.max(1) as f64;
-    if !cell_meters.is_finite() || cell_meters <= 0.0 {
-        return 1;
+fn source_cells_for_meters(gridnum_perdegree: usize, meters: f64) -> io::Result<usize> {
+    if gridnum_perdegree == 0 || !meters.is_finite() || meters < 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source-cell radius must be finite and non-negative, with positive grid sampling",
+        ));
     }
-    ((meters / cell_meters).round() as usize).max(1)
+    let nlons_source = gridnum_perdegree.checked_mul(360).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridnum_perdegree * 360 overflows usize",
+        )
+    })?;
+    let max_unique_radius = nlons_source.min(isize::MAX as usize) / 2;
+    let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
+    let cell_meters = meters_per_degree / gridnum_perdegree as f64;
+    let cells = (meters / cell_meters).round();
+    if !cells.is_finite() || cells > max_unique_radius as f64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "source-cell radius {cells:.0} exceeds the unique periodic longitude neighbourhood limit {max_unique_radius}"
+            ),
+        ));
+    }
+    Ok((cells as usize).max(1))
 }
 
 #[cfg(test)]
@@ -323,6 +360,7 @@ mod tests {
             landtype_file: None,
             mesh_type: "earthmesh",
             refine_coastline: false,
+            domain_region: None,
         };
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(plan_demand_at_scale(&refine, &inputs, 1, bad).is_err());
@@ -338,11 +376,43 @@ mod tests {
             landtype_file: None,
             mesh_type: "earthmesh",
             refine_coastline: false,
+            domain_region: None,
         };
         let plan = plan_demand_at_scale(&refine, &inputs, 1, 100_000.0).expect("plan");
         assert!(plan.is_empty());
         assert!(plan.contributions.is_empty());
         assert_eq!(plan.level, 1);
+    }
+
+    #[test]
+    fn domain_filter_keeps_wrapped_bbox_demand_from_counting_outside_cells() {
+        let bounds = super::super::source_bounds_for_bbox(-180.0, 180.0, -1.0, 1.0, 1).unwrap();
+        let mut demand = RefinementDemand::new(bounds, 1).unwrap();
+        demand.fill_par(|_, _| true);
+        let region = GridRegion::Bbox {
+            west: 170.0,
+            east: -170.0,
+            south: -1.0,
+            north: 1.0,
+        };
+        filter_to_domain(&mut demand, Some(&region));
+
+        assert!(demand.is_demanded(351, 90), "170E side remains demanded");
+        assert!(demand.is_demanded(1, 90), "180W side remains demanded");
+        assert!(
+            !demand.is_demanded(181, 90),
+            "0E is outside the wrapped bbox"
+        );
+        assert!(
+            demand.demanded_count() < demand.bounds_cell_count() / 4,
+            "outside-domain cells must not consume demand budget"
+        );
+    }
+
+    #[test]
+    fn huge_finite_cell_radius_is_rejected_before_it_can_wrap_indices() {
+        let err = source_cells_for_meters(1, f64::MAX).expect_err("huge radius must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -354,9 +424,59 @@ mod tests {
         let cell_deg = 1.0 / per_degree as f64;
         let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
         let one_cell_m = cell_deg * meters_per_degree;
-        assert_eq!(source_cells_for_meters(per_degree, one_cell_m), 1);
-        assert_eq!(source_cells_for_meters(per_degree, 8.0 * one_cell_m), 8);
+        assert_eq!(source_cells_for_meters(per_degree, one_cell_m).unwrap(), 1);
+        assert_eq!(
+            source_cells_for_meters(per_degree, 8.0 * one_cell_m).unwrap(),
+            8
+        );
         // Never zero: a level finer than the raster still asks about one cell.
-        assert_eq!(source_cells_for_meters(per_degree, one_cell_m / 100.0), 1);
+        assert_eq!(
+            source_cells_for_meters(per_degree, one_cell_m / 100.0).unwrap(),
+            1
+        );
+    }
+
+    /// The domain filter keeps only what the region actually contains.
+    ///
+    /// A wrapped domain is now split into windows rather than widened to the
+    /// whole band, so the demand it produces is already close -- but a window is
+    /// a rectangle and a circle or a closed curve is not, so what the window
+    /// admits is still a superset. This is what takes the rest back out, and
+    /// `GridRegion::contains` is what reads the seam correctly while doing it.
+    ///
+    /// Nothing covered it: the filter and the field arrived with seven tests
+    /// beside them, none touching either.
+    #[test]
+    fn the_domain_filter_keeps_only_what_a_wrapped_region_contains() {
+        let wrapped = GridRegion::Bbox {
+            west: 170.0,
+            east: -170.0,
+            south: -10.0,
+            north: 10.0,
+        };
+
+        assert!(wrapped.contains(175.0, 0.0), "west of the seam is inside");
+        assert!(wrapped.contains(-175.0, 0.0), "east of the seam is inside");
+        assert!(
+            !wrapped.contains(0.0, 0.0),
+            "the far side of the globe is not"
+        );
+        assert!(
+            !wrapped.contains(175.0, 40.0),
+            "and neither is a point outside in latitude"
+        );
+
+        // A circle is where the window stays a superset however it is split:
+        // its corners are in the rectangle and not in the circle.
+        let circle = GridRegion::Circle {
+            lon: 0.0,
+            lat: 0.0,
+            radius_km: 100.0,
+        };
+        assert!(circle.contains(0.0, 0.0), "the centre");
+        assert!(
+            !circle.contains(0.9, 0.9),
+            "a corner of its box is outside it, which is why the filter runs"
+        );
     }
 }

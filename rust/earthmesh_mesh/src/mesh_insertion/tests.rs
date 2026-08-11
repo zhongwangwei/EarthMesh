@@ -1,5 +1,7 @@
 use super::*;
-use crate::{lonlat_degrees_to_unit_xyz, LonLatDegrees, TriangularMesh};
+use crate::{
+    lonlat_degrees_to_unit_xyz, normalize_cartesian_to_radius, LonLatDegrees, TriangularMesh,
+};
 
 fn sphere(nxp: usize) -> MeshState {
     let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
@@ -297,4 +299,148 @@ fn inserting_sites_passes_the_degree_the_gridfile_can_carry() {
         broke_at <= 15,
         "the cap survived {broke_at} insertions; it was measured to break by ten"
     );
+}
+
+#[test]
+fn insertion_reuse_invalidates_old_face_id_but_keeps_old_vertex_ids() {
+    let mut state = sphere(6);
+    let point = on(&state, 37.0, 21.0);
+    let containing = state.locate_triangle(point, None).expect("locate");
+    let old_face = state.face_id(containing).expect("face id");
+    let old_vertex = state.vertex_id(MESH_STATE_FIRST_ID).expect("vertex id");
+
+    let report = state.insert_site(point).expect("insert");
+
+    assert!(report.removed.contains(&containing));
+    assert!(report.removed_ids.contains(&old_face));
+    assert!(state.contains_vertex_id(report.site_id));
+    assert!(report
+        .created_ids
+        .iter()
+        .all(|&face| state.contains_face_id(face)));
+    assert!(!state.contains_face_id(old_face));
+    assert!(state.contains_vertex_id(old_vertex));
+}
+
+#[test]
+fn transaction_reject_restores_topology_and_active_ids() {
+    let mut state = sphere(6);
+    let before = state.clone();
+    let face = state.face_id(10).expect("face id");
+    let vertex = state.vertex_id(10).expect("vertex id");
+
+    let error = state
+        .insert_site_transactionally(on(&state, 41.0, 19.0), |_, _| false)
+        .expect_err("forced rejection rolls back");
+
+    assert!(matches!(error, InsertionTransactionError::Rejected));
+    assert_eq!(state, before);
+    assert!(state.contains_face_id(face));
+    assert!(state.contains_vertex_id(vertex));
+    state.validate().expect("valid after rollback");
+}
+
+#[test]
+fn rollback_does_not_reissue_transient_ids() {
+    let mut state = sphere(6);
+    let first = on(&state, 41.0, 19.0);
+    let containing = state.locate_triangle(first, None).expect("locate");
+    let cavity = state.delaunay_cavity(first, containing).expect("cavity");
+    let patch = state.snapshot_around(&cavity);
+    let transient = state.insert_site(first).expect("insert");
+    let transient_site = state.vertex_id(transient.site).expect("transient site");
+    let transient_faces: Vec<_> = transient
+        .created
+        .iter()
+        .map(|&slot| state.face_id(slot).expect("transient face"))
+        .collect();
+
+    state.restore_patch(patch).expect("rollback");
+    let second = state.insert_site(on(&state, -35.0, 44.0)).expect("second");
+    let second_site = state.vertex_id(second.site).expect("second site");
+    assert_eq!(second_site.slot, transient_site.slot);
+    assert_ne!(second_site, transient_site);
+
+    for face in transient_faces {
+        if let Some(new_face) = state.face_id(face.slot) {
+            assert_ne!(new_face, face, "transient face id was reissued");
+        }
+    }
+}
+
+#[test]
+fn degree_forecast_is_exact_for_an_on_edge_split() {
+    let mut state = sphere(6);
+    let [tail, head, _] = state.triangles()[20];
+    let a = state.vertices()[tail];
+    let b = state.vertices()[head];
+    let point = normalize_cartesian_to_radius(
+        CartesianPoint::new(a.x + b.x, a.y + b.y, a.z + b.z),
+        state.sphere_radius(),
+    )
+    .expect("edge midpoint");
+    let tail_before = state.vertex_degree(tail).expect("tail degree");
+    let head_before = state.vertex_degree(head).expect("head degree");
+    let forecast = state.forecast_degrees(point, Some(20)).expect("forecast");
+
+    let report = state.insert_site(point).expect("split edge");
+    let changed: BTreeSet<_> = report.created.iter().copied().collect();
+    let actual_worst = state
+        .sites_touching(&changed)
+        .into_iter()
+        .filter(|&(site, _)| site != report.site)
+        .map(|(site, seed)| state.vertex_degree_from(site, seed).expect("degree"))
+        .max()
+        .expect("ring");
+
+    assert_eq!(forecast.new_site, state.vertex_degree(report.site).unwrap());
+    assert_eq!(forecast.worst_neighbour, actual_worst);
+    assert_eq!(state.vertex_degree(tail), Ok(tail_before));
+    assert_eq!(state.vertex_degree(head), Ok(head_before));
+}
+
+#[test]
+fn boundary_edge_insertion_splits_open_edge_without_degenerate_fan() {
+    let mut state = MeshState::from_parts(
+        vec![
+            CartesianPoint::new(0.0, 0.0, 0.0),
+            CartesianPoint::new(0.0, 0.0, 0.0),
+            p(0.0, 0.0),
+            p(90.0, 0.0),
+            p(0.0, 90.0),
+        ],
+        vec![[1, 1, 1], [1, 1, 1], [2, 3, 4]],
+    )
+    .expect("open triangle");
+    let point = normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            state.vertices()[2].x + state.vertices()[3].x,
+            state.vertices()[2].y + state.vertices()[3].y,
+            state.vertices()[2].z + state.vertices()[3].z,
+        ),
+        state.sphere_radius(),
+    )
+    .expect("midpoint");
+
+    let report = state
+        .insert_site_on_boundary_edge_transactionally(point, 2, 3, |_, _| true)
+        .expect("boundary insert");
+
+    assert_eq!(state.vertex_count(), 4);
+    assert_eq!(state.triangle_count(), 2);
+    assert_eq!(state.open_edge_count(), 4);
+    state.validate().expect("valid open mesh");
+    assert!(state.triangles()[MESH_STATE_FIRST_ID..]
+        .iter()
+        .all(|corners| !(corners.contains(&2) && corners.contains(&3))));
+    assert!(state.triangles()[MESH_STATE_FIRST_ID..]
+        .iter()
+        .any(|corners| corners.contains(&2) && corners.contains(&report.site)));
+    assert!(state.triangles()[MESH_STATE_FIRST_ID..]
+        .iter()
+        .any(|corners| corners.contains(&3) && corners.contains(&report.site)));
+}
+
+fn p(lon: f64, lat: f64) -> CartesianPoint {
+    lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat))
 }

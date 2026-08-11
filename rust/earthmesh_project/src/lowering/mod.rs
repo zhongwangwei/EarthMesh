@@ -1,7 +1,8 @@
 use crate::{
     criterion_catalog, degree_to_nxp, km_to_nxp, AdaptiveRefinementRecipe, DomainConfig,
-    GeometryIr, HfieldRefinementRecipe, ProjectConfig, ProjectLayerRole, RegionShape,
-    ResolutionSpec, ThresholdField, ThresholdStatistic, ViolationPolicy,
+    GeometryIr, HarpDvRefinementRecipe, HfieldRefinementRecipe, MethodCAlgorithm,
+    MethodCRefinementRecipe, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    ThresholdField, ThresholdStatistic, ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -17,6 +18,10 @@ pub struct LoweredProject {
     pub quality: QualityNamelist,
     /// Which refinement algorithm the run asked for.
     pub backend: crate::RefinementBackend,
+    /// Method-C's internal algorithm and bounded LEPP settings.
+    pub method_c: MethodCRefinementRecipe,
+    /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
+    pub harp_dv: HarpDvRefinementRecipe,
     /// Emitted as a standalone `&adaptive` group when enabled.
     pub adaptive: Option<AdaptiveRefinementRecipe>,
     /// Emitted as a standalone `&hfield` group when enabled.
@@ -72,10 +77,49 @@ impl LoweredProject {
             }
             _ => String::new(),
         };
+        let method_c = if self.mkgrd.refine
+            && self.backend == crate::RefinementBackend::MethodC
+            && self.method_c.algorithm == MethodCAlgorithm::LeppDelaunay
+        {
+            format!(
+                "&method_c\n   NL%algorithm = 'lepp_delaunay'\n   NL%max_cycles = {}\n   NL%target_size_tolerance = {}\n   NL%maximum_neighbor_size_ratio = {}\n   NL%maximum_vertices = {}\n   NL%maximum_insertions_per_cycle = {}\n   NL%maximum_path_length = {}\n   NL%stop_at_source_resolution = {}\n   NL%minimum_triangle_angle_deg = {}\n/\n\n",
+                self.method_c.max_cycles,
+                self.method_c.target_size_tolerance,
+                self.method_c.maximum_neighbor_size_ratio,
+                self.method_c.maximum_vertices,
+                self.method_c.maximum_insertions_per_cycle,
+                self.method_c.maximum_path_length,
+                if self.method_c.stop_at_source_resolution {
+                    ".true."
+                } else {
+                    ".false."
+                },
+                self.method_c.minimum_triangle_angle_deg,
+            )
+        } else {
+            String::new()
+        };
+        let harp_dv = if self.mkgrd.refine && self.backend == crate::RefinementBackend::HarpDv {
+            format!(
+                "&harp_dv\n   NL%max_cycles = {}\n   NL%minimum_cell_width_m = {}\n   NL%maximum_cells = {}\n   NL%maximum_patch_cells = {}\n   NL%maximum_neighbor_scale_ratio = {}\n   NL%minimum_candidate_separation_m = {}\n   NL%maximum_vertex_degree = {}\n   NL%minimum_triangle_angle_deg = {}\n/\n\n",
+                self.harp_dv.max_cycles,
+                self.harp_dv.minimum_cell_width_m,
+                self.harp_dv.maximum_cells,
+                self.harp_dv.maximum_patch_cells,
+                self.harp_dv.maximum_neighbor_scale_ratio,
+                self.harp_dv.minimum_candidate_separation_m,
+                self.harp_dv.maximum_vertex_degree,
+                self.harp_dv.minimum_triangle_angle_deg,
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "{}\n{}{}{}{}\n{}",
+            "{}\n{}{}{}{}{}{}\n{}",
             self.mkgrd.to_mkgrd_namelist(),
             mkrefine,
+            method_c,
+            harp_dv,
             adaptive,
             hfield,
             self.quality.to_quality_namelist(),
@@ -130,10 +174,18 @@ impl ProjectConfig {
     }
 
     fn quality_namelist(&self) -> QualityNamelist {
+        let lepp = self.quality.lepp_post_quality.as_ref();
         QualityNamelist {
             min_angle_warn_deg: self.quality.min_angle_deg,
             repair_batch_limit: self.quality.auto_refine_batch_cells as i32,
             on_violation: self.quality.on_violation.as_str().to_string(),
+            lepp_post_quality: lepp.is_some(),
+            lepp_post_quality_max_insertions: lepp
+                .map(|config| config.maximum_insertions as i32)
+                .unwrap_or_else(|| QualityNamelist::default().lepp_post_quality_max_insertions),
+            lepp_post_quality_max_edge_km: lepp
+                .and_then(|config| config.maximum_edge_km)
+                .unwrap_or(0.0),
             ..QualityNamelist::default()
         }
     }
@@ -335,6 +387,9 @@ impl ProjectConfig {
         if let Some(enabled) = self.expert.weak_concav_eliminate {
             refine.weak_concav_eliminate = enabled;
         }
+        if self.refinement.backend == crate::RefinementBackend::HarpDv {
+            refine.harp_min_angle_deg = self.refinement.harp_dv.criterion_minimum_angle_deg;
+        }
         if let Some(beta) = self.expert.beta {
             mkgrd.beta = beta;
         }
@@ -391,10 +446,13 @@ impl ProjectConfig {
         let hydro_local_refinement = self
             .hydro_execution_plan()?
             .is_some_and(|plan| plan.max_level > 0);
-        if hfield.is_some()
-            || adaptive.is_some()
-            || hydro_local_refinement
-            || self.quality.on_violation == ViolationPolicy::AutoRefine
+        let canonical_method_c = backend == crate::RefinementBackend::MethodC
+            && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical;
+        if canonical_method_c
+            && (hfield.is_some()
+                || adaptive.is_some()
+                || hydro_local_refinement
+                || self.quality.on_violation == ViolationPolicy::AutoRefine)
         {
             let increment = (3 - mkgrd.nxp.rem_euclid(3)) % 3;
             mkgrd.nxp = mkgrd
@@ -407,6 +465,8 @@ impl ProjectConfig {
             mkgrd,
             refine,
             backend,
+            method_c: self.refinement.method_c.clone(),
+            harp_dv: self.refinement.harp_dv.clone(),
             adaptive,
             hfield,
             data_layers: lowering_layers,

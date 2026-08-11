@@ -415,6 +415,12 @@ fn load_hydro_target_field_in_domain(
                 .map(|point| (point.x, point.y))
                 .collect::<Vec<_>>();
             let region = HRegion::Polygon { points };
+            region.validate().map_err(|error| {
+                invalid(format!(
+                    "hydro target cell {} has invalid polygon ring: {error}",
+                    group.cell_id
+                ))
+            })?;
             field.min_with_fn(|lon, lat| {
                 if domain
                     .as_ref()
@@ -436,6 +442,12 @@ fn load_hydro_target_field_in_domain(
                 lat,
                 radius_m: seed_radius_m,
             };
+            seed.validate().map_err(|error| {
+                invalid(format!(
+                    "hydro target cell {} has invalid centroid seed: {error}",
+                    group.cell_id
+                ))
+            })?;
             field.min_with_fn(|sample_lon, sample_lat| {
                 if domain
                     .as_ref()
@@ -843,11 +855,11 @@ mod tests {
         apply_minimum_spring_iterations(&mut canonical, Some(20));
         assert!(!canonical.niter_refine_specified);
         assert_eq!(
-            crate::method_c_spring_iterations(&canonical, true).unwrap(),
+            crate::refinement_spring_iterations(&canonical, true).unwrap(),
             5000
         );
         assert_eq!(
-            crate::method_c_spring_iterations(&canonical, false).unwrap(),
+            crate::refinement_spring_iterations(&canonical, false).unwrap(),
             2000
         );
 
@@ -1002,6 +1014,32 @@ mod tests {
         let error = load_hydro_target_field(&cells, &levels, 1_000_000.0, 0.2, 36, 18)
             .expect_err("invalid legacy cell index must fail");
         assert!(error.to_string().contains("outside 1 target cells"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hydro_target_field_rejects_invalid_polygon_rings() {
+        let root = temp_path("invalid_polygon");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cells = root.join("cells.geojson");
+        let levels = root.join("levels.json");
+        fs::write(
+            &cells,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"cell_id":"bad","center_lon":0,"center_lat":0},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,10],[0,10],[10,0],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            &levels,
+            r#"{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{"cell_id":"bad","target_level":1}]}"#,
+        )
+        .unwrap();
+
+        let error = load_hydro_target_field(&cells, &levels, 1_000_000.0, 0.2, 36, 18)
+            .expect_err("invalid polygon must fail before silent no-refinement");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("bad"));
+        assert!(error.to_string().contains("invalid polygon ring"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -207,6 +207,21 @@ fn write_landtype_file_by_predicate(path: &std::path::Path, is_land: impl Fn(f64
     var.put_values(&values, (.., ..)).expect("write landtype");
 }
 
+fn write_sparse_landtype_file_for_gridnum(path: &std::path::Path, gridnum_perdegree: usize) {
+    let (nlons, nlats) = (360 * gridnum_perdegree, 180 * gridnum_perdegree);
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create sparse landtype file");
+    file.add_dimension("longitude", nlons)
+        .expect("longitude dim");
+    file.add_dimension("latitude", nlats).expect("latitude dim");
+    let mut var = file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype var");
+    let strip = vec![1_i8; nlats];
+    let lon_zero = 180 * gridnum_perdegree;
+    var.put_values(&strip, (lon_zero..lon_zero + 1, ..))
+        .expect("write sparse landtype strip");
+}
+
 fn non_placeholder_points(points: &[LonLatPoint]) -> Vec<LonLatPoint> {
     points
         .iter()
@@ -2904,7 +2919,7 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_harp_dv_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+            "&mkgrd\n  NL%EXPNME='case_harp_dv_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=1\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=20\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
         ),
     )
     .expect("write harp_dv namelist");
@@ -2913,6 +2928,11 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
         .expect("harp_dv backend should run through the refinement pipeline");
 
     assert_eq!(run.max_level, 2);
+    assert_eq!(run.spring_nest_iterations, 20);
+    assert_eq!(
+        run.spring_nest_passes, 0,
+        "the regional spring must reject this fixture's worse-angle candidate"
+    );
     assert!(run.output.output.exists());
     assert!(
         run.output.lbx_points > run.gridinit.gridfile.lbx_points,
@@ -2943,6 +2963,121 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
         topology.is_consistent(),
         "harp_dv output topology violations: {:?}",
         &topology.violations[..topology.violations.len().min(8)]
+    );
+}
+
+#[test]
+fn harp_dv_backend_consumes_adaptive_landcover_criteria_without_named_regions() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("harp_dv_landcover_adaptive");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_bbox_mask_netcdf(
+        sources.join("domain_bbox_000.nc4"),
+        &BBoxMask {
+            refine_degree: 0,
+            points: vec![BBoxPoint {
+                west: -6.0,
+                east: 6.0,
+                north: 6.0,
+                south: -6.0,
+            }],
+        },
+    )
+    .expect("write bbox domain source");
+    let landtype = root.join("landtype.nc");
+    write_sparse_landtype_file_for_gridnum(&landtype, 120);
+
+    let namelist = root.join("mkgrd_harp_dv_landcover.nml");
+    let base_dir = format!("{}/", root.display());
+    let domain_prefix = sources.join("domain_bbox").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd
+  NL%EXPNME='case_harp_dv_landcover'
+  NL%base_dir='{base_dir}'
+  NL%NXP=6
+  NL%mesh_type='landmesh'
+  NL%mode_grid='hex'
+  NL%mode_file='none'
+  NL%mode_file_description='none'
+  NL%refine=.true.
+  NL%refine_backend='harp_dv'
+  NL%niter=0
+  NL%beta=1.0
+  NL%relax=0.25
+  NL%gridnum_perdegree=120
+  NL%landtype_file='{}'
+  NL%mask_domain_global=.false.
+  NL%mask_domain_type='bbox'
+  NL%mask_domain_fprefix='{domain_prefix}'
+  NL%mask_patch_on=.false.
+  NL%output_format='CoLM'
+/
+&mkrefine
+  RL%Istransition=.true.
+  RL%SpringGlobal_type=0
+  RL%SpringRegional_type=0
+  RL%refine_spc=.false.
+  RL%refine_cal=.true.
+  RL%max_iter_spc=0
+  RL%max_iter_cal=1
+  RL%niter_refine=0
+  RL%num_rc=1
+  RL%set_dis_type='linear'
+  RL%halo=3,3,3,0,0,0,0,0,0
+  RL%max_transition_row=3,3,3,0,0,0,0,0,0
+  RL%mask_refine_cal_fprefix='/tmp'
+  RL%refine_num_landtypes=.true.
+  RL%th_num_landtypes=1
+/
+&harp_dv
+  NL%max_cycles=1
+/
+&adaptive
+  NL%adaptive_on=.true.
+  NL%adaptive_max_level=1
+  NL%adaptive_base_m=800000.0
+  NL%adaptive_coastline=.false.
+/
+",
+            landtype.display()
+        ),
+    )
+    .expect("write harp_dv landcover namelist");
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect("HARP-DV should consume adaptive landcover criteria");
+    let harp = run.harp_dv_run.expect("HARP-DV report");
+    assert_eq!(
+        harp.cycles_completed, 1,
+        "&harp_dv controls must reach the backend"
+    );
+    assert!(
+        harp.transactions_committed > 0,
+        "adaptive landcover criteria must do work: {harp:?}"
+    );
+    assert!(
+        run.realized_region_halvings > 0.0,
+        "adaptive circles must reach the achieved-resolution measurement"
+    );
+    assert!(run.output.output.exists());
+    let adaptive_report = run
+        .output
+        .output
+        .parent()
+        .expect("result dir")
+        .join("adaptive_refinement.json");
+    assert!(
+        adaptive_report.exists(),
+        "HARP-DV adaptive criteria must leave the same demand report as the other consumers"
+    );
+    assert!(
+        fs::read_to_string(adaptive_report)
+            .expect("adaptive report")
+            .contains("\"base_m\":800000"),
+        "explicit adaptive_base_m must reach the HARP-DV target/report"
     );
 }
 

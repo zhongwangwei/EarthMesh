@@ -74,115 +74,239 @@ impl<'a> ClassCounts<'a> {
         &self.classes
     }
 
-    /// Counts for one output row, west to east.
+    pub(super) fn plane_of(&self) -> &[u16] {
+        &self.plane_of
+    }
+
+    /// Count consecutive output rows, north to south and west to east.
     ///
-    /// `out[i * classes().len() + c]` is how many cells of `classes()[c]` the
-    /// neighbourhood of the `i`-th output column holds; `totals[i]` is how many
-    /// cells that neighbourhood held at all.
-    pub(super) fn row_counts(
+    /// The vertical column counts are initialized once for the first row, then
+    /// updated by removing the row that leaves the neighbourhood and adding the
+    /// row that enters it. `emit` receives one row at a time; its slices remain
+    /// valid only until `emit` returns.
+    pub(super) fn for_each_row(
         &self,
-        lat_index: usize,
+        lat_from: usize,
+        lat_to: usize,
         lon_from: usize,
         lon_to: usize,
         radius_cells: usize,
-        out: &mut Vec<u32>,
-        totals: &mut Vec<u32>,
+        emit: impl FnMut(usize, &[u32], &[u32]),
     ) {
-        let class_count = self.classes.len();
-        let width = lon_to.saturating_sub(lon_from) + 1;
-        out.clear();
-        out.resize(width * class_count, 0);
-        totals.clear();
-        totals.resize(width, 0);
-        if class_count == 0 {
-            return;
-        }
-
-        // Rows the neighbourhood covers, clipped as `value_at_global` clips.
-        let lat_lo = lat_index
-            .saturating_sub(radius_cells)
-            .max(self.bounds.maxlat_source);
-        let lat_hi = (lat_index + radius_cells).min(self.bounds.minlat_source);
-        if lat_lo > lat_hi {
-            return;
-        }
-
-        // Columns the whole row will ever touch, and each one's class counts
-        // down the covered rows. Built once per output row: the vertical extent
-        // is the same for every column in it.
         let scan_lo = lon_from
             .saturating_sub(radius_cells)
             .max(self.bounds.minlon_source);
         let scan_hi = (lon_to + radius_cells).min(self.bounds.maxlon_source);
-        if scan_lo > scan_hi {
-            return;
-        }
-        let scan_width = scan_hi - scan_lo + 1;
-        let mut column = vec![0u32; scan_width * class_count];
-        let mut column_total = vec![0u32; scan_width];
-        for lon in scan_lo..=scan_hi {
-            let slot = lon - scan_lo;
-            for lat in lat_lo..=lat_hi {
-                let Some(value) = self.window.value_at_global(lon, lat) else {
-                    continue;
-                };
-                let plane = self.plane_of[value as isize as usize & 0xff] as usize;
-                column[slot * class_count + plane] += 1;
-                column_total[slot] += 1;
-            }
-        }
+        for_each_count_row(
+            lat_from,
+            lat_to,
+            lon_from,
+            lon_to,
+            self.bounds.maxlat_source,
+            self.bounds.minlat_source,
+            scan_lo as isize,
+            scan_hi as isize,
+            radius_cells,
+            self.classes.len(),
+            &self.plane_of,
+            |lon, lat| {
+                usize::try_from(lon)
+                    .ok()
+                    .and_then(|lon| self.window.value_at_global(lon, lat))
+            },
+            emit,
+        );
+    }
+}
 
-        // Slide east: the neighbourhood of column `lon` is the column counts
-        // over `lon-r ..= lon+r`, clipped.
-        let mut running = vec![0u32; class_count];
-        let mut running_total = 0u32;
-        let mut covered_lo = scan_lo;
-        let mut covered_hi = scan_lo;
-        let mut primed = false;
-        for lon in lon_from..=lon_to {
-            let want_lo = lon
-                .saturating_sub(radius_cells)
-                .max(self.bounds.minlon_source)
-                .max(scan_lo);
-            let want_hi = (lon + radius_cells)
-                .min(self.bounds.maxlon_source)
-                .min(scan_hi);
-            if want_lo > want_hi {
-                continue;
-            }
-            if !primed {
-                for column_index in want_lo..=want_hi {
-                    let slot = column_index - scan_lo;
-                    for plane in 0..class_count {
-                        running[plane] += column[slot * class_count + plane];
-                    }
-                    running_total += column_total[slot];
-                }
-                covered_lo = want_lo;
-                covered_hi = want_hi;
-                primed = true;
-            } else {
-                while covered_hi < want_hi {
-                    covered_hi += 1;
-                    let slot = covered_hi - scan_lo;
-                    for plane in 0..class_count {
-                        running[plane] += column[slot * class_count + plane];
-                    }
-                    running_total += column_total[slot];
-                }
-                while covered_lo < want_lo {
-                    let slot = covered_lo - scan_lo;
-                    for plane in 0..class_count {
-                        running[plane] -= column[slot * class_count + plane];
-                    }
-                    running_total -= column_total[slot];
-                    covered_lo += 1;
-                }
-            }
-            let base = (lon - lon_from) * class_count;
-            out[base..base + class_count].copy_from_slice(&running);
-            totals[lon - lon_from] = running_total;
+#[allow(clippy::too_many_arguments)]
+pub(super) fn for_each_count_row(
+    lat_from: usize,
+    lat_to: usize,
+    lon_from: usize,
+    lon_to: usize,
+    source_lat_from: usize,
+    source_lat_to: usize,
+    scan_lon_from: isize,
+    scan_lon_to: isize,
+    radius_cells: usize,
+    class_count: usize,
+    plane_of: &[u16],
+    value_at: impl Fn(isize, usize) -> Option<i8>,
+    mut emit: impl FnMut(usize, &[u32], &[u32]),
+) {
+    if lat_from > lat_to || lon_from > lon_to || scan_lon_from > scan_lon_to {
+        return;
+    }
+
+    let width = lon_to - lon_from + 1;
+    let scan_width = (scan_lon_to - scan_lon_from + 1) as usize;
+    let mut out = vec![0u32; width * class_count];
+    let mut totals = vec![0u32; width];
+    if class_count == 0 {
+        for lat in lat_from..=lat_to {
+            emit(lat, &out, &totals);
         }
+        return;
+    }
+
+    let mut covered_lat_from = lat_from.saturating_sub(radius_cells).max(source_lat_from);
+    let mut covered_lat_to = lat_from.saturating_add(radius_cells).min(source_lat_to);
+    if covered_lat_from > covered_lat_to {
+        for lat in lat_from..=lat_to {
+            emit(lat, &out, &totals);
+        }
+        return;
+    }
+
+    let mut columns = vec![0u32; scan_width * class_count];
+    let mut column_totals = vec![0u32; scan_width];
+    for logical_lon in scan_lon_from..=scan_lon_to {
+        let slot = (logical_lon - scan_lon_from) as usize;
+        for lat in covered_lat_from..=covered_lat_to {
+            add_value(
+                &mut columns,
+                &mut column_totals,
+                slot,
+                class_count,
+                plane_of,
+                value_at(logical_lon, lat),
+            );
+        }
+    }
+
+    for lat in lat_from..=lat_to {
+        fill_horizontal_row(
+            &columns,
+            &column_totals,
+            scan_lon_from,
+            lon_from,
+            lon_to,
+            radius_cells,
+            class_count,
+            &mut out,
+            &mut totals,
+        );
+        emit(lat, &out, &totals);
+
+        if lat == lat_to {
+            break;
+        }
+        let next_lat_from = (lat + 1).saturating_sub(radius_cells).max(source_lat_from);
+        let next_lat_to = (lat + 1).saturating_add(radius_cells).min(source_lat_to);
+        while covered_lat_from < next_lat_from {
+            for logical_lon in scan_lon_from..=scan_lon_to {
+                let slot = (logical_lon - scan_lon_from) as usize;
+                remove_value(
+                    &mut columns,
+                    &mut column_totals,
+                    slot,
+                    class_count,
+                    plane_of,
+                    value_at(logical_lon, covered_lat_from),
+                );
+            }
+            covered_lat_from += 1;
+        }
+        while covered_lat_to < next_lat_to {
+            covered_lat_to += 1;
+            for logical_lon in scan_lon_from..=scan_lon_to {
+                let slot = (logical_lon - scan_lon_from) as usize;
+                add_value(
+                    &mut columns,
+                    &mut column_totals,
+                    slot,
+                    class_count,
+                    plane_of,
+                    value_at(logical_lon, covered_lat_to),
+                );
+            }
+        }
+    }
+}
+
+fn add_value(
+    columns: &mut [u32],
+    totals: &mut [u32],
+    slot: usize,
+    class_count: usize,
+    plane_of: &[u16],
+    value: Option<i8>,
+) {
+    let Some(value) = value else { return };
+    let plane = plane_of[value as isize as usize & 0xff] as usize;
+    columns[slot * class_count + plane] += 1;
+    totals[slot] += 1;
+}
+
+fn remove_value(
+    columns: &mut [u32],
+    totals: &mut [u32],
+    slot: usize,
+    class_count: usize,
+    plane_of: &[u16],
+    value: Option<i8>,
+) {
+    let Some(value) = value else { return };
+    let plane = plane_of[value as isize as usize & 0xff] as usize;
+    columns[slot * class_count + plane] -= 1;
+    totals[slot] -= 1;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_horizontal_row(
+    columns: &[u32],
+    column_totals: &[u32],
+    scan_lon_from: isize,
+    lon_from: usize,
+    lon_to: usize,
+    radius_cells: usize,
+    class_count: usize,
+    out: &mut [u32],
+    totals: &mut [u32],
+) {
+    out.fill(0);
+    totals.fill(0);
+    let mut running = vec![0u32; class_count];
+    let mut running_total = 0u32;
+    let mut covered_lon_from = lon_from as isize - radius_cells as isize;
+    let mut covered_lon_to = lon_from as isize + radius_cells as isize;
+    covered_lon_from = covered_lon_from.max(scan_lon_from);
+    let scan_lon_to = scan_lon_from + column_totals.len() as isize - 1;
+    covered_lon_to = covered_lon_to.min(scan_lon_to);
+
+    for logical_lon in covered_lon_from..=covered_lon_to {
+        let slot = (logical_lon - scan_lon_from) as usize;
+        for plane in 0..class_count {
+            running[plane] += columns[slot * class_count + plane];
+        }
+        running_total += column_totals[slot];
+    }
+
+    for lon in lon_from..=lon_to {
+        if lon > lon_from {
+            let wanted_from = (lon as isize - radius_cells as isize).max(scan_lon_from);
+            let wanted_to = (lon as isize + radius_cells as isize).min(scan_lon_to);
+            while covered_lon_to < wanted_to {
+                covered_lon_to += 1;
+                let slot = (covered_lon_to - scan_lon_from) as usize;
+                for plane in 0..class_count {
+                    running[plane] += columns[slot * class_count + plane];
+                }
+                running_total += column_totals[slot];
+            }
+            while covered_lon_from < wanted_from {
+                let slot = (covered_lon_from - scan_lon_from) as usize;
+                for plane in 0..class_count {
+                    running[plane] -= columns[slot * class_count + plane];
+                }
+                running_total -= column_totals[slot];
+                covered_lon_from += 1;
+            }
+        }
+        let base = (lon - lon_from) * class_count;
+        out[base..base + class_count].copy_from_slice(&running);
+        totals[lon - lon_from] = running_total;
     }
 }
 
@@ -243,11 +367,9 @@ mod tests {
         // to disagree.
         let window = window(11, 7, |lon, lat| ((lon * 3 + lat * 5) % 4) as i8);
         let counts = ClassCounts::build(&window);
-        let (mut row, mut totals) = (Vec::new(), Vec::new());
 
         for radius in [1usize, 2, 3, 5, 20] {
-            for lat in 1..=7 {
-                counts.row_counts(lat, 1, 11, radius, &mut row, &mut totals);
+            counts.for_each_row(1, 7, 1, 11, radius, |lat, row, totals| {
                 let class_count = counts.classes().len();
                 for lon in 1..=11 {
                     let (expected, expected_total) = brute_force(&window, lon, lat, radius);
@@ -266,8 +388,30 @@ mod tests {
                         .collect();
                     assert_eq!(got, expected, "counts at {lon},{lat} r{radius}");
                 }
-            }
+            });
         }
+    }
+
+    #[test]
+    fn a_band_starting_mid_window_matches_the_loop() {
+        let window = window(13, 9, |lon, lat| ((lon * 7 + lat * 11) % 5) as i8);
+        let counts = ClassCounts::build(&window);
+        counts.for_each_row(4, 7, 2, 12, 3, |lat, row, totals| {
+            let class_count = counts.classes().len();
+            for lon in 2..=12 {
+                let (expected, expected_total) = brute_force(&window, lon, lat, 3);
+                assert_eq!(totals[lon - 2], expected_total);
+                let base = (lon - 2) * class_count;
+                let got: Vec<(i8, u32)> = counts
+                    .classes()
+                    .iter()
+                    .copied()
+                    .zip(row[base..base + class_count].iter().copied())
+                    .filter(|(_, count)| *count > 0)
+                    .collect();
+                assert_eq!(got, expected, "counts at {lon},{lat}");
+            }
+        });
     }
 
     #[test]
@@ -282,20 +426,20 @@ mod tests {
         let counts = ClassCounts::build(&window);
         assert_eq!(counts.classes(), &[-5, 0, 9]);
 
-        let (mut row, mut totals) = (Vec::new(), Vec::new());
-        counts.row_counts(2, 1, 6, 1, &mut row, &mut totals);
-        for lon in 1..=6 {
-            let (expected, expected_total) = brute_force(&window, lon, 2, 1);
-            assert_eq!(totals[lon - 1], expected_total);
-            let base = (lon - 1) * 3;
-            let got: Vec<(i8, u32)> = counts
-                .classes()
-                .iter()
-                .copied()
-                .zip(row[base..base + 3].iter().copied())
-                .filter(|(_, count)| *count > 0)
-                .collect();
-            assert_eq!(got, expected, "at {lon}");
-        }
+        counts.for_each_row(2, 2, 1, 6, 1, |_, row, totals| {
+            for lon in 1..=6 {
+                let (expected, expected_total) = brute_force(&window, lon, 2, 1);
+                assert_eq!(totals[lon - 1], expected_total);
+                let base = (lon - 1) * 3;
+                let got: Vec<(i8, u32)> = counts
+                    .classes()
+                    .iter()
+                    .copied()
+                    .zip(row[base..base + 3].iter().copied())
+                    .filter(|(_, count)| *count > 0)
+                    .collect();
+                assert_eq!(got, expected, "at {lon}");
+            }
+        });
     }
 }

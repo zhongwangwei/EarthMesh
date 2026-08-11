@@ -1,7 +1,8 @@
 //! Project intent/schema command handlers.
 
 use earthmesh_project::{
-    DomainConfig, MeshDomainKind, MeshIntentPreset, ProjectConfig, RegionShape, ResolutionSpec,
+    DomainConfig, MeshDomainKind, MeshIntentPreset, MethodCAlgorithm, ProjectConfig, RegionShape,
+    ResolutionSpec,
 };
 
 pub(crate) fn validated_yaml(cfg: ProjectConfig) -> Result<String, String> {
@@ -77,11 +78,28 @@ pub(crate) fn preserve_unexposed_project_fields(
 
     cfg.expert = base.expert;
     cfg.refinement.threshold_criteria = base.refinement.threshold_criteria.clone();
+    cfg.refinement.method_c = base.refinement.method_c.clone();
+    cfg.refinement.harp_dv = base.refinement.harp_dv.clone();
+    if cfg.refinement.specified_circle.is_none()
+        && cfg.refinement.specified_bbox.is_none()
+        && cfg.refinement.specified_close.is_none()
+    {
+        cfg.refinement.specified_circle = base.refinement.specified_circle.clone();
+        cfg.refinement.specified_bbox = base.refinement.specified_bbox.clone();
+        cfg.refinement.specified_close = base.refinement.specified_close.clone();
+    }
+
+    if let Some(base_adaptive) = base.refinement.adaptive.as_ref() {
+        let adaptive = cfg.refinement.adaptive.get_or_insert_with(Default::default);
+        adaptive.base_m = base_adaptive.base_m;
+    }
 
     if let Some(base_hfield) = base.refinement.hfield.as_ref() {
         let hfield = cfg.refinement.hfield.get_or_insert_with(Default::default);
         hfield.origin_lon = base_hfield.origin_lon;
         hfield.origin_lat = base_hfield.origin_lat;
+        hfield.nlon = base_hfield.nlon;
+        hfield.nlat = base_hfield.nlat;
     }
 
     if base.target.intent == cfg.target.intent {
@@ -133,5 +151,27 @@ pub(crate) fn preserve_unexposed_project_fields(
         cfg.domain = base.domain;
     }
 
+    validated_yaml(cfg)
+}
+
+/// Preserve hidden quality settings after visible route/backend/domain setters have
+/// made the intermediate project valid.
+#[tauri::command]
+pub(crate) fn preserve_unexposed_quality_fields(
+    base_yaml: String,
+    yaml: String,
+) -> Result<String, String> {
+    let base = ProjectConfig::from_yaml(&base_yaml)?;
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    let Some(lepp) = base.quality.lepp_post_quality else {
+        return validated_yaml(cfg);
+    };
+    if cfg.refinement.enabled
+        && cfg.refinement.backend == earthmesh_project::RefinementBackend::MethodC
+        && cfg.refinement.method_c.algorithm != MethodCAlgorithm::LeppDelaunay
+        && matches!(cfg.domain, DomainConfig::Global)
+    {
+        cfg.quality.lepp_post_quality = Some(lepp);
+    }
     validated_yaml(cfg)
 }

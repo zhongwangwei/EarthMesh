@@ -6,4 +6,9 @@
 //! where it belongs in the layering; the file move is a separate change with
 //! nothing else in it.
 
-pub use earthmesh_hfield::*;
+// Was `pub use earthmesh_hfield::*;`. Nothing anywhere imports through this
+// module -- callers reach `earthmesh_hfield` directly -- so the wildcard
+// re-exported a whole crate's surface for no consumer, and the architecture
+// gate forbids exactly that. The module stays for the note above it, which
+// records where the h-field belongs in the layering once it is moved.
+pub use earthmesh_hfield::{HField, EARTH_RADIUS_METERS};

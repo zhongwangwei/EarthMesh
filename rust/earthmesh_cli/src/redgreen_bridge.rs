@@ -7,9 +7,13 @@
 //! large to address in `i32` has to say so here rather than wrap silently into
 //! a gridfile that reads as valid.
 
-use std::io;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use earthmesh_refine_redgreen::RedGreenMesh;
+use rayon::prelude::*;
 
 use crate::coordinate_types::LonLatPoint;
 use crate::unstructured_mesh_support::UnstructuredMesh;
@@ -201,17 +205,320 @@ pub fn redgreen_marking_from_regions(
     if regions.is_empty() {
         return marking;
     }
-    for triangle in mesh.num_vertex + 1..=mesh.triangle_count() {
-        let centre = mesh.triangle_points[triangle];
-        let wanted = regions
+    let region_index = earthmesh_mesh::RefinementRegionIndex::new(regions);
+    marking
+        .par_iter_mut()
+        .enumerate()
+        .skip(mesh.num_vertex + 1)
+        .for_each(|(triangle, mark)| {
+            let centre = mesh.triangle_points[triangle];
+            *mark = i32::from(region_index.contains_lonlat_canonical(centre, level));
+        });
+    marking
+}
+
+/// Restore only holes whose entire boundary decomposes into triangular faces.
+///
+/// The weak-concavity transition can omit a face where two carried transition
+/// rows meet. Filling an arbitrary boundary would hide a broken mesh, so this
+/// accepts only edge-disjoint three-edge cycles and leaves every other shape as
+/// an error for the caller's topology gate.
+fn close_triangular_transition_holes(mesh: &mut RedGreenMesh) -> io::Result<usize> {
+    let edge_counts = |mesh: &RedGreenMesh| -> io::Result<BTreeMap<(usize, usize), usize>> {
+        let mut counts = BTreeMap::new();
+        for (triangle, corners) in mesh
+            .cells_on_triangle
             .iter()
-            .filter(|region| region.level() >= level)
-            .any(|region| region.contains_lonlat_canonical(centre));
-        if wanted {
-            marking[triangle] = 1;
+            .enumerate()
+            .skip(mesh.num_vertex + 1)
+        {
+            if corners
+                .iter()
+                .any(|&cell| cell == 0 || cell >= mesh.cell_points.len())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("red-green triangle {triangle} names a missing cell"),
+                ));
+            }
+            for (a, b) in [
+                (corners[0], corners[1]),
+                (corners[1], corners[2]),
+                (corners[2], corners[0]),
+            ] {
+                *counts.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        Ok(counts)
+    };
+
+    let counts = edge_counts(mesh)?;
+    if let Some((&edge, &owners)) = counts.iter().find(|(_, owners)| **owners > 2) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("red-green edge {edge:?} has {owners} owners"),
+        ));
+    }
+    let boundary = counts
+        .iter()
+        .filter_map(|(&edge, &owners)| (owners == 1).then_some(edge))
+        .collect::<BTreeSet<_>>();
+    if boundary.is_empty() {
+        return Ok(0);
+    }
+
+    let mut graph = BTreeMap::<usize, BTreeSet<usize>>::new();
+    for &(a, b) in &boundary {
+        graph.entry(a).or_default().insert(b);
+        graph.entry(b).or_default().insert(a);
+    }
+    let mut holes = BTreeSet::<[usize; 3]>::new();
+    for &(a, b) in &boundary {
+        let common = graph[&a]
+            .intersection(&graph[&b])
+            .copied()
+            .collect::<Vec<_>>();
+        if common.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "red-green transition boundary edge {a}/{b} belongs to {} triangular cycles",
+                    common.len()
+                ),
+            ));
+        }
+        let mut face = [a, b, common[0]];
+        face.sort_unstable();
+        holes.insert(face);
+    }
+    let mut covered = BTreeMap::<(usize, usize), usize>::new();
+    for [a, b, c] in &holes {
+        for edge in [(*a, *b), (*b, *c), (*a, *c)] {
+            *covered.entry(edge).or_default() += 1;
         }
     }
-    marking
+    if covered.len() != boundary.len()
+        || boundary
+            .iter()
+            .any(|edge| covered.get(edge).copied() != Some(1))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "red-green transition boundary is not a set of edge-disjoint triangular holes",
+        ));
+    }
+
+    let mut repaired = mesh.clone();
+    let orient = |mut corners: [usize; 3], points: &[earthmesh_mesh::LonLatDegrees]| {
+        let face_points = corners.map(|cell| points[cell]);
+        let xyz = face_points.map(earthmesh_mesh::lonlat_degrees_to_unit_xyz);
+        match earthmesh_mesh::orientation_on_sphere(xyz[0], xyz[1], xyz[2]).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("red-green transition face orientation is ambiguous: {error}"),
+            )
+        })? {
+            earthmesh_mesh::Sign::Positive => {}
+            earthmesh_mesh::Sign::Negative => corners.swap(1, 2),
+            earthmesh_mesh::Sign::Zero => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "red-green transition face is degenerate",
+                ));
+            }
+        }
+        let centroid =
+            earthmesh_mesh::spherical_centroid_degrees(&face_points).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "red-green transition face has no spherical centroid",
+                )
+            })?;
+        Ok::<_, io::Error>((corners, centroid))
+    };
+    for cycle in holes.iter().copied() {
+        let xyz = cycle
+            .map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(repaired.cell_points[cell]));
+        let edges = [
+            (
+                earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[1]),
+                0,
+                1,
+                2,
+            ),
+            (
+                earthmesh_mesh::arc_length_unit_sphere(xyz[1], xyz[2]),
+                1,
+                2,
+                0,
+            ),
+            (
+                earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[2]),
+                0,
+                2,
+                1,
+            ),
+        ];
+        let &(longest, left, right, middle) = edges
+            .iter()
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("three edges");
+        let split_length = earthmesh_mesh::arc_length_unit_sphere(xyz[left], xyz[middle])
+            + earthmesh_mesh::arc_length_unit_sphere(xyz[middle], xyz[right]);
+        if (longest - split_length).abs() > 1.0e-10 * longest.max(1.0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "red-green transition boundary contains a true missing face, not a hanging edge",
+            ));
+        }
+        let a = cycle[left];
+        let b = cycle[right];
+        let midpoint = cycle[middle];
+        let owners = repaired
+            .cells_on_triangle
+            .iter()
+            .enumerate()
+            .skip(repaired.num_vertex + 1)
+            .filter(|(_, corners)| corners.contains(&a) && corners.contains(&b))
+            .map(|(triangle, _)| triangle)
+            .collect::<Vec<_>>();
+        if owners.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "red-green hanging edge {a}/{b} has {} coarse owners",
+                    owners.len()
+                ),
+            ));
+        }
+        let owner = owners[0];
+        let opposite = repaired.cells_on_triangle[owner]
+            .iter()
+            .copied()
+            .find(|&cell| cell != a && cell != b)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("red-green hanging-edge owner {owner} has no opposite cell"),
+                )
+            })?;
+        let (first, first_center) = orient([opposite, a, midpoint], &repaired.cell_points)?;
+        let (second, second_center) = orient([opposite, midpoint, b], &repaired.cell_points)?;
+        repaired.cells_on_triangle[owner] = first;
+        repaired.triangle_points[owner] = first_center;
+        repaired.cells_on_triangle.push(second);
+        repaired.triangle_points.push(second_center);
+    }
+    repaired.triangles_on_cell = vec![Vec::new(); repaired.cell_points.len()];
+    for (triangle, corners) in repaired.cells_on_triangle.iter().enumerate().skip(2) {
+        for &cell in corners {
+            repaired.triangles_on_cell[cell].push(triangle);
+        }
+    }
+    repaired.n_triangles_on_cell = repaired.triangles_on_cell.iter().map(Vec::len).collect();
+    earthmesh_refine_redgreen::get_sort_new_one_based(
+        repaired.cell_count(),
+        &repaired.n_triangles_on_cell,
+        &repaired.cells_on_triangle,
+        &repaired.triangle_points,
+        &mut repaired.triangles_on_cell,
+    )?;
+    if edge_counts(&repaired)?.values().any(|&owners| owners != 2) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "red-green triangular-hole repair did not produce a closed mesh",
+        ));
+    }
+    let repaired_count = holes.len();
+    *mesh = repaired;
+    Ok(repaired_count)
+}
+
+#[cfg(test)]
+mod transition_hole_tests {
+    use super::*;
+
+    fn tetrahedron_with_one_hanging_midpoint() -> RedGreenMesh {
+        let mut cell_points = vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); 7];
+        cell_points[2] = earthmesh_mesh::LonLatDegrees::new(0.0, 70.0);
+        cell_points[3] = earthmesh_mesh::LonLatDegrees::new(-120.0, -20.0);
+        cell_points[4] = earthmesh_mesh::LonLatDegrees::new(0.0, -20.0);
+        cell_points[5] = earthmesh_mesh::LonLatDegrees::new(120.0, -20.0);
+        cell_points[6] = earthmesh_refine_redgreen::midpoint_lonlat(cell_points[2], cell_points[4])
+            .expect("edge midpoint");
+        let mut cells_on_triangle = vec![[1usize; 3]; 2];
+        let mut triangle_points = vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); 2];
+        for mut corners in [[3, 2, 6], [3, 6, 4], [3, 5, 4], [2, 5, 3], [2, 4, 5]] {
+            let xyz =
+                corners.map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(cell_points[cell]));
+            if earthmesh_mesh::orientation_on_sphere(xyz[0], xyz[1], xyz[2])
+                .expect("non-degenerate face")
+                == earthmesh_mesh::Sign::Negative
+            {
+                corners.swap(1, 2);
+            }
+            triangle_points.push(
+                earthmesh_mesh::spherical_centroid_degrees(&corners.map(|cell| cell_points[cell]))
+                    .expect("face centroid"),
+            );
+            cells_on_triangle.push(corners);
+        }
+        let mut triangles_on_cell = vec![Vec::new(); cell_points.len()];
+        for (triangle, corners) in cells_on_triangle.iter().enumerate().skip(2) {
+            for &cell in corners {
+                triangles_on_cell[cell].push(triangle);
+            }
+        }
+        let n_triangles_on_cell = triangles_on_cell.iter().map(Vec::len).collect();
+        RedGreenMesh {
+            num_vertex: 1,
+            num_center: 1,
+            triangle_points,
+            cell_points,
+            cells_on_triangle,
+            triangles_on_cell,
+            n_triangles_on_cell,
+        }
+    }
+
+    #[test]
+    fn only_a_complete_hanging_edge_cycle_is_restored() {
+        let mut mesh = tetrahedron_with_one_hanging_midpoint();
+
+        assert_eq!(close_triangular_transition_holes(&mut mesh).unwrap(), 1);
+        let neighbors = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
+            &mesh.cells_on_triangle,
+            &mesh.triangles_on_cell,
+            &mesh.n_triangles_on_cell,
+        )
+        .expect("closed membership");
+        assert!(
+            neighbors.iter().skip(2).all(|row| !row.contains(&0)),
+            "every restored edge must have a neighbor: {neighbors:?}"
+        );
+        assert!(mesh.cells_on_triangle.iter().skip(2).all(|corners| {
+            earthmesh_mesh::spherical_triangle_area_unit(
+                corners
+                    .map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(mesh.cell_points[cell])),
+            ) > 0.0
+        }));
+        assert_eq!(close_triangular_transition_holes(&mut mesh).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_true_missing_face_is_not_hidden_as_a_transition_repair() {
+        let mut mesh = tetrahedron_with_one_hanging_midpoint();
+        close_triangular_transition_holes(&mut mesh).unwrap();
+        mesh.cells_on_triangle.pop();
+        mesh.triangle_points.pop();
+        let before = mesh.clone();
+
+        let error = close_triangular_transition_holes(&mut mesh)
+            .expect_err("a non-collinear missing face is not a hanging edge");
+
+        assert!(error.to_string().contains("true missing face"), "{error}");
+        assert_eq!(mesh, before, "a refused repair must not mutate the mesh");
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +576,32 @@ mod marking_tests {
             .iter()
             .all(|&value| value == 0));
     }
+
+    #[test]
+    fn marking_is_identical_across_thread_counts() {
+        let mesh = base();
+        let regions = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(179.0, 0.0),
+                radius_meters: 2_000_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(-45.0, 80.0),
+                radius_meters: 1_000_000.0,
+                level: 1,
+            },
+        ];
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| redgreen_marking_from_regions(&mesh, &regions, 1))
+        };
+
+        assert_eq!(run(1), run(4));
+    }
 }
 
 /// One red-green level, from the regions that asked for it to a mesh the
@@ -285,15 +618,68 @@ pub fn refine_redgreen_level(
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
+    preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking_from_regions(mesh, regions, level);
-    let settings = redgreen_settings_for_level(refine, level);
-    let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+    let mut settings = redgreen_settings_for_level(refine, level);
+    let primary = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,
         &settings,
         previous_level_marks,
-    )?;
+    );
+    let mut fallback_reason = None;
+    let mut outcome = match primary {
+        Ok(outcome) => outcome,
+        Err(error) if preserve_locality && settings.eliminate_weak_concavity => {
+            fallback_reason = Some(format!(
+                "weak-concavity elimination could not form a local transition ({error})"
+            ));
+            settings.eliminate_weak_concavity = false;
+            earthmesh_refine_redgreen::refine_redgreen_round_inside(
+                mesh,
+                &marking,
+                &settings,
+                previous_level_marks,
+            )?
+        }
+        Err(error) => return Err(error),
+    };
+    let refinable = mesh.triangle_count().saturating_sub(mesh.num_vertex);
+    if preserve_locality
+        && settings.eliminate_weak_concavity
+        && outcome.grown_triangle_count > 0
+        && outcome.refined_triangle_count == refinable
+    {
+        settings.eliminate_weak_concavity = false;
+        outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+            mesh,
+            &marking,
+            &settings,
+            previous_level_marks,
+        )?;
+        fallback_reason =
+            Some("weak-concavity elimination reached the whole triangular domain".to_string());
+    }
+    let closed = if preserve_locality {
+        close_triangular_transition_holes(&mut outcome.mesh)?
+    } else {
+        0
+    };
+    if let Some(reason) = fallback_reason {
+        eprintln!(
+            "earthmesh_cli: Red-Green {reason}; carrying the boundary concavities instead{}",
+            if closed == 0 {
+                String::new()
+            } else {
+                format!(" and restoring {closed} triangular transition face(s)")
+            }
+        );
+    } else if closed > 0 {
+        eprintln!(
+            "earthmesh_cli: Red-Green restored {closed} triangular hanging-edge transition face(s)"
+        );
+    }
     let written = unstructured_mesh_from_redgreen(&outcome.mesh)?;
     Ok((written, outcome))
 }
@@ -324,6 +710,7 @@ mod level_tests {
             &earthmesh_core::RefineConfig::default(),
             1,
             None,
+            false,
         )
         .expect("one red-green level");
 
@@ -376,6 +763,7 @@ mod level_tests {
             },
             1,
             None,
+            false,
         )
         .expect("one red-green level");
 
@@ -429,7 +817,7 @@ mod level_tests {
         };
 
         let (_, first) =
-            refine_redgreen_level(&mesh, &regions, &refine, 1, None).expect("level one");
+            refine_redgreen_level(&mesh, &regions, &refine, 1, None, false).expect("level one");
         let previous = redgreen_marking_from_regions(&first.mesh, &regions, 1);
         assert_eq!(
             previous.len(),
@@ -442,9 +830,10 @@ mod level_tests {
             "and cell_renumbering is not that mapping -- it is per cell"
         );
 
-        let (_, held) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous))
-            .expect("level two, held inside level one");
-        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None)
+        let (_, held) =
+            refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous), false)
+                .expect("level two, held inside level one");
+        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None, false)
             .expect("level two, free");
 
         assert!(
@@ -457,6 +846,70 @@ mod level_tests {
             "so it refines less: {} vs {}",
             held.refined_triangle_count,
             free.refined_triangle_count
+        );
+    }
+
+    #[test]
+    fn triangular_red_green_does_not_turn_distributed_demand_into_global_refinement() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+            .expect("base mesh");
+        let neighbors = base.m_neighbors.clone();
+        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
+            .expect("bridge in");
+        let refine = earthmesh_core::RefineConfig::default();
+        let refinable = mesh.triangle_count() - mesh.num_vertex;
+        let mut fixture = None;
+        'search: for step in [45, 30, 20] {
+            for radius_meters in [1_500_000.0, 2_000_000.0, 2_500_000.0] {
+                let regions = [-60.0, 0.0, 60.0]
+                    .into_iter()
+                    .flat_map(|lat| {
+                        (-180..180)
+                            .step_by(step)
+                            .map(move |lon| RefinementRegion::Circle {
+                                center: LonLatDegrees::new(f64::from(lon), lat),
+                                radius_meters,
+                                level: 1,
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                let (_, filled) = refine_redgreen_level(&mesh, &regions, &refine, 1, None, false)
+                    .expect("filled run");
+                if filled.refined_triangle_count == refinable && filled.grown_triangle_count > 0 {
+                    fixture = Some((regions, filled));
+                    break 'search;
+                }
+            }
+        }
+        let (regions, filled) = fixture.expect("a distributed marking must exercise the fallback");
+
+        let (written, local) =
+            refine_redgreen_level(&mesh, &regions, &refine, 1, None, true).expect("local run");
+        assert!(
+            local.refined_triangle_count < filled.refined_triangle_count,
+            "distributed local demand must retain a coarse exterior"
+        );
+        let neighbors = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
+            &local.mesh.cells_on_triangle,
+            &local.mesh.triangles_on_cell,
+            &local.mesh.n_triangles_on_cell,
+        )
+        .expect("local transition membership must resolve");
+        assert!(
+            neighbors
+                .iter()
+                .skip(local.mesh.num_vertex + 1)
+                .all(|row| !row.contains(&0)),
+            "the carried transition must close every edge"
+        );
+        let topology = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&written);
+        assert!(
+            topology
+                .violations
+                .iter()
+                .all(|violation| !violation.starts_with("misoriented_shared_edge")),
+            "the carried transition must stay consistently oriented: {:?}",
+            topology.violations
         );
     }
 }

@@ -30,7 +30,7 @@ use std::io;
 use earthmesh_mesh::{RefinementRegion, TriangularMesh};
 use earthmesh_refine_method_c::MethodCMesh;
 
-use super::ladder::nested_circle_radii_meters;
+use super::ladder::{nested_circle_radii_meters, MEASURED_PARENT_HALO_ROWS};
 use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
 use super::reduce_demand_to_circles_on_blocks;
 use earthmesh_core::RefineConfig;
@@ -78,7 +78,7 @@ pub struct AdaptiveNestReport {
 pub struct AdaptiveNestSpring {
     /// The base mesh's NXP, which sets the spring's target edge length.
     pub nxp: usize,
-    /// Iterations per pass, from `method_c_spring_iterations`.
+    /// Iterations per pass, from `refinement_spring_iterations`.
     pub iterations: usize,
     /// Transition width, `MAX_MROWS_SURFACE` or `MAX_MROWS_ATMOS`.
     ///
@@ -142,6 +142,8 @@ pub struct LevelCircles {
     /// the message can say what size failed.
     pub radius_meters: f64,
     pub circles: Vec<RefinementRegion>,
+    /// Stable criterion ids that contributed at least one source cell.
+    pub criterion_ids: Vec<String>,
 }
 
 /// Re-ask the criteria at the cell size this level will produce, and reduce what
@@ -162,29 +164,76 @@ pub fn adaptive_demand_circles_for_level(
     base_cell_meters: f64,
     max_level: usize,
 ) -> io::Result<LevelCircles> {
+    adaptive_demand_circles_for_level_windows(
+        refine,
+        std::slice::from_ref(inputs),
+        level,
+        base_cell_meters,
+        max_level,
+    )
+}
+
+pub fn adaptive_demand_circles_for_level_windows(
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
+    level: usize,
+    base_cell_meters: f64,
+    max_level: usize,
+) -> io::Result<LevelCircles> {
     let radii = nested_circle_radii_meters(base_cell_meters, max_level)?;
     // The cell this pass refines away is the one the previous level left.
     let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-    let plan: LevelDemand = plan_demand_at_scale(refine, inputs, level, cell_meters)?;
-    let radius_meters = radii[level - 1];
-    if plan.is_empty() {
-        return Ok(LevelCircles {
-            demanded: false,
-            demanded_cells: 0,
-            radius_meters,
-            circles: Vec::new(),
-        });
-    }
-    Ok(LevelCircles {
-        demanded: true,
-        demanded_cells: plan.demand.demanded_count(),
-        radius_meters,
-        circles: reduce_demand_to_circles_on_blocks(
+    adaptive_demand_circles_for_level_windows_at_radius(
+        refine,
+        inputs,
+        level,
+        cell_meters,
+        radii[level - 1],
+        radii[max_level - 1],
+    )
+}
+
+/// Re-ask the criteria and cover their source cells with caller-sized circles.
+///
+/// Method-C needs its measured 2.5-cell seed radius; Red-Green does not. Keeping
+/// the radius policy outside the shared raster scan prevents a backend's mesh
+/// constraint from broadening another backend's requested region.
+pub fn adaptive_demand_circles_for_level_windows_at_radius(
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
+    level: usize,
+    cell_meters: f64,
+    radius_meters: f64,
+    block_radius_meters: f64,
+) -> io::Result<LevelCircles> {
+    let mut demanded_cells = 0usize;
+    let mut circles = Vec::new();
+    let mut criterion_ids = std::collections::BTreeSet::new();
+    for input in inputs {
+        let plan: LevelDemand = plan_demand_at_scale(refine, input, level, cell_meters)?;
+        if plan.is_empty() {
+            continue;
+        }
+        demanded_cells += plan.demand.demanded_count();
+        criterion_ids.extend(
+            plan.contributions
+                .iter()
+                .filter(|contribution| contribution.demanded_cells > 0)
+                .map(|contribution| contribution.criterion.clone()),
+        );
+        circles.extend(reduce_demand_to_circles_on_blocks(
             &plan.demand,
             level,
             radius_meters,
-            radii[max_level - 1],
-        )?,
+            block_radius_meters,
+        )?);
+    }
+    Ok(LevelCircles {
+        demanded: demanded_cells > 0,
+        demanded_cells,
+        radius_meters,
+        circles,
+        criterion_ids: criterion_ids.into_iter().collect(),
     })
 }
 
@@ -192,6 +241,26 @@ pub fn spawn_nest_adaptive_with_named_regions(
     mesh: &MethodCMesh,
     refine: &RefineConfig,
     inputs: &DemandPlanInputs<'_>,
+    named_regions: &[RefinementRegion],
+    base_cell_meters: f64,
+    max_level: usize,
+    spring: Option<AdaptiveNestSpring>,
+) -> io::Result<(MethodCMesh, AdaptiveNestReport)> {
+    spawn_nest_adaptive_with_named_region_windows(
+        mesh,
+        refine,
+        std::slice::from_ref(inputs),
+        named_regions,
+        base_cell_meters,
+        max_level,
+        spring,
+    )
+}
+
+pub fn spawn_nest_adaptive_with_named_region_windows(
+    mesh: &MethodCMesh,
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
     named_regions: &[RefinementRegion],
     base_cell_meters: f64,
     max_level: usize,
@@ -250,8 +319,13 @@ pub fn spawn_nest_adaptive_with_named_regions(
 
     for level in 1..=max_level {
         let cell_meters = base_cell_meters / 2f64.powi((level - 1) as i32);
-        let demand =
-            adaptive_demand_circles_for_level(refine, inputs, level, base_cell_meters, max_level)?;
+        let demand = adaptive_demand_circles_for_level_windows(
+            refine,
+            inputs,
+            level,
+            base_cell_meters,
+            max_level,
+        )?;
         // Named regions are shapes Method-C can build and stay served; it is
         // demand whose shape came from the data that is suspended. Testing
         // whether a criterion asked at all is what separates them exactly -- a
@@ -273,8 +347,13 @@ pub fn spawn_nest_adaptive_with_named_regions(
                 .cloned(),
         );
         if regions.is_empty() {
-            stopped_on_empty_demand = true;
-            break;
+            for region in named_regions.iter().filter(|region| region.level() > level) {
+                regions.push(region_parent_for_level(region, level, base_cell_meters)?);
+            }
+            if regions.is_empty() {
+                stopped_on_empty_demand = true;
+                break;
+            }
         }
         let faces_before = face_count(&current);
         // A single call unions every group's mask and emits once, which is the
@@ -485,6 +564,55 @@ pub fn spawn_nest_adaptive_with_named_regions(
             spring_passes,
         },
     ))
+}
+
+fn region_parent_for_level(
+    region: &RefinementRegion,
+    level: usize,
+    base_cell_meters: f64,
+) -> io::Result<RefinementRegion> {
+    let mut region = region.clone();
+    let halo: f64 = (level..region.level())
+        .map(|transition_level| {
+            MEASURED_PARENT_HALO_ROWS * base_cell_meters / 2f64.powi((transition_level - 1) as i32)
+        })
+        .sum();
+    match &mut region {
+        RefinementRegion::Circle {
+            radius_meters,
+            level: region_level,
+            ..
+        } => {
+            *radius_meters += halo;
+            *region_level = level;
+        }
+        RefinementRegion::Corridor {
+            radius_meters,
+            level: region_level,
+            ..
+        } => {
+            for radius in radius_meters {
+                *radius += halo;
+            }
+            *region_level = level;
+        }
+        RefinementRegion::Bbox { .. } | RefinementRegion::Polygon { .. } => {
+            let kind = match region {
+                RefinementRegion::Bbox { .. } => "bbox",
+                RefinementRegion::Polygon { .. } => "polygon",
+                _ => unreachable!(),
+            };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "a named {kind} region asks for level {} after an empty level {level}; \
+                     provide explicit parent halo regions for bbox/polygon nests",
+                    region.level()
+                ),
+            ));
+        }
+    }
+    Ok(region)
 }
 
 fn face_count(mesh: &TriangularMesh) -> usize {

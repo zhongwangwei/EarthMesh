@@ -1,30 +1,15 @@
 use std::io;
 
 use crate::{
-    validate_lonlat, validate_positive_distance, RefinementRegion, METHOD_C_MIN_GRID_SPACING_METERS,
+    dot, lonlat_degrees_to_unit_xyz, validate_lonlat, validate_positive_distance, RefinementRegion,
+    METHOD_C_MIN_GRID_SPACING_METERS,
 };
 
 impl RefinementRegion {
-    /// Compatibility warning for geometry whose Canonical interpretation is
-    /// intentionally planar rather than spherical.
-    ///
-    /// Callers that accept user-authored polygons should surface this warning,
-    /// especially for high-latitude or pole-enclosing inputs. The legacy
-    /// semantics remain available and validation does not silently reinterpret
-    /// polygon edges as geodesics.
+    /// Compatibility warning retained for callers compiled against the older
+    /// planar-polygon API. Geographic polygons now use spherical winding.
     pub fn canonical_geometry_warning(&self) -> Option<&'static str> {
-        match self {
-            Self::Polygon { points, .. }
-                if points
-                    .iter()
-                    .any(|point| point.lat_degrees.abs() >= 75.0) =>
-            {
-                Some(
-                    "Canonical high-latitude polygon containment is planar lon/lat, not spherical; distortion grows toward either pole",
-                )
-            }
-            _ => None,
-        }
+        None
     }
 
     pub fn validate(&self) -> io::Result<()> {
@@ -98,14 +83,59 @@ impl RefinementRegion {
                 }
             }
             Self::Polygon { points, .. } => {
+                for &point in points {
+                    validate_lonlat(point)?;
+                }
+                let points = if points.len() > 1
+                    && dot(
+                        lonlat_degrees_to_unit_xyz(points[0]),
+                        lonlat_degrees_to_unit_xyz(points[points.len() - 1]),
+                    ) >= 1.0 - 1.0e-12
+                {
+                    &points[..points.len() - 1]
+                } else {
+                    points.as_slice()
+                };
                 if points.len() < 3 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "polygon refinement requires at least three points",
+                        "polygon refinement requires at least three distinct points",
                     ));
                 }
-                for &point in points {
-                    validate_lonlat(point)?;
+                let vertices = points
+                    .iter()
+                    .map(|point| earthmesh_boundary::BoundaryVertex {
+                        lon_degrees: point.lon_degrees,
+                        lat_degrees: point.lat_degrees,
+                        pinned: true,
+                    })
+                    .collect::<Vec<_>>();
+                let Some(ring) = earthmesh_boundary::BoundaryLoop::bounding_smaller_side(
+                    earthmesh_boundary::LoopType::Outer,
+                    earthmesh_boundary::BoundaryRole::RefinementGuide,
+                    (0..vertices.len()).collect(),
+                    None,
+                    &vertices,
+                ) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "polygon refinement requires a non-degenerate spherical ring",
+                    ));
+                };
+                let boundary = earthmesh_boundary::SphericalBoundaryModel {
+                    vertices,
+                    loops: vec![ring],
+                };
+                if let Err(errors) = boundary.validate() {
+                    let errors = errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("invalid spherical polygon: {errors}"),
+                    ));
                 }
             }
         }

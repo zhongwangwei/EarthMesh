@@ -74,65 +74,125 @@ fn normalize_lon_degrees(x: f64) -> f64 {
     ((x + 180.0).rem_euclid(360.0)) - 180.0
 }
 
-fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
-    if points.len() < 3 || !lon.is_finite() || !lat.is_finite() {
+fn lonlat_to_unit(lon: f64, lat: f64) -> [f64; 3] {
+    let (lon, lat) = (lon.to_radians(), lat.to_radians());
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn norm(point: [f64; 3]) -> f64 {
+    dot(point, point).sqrt()
+}
+
+fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
+    dot(a, b).clamp(-1.0, 1.0).acos()
+}
+
+fn point_on_minor_arc(a: [f64; 3], b: [f64; 3], point: [f64; 3]) -> bool {
+    let edge_angle = angle(a, b);
+    if edge_angle <= 1.0e-12 || (std::f64::consts::PI - edge_angle).abs() <= 1.0e-10 {
         return false;
     }
-    let norm = normalize_lon_degrees;
-    let lon0 = norm(lon);
-    let normalized_lons = points
-        .iter()
-        .map(|point| norm(point.lon))
-        .collect::<Vec<_>>();
-    let min_lon = normalized_lons
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max_lon = normalized_lons
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let crosses_dateline = max_lon - min_lon > 180.0;
-    let unwrap = |x: f64| {
-        let mut y = norm(x);
-        if crosses_dateline {
-            if y - lon0 > 180.0 {
-                y -= 360.0;
-            } else if y - lon0 < -180.0 {
-                y += 360.0;
-            }
-        }
-        y
+    let normal = cross(a, b);
+    dot(normal, point).abs() <= 1.0e-10 * norm(normal).max(1.0)
+        && angle(a, point) + angle(point, b) <= edge_angle + 1.0e-10
+}
+
+fn signed_spherical_area(points: &[LonLatPoint]) -> Option<f64> {
+    if points.len() < 3
+        || points.iter().any(|point| {
+            !point.lon.is_finite() || !point.lat.is_finite() || !(-90.0..=90.0).contains(&point.lat)
+        })
+    {
+        return None;
+    }
+    let apex = lonlat_to_unit(points[0].lon, points[0].lat);
+    let mut total = 0.0;
+    for step in 1..points.len() - 1 {
+        let b = lonlat_to_unit(points[step].lon, points[step].lat);
+        let c = lonlat_to_unit(points[step + 1].lon, points[step + 1].lat);
+        total += 2.0 * dot(apex, cross(b, c)).atan2(1.0 + dot(apex, b) + dot(b, c) + dot(c, apex));
+    }
+    total.is_finite().then_some(total)
+}
+
+fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
+    if points.len() < 3 || !lon.is_finite() || !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        return false;
+    }
+    let Some(area) = signed_spherical_area(points) else {
+        return false;
     };
-    let mut inside = false;
-    let eps = 1.0e-12;
-    for i in 0..points.len() {
-        let a = points[i];
-        let b = points[(i + 1) % points.len()];
-        if !a.lon.is_finite() || !a.lat.is_finite() || !b.lon.is_finite() || !b.lat.is_finite() {
-            return false;
+    if area.abs() <= 1.0e-14 {
+        return false;
+    }
+    // A close mask historically had no orientation contract. Preserve that
+    // property on the sphere by selecting the smaller side of the ring.
+    let desired_sign = if area.abs() <= std::f64::consts::TAU {
+        area.signum()
+    } else {
+        -area.signum()
+    };
+    let here = lonlat_to_unit(lon, lat);
+    let tangent = |point: [f64; 3]| -> Option<(f64, f64)> {
+        let projection = dot(here, point);
+        let flat = [
+            point[0] - here[0] * projection,
+            point[1] - here[1] * projection,
+            point[2] - here[2] * projection,
+        ];
+        let length = norm(flat);
+        if length <= 1.0e-12 {
+            return None;
         }
-        let ax = unwrap(a.lon);
-        let bx = unwrap(b.lon);
-        let ay = a.lat;
-        let by = b.lat;
-        let cross = (lon0 - ax) * (by - ay) - (lat - ay) * (bx - ax);
-        let on_segment = cross.abs() <= eps
-            && lon0 >= ax.min(bx) - eps
-            && lon0 <= ax.max(bx) + eps
-            && lat >= ay.min(by) - eps
-            && lat <= ay.max(by) + eps;
-        if on_segment {
+        let east = [-here[1], here[0], 0.0];
+        let east_length = (east[0] * east[0] + east[1] * east[1]).sqrt();
+        let east = if east_length > 1.0e-12 {
+            [east[0] / east_length, east[1] / east_length, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let north = cross(here, east);
+        Some((dot(flat, east) / length, dot(flat, north) / length))
+    };
+
+    let mut turned = 0.0;
+    for i in 0..points.len() {
+        let a = lonlat_to_unit(points[i].lon, points[i].lat);
+        let b = lonlat_to_unit(
+            points[(i + 1) % points.len()].lon,
+            points[(i + 1) % points.len()].lat,
+        );
+        if dot(here, a) > 1.0 - 1.0e-12 || dot(here, b) > 1.0 - 1.0e-12 {
             return true;
         }
-        if (ay > lat) != (by > lat) {
-            let x_at_lat = ax + (lat - ay) * (bx - ax) / (by - ay);
-            if lon0 < x_at_lat {
-                inside = !inside;
-            }
+        if dot(here, a) < -1.0 + 1.0e-12 || dot(here, b) < -1.0 + 1.0e-12 {
+            return false;
         }
+        if point_on_minor_arc(a, b, here) {
+            return true;
+        }
+        let (Some(a), Some(b)) = (tangent(a), tangent(b)) else {
+            return false;
+        };
+        turned += (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
     }
-    inside
+    if desired_sign > 0.0 {
+        turned > std::f64::consts::PI
+    } else {
+        turned < -std::f64::consts::PI
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +248,54 @@ mod tests {
         ];
         assert!(point_in_close_region(&points, 115.0, 20.0));
         assert!(!point_in_close_region(&points, -70.0, 20.0));
+    }
+
+    #[test]
+    fn close_region_uses_spherical_smaller_side_at_a_pole() {
+        let points = vec![
+            LonLatPoint {
+                lon: -120.0,
+                lat: 80.0,
+            },
+            LonLatPoint {
+                lon: 0.0,
+                lat: 80.0,
+            },
+            LonLatPoint {
+                lon: 120.0,
+                lat: 80.0,
+            },
+        ];
+        assert!(point_in_close_region(&points, 45.0, 90.0));
+        assert!(!point_in_close_region(&points, 45.0, -80.0));
+
+        let reversed = points.iter().rev().copied().collect::<Vec<_>>();
+        assert!(point_in_close_region(&reversed, -90.0, 90.0));
+        assert!(!point_in_close_region(&reversed, -90.0, -80.0));
+    }
+
+    #[test]
+    fn close_region_uses_great_circle_edges_across_the_dateline() {
+        let points = vec![
+            LonLatPoint {
+                lon: 170.0,
+                lat: -10.0,
+            },
+            LonLatPoint {
+                lon: -170.0,
+                lat: -10.0,
+            },
+            LonLatPoint {
+                lon: -170.0,
+                lat: 10.0,
+            },
+            LonLatPoint {
+                lon: 170.0,
+                lat: 10.0,
+            },
+        ];
+        assert!(point_in_close_region(&points, 180.0, 0.0));
+        assert!(point_in_close_region(&points, -179.0, 0.0));
+        assert!(!point_in_close_region(&points, 0.0, 0.0));
     }
 }

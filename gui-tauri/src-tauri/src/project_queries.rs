@@ -8,7 +8,8 @@ use earthmesh_project::{
     criterion_catalog, default_mask_sea_ratio, threshold_criterion_catalog, CloseMaskFormat,
     DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshIntentPreset,
     ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
-    DEFAULT_LANDCOVER_CLASS_THRESHOLD, DEFAULT_MIN_ANGLE_DEG, INTENT_PRESETS,
+    DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS, DEFAULT_LANDCOVER_CLASS_THRESHOLD,
+    DEFAULT_MIN_ANGLE_DEG, DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS, INTENT_PRESETS,
     KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
     METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
 };
@@ -86,9 +87,13 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         method_c_max_refinement_level: METHOD_C_MAX_AUTO_REFINE_LEVEL,
         default_openmp: baseline.mkgrd.openmp,
         default_niter: baseline.mkgrd.niter,
+        default_surface_refine_spring_iterations: DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS,
+        default_atmosphere_refine_spring_iterations: DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS,
         default_beta: baseline.mkgrd.beta,
         default_relax: baseline.mkgrd.relax,
         default_hfield_g: HfieldRefinementRecipe::default().g,
+        method_c_defaults: Default::default(),
+        harp_dv_defaults: Default::default(),
         method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
         km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
     })
@@ -298,6 +303,37 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         refine_enabled: cfg.refinement.enabled,
         threshold_refine_enabled: cfg.refinement.threshold_enabled,
         threshold_criteria,
+        refinement_backend: refinement_backend_id(cfg.refinement.backend).to_string(),
+        refinement_algorithm: refinement_algorithm_id(&cfg).to_string(),
+        method_c_lepp_max_cycles: cfg.refinement.method_c.max_cycles,
+        method_c_lepp_target_size_tolerance: cfg.refinement.method_c.target_size_tolerance,
+        method_c_lepp_maximum_neighbor_size_ratio: cfg
+            .refinement
+            .method_c
+            .maximum_neighbor_size_ratio,
+        method_c_lepp_maximum_vertices: cfg.refinement.method_c.maximum_vertices,
+        method_c_lepp_maximum_insertions_per_cycle: cfg
+            .refinement
+            .method_c
+            .maximum_insertions_per_cycle,
+        method_c_lepp_maximum_path_length: cfg.refinement.method_c.maximum_path_length,
+        method_c_lepp_stop_at_source_resolution: cfg.refinement.method_c.stop_at_source_resolution,
+        method_c_lepp_minimum_triangle_angle_deg: cfg
+            .refinement
+            .method_c
+            .minimum_triangle_angle_deg,
+        harp_dv_max_cycles: cfg.refinement.harp_dv.max_cycles,
+        harp_dv_minimum_cell_width_m: cfg.refinement.harp_dv.minimum_cell_width_m,
+        harp_dv_maximum_cells: cfg.refinement.harp_dv.maximum_cells,
+        harp_dv_maximum_patch_cells: cfg.refinement.harp_dv.maximum_patch_cells,
+        harp_dv_maximum_neighbor_scale_ratio: cfg.refinement.harp_dv.maximum_neighbor_scale_ratio,
+        harp_dv_minimum_candidate_separation_m: cfg
+            .refinement
+            .harp_dv
+            .minimum_candidate_separation_m,
+        harp_dv_maximum_vertex_degree: cfg.refinement.harp_dv.maximum_vertex_degree,
+        harp_dv_minimum_triangle_angle_deg: cfg.refinement.harp_dv.minimum_triangle_angle_deg,
+        harp_dv_criterion_minimum_angle_deg: cfg.refinement.harp_dv.criterion_minimum_angle_deg,
         hydro_river_refine_enabled: hydro.is_some_and(|value| value.river_refinement_enabled),
         hydro_river_width_refine_enabled: hydro
             .is_some_and(HydroCoastConfig::river_width_refinement_active),
@@ -362,6 +398,28 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         expert_isolated_ocean: cfg.expert.isolated_ocean,
         layers,
     })
+}
+
+fn refinement_backend_id(backend: earthmesh_project::RefinementBackend) -> &'static str {
+    match backend {
+        earthmesh_project::RefinementBackend::MethodC => "method_c",
+        earthmesh_project::RefinementBackend::RedGreen => "red_green",
+        earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
+    }
+}
+
+fn refinement_algorithm_id(cfg: &ProjectConfig) -> &'static str {
+    match cfg.refinement.backend {
+        earthmesh_project::RefinementBackend::MethodC
+            if cfg.refinement.method_c.algorithm
+                == earthmesh_project::MethodCAlgorithm::LeppDelaunay =>
+        {
+            "lepp_delaunay"
+        }
+        earthmesh_project::RefinementBackend::MethodC => "method_c",
+        earthmesh_project::RefinementBackend::RedGreen => "red_green",
+        earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
+    }
 }
 
 fn target_kind_id(kind: MeshDomainKind) -> &'static str {

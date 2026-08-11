@@ -301,17 +301,20 @@ pub use voronoi_pcvt::pcvt_adjust_voronoi_grid_state;
 mod voronoi_gridinit;
 pub use voronoi_gridinit::gridinit_voronoi_state_canonical;
 mod primal_dual_mesh;
-pub use mesh_insertion::{DegreeForecast, Encroachment, InsertionError, InsertionReport};
+pub use mesh_insertion::{
+    DegreeForecast, Encroachment, InsertionError, InsertionReport, InsertionTransactionError,
+};
 pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
-pub use mesh_state::{MeshState, MeshStateError, MESH_STATE_FIRST_ID};
+pub use mesh_state::{EdgeId, FaceId, MeshState, MeshStateError, VertexId, MESH_STATE_FIRST_ID};
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
 pub use primal_dual_mesh::TriangularMesh;
 mod mesh_from_gridfile;
 pub use mesh_from_gridfile::MethodCGridfileMetadata;
 mod refine_regions;
+pub use refine_regions::scale_refinement_regions_radius;
 pub use refine_regions::RefinementRegion;
-pub use refine_regions::*;
+pub(crate) use refine_regions::METHOD_C_MIN_GRID_SPACING_METERS;
 mod refine_region_geometry;
 pub use refine_region_geometry::{
     refine_regions_close_to_method_c, refine_regions_contain_method_c,
@@ -319,6 +322,7 @@ pub use refine_region_geometry::{
 mod mesh_expansion;
 mod mesh_topology_validation;
 mod refine_region_selection;
+pub use refine_region_selection::RefinementRegionIndex;
 mod refine_region_validation;
 pub use mesh_topology_validation::MethodCTopologyValidation;
 mod mesh_cart_hex;

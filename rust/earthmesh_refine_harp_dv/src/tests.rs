@@ -132,7 +132,7 @@ fn wrapping_a_mesh_gives_every_site_an_identity() {
 
     for site in adaptive.sites() {
         assert_eq!(
-            site.position, site.reference_position,
+            site.position, site.origin_position,
             "an inherited site has not moved yet"
         );
         assert_eq!(site.cumulative_displacement_m, 0.0);

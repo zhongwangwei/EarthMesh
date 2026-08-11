@@ -172,6 +172,17 @@ impl RefinementDemand {
         self.words.iter().all(|word| *word == 0)
     }
 
+    /// Clear demanded cells that do not pass `keep`.
+    pub(crate) fn retain_where(&mut self, keep: impl Fn(usize, usize) -> bool) {
+        for lat in self.bounds.maxlat_source..=self.bounds.minlat_source {
+            for lon in self.bounds.minlon_source..=self.bounds.maxlon_source {
+                if self.is_demanded(lon, lat) && !keep(lon, lat) {
+                    self.set(lon, lat, false);
+                }
+            }
+        }
+    }
+
     /// Fill the window from a per-cell predicate, one latitude row at a time,
     /// in parallel.
     ///
@@ -248,6 +259,68 @@ impl RefinementDemand {
                 }
             }
         }
+    }
+
+    /// Fill consecutive latitude bands in parallel and pack each emitted row
+    /// immediately, without retaining one byte per source cell until the scan
+    /// finishes.
+    pub fn fill_row_bands_par(
+        &mut self,
+        decide_band: impl Fn(usize, usize, usize, usize, &mut dyn FnMut(usize, &[bool])) + Sync + Send,
+    ) {
+        let nlons = self.nlons;
+        self.fill_packed_bands_par(|lat_from, lat_to, lon_from, lon_to, words| {
+            let rows = lat_to - lat_from + 1;
+            let mut emitted_rows = 0usize;
+            let mut emit = |lat: usize, row: &[bool]| {
+                debug_assert_eq!(row.len(), nlons, "a row must cover the window width");
+                debug_assert_eq!(lat, lat_from + emitted_rows);
+                let row_bit_from = emitted_rows * nlons;
+                for (lon_offset, demanded) in row.iter().copied().enumerate() {
+                    if demanded {
+                        let bit = row_bit_from + lon_offset;
+                        words[bit / 64] |= 1u64 << (bit % 64);
+                    }
+                }
+                emitted_rows += 1;
+            };
+            decide_band(lat_from, lat_to, lon_from, lon_to, &mut emit);
+            debug_assert_eq!(emitted_rows, rows, "a band must emit every row once");
+        });
+    }
+
+    /// Fill word-aligned latitude bands directly into the packed demand.
+    pub fn fill_packed_bands_par(
+        &mut self,
+        decide_band: impl Fn(usize, usize, usize, usize, &mut [u64]) + Sync + Send,
+    ) {
+        use rayon::prelude::*;
+
+        let (minlon, nlons) = (self.bounds.minlon_source, self.nlons);
+        let maxlat = self.bounds.maxlat_source;
+        let nlats = self.nlats;
+        let workers = rayon::current_num_threads().max(1);
+        let target_rows = nlats.div_ceil(workers.saturating_mul(2)).max(1);
+        // A whole number of 64-row groups aligns every band's first bit for any
+        // raster width, so Rayon can hand out disjoint word slices directly.
+        let band_rows = target_rows.div_ceil(64).saturating_mul(64).max(64);
+        let words_per_band = band_rows.saturating_mul(nlons) / 64;
+
+        self.words.fill(0);
+        self.words
+            .par_chunks_mut(words_per_band.max(1))
+            .enumerate()
+            .for_each(|(band_index, words)| {
+                let lat_offset_from = band_index * band_rows;
+                let rows = (nlats - lat_offset_from).min(band_rows);
+                decide_band(
+                    maxlat + lat_offset_from,
+                    maxlat + lat_offset_from + rows - 1,
+                    minlon,
+                    minlon + nlons - 1,
+                    words,
+                );
+            });
     }
 
     /// Union with another demand over the same window, so several criteria can

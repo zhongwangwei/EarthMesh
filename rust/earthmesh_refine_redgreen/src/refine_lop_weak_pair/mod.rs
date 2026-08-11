@@ -73,10 +73,15 @@ pub fn refine_weak_concav_pair_special_one_based(
             .iter()
             .copied()
             .find(|&neighbor| neighbor > 0 && neighbor < mrl_new.len() && mrl_new[neighbor] != 4)
+            // The canonical loop leaves `m3` on its last neighbour when the
+            // transition row has already absorbed all three. It still records
+            // that pair for the Lawson pass; rejecting it makes the local
+            // weak-concavity route unusable on dense, valid markings.
+            .or_else(|| triangle_neighbors[m1].last().copied())
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("weak concavity triangle {m1} has no outward non-refined neighbor"),
+                    format!("weak concavity triangle {m1} has no neighbor"),
                 )
             })?;
         if m3 >= triangle_neighbors.len()

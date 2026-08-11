@@ -189,7 +189,7 @@ fn write_mpas_mesh_netcdf_with_radius(
         &["nVertices", "vertexDegree"],
         &mesh.edges_on_vertex[1..],
     )?;
-    // Match the checked MPAS-Ocean SOMA reference meshes: two surviving cells
+    // Match the checked MPAS-Ocean SOMA published meshes: two surviving cells
     // keep boundaryVertex=0; only a single surviving cell marks the vertex 1.
     let boundary_vertex = mesh.cells_on_vertex[1..]
         .iter()

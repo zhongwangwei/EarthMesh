@@ -310,7 +310,48 @@ fn a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone() {
     assert_eq!(mesh.sites().len(), before_sites);
 }
 
-/// A demand the ladder can satisfy stops at the first rung that passes.
+/// A refinement records the generation of the cell it served.
+#[test]
+fn refining_a_refined_site_records_the_next_generation() {
+    let mut mesh = sphere(6);
+
+    let first = mesh
+        .refine_cell(40, None, CandidatePolicy::default(), permissive())
+        .expect("first refine")
+        .resolved()
+        .expect("first commit")
+        .clone();
+    assert_eq!(
+        mesh.sites()[first.vertex - MESH_STATE_FIRST_ID].depth,
+        1,
+        "a first-level demand records depth 1"
+    );
+
+    let second = mesh
+        .refine_cell(first.vertex, None, CandidatePolicy::default(), permissive())
+        .expect("second refine")
+        .resolved()
+        .expect("second commit")
+        .clone();
+    assert_eq!(
+        mesh.sites()[second.vertex - MESH_STATE_FIRST_ID].depth,
+        2,
+        "refining an inserted site must not be flattened back to depth 1"
+    );
+    let written = mesh.to_triangular_mesh().expect("writeable mesh");
+    let deepest = written
+        .w_faces
+        .iter()
+        .skip(2)
+        .map(|face| face.mrlw)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        deepest >= 3,
+        "face levels must carry the inserted site's depth"
+    );
+}
+
 #[test]
 fn refining_a_cell_keeps_the_first_candidate_that_survives() {
     let mut mesh = sphere(6);
@@ -465,4 +506,95 @@ fn a_higher_sliver_floor_buys_a_better_worst_angle() {
         tight_sites <= loose_sites,
         "refusing thin triangles cannot add sites: {tight_sites} against {loose_sites}"
     );
+}
+
+/// A patch bigger than the run allows is refused, not snapshotted anyway.
+///
+/// `maximum_patch_cells` was declared, validated, and passed to nothing --
+/// `api.rs` built `CycleLimits` without it and no transaction ever looked at a
+/// patch's size. A bound accepted and ignored is what this crate's own config
+/// note about `deterministic` says a flag must never be.
+///
+/// One is the tightest possible budget: an insertion's cavity plus its ring is
+/// always more than one triangle, so this must refuse, and refuse by name
+/// rather than by running out of something else.
+#[test]
+fn a_patch_over_budget_is_refused_by_name() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    let point = mesh.state().vertices()[site];
+    let gates = HardGates {
+        max_patch_triangles: 1,
+        ..HardGates::default()
+    };
+    let target = crate::candidate::candidates_for_site(
+        mesh.state(),
+        site,
+        None,
+        crate::CandidatePolicy::default(),
+    )
+    .expect("ladder")
+    .first()
+    .map(|candidate| candidate.point)
+    .unwrap_or(point);
+
+    match mesh
+        .propose_site_near(target, None, gates)
+        .expect("proposal")
+    {
+        Acceptance::RolledBack(Rejection::PatchTooLarge { triangles, allowed }) => {
+            assert_eq!(allowed, 1);
+            assert!(triangles > 1, "the patch really was larger: {triangles}");
+        }
+        other => panic!("expected the patch bound to refuse, got {other:?}"),
+    }
+
+    // And with the bound generous the same change is refused for some other
+    // reason or not at all -- either way not by the patch bound, so the refusal
+    // above is that bound and not the change being impossible.
+    let mut mesh = sphere(6);
+    let generous = HardGates {
+        max_patch_triangles: 10_000,
+        ..HardGates::default()
+    };
+    assert!(
+        !matches!(
+            mesh.propose_site_near(target, None, generous)
+                .expect("proposal"),
+            Acceptance::RolledBack(Rejection::PatchTooLarge { .. })
+        ),
+        "a generous bound must not be what refuses it"
+    );
+}
+
+/// The patch bound covers a move, not only an insertion.
+///
+/// It went in on the insertion path alone, so a move could snapshot any amount
+/// and the config was half-honoured -- which is exactly the shape the bound was
+/// added to end. A move snapshots more than an insertion does, too: the ring
+/// around the fan's ring, because a flip rewrites a whole ring and a rollback
+/// has to be able to put all of it back.
+#[test]
+fn the_patch_bound_covers_a_move_as_well_as_an_insertion() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    let here = mesh.state().vertices()[site];
+    // A destination a hair away: the move itself is trivial, so whatever
+    // refuses it is the bound and not the geometry.
+    let destination = CartesianPoint::new(here.x + 1.0, here.y, here.z);
+
+    let tight = HardGates {
+        max_patch_triangles: 1,
+        ..HardGates::default()
+    };
+    match mesh
+        .propose_move(site, destination, tight, &|_| true)
+        .expect("proposal")
+    {
+        Acceptance::RolledBack(Rejection::PatchTooLarge { triangles, allowed }) => {
+            assert_eq!(allowed, 1);
+            assert!(triangles > 1, "the patch really was larger: {triangles}");
+        }
+        other => panic!("a move must respect the patch bound, got {other:?}"),
+    }
 }

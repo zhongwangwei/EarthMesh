@@ -249,6 +249,28 @@ fn bundled_engine_directory_precedes_a_stale_repository_build() {
 }
 
 #[test]
+fn source_checkout_discovers_only_staged_tauri_sidecars() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_sidecars_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let binaries = root.join("gui-tauri/src-tauri/binaries");
+    fs::create_dir_all(&binaries).unwrap();
+    fs::write(binaries.join("earthmesh_cli-test-target"), b"release").unwrap();
+    fs::write(binaries.join("unrelated"), b"debug").unwrap();
+
+    assert_eq!(
+        engine::source_sidecar_candidates(&root),
+        vec![binaries.join("earthmesh_cli-test-target")]
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn gui_scans_valid_auto_refine_decisions_and_keeps_malformed_artifacts_nonfatal() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -765,9 +787,16 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     );
     assert_eq!(capabilities.default_openmp, 16);
     assert_eq!(capabilities.default_niter, 5000);
+    assert_eq!(capabilities.default_surface_refine_spring_iterations, 2000);
+    assert_eq!(
+        capabilities.default_atmosphere_refine_spring_iterations,
+        5000
+    );
     assert_eq!(capabilities.default_beta, 1.2);
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);
+    assert_eq!(capabilities.method_c_defaults, Default::default());
+    assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(
         capabilities.method_c_spring_nxp1_km,
         earthmesh_project::METHOD_C_SPRING_NXP1_KM
@@ -1720,6 +1749,34 @@ fn a_circle_chain_is_visible_in_the_summary() {
     assert_eq!(summary.specified_refine_circle_count, 2);
     assert_eq!(summary.specified_refine_lon, Some(113.5));
 
+    // Open -> save/run sends the unchanged visible head back through the one-circle
+    // command; that must keep the hidden tail.
+    let saved = set_specified_refinement(
+        chained.clone(),
+        true,
+        Some("radius".to_string()),
+        Some(113.5),
+        Some(22.0),
+        Some(80.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("unchanged chain head preserves the chain");
+    let saved = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+    assert_eq!(
+        saved
+            .refinement
+            .specified_circle
+            .as_ref()
+            .unwrap()
+            .as_slice()
+            .len(),
+        2
+    );
+
     // The single-circle control must not silently drop the second member.
     let error = set_specified_refinement(
         chained,
@@ -1880,9 +1937,19 @@ fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
         base_m: Some(12_000.0),
         origin_lon: Some(123.5),
         origin_lat: Some(-31.25),
-        nlon: None,
-        nlat: None,
+        nlon: Some(1440),
+        nlat: Some(720),
     });
+    base.refinement.adaptive = Some(earthmesh_project::AdaptiveRefinementRecipe {
+        enabled: true,
+        max_level: 2,
+        base_m: Some(9_000.0),
+        coastline: false,
+    });
+    base.refinement.method_c = earthmesh_project::MethodCRefinementRecipe {
+        max_cycles: 123,
+        ..Default::default()
+    };
     let edited = ProjectConfig::scaffold(
         "edited_hfield_origin",
         MeshIntentPreset::HydrologyLand,
@@ -1910,6 +1977,108 @@ fn hfield_origin_survives_opened_project_compose_and_canonical_save() {
     assert_eq!(recipe.base_m, Some(10_000.0));
     assert_eq!(recipe.origin_lon, Some(123.5));
     assert_eq!(recipe.origin_lat, Some(-31.25));
+    assert_eq!(recipe.nlon, Some(1440));
+    assert_eq!(recipe.nlat, Some(720));
+    let saved = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+    assert_eq!(saved.refinement.adaptive.unwrap().base_m, Some(9_000.0));
+    assert_eq!(saved.refinement.method_c.max_cycles, 123);
+}
+
+#[test]
+fn hidden_lepp_post_quality_survives_compatible_open_compose_only() {
+    let mut base = ProjectConfig::scaffold(
+        "opened_lepp_quality",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    base.refinement.enabled = true;
+    base.refinement.max_passes = 1;
+    base.refinement.threshold_enabled = false;
+    base.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+        earthmesh_project::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.0,
+            radius_km: 80.0,
+        },
+    ));
+    base.refinement.backend = earthmesh_project::RefinementBackend::MethodC;
+    base.quality.lepp_post_quality = Some(earthmesh_project::LeppPostQualityConfig {
+        maximum_insertions: 77,
+        maximum_edge_km: Some(42.0),
+    });
+    let base_yaml = base.to_yaml().expect("base yaml");
+    let edited = ProjectConfig::scaffold(
+        "edited_lepp_quality",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+
+    let yaml = preserve_unexposed_project_fields(
+        base_yaml.clone(),
+        edited.to_yaml().expect("edited yaml"),
+        true,
+    )
+    .expect("preserve project fields");
+    let yaml = set_refinement(yaml, true, false, 1).expect("set visible refinement");
+    let yaml = set_adaptive_refinement(yaml, true, Some(1), Some(false)).expect("adaptive route");
+    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("h-field off");
+    let yaml = set_refinement_backend(yaml, "method_c".to_string()).expect("method-c backend");
+    let yaml = preserve_unexposed_quality_fields(base_yaml, yaml).expect("preserve hidden lepp");
+    let cfg = ProjectConfig::from_yaml(&yaml).expect("valid composed yaml");
+    assert_eq!(
+        cfg.quality.lepp_post_quality.unwrap().maximum_insertions,
+        77
+    );
+}
+
+#[test]
+fn incompatible_visible_choices_drop_hidden_lepp_post_quality() {
+    let mut base = ProjectConfig::scaffold(
+        "opened_lepp_quality_drop",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    base.refinement.enabled = true;
+    base.refinement.max_passes = 1;
+    base.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+        earthmesh_project::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.0,
+            radius_km: 80.0,
+        },
+    ));
+    base.quality.lepp_post_quality = Some(earthmesh_project::LeppPostQualityConfig {
+        maximum_insertions: 77,
+        maximum_edge_km: None,
+    });
+    let yaml = base.to_yaml().expect("base yaml");
+
+    let regional = set_domain_bbox(yaml.clone(), 112.0, 115.0, 21.0, 24.0, None)
+        .expect("regional domain drops incompatible hidden LEPP repair");
+    assert!(ProjectConfig::from_yaml(&regional)
+        .unwrap()
+        .quality
+        .lepp_post_quality
+        .is_none());
+
+    let red_green = set_refinement_backend(yaml, "red_green".to_string())
+        .expect("red-green backend drops incompatible hidden LEPP repair");
+    assert!(ProjectConfig::from_yaml(&red_green)
+        .unwrap()
+        .quality
+        .lepp_post_quality
+        .is_none());
+
+    let disabled = set_refinement(base.to_yaml().unwrap(), false, false, 0)
+        .expect("disabling refinement drops incompatible hidden LEPP repair");
+    assert!(ProjectConfig::from_yaml(&disabled)
+        .unwrap()
+        .quality
+        .lepp_post_quality
+        .is_none());
 }
 
 #[test]
@@ -2949,24 +3118,49 @@ fn the_summary_says_what_a_target_and_model_pairing_delivers() {
     assert_eq!(summary.delivery_status, "full");
 }
 
-/// The GUI can select every backend the engine has.
+/// The GUI can select every mesh-refinement algorithm the engine has.
 ///
 /// It could not: `set_refinement_backend` knew `method_c` and `red_green`, and
 /// `RefinementBackend` had no HARP-DV variant at all, so the third backend was
 /// unreachable from a project file or the interface. The engine had shipped it
 /// and nothing above the CLI could ask for it.
 #[test]
-fn every_engine_backend_is_selectable_from_a_project() {
+fn every_refinement_algorithm_is_selectable_from_a_project() {
     let base = circle_project("backend selection").to_yaml().expect("yaml");
-    for (name, expected) in [
-        ("method_c", earthmesh_project::RefinementBackend::MethodC),
-        ("red_green", earthmesh_project::RefinementBackend::RedGreen),
-        ("harp_dv", earthmesh_project::RefinementBackend::HarpDv),
+    for (name, backend, method_c_algorithm) in [
+        (
+            "method_c",
+            earthmesh_project::RefinementBackend::MethodC,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
+        (
+            "lepp_delaunay",
+            earthmesh_project::RefinementBackend::MethodC,
+            earthmesh_project::MethodCAlgorithm::LeppDelaunay,
+        ),
+        (
+            "red_green",
+            earthmesh_project::RefinementBackend::RedGreen,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
+        (
+            "harp_dv",
+            earthmesh_project::RefinementBackend::HarpDv,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
     ] {
         let yaml = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
             .unwrap_or_else(|error| panic!("{name} should be selectable: {error}"));
         let parsed = ProjectConfig::from_yaml(&yaml).expect("round trip");
-        assert_eq!(parsed.refinement.backend, expected, "{name}");
+        assert_eq!(parsed.refinement.backend, backend, "{name}");
+        assert_eq!(
+            parsed.refinement.method_c.algorithm, method_c_algorithm,
+            "{name}"
+        );
+        assert_eq!(
+            project_summary(yaml).expect("summary").refinement_algorithm,
+            name
+        );
     }
 
     let error = crate::project_edits::set_refinement_backend(base, "harpdv".to_string())
@@ -2975,4 +3169,46 @@ fn every_engine_backend_is_selectable_from_a_project() {
         error.contains("harp_dv"),
         "the message should list it: {error}"
     );
+}
+
+#[test]
+fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
+    let base = circle_project("algorithm controls")
+        .to_yaml()
+        .expect("yaml");
+    let lepp =
+        crate::project_edits::set_refinement_backend(base.clone(), "lepp_delaunay".to_string())
+            .expect("LEPP algorithm");
+    let lepp = crate::project_edits::set_method_c_algorithm_options(
+        lepp, 3, 1.1, 1.5, 9_000, 800, 700, false, 20.0,
+    )
+    .expect("LEPP options");
+    let summary = project_summary(lepp).expect("LEPP summary");
+    assert_eq!(summary.refinement_algorithm, "lepp_delaunay");
+    assert_eq!(summary.method_c_lepp_max_cycles, 3);
+    assert_eq!(summary.method_c_lepp_target_size_tolerance, 1.1);
+    assert_eq!(summary.method_c_lepp_maximum_neighbor_size_ratio, 1.5);
+    assert_eq!(summary.method_c_lepp_maximum_vertices, 9_000);
+    assert_eq!(summary.method_c_lepp_maximum_insertions_per_cycle, 800);
+    assert_eq!(summary.method_c_lepp_maximum_path_length, 700);
+    assert!(!summary.method_c_lepp_stop_at_source_resolution);
+    assert_eq!(summary.method_c_lepp_minimum_triangle_angle_deg, 20.0);
+
+    let harp = crate::project_edits::set_refinement_backend(base, "harp_dv".to_string())
+        .expect("HARP-DV algorithm");
+    let harp = crate::project_edits::set_harp_dv_options(
+        harp, 4, 2_000.0, 10_000, 900, 1.5, 2.0, 6, 25.0, 10.0,
+    )
+    .expect("HARP-DV options");
+    let summary = project_summary(harp).expect("HARP-DV summary");
+    assert_eq!(summary.refinement_algorithm, "harp_dv");
+    assert_eq!(summary.harp_dv_max_cycles, 4);
+    assert_eq!(summary.harp_dv_minimum_cell_width_m, 2_000.0);
+    assert_eq!(summary.harp_dv_maximum_cells, 10_000);
+    assert_eq!(summary.harp_dv_maximum_patch_cells, 900);
+    assert_eq!(summary.harp_dv_maximum_neighbor_scale_ratio, 1.5);
+    assert_eq!(summary.harp_dv_minimum_candidate_separation_m, 2.0);
+    assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
+    assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
+    assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
 }

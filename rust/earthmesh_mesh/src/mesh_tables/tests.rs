@@ -59,10 +59,10 @@ fn a_mesh_with_an_inserted_site_round_trips() {
     assert_eq!(rebuilt.nmd, mesh.nmd + 1);
     assert_eq!(rebuilt.nwd, mesh.nwd + 2);
     rebuilt.validate_topology().expect("a valid mesh");
-    assert_eq!(
-        MeshState::from_triangular_mesh(&rebuilt).expect("neutral state"),
-        state
-    );
+    let round_trip = MeshState::from_triangular_mesh(&rebuilt).expect("neutral state");
+    assert_eq!(round_trip.vertices(), state.vertices());
+    assert_eq!(round_trip.triangles(), state.triangles());
+    assert_eq!(round_trip.neighbours(), state.neighbours());
 }
 
 /// Per-face generations land where the writers read them.

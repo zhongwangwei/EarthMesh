@@ -2447,3 +2447,195 @@ CoLM 冒烟测试都在那里)。**只标 ignore 不接进 test-slow 就是「�
 
 **两个问题叠在一起,我修了一个就以为修完了。** 8 vs 9 那个断言在 1 分 06 秒就挂了,所以那一次没走
 到超时——一个失败**遮住**了另一个,而它们的症状(CI 红)完全一样。
+
+### 11.50 一个装作在检查的门禁(2026-08-09)
+
+外部审查报告说 `make check-architecture` 失败,有三处 wildcard re-export。核实下来**比那更糟**:
+本机没装 `rg`,于是
+
+```
+@if rg -n '...' rust --glob '*.rs'; then echo '...forbidden'; exit 1; fi
+```
+
+三条检查全部 `command not found`,`if` 取假分支,**target 退出 0 —— 报告成功**。它守着
+`release-check`。**一个报告成功却什么都没检查的门禁,比没有门禁更坏**:它让人以为查过了。
+
+这和 §11.38–11.41 是同一形状,只是这次长在门禁自己身上——而我这一整轮都在用门禁给自己背书。
+
+改成 `grep -r --include`(POSIX,处处都有),并加 `--exclude-dir=target`:grep 不像 ripgrep 那样
+读 `.gitignore`,不排除构建目录的话,六条来自 `target/` 的命中会把真正的三条淹掉。
+
+**打开之后,先前被完全掩盖的违规**:
+
+| 类别 | 数量 |
+|---|---|
+| wildcard public re-export | 3 |
+| source-origin reference 命名 | 15 |
+
+三处 wildcard 都换成具名导出。名字是**把导出收窄到编译不过为止**逐轮问出来的——第一轮只跑
+`cargo build` 漏掉了测试用到的两个,`--all-targets` 才补齐。`earthmesh_refine::hfield` 那处更直接:
+**没有任何调用方经由它引用**,一个 wildcard 转出整个 crate 的表面,却没有一个消费者。
+
+15 处 reference 命名里,**只有一处是规则真正要禁的意思**(红绿 lib.rs 的「the Fortran reference」),
+其余是英文里「参照物 / 基准」的普通用法,包括我这一轮自己写的两处。规则是个粗糙的正则,但把它们
+改成 `baseline` / `yardstick` / `原版` 比给正则开洞便宜。
+
+**这一条对本轮其余结论的意义**:我一路用「门禁全绿」给自己背书,而这道门禁从头到尾没在跑。
+**「门禁通过」只在门禁真的执行了检查时才是证据。**
+
+### 11.51 外部审查指出的两处,都是我漏的同类第二例(2026-08-09)
+
+**一、全局 finest/coarsest 读整行 `w_to_m`,还丢掉一半单元。**
+
+我修过**区域指标**上一模一样的缺陷:`w_to_m` 每行固定七槽,只有前 `n_w_to_m` 个是角点,其余是
+placeholder id 1——它解析得到一个**真实但无关**的点,于是多边形由「一个单元 + 一个陌生人」构成。
+**同一个文件里的另一处我没查。**
+
+第二处还多一个毛病:`robust_spherical_area_unit` 返回**有符号**面积,而这里 `steradians <= 0.0`
+直接 `continue`——约一半单元 winding 相反,于是**被整批丢弃**,报告的极值只是剩下那一半的极值。
+区域指标那处的注释早就写明了这件事并用了 `abs()`。
+
+**二、`maximum_patch_cells` 声明了、校验了、传给了谁都没有。**
+
+`api.rs` 构造 `CycleLimits` 时不带它,事务处也从不检查补丁大小。这和我删掉的 `patch_ring_depth`
+是同一类,但这个量定义明确(补丁快照的三角形数),所以**实现而不是删除**:进 `HardGates`(逐事务
+门禁所在处),超限返回 `Rejection::PatchTooLarge`,计入 topology 类拒绝。
+
+**我审这个结构体时漏了它,方法上的原因值得记**:我只统计了每个字段的**引用次数**,看到
+`maximum_patch_cells` 有 3 次就放过——而那 3 次全是**校验**,没有一次是**消费**。
+**「被引用」不等于「被使用」;要数的是消费点。**
+
+**三、修这一条时我当场又犯了一次同样的错。** 在 `api.rs` 里写了
+
+```rust
+let mut gates = request.gates;
+gates.max_patch_triangles = request.config.maximum_patch_cells;
+let outcome = run_cycles(..., request.gates, ...);   // ← 传的还是原来那个
+```
+
+赋了值,传的却是旧的——**正是这条修复要治的那个病**。clippy 的 `assigned to, but never used` 抓到了。
+写门禁的人自己也会犯门禁要防的错,这就是为什么门禁不能只靠自觉。
+
+### 11.52 外部审查剩下的五条(2026-08-09)
+
+**一、跨反子午线的窗口:一个报错、一个丢一半、一个只是过扫。**
+
+需求窗口是**源索引上的单个矩形**,而 170°E 到 170°W 是被接缝分开的**两段**——没有任何一个
+`minlon..maxlon` 能装下它。三处表现不同:
+
+| 形状 | 修前 | 性质 |
+|---|---|---|
+| Bbox `west > east` | `source_bounds_for_bbox` 拒绝 `east <= west`,运行直接死 | **真错**(项目层明确允许这种窗口) |
+| Circle 靠近接缝 | 盒子裁到 180,**另一侧从不扫描**,那边的需求无声消失 | **真错** |
+| Close 跨接缝 | 普通 min/max,扫约 358° | **只是过扫,结果正确** |
+
+修法:**跨接缝时退化为整条经度带**。这是超集,不丢东西;哪个源单元真的被需要,后面由
+`GridRegion::contains` 逐格判定,而它本来就正确处理接缝。**过扫是安全的,欠扫不是**,而前两处
+都在欠扫。Close 那处不动:把跨接缝的曲线和真正全球的曲线分开,要的是包含判定而不是外接范围。
+
+**二、高纬 overlay 把球面压成经纬度平面。**
+
+`complete-mask` 写出处用平面 shoelace 面积在**多个 surface class 之间**比大小选赢家。同一单元内
+不同 class 的纬度分布不同,所以畸变**不会抵消**:偏极侧的 class 被高估。复现审查给的数值——单元
+80°–89°N,掩膜覆盖其偏极那一半:
+
+```
+平面 fraction = 0.500
+球面 fraction = 0.296     (sin 差之比)
+高估          = 69%
+```
+
+两个 class 靠得近时,赢家会翻。改用 `LocalEqualArea`——**同一个 crate 里的 intersections 写出处
+早就为同样的理由在用它**。测试同时钉住赤道附近两种读数一致,以免这变成一个到处乱抹的"修正"。
+
+**三、HARP-DV 把三种结局合并成 `AllSatisfied`。**
+
+demand 列表为空就报 `AllSatisfied`,而空可能意味着三件事:每个单元都够小了;还想细化的单元**都
+触到了最小宽度**;剩下的需求**数据支撑不了**。只有第一件叫"满足"。
+
+`StopReason::MinimumScaleReached` 早就定义了,**却没有任何赋值点**。现在 `evaluate` 回报一个
+tally,三种结局分别对应 `AllSatisfied` / `MinimumScaleReached` / 新增的 `SourceResolutionReached`。
+
+**触底是整单元跳过的**——连 MinAngle 这类质量判据也一起不问。这一点值得报出来而不是抹平。
+
+**而原来有一个测试把错误语义钉死了**:`a_cell_at_the_minimum_width_stops_asking` 断言
+`AllSatisfied`。**测试固定的是缺陷而不是行为**。改成断言 `MinimumScaleReached`,并补一个反面
+测试:真正达标的网格仍报 `AllSatisfied`——区分三种结局,只在"满足"那种仍说满足时才有意义。
+
+**四、CLI 只在 `unresolved_cells` 非空时才说话。**
+
+于是 `BudgetReached`、`MaximumCyclesReached`、以及只有 `unbalanced_pairs_remaining` 的情形
+**完全静默**——而静默读起来就是"这就是你要的网格"。改为按**停止原因**判断,并且只在详细那段不会
+触发时打印:两行说同一件事,会训练人两行都不读。
+
+**五、架构文档写着「Two refinement backends」,且把 Method-C 放在 `earthmesh_mesh` 里。**
+
+两句都曾为真:HARP-DV 后来才有,Method-C 是我 `aa415d8` 搬走的。**标题里的数字是那种会在无人
+改动周围句子的情况下悄悄过期的事实**,所以改的同时把它为什么过期也写进去了。
+
+### 11.53 复查打回的四条,三条是我上一轮只做了一半(2026-08-09)
+
+**一、`make clippy-full` 是红的,而我一直在读 `make clippy`。**
+
+`clippy` 覆盖无 NetCDF 的那些 crate;`clippy-full` 再加上 `earthmesh_cli`。**这一轮的大半改动都在
+`earthmesh_cli` 里**,而我全程报的是窄的那个。这是 CLAUDE.md 开篇那条警告的**第三种形态**:它是
+关于两个 workspace 的,也是关于平台的(§11.49),现在还关于**两个名字只差一个词的 make target**。
+
+**二、架构门禁仍分不清「没找到」和「没能查」。**
+
+把 `rg` 换成 `grep` 只解决了当时那个具体原因(rg 没装),**结构原封未动**:
+`if grep ...; then fail; fi` 里,工具缺失或出错都是非零,都走假分支,都读成"干净"。
+
+grep 自己是分的:**0 找到、1 没找到、≥2 没能查**。现在显式读退出码,>1 一律判门禁失败,并先
+`command -v grep` 确认工具在。两种情形都实测过:注入一个 wildcard 会失败,把 grep 替换成
+`exit 2` 的桩也会失败——**不是又一次空转**。
+
+**三、极区面积:`.abs()` 什么也没救到。**
+
+`robust_spherical_area_unit` 对含极点的多边形返回**补面积**。实测三个顶点都在 89°N 的三角形:
+
+```
+返回   12.5654 sr   (≈ 4π)
+真实    0.00096 sr  (极冠)
+        差 13000 倍
+```
+
+反向只是变号,`abs()` 取的还是补面积。单元都远小于半球,所以**大于 2π 的那个一定是补**,取
+`4π − a`。上一轮我加 `.abs()` 时只想着 winding,没想到还有补面积——而字段注释里早就写着这个风险。
+
+**四、`maximum_patch_cells` 只挡了 insertion,没挡 move。**
+
+`propose_move` 建完快照直接改。而 move 快照的**比 insertion 更大**(扇形的环的再一环,因为一次
+翻转会重写整个环),所以漏掉的恰恰是更需要约束的那条。已补,并加测试。顺带把单位写进字段文档:
+**名字叫 cells,比较的是 triangles**——名字是公共 API 不动,但两者不一致却不说,比哪一个都糟。
+
+**这一节四条里有三条是"上一轮做了一半"**:窄 target、只换工具不换结构、只想到 winding 没想到补
+面积、只改 insertion 没改 move。共同的形状是**修完第一个触发点就当作修完了**,而没有回头问"同一
+个原因还有哪些出口"。
+
+**五、停止原因的统计发生在判据之前,于是区域外的细单元也算「触底」。** §11.52 加的 tally 是在
+读判据**之前**数的,所以任何小于最小宽度的单元都计入——**包括区域外、根本没被要求做任何事的单元**。
+一个空区域判据、没有任何需求的运行,因此报 `MinimumScaleReached`。**这和 tally 本来要消灭的是同一
+类错答案**:什么都没被要求的运行是满足,不是受阻。
+
+改为先读判据再判触底:**想要工作却不能得到**才算触底,想要什么都没有的不算。代价是触底单元多走一遍
+判据,买到的是「这个单元要不到」和「这个单元不想要」的区分。审查给的探针已固定为测试。
+
+**六、HARP-DV 的结局只到 stderr,`adaptive_run: None`。**
+
+`adaptive_run` 装不下它——那是 Method-C 的逐层圆记录,说不出周期数、拒绝数、停止原因。新增
+`HarpDvRunRecord` 走完整条链路:`RefinedGrid` → 运行报告 → 打印。实测:
+
+```
+harp_dv_stop_reason=NoAcceptedTransactions
+harp_dv_cycles=14
+harp_dv_transactions_committed=2719
+harp_dv_unresolved_cells=447
+harp_dv_unbalanced_pairs=176
+```
+
+只对 HARP-DV 打印:另外两个后端没有周期、没有拒绝、没有停止原因,给它们打一行 `None` 是噪声,
+而噪声会训练人跳过那一行——包括真正要紧的那次。
+
+中途我又差点重演老毛病:字段加进了 `RefinedGrid` 并被解构,**却没有任何消费者**。`grep -c` 一查
+就露了。**加了字段不等于接上了。**

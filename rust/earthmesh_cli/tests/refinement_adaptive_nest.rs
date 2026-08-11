@@ -61,6 +61,7 @@ fn plan_inputs<'a>(landtype: &'a Path, refine_coastline: bool) -> DemandPlanInpu
         landtype_file: Some(landtype),
         mesh_type: "earthmesh",
         refine_coastline,
+        domain_region: None,
     }
 }
 
@@ -195,6 +196,88 @@ fn a_named_region_is_refined_even_when_no_criterion_asks() {
         .unwrap_or(0);
     assert_eq!(deepest, 2, "a named circle must reach mrlw 2");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_gap_between_named_region_levels_does_not_drop_the_deeper_region() {
+    let root = temp_root("named_gap");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0);
+
+    let named = vec![earthmesh_mesh::RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+        radius_meters: 400_000.0,
+        level: 3,
+    }];
+    let (_refined, report) =
+        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+            &base_mesh(),
+            &RefineConfig::default(),
+            &plan_inputs(&path, true),
+            &named,
+            base_cell_meters(),
+            3,
+            None,
+        )
+        .expect("adaptive nest");
+
+    assert_eq!(report.deepest_level, 3, "{report:?}");
+    assert_eq!(
+        report
+            .passes
+            .iter()
+            .map(|pass| pass.level)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "empty level 2 must be bridged before level 3"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+fn gap_error_for(region: earthmesh_mesh::RefinementRegion) -> String {
+    let root = temp_root("named_gap_shape");
+    let path = root.join("landtype.nc");
+    write_landtype(&path, |_, _| 0);
+
+    let error = earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+        &base_mesh(),
+        &RefineConfig::default(),
+        &plan_inputs(&path, true),
+        &[region],
+        base_cell_meters(),
+        3,
+        None,
+    )
+    .expect_err("non-bufferable shape cannot bridge an empty parent level");
+    let _ = fs::remove_dir_all(root);
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    error.to_string()
+}
+
+#[test]
+fn bbox_gap_between_named_region_levels_is_refused() {
+    let error = gap_error_for(earthmesh_mesh::RefinementRegion::Bbox {
+        west_degrees: 112.0,
+        east_degrees: 116.0,
+        south_degrees: 20.0,
+        north_degrees: 24.0,
+        level: 3,
+    });
+    assert!(error.contains("explicit parent halo"), "{error}");
+}
+
+#[test]
+fn polygon_gap_between_named_region_levels_is_refused() {
+    let error = gap_error_for(earthmesh_mesh::RefinementRegion::Polygon {
+        points: vec![
+            earthmesh_mesh::LonLatDegrees::new(112.0, 20.0),
+            earthmesh_mesh::LonLatDegrees::new(116.0, 20.0),
+            earthmesh_mesh::LonLatDegrees::new(116.0, 24.0),
+            earthmesh_mesh::LonLatDegrees::new(112.0, 24.0),
+        ],
+        level: 3,
+    });
+    assert!(error.contains("explicit parent halo"), "{error}");
 }
 
 #[test]

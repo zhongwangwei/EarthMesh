@@ -7,7 +7,7 @@ pub(crate) fn final_quality_non_negative_usize(value: i32, message: &str) -> io:
     usize::try_from(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, message))
 }
 
-pub(crate) fn method_c_spring_iterations(
+pub(crate) fn refinement_spring_iterations(
     refine: &RefineConfig,
     is_atmosmesh: bool,
 ) -> io::Result<usize> {
@@ -17,10 +17,14 @@ pub(crate) fn method_c_spring_iterations(
     if refine.niter_refine_specified {
         return final_quality_non_negative_usize(
             refine.niter_refine,
-            "Method-C specified refine niter_refine must be non-negative",
+            "refinement spring niter_refine must be non-negative",
         );
     }
-    Ok(if is_atmosmesh { 5000 } else { 2000 })
+    Ok(if is_atmosmesh {
+        earthmesh_core::DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS
+    } else {
+        earthmesh_core::DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS
+    })
 }
 
 pub(crate) fn native_spawn_spring_iterations(

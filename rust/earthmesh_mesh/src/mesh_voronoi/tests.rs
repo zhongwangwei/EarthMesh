@@ -74,16 +74,16 @@ fn the_fan_is_in_rotational_order() {
 fn the_fan_is_the_same_cycle_from_any_seed() {
     let state = sphere(6);
     for site in [7usize, 40, 120, 300] {
-        let reference = state.triangle_fan(site).expect("fan");
-        for &seed in &reference {
+        let baseline = state.triangle_fan(site).expect("fan");
+        for &seed in &baseline {
             let fan = state.triangle_fan_from(site, seed).expect("fan");
-            assert_eq!(fan.len(), reference.len());
-            let offset = reference
+            assert_eq!(fan.len(), baseline.len());
+            let offset = baseline
                 .iter()
                 .position(|&triangle| triangle == seed)
                 .expect("the seed is in its own fan");
             for step in 0..fan.len() {
-                assert_eq!(fan[step], reference[(offset + step) % reference.len()]);
+                assert_eq!(fan[step], baseline[(offset + step) % baseline.len()]);
             }
         }
     }

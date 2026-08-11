@@ -93,7 +93,8 @@ log("project paths render as text");
 check(
   !html.includes("defaultMethodCSpringNestIterations") &&
     html.includes("niterRefine: expertEdit.niterRefine") &&
-    html.includes("blank lets the engine choose for the target mesh"),
+    html.includes("blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface") &&
+    html.includes("DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS"),
   "niter_refine must remain unset unless the user explicitly overrides it",
 );
 log("niter_refine default remains engine-owned");
@@ -201,6 +202,49 @@ check(
   "specified and threshold refinement must be separate panels opened by strategy switches",
 );
 log("refinement strategies open independent panels");
+
+check(
+  html.includes('id="refinementAlgorithmPanel"') &&
+    html.includes('id="refineBackendFamily"') &&
+    html.includes('id="methodCAlgorithm"') &&
+    html.includes('value="lepp_delaunay"') &&
+    html.includes("LEPP-Delaunay / AdaptiveHybrid") &&
+    html.includes('algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm') &&
+    html.includes('${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">') &&
+    !html.includes('id="methodCAlgorithmChoice" style=') &&
+    html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
+    html.includes("+ algorithmBlock") &&
+    !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
+  "Method-C must visibly own Canonical and LEPP-Delaunay while Red-Green and HARP-DV remain independent backends",
+);
+log("algorithm hierarchy shows LEPP-Delaunay AdaptiveHybrid under Method-C");
+
+check(
+  html.includes('id="canonicalMethodCOptions"') &&
+    html.includes('id="leppDelaunayOptions"') &&
+    html.includes('id="redGreenOptions"') &&
+    html.includes('id="harpDvOptions"') &&
+    html.includes("const algorithmOptionsBlock = {") &&
+    html.includes("+ algorithmOptionsBlock") &&
+    html.includes('id="leppMaximumPathLength"') &&
+    html.includes('id="harpMaximumPatchCells"') &&
+    html.includes('invoke("set_method_c_algorithm_options"') &&
+    html.includes('invoke("set_harp_dv_options"'),
+  "the selected algorithm must be the only one whose complete production controls are rendered and saved",
+);
+log("algorithm-specific parameter panels are conditional and wired to Rust");
+
+{
+  const canonical = section(html, /const canonicalMethodCOptions = `([\s\S]*?)`;\n    const leppOptions/, "Canonical Method-C options");
+  const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const harpOptions/, "Red-Green options");
+  check(
+    !canonical.includes('id="expertWeakConcav"') &&
+      redGreen.includes('id="expertWeakConcav"') &&
+      html.includes('if (weakConcav) expertEdit.weakConcavEliminate ='),
+    "weak-concavity elimination must belong only to Red-Green while hidden values remain preserved",
+  );
+  log("weak-concavity control is Red-Green-only");
+}
 
 check(
   html.includes('id="qualityAutoRefineOn"') &&
@@ -424,6 +468,8 @@ log("resolution slider ticks are self-describing");
       body.includes("capabilities.target_compatibility") &&
       body.includes("capabilities.method_c_min_base_nxp") &&
       body.includes("capabilities.method_c_max_refinement_level") &&
+      body.includes("capabilities.default_surface_refine_spring_iterations") &&
+      body.includes("capabilities.default_atmosphere_refine_spring_iterations") &&
       body.includes("capabilities.method_c_spring_nxp1_km") &&
       body.includes("capabilities.km_per_degree_equator") &&
       html.includes("Promise.all([api.capabilities(), api.listCriteria()])") &&
@@ -461,8 +507,11 @@ log("target kind/model are editable canonical state");
       compose.includes("weakConcavEliminate: expertEdit.weakConcavEliminate") &&
       reflect.includes("nxp: sum.expert_nxp ?? null") &&
       reflect.includes("weakConcavEliminate: sum.expert_weak_concav_eliminate ?? null") &&
+      reflect.includes("const algorithmDefaults = defaultAlgorithmControls();") &&
       wire.includes("nxp: expertEdit.nxp") &&
       wire.includes("weakConcavEliminate: expertEdit.weakConcavEliminate") &&
+      wire.includes("isolatedOcean: expertEdit.isolatedOcean") &&
+      !wire.includes("[spring,") &&
       !compose.includes("nxp: null, openmp:") &&
       !compose.includes("weakConcavEliminate: discreteMask ? true : null"),
     "open-compose-save must preserve hidden expert overrides exactly",
@@ -475,7 +524,14 @@ log("target kind/model are editable canonical state");
       !compose.includes("catch (err)"),
     "compose must surface data-layer and criterion validation errors",
   );
-  log("hidden expert overrides survive compose and edit validation errors propagate");
+  check(
+    compose.indexOf('invoke("set_adaptive_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.indexOf('invoke("set_hfield_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.includes('invoke("preserve_unexposed_quality_fields"') &&
+      reflect.includes('algorithm: sum.refinement_algorithm || sum.refinement_backend || "method_c"'),
+    "opened GUI projects must restore backend choice after route setters and preserve hidden LEPP quality only after compatibility is known",
+  );
+  log("opened project backend/route/hidden-LEPP round-trip is ordered safely");
 }
 
 check(
@@ -916,6 +972,9 @@ check(
     html.includes("display-only") &&
     html.includes("applyProjectCapabilities(capabilities)") &&
     html.includes("DEFAULT_HFIELD_G = capabilities.default_hfield_g") &&
+    html.includes("METHOD_C_DEFAULTS = capabilities.method_c_defaults") &&
+    html.includes("HARP_DV_DEFAULTS = capabilities.harp_dv_defaults") &&
+    html.includes("const algorithmDefaults = defaultAlgorithmControls();") &&
     html.includes("DEFAULT_OPENMP = capabilities.default_openmp") &&
     html.includes("DEFAULT_NITER = capabilities.default_niter"),
   "Tauri defaults must replace the explicitly bounded plain-browser fallback",
@@ -957,7 +1016,13 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 
 {
   const body = section(html, /async function enhanceQualityStep\(\) \{([\s\S]*?)\n  \}/, "enhanceQualityStep body");
-  check(body.includes("let minAngle = 0") && !body.includes("let minAngle = 25"), "frontend quality min angle must pass invalid input to Rust validation");
+  check(
+    html.includes('id="qualityMinAngle"') &&
+      body.includes('document.getElementById("qualityMinAngle")') &&
+      body.includes("let minAngle = 0") &&
+      !body.includes("let minAngle = 25"),
+    "frontend quality min angle must use a stable control and pass invalid input to Rust validation",
+  );
   check(
     body.includes("const s = await refreshSummary();") && !body.includes("let s = lastSummary;"),
     "AutoRefine eligibility must use the current composed project summary",
@@ -1072,38 +1137,61 @@ check(
 );
 log("atmosphere template labels match supported behavior");
 
+check(
+  html.includes('["off", z?"关闭弹性调整":"Disable spring smoothing"]') &&
+    html.includes('if(strategy==="off") return {springGlobalType:0,springRegionalType:0};') &&
+    html.includes('const expertRefine = `<div style="border:1px solid var(--border)') &&
+    html.includes('+ algorithmOptionsBlock\n        + expertRefine') &&
+    !html.includes('id="expertSpringStrategy"') &&
+    !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")'),
+  "spring strategy and iterations must have one visible home for every refinement algorithm",
+);
+log("common spring controls are algorithm-independent");
+
 {
-  // Three expert controls are parsed from the namelist, validated, lowered and
-  // written back -- and read by no refinement code. Measured on all three
-  // backends with the relevant spring proven to be running: changing any of
-  // them leaves the mesh bit-identical. A number a user can set that does
-  // nothing has to say so, so each carries the reason in its help text. If one
-  // is ever implemented, that sentence is what has to come back out.
+  // These are preserved from an opened project for namelist fidelity, but no
+  // production refinement backend consumes them. Do not present inert knobs.
   const inert = ["RL%set_dis_type", "RL%num_rc", "RL%vertex_pretect_layers"];
-  const missing = inert.filter((name) => {
-    const at = html.indexOf(`\${field("${name}"`);
-    if (at < 0) return true;
-    return !html
-      .slice(at, at + 900)
-      .includes("does not affect the mesh in this build");
-  });
   check(
-    !missing.length,
-    "expert controls that no backend reads must say so in their help text",
-    missing,
+    inert.every((name) => !html.includes(`\${field("${name}"`)) &&
+      html.includes("setDisType: expertEdit.setDisType") &&
+      html.includes("numRc: expertEdit.numRc") &&
+      html.includes("vertexPretectLayers: expertEdit.vertexPretectLayers"),
+    "inert compatibility values must be preserved without exposing dead controls",
   );
-  log("inert expert controls are labelled as carried-for-fidelity");
+  log("inert compatibility values are preserved but not exposed");
+}
+
+check(
+  html.includes('${backend==="discrete"?`<option value="discrete" selected>') &&
+    !html.includes('<option value="discrete" ${backend==="discrete"?"selected":""}>'),
+  "new projects must not expose the unconfigurable discrete-mask route",
+);
+log("discrete mask is existing-project-only");
+
+{
+  const body = section(html, /function expertEnabled\(\) \{([\s\S]*?)\n  \}/, "expertEnabled body");
+  check(
+    body.includes("expertEdit.nxp != null") &&
+      body.includes("expertEdit.weakConcavEliminate != null") &&
+      body.includes("expertEdit.isolatedOcean != null") &&
+      !body.includes("discreteMask") &&
+      html.includes("expertEdit.enabled = expertEnabled();"),
+    "expert mode must reflect actual overrides instead of the demand route",
+  );
+  log("expert visibility follows actual overrides");
 }
 
 {
   // Algorithm and route were two selects that knew nothing about each other, so
   // the pair `harp_dv` + h-field was one click away and the run refuses it.
-  // Both halves are needed: disabling the option stops it being chosen, and the
-  // reset stops it staying chosen, because a browser keeps a disabled option
-  // selected when it already was.
+  // Both halves are needed: the non-Method-C DOM must not contain H-field
+  // controls, and stale projects must be reset before rendering or saving.
   check(
-    /id="refineBackend"[^]*?value="hfield"[^]*?\$\{hfieldServed\?"":"disabled"\}/.test(html),
-    "the h-field route option must be disabled for a backend that cannot serve it",
+    html.includes('${hfieldServed?`<option value="hfield"') &&
+      html.includes('${hfieldServed?`<div id="hfieldOptions"') &&
+      html.includes('if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";'),
+    "non-Method-C algorithms must not render or retain H-field controls",
   );
   check(
     html.includes('specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield"'),

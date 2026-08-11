@@ -452,15 +452,35 @@ fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoin
     ))
 }
 
+/// What a pass over the cells found, beyond the demands themselves.
+///
+/// `AllSatisfied` used to be reported whenever the demand list came back
+/// empty, which folded three different endings into one: every cell is small
+/// enough, every cell that still wants something has hit the minimum width, and
+/// every remaining demand is one the data cannot support. Only the first is
+/// "satisfied"; the other two are the run stopping short, and a caller that
+/// cannot tell them apart cannot know whether it got what it asked for.
+#[derive(Clone, Copy, Debug, Default)]
+struct EvaluationTally {
+    /// Cells skipped because they already reached `minimum_cell_width_m`.
+    ///
+    /// Skipped whole, criteria and all -- so a cell at the floor stops being
+    /// asked about its *angles* too, not only its size.
+    at_minimum_scale: usize,
+    /// Cells whose only remaining evidence says the data cannot support it.
+    unsatisfiable: usize,
+}
+
 /// Read every active cell once.
 fn evaluate(
     mesh: &AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
     limits: CycleLimits,
-) -> Result<Vec<RefinementDemand>> {
+) -> Result<(Vec<RefinementDemand>, EvaluationTally)> {
     let state = mesh.state();
     let radius_m = state.sphere_radius();
     let mut demands = Vec::new();
+    let mut tally = EvaluationTally::default();
     for site in MESH_STATE_FIRST_ID..state.vertices().len() {
         // A cell that cannot be read is not a demand. Skipping it here keeps
         // evaluation total; the transaction layer reports the same cell as
@@ -474,15 +494,29 @@ fn evaluate(
             state,
             radius_m,
         };
-        if view
+        // Read the criteria first, even for a cell already at the floor.
+        //
+        // The floor used to short-circuit the whole cell, and the tally with
+        // it, so any small cell counted as "stopped short" -- including cells
+        // no criterion covers, which are simply outside the region and want
+        // nothing. That reported `MinimumScaleReached` for a run where nothing
+        // was ever asked, which is the same class of wrong answer the tally was
+        // added to stop.
+        //
+        // Evaluating and then declining to act costs one pass over criteria for
+        // the cells at the floor, and buys the distinction between "this cell
+        // wanted more and could not have it" and "this cell wanted nothing".
+        let at_floor = view
             .effective_scale_m()
-            .is_some_and(|scale| scale <= limits.minimum_cell_width_m)
-        {
-            continue;
-        }
-        let mut evidences = Vec::with_capacity(criteria.len());
+            .is_some_and(|scale| scale <= limits.minimum_cell_width_m);
+        let mut evidences = Vec::new();
+        let mut unsatisfiable = false;
         for criterion in criteria {
-            evidences.push(criterion.evaluate(&view)?);
+            let evidence = criterion.evaluate(&view)?;
+            unsatisfiable |= !evidence.satisfiable;
+            if evidence.demands_work() || !evidence.satisfiable {
+                evidences.push(evidence);
+            }
         }
         // The cause names the criterion that asked hardest, so a report can
         // say which one drove a cell rather than only that something did.
@@ -499,12 +533,23 @@ fn evaluate(
                     criterion_id: evidence.criterion_id.clone(),
                 }
             });
+        // Counted before the filter, because `demands_work()` is false for an
+        // unsatisfiable demand and true for a satisfied one -- and the two mean
+        // opposite things to a caller.
         let demand = RefinementDemand::from_evidence(site as u64, evidences, cause);
-        if demand.demands_work() {
+        if !demand.demands_work() {
+            if unsatisfiable {
+                tally.unsatisfiable += 1;
+            }
+        } else if at_floor {
+            // It wanted work and cannot have it: the floor is what stopped it,
+            // and that is what the run should say when nothing else is left.
+            tally.at_minimum_scale += 1;
+        } else {
             demands.push(demand);
         }
     }
-    Ok(demands)
+    Ok((demands, tally))
 }
 
 /// Run cycles until something says to stop, and say which.
@@ -527,14 +572,24 @@ pub fn run_cycles(
     let mut stop_reason = StopReason::MaximumCyclesReached;
 
     while cycles < limits.max_cycles {
-        let mut demands = evaluate(mesh, criteria, limits)?;
+        let (mut demands, tally) = evaluate(mesh, criteria, limits)?;
         // Section 14, folded into the same list rather than run as a pass of
         // its own: one loop serves both, and `RefinementCause` is what keeps
         // physical refinement and transition balance apart in the report --
         // which the spec says is the reason the distinction exists.
         demands.extend(balance_demands(mesh, limits));
         if demands.is_empty() {
-            stop_reason = StopReason::AllSatisfied;
+            // Three endings, told apart. A cell parked at the floor or asking
+            // for something the data cannot give is not a satisfied cell, and
+            // saying `AllSatisfied` for either is the report claiming the run
+            // delivered what was asked.
+            stop_reason = if tally.at_minimum_scale > 0 {
+                StopReason::MinimumScaleReached
+            } else if tally.unsatisfiable > 0 {
+                StopReason::SourceResolutionReached
+            } else {
+                StopReason::AllSatisfied
+            };
             break;
         }
         order_demands(&mut demands);
@@ -604,6 +659,10 @@ pub fn run_cycles(
                             Rejection::DegreeOverBudget { .. } => refusals.degree += 1,
                             Rejection::ProtectedPentagonDisturbed { .. } => refusals.pentagon += 1,
                             Rejection::NotInsertable(_) => refusals.not_insertable += 1,
+                            // Counted with topology: like the others there, it
+                            // is the change being too big to undo safely rather
+                            // than the demand being unreachable.
+                            Rejection::PatchTooLarge { .. } => refusals.topology += 1,
                             Rejection::SurfaceOpened { .. }
                             | Rejection::TopologyInvalid { .. }
                             | Rejection::CouldNotLegalize(_) => refusals.topology += 1,

@@ -57,6 +57,28 @@ fn target(target_scale_m: f64, region: TargetRegion) -> Vec<Box<dyn CellCriterio
     })]
 }
 
+#[test]
+fn evaluation_retains_only_evidence_that_can_affect_the_demand() {
+    let mesh = sphere(2);
+    let coarsest = coarsest_scale(&mesh);
+    let mut criteria: Vec<Box<dyn CellCriterion>> = (0..4_096)
+        .map(|index| {
+            Box::new(TargetScale {
+                id: format!("satisfied-{index}"),
+                target_scale_m: coarsest * 2.0,
+                region: TargetRegion::Global,
+                source_resolution_m: None,
+            }) as Box<dyn CellCriterion>
+        })
+        .collect();
+    criteria.extend(target(coarsest * 0.5, TargetRegion::Global));
+
+    let (demands, _) = evaluate(&mesh, &criteria, limits(1, 100_000)).expect("evaluate");
+
+    assert!(!demands.is_empty());
+    assert!(demands.iter().all(|demand| demand.evidences.len() == 1));
+}
+
 /// A target every cell already meets ends the run in one look, having done
 /// nothing.
 #[test]
@@ -240,7 +262,17 @@ fn the_cycle_limit_is_reported_as_the_cycle_limit() {
     assert!(outcome.report.transactions_committed > 0);
 }
 
-/// A cell already at the floor is not evaluated at all.
+/// A cell already at the floor is not evaluated, and the run says so.
+///
+/// This asserted `AllSatisfied`, which pinned the defect rather than the
+/// behaviour: a mesh every cell of which is parked at `minimum_cell_width_m`
+/// has not satisfied a target of one metre -- it has stopped short of it. The
+/// two endings need different answers from a caller, and `MinimumScaleReached`
+/// existed as a variant with nothing ever assigning it.
+///
+/// The skip is whole-cell, so it also stops the *quality* criteria being asked
+/// about that cell, not only the scale ones. That is worth knowing and is why
+/// the reason is reported rather than folded away.
 #[test]
 fn a_cell_at_the_minimum_width_stops_asking() {
     let mut mesh = sphere(6);
@@ -263,9 +295,43 @@ fn a_cell_at_the_minimum_width_stops_asking() {
     )
     .expect("run");
 
-    assert_eq!(outcome.report.stop_reason, StopReason::AllSatisfied);
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::MinimumScaleReached,
+        "every cell is at the floor, which is stopping short and not satisfying"
+    );
     assert_eq!(outcome.report.transactions_attempted, 0);
     assert_eq!(mesh.state(), &before);
+}
+
+/// A mesh that genuinely meets its target still reports `AllSatisfied`.
+///
+/// The other side of the change above: telling the endings apart is only worth
+/// anything if the satisfied one still says satisfied.
+#[test]
+fn a_mesh_that_meets_its_target_still_reports_all_satisfied() {
+    let mut mesh = sphere(6);
+    // Coarser than every cell, so every cell already meets it.
+    let target_scale = coarsest_scale(&mesh) * 2.0;
+    let criteria = target(target_scale, TargetRegion::Global);
+
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        permissive(),
+        CycleLimits {
+            max_cycles: 8,
+            max_sites: 100_000,
+            // Far below every cell, so nothing is parked at the floor.
+            minimum_cell_width_m: 1.0,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    assert_eq!(outcome.report.stop_reason, StopReason::AllSatisfied);
+    assert_eq!(outcome.report.transactions_attempted, 0);
 }
 
 /// The same run twice gives the same mesh and the same report.
@@ -605,10 +671,8 @@ fn the_wall_behind_degree_is_the_pentagons() {
 /// Protected segments are what let a quality target reach Ruppert's bound.
 ///
 /// A 20-degree angle target, with and without them: with, the run converges
-/// and the worst triangle clears 20.7 degrees -- Ruppert's bound, and the
-/// point, because the guarantee is constructive rather than something a
-/// template happened to give. Without, it converges to a worse mesh and never
-/// gets there.
+/// and every triangle clears the requested 20 degrees. Without, it converges
+/// to a worse mesh and never reaches the request.
 ///
 /// 20 degrees, not 25. Guide 11.29: the sound segment list diverges at 25,
 /// which is what the theory says -- Ruppert's proof reaches about 20.7 and no
@@ -696,15 +760,60 @@ fn protected_segments_make_a_quality_target_terminate() {
         "{sites} sites; it should converge, not run away"
     );
     assert!(
-        worst > 20.7,
-        "min triangle angle {worst:.2}; Ruppert bounds this at 20.7"
+        worst >= ANGLE,
+        "min triangle angle {worst:.2}; requested {ANGLE:.2}"
     );
     assert_eq!(stop, StopReason::NoAcceptedTransactions);
 
     let (_, unprotected_worst, _) = run(false);
     assert!(
-        unprotected_worst < 20.7 && unprotected_worst < worst,
+        unprotected_worst < ANGLE && unprotected_worst < worst,
         "without protected segments the bound should not be reached: \
          {unprotected_worst:.2} degrees against {worst:.2}"
     );
+}
+
+/// A criterion covering nowhere does not read as "stopped at the floor".
+///
+/// The tally that tells the three endings apart was first counted *before* the
+/// criteria were read, so any cell below `minimum_cell_width_m` counted --
+/// including every cell outside the region, which wants nothing at all. A run
+/// with an empty region and no demand anywhere came back
+/// `MinimumScaleReached`, which is the same kind of wrong answer the tally was
+/// added to stop: a run that asked for nothing is satisfied, not thwarted.
+#[test]
+fn a_region_that_covers_no_cell_reports_satisfied_not_thwarted() {
+    let mut mesh = sphere(6);
+    // A circle of ten metres somewhere in the Pacific: no cell's centre is in
+    // it, so no criterion demands anything of any cell.
+    let criteria = target(
+        1.0,
+        TargetRegion::Circle {
+            centre: earthmesh_mesh::LonLatDegrees::new(-140.0, -30.0),
+            radius_m: 10.0,
+        },
+    );
+    // And a floor above every cell, so the old tally would have counted them all.
+    let floor = coarsest_scale(&mesh) * 2.0;
+
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        permissive(),
+        CycleLimits {
+            max_cycles: 8,
+            max_sites: 100_000,
+            minimum_cell_width_m: floor,
+            max_neighbour_scale_ratio: 1.75,
+        },
+    )
+    .expect("run");
+
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::AllSatisfied,
+        "nothing was ever asked, so nothing was left unmet"
+    );
+    assert_eq!(outcome.report.transactions_attempted, 0);
 }

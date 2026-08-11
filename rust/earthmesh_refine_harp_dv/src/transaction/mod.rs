@@ -37,7 +37,7 @@ use crate::error::{HarpDvError, Result};
 use crate::state::{AdaptiveMesh, SiteId};
 
 /// The most neighbours a cell can have and still be written to a gridfile.
-pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = 7;
+pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE;
 
 /// What a transaction must satisfy to be kept.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +66,17 @@ pub struct HardGates {
     /// holds the model it would gate against, and no backend consumes that
     /// crate yet.
     pub require_closed_surface: bool,
+    /// The largest patch one transaction may snapshot, in triangles.
+    ///
+    /// `HarpDvConfig::maximum_patch_cells` reaches the run through here.
+    /// Before this it was declared, validated and passed to nothing -- a bound
+    /// accepted and ignored, which the config's own note about `deterministic`
+    /// says a flag must never be.
+    ///
+    /// The bound is on what a rollback has to be able to put back, so it is
+    /// checked against the snapshot rather than against the cavity: those
+    /// differ, and it is the snapshot that is held in memory.
+    pub max_patch_triangles: usize,
 }
 
 impl Default for HardGates {
@@ -93,8 +104,9 @@ impl Default for HardGates {
             //
             // That it lands on Chew's 30-degree bound is a coincidence; this
             // number came from a sweep, not from the theory.
-            min_triangle_angle_deg: 30.0,
+            min_triangle_angle_deg: earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG,
             require_closed_surface: true,
+            max_patch_triangles: earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
         }
     }
 }
@@ -102,6 +114,9 @@ impl Default for HardGates {
 /// Why a proposal was not kept.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rejection {
+    /// The change would have snapshotted more than the run allows to be held
+    /// for rollback.
+    PatchTooLarge { triangles: usize, allowed: usize },
     /// The point could not be inserted at all.
     NotInsertable(InsertionError),
     /// A site would have ended with more neighbours than the run allows.
@@ -133,6 +148,11 @@ pub enum Rejection {
 impl std::fmt::Display for Rejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PatchTooLarge { triangles, allowed } => write!(
+                formatter,
+                "the change would snapshot {triangles} triangles for rollback and the run allows \
+                 {allowed}"
+            ),
             Self::NotInsertable(error) => write!(formatter, "the site does not insert: {error}"),
             Self::DegreeOverBudget {
                 site,
@@ -389,6 +409,13 @@ impl AdaptiveMesh {
             Err(error) => return Ok(Acceptance::RolledBack(Rejection::NotInsertable(error))),
         };
         let patch = self.state().snapshot_around(&cavity);
+        let patch_size = patch.triangles().count();
+        if gates.max_patch_triangles > 0 && patch_size > gates.max_patch_triangles {
+            return Ok(Acceptance::RolledBack(Rejection::PatchTooLarge {
+                triangles: patch_size,
+                allowed: gates.max_patch_triangles,
+            }));
+        }
 
         let report = match self.state_mut().insert_site(point) {
             Ok(report) => report,
@@ -464,6 +491,16 @@ impl AdaptiveMesh {
         // run ends with four asymmetric neighbour pairs.
         let reach: BTreeSet<usize> = self.state().snapshot_around(&fan).triangles().collect();
         let patch = self.state().snapshot_around(&reach);
+        // The same bound the insertion path checks. It covered only insertion
+        // when it went in, so a move could snapshot any amount and the config
+        // was half-honoured -- which is the shape it was meant to end.
+        let patch_size = patch.triangles().count();
+        if gates.max_patch_triangles > 0 && patch_size > gates.max_patch_triangles {
+            return Ok(Acceptance::RolledBack(Rejection::PatchTooLarge {
+                triangles: patch_size,
+                allowed: gates.max_patch_triangles,
+            }));
+        }
         let origin = self.state().vertices()[site];
 
         self.state_mut().move_vertex(site, destination);
@@ -557,10 +594,11 @@ impl AdaptiveMesh {
             Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
         };
         // Order the ladder by what each candidate would do to the degrees
-        // around it, before anything is written. Every site on an insertion's
-        // cavity ring gains exactly one neighbour, so a candidate that would
-        // push one past the budget is knowable in advance -- and the degree
-        // bound is 96% of everything this backend cannot do (guide 11.13).
+        // around it, before anything is written. The forecast accounts for the
+        // new neighbour and for cavity-internal edges that disappear (notably
+        // an on-edge split), so a candidate that would push one past the budget
+        // is knowable in advance -- and the degree bound is 96% of everything
+        // this backend cannot do (guide 11.13).
         //
         // Sorting rather than filtering: the ladder's own order still decides
         // among candidates that are equally safe, so a witness still leads
@@ -586,10 +624,6 @@ impl AdaptiveMesh {
 
         let mut refusals = Vec::with_capacity(ladder.len());
         for candidate in ladder {
-            // Ruppert's rule, applied to the candidate rather than after the
-            // fact: a point inside a protected segment's diametral circle is
-            // never inserted -- the segment is split at its midpoint instead,
-            // and that split is what makes the refinement terminate.
             // Ruppert's rule: a point inside a protected segment's diametral
             // circle is never inserted -- the segment is split at its midpoint
             // instead, and that split is what makes the refinement terminate.
@@ -601,7 +635,7 @@ impl AdaptiveMesh {
                 },
                 None => candidate,
             };
-            match self.propose_site_near(candidate.point, Some(candidate.hint), gates)? {
+            match self.propose_site_for(candidate.point, Some(candidate.hint), gates, site)? {
                 Acceptance::Committed(report) => {
                     // The halves are segments too, or the induction stops
                     // exactly where it was just applied.
