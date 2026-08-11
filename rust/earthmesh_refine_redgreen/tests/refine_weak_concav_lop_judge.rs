@@ -133,3 +133,50 @@ fn weak_concav_lop_judge_clears_empty_odd_segment_pair_after_intersegment_pair()
     assert_eq!(n_ref_temp[1], 2);
     assert_eq!(num_ref, 2);
 }
+
+#[test]
+fn weak_concav_lop_judge_stops_at_a_padded_segment_slot() {
+    let mut mrl_new = vec![1; 10];
+    mrl_new[8] = 4;
+    let mut triangle_neighbors = vec![vec![1, 1, 1]; 10];
+    triangle_neighbors[7] = vec![5, 8, 9];
+    let mut vertices = vec![[0, 0, 0]; 100];
+    vertices[20] = [1, 2, 3];
+    vertices[61] = [2, 3, 4];
+    vertices[30] = [10, 11, 12];
+    vertices[81] = [11, 12, 13];
+    let mut sjx_child = vec![[0, 0]; 10];
+    sjx_child[2] = [20, 21];
+    sjx_child[3] = [30, 31];
+    sjx_child[6] = [60, 61];
+    sjx_child[8] = [80, 81];
+    let mut weak_segment = vec![vec![7, 1], vec![1, 1]];
+    let weak_segment_old = vec![vec![3, 2, 2], vec![6]];
+    let n_weak_segment = vec![2, 0];
+    let weak_pair: Vec<[usize; 2]> = Vec::new();
+    let mut ref_temp = vec![vec![0; 8]; 4];
+    let mut n_ref_temp = vec![0; 4];
+    let mut num_ref = 0;
+
+    refine_weak_concav_lop_judge_one_based(
+        &mut num_ref,
+        1,
+        2,
+        2,
+        0,
+        &mrl_new,
+        &triangle_neighbors,
+        &vertices,
+        &sjx_child,
+        &mut weak_segment,
+        &weak_segment_old,
+        &n_weak_segment,
+        &weak_pair,
+        &mut ref_temp,
+        &mut n_ref_temp,
+    )
+    .expect("padding is the end of the weak segment, not triangle zero");
+
+    assert_eq!(ref_temp[1][0..4], [20, 61, 30, 81]);
+    assert_eq!(num_ref, 4);
+}
