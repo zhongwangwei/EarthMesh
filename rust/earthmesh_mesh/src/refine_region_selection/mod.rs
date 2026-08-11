@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{
     lonlat_degrees_to_unit_xyz, method_c_cartesian_xy_segment_distance,
     method_c_closed_corridor_contains_cartesian, method_c_corridor_radius_at_segment,
@@ -18,7 +20,7 @@ struct IndexedCircle {
 
 #[derive(Clone, Debug)]
 pub struct RefinementRegionIndex<'a> {
-    regions: &'a [RefinementRegion],
+    regions: Cow<'a, [RefinementRegion]>,
     circles_by_latitude: Vec<IndexedCircle>,
     other_regions: Vec<usize>,
     maximum_circle_radius: f64,
@@ -26,6 +28,10 @@ pub struct RefinementRegionIndex<'a> {
 
 impl<'a> RefinementRegionIndex<'a> {
     pub fn new(regions: &'a [RefinementRegion]) -> Self {
+        Self::build(Cow::Borrowed(regions))
+    }
+
+    fn build(regions: Cow<'a, [RefinementRegion]>) -> Self {
         let mut circles_by_latitude = Vec::new();
         let mut other_regions = Vec::new();
         let mut maximum_circle_radius = 0.0f64;
@@ -122,6 +128,12 @@ impl<'a> RefinementRegionIndex<'a> {
                 self.regions[region].level() >= minimum_level
                     && circle_contains_lonlat_great_circle(&self.regions[region], point)
             })
+    }
+}
+
+impl RefinementRegionIndex<'static> {
+    pub fn from_owned(regions: Vec<RefinementRegion>) -> Self {
+        Self::build(Cow::Owned(regions))
     }
 }
 

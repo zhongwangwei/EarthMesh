@@ -509,9 +509,14 @@ fn evaluate(
         let at_floor = view
             .effective_scale_m()
             .is_some_and(|scale| scale <= limits.minimum_cell_width_m);
-        let mut evidences = Vec::with_capacity(criteria.len());
+        let mut evidences = Vec::new();
+        let mut unsatisfiable = false;
         for criterion in criteria {
-            evidences.push(criterion.evaluate(&view)?);
+            let evidence = criterion.evaluate(&view)?;
+            unsatisfiable |= !evidence.satisfiable;
+            if evidence.demands_work() || !evidence.satisfiable {
+                evidences.push(evidence);
+            }
         }
         // The cause names the criterion that asked hardest, so a report can
         // say which one drove a cell rather than only that something did.
@@ -531,7 +536,6 @@ fn evaluate(
         // Counted before the filter, because `demands_work()` is false for an
         // unsatisfiable demand and true for a satisfied one -- and the two mean
         // opposite things to a caller.
-        let unsatisfiable = evidences.iter().any(|evidence| !evidence.satisfiable);
         let demand = RefinementDemand::from_evidence(site as u64, evidences, cause);
         if !demand.demands_work() {
             if unsatisfiable {

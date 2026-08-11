@@ -2246,25 +2246,12 @@ fn refine_with_harp_dv(
             spring_boundaries.extend(harp_region_boundaries(&demand.circles)?);
             let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
             spring_target_scales.extend(std::iter::repeat_n(target_scale_m, demand.circles.len()));
-            for (circle_index, circle) in demand.circles.iter().enumerate() {
-                let earthmesh_mesh::RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    ..
-                } = circle
-                else {
-                    continue;
-                };
-                criteria.push(Box::new(harp::TargetScale {
-                    id: format!("{criterion_id}-{circle_index}"),
-                    target_scale_m,
-                    region: harp::TargetRegion::Circle {
-                        centre: *center,
-                        radius_m: *radius_meters,
-                    },
-                    source_resolution_m: Some(source_resolution_m),
-                }));
-            }
+            criteria.push(Box::new(harp::TargetScale {
+                id: criterion_id,
+                target_scale_m,
+                region: harp::TargetRegion::circles(demand.circles.clone()),
+                source_resolution_m: Some(source_resolution_m),
+            }));
             deepest_level = level;
             passes.push(crate::refinement_demand::nest::NestPassReport {
                 level,

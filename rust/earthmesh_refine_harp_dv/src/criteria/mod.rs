@@ -23,7 +23,7 @@
 use earthmesh_boundary::SphericalBoundaryModel;
 use earthmesh_mesh::{
     lonlat_degrees_to_unit_xyz, xyz_to_lonlat_degrees, CartesianPoint, LonLatDegrees, MeshState,
-    VoronoiCell,
+    RefinementRegion, RefinementRegionIndex, VoronoiCell,
 };
 use earthmesh_refine::{CriterionSemantics, DemandEvidence, EvidenceStopReason};
 
@@ -101,6 +101,15 @@ pub enum TargetRegion {
         centre: LonLatDegrees,
         radius_m: f64,
     },
+    /// Any circle in an indexed set.
+    ///
+    /// Adaptive runs can contain tens of thousands of overlapping demand
+    /// circles. Treating each circle as a separate criterion makes every cell
+    /// retain one evidence object per circle; the index keeps one criterion
+    /// per target level and prunes circles by latitude before distance tests.
+    Circles {
+        index: RefinementRegionIndex<'static>,
+    },
     /// Inside a closed curve, holes and all.
     ///
     /// The shape a closed-curve refinement mask describes. Held as a
@@ -117,10 +126,17 @@ pub enum TargetRegion {
 }
 
 impl TargetRegion {
+    pub fn circles(regions: Vec<RefinementRegion>) -> Self {
+        Self::Circles {
+            index: RefinementRegionIndex::from_owned(regions),
+        }
+    }
+
     fn contains(&self, point: LonLatDegrees, radius_m: f64) -> bool {
         match self {
             Self::Global => true,
             Self::Polygon { boundary } => boundary.contains(point.lon_degrees, point.lat_degrees),
+            Self::Circles { index } => index.contains_lonlat_great_circle(point, 0),
             Self::Circle {
                 centre,
                 radius_m: reach,

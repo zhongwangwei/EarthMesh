@@ -57,6 +57,28 @@ fn target(target_scale_m: f64, region: TargetRegion) -> Vec<Box<dyn CellCriterio
     })]
 }
 
+#[test]
+fn evaluation_retains_only_evidence_that_can_affect_the_demand() {
+    let mesh = sphere(2);
+    let coarsest = coarsest_scale(&mesh);
+    let mut criteria: Vec<Box<dyn CellCriterion>> = (0..4_096)
+        .map(|index| {
+            Box::new(TargetScale {
+                id: format!("satisfied-{index}"),
+                target_scale_m: coarsest * 2.0,
+                region: TargetRegion::Global,
+                source_resolution_m: None,
+            }) as Box<dyn CellCriterion>
+        })
+        .collect();
+    criteria.extend(target(coarsest * 0.5, TargetRegion::Global));
+
+    let (demands, _) = evaluate(&mesh, &criteria, limits(1, 100_000)).expect("evaluate");
+
+    assert!(!demands.is_empty());
+    assert!(demands.iter().all(|demand| demand.evidences.len() == 1));
+}
+
 /// A target every cell already meets ends the run in one look, having done
 /// nothing.
 #[test]

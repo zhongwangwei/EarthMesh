@@ -117,6 +117,33 @@ fn a_cell_outside_the_region_is_satisfied() {
     assert!(!criterion.evaluate(&view).expect("evaluate").demands_work());
 }
 
+#[test]
+fn indexed_circles_are_one_target_with_the_same_great_circle_membership() {
+    let state = state(6);
+    let cell = state.voronoi_cell(40).expect("cell");
+    let view = view(&state, &cell);
+    let centre = view.centre();
+    let criterion = TargetScale {
+        id: "adaptive-level".to_string(),
+        target_scale_m: 1.0,
+        region: TargetRegion::circles(vec![
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(centre.lon_degrees + 180.0, -centre.lat_degrees),
+                radius_meters: 1_000.0,
+                level: 1,
+            },
+            RefinementRegion::Circle {
+                center: centre,
+                radius_meters: 1_000.0,
+                level: 1,
+            },
+        ]),
+        source_resolution_m: None,
+    };
+
+    assert!(criterion.evaluate(&view).expect("evaluate").demands_work());
+}
+
 /// A target finer than the data behind it is reported unsatisfiable, not
 /// pursued.
 ///
