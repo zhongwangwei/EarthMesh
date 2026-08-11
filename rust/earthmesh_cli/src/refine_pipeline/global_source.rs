@@ -2143,10 +2143,7 @@ fn refine_with_harp_dv(
     });
     let boundaries = harp_region_boundaries(regions)?;
     let mut spring_boundaries = boundaries.clone();
-    let mut spring_target_scales = regions
-        .iter()
-        .map(|region| base_cell_m / 2.0_f64.powi(region.level() as i32))
-        .collect::<Vec<_>>();
+    let mut spring_regions = regions.to_vec();
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
         .iter()
         .zip(&boundaries)
@@ -2244,8 +2241,8 @@ fn refine_with_harp_dv(
                 format!("{}-level-{level}", demand.criterion_ids.join("+"))
             };
             spring_boundaries.extend(harp_region_boundaries(&demand.circles)?);
+            spring_regions.extend(demand.circles.iter().cloned());
             let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
-            spring_target_scales.extend(std::iter::repeat_n(target_scale_m, demand.circles.len()));
             criteria.push(Box::new(harp::TargetScale {
                 id: criterion_id,
                 target_scale_m,
@@ -2373,56 +2370,46 @@ fn refine_with_harp_dv(
         }
     }
 
-    // Smooth with the nest spring, targeting each edge at what the *criteria*
-    // asked for there. Guide 11.21 records the version that took targets from
-    // the mesh's own current scale: that tells the spring to keep things as
-    // they are, and 5000 iterations under it made the angles worse.
-    let unsmoothed = (spring_iterations > 0).then(|| refined.clone());
-    let mut spring_nest_passes = 0usize;
-    let refined = if spring_iterations > 0 {
-        match harp_spring_smoothed(
-            &refined,
-            &spring_boundaries,
-            &spring_target_scales,
-            base_cell_m,
-            spring_iterations,
-        ) {
-            Ok(mesh) => {
-                spring_nest_passes = 1;
-                mesh
-            }
-            // A smoothing pass that declines is not a reason to lose the mesh.
-            Err(error) => {
-                eprintln!("harp_dv: nest spring declined ({error}); writing the unsmoothed mesh");
-                refined
-            }
+    // HARP-DV does not carry Method-C transition rows, so use the same
+    // backend-neutral regional spring as Red-Green and LEPP. It pins the
+    // refined/coarse interface and keeps the candidate only when topology and
+    // triangle-angle checks do not regress.
+    let state = spherical_voronoi_state(&refined)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+    let (smoothed_output, spring_nest_passes) =
+        spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
+    let (refined, state, output_mesh) = if spring_nest_passes > 0 {
+        let smoothed_output = unstructured_mesh_with_one_based_rows(&smoothed_output);
+        if smoothed_output.w_points.len() != refined.m_points.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HARP-DV spring changed the number of mesh sites",
+            ));
         }
-    } else {
-        refined
-    };
-    // The writer's admissibility check runs over every triangle, and the
-    // transaction gates only ever saw the ones a change touched. So the
-    // decision is made here, where both meshes are still in hand: try the one
-    // that was smoothed, and fall back to the one that was not rather than
-    // failing the run.
-    let (refined, state) = match spherical_voronoi_state(&refined) {
-        Ok(state) => (refined, state),
-        Err(error) if unsmoothed.is_some() => {
-            eprintln!(
-                "harp_dv: the smoothed mesh is not writable ({error}); falling back to the \
-                 unsmoothed one"
+        let radius = earthmesh_mesh::active_mesh_radius(&refined)?;
+        let mut adjusted = refined.clone();
+        for im in 2..=adjusted.nmd {
+            let unit =
+                earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
+                    smoothed_output.w_points[im].lon,
+                    smoothed_output.w_points[im].lat,
+                ));
+            adjusted.m_points[im] = earthmesh_mesh::CartesianPoint::new(
+                unit.x * radius,
+                unit.y * radius,
+                unit.z * radius,
             );
-            spring_nest_passes = 0;
-            let plain = unsmoothed.expect("checked");
-            let state = spherical_voronoi_state(&plain)?;
-            (plain, state)
         }
-        Err(error) => return Err(error),
+        adjusted.validate_topology()?;
+        let state = spherical_voronoi_state(&adjusted)?;
+        let output = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+        (adjusted, state, output)
+    } else {
+        (refined, state, output_mesh)
     };
     if let Some((report, _, _, _)) = &mut adaptive_run {
         report.spring_passes = spring_nest_passes;
     }
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
     Ok(RefinedGrid {
         // HARP-DV builds no transition band, so there is nothing to count in
@@ -2654,136 +2641,6 @@ fn harp_region_contains(
             boundary.contains(here.lon_degrees, here.lat_degrees)
         }
     }
-}
-
-/// Smooth a HARP-DV mesh against the sizes the criteria asked for.
-///
-/// The targets come from the criteria, not from the mesh -- which is what
-/// makes this different from the attempt in guide 11.21. They are passed
-/// beside the compiled boundaries so an explicit `adaptive_base_m` reaches
-/// the spring instead of being silently replaced by the measured base scale.
-///
-/// The conversion from a cell width to a triangle edge length is measured off
-/// this mesh rather than derived: the two differ by a shape factor that
-/// depends on the dual, and measuring it is both shorter and harder to get
-/// wrong than deriving it.
-fn harp_spring_smoothed(
-    mesh: &earthmesh_mesh::TriangularMesh,
-    boundaries: &[HarpRegionBoundary],
-    target_scales_m: &[f64],
-    base_cell_m: f64,
-    iterations: usize,
-) -> io::Result<earthmesh_mesh::TriangularMesh> {
-    if boundaries.len() != target_scales_m.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "HARP-DV spring regions and target scales must have the same length",
-        ));
-    }
-    let radius = earthmesh_core::EARTH_RADIUS_METERS;
-
-    // The factor from a cell width to a triangle edge length, measured on the
-    // parts of the mesh that were *not* refined -- those are the ones whose
-    // width is `base_cell_m` by definition.
-    //
-    // Taking the median over every edge instead was wrong and worked by
-    // accident: it is right only while refined edges are a minority, and a run
-    // that refines most of its domain would get a factor pulled down by the
-    // short edges, shrink every target, and have the spring compress the whole
-    // mesh.
-    let inside = |a: &earthmesh_mesh::CartesianPoint, b: &earthmesh_mesh::CartesianPoint| {
-        let middle = earthmesh_mesh::CartesianPoint::new(
-            (a.x + b.x) / 2.0,
-            (a.y + b.y) / 2.0,
-            (a.z + b.z) / 2.0,
-        );
-        boundaries
-            .iter()
-            .any(|region| harp_region_contains(region, middle, radius))
-    };
-    let mut edges: Vec<f64> = Vec::new();
-    for iu in 2..=mesh.nud {
-        let [im1, im2] = mesh.u_edges[iu].im;
-        let (Some(a), Some(b)) = (mesh.m_points.get(im1), mesh.m_points.get(im2)) else {
-            continue;
-        };
-        if inside(a, b) {
-            continue;
-        }
-        let length = earthmesh_mesh::arc_length_unit_sphere(*a, *b);
-        if length.is_finite() && length > 0.0 {
-            edges.push(length);
-        }
-    }
-    if edges.is_empty() {
-        return Err(io::Error::other(
-            "every edge is inside a refinement region, so there is no unrefined \
-             scale to calibrate the spring targets against",
-        ));
-    }
-    edges.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    // A conversion, not a guard. `width` below is built from `base_cell_m` --
-    // a cell scale, `sqrt(A/pi)` -- and `spring_nest_with_edge_targets` wants
-    // edge lengths, so every target has to cross between the two. Measured at
-    // NXP 21: the median unrefined edge is 363 km against a 190 km cell scale,
-    // so the factor is 1.91. An earlier comment here called it "near one",
-    // which described a version whose divisor was the median *edge*; dividing
-    // by that would leave cell scales fed to an edge-target spring, which is
-    // the halved-target defect guide 11.31 records.
-    let shape_factor = edges[edges.len() / 2] / base_cell_m;
-    let targets =
-        earthmesh_refine_method_c::method_c_edge_target_lengths_from_field(mesh, |lon, lat| {
-            let here = earthmesh_mesh::lonlat_degrees_to_unit_xyz(
-                earthmesh_mesh::LonLatDegrees::new(lon, lat),
-            );
-            // Gradient-limited, not a step at the region boundary. A target that
-            // jumps from base to base/4 across one edge asks the spring for a
-            // discontinuity it can only answer with a sliver; letting it grow
-            // back at a bounded rate is what an h-field does and what a circle
-            // list on its own does not.
-            //
-            // 0.3 metres of growth per metre of distance: shallow enough that
-            // the transition spans a few cells, steep enough that a target
-            // does not reach across the globe.
-            //
-            // Swept 0.05 to 0.50 both before and after the scale correction;
-            // it changes nothing either way (guide 11.24, 11.32). What matters
-            // is that the field is continuous, not its slope. The sweep left an
-            // `EM_G` environment override here that was read into a variable
-            // nothing used -- so the knob a reader would reach for did nothing,
-            // and the constant below is what the run has always used.
-            const GRADIENT: f64 = 0.3;
-            let mut width = base_cell_m;
-            for (boundary, asked) in boundaries.iter().zip(target_scales_m) {
-                let outside = match boundary {
-                    HarpRegionBoundary::Circle {
-                        center,
-                        radius_meters,
-                    } => {
-                        let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-                        let dot = (here.x * centre.x + here.y * centre.y + here.z * centre.z)
-                            .clamp(-1.0, 1.0);
-                        (dot.acos() * radius - *radius_meters).max(0.0)
-                    }
-                    HarpRegionBoundary::Polygon(boundary) => {
-                        let here = earthmesh_mesh::xyz_to_lonlat_degrees(here);
-                        if boundary.contains(here.lon_degrees, here.lat_degrees) {
-                            0.0
-                        } else {
-                            boundary
-                                .distance_to_boundary_radians(here.lon_degrees, here.lat_degrees)
-                                .unwrap_or(std::f64::consts::PI)
-                                * radius
-                        }
-                    }
-                };
-                width = width.min(*asked + GRADIENT * outside);
-            }
-            width * shape_factor
-        })?;
-    Ok(earthmesh_refine_method_c::MethodCMesh::new(mesh.clone())
-        .spring_nest_with_edge_targets(iterations, 2, true, true, &targets)?
-        .into_inner())
 }
 
 /// The Voronoi/PCVT step, in lon/lat, for a mesh on the sphere.
@@ -3809,30 +3666,6 @@ mod tests {
             )),
             earthmesh_core::EARTH_RADIUS_METERS,
         ));
-    }
-
-    #[test]
-    fn harp_polygon_targets_reach_the_spring_path() {
-        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh")
-            .into_inner();
-        let region = earthmesh_mesh::RefinementRegion::Polygon {
-            points: vec![
-                earthmesh_mesh::LonLatDegrees::new(-20.0, -20.0),
-                earthmesh_mesh::LonLatDegrees::new(20.0, -20.0),
-                earthmesh_mesh::LonLatDegrees::new(20.0, 20.0),
-                earthmesh_mesh::LonLatDegrees::new(-20.0, 20.0),
-            ],
-            level: 1,
-        };
-        let boundaries = harp_region_boundaries(std::slice::from_ref(&region)).expect("boundary");
-        let (base_cell_m, _) = harp_base_lengths(&mesh).expect("base scale");
-        let smoothed =
-            harp_spring_smoothed(&mesh, &boundaries, &[base_cell_m / 2.0], base_cell_m, 1)
-                .expect("polygon target spring");
-        assert_eq!(smoothed.nmd, mesh.nmd);
-        assert_eq!(smoothed.nud, mesh.nud);
-        assert_eq!(smoothed.nwd, mesh.nwd);
     }
 
     #[test]

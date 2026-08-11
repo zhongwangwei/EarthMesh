@@ -2919,7 +2919,7 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_harp_dv_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
+            "&mkgrd\n  NL%EXPNME='case_harp_dv_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=1\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=20\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
         ),
     )
     .expect("write harp_dv namelist");
@@ -2928,6 +2928,11 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
         .expect("harp_dv backend should run through the refinement pipeline");
 
     assert_eq!(run.max_level, 2);
+    assert_eq!(run.spring_nest_iterations, 20);
+    assert_eq!(
+        run.spring_nest_passes, 0,
+        "the regional spring must reject this fixture's worse-angle candidate"
+    );
     assert!(run.output.output.exists());
     assert!(
         run.output.lbx_points > run.gridinit.gridfile.lbx_points,
