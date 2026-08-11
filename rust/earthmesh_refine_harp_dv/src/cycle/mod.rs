@@ -92,9 +92,12 @@ fn scales(mesh: &AdaptiveMesh) -> Vec<Option<f64>> {
 ///
 /// Raised against the *coarser* of the pair: refining the finer one would
 /// widen the ratio it was called to close.
-fn balance_demands(mesh: &AdaptiveMesh, limits: CycleLimits) -> Vec<RefinementDemand> {
+fn balance_demands(
+    mesh: &AdaptiveMesh,
+    scales: &[Option<f64>],
+    limits: CycleLimits,
+) -> Vec<RefinementDemand> {
     let state = mesh.state();
-    let scales = scales(mesh);
     // Worst offender per cell, so one cell surrounded by fine neighbours
     // produces one demand rather than six.
     let mut worst: BTreeMap<usize, f64> = BTreeMap::new();
@@ -157,11 +160,9 @@ fn balance_demands(mesh: &AdaptiveMesh, limits: CycleLimits) -> Vec<RefinementDe
 
 /// Adjacent pairs still past the bound.
 ///
-/// Not zero in general. Closing the last of them takes cells the degree gate
-/// refuses, and insertion is this backend's only move -- section 8.1's
-/// r-adaptation, which would resolve it by moving sites rather than adding
-/// them, is not implemented. Reported so a caller can decide, rather than left
-/// for them to discover.
+/// Reported even though unconstrained r-adaptation normally closes them: a
+/// protected-segment run does not move sites, and a hard gate may still leave
+/// a residue that the caller must decide on.
 fn unbalanced_pairs(mesh: &AdaptiveMesh, limits: CycleLimits) -> usize {
     let state = mesh.state();
     let scales = scales(mesh);
@@ -188,65 +189,72 @@ fn unbalanced_pairs(mesh: &AdaptiveMesh, limits: CycleLimits) -> usize {
     over
 }
 
-/// The largest vertex degree in a site's fan, counting the site itself.
+/// The part of the global scale objective that a local move can change.
 ///
-/// What a degree-relieving move has to lower. Section 11.13 measured the degree
-/// bound as 96% of everything this backend cannot do, and section 11.14 that
-/// motion alone cannot change a degree -- so the move this feeds is motion
-/// *and* legalization, and the flips are what redistribute degree.
-fn neighbourhood_max_degree(state: &MeshState, site: usize) -> usize {
-    let Ok(fan) = state.triangle_fan(site) else {
-        return usize::MAX;
-    };
-    let mut region: BTreeSet<usize> = BTreeSet::new();
-    for triangle in &fan {
-        for corner in state.triangles()[*triangle] {
-            region.insert(corner);
-        }
-    }
-    region
-        .iter()
-        .filter_map(|&member| state.vertex_degree(member).ok())
-        .max()
-        .unwrap_or(usize::MAX)
-}
-
-/// The centroid of a site's neighbours, on the sphere: one relaxation step.
-///
-/// Unweighted, unlike `balance_destination`. This move is not trying to even
-/// out scales -- it is trying to give the legalization that follows a
-/// configuration whose flips lower degree, and the even spacing is what does
-/// that.
-fn relaxation_destination(state: &MeshState, site: usize) -> Option<CartesianPoint> {
-    const STEP: f64 = 0.5;
-    let here = state.vertices()[site];
-    let radius = magnitude(here);
-    let fan = state.triangle_fan(site).ok()?;
-    let mut neighbours: BTreeSet<usize> = BTreeSet::new();
-    for triangle in &fan {
-        for corner in state.triangles()[*triangle] {
-            if corner != site {
-                neighbours.insert(corner);
+/// Every edge not incident to `sites` contributes the same value before and
+/// after the move, so comparing this tuple is exactly the global objective
+/// delta without rescanning the whole mesh for every candidate.
+fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> Option<[f64; 3]> {
+    let mut edges = BTreeSet::new();
+    for &site in sites {
+        for triangle in state.triangle_fan(site).ok()? {
+            for corner in state.triangles()[triangle] {
+                if corner != site {
+                    edges.insert((site.min(corner), site.max(corner)));
+                }
             }
         }
     }
-    if neighbours.is_empty() {
-        return None;
+    let mut cached = BTreeMap::new();
+    let mut violations = 0usize;
+    let mut worst = 1.0_f64;
+    let mut energy = 0.0;
+    for (left, right) in edges {
+        let mut scale = |site| {
+            if let Some(value) = cached.get(&site) {
+                return Some(*value);
+            }
+            let value = site_scale(state, site)?;
+            cached.insert(site, value);
+            Some(value)
+        };
+        let here = scale(left)?;
+        let there = scale(right)?;
+        let ratio = here.max(there) / here.min(there);
+        if !ratio.is_finite() {
+            return None;
+        }
+        worst = worst.max(ratio);
+        if ratio > bound {
+            violations += 1;
+            let excess = ratio / bound - 1.0;
+            energy += excess * excess;
+        }
     }
-    let mut centroid = CartesianPoint::new(0.0, 0.0, 0.0);
-    for &corner in &neighbours {
-        let point = state.vertices()[corner];
-        centroid = CartesianPoint::new(
-            centroid.x + point.x,
-            centroid.y + point.y,
-            centroid.z + point.z,
-        );
+    Some([violations as f64, worst, energy])
+}
+
+fn site_scale(state: &MeshState, site: usize) -> Option<f64> {
+    let cell = state.voronoi_cell(site).ok()?;
+    CellView {
+        site,
+        cell: &cell,
+        state,
+        radius_m: state.sphere_radius(),
     }
-    let count = neighbours.len() as f64;
+    .effective_scale_m()
+}
+
+fn projected_step(
+    here: CartesianPoint,
+    target: CartesianPoint,
+    step: f64,
+) -> Option<CartesianPoint> {
+    let radius = magnitude(here);
     let stepped = CartesianPoint::new(
-        here.x + (centroid.x / count - here.x) * STEP,
-        here.y + (centroid.y / count - here.y) * STEP,
-        here.z + (centroid.z / count - here.z) * STEP,
+        here.x + (target.x - here.x) * step,
+        here.y + (target.y - here.y) * step,
+        here.z + (target.z - here.z) * step,
     );
     let length = magnitude(stepped);
     if !length.is_finite() || length <= 0.0 {
@@ -259,131 +267,73 @@ fn relaxation_destination(state: &MeshState, site: usize) -> Option<CartesianPoi
     ))
 }
 
-/// How badly the neighbourhood around a site breaks the scale bound.
-///
-/// Not called. Three improvement gates were built and measured, each wider
-/// than the last, and each lowered the violation count without closing the
-/// bound or letting the run converge (guide 11.9). Kept because the sequence
-/// is the finding: the objective has to be global, and these are the local
-/// ones already ruled out.
-#[allow(dead_code)]
-///
-/// Sum of squared excess over every adjacent pair in the site's fan and one
-/// ring out -- not the site's own worst ratio, which is what the first attempt
-/// at an improvement gate measured and why it failed. Moving a site changes
-/// every pair around it at once, so a gate reading one pair accepts moves that
-/// improve that pair and push the violation next door. Guide section 11.9.
-///
-/// Local, because the whole point of a per-transaction gate is that it costs
-/// the neighbourhood rather than the mesh (section 11.7).
-fn neighbourhood_violation(state: &MeshState, site: usize, bound: f64) -> f64 {
-    let radius_m = state.sphere_radius();
-    let scale = |site: usize| {
-        let cell = state.voronoi_cell(site).ok()?;
-        CellView {
-            site,
-            cell: &cell,
-            state,
-            radius_m,
-        }
-        .effective_scale_m()
-    };
+fn neighbour_sites(state: &MeshState, site: usize) -> BTreeSet<usize> {
     let Ok(fan) = state.triangle_fan(site) else {
-        return f64::INFINITY;
+        return BTreeSet::new();
     };
-    // Every site in the fan, and every site in theirs: the ring whose pairs a
-    // move can shift.
-    let mut region: BTreeSet<usize> = BTreeSet::new();
-    for triangle in &fan {
-        for corner in state.triangles()[*triangle] {
-            region.insert(corner);
-        }
-    }
-    let inner: Vec<usize> = region.iter().copied().collect();
-    for &member in &inner {
-        if let Ok(their_fan) = state.triangle_fan(member) {
-            for triangle in their_fan {
-                for corner in state.triangles()[triangle] {
-                    region.insert(corner);
-                }
-            }
-        }
-    }
-
-    let mut total = 0.0;
-    let mut seen: BTreeSet<(usize, usize)> = BTreeSet::new();
-    for &member in &region {
-        let Some(here) = scale(member) else {
-            continue;
-        };
-        let Ok(their_fan) = state.triangle_fan(member) else {
-            continue;
-        };
-        for triangle in their_fan {
-            for corner in state.triangles()[triangle] {
-                if corner == member || !region.contains(&corner) {
-                    continue;
-                }
-                let key = (member.min(corner), member.max(corner));
-                if !seen.insert(key) {
-                    continue;
-                }
-                let Some(there) = scale(corner) else { continue };
-                let ratio = here.max(there) / here.min(there);
-                if ratio > bound {
-                    let excess = ratio - bound;
-                    total += excess * excess;
-                }
-            }
-        }
-    }
-    total
+    fan.into_iter()
+        .flat_map(|triangle| state.triangles()[triangle])
+        .filter(|&corner| corner != site)
+        .collect()
 }
 
-/// The worst neighbour scale ratio at one site.
-#[allow(dead_code)]
+/// Deterministic positions that can change the Delaunay degree of `site`.
 ///
-/// Local: the improvement gate compares this before and after a move, and a
-/// global objective would cost the mesh per transaction -- the shape guide
-/// section 11.7 records.
-fn worst_ratio_at(state: &MeshState, site: usize, limits: CycleLimits) -> f64 {
-    let radius_m = state.sphere_radius();
-    let scale = |site: usize| {
-        let cell = state.voronoi_cell(site).ok()?;
-        CellView {
-            site,
-            cell: &cell,
-            state,
-            radius_m,
-        }
-        .effective_scale_m()
-    };
-    let Some(here) = scale(site) else {
-        return f64::INFINITY;
-    };
-    let Ok(fan) = state.triangle_fan(site) else {
-        return f64::INFINITY;
-    };
-    let mut worst = 1.0_f64;
-    for triangle in fan {
-        for corner in state.triangles()[triangle] {
-            if corner == site {
-                continue;
-            }
-            if let Some(there) = scale(corner) {
-                worst = worst.max(here.max(there) / here.min(there));
+/// A centroid-only move was too symmetric to cross an edge-flip boundary and
+/// fired zero times. Moving away from each current neighbour directly targets
+/// the incident edge that must disappear for a degree-seven site to make room.
+fn degree_relief_destinations(state: &MeshState, site: usize) -> Vec<CartesianPoint> {
+    let here = state.vertices()[site];
+    let neighbours = neighbour_sites(state, site);
+    if neighbours.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = Vec::with_capacity(neighbours.len() * 2);
+    for neighbour in neighbours {
+        let point = state.vertices()[neighbour];
+        let away = CartesianPoint::new(
+            here.x + (here.x - point.x),
+            here.y + (here.y - point.y),
+            here.z + (here.z - point.z),
+        );
+        for step in [0.5, 0.25] {
+            if let Some(point) = projected_step(here, away, step) {
+                candidates.push(point);
             }
         }
     }
-    let _ = limits;
-    worst
+    candidates
+}
+
+fn sites_are_adjacent(state: &MeshState, left: usize, right: usize) -> Option<bool> {
+    Some(state.triangle_fan(left).ok()?.into_iter().any(|triangle| {
+        state.triangles()[triangle]
+            .into_iter()
+            .any(|corner| corner == right)
+    }))
+}
+
+fn tally_refusals(
+    reasons: &[(crate::candidate::CandidateSource, Rejection)],
+    tally: &mut RejectionTally,
+) {
+    for (_, reason) in reasons {
+        match reason {
+            Rejection::DegreeOverBudget { .. } => tally.degree += 1,
+            Rejection::ProtectedPentagonDisturbed { .. } => tally.pentagon += 1,
+            Rejection::NotInsertable(_) => tally.not_insertable += 1,
+            Rejection::PatchTooLarge { .. }
+            | Rejection::SurfaceOpened { .. }
+            | Rejection::TopologyInvalid { .. }
+            | Rejection::CouldNotLegalize(_) => tally.topology += 1,
+            Rejection::SliverTriangle { .. } => tally.sliver += 1,
+            Rejection::NoImprovement { .. } => tally.no_improvement += 1,
+            Rejection::Unmeasurable(_) => tally.unmeasurable += 1,
+        }
+    }
 }
 
 /// Where to move a site to even out the scales around it.
-///
-/// Not called; see `neighbourhood_violation` for why the balance path does not
-/// move sites today.
-#[allow(dead_code)]
 ///
 /// Toward the centroid of its neighbours, weighted so the coarse side pulls
 /// harder: a site sitting between a fine neighbourhood and a coarse one is
@@ -393,12 +343,12 @@ fn worst_ratio_at(state: &MeshState, site: usize, limits: CycleLimits) -> f64 {
 /// A fraction of the way, not all of it. A site landing on the centroid would
 /// overshoot past the balance it was moving toward, and the next cycle would
 /// move it back.
-fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoint> {
-    const STEP: f64 = 0.25;
+fn balance_destinations(mesh: &AdaptiveMesh, site: usize) -> Vec<CartesianPoint> {
     let state = mesh.state();
     let here = state.vertices()[site];
-    let radius = magnitude(here);
-    let fan = state.triangle_fan(site).ok()?;
+    let Ok(fan) = state.triangle_fan(site) else {
+        return Vec::new();
+    };
     let mut neighbours = BTreeMap::new();
     for triangle in &fan {
         for corner in state.triangles()[*triangle] {
@@ -408,9 +358,9 @@ fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoin
         }
     }
     if neighbours.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let scales = scales(mesh);
+    let radius_m = state.sphere_radius();
     let mut total = 0.0;
     let mut target = CartesianPoint::new(0.0, 0.0, 0.0);
     for &corner in neighbours.keys() {
@@ -419,7 +369,19 @@ fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoin
         // fine side: the coarse cell loses area there and the fine one gains
         // it. Weighting the other way -- toward the coarse side -- was tried
         // first and measured worse than doing nothing.
-        let scale = scales[corner].unwrap_or(0.0);
+        let scale = state
+            .voronoi_cell(corner)
+            .ok()
+            .and_then(|cell| {
+                CellView {
+                    site: corner,
+                    cell: &cell,
+                    state,
+                    radius_m,
+                }
+                .effective_scale_m()
+            })
+            .unwrap_or(0.0);
         if scale <= 0.0 {
             continue;
         }
@@ -433,23 +395,13 @@ fn balance_destination(mesh: &AdaptiveMesh, site: usize) -> Option<CartesianPoin
         total += weight;
     }
     if total <= 0.0 {
-        return None;
+        return Vec::new();
     }
     let centroid = CartesianPoint::new(target.x / total, target.y / total, target.z / total);
-    let stepped = CartesianPoint::new(
-        here.x + (centroid.x - here.x) * STEP,
-        here.y + (centroid.y - here.y) * STEP,
-        here.z + (centroid.z - here.z) * STEP,
-    );
-    let length = magnitude(stepped);
-    if !length.is_finite() || length <= 0.0 {
-        return None;
-    }
-    Some(CartesianPoint::new(
-        stepped.x / length * radius,
-        stepped.y / length * radius,
-        stepped.z / length * radius,
-    ))
+    [0.5, 0.25, 0.125, 0.0625]
+        .into_iter()
+        .filter_map(|step| projected_step(here, centroid, step))
+        .collect()
 }
 
 /// What a pass over the cells found, beyond the demands themselves.
@@ -476,12 +428,13 @@ fn evaluate(
     mesh: &AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
     limits: CycleLimits,
-) -> Result<(Vec<RefinementDemand>, EvaluationTally)> {
+) -> Result<(Vec<RefinementDemand>, EvaluationTally, Vec<Option<f64>>)> {
     let state = mesh.state();
     let radius_m = state.sphere_radius();
     let mut demands = Vec::new();
     let mut tally = EvaluationTally::default();
-    for site in MESH_STATE_FIRST_ID..state.vertices().len() {
+    let mut scales = vec![None; state.vertices().len()];
+    for (site, scale_slot) in scales.iter_mut().enumerate().skip(MESH_STATE_FIRST_ID) {
         // A cell that cannot be read is not a demand. Skipping it here keeps
         // evaluation total; the transaction layer reports the same cell as
         // `NotAttempted` if anything later asks for it.
@@ -494,6 +447,8 @@ fn evaluate(
             state,
             radius_m,
         };
+        let scale = view.effective_scale_m();
+        *scale_slot = scale;
         // Read the criteria first, even for a cell already at the floor.
         //
         // The floor used to short-circuit the whole cell, and the tally with
@@ -506,9 +461,7 @@ fn evaluate(
         // Evaluating and then declining to act costs one pass over criteria for
         // the cells at the floor, and buys the distinction between "this cell
         // wanted more and could not have it" and "this cell wanted nothing".
-        let at_floor = view
-            .effective_scale_m()
-            .is_some_and(|scale| scale <= limits.minimum_cell_width_m);
+        let at_floor = scale.is_some_and(|scale| scale <= limits.minimum_cell_width_m);
         let mut evidences = Vec::new();
         let mut unsatisfiable = false;
         for criterion in criteria {
@@ -549,7 +502,7 @@ fn evaluate(
             demands.push(demand);
         }
     }
-    Ok((demands, tally))
+    Ok((demands, tally, scales))
 }
 
 /// Run cycles until something says to stop, and say which.
@@ -567,17 +520,25 @@ pub fn run_cycles(
     let mut balanced = 0usize;
     let mut refusals = RejectionTally::default();
     let mut relieved = 0usize;
+    let mut r_adapted = 0usize;
     let mut unresolved_cells = Vec::new();
+    let mut quality_constrained = 0usize;
     let mut cycles = 0u32;
     let mut stop_reason = StopReason::MaximumCyclesReached;
+    let mut adaptation_probe = None;
 
     while cycles < limits.max_cycles {
-        let (mut demands, tally) = evaluate(mesh, criteria, limits)?;
+        unresolved_cells.clear();
+        quality_constrained = 0;
+        let (mut demands, tally, scales) = evaluate(mesh, criteria, limits)?;
+        let physical_demand_count = demands.len();
         // Section 14, folded into the same list rather than run as a pass of
         // its own: one loop serves both, and `RefinementCause` is what keeps
         // physical refinement and transition balance apart in the report --
         // which the spec says is the reason the distinction exists.
-        demands.extend(balance_demands(mesh, limits));
+        let balance = balance_demands(mesh, &scales, limits);
+        let balance_demand_count = balance.len();
+        demands.extend(balance);
         if demands.is_empty() {
             // Three endings, told apart. A cell parked at the floor or asking
             // for something the data cannot give is not a satisfied cell, and
@@ -595,8 +556,11 @@ pub fn run_cycles(
         order_demands(&mut demands);
 
         let mut accepted_this_cycle = 0usize;
+        let mut adapted_this_cycle = 0usize;
         let mut out_of_budget = false;
-        unresolved_cells.clear();
+        let mut degree_blocked_sites = BTreeSet::new();
+        let mut pentagon_blocked_pairs = BTreeSet::new();
+        let mut balance_blocked_sites = BTreeSet::new();
         for demand in &demands {
             if mesh.active_site_count() >= limits.max_sites {
                 out_of_budget = true;
@@ -622,61 +586,184 @@ pub fn run_cycles(
                     refusals: reasons, ..
                 } => {
                     rolled_back += reasons.len();
-                    // A demand the degree bound turned away is the one case
-                    // worth a second move: relax the neighbourhood and let the
-                    // legalization redistribute degree, so the next cycle can
-                    // try the same demand into a mesh with room. Only when
-                    // degree was the reason -- anything else is a different
-                    // problem and this would not touch it.
-                    if reasons
-                        .iter()
-                        .any(|(_, reason)| matches!(reason, Rejection::DegreeOverBudget { .. }))
-                    {
-                        if let Some(destination) = relaxation_destination(mesh.state(), site) {
-                            let before = neighbourhood_max_degree(mesh.state(), site);
-                            let improves =
-                                |state: &MeshState| neighbourhood_max_degree(state, site) < before;
-                            // `?`, not a discarded `Ok`. The only error this
-                            // returns is a rollback that failed, which leaves
-                            // the mesh inconsistent -- swallowing it would
-                            // carry on refining a mesh nobody can trust.
-                            if let Acceptance::Committed(_) =
-                                mesh.propose_move(site, destination, gates, &improves)?
-                            {
-                                relieved += 1;
-                                // Deliberately *not* counted as an accepted
-                                // transaction. A relief move serves no demand,
-                                // so a cycle that only relieves has made no
-                                // progress on what was asked -- counting it
-                                // would keep `NoAcceptedTransactions` from ever
-                                // firing and let such a run spin to the cycle
-                                // limit reporting the wrong reason.
-                            }
-                        }
-                    }
-                    for (_, reason) in &reasons {
+                    // Record the hard vertices and balance cells a local move
+                    // can change; the phase below deduplicates them before it
+                    // pays for legalization.
+                    degree_blocked_sites.extend(reasons.iter().filter_map(
+                        |(_, reason)| match reason {
+                            Rejection::DegreeOverBudget { site, .. } => Some(*site),
+                            _ => None,
+                        },
+                    ));
+                    pentagon_blocked_pairs.extend(reasons.iter().filter_map(|(_, reason)| {
                         match reason {
-                            Rejection::DegreeOverBudget { .. } => refusals.degree += 1,
-                            Rejection::ProtectedPentagonDisturbed { .. } => refusals.pentagon += 1,
-                            Rejection::NotInsertable(_) => refusals.not_insertable += 1,
-                            // Counted with topology: like the others there, it
-                            // is the change being too big to undo safely rather
-                            // than the demand being unreachable.
-                            Rejection::PatchTooLarge { .. } => refusals.topology += 1,
-                            Rejection::SurfaceOpened { .. }
-                            | Rejection::TopologyInvalid { .. }
-                            | Rejection::CouldNotLegalize(_) => refusals.topology += 1,
-                            Rejection::SliverTriangle { .. } => refusals.sliver += 1,
-                            Rejection::NoImprovement { .. } => refusals.no_improvement += 1,
-                            Rejection::Unmeasurable(_) => refusals.unmeasurable += 1,
+                            Rejection::ProtectedPentagonDisturbed { site: pentagon, .. } => {
+                                Some((*pentagon, site))
+                            }
+                            _ => None,
                         }
+                    }));
+                    if for_balance {
+                        balance_blocked_sites.insert(site);
                     }
+                    if !reasons.is_empty()
+                        && reasons
+                            .iter()
+                            .all(|(_, reason)| matches!(reason, Rejection::SliverTriangle { .. }))
+                    {
+                        quality_constrained += 1;
+                    }
+                    tally_refusals(&reasons, &mut refusals);
                     unresolved_cells.push(site);
                 }
                 DemandOutcome::NotAttempted(_) => unresolved_cells.push(site),
             }
         }
+        // Ruppert's protected-segment path has its own termination invariant:
+        // accepted sites and split segments stay where the proof put them.
+        // Moving even an unmarked interior site afterwards invalidates that
+        // invariant, so r-adaptation is confined to unconstrained runs.
+        if !mesh.segments_are_empty() {
+            degree_blocked_sites.clear();
+            pentagon_blocked_pairs.clear();
+            balance_blocked_sites.clear();
+        }
+        let pentagon_sites: BTreeSet<usize> = pentagon_blocked_pairs
+            .iter()
+            .flat_map(|&(pentagon, demand)| [pentagon, demand])
+            .collect();
+        balance_blocked_sites.extend(pentagon_sites.iter().copied());
+        // Insertion reports the vertex that would exceed the writer's degree
+        // limit. Move that vertex -- not the cell that happened to ask -- and
+        // legalize until one of its incident edges disappears. Doing this as a
+        // phase avoids retrying the same blocker once per failed demand.
+        balance_blocked_sites.extend(degree_blocked_sites.iter().copied());
+        for blocked_site in degree_blocked_sites {
+            if !mesh.can_move_site(blocked_site)
+                || mesh.state().vertex_degree(blocked_site).ok() < Some(gates.max_vertex_degree)
+            {
+                continue;
+            }
+            // This phase removes one hard writer blocker. Scale has its own
+            // phase below; scoring it here was expensive and admitted moves
+            // that balanced a neighbourhood without lowering this degree.
+            let objective =
+                |state: &MeshState, _: &BTreeSet<usize>| state.vertex_degree(blocked_site).ok();
+            let Ok(before) = mesh.state().vertex_degree(blocked_site) else {
+                continue;
+            };
+            for destination in degree_relief_destinations(mesh.state(), blocked_site) {
+                // `?`, not a discarded `Ok`: an error here means rollback
+                // failed and the mesh cannot safely be used further.
+                if let Acceptance::Committed(_) = mesh.propose_move_cached(
+                    blocked_site,
+                    destination,
+                    gates,
+                    &objective,
+                    Some(&before),
+                    false,
+                )? {
+                    relieved += 1;
+                    r_adapted += 1;
+                    adapted_this_cycle += 1;
+                    break;
+                }
+            }
+        }
+        // A protected pentagon cannot gain a sixth neighbour. Move the pair
+        // apart transactionally; the hard gate keeps the pentagon at degree
+        // five, while the distance term permits the staged moves one edge
+        // swap can require.
+        for (pentagon, demand_site) in pentagon_blocked_pairs.iter().copied() {
+            if sites_are_adjacent(mesh.state(), pentagon, demand_site) != Some(true) {
+                continue;
+            }
+            let mut moved = false;
+            for (index, moving_site) in [demand_site, pentagon].into_iter().enumerate() {
+                if moved || (index == 1 && pentagon == demand_site) {
+                    break;
+                }
+                if !mesh.can_move_site(moving_site) {
+                    continue;
+                }
+                let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+                    let left = *state.vertices().get(pentagon)?;
+                    let right = *state.vertices().get(demand_site)?;
+                    let distance_squared = (left.x - right.x).powi(2)
+                        + (left.y - right.y).powi(2)
+                        + (left.z - right.z).powi(2);
+                    Some([
+                        f64::from(sites_are_adjacent(state, pentagon, demand_site)?),
+                        -distance_squared,
+                    ])
+                };
+                let Some(before) = objective(mesh.state(), &BTreeSet::new()) else {
+                    continue;
+                };
+                for destination in degree_relief_destinations(mesh.state(), moving_site) {
+                    if let Acceptance::Committed(_) = mesh.propose_move_cached(
+                        moving_site,
+                        destination,
+                        gates,
+                        &objective,
+                        Some(&before),
+                        false,
+                    )? {
+                        adapted_this_cycle += 1;
+                        r_adapted += 1;
+                        moved = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for site in balance_blocked_sites {
+            if !mesh.can_move_site(site) {
+                continue;
+            }
+            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+                balance_objective(state, affected, limits.max_neighbour_scale_ratio)
+            };
+            let Some(before) = mesh.score_before_move(site, &objective) else {
+                continue;
+            };
+            if before[0] == 0.0 && !pentagon_sites.contains(&site) {
+                continue;
+            }
+            let mut destinations = balance_destinations(mesh, site);
+            let mut relief = degree_relief_destinations(mesh.state(), site);
+            if before[0] == 0.0 {
+                // No bound is broken here. Keep the protected-pentagon escape
+                // search bounded; broad search belongs to actual violations.
+                relief.truncate(3);
+            }
+            destinations.extend(relief);
+            for destination in destinations {
+                if let Acceptance::Committed(_) = mesh.propose_move_cached(
+                    site,
+                    destination,
+                    gates,
+                    &objective,
+                    Some(&before),
+                    true,
+                )? {
+                    adapted_this_cycle += 1;
+                    r_adapted += 1;
+                    break;
+                }
+            }
+        }
         cycles += 1;
+        eprintln!(
+            "harp_dv cycle {cycles}/{}: {} insertions, {} r-adaptations, {} unresolved ({} \
+             angle-constrained), {} active cells",
+            limits.max_cycles,
+            accepted_this_cycle,
+            adapted_this_cycle,
+            unresolved_cells.len(),
+            quality_constrained,
+            mesh.active_site_count()
+        );
         if out_of_budget {
             stop_reason = StopReason::BudgetReached;
             break;
@@ -686,8 +773,25 @@ pub fn run_cycles(
         // cycle limit is what keeps "unmet" distinguishable from "out of
         // cycles" in the report.
         if accepted_this_cycle == 0 {
-            stop_reason = StopReason::NoAcceptedTransactions;
-            break;
+            if adapted_this_cycle == 0 {
+                stop_reason =
+                    if quality_constrained == unresolved_cells.len() && quality_constrained > 0 {
+                        StopReason::QualityConstraintReached
+                    } else {
+                        StopReason::NoAcceptedTransactions
+                    };
+                break;
+            }
+            let signature = (physical_demand_count, balance_demand_count);
+            if adaptation_probe.is_some_and(|before: (usize, usize)| {
+                signature.0 >= before.0 && signature.1 >= before.1
+            }) {
+                stop_reason = StopReason::NoProductiveAdaptation;
+                break;
+            }
+            adaptation_probe = Some(signature);
+        } else {
+            adaptation_probe = None;
         }
     }
 
@@ -709,8 +813,10 @@ pub fn run_cycles(
             balance_transactions_committed: balanced,
             refusals,
             degree_relieving_moves: relieved,
+            r_adaptation_moves: r_adapted,
             unbalanced_pairs_remaining,
             unresolved_count: unresolved_cells.len(),
+            quality_constrained_count: quality_constrained,
             deterministic: true,
         },
         unresolved_cells,

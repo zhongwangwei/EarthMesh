@@ -18,19 +18,16 @@
 //!
 //! # What is not
 //!
-//! One criterion, `TargetScale`. The other three of section 8.2 need data
-//! sources this crate does not own yet.
+//! The data-backed physical criteria of section 8.2; this crate owns the
+//! geometry-only `TargetScale` and `MinAngle` criteria, not raster sources.
 //!
 //! Section 13.3's continuous improvement gate, whose three weights nobody has
 //! measured. The hard gates of 13.2 are here; the discrete MVP the spec offers
 //! beside the continuous objective is what belongs next.
 //!
-//! Section 8.1's r-adaptation. A run today only inserts, and that is not a
-//! matter of scope: measured, the degree bound the gridfile imposes and
-//! section 14's scale bound pull against each other, and closing the last
-//! ratios needs cells the degree gate refuses. Moving sites is the move that
-//! would resolve it. Until it exists, `unbalanced_pairs_remaining` reports
-//! what balance could not close -- guide section 11.8 has the numbers.
+//! Boundary-curve and interface-curve r-adaptation. Unconstrained runs move
+//! interior sites transactionally; protected-segment runs keep every site in
+//! place because Ruppert's termination invariant depends on those positions.
 //!
 pub mod api;
 pub mod candidate;

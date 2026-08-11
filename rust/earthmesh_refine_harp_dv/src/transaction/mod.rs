@@ -96,14 +96,12 @@ impl Default for HardGates {
             //     32     -> 32.01,       4835
             //     36     -> no refinement survives at all
             //
-            // 30 is the knee. Below it quality is left on the table; at 31 the
-            // cell count falls under Method-C's 7023 for the same request, so
-            // the mesh stops being the mesh that was asked for. At 30 it is
-            // 7132 cells at 30.00 degrees against Method-C's 7023 at 27.40 --
-            // ahead on both.
-            //
-            // That it lands on Chew's 30-degree bound is a coincidence; this
-            // number came from a sweep, not from the theory.
+            // The old 30-degree default was the knee of a small NXP-21 sweep,
+            // but it rejected 7,470 production demands whose candidate ladder
+            // could satisfy the project's actual 25-degree quality gate.  The
+            // backend default now matches that shared gate; users can still
+            // request a stricter floor explicitly and the report names the
+            // cells that strictness leaves unserved.
             min_triangle_angle_deg: earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG,
             require_closed_surface: true,
             max_patch_triangles: earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
@@ -451,6 +449,30 @@ impl AdaptiveMesh {
 }
 
 impl AdaptiveMesh {
+    fn move_neighbourhood(
+        &self,
+        site: usize,
+    ) -> std::result::Result<(BTreeSet<usize>, BTreeSet<usize>), VoronoiError> {
+        let fan: BTreeSet<usize> = self.state().triangle_fan(site)?.into_iter().collect();
+        let reach: BTreeSet<usize> = self.state().snapshot_around(&fan).triangles().collect();
+        Ok((fan, reach))
+    }
+
+    pub(crate) fn score_before_move<Score>(
+        &self,
+        site: usize,
+        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+    ) -> Option<Score> {
+        let (_, reach) = self.move_neighbourhood(site).ok()?;
+        let affected_sites = self
+            .state()
+            .sites_touching(&reach)
+            .keys()
+            .copied()
+            .collect();
+        objective(self.state(), &affected_sites)
+    }
+
     /// Move a site, restore Delaunay around it, and keep it only if the gates
     /// pass.
     ///
@@ -464,9 +486,9 @@ impl AdaptiveMesh {
     /// legalization pass follows -- and a flip can make a neighbouring edge
     /// illegal, so the repair reaches past the fan it started in. The patch is
     /// taken over the whole fan and its ring for that reason.
-    /// `improves` is section 13.3's improvement gate, in the discrete form the
-    /// specification offers for the MVP: the hard gates say the mesh is legal,
-    /// and this says it is better than it was. Both are needed, and the
+    /// `improves` is section 13.3's public improvement gate: the hard gates say
+    /// the mesh is legal, and this says it is better than it was. Both are
+    /// needed, and the
     /// measurement that says so is in guide section 11.9 -- without it a
     /// balance run committed 389 moves over 40 cycles and left more violations
     /// than it started with, because every one of them was legal and the loop
@@ -478,8 +500,21 @@ impl AdaptiveMesh {
         gates: HardGates,
         improves: &dyn Fn(&MeshState) -> bool,
     ) -> Result<Acceptance> {
-        let fan: BTreeSet<usize> = match self.state().triangle_fan(site) {
-            Ok(fan) => fan.into_iter().collect(),
+        let objective = |state: &MeshState, _: &BTreeSet<usize>| Some(!improves(state));
+        self.propose_move_cached(site, destination, gates, &objective, Some(&true), false)
+    }
+
+    pub(crate) fn propose_move_cached<Score: PartialOrd>(
+        &mut self,
+        site: usize,
+        destination: CartesianPoint,
+        gates: HardGates,
+        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+        cached_before: Option<&Score>,
+        objective_reads_affected_sites: bool,
+    ) -> Result<Acceptance> {
+        let (fan, reach) = match self.move_neighbourhood(site) {
+            Ok(neighbourhood) => neighbourhood,
             Err(error) => return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(error))),
         };
         // Two rings of snapshot for one ring of flips. A flip rewrites the
@@ -489,7 +524,6 @@ impl AdaptiveMesh {
         // change back leaves a mesh that is neither the old one nor the new
         // one, and that validates. Measured: without the extra ring, a balance
         // run ends with four asymmetric neighbour pairs.
-        let reach: BTreeSet<usize> = self.state().snapshot_around(&fan).triangles().collect();
         let patch = self.state().snapshot_around(&reach);
         // The same bound the insertion path checks. It covered only insertion
         // when it went in, so a move could snapshot any amount and the config
@@ -501,6 +535,21 @@ impl AdaptiveMesh {
                 allowed: gates.max_patch_triangles,
             }));
         }
+        let affected_sites = if objective_reads_affected_sites {
+            self.state()
+                .sites_touching(&reach)
+                .keys()
+                .copied()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let computed_before = if cached_before.is_none() {
+            objective(self.state(), &affected_sites)
+        } else {
+            None
+        };
+        let before = cached_before.or(computed_before.as_ref());
         let origin = self.state().vertices()[site];
 
         self.state_mut().move_vertex(site, destination);
@@ -521,8 +570,22 @@ impl AdaptiveMesh {
 
         let pentagons = self.pentagon_ids();
         let verdict = match check(self.state(), &touched, gates, &pentagons) {
-            Ok(max_degree_touched) if improves(self.state()) => Ok(max_degree_touched),
-            Ok(_) => Err(Rejection::NoImprovement { site }),
+            Ok(max_degree_touched) => {
+                let improved = match (
+                    before.as_ref(),
+                    objective(self.state(), &affected_sites).as_ref(),
+                ) {
+                    (Some(before), Some(after)) => {
+                        after.partial_cmp(before) == Some(std::cmp::Ordering::Less)
+                    }
+                    _ => false,
+                };
+                if improved {
+                    Ok(max_degree_touched)
+                } else {
+                    Err(Rejection::NoImprovement { site })
+                }
+            }
             Err(rejection) => Err(rejection),
         };
         match verdict {

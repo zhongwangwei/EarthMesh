@@ -73,7 +73,7 @@ fn evaluation_retains_only_evidence_that_can_affect_the_demand() {
         .collect();
     criteria.extend(target(coarsest * 0.5, TargetRegion::Global));
 
-    let (demands, _) = evaluate(&mesh, &criteria, limits(1, 100_000)).expect("evaluate");
+    let (demands, _, _) = evaluate(&mesh, &criteria, limits(1, 100_000)).expect("evaluate");
 
     assert!(!demands.is_empty());
     assert!(demands.iter().all(|demand| demand.evidences.len() == 1));
@@ -97,6 +97,8 @@ fn a_satisfied_target_stops_at_once_and_changes_nothing() {
     .expect("run");
 
     assert_eq!(outcome.report.stop_reason, StopReason::AllSatisfied);
+    assert_eq!(outcome.report.unresolved_count, 0);
+    assert!(outcome.unresolved_cells.is_empty());
     assert_eq!(outcome.report.cycles_completed, 0);
     assert_eq!(outcome.report.transactions_attempted, 0);
     assert_eq!(mesh.state(), &before);
@@ -179,7 +181,9 @@ fn refining_makes_the_demand_go_away() {
     assert!(
         matches!(
             outcome.report.stop_reason,
-            StopReason::AllSatisfied | StopReason::NoAcceptedTransactions
+            StopReason::AllSatisfied
+                | StopReason::NoAcceptedTransactions
+                | StopReason::NoProductiveAdaptation
         ),
         "the run should converge or say it could not, not run out of cycles: {:?}",
         outcome.report.stop_reason
@@ -240,6 +244,37 @@ fn a_run_that_cannot_place_anything_says_so() {
     assert_eq!(outcome.report.transactions_committed, 0);
     assert!(outcome.report.unresolved_count > 0);
     assert_eq!(mesh.state(), &before, "and left the mesh alone");
+}
+
+/// A pure angle wall is named instead of being mistaken for more work.
+#[test]
+fn a_run_blocked_only_by_the_angle_floor_names_the_constraint() {
+    let mut mesh = sphere(6);
+    let criteria = target(coarsest_scale(&mesh) * 0.5, TargetRegion::Global);
+
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        HardGates {
+            min_triangle_angle_deg: 59.0,
+            ..permissive()
+        },
+        limits(20, 100_000),
+    )
+    .expect("run");
+
+    assert_eq!(
+        outcome.report.stop_reason,
+        StopReason::QualityConstraintReached
+    );
+    assert_eq!(outcome.report.cycles_completed, 1);
+    assert_eq!(outcome.report.transactions_committed, 0);
+    assert_eq!(
+        outcome.report.quality_constrained_count,
+        outcome.report.unresolved_count
+    );
+    assert!(outcome.report.refusals.sliver > 0);
 }
 
 /// The cycle limit is reported as itself.
@@ -408,22 +443,93 @@ fn steep_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
     )
 }
 
-/// Balance closes most of the gap, and the run reports what it could not.
+fn worst_degree(mesh: &AdaptiveMesh) -> usize {
+    let state = mesh.state();
+    (MESH_STATE_FIRST_ID..state.vertices().len())
+        .filter_map(|site| state.vertex_degree(site).ok())
+        .max()
+        .unwrap_or(0)
+}
+
+fn worst_triangle_floor(mesh: &AdaptiveMesh) -> f64 {
+    let state = mesh.state();
+    (MESH_STATE_FIRST_ID..state.triangles().len())
+        .map(|triangle| {
+            let corners = state.triangles()[triangle];
+            crate::criteria::smallest_angle_deg_for_test([
+                state.vertices()[corners[0]],
+                state.vertices()[corners[1]],
+                state.vertices()[corners[2]],
+            ])
+        })
+        .fold(f64::MAX, f64::min)
+}
+
+/// A degree wall is not only counted; it is relieved without breaking the mesh.
+///
+/// This is deliberately the same small deterministic target as the balance
+/// tests. Before the r-adaptation hook, the run stopped with degree refusals
+/// and a larger balance residue. The regression is relational enough to leave
+/// room for harmless geometry tie changes, but concrete enough to fail if the
+/// relief move is deleted or stops passing through the ordinary gates.
+#[test]
+fn degree_relief_moves_reduce_the_wall_without_breaking_quality_gates() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let gates = HardGates {
+        min_triangle_angle_deg: 20.0,
+        ..HardGates::default()
+    };
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        gates,
+        limits(40, 100_000),
+    )
+    .expect("run");
+
+    let (worst_ratio, unbalanced) = ratio_survey(&mesh, 1.75);
+    assert!(
+        outcome.report.degree_relieving_moves > 0,
+        "the fixture must exercise r-adaptation, not only count a degree wall: {:?}",
+        outcome.report
+    );
+    assert!(
+        outcome.report.unresolved_count <= 2,
+        "r-adaptation should remove most of the degree-wall residue; protected pentagons may \
+         still refuse a local insertion: {:?}",
+        outcome.report
+    );
+    assert!(
+        unbalanced <= 8 && worst_ratio < 2.1,
+        "r-adaptation should keep the balance residue bounded, got {unbalanced} pairs and \
+         worst ratio {worst_ratio:.3}"
+    );
+    assert_eq!(outcome.report.unbalanced_pairs_remaining, unbalanced);
+    assert!(
+        worst_degree(&mesh) <= gates.max_vertex_degree,
+        "degree gate leaked: worst degree {}",
+        worst_degree(&mesh)
+    );
+    assert!(
+        worst_triangle_floor(&mesh) >= gates.min_triangle_angle_deg - 1.0e-9,
+        "angle gate leaked: worst angle {:.6}",
+        worst_triangle_floor(&mesh)
+    );
+    assert_eq!(mesh.state().open_edge_count(), 0);
+    mesh.state().validate().expect("still a triangulation");
+}
+
+/// Balance plus r-adaptation closes the neighbour-scale gap.
 ///
 /// Measured on the same target with balance off: worst neighbour ratio 2.46,
-/// 58 adjacent pairs past 1.75. With it on: 1.96 and 16, and the run stops
-/// saying `NoAcceptedTransactions` rather than claiming to be finished.
-///
-/// It does not reach zero, and the reason is worth stating because it is not a
-/// tuning problem. The degree bound and the scale bound pull against each
-/// other: closing the last ratios needs cells the degree gate will not allow,
-/// and insertion is the only move this backend has. Section 8.1 puts
-/// r-adaptation -- moving sites -- ahead of h-adaptation for exactly this, and
-/// it is not implemented. Until it is, the residual is reported rather than
-/// hidden, because a mesh that quietly violates the bound it claims is the
-/// failure class this backend exists to avoid.
+/// 58 adjacent pairs past 1.75. Insertion-only balance left 1.96 and 16;
+/// r-adaptation closes the scale remainder. A protected pentagon can still
+/// leave one explicit size demand; hiding that would be worse than reporting
+/// the hard topology constraint.
 #[test]
-fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
+fn scale_balance_and_r_adaptation_close_the_gap() {
     let mut mesh = sphere(6);
     let criteria = steep_target(&mesh);
     let outcome = run_cycles(
@@ -441,11 +547,8 @@ fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
     .expect("run");
 
     let (worst, over) = ratio_survey(&mesh, 1.75);
-    assert!(
-        over <= 45 && worst < 2.2,
-        "balance left {over} pairs past 1.75, worst {worst:.3}; without it the same target \
-         leaves 58 and 2.46, so this is no better than doing nothing"
-    );
+    assert_eq!(over, 0, "balance left {over} pairs past 1.75");
+    assert!(worst <= 1.75, "worst neighbour ratio is {worst:.3}");
     assert!(
         outcome.report.balance_transactions_committed > 0,
         "and it took work to do it"
@@ -454,11 +557,22 @@ fn scale_balance_closes_most_of_the_gap_and_reports_the_rest() {
         outcome.report.unbalanced_pairs_remaining, over,
         "the report says what is left rather than leaving a caller to find out"
     );
-    assert_eq!(
+    assert!(matches!(
         outcome.report.stop_reason,
-        StopReason::NoAcceptedTransactions,
-        "a run that could not finish balancing does not report having finished"
+        StopReason::AllSatisfied | StopReason::NoAcceptedTransactions
+    ));
+    assert_eq!(
+        outcome.report.unresolved_count,
+        outcome.unresolved_cells.len()
     );
+    assert!(
+        outcome.report.unresolved_count <= 1,
+        "only a protected-pentagon demand may remain: {:?}",
+        outcome.report
+    );
+    if outcome.report.unresolved_count == 1 {
+        assert!(outcome.report.refusals.pentagon > 0);
+    }
     assert_eq!(mesh.state().open_edge_count(), 0);
     mesh.state().validate().expect("still a triangulation");
 }
@@ -670,9 +784,10 @@ fn the_wall_behind_degree_is_the_pentagons() {
 
 /// Protected segments are what let a quality target reach Ruppert's bound.
 ///
-/// A 20-degree angle target, with and without them: with, the run converges
-/// and every triangle clears the requested 20 degrees. Without, it converges
-/// to a worse mesh and never reaches the request.
+/// A 20-degree angle target with explicit protected segments converges and
+/// every triangle clears the requested 20 degrees.  The unconstrained path is
+/// checked too: r-adaptation may now clear this particular fixture without
+/// segments, but that empirical result is not Ruppert's boundary guarantee.
 ///
 /// 20 degrees, not 25. Guide 11.29: the sound segment list diverges at 25,
 /// which is what the theory says -- Ruppert's proof reaches about 20.7 and no
@@ -765,11 +880,21 @@ fn protected_segments_make_a_quality_target_terminate() {
     );
     assert_eq!(stop, StopReason::NoAcceptedTransactions);
 
-    let (_, unprotected_worst, _) = run(false);
+    let (unprotected_sites, unprotected_worst, unprotected_stop) = run(false);
     assert!(
-        unprotected_worst < ANGLE && unprotected_worst < worst,
-        "without protected segments the bound should not be reached: \
-         {unprotected_worst:.2} degrees against {worst:.2}"
+        unprotected_sites < 2_000,
+        "the unconstrained comparison must stay bounded, got {unprotected_sites} sites"
+    );
+    assert!(
+        unprotected_worst >= ANGLE,
+        "the unconstrained comparison regressed below {ANGLE:.2}: {unprotected_worst:.2}"
+    );
+    assert!(
+        matches!(
+            unprotected_stop,
+            StopReason::AllSatisfied | StopReason::NoAcceptedTransactions
+        ),
+        "unexpected unconstrained stop: {unprotected_stop:?}"
     );
 }
 

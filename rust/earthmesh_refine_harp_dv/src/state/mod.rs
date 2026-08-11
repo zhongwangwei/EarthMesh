@@ -264,6 +264,13 @@ impl AdaptiveMesh {
         self.segments.is_empty()
     }
 
+    pub(crate) fn can_move_site(&self, vertex: usize) -> bool {
+        vertex
+            .checked_sub(MESH_STATE_FIRST_ID)
+            .and_then(|row| self.sites.get(row))
+            .is_some_and(|site| site.mobility == SiteMobility::Interior)
+    }
+
     /// Replace a segment with its two halves, once its midpoint exists.
     ///
     /// The induction Ruppert's proof runs on: a split segment is two segments,

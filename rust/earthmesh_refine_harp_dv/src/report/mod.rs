@@ -11,6 +11,13 @@ pub enum StopReason {
     AllSatisfied,
     /// Demands remained, but no transaction over them was acceptable.
     NoAcceptedTransactions,
+    /// Site moves committed, but the next evaluation reduced neither physical
+    /// demands nor scale-balance demands.
+    NoProductiveAdaptation,
+    /// Every remaining demand was rejected only by the requested triangle
+    /// angle floor and no local adaptation was accepted. More identical
+    /// cycles cannot change that, so this is distinct from a generic refusal.
+    QualityConstraintReached,
     MaximumCyclesReached,
     BudgetReached,
     /// Cells still wanted refining but had reached `minimum_cell_width_m`.
@@ -78,26 +85,30 @@ pub struct HarpDvRunReport {
     /// Adjacent cell pairs still past `max_neighbour_scale_ratio` when the run
     /// stopped.
     ///
-    /// Rarely zero. The degree bound and the scale bound pull against each
-    /// other, and closing the last ratios needs cells the degree gate refuses.
-    /// Section 8.1's r-adaptation is the move that would resolve it and is not
-    /// implemented; until it is, this number is what a caller decides on.
+    /// Normally zero after unconstrained r-adaptation. Protected segments or a
+    /// hard gate can leave a residue, so the value remains explicit.
     pub unbalanced_pairs_remaining: usize,
     /// Demands the run could not meet. Counted rather than dropped: a run that
     /// silently serves less than was asked is the failure mode this whole
     /// backend is arranged against.
     pub unresolved_count: usize,
+    /// Final-cycle demands for which every candidate failed only the triangle
+    /// angle gate.
+    pub quality_constrained_count: usize,
     /// Every refusal the run made, by kind. One demand can contribute several
     /// -- the ladder tries every rung before giving up.
     pub refusals: RejectionTally,
-    /// Moves that lowered a neighbourhood's maximum degree so a demand the
-    /// degree bound had turned away could be tried again.
+    /// Moves that lowered the actual vertex named by a degree rejection so the
+    /// refused demand could be tried again.
     pub degree_relieving_moves: usize,
+    /// All committed r-adaptation moves, including degree, pentagon and scale
+    /// relief. These change geometry without adding a cell.
+    pub r_adaptation_moves: usize,
     pub deterministic: bool,
 }
 
 impl HarpDvRunReport {
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub const SCHEMA_VERSION: u32 = 2;
 
     /// The report of a run that had nothing to do.
     pub fn empty(sites: usize, stop_reason: StopReason) -> Self {
@@ -113,8 +124,10 @@ impl HarpDvRunReport {
             balance_transactions_committed: 0,
             unbalanced_pairs_remaining: 0,
             unresolved_count: 0,
+            quality_constrained_count: 0,
             refusals: RejectionTally::default(),
             degree_relieving_moves: 0,
+            r_adaptation_moves: 0,
             deterministic: true,
         }
     }

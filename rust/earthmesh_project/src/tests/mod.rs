@@ -1799,6 +1799,11 @@ fn quality_default_is_single_project_source() {
         MeshIntentPreset::HydrologyLand.defaults().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
     );
+    assert_eq!(
+        HarpDvRefinementRecipe::default().minimum_triangle_angle_deg,
+        QualityConfig::default().min_angle_deg,
+        "HARP-DV must not reject refinement more strictly than the default quality gate"
+    );
 }
 
 #[test]

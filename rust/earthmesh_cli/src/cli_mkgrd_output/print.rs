@@ -214,7 +214,12 @@ pub(crate) fn print_refine_pipeline_report(
             "harp_dv_transactions_committed={}",
             harp.transactions_committed
         );
+        println!("harp_dv_r_adaptation_moves={}", harp.r_adaptation_moves);
         println!("harp_dv_unresolved_cells={}", harp.unresolved_cells);
+        println!(
+            "harp_dv_quality_constrained_cells={}",
+            harp.quality_constrained_cells
+        );
         println!(
             "harp_dv_unbalanced_pairs={}",
             harp.unbalanced_pairs_remaining

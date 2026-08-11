@@ -572,7 +572,7 @@ const STATIC_BROWSER_CAPABILITIES={
   default_relax:0.04,
   default_hfield_g:0.2,
   method_c_defaults:{max_cycles:8,target_size_tolerance:1.2,maximum_neighbor_size_ratio:1.75,maximum_vertices:5000000,maximum_insertions_per_cycle:500000,maximum_path_length:100000,stop_at_source_resolution:true,minimum_triangle_angle_deg:0},
-  harp_dv_defaults:{max_cycles:20,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:30,criterion_minimum_angle_deg:0},
+  harp_dv_defaults:{max_cycles:20,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:25,criterion_minimum_angle_deg:0},
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
@@ -2951,7 +2951,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"最大邻胞尺度比":"Max neighbor-scale ratio",`<input class="input" type="number" id="harpMaximumNeighborScaleRatio" min="1.0001" step="0.05" value="${specifiedRefine.harpMaximumNeighborScaleRatio}">`)}
         ${field(z?"候选点最小间距 (m)":"Candidate minimum separation (m)",`<input class="input" type="number" id="harpMinimumCandidateSeparationM" min="0.001" step="0.1" value="${specifiedRefine.harpMinimumCandidateSeparationM}">`)}
         ${field(z?"最大顶点邻接度":"Maximum vertex degree",`<input class="input" type="number" id="harpMaximumVertexDegree" min="3" max="7" step="1" value="${specifiedRefine.harpMaximumVertexDegree}">`,z?"gridfile 上限为 7":"gridfile limit is 7")}
-        ${field(z?"事务最小角硬门 (°)":"Transaction minimum-angle gate (°)",`<input class="input" type="number" id="harpMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.harpMinimumTriangleAngleDeg}">`)}
+        ${field(z?"事务最小角硬门 (°)":"Transaction minimum-angle gate (°)",`<input class="input" type="number" id="harpMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.harpMinimumTriangleAngleDeg}">`,z?"默认 25° 与质量门一致；提高会牺牲可满足的细化需求，残余会写入运行报告":"The 25° default matches the quality gate; higher values trade away satisfiable refinement and are reported as residuals")}
         ${field(z?"Ruppert 最小角需求 (°)":"Ruppert minimum-angle criterion (°)",`<input class="input" type="number" id="harpCriterionMinimumAngleDeg" min="0" max="20.7" step="0.1" value="${specifiedRefine.harpCriterionMinimumAngleDeg}">`,z?"0 关闭；≤20.7° 保持终止性边界":"0 disables it; ≤20.7° preserves the termination bound")}
         ${field(z?"执行约束":"Execution invariants",`<input class="input" value="${z?"确定性单线程；闭合球面":"deterministic single-thread; closed surface"}" disabled>`,z?"当前实现只有这一种有效模式，因此不伪造无效开关":"the implementation has only this valid mode, so no fake switches are exposed")}
       </div>

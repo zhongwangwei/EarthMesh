@@ -598,3 +598,31 @@ fn the_patch_bound_covers_a_move_as_well_as_an_insertion() {
         other => panic!("a move must respect the patch bound, got {other:?}"),
     }
 }
+
+#[test]
+fn a_cached_move_score_is_not_recomputed_for_every_candidate() {
+    let mut mesh = sphere(6);
+    let site = 40;
+    let origin = earthmesh_mesh::xyz_to_lonlat_degrees(mesh.state().vertices()[site]);
+    let destination = on(&mesh, origin.lon_degrees + 0.001, origin.lat_degrees);
+    let calls = std::cell::Cell::new(0usize);
+    let objective = |_: &MeshState, _: &BTreeSet<usize>| {
+        calls.set(calls.get() + 1);
+        Some(0usize)
+    };
+    let before = 1usize;
+
+    assert!(matches!(
+        mesh.propose_move_cached(
+            site,
+            destination,
+            permissive(),
+            &objective,
+            Some(&before),
+            false,
+        )
+        .expect("proposal"),
+        Acceptance::Committed(_)
+    ));
+    assert_eq!(calls.get(), 1, "only the changed mesh needs rescoring");
+}
