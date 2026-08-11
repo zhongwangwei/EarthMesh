@@ -48,6 +48,12 @@ pub enum CandidateSource {
     /// The most conservative rung: it splits an edge that already exists rather
     /// than proposing a point in open space, so it disturbs the least.
     LongestEdgeMidpoint,
+    /// A second off-centre position tried only after the ordinary ladder made
+    /// no progress for a whole cycle.
+    AdaptiveOffCentre,
+    /// The midpoint of an incident edge other than the single longest one,
+    /// tried only by the stalled-cycle fallback.
+    IncidentEdgeMidpoint,
 }
 
 /// A point to try, and where it came from.
@@ -213,6 +219,66 @@ pub fn candidates_for_site(
             .all(|site| arc_length_unit_sphere(*site, candidate.point) >= policy.min_separation_m)
     });
     Ok(ladder)
+}
+
+/// Extra deterministic positions for a demand the ordinary ladder could not
+/// serve during a whole cycle.
+///
+/// Kept out of [`candidates_for_site`] so productive cycles still pay for the
+/// short ladder. A stalled run can afford a broader search over the same cell:
+/// two off-centre fractions for every Voronoi corner and every incident edge
+/// midpoint, excluding points the ordinary ladder already tried.
+pub(crate) fn fallback_candidates_for_site(
+    state: &MeshState,
+    site: usize,
+    policy: CandidatePolicy,
+) -> Result<Vec<Candidate>, VoronoiError> {
+    let cell = state.voronoi_cell(site)?;
+    let centre = state.vertices()[site];
+    let hint = *cell.triangles.first().expect("a cell has triangles");
+    let ordinary = candidates_for_site(state, site, None, policy)?;
+    let neighbours: std::collections::BTreeSet<usize> = cell
+        .triangles
+        .iter()
+        .flat_map(|&triangle| state.triangles()[triangle])
+        .filter(|&corner| corner != site)
+        .collect();
+    let mut fallback = Vec::new();
+
+    for corner in cell.corners.iter().copied() {
+        for fraction in [0.8, 0.5] {
+            if let Some(point) = along_arc(centre, corner, fraction) {
+                fallback.push(Candidate {
+                    point,
+                    source: CandidateSource::AdaptiveOffCentre,
+                    hint,
+                });
+            }
+        }
+    }
+    for neighbour in neighbours.iter().copied() {
+        if let Some(point) = along_arc(centre, state.vertices()[neighbour], 0.5) {
+            fallback.push(Candidate {
+                point,
+                source: CandidateSource::IncidentEdgeMidpoint,
+                hint,
+            });
+        }
+    }
+
+    let mut nearby: Vec<CartesianPoint> = neighbours
+        .iter()
+        .map(|&other| state.vertices()[other])
+        .collect();
+    nearby.push(centre);
+    fallback.retain(|candidate| {
+        ordinary.iter().all(|tried| tried.point != candidate.point)
+            && nearby.iter().all(|point| {
+                arc_length_unit_sphere(*point, candidate.point) >= policy.min_separation_m
+            })
+    });
+    fallback.dedup_by(|left, right| left.point == right.point);
+    Ok(fallback)
 }
 
 #[cfg(test)]

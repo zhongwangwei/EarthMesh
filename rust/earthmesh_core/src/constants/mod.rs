@@ -26,7 +26,7 @@ pub const DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION: bool = true;
 
 /// One source of truth for the production HARP-DV controls exposed through
 /// project files, namelists, and the GUI.
-pub const DEFAULT_HARP_DV_MAX_CYCLES: u32 = 20;
+pub const DEFAULT_HARP_DV_MAX_CYCLES: u32 = 60;
 pub const DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M: f64 = 1_000.0;
 pub const DEFAULT_HARP_DV_MAXIMUM_CELLS: usize = 5_000_000;
 pub const DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS: usize = 10_000;

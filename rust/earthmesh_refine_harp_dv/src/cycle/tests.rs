@@ -521,6 +521,36 @@ fn degree_relief_moves_reduce_the_wall_without_breaking_quality_gates() {
     mesh.state().validate().expect("still a triangulation");
 }
 
+#[test]
+fn final_unresolved_cells_are_reevaluated_after_the_last_adaptation() {
+    let mut mesh = sphere(6);
+    let criteria = steep_target(&mesh);
+    let limits = limits(1, 100_000);
+    let outcome = run_cycles(
+        &mut mesh,
+        &criteria,
+        CandidatePolicy::default(),
+        permissive(),
+        limits,
+    )
+    .expect("run");
+    let (physical, _, scales) = evaluate(&mesh, &criteria, limits).expect("final evaluation");
+    let pending: BTreeSet<usize> = physical
+        .iter()
+        .chain(balance_demands(&mesh, &scales, limits).iter())
+        .map(|demand| demand.cell as usize)
+        .collect();
+
+    assert_eq!(
+        outcome.unresolved_cells,
+        pending.into_iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        outcome.report.unresolved_count,
+        outcome.unresolved_cells.len()
+    );
+}
+
 /// Balance plus r-adaptation closes the neighbour-scale gap.
 ///
 /// Measured on the same target with balance off: worst neighbour ratio 2.46,

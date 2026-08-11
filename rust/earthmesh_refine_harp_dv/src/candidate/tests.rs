@@ -140,6 +140,35 @@ fn the_ladder_is_deterministic() {
     }
 }
 
+#[test]
+fn the_stalled_fallback_is_broader_without_retrying_the_ladder() {
+    let state = sphere(6);
+    let site = 40;
+    let ordinary =
+        candidates_for_site(&state, site, None, CandidatePolicy::default()).expect("ladder");
+    let fallback =
+        fallback_candidates_for_site(&state, site, CandidatePolicy::default()).expect("fallback");
+
+    assert!(
+        fallback.len() > ordinary.len(),
+        "the fallback must broaden the search"
+    );
+    assert!(fallback.iter().all(|candidate| {
+        matches!(
+            candidate.source,
+            CandidateSource::AdaptiveOffCentre | CandidateSource::IncidentEdgeMidpoint
+        )
+    }));
+    assert!(fallback
+        .iter()
+        .all(|candidate| { ordinary.iter().all(|tried| tried.point != candidate.point) }));
+    assert_eq!(
+        fallback,
+        fallback_candidates_for_site(&state, site, CandidatePolicy::default())
+            .expect("repeat fallback")
+    );
+}
+
 /// A candidate's hint really is a triangle at the site it refines.
 #[test]
 fn the_hint_is_a_triangle_at_the_site() {

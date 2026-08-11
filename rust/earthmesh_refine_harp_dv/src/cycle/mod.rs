@@ -61,8 +61,7 @@ pub struct CycleLimits {
 #[derive(Debug)]
 pub struct CycleOutcome {
     pub report: HarpDvRunReport,
-    /// Cells whose demand no ladder could satisfy, from the last cycle that
-    /// tried them.
+    /// Cells still demanding work after the final insertion or site move.
     pub unresolved_cells: Vec<usize>,
 }
 
@@ -305,6 +304,39 @@ fn degree_relief_destinations(state: &MeshState, site: usize) -> Vec<CartesianPo
     candidates
 }
 
+/// Paired positions that can cross a Delaunay flip boundary which neither
+/// endpoint can cross alone under the strict-improvement gate.
+fn degree_relief_pairs(
+    state: &MeshState,
+    site: usize,
+) -> Vec<(usize, CartesianPoint, CartesianPoint)> {
+    let here = state.vertices()[site];
+    let mut candidates = Vec::new();
+    for neighbour in neighbour_sites(state, site) {
+        let there = state.vertices()[neighbour];
+        let here_away = CartesianPoint::new(
+            here.x + (here.x - there.x),
+            here.y + (here.y - there.y),
+            here.z + (here.z - there.z),
+        );
+        let there_away = CartesianPoint::new(
+            there.x + (there.x - here.x),
+            there.y + (there.y - here.y),
+            there.z + (there.z - here.z),
+        );
+        for step in [0.25, 0.125] {
+            let Some(first) = projected_step(here, here_away, step) else {
+                continue;
+            };
+            let Some(second) = projected_step(there, there_away, step) else {
+                continue;
+            };
+            candidates.push((neighbour, first, second));
+        }
+    }
+    candidates
+}
+
 fn sites_are_adjacent(state: &MeshState, left: usize, right: usize) -> Option<bool> {
     Some(state.triangle_fan(left).ok()?.into_iter().any(|triangle| {
         state.triangles()[triangle]
@@ -331,6 +363,33 @@ fn tally_refusals(
             Rejection::Unmeasurable(_) => tally.unmeasurable += 1,
         }
     }
+}
+
+fn collect_blockers(
+    demand_site: usize,
+    for_balance: bool,
+    reasons: &[(crate::candidate::CandidateSource, Rejection)],
+    degree_blocked_sites: &mut BTreeSet<usize>,
+    pentagon_blocked_pairs: &mut BTreeSet<(usize, usize)>,
+    balance_blocked_sites: &mut BTreeSet<usize>,
+) -> bool {
+    degree_blocked_sites.extend(reasons.iter().filter_map(|(_, reason)| match reason {
+        Rejection::DegreeOverBudget { site, .. } => Some(*site),
+        _ => None,
+    }));
+    pentagon_blocked_pairs.extend(reasons.iter().filter_map(|(_, reason)| match reason {
+        Rejection::ProtectedPentagonDisturbed { site: pentagon, .. } => {
+            Some((*pentagon, demand_site))
+        }
+        _ => None,
+    }));
+    if for_balance {
+        balance_blocked_sites.insert(demand_site);
+    }
+    !reasons.is_empty()
+        && reasons
+            .iter()
+            .all(|(_, reason)| matches!(reason, Rejection::SliverTriangle { .. }))
 }
 
 /// Where to move a site to even out the scales around it.
@@ -518,18 +577,20 @@ pub fn run_cycles(
     let mut committed = 0usize;
     let mut rolled_back = 0usize;
     let mut balanced = 0usize;
+    let mut fallback_committed = 0usize;
     let mut refusals = RejectionTally::default();
     let mut relieved = 0usize;
     let mut r_adapted = 0usize;
+    let mut pair_adapted = 0usize;
     let mut unresolved_cells = Vec::new();
-    let mut quality_constrained = 0usize;
+    let mut quality_constrained_cells = BTreeSet::new();
     let mut cycles = 0u32;
     let mut stop_reason = StopReason::MaximumCyclesReached;
     let mut adaptation_probe = None;
 
     while cycles < limits.max_cycles {
         unresolved_cells.clear();
-        quality_constrained = 0;
+        quality_constrained_cells.clear();
         let (mut demands, tally, scales) = evaluate(mesh, criteria, limits)?;
         let physical_demand_count = demands.len();
         // Section 14, folded into the same list rather than run as a pass of
@@ -561,6 +622,9 @@ pub fn run_cycles(
         let mut degree_blocked_sites = BTreeSet::new();
         let mut pentagon_blocked_pairs = BTreeSet::new();
         let mut balance_blocked_sites = BTreeSet::new();
+        let mut stalled_demands = Vec::new();
+        let mut retry_demands = Vec::new();
+        let mut unattempted_cells = Vec::new();
         for demand in &demands {
             if mesh.active_site_count() >= limits.max_sites {
                 out_of_budget = true;
@@ -586,39 +650,88 @@ pub fn run_cycles(
                     refusals: reasons, ..
                 } => {
                     rolled_back += reasons.len();
-                    // Record the hard vertices and balance cells a local move
-                    // can change; the phase below deduplicates them before it
-                    // pays for legalization.
-                    degree_blocked_sites.extend(reasons.iter().filter_map(
-                        |(_, reason)| match reason {
-                            Rejection::DegreeOverBudget { site, .. } => Some(*site),
-                            _ => None,
-                        },
-                    ));
-                    pentagon_blocked_pairs.extend(reasons.iter().filter_map(|(_, reason)| {
-                        match reason {
-                            Rejection::ProtectedPentagonDisturbed { site: pentagon, .. } => {
-                                Some((*pentagon, site))
-                            }
-                            _ => None,
-                        }
-                    }));
-                    if for_balance {
-                        balance_blocked_sites.insert(site);
-                    }
-                    if !reasons.is_empty()
-                        && reasons
-                            .iter()
-                            .all(|(_, reason)| matches!(reason, Rejection::SliverTriangle { .. }))
-                    {
-                        quality_constrained += 1;
+                    if collect_blockers(
+                        site,
+                        for_balance,
+                        &reasons,
+                        &mut degree_blocked_sites,
+                        &mut pentagon_blocked_pairs,
+                        &mut balance_blocked_sites,
+                    ) {
+                        quality_constrained_cells.insert(site);
                     }
                     tally_refusals(&reasons, &mut refusals);
                     unresolved_cells.push(site);
+                    stalled_demands.push((site, witness, for_balance, reasons));
                 }
-                DemandOutcome::NotAttempted(_) => unresolved_cells.push(site),
+                DemandOutcome::NotAttempted(_) => {
+                    unresolved_cells.push(site);
+                    unattempted_cells.push(site);
+                }
             }
         }
+        // A productive cycle keeps the short candidate ladder. If no insertion
+        // survived, retry only its unresolved demands with the broader stalled
+        // ladder before spending another cycle on the same geometry.
+        if accepted_this_cycle == 0 && !stalled_demands.is_empty() && mesh.segments_are_empty() {
+            unresolved_cells.clear();
+            unresolved_cells.extend(unattempted_cells);
+            quality_constrained_cells.clear();
+            degree_blocked_sites.clear();
+            pentagon_blocked_pairs.clear();
+            balance_blocked_sites.clear();
+            for (site, witness, for_balance, mut reasons) in stalled_demands {
+                if mesh.active_site_count() >= limits.max_sites {
+                    out_of_budget = true;
+                    break;
+                }
+                attempted += 1;
+                match mesh.refine_cell_fallback(site, policy, gates)? {
+                    DemandOutcome::Resolved { .. } => {
+                        committed += 1;
+                        accepted_this_cycle += 1;
+                        fallback_committed += 1;
+                        if for_balance {
+                            balanced += 1;
+                        }
+                    }
+                    DemandOutcome::Unresolved {
+                        refusals: fallback, ..
+                    } => {
+                        rolled_back += fallback.len();
+                        tally_refusals(&fallback, &mut refusals);
+                        reasons.extend(fallback);
+                        if collect_blockers(
+                            site,
+                            for_balance,
+                            &reasons,
+                            &mut degree_blocked_sites,
+                            &mut pentagon_blocked_pairs,
+                            &mut balance_blocked_sites,
+                        ) {
+                            quality_constrained_cells.insert(site);
+                        }
+                        unresolved_cells.push(site);
+                        retry_demands.push((site, witness, for_balance));
+                    }
+                    DemandOutcome::NotAttempted(_) => {
+                        if collect_blockers(
+                            site,
+                            for_balance,
+                            &reasons,
+                            &mut degree_blocked_sites,
+                            &mut pentagon_blocked_pairs,
+                            &mut balance_blocked_sites,
+                        ) {
+                            quality_constrained_cells.insert(site);
+                        }
+                        unresolved_cells.push(site);
+                        retry_demands.push((site, witness, for_balance));
+                    }
+                }
+            }
+        }
+        let use_pair_relief = accepted_this_cycle == 0;
         // Ruppert's protected-segment path has its own termination invariant:
         // accepted sites and split segments stay where the proof put them.
         // Moving even an unmarked interior site afterwards invalidates that
@@ -652,6 +765,7 @@ pub fn run_cycles(
             let Ok(before) = mesh.state().vertex_degree(blocked_site) else {
                 continue;
             };
+            let mut moved = false;
             for destination in degree_relief_destinations(mesh.state(), blocked_site) {
                 // `?`, not a discarded `Ok`: an error here means rollback
                 // failed and the mesh cannot safely be used further.
@@ -666,6 +780,28 @@ pub fn run_cycles(
                     relieved += 1;
                     r_adapted += 1;
                     adapted_this_cycle += 1;
+                    moved = true;
+                    break;
+                }
+            }
+            if moved || !use_pair_relief {
+                continue;
+            }
+            for (neighbour, first, second) in degree_relief_pairs(mesh.state(), blocked_site) {
+                if !mesh.can_move_site(neighbour) {
+                    continue;
+                }
+                if let Acceptance::Committed(_) = mesh.propose_pair_move_cached(
+                    (blocked_site, first),
+                    (neighbour, second),
+                    gates,
+                    &objective,
+                    Some(&before),
+                )? {
+                    relieved += 1;
+                    r_adapted += 2;
+                    pair_adapted += 2;
+                    adapted_this_cycle += 2;
                     break;
                 }
             }
@@ -753,6 +889,69 @@ pub fn run_cycles(
                 }
             }
         }
+        // Site motion is only useful if the demands it was meant to unlock are
+        // retried against the moved geometry. Do that once as a batch, for
+        // every stalled cycle -- not as a last-cycle exception and not once per
+        // move. The latter was measured slower and harmed balance (§11.54).
+        if accepted_this_cycle == 0
+            && adapted_this_cycle > 0
+            && !retry_demands.is_empty()
+            && mesh.segments_are_empty()
+        {
+            unresolved_cells.clear();
+            quality_constrained_cells.clear();
+            for (site, witness, for_balance) in retry_demands {
+                if mesh.active_site_count() >= limits.max_sites {
+                    out_of_budget = true;
+                    break;
+                }
+                attempted += 1;
+                let mut reasons = match mesh.refine_cell(site, witness, policy, gates)? {
+                    DemandOutcome::Resolved { .. } => {
+                        committed += 1;
+                        accepted_this_cycle += 1;
+                        if for_balance {
+                            balanced += 1;
+                        }
+                        continue;
+                    }
+                    DemandOutcome::Unresolved { refusals: ordinary } => {
+                        rolled_back += ordinary.len();
+                        tally_refusals(&ordinary, &mut refusals);
+                        ordinary
+                    }
+                    DemandOutcome::NotAttempted(_) => {
+                        unresolved_cells.push(site);
+                        continue;
+                    }
+                };
+                attempted += 1;
+                match mesh.refine_cell_fallback(site, policy, gates)? {
+                    DemandOutcome::Resolved { .. } => {
+                        committed += 1;
+                        accepted_this_cycle += 1;
+                        fallback_committed += 1;
+                        if for_balance {
+                            balanced += 1;
+                        }
+                    }
+                    DemandOutcome::Unresolved { refusals: fallback } => {
+                        rolled_back += fallback.len();
+                        tally_refusals(&fallback, &mut refusals);
+                        reasons.extend(fallback);
+                        if !reasons.is_empty()
+                            && reasons.iter().all(|(_, reason)| {
+                                matches!(reason, Rejection::SliverTriangle { .. })
+                            })
+                        {
+                            quality_constrained_cells.insert(site);
+                        }
+                        unresolved_cells.push(site);
+                    }
+                    DemandOutcome::NotAttempted(_) => unresolved_cells.push(site),
+                }
+            }
+        }
         cycles += 1;
         eprintln!(
             "harp_dv cycle {cycles}/{}: {} insertions, {} r-adaptations, {} unresolved ({} \
@@ -761,7 +960,7 @@ pub fn run_cycles(
             accepted_this_cycle,
             adapted_this_cycle,
             unresolved_cells.len(),
-            quality_constrained,
+            quality_constrained_cells.len(),
             mesh.active_site_count()
         );
         if out_of_budget {
@@ -774,12 +973,13 @@ pub fn run_cycles(
         // cycles" in the report.
         if accepted_this_cycle == 0 {
             if adapted_this_cycle == 0 {
-                stop_reason =
-                    if quality_constrained == unresolved_cells.len() && quality_constrained > 0 {
-                        StopReason::QualityConstraintReached
-                    } else {
-                        StopReason::NoAcceptedTransactions
-                    };
+                stop_reason = if quality_constrained_cells.len() == unresolved_cells.len()
+                    && !quality_constrained_cells.is_empty()
+                {
+                    StopReason::QualityConstraintReached
+                } else {
+                    StopReason::NoAcceptedTransactions
+                };
                 break;
             }
             let signature = (physical_demand_count, balance_demand_count);
@@ -793,6 +993,38 @@ pub fn run_cycles(
         } else {
             adaptation_probe = None;
         }
+    }
+
+    // Re-read after the last insertion or move. The loop's attempted-demand
+    // list predates its r-adaptation phase, so returning it here would make the
+    // final count stale by construction whenever the last cycle moved sites.
+    let (final_demands, final_tally, final_scales) = evaluate(mesh, criteria, limits)?;
+    let final_balance = balance_demands(mesh, &final_scales, limits);
+    let physical_demands_remaining = final_demands.len();
+    let balance_demands_remaining = final_balance.len();
+    let pending: BTreeSet<usize> = final_demands
+        .iter()
+        .chain(final_balance.iter())
+        .map(|demand| demand.cell as usize)
+        .collect();
+    quality_constrained_cells.retain(|site| pending.contains(site));
+    unresolved_cells = pending.into_iter().collect();
+    if unresolved_cells.is_empty()
+        && matches!(
+            stop_reason,
+            StopReason::MaximumCyclesReached
+                | StopReason::NoAcceptedTransactions
+                | StopReason::NoProductiveAdaptation
+                | StopReason::QualityConstraintReached
+        )
+    {
+        stop_reason = if final_tally.at_minimum_scale > 0 {
+            StopReason::MinimumScaleReached
+        } else if final_tally.unsatisfiable > 0 {
+            StopReason::SourceResolutionReached
+        } else {
+            StopReason::AllSatisfied
+        };
     }
 
     // Counted at the end rather than tracked through: it is what a caller has
@@ -811,12 +1043,16 @@ pub fn run_cycles(
             transactions_committed: committed,
             transactions_rolled_back: rolled_back,
             balance_transactions_committed: balanced,
+            fallback_transactions_committed: fallback_committed,
             refusals,
             degree_relieving_moves: relieved,
             r_adaptation_moves: r_adapted,
+            paired_r_adaptation_moves: pair_adapted,
             unbalanced_pairs_remaining,
             unresolved_count: unresolved_cells.len(),
-            quality_constrained_count: quality_constrained,
+            physical_demands_remaining,
+            balance_demands_remaining,
+            quality_constrained_count: quality_constrained_cells.len(),
             deterministic: true,
         },
         unresolved_cells,

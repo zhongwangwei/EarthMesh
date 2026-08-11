@@ -1301,8 +1301,12 @@ pub struct HarpDvRunRecord {
     pub stop_reason: String,
     pub cycles_completed: u32,
     pub transactions_committed: usize,
+    pub fallback_transactions_committed: usize,
     pub r_adaptation_moves: usize,
+    pub paired_r_adaptation_moves: usize,
     pub unresolved_cells: usize,
+    pub physical_demands_remaining: usize,
+    pub balance_demands_remaining: usize,
     pub quality_constrained_cells: usize,
     pub unbalanced_pairs_remaining: usize,
 }
@@ -2363,6 +2367,16 @@ fn refine_with_harp_dv(
                 outcome.report.r_adaptation_moves
             );
         }
+        if outcome.report.fallback_transactions_committed > 0
+            || outcome.report.paired_r_adaptation_moves > 0
+        {
+            eprintln!(
+                "harp_dv: stalled recovery committed {} fallback insertions and {} paired site \
+                 moves",
+                outcome.report.fallback_transactions_committed,
+                outcome.report.paired_r_adaptation_moves
+            );
+        }
         if outcome.report.quality_constrained_count > 0 {
             eprintln!(
                 "harp_dv: {} remaining cells exhausted every candidate at the {:.1} degree \
@@ -2445,8 +2459,12 @@ fn refine_with_harp_dv(
             stop_reason: format!("{:?}", outcome.report.stop_reason),
             cycles_completed: outcome.report.cycles_completed,
             transactions_committed: outcome.report.transactions_committed,
+            fallback_transactions_committed: outcome.report.fallback_transactions_committed,
             r_adaptation_moves: outcome.report.r_adaptation_moves,
+            paired_r_adaptation_moves: outcome.report.paired_r_adaptation_moves,
             unresolved_cells: outcome.unresolved_cells.len(),
+            physical_demands_remaining: outcome.report.physical_demands_remaining,
+            balance_demands_remaining: outcome.report.balance_demands_remaining,
             quality_constrained_cells: outcome.report.quality_constrained_count,
             unbalanced_pairs_remaining: outcome.report.unbalanced_pairs_remaining,
         }),

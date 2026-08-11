@@ -82,6 +82,9 @@ pub struct HarpDvRunReport {
     /// refinement is the run doing what was asked, and balance refinement is
     /// what that cost in cells nobody requested.
     pub balance_transactions_committed: usize,
+    /// Insertions found by the broader candidate ladder after a whole cycle
+    /// made no insertion progress.
+    pub fallback_transactions_committed: usize,
     /// Adjacent cell pairs still past `max_neighbour_scale_ratio` when the run
     /// stopped.
     ///
@@ -92,6 +95,10 @@ pub struct HarpDvRunReport {
     /// silently serves less than was asked is the failure mode this whole
     /// backend is arranged against.
     pub unresolved_count: usize,
+    /// Criterion-driven cells still asking after the final re-evaluation.
+    pub physical_demands_remaining: usize,
+    /// Mesh-balance cells still asking after the final re-evaluation.
+    pub balance_demands_remaining: usize,
     /// Final-cycle demands for which every candidate failed only the triangle
     /// angle gate.
     pub quality_constrained_count: usize,
@@ -104,11 +111,14 @@ pub struct HarpDvRunReport {
     /// All committed r-adaptation moves, including degree, pentagon and scale
     /// relief. These change geometry without adding a cell.
     pub r_adaptation_moves: usize,
+    /// Site moves committed as two-site transactions to cross a local
+    /// Delaunay saddle. Each transaction contributes two moves.
+    pub paired_r_adaptation_moves: usize,
     pub deterministic: bool,
 }
 
 impl HarpDvRunReport {
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 4;
 
     /// The report of a run that had nothing to do.
     pub fn empty(sites: usize, stop_reason: StopReason) -> Self {
@@ -122,12 +132,16 @@ impl HarpDvRunReport {
             transactions_committed: 0,
             transactions_rolled_back: 0,
             balance_transactions_committed: 0,
+            fallback_transactions_committed: 0,
             unbalanced_pairs_remaining: 0,
             unresolved_count: 0,
+            physical_demands_remaining: 0,
+            balance_demands_remaining: 0,
             quality_constrained_count: 0,
             refusals: RejectionTally::default(),
             degree_relieving_moves: 0,
             r_adaptation_moves: 0,
+            paired_r_adaptation_moves: 0,
             deterministic: true,
         }
     }

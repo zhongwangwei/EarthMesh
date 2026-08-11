@@ -626,3 +626,80 @@ fn a_cached_move_score_is_not_recomputed_for_every_candidate() {
     ));
     assert_eq!(calls.get(), 1, "only the changed mesh needs rescoring");
 }
+
+#[test]
+fn a_pair_move_commits_or_restores_both_sites_as_one_transaction() {
+    let destinations = |mesh: &AdaptiveMesh, left: usize, right: usize| {
+        let radius = mesh.state().sphere_radius();
+        let separate = |from: CartesianPoint, other: CartesianPoint| {
+            let point = CartesianPoint::new(
+                from.x + (from.x - other.x) * 0.05,
+                from.y + (from.y - other.y) * 0.05,
+                from.z + (from.z - other.z) * 0.05,
+            );
+            let scale = radius / earthmesh_mesh::magnitude(point);
+            CartesianPoint::new(point.x * scale, point.y * scale, point.z * scale)
+        };
+        let a = mesh.state().vertices()[left];
+        let b = mesh.state().vertices()[right];
+        (separate(a, b), separate(b, a))
+    };
+    let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+        let a = state.vertices()[40];
+        let b = state.vertices()[41];
+        Some(-((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)))
+    };
+
+    let mut committed = sphere(6);
+    let committed_destinations = destinations(&committed, 40, 41);
+    assert!(matches!(
+        committed
+            .propose_pair_move_cached(
+                (40, committed_destinations.0),
+                (41, committed_destinations.1),
+                permissive(),
+                &objective,
+                None,
+            )
+            .expect("pair proposal"),
+        Acceptance::Committed(_)
+    ));
+    committed.state().validate().expect("committed topology");
+
+    let mut rolled_back = sphere(6);
+    let before = rolled_back.state().clone();
+    let rollback_destinations = destinations(&rolled_back, 40, 41);
+    assert!(matches!(
+        rolled_back
+            .propose_pair_move_cached(
+                (40, rollback_destinations.0),
+                (41, rollback_destinations.1),
+                permissive(),
+                &|_, _| Some(0usize),
+                None,
+            )
+            .expect("pair rollback"),
+        Acceptance::RolledBack(Rejection::NoImprovement { .. })
+    ));
+    assert_eq!(rolled_back.state(), &before);
+}
+
+#[test]
+fn the_stalled_fallback_can_serve_a_demand_the_short_ladder_cannot() {
+    let mut mesh = sphere(6);
+    let gates = HardGates {
+        min_triangle_angle_deg: 20.0,
+        ..HardGates::default()
+    };
+    assert!(matches!(
+        mesh.refine_cell(3, None, CandidatePolicy::default(), gates)
+            .expect("ordinary"),
+        DemandOutcome::Unresolved { .. }
+    ));
+    assert!(matches!(
+        mesh.refine_cell_fallback(3, CandidatePolicy::default(), gates)
+            .expect("fallback"),
+        DemandOutcome::Resolved { .. }
+    ));
+    mesh.state().validate().expect("fallback topology");
+}

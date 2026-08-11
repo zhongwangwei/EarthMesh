@@ -32,7 +32,9 @@ use earthmesh_mesh::{
     CartesianPoint, InsertionError, MeshState, VoronoiError, MESH_STATE_FIRST_ID,
 };
 
-use crate::candidate::{candidates_for_site, Candidate, CandidatePolicy, CandidateSource};
+use crate::candidate::{
+    candidates_for_site, fallback_candidates_for_site, Candidate, CandidatePolicy, CandidateSource,
+};
 use crate::error::{HarpDvError, Result};
 use crate::state::{AdaptiveMesh, SiteId};
 
@@ -608,6 +610,110 @@ impl AdaptiveMesh {
             }
         }
     }
+
+    /// Move two neighbouring sites as one transaction.
+    ///
+    /// Some Delaunay edge changes need both ends to move before the degree
+    /// objective improves. Two ordinary move transactions cannot cross that
+    /// saddle because the first one is correctly rejected as unimproving.
+    pub(crate) fn propose_pair_move_cached<Score: PartialOrd>(
+        &mut self,
+        first: (usize, CartesianPoint),
+        second: (usize, CartesianPoint),
+        gates: HardGates,
+        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+        cached_before: Option<&Score>,
+    ) -> Result<Acceptance> {
+        if first.0 == second.0 {
+            return Ok(Acceptance::RolledBack(Rejection::NoImprovement {
+                site: first.0,
+            }));
+        }
+        let (first_fan, first_reach) = match self.move_neighbourhood(first.0) {
+            Ok(neighbourhood) => neighbourhood,
+            Err(error) => return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(error))),
+        };
+        let (second_fan, second_reach) = match self.move_neighbourhood(second.0) {
+            Ok(neighbourhood) => neighbourhood,
+            Err(error) => return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(error))),
+        };
+        let fan: BTreeSet<usize> = first_fan.union(&second_fan).copied().collect();
+        let reach: BTreeSet<usize> = first_reach.union(&second_reach).copied().collect();
+        let patch = self.state().snapshot_around(&reach);
+        let patch_size = patch.triangles().count();
+        if gates.max_patch_triangles > 0 && patch_size > gates.max_patch_triangles {
+            return Ok(Acceptance::RolledBack(Rejection::PatchTooLarge {
+                triangles: patch_size,
+                allowed: gates.max_patch_triangles,
+            }));
+        }
+        let affected_sites: BTreeSet<usize> = self
+            .state()
+            .sites_touching(&reach)
+            .keys()
+            .copied()
+            .collect();
+        let computed_before = cached_before
+            .is_none()
+            .then(|| objective(self.state(), &affected_sites))
+            .flatten();
+        let before = cached_before.or(computed_before.as_ref());
+        let first_origin = self.state().vertices()[first.0];
+        let second_origin = self.state().vertices()[second.0];
+
+        self.state_mut().move_vertex(first.0, first.1);
+        self.state_mut().move_vertex(second.0, second.1);
+        if let Err(error) = self.state_mut().legalize_within(&fan, Some(&reach)) {
+            self.state_mut().move_vertex(first.0, first_origin);
+            self.state_mut().move_vertex(second.0, second_origin);
+            self.state_mut()
+                .restore_patch(patch)
+                .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+            return Ok(Acceptance::RolledBack(Rejection::CouldNotLegalize(
+                error.to_string(),
+            )));
+        }
+
+        let pentagons = self.pentagon_ids();
+        let verdict = match check(self.state(), &reach, gates, &pentagons) {
+            Ok(max_degree_touched) => {
+                let improved = match (
+                    before.as_ref(),
+                    objective(self.state(), &affected_sites).as_ref(),
+                ) {
+                    (Some(before), Some(after)) => {
+                        after.partial_cmp(before) == Some(std::cmp::Ordering::Less)
+                    }
+                    _ => false,
+                };
+                improved
+                    .then_some(max_degree_touched)
+                    .ok_or(Rejection::NoImprovement { site: first.0 })
+            }
+            Err(rejection) => Err(rejection),
+        };
+        match verdict {
+            Ok(max_degree_touched) => {
+                let site_id = self.record_moved_site(first.0);
+                self.record_moved_site(second.0);
+                Ok(Acceptance::Committed(TransactionReport {
+                    site_id,
+                    vertex: first.0,
+                    triangles_removed: 0,
+                    triangles_created: 0,
+                    max_degree_touched,
+                }))
+            }
+            Err(rejection) => {
+                self.state_mut().move_vertex(first.0, first_origin);
+                self.state_mut().move_vertex(second.0, second_origin);
+                self.state_mut()
+                    .restore_patch(patch)
+                    .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                Ok(Acceptance::RolledBack(rejection))
+            }
+        }
+    }
 }
 
 /// What became of one demand after the whole ladder was tried.
@@ -656,6 +762,30 @@ impl AdaptiveMesh {
             Ok(ladder) => ladder,
             Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
         };
+        self.refine_cell_with_ladder(site, ladder, gates)
+    }
+
+    /// Broaden the search for a demand after the ordinary ladder failed for a
+    /// whole cycle. Productive cycles never call this path.
+    pub(crate) fn refine_cell_fallback(
+        &mut self,
+        site: usize,
+        policy: CandidatePolicy,
+        gates: HardGates,
+    ) -> Result<DemandOutcome> {
+        let ladder = match fallback_candidates_for_site(self.state(), site, policy) {
+            Ok(ladder) => ladder,
+            Err(error) => return Ok(DemandOutcome::NotAttempted(error)),
+        };
+        self.refine_cell_with_ladder(site, ladder, gates)
+    }
+
+    fn refine_cell_with_ladder(
+        &mut self,
+        site: usize,
+        mut ladder: Vec<Candidate>,
+        gates: HardGates,
+    ) -> Result<DemandOutcome> {
         // Order the ladder by what each candidate would do to the degrees
         // around it, before anything is written. The forecast accounts for the
         // new neighbour and for cavity-internal edges that disappear (notably
@@ -667,7 +797,6 @@ impl AdaptiveMesh {
         // among candidates that are equally safe, so a witness still leads
         // when nothing separates them on degree. A stable sort is what keeps
         // that true.
-        let mut ladder = ladder;
         let mut forecasts: Vec<usize> = Vec::with_capacity(ladder.len());
         for candidate in &ladder {
             let worst = self

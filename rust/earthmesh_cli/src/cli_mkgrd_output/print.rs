@@ -214,8 +214,24 @@ pub(crate) fn print_refine_pipeline_report(
             "harp_dv_transactions_committed={}",
             harp.transactions_committed
         );
+        println!(
+            "harp_dv_fallback_transactions_committed={}",
+            harp.fallback_transactions_committed
+        );
         println!("harp_dv_r_adaptation_moves={}", harp.r_adaptation_moves);
+        println!(
+            "harp_dv_paired_r_adaptation_moves={}",
+            harp.paired_r_adaptation_moves
+        );
         println!("harp_dv_unresolved_cells={}", harp.unresolved_cells);
+        println!(
+            "harp_dv_physical_demands_remaining={}",
+            harp.physical_demands_remaining
+        );
+        println!(
+            "harp_dv_balance_demands_remaining={}",
+            harp.balance_demands_remaining
+        );
         println!(
             "harp_dv_quality_constrained_cells={}",
             harp.quality_constrained_cells
