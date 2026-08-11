@@ -249,6 +249,28 @@ fn bundled_engine_directory_precedes_a_stale_repository_build() {
 }
 
 #[test]
+fn source_checkout_discovers_only_staged_tauri_sidecars() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_sidecars_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let binaries = root.join("gui-tauri/src-tauri/binaries");
+    fs::create_dir_all(&binaries).unwrap();
+    fs::write(binaries.join("earthmesh_cli-test-target"), b"release").unwrap();
+    fs::write(binaries.join("unrelated"), b"debug").unwrap();
+
+    assert_eq!(
+        engine::source_sidecar_candidates(&root),
+        vec![binaries.join("earthmesh_cli-test-target")]
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn gui_scans_valid_auto_refine_decisions_and_keeps_malformed_artifacts_nonfatal() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

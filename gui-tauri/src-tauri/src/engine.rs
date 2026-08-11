@@ -139,6 +139,21 @@ fn resolve_mkgrd_path() -> Result<String, String> {
         }
     }
 
+    // In a source checkout the staged Tauri sidecar is the intentional
+    // release engine. Prefer it over a newer debug binary left by `cargo test`.
+    if current_exe
+        .as_deref()
+        .is_some_and(|exe| path_is_within(exe, &repo))
+    {
+        if let Some(candidate) = source_sidecar_candidates(&repo)
+            .into_iter()
+            .filter(|path| engine_candidate_is_compatible(path))
+            .max_by_key(|path| candidate_modified(path))
+        {
+            return Ok(canonical_string(candidate));
+        }
+    }
+
     // Kept so a failure can say what it turned down. A binary that is simply
     // absent says nothing; one that ran and named another version is the whole
     // answer, and reporting it as "nothing found" is what sends a user off to
@@ -259,6 +274,22 @@ fn canonical_string(path: PathBuf) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned()
+}
+
+pub(crate) fn source_sidecar_candidates(repo: &Path) -> Vec<PathBuf> {
+    let directory = repo.join("gui-tauri/src-tauri/binaries");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("earthmesh_cli-"))
+        })
+        .collect()
 }
 
 pub(crate) fn engine_search_roots(repo: &Path, current_exe: Option<&Path>) -> Vec<PathBuf> {
