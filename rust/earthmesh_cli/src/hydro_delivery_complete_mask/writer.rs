@@ -56,7 +56,7 @@ pub fn write_complete_cell_mask_geojson(
     coast_geojson: Option<&Path>,
     surface_geojson: Option<&Path>,
 ) -> io::Result<usize> {
-    use crate::hydro_delivery_intersections::geometry::LocalEqualArea;
+    use earthmesh_boundary::LocalEqualArea;
     use earthmesh_geometry::{intersection_area, Point};
     let read =
         |p: &Path| -> io::Result<JsonNode> { JsonParser::new(&read_text_maybe_gzip(p)?).parse() };

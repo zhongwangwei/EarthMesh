@@ -208,3 +208,49 @@ fn triangular_mesh_conversion_rejects_short_tables_before_indexing() {
         MeshState::from_triangular_mesh(&short_faces).expect_err("short face table is malformed");
     assert!(error.to_string().contains("w_faces"));
 }
+
+#[test]
+fn retired_rows_are_not_active_entities() {
+    let (vertices, triangles) = tetrahedron();
+    let mut state = MeshState::from_parts(vertices, triangles).expect("mesh");
+    let vertex = state.vertex_id(2).expect("vertex id");
+    let face = state.face_id(2).expect("face id");
+
+    let region: std::collections::BTreeSet<_> = state.active_triangle_slots().collect();
+    state.retire_triangle_in_region_for_test(2, &region);
+    assert_eq!(state.face_id(2), None);
+    assert!(!state.contains_face_id(face));
+    assert_eq!(state.triangle_count(), 3);
+    assert_eq!(state.open_edge_count(), 3);
+    state.validate().expect("retired faces are ignored");
+
+    state.retire_vertex_for_test(2);
+    assert_eq!(state.vertex_id(2), None);
+    assert!(!state.contains_vertex_id(vertex));
+    assert_eq!(state.vertex_count(), 3);
+    let errors = state
+        .validate()
+        .expect_err("live faces may not name retired vertices");
+    assert!(errors.contains(&MeshStateError::UnknownVertex {
+        triangle: 3,
+        vertex: 2
+    }));
+}
+
+#[test]
+fn active_slot_iterators_skip_retired_rows() {
+    let (vertices, triangles) = tetrahedron();
+    let mut state = MeshState::from_parts(vertices, triangles).expect("mesh");
+    state.retire_vertex_for_test(5);
+    let region: std::collections::BTreeSet<_> = state.active_triangle_slots().collect();
+    state.retire_triangle_in_region_for_test(5, &region);
+
+    assert_eq!(
+        state.active_vertex_slots().collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+    assert_eq!(
+        state.active_triangle_slots().collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
+}

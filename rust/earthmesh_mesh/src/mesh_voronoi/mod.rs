@@ -24,7 +24,9 @@
 use std::collections::BTreeSet;
 
 use crate::mesh_area_primitives::spherical_cell_area_from_vertices_unit;
-use crate::mesh_state::{MeshState, MESH_STATE_FIRST_ID};
+use crate::mesh_state::MeshState;
+#[cfg(test)]
+use crate::mesh_state::MESH_STATE_FIRST_ID;
 use crate::spherical_circumcenter::spherical_circumcenter_from_barycenter;
 use crate::CartesianPoint;
 
@@ -128,10 +130,20 @@ impl MeshState {
     /// round having visited each incident triangle exactly once.
     pub fn triangle_fan_from(&self, site: usize, seed: usize) -> Result<Vec<usize>, VoronoiError> {
         let corner_of = |triangle: usize| {
-            self.triangles()[triangle]
-                .iter()
-                .position(|&corner| corner == site)
+            self.is_triangle_live(triangle)
+                .then(|| {
+                    self.triangles()[triangle]
+                        .iter()
+                        .position(|&corner| corner == site)
+                })
+                .flatten()
         };
+        if !self.is_vertex_live(site) {
+            return Err(VoronoiError::UnknownSite { site });
+        }
+        if !self.is_triangle_live(seed) {
+            return Err(VoronoiError::SeedDoesNotTouchTheSite { site, seed });
+        }
         let Some(mut corner) = corner_of(seed) else {
             return Err(VoronoiError::SeedDoesNotTouchTheSite { site, seed });
         };
@@ -141,7 +153,7 @@ impl MeshState {
         let limit = self.triangle_count() + 1;
         for _ in 0..limit {
             let next = self.neighbours()[current][(corner + 1) % 3];
-            if next == 0 {
+            if next == 0 || !self.is_triangle_live(next) {
                 return Err(VoronoiError::FanIsOpen { site, at: current });
             }
             if next == seed {
@@ -166,10 +178,11 @@ impl MeshState {
     /// site -- and after a local change it does -- [`Self::triangle_fan_from`]
     /// is the one to use.
     pub fn triangle_fan(&self, site: usize) -> Result<Vec<usize>, VoronoiError> {
-        if site < MESH_STATE_FIRST_ID || site >= self.vertices().len() {
+        if !self.is_vertex_live(site) {
             return Err(VoronoiError::UnknownSite { site });
         }
-        let seed = (MESH_STATE_FIRST_ID..self.triangles().len())
+        let seed = self
+            .active_triangle_slots()
             .find(|&triangle| self.triangles()[triangle].contains(&site))
             .ok_or(VoronoiError::SiteIsInNoTriangle { site })?;
         self.triangle_fan_from(site, seed)
@@ -203,7 +216,7 @@ impl MeshState {
     ) -> std::collections::BTreeMap<usize, usize> {
         let mut seeds = std::collections::BTreeMap::new();
         for &triangle in triangles {
-            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles().len() {
+            if !self.is_triangle_live(triangle) {
                 continue;
             }
             for corner in self.triangles()[triangle] {
@@ -259,6 +272,9 @@ impl MeshState {
     /// The point equidistant from a triangle's three sites, on its own side of
     /// the sphere.
     pub fn circumcentre(&self, triangle: usize) -> Result<CartesianPoint, VoronoiError> {
+        if !self.is_triangle_live(triangle) {
+            return Err(VoronoiError::CircumcentreUndefined { triangle });
+        }
         let corners = self.triangles()[triangle];
         let points = corners.map(|corner| self.vertices()[corner]);
         let barycentre = CartesianPoint::new(

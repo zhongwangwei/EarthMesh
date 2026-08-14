@@ -215,6 +215,7 @@ fn run_prepared_mkgrd(
             .as_ref()
             .filter(|spec| {
                 spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
+                    && !harp_owns_quality_repair(spec.config.refinement.backend)
             })
             .map(|spec| {
                 let target_nxp = spec.config.try_lower()?.mkgrd.nxp;
@@ -288,12 +289,47 @@ fn run_prepared_mkgrd(
             let current_pass = auto_refine_state
                 .as_ref()
                 .map(earthmesh_project::AutoRefineState::current_pass)
-                .ok_or_else(|| "auto_refine orchestration state was not initialized".to_string())?;
+                .unwrap_or(spec.config.refinement.max_passes);
             eprintln!(
                 "earthmesh_cli: auto_refine quality={} level={}",
                 verdict.as_str(),
                 current_pass
             );
+            if harp_owns_quality_repair(spec.config.refinement.backend) {
+                let reason = match verdict {
+                    earthmesh_quality::QualityLevel::Pass => {
+                        "HARP-DV internal quality repair passed"
+                    }
+                    earthmesh_quality::QualityLevel::Warn => {
+                        "HARP-DV completed its own transactional quality repair; Method-C local repair is not applicable"
+                    }
+                    earthmesh_quality::QualityLevel::Fail => {
+                        return Err(
+                            "HARP-DV internal quality repair ended with verdict=fail".to_string()
+                        )
+                    }
+                };
+                record_auto_refine_decision(
+                    current_pass,
+                    if verdict == earthmesh_quality::QualityLevel::Pass {
+                        "complete"
+                    } else {
+                        "kept"
+                    },
+                    reason,
+                    None,
+                    gridfile,
+                    gridfile,
+                    None,
+                    verdict,
+                    verdict,
+                    &[],
+                )?;
+                if verdict != earthmesh_quality::QualityLevel::Pass {
+                    eprintln!("earthmesh_cli: warning: {reason}; keeping the HARP-DV mesh");
+                }
+                break report;
+            }
             if let Some(previous_quality) = last_acceptable_quality.take() {
                 let regressions = quality.guarded_metric_regressions(&previous_quality);
                 if earthmesh_cli::project_quality::select_auto_refine_candidate(
@@ -738,7 +774,9 @@ fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<
         .checked_mul(nxp)
         .and_then(|value| value.checked_mul(nxp))
         .ok_or_else(|| "project base triangle count exceeds this platform".to_string())?;
-    let passes = if config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine {
+    let passes = if config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
+        && !harp_owns_quality_repair(config.refinement.backend)
+    {
         earthmesh_project::auto_refine_level_cap(target_nxp)
     } else if config.refinement.enabled {
         config.refinement.max_passes
@@ -748,6 +786,10 @@ fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<
     base.checked_shl(u32::from(passes) * 2)
         .map(|budget| budget.max(100_000))
         .ok_or_else(|| "project refined triangle budget exceeds this platform".to_string())
+}
+
+fn harp_owns_quality_repair(backend: earthmesh_project::RefinementBackend) -> bool {
+    backend == earthmesh_project::RefinementBackend::HarpDv
 }
 
 fn final_gridfile(
@@ -873,7 +915,8 @@ pub(crate) fn enforce_project_quality_policy(
 mod tests {
     use super::*;
     use earthmesh_project::{
-        DomainConfig, MeshIntentPreset, ProjectConfig, ResolutionSpec, ViolationPolicy,
+        DomainConfig, MeshIntentPreset, ProjectConfig, RefinementBackend, ResolutionSpec,
+        ViolationPolicy,
     };
     use earthmesh_quality::QualityLevel;
 
@@ -888,6 +931,12 @@ mod tests {
     fn auto_refine_keeps_warn_but_not_fail_when_repair_is_unavailable() {
         assert!(keep_mesh_after_repair_error(QualityLevel::Warn));
         assert!(!keep_mesh_after_repair_error(QualityLevel::Fail));
+    }
+
+    #[test]
+    fn harp_dv_is_not_a_method_c_quality_repair_candidate() {
+        assert!(harp_owns_quality_repair(RefinementBackend::HarpDv));
+        assert!(!harp_owns_quality_repair(RefinementBackend::MethodC));
     }
 
     #[test]

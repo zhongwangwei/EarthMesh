@@ -515,21 +515,27 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
         segments_at_risk.insert((head.min(midpoint), head.max(midpoint)));
     }
     let transaction = if splits_open_edge {
-        mesh.insert_site_on_boundary_edge_transactionally(point, tail, head, |state, report| {
-            if state.open_edge_count() != before_open_edges + 1 {
-                failure.set(Some(GateFailure::OpenEdges(state.open_edge_count())));
-                return false;
-            }
-            constrained_gates_pass(
-                state,
-                report,
-                gates,
-                &protected_degrees,
-                &segments_at_risk,
-                before_open_edges != 0,
-                &failure,
-            ) && postcondition(state, report)
-        })
+        mesh.insert_site_on_boundary_edge_from_transactionally(
+            point,
+            open_edge_face.expect("splits_open_edge comes from this face"),
+            tail,
+            head,
+            |state, report| {
+                if state.open_edge_count() != before_open_edges + 1 {
+                    failure.set(Some(GateFailure::OpenEdges(state.open_edge_count())));
+                    return false;
+                }
+                constrained_gates_pass(
+                    state,
+                    report,
+                    gates,
+                    &protected_degrees,
+                    &segments_at_risk,
+                    before_open_edges != 0,
+                    &failure,
+                ) && postcondition(state, report)
+            },
+        )
     } else {
         mesh.insert_site_transactionally(point, |state, report| {
             if state.open_edge_count() != before_open_edges {

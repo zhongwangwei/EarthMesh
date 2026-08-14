@@ -223,6 +223,167 @@ pub(crate) fn print_refine_pipeline_report(
             "harp_dv_paired_r_adaptation_moves={}",
             harp.paired_r_adaptation_moves
         );
+        println!(
+            "harp_dv_multi_ring_r_adaptation_moves={}",
+            harp.multi_ring_r_adaptation_moves
+        );
+        println!("harp_dv_angles_below_40_deg={}", harp.angles_below_40_deg);
+        println!("harp_dv_angles_in_40_90_deg={}", harp.angles_in_40_90_deg);
+        println!("harp_dv_angles_above_90_deg={}", harp.angles_above_90_deg);
+        println!("harp_dv_angles_in_40_80_deg={}", harp.angles_in_40_80_deg);
+        println!("harp_dv_angles_above_80_deg={}", harp.angles_above_80_deg);
+        println!("harp_dv_angle_min_deg={:.6}", harp.angle_min_deg);
+        println!("harp_dv_angle_max_deg={:.6}", harp.angle_max_deg);
+        println!(
+            "harp_dv_angle_window_40_80_verdict={}",
+            harp.angle_window_40_80_verdict
+        );
+        println!(
+            "harp_dv_angle_window_unmeasurable_triangles={}",
+            harp.angle_window_unmeasurable_triangles
+        );
+        println!(
+            "harp_dv_vertices_below_degree_5={}",
+            harp.vertices_below_degree_5
+        );
+        println!(
+            "harp_dv_active_adaptive_sites={}",
+            harp.active_adaptive_sites
+        );
+        println!("harp_dv_active_leaf_sites={}", harp.active_leaf_sites);
+        println!("harp_dv_interior_leaf_sites={}", harp.interior_leaf_sites);
+        println!(
+            "harp_dv_lineage_unknown_adaptive_sites={}",
+            harp.lineage_unknown_adaptive_sites
+        );
+        println!("harp_dv_leaf_degree_4={}", harp.leaf_degree_4);
+        println!("harp_dv_leaf_degree_5={}", harp.leaf_degree_5);
+        println!("harp_dv_leaf_degree_6={}", harp.leaf_degree_6);
+        println!("harp_dv_leaf_degree_7={}", harp.leaf_degree_7);
+        println!("harp_dv_leaf_degree_other={}", harp.leaf_degree_other);
+        println!("harp_dv_leaf_birth_cycle_min={}", harp.leaf_birth_cycle_min);
+        println!("harp_dv_leaf_birth_cycle_max={}", harp.leaf_birth_cycle_max);
+        println!(
+            "harp_dv_leaf_target_scale_measured={}",
+            harp.leaf_target_scale_measured
+        );
+        println!(
+            "harp_dv_leaf_target_scale_min_m={:.6}",
+            harp.leaf_target_scale_min_m
+        );
+        println!(
+            "harp_dv_leaf_target_scale_max_m={:.6}",
+            harp.leaf_target_scale_max_m
+        );
+        println!(
+            "harp_dv_angles_below_40_at_leaf_vertices={}",
+            harp.angles_below_40_at_leaf_vertices
+        );
+        println!(
+            "harp_dv_angles_above_80_at_leaf_vertices={}",
+            harp.angles_above_80_at_leaf_vertices
+        );
+        println!(
+            "harp_dv_angles_below_40_at_interior_leaf_vertices={}",
+            harp.angles_below_40_at_interior_leaf_vertices
+        );
+        println!(
+            "harp_dv_angles_above_80_at_interior_leaf_vertices={}",
+            harp.angles_above_80_at_interior_leaf_vertices
+        );
+        println!(
+            "harp_dv_violating_triangles_touching_leaf={}",
+            harp.violating_triangles_touching_leaf
+        );
+        println!(
+            "harp_dv_violating_triangles_touching_interior_leaf={}",
+            harp.violating_triangles_touching_interior_leaf
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_candidates={}",
+            harp.d4_leaf_retirement_candidates
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_triangulations={}",
+            harp.d4_leaf_retirement_triangulations
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_hard_gate_safe={}",
+            harp.d4_leaf_retirement_hard_gate_safe
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_physical_safe={}",
+            harp.d4_leaf_retirement_physical_safe
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_balance_safe={}",
+            harp.d4_leaf_retirement_balance_safe
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_quality_improving={}",
+            harp.d4_leaf_retirement_quality_improving
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_fully_acceptable={}",
+            harp.d4_leaf_retirement_fully_acceptable
+        );
+        println!(
+            "harp_dv_d4_leaf_retirement_committed={}",
+            harp.d4_leaf_retirement_committed
+        );
+        println!(
+            "harp_dv_quality_leaf_retirement_committed={}",
+            harp.quality_leaf_retirement_committed
+        );
+        println!(
+            "harp_dv_conservative_remap_rows={}",
+            harp.conservative_remap_rows
+        );
+        println!(
+            "harp_dv_conservative_remap_max_row_sum_error={:.3e}",
+            harp.conservative_remap_max_row_sum_error
+        );
+        if let Some(path) = &harp.conservative_remap_file {
+            println!("harp_dv_conservative_remap_file={}", path.display());
+        }
+        println!(
+            "harp_dv_target_triangle_angles_below_40_deg={}",
+            harp.target_triangle_angles_below_40_deg
+        );
+        println!(
+            "harp_dv_target_triangle_angles_above_80_deg={}",
+            harp.target_triangle_angles_above_80_deg
+        );
+        println!(
+            "harp_dv_target_triangle_angle_count={}",
+            harp.target_triangle_angle_count
+        );
+        println!(
+            "harp_dv_target_triangle_angle_min_deg={:.6}",
+            harp.target_triangle_angle_min_deg
+        );
+        println!(
+            "harp_dv_target_triangle_angle_max_deg={:.6}",
+            harp.target_triangle_angle_max_deg
+        );
+        println!(
+            "harp_dv_angle_window_penalty={:.6}",
+            harp.angle_window_penalty
+        );
+        println!(
+            "harp_dv_angle_window_40_80_penalty={:.6}",
+            harp.angle_window_40_80_penalty
+        );
+        println!(
+            "harp_dv_quality_optimiser_moves={}",
+            harp.quality_optimiser_moves
+        );
+        println!("harp_dv_triangle_eta_min={:.6}", harp.triangle_eta_min);
+        println!("harp_dv_triangle_eta_p1={:.6}", harp.triangle_eta_p1);
+        println!(
+            "harp_dv_triangles_below_eta_0_89={}",
+            harp.triangles_below_eta_0_89
+        );
         println!("harp_dv_unresolved_cells={}", harp.unresolved_cells);
         println!(
             "harp_dv_physical_demands_remaining={}",

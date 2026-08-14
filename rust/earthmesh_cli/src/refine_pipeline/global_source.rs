@@ -416,7 +416,7 @@ pub fn run_refine_pipeline_namelist(
             max_tris,
         )?
     };
-    let spring_nest_iterations = if native_only_spawn {
+    let requested_spring_nest_iterations = if native_only_spawn {
         if !is_atmosmesh {
             let atmosphere_iterations = if native_atmosphere_regions.is_empty() {
                 0
@@ -441,6 +441,14 @@ pub fn run_refine_pipeline_namelist(
     } else {
         refinement_spring_iterations(&refine, is_atmosmesh)?
     };
+    let spring_nest_iterations =
+        effective_refinement_spring_iterations(backend, requested_spring_nest_iterations);
+    if requested_spring_nest_iterations > 0 && spring_nest_iterations == 0 {
+        eprintln!(
+            "earthmesh_cli: HARP-DV uses transactional site moves with Delaunay legalization; \
+             the generic regional Laplacian spring is disabled for this backend"
+        );
+    }
     let file_dir = PathBuf::from(config.file_dir());
     // The choice of backend, at the one place where it is a choice. Method-C
     // continues as a `TriangularMesh` through the Voronoi/PCVT step; red-green's
@@ -552,7 +560,6 @@ pub fn run_refine_pipeline_namelist(
                 mesh_type,
                 method_c_nxp,
                 max_level,
-                spring_nest_iterations,
                 &refine,
                 harp_dv_options,
             )?
@@ -1300,10 +1307,65 @@ fn region_center_demand(
 pub struct HarpDvRunRecord {
     pub stop_reason: String,
     pub cycles_completed: u32,
+    /// Insertions only; geometry-only commits are in `r_adaptation_moves`.
     pub transactions_committed: usize,
     pub fallback_transactions_committed: usize,
     pub r_adaptation_moves: usize,
     pub paired_r_adaptation_moves: usize,
+    pub multi_ring_r_adaptation_moves: usize,
+    pub angles_below_40_deg: usize,
+    pub angles_in_40_90_deg: usize,
+    pub angles_above_90_deg: usize,
+    pub angles_in_40_80_deg: usize,
+    pub angles_above_80_deg: usize,
+    pub angle_min_deg: f64,
+    pub angle_max_deg: f64,
+    pub angle_window_40_80_verdict: String,
+    pub angle_window_unmeasurable_triangles: usize,
+    pub vertices_below_degree_5: usize,
+    pub active_adaptive_sites: usize,
+    pub active_leaf_sites: usize,
+    pub interior_leaf_sites: usize,
+    pub lineage_unknown_adaptive_sites: usize,
+    pub leaf_degree_4: usize,
+    pub leaf_degree_5: usize,
+    pub leaf_degree_6: usize,
+    pub leaf_degree_7: usize,
+    pub leaf_degree_other: usize,
+    pub leaf_birth_cycle_min: u32,
+    pub leaf_birth_cycle_max: u32,
+    pub leaf_target_scale_measured: usize,
+    pub leaf_target_scale_min_m: f64,
+    pub leaf_target_scale_max_m: f64,
+    pub angles_below_40_at_leaf_vertices: usize,
+    pub angles_above_80_at_leaf_vertices: usize,
+    pub angles_below_40_at_interior_leaf_vertices: usize,
+    pub angles_above_80_at_interior_leaf_vertices: usize,
+    pub violating_triangles_touching_leaf: usize,
+    pub violating_triangles_touching_interior_leaf: usize,
+    pub d4_leaf_retirement_candidates: usize,
+    pub d4_leaf_retirement_triangulations: usize,
+    pub d4_leaf_retirement_hard_gate_safe: usize,
+    pub d4_leaf_retirement_physical_safe: usize,
+    pub d4_leaf_retirement_balance_safe: usize,
+    pub d4_leaf_retirement_quality_improving: usize,
+    pub d4_leaf_retirement_fully_acceptable: usize,
+    pub d4_leaf_retirement_committed: usize,
+    pub quality_leaf_retirement_committed: usize,
+    pub conservative_remap_rows: usize,
+    pub conservative_remap_max_row_sum_error: f64,
+    pub conservative_remap_file: Option<PathBuf>,
+    pub target_triangle_angles_below_40_deg: usize,
+    pub target_triangle_angles_above_80_deg: usize,
+    pub target_triangle_angle_count: usize,
+    pub target_triangle_angle_min_deg: f64,
+    pub target_triangle_angle_max_deg: f64,
+    pub angle_window_penalty: f64,
+    pub angle_window_40_80_penalty: f64,
+    pub quality_optimiser_moves: usize,
+    pub triangle_eta_min: f64,
+    pub triangle_eta_p1: f64,
+    pub triangles_below_eta_0_89: usize,
     pub unresolved_cells: usize,
     pub physical_demands_remaining: usize,
     pub balance_demands_remaining: usize,
@@ -2075,11 +2137,9 @@ fn lepp_region_boundary_segments(
     earthmesh_boundary::SegmentList::from_pairs(protected)
 }
 
-/// Refine `mesh` the Method-C way: native spawn, adaptive point+radius, h-field
-/// target levels, or plain specified regions, whichever the request selects.
 /// Refine by re-reading the criteria against the cells that exist.
 ///
-/// The one thing this route does differently at the pipeline boundary: it
+/// This route differs at the pipeline boundary because it
 /// produces its mesh from `MeshState`, so it goes out through
 /// `to_triangular_mesh` rather than arriving as a `TriangularMesh` already.
 fn refine_with_harp_dv(
@@ -2091,7 +2151,6 @@ fn refine_with_harp_dv(
     mesh_type: &str,
     nxp: usize,
     max_level: usize,
-    spring_iterations: usize,
     refine: &RefineConfig,
     options: HarpDvRunOptions,
 ) -> io::Result<RefinedGrid> {
@@ -2133,23 +2192,19 @@ fn refine_with_harp_dv(
     // `2*pi*R/(5*nxp)` is neither of them cleanly. At NXP 21 that formula gives
     // 381 km; the mesh's median cell `sqrt(A/pi)` is 190 km and its median
     // triangle edge is 364 km. The formula is an edge length, near enough --
-    // which is why the spring, which wants edge lengths, was accidentally
-    // right, and why `TargetScale`, which compares cell scales, was asking for
+    // which is why `TargetScale`, which compares cell scales, was asking for
     // half of what a level meant. Guide 11.31.
 
-    // Only the cell scale is used here -- `TargetScale` compares cell scales,
-    // and the spring converts to edge lengths from this same number so the two
-    // cannot disagree. `harp_base_lengths` still measures both because the
-    // pair is what makes the distinction checkable: 190 km against 364 km at
-    // NXP 21 is why taking the nominal `2*pi*R/(5*nxp)` for either was wrong.
+    // Only the cell scale is used here. `harp_base_lengths` still measures both
+    // because the pair makes the distinction checkable: 190 km against 364 km
+    // at NXP 21 is why taking the nominal `2*pi*R/(5*nxp)` for either was wrong.
     let (base_cell_m, _base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
         let nominal =
             2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
         (nominal / 2.0, nominal)
     });
     let boundaries = harp_region_boundaries(regions)?;
-    let mut spring_boundaries = boundaries.clone();
-    let mut spring_regions = regions.to_vec();
+    let mut region_boundaries = boundaries.clone();
     let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
         .iter()
         .zip(&boundaries)
@@ -2246,8 +2301,7 @@ fn refine_with_harp_dv(
             } else {
                 format!("{}-level-{level}", demand.criterion_ids.join("+"))
             };
-            spring_boundaries.extend(harp_region_boundaries(&demand.circles)?);
-            spring_regions.extend(demand.circles.iter().cloned());
+            region_boundaries.extend(harp_region_boundaries(&demand.circles)?);
             let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
             criteria.push(Box::new(harp::TargetScale {
                 id: criterion_id,
@@ -2287,7 +2341,7 @@ fn refine_with_harp_dv(
     // the refinement does not terminate (guide 11.25); with it, it reaches
     // Ruppert's angle bound (11.26).
     if let Some(min_angle_deg) = harp_min_angle_target(refine) {
-        let segments = harp_region_boundary_segments(&adaptive, &spring_boundaries);
+        let segments = harp_region_boundary_segments(&adaptive, &region_boundaries);
         adaptive.protect_segments(segments);
         criteria.push(Box::new(harp::MinAngle {
             id: "min-angle".to_string(),
@@ -2377,6 +2431,13 @@ fn refine_with_harp_dv(
                 outcome.report.paired_r_adaptation_moves
             );
         }
+        if outcome.report.multi_ring_r_adaptation_moves > 0 {
+            eprintln!(
+                "harp_dv: {} moves came from widening the recovery to a few rings around each \
+                 stalled region",
+                outcome.report.multi_ring_r_adaptation_moves
+            );
+        }
         if outcome.report.quality_constrained_count > 0 {
             eprintln!(
                 "harp_dv: {} remaining cells exhausted every candidate at the {:.1} degree \
@@ -2391,6 +2452,40 @@ fn refine_with_harp_dv(
         .mesh
         .to_triangular_mesh()
         .map_err(|error| io::Error::other(error.to_string()))?;
+    let conservative_remap_rows = outcome
+        .mesh
+        .conservative_remap()
+        .iter()
+        .map(|row| row.old_site_id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let conservative_remap_max_row_sum_error = outcome
+        .mesh
+        .conservative_remap()
+        .iter()
+        .fold(std::collections::BTreeMap::new(), |mut sums, row| {
+            *sums.entry(row.old_site_id).or_insert(0.0) += row.overlap_fraction;
+            sums
+        })
+        .into_values()
+        .map(|sum: f64| (sum - 1.0).abs())
+        .fold(0.0, f64::max);
+    let conservative_remap_file = if outcome.mesh.conservative_remap().is_empty() {
+        None
+    } else {
+        let result_dir = PathBuf::from(config.file_dir()).join("result");
+        fs::create_dir_all(&result_dir)?;
+        let path = result_dir.join("harp_dv_conservative_remap.csv");
+        let mut csv = String::from("old_site_id,new_site_id,overlap_fraction\n");
+        for row in outcome.mesh.conservative_remap() {
+            csv.push_str(&format!(
+                "{},{},{:.17}\n",
+                row.old_site_id.0, row.new_site_id.0, row.overlap_fraction
+            ));
+        }
+        fs::write(&path, csv)?;
+        Some(path)
+    };
     if let Some((report, _, _, _)) = &mut adaptive_run {
         // HARP-DV evaluates every requested level together rather than running
         // one topology pass per level. Each row is therefore a demand level,
@@ -2401,46 +2496,13 @@ fn refine_with_harp_dv(
         }
     }
 
-    // HARP-DV does not carry Method-C transition rows, so use the same
-    // backend-neutral regional spring as Red-Green and LEPP. It pins the
-    // refined/coarse interface and keeps the candidate only when topology and
-    // triangle-angle checks do not regress.
+    // HARP-DV already repairs its continuously graded mesh through
+    // transactional site moves followed by Delaunay legalization and quality
+    // acceptance. A fixed-connectivity Laplacian spring works against that
+    // size field, so it is deliberately not run here.
     let state = spherical_voronoi_state(&refined)?;
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-    let (smoothed_output, spring_nest_passes) =
-        spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
-    let (refined, state, output_mesh) = if spring_nest_passes > 0 {
-        let smoothed_output = unstructured_mesh_with_one_based_rows(&smoothed_output);
-        if smoothed_output.w_points.len() != refined.m_points.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HARP-DV spring changed the number of mesh sites",
-            ));
-        }
-        let radius = earthmesh_mesh::active_mesh_radius(&refined)?;
-        let mut adjusted = refined.clone();
-        for im in 2..=adjusted.nmd {
-            let unit =
-                earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
-                    smoothed_output.w_points[im].lon,
-                    smoothed_output.w_points[im].lat,
-                ));
-            adjusted.m_points[im] = earthmesh_mesh::CartesianPoint::new(
-                unit.x * radius,
-                unit.y * radius,
-                unit.z * radius,
-            );
-        }
-        adjusted.validate_topology()?;
-        let state = spherical_voronoi_state(&adjusted)?;
-        let output = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-        (adjusted, state, output)
-    } else {
-        (refined, state, output_mesh)
-    };
-    if let Some((report, _, _, _)) = &mut adaptive_run {
-        report.spring_passes = spring_nest_passes;
-    }
+    let spring_nest_passes = 0;
     let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
     Ok(RefinedGrid {
         // HARP-DV builds no transition band, so there is nothing to count in
@@ -2462,6 +2524,72 @@ fn refine_with_harp_dv(
             fallback_transactions_committed: outcome.report.fallback_transactions_committed,
             r_adaptation_moves: outcome.report.r_adaptation_moves,
             paired_r_adaptation_moves: outcome.report.paired_r_adaptation_moves,
+            multi_ring_r_adaptation_moves: outcome.report.multi_ring_r_adaptation_moves,
+            angles_below_40_deg: outcome.report.angles_below_40_deg,
+            angles_in_40_90_deg: outcome.report.angles_in_40_90_deg,
+            angles_above_90_deg: outcome.report.angles_above_90_deg,
+            angles_in_40_80_deg: outcome.report.angles_in_40_80_deg,
+            angles_above_80_deg: outcome.report.angles_above_80_deg,
+            angle_min_deg: outcome.report.angle_min_deg,
+            angle_max_deg: outcome.report.angle_max_deg,
+            angle_window_40_80_verdict: outcome
+                .report
+                .angle_window_40_80_verdict
+                .as_str()
+                .to_string(),
+            angle_window_unmeasurable_triangles: outcome.report.angle_window_unmeasurable_triangles,
+            vertices_below_degree_5: outcome.report.vertices_below_degree_5,
+            active_adaptive_sites: outcome.report.active_adaptive_sites,
+            active_leaf_sites: outcome.report.active_leaf_sites,
+            interior_leaf_sites: outcome.report.interior_leaf_sites,
+            lineage_unknown_adaptive_sites: outcome.report.lineage_unknown_adaptive_sites,
+            leaf_degree_4: outcome.report.leaf_degree_4,
+            leaf_degree_5: outcome.report.leaf_degree_5,
+            leaf_degree_6: outcome.report.leaf_degree_6,
+            leaf_degree_7: outcome.report.leaf_degree_7,
+            leaf_degree_other: outcome.report.leaf_degree_other,
+            leaf_birth_cycle_min: outcome.report.leaf_birth_cycle_min,
+            leaf_birth_cycle_max: outcome.report.leaf_birth_cycle_max,
+            leaf_target_scale_measured: outcome.report.leaf_target_scale_measured,
+            leaf_target_scale_min_m: outcome.report.leaf_target_scale_min_m,
+            leaf_target_scale_max_m: outcome.report.leaf_target_scale_max_m,
+            angles_below_40_at_leaf_vertices: outcome.report.angles_below_40_at_leaf_vertices,
+            angles_above_80_at_leaf_vertices: outcome.report.angles_above_80_at_leaf_vertices,
+            angles_below_40_at_interior_leaf_vertices: outcome
+                .report
+                .angles_below_40_at_interior_leaf_vertices,
+            angles_above_80_at_interior_leaf_vertices: outcome
+                .report
+                .angles_above_80_at_interior_leaf_vertices,
+            violating_triangles_touching_leaf: outcome.report.violating_triangles_touching_leaf,
+            violating_triangles_touching_interior_leaf: outcome
+                .report
+                .violating_triangles_touching_interior_leaf,
+            d4_leaf_retirement_candidates: outcome.report.d4_leaf_retirement_candidates,
+            d4_leaf_retirement_triangulations: outcome.report.d4_leaf_retirement_triangulations,
+            d4_leaf_retirement_hard_gate_safe: outcome.report.d4_leaf_retirement_hard_gate_safe,
+            d4_leaf_retirement_physical_safe: outcome.report.d4_leaf_retirement_physical_safe,
+            d4_leaf_retirement_balance_safe: outcome.report.d4_leaf_retirement_balance_safe,
+            d4_leaf_retirement_quality_improving: outcome
+                .report
+                .d4_leaf_retirement_quality_improving,
+            d4_leaf_retirement_fully_acceptable: outcome.report.d4_leaf_retirement_fully_acceptable,
+            d4_leaf_retirement_committed: outcome.report.d4_leaf_retirement_committed,
+            quality_leaf_retirement_committed: outcome.report.quality_leaf_retirement_committed,
+            conservative_remap_rows,
+            conservative_remap_max_row_sum_error,
+            conservative_remap_file,
+            target_triangle_angles_below_40_deg: outcome.report.target_triangle_angles_below_40_deg,
+            target_triangle_angles_above_80_deg: outcome.report.target_triangle_angles_above_80_deg,
+            target_triangle_angle_count: outcome.report.target_triangle_angle_count,
+            target_triangle_angle_min_deg: outcome.report.target_triangle_angle_min_deg,
+            target_triangle_angle_max_deg: outcome.report.target_triangle_angle_max_deg,
+            angle_window_penalty: outcome.report.angle_window_penalty,
+            angle_window_40_80_penalty: outcome.report.angle_window_40_80_penalty,
+            quality_optimiser_moves: outcome.report.quality_optimiser_moves,
+            triangle_eta_min: outcome.report.triangle_eta_min,
+            triangle_eta_p1: outcome.report.triangle_eta_p1,
+            triangles_below_eta_0_89: outcome.report.triangles_below_eta_0_89,
             unresolved_cells: outcome.unresolved_cells.len(),
             physical_demands_remaining: outcome.report.physical_demands_remaining,
             balance_demands_remaining: outcome.report.balance_demands_remaining,
@@ -2476,9 +2604,9 @@ fn refine_with_harp_dv(
 
 /// The mesh's own median cell scale and median triangle edge, in metres.
 ///
-/// Two quantities that a single nominal-spacing formula conflates. A criterion
-/// comparing `sqrt(A/pi)` wants the first; a spring pulling on edges wants the
-/// second.
+/// Two quantities that a single nominal-spacing formula conflates. HARP's
+/// criterion comparing `sqrt(A/pi)` wants the first; the second keeps the
+/// measurement and its unit distinction checkable.
 fn harp_base_lengths(mesh: &earthmesh_mesh::TriangularMesh) -> Option<(f64, f64)> {
     let state = earthmesh_mesh::MeshState::from_triangular_mesh(mesh).ok()?;
     let radius = state.sphere_radius();
@@ -2515,6 +2643,14 @@ enum RefineBackend {
     MethodC,
     RedGreen,
     HarpDv,
+}
+
+fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
+    if backend == RefineBackend::HarpDv {
+        0
+    } else {
+        requested
+    }
 }
 
 /// Resolve `NL%refine_backend`, refusing anything that is not a backend.
@@ -3639,6 +3775,22 @@ mod tests {
                 < 1.0e-12
         );
         assert_eq!(minor_cell_steradians(f64::NAN), None);
+    }
+
+    #[test]
+    fn harp_uses_its_transactional_repair_instead_of_the_generic_spring() {
+        assert_eq!(
+            effective_refinement_spring_iterations(RefineBackend::HarpDv, 2_000),
+            0
+        );
+        assert_eq!(
+            effective_refinement_spring_iterations(RefineBackend::RedGreen, 2_000),
+            2_000
+        );
+        assert_eq!(
+            effective_refinement_spring_iterations(RefineBackend::MethodC, 5_000),
+            5_000
+        );
     }
 
     #[test]

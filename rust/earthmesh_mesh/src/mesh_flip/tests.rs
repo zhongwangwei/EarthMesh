@@ -1,6 +1,8 @@
 use super::*;
 
-use crate::{lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, TriangularMesh};
+use crate::{
+    lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, TriangularMesh, MESH_STATE_FIRST_ID,
+};
 
 fn sphere(nxp: usize) -> MeshState {
     let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
@@ -112,6 +114,22 @@ fn an_edge_on_a_boundary_is_refused() {
         matches!(error, FlipError::EdgeIsOnTheBoundary { .. }),
         "{error}"
     );
+}
+
+#[test]
+fn retired_triangles_are_not_flipped_or_legalized() {
+    let mut state = sphere(2);
+    state.retire_triangle_in_region_for_test(2, &BTreeSet::from([2]));
+
+    assert!(!state.edge_is_illegal(2, 0).expect("dead face is ignored"));
+    assert!(matches!(
+        state.flip_edge(2, 0),
+        Err(FlipError::EdgeIsOnTheBoundary {
+            triangle: 2,
+            corner: 0
+        })
+    ));
+    assert_eq!(state.legalize_around(&BTreeSet::from([2])).unwrap(), 0);
 }
 
 /// An icosahedral mesh is Delaunay, so legalizing it changes nothing.

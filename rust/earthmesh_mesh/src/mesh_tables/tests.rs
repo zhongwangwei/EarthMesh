@@ -138,3 +138,35 @@ fn a_refined_mesh_has_more_than_twelve_degree_five_sites() {
         .to_triangular_mesh(mesh.impent, None)
         .expect("three tables");
 }
+
+#[test]
+fn tombstones_are_compacted_when_exporting_tables() {
+    let mesh = base(6);
+    let mut state = MeshState::from_triangular_mesh(&mesh).expect("neutral state");
+    let retired_vertex = state.push_vertex(crate::CartesianPoint::new(9.0, 9.0, 9.0));
+    let retired_triangle = state.push_triangle(state.triangles()[MESH_STATE_FIRST_ID]);
+    let retired_vertex_id = state.vertex_id(retired_vertex).expect("extra vertex id");
+    let retired_face_id = state.face_id(retired_triangle).expect("extra face id");
+    let region: std::collections::BTreeSet<_> = state.active_triangle_slots().collect();
+    state.retire_triangle_in_region_for_test(retired_triangle, &region);
+    state.retire_vertex_for_test(retired_vertex);
+
+    let exported = state
+        .to_triangular_mesh(mesh.impent, None)
+        .expect("compacted mesh tables");
+
+    assert_eq!(state.vertex_id(retired_vertex), None);
+    assert_eq!(state.face_id(retired_triangle), None);
+    assert!(!state.contains_vertex_id(retired_vertex_id));
+    assert!(!state.contains_face_id(retired_face_id));
+    assert_eq!(exported.nmd, mesh.nmd);
+    assert_eq!(exported.nwd, mesh.nwd);
+    assert_eq!(exported.m_points, mesh.m_points);
+    for iw in MESH_STATE_FIRST_ID..=mesh.nwd {
+        let mut here = exported.w_faces[iw].im;
+        let mut there = mesh.w_faces[iw].im;
+        here.sort_unstable();
+        there.sort_unstable();
+        assert_eq!(here, there, "face {iw}");
+    }
+}

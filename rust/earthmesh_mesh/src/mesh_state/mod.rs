@@ -69,6 +69,8 @@ pub struct MeshState {
     neighbours: Vec<[usize; 3]>,
     vertex_generations: Vec<u64>,
     triangle_generations: Vec<u64>,
+    vertex_live: Vec<bool>,
+    triangle_live: Vec<bool>,
     next_vertex_generation: u64,
     next_triangle_generation: u64,
 }
@@ -80,6 +82,8 @@ impl PartialEq for MeshState {
             && self.neighbours == other.neighbours
             && self.vertex_generations == other.vertex_generations
             && self.triangle_generations == other.triangle_generations
+            && self.vertex_live == other.vertex_live
+            && self.triangle_live == other.triangle_live
     }
 }
 
@@ -214,12 +218,18 @@ impl MeshState {
 
         let vertex_generations = vec![0; vertices.len()];
         let triangle_generations = vec![0; triangles.len()];
+        let mut vertex_live = vec![false; vertices.len()];
+        vertex_live[MESH_STATE_FIRST_ID..].fill(true);
+        let mut triangle_live = vec![false; triangles.len()];
+        triangle_live[MESH_STATE_FIRST_ID..].fill(true);
         Ok(Self {
             vertices,
             triangles,
             neighbours,
             vertex_generations,
             triangle_generations,
+            vertex_live,
+            triangle_live,
             next_vertex_generation: 1,
             next_triangle_generation: 1,
         })
@@ -299,14 +309,14 @@ impl MeshState {
     }
 
     pub fn vertex_id(&self, slot: usize) -> Option<VertexId> {
-        (slot >= MESH_STATE_FIRST_ID && slot < self.vertices.len()).then(|| VertexId {
+        self.is_vertex_live(slot).then(|| VertexId {
             slot,
             generation: self.vertex_generations[slot],
         })
     }
 
     pub fn face_id(&self, slot: usize) -> Option<FaceId> {
-        (slot >= MESH_STATE_FIRST_ID && slot < self.triangles.len()).then(|| FaceId {
+        self.is_triangle_live(slot).then(|| FaceId {
             slot,
             generation: self.triangle_generations[slot],
         })
@@ -328,17 +338,80 @@ impl MeshState {
         &self.triangle_generations
     }
 
+    pub fn is_vertex_live(&self, slot: usize) -> bool {
+        slot >= MESH_STATE_FIRST_ID && self.vertex_live.get(slot).copied().unwrap_or(false)
+    }
+
+    pub fn is_triangle_live(&self, slot: usize) -> bool {
+        slot >= MESH_STATE_FIRST_ID && self.triangle_live.get(slot).copied().unwrap_or(false)
+    }
+
+    pub fn active_vertex_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        (MESH_STATE_FIRST_ID..self.vertices.len()).filter(|&slot| self.is_vertex_live(slot))
+    }
+
+    pub fn active_triangle_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        (MESH_STATE_FIRST_ID..self.triangles.len()).filter(|&slot| self.is_triangle_live(slot))
+    }
+
+    pub(crate) fn retire_vertex_slot(&mut self, vertex: usize) {
+        if vertex >= MESH_STATE_FIRST_ID && vertex < self.vertex_live.len() {
+            self.vertex_live[vertex] = false;
+            self.vertex_generations[vertex] = self.next_vertex_generation;
+            self.next_vertex_generation += 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retire_vertex_for_test(&mut self, vertex: usize) {
+        self.retire_vertex_slot(vertex);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retire_triangle_in_region_for_test(
+        &mut self,
+        triangle: usize,
+        region: &std::collections::BTreeSet<usize>,
+    ) {
+        if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangle_live.len() {
+            return;
+        }
+        self.triangle_live[triangle] = false;
+        self.triangle_generations[triangle] = self.next_triangle_generation;
+        self.next_triangle_generation += 1;
+        self.neighbours[triangle] = [0; 3];
+        for &row in region {
+            if let Some(neighbours) = self.neighbours.get_mut(row) {
+                for neighbour in neighbours {
+                    if *neighbour == triangle {
+                        *neighbour = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn retire_triangle_slot(&mut self, triangle: usize) {
+        if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangle_live.len() {
+            return;
+        }
+        self.triangle_live[triangle] = false;
+        self.triangle_generations[triangle] = self.next_triangle_generation;
+        self.next_triangle_generation += 1;
+        self.neighbours[triangle] = [0; 3];
+    }
+
     pub(crate) fn restore_triangle_generation(&mut self, triangle: usize, generation: u64) {
         self.triangle_generations[triangle] = generation;
     }
 
     /// Real sites, not counting the two reserved slots.
     pub fn vertex_count(&self) -> usize {
-        self.vertices.len().saturating_sub(MESH_STATE_FIRST_ID)
+        self.active_vertex_slots().count()
     }
 
     pub fn triangle_count(&self) -> usize {
-        self.triangles.len().saturating_sub(MESH_STATE_FIRST_ID)
+        self.active_triangle_slots().count()
     }
 
     /// Triangle edges with no triangle across them.
@@ -347,7 +420,7 @@ impl MeshState {
     /// something opened, and the caller is the one who knows which it should
     /// be.
     pub fn open_edge_count(&self) -> usize {
-        (MESH_STATE_FIRST_ID..self.triangles.len())
+        self.active_triangle_slots()
             .map(|triangle| {
                 self.neighbours[triangle]
                     .iter()
@@ -361,6 +434,7 @@ impl MeshState {
     pub(crate) fn push_vertex(&mut self, point: CartesianPoint) -> usize {
         self.vertices.push(point);
         self.vertex_generations.push(self.next_vertex_generation);
+        self.vertex_live.push(true);
         self.next_vertex_generation += 1;
         self.vertices.len() - 1
     }
@@ -379,6 +453,7 @@ impl MeshState {
     /// Reusing a slot rather than deleting is what keeps every other id stable
     /// through an insertion. A caller doing this owes the adjacency a repair.
     pub(crate) fn set_triangle(&mut self, triangle: usize, corners: [usize; 3]) {
+        debug_assert!(self.is_triangle_live(triangle));
         self.triangles[triangle] = corners;
         self.triangle_generations[triangle] = self.next_triangle_generation;
         self.next_triangle_generation += 1;
@@ -390,6 +465,7 @@ impl MeshState {
         self.neighbours.push([0usize; 3]);
         self.triangle_generations
             .push(self.next_triangle_generation);
+        self.triangle_live.push(true);
         self.next_triangle_generation += 1;
         self.triangles.len() - 1
     }
@@ -401,9 +477,11 @@ impl MeshState {
     pub(crate) fn truncate_to(&mut self, vertices: usize, triangles: usize) {
         self.vertices.truncate(vertices);
         self.vertex_generations.truncate(vertices);
+        self.vertex_live.truncate(vertices);
         self.triangles.truncate(triangles);
         self.neighbours.truncate(triangles);
         self.triangle_generations.truncate(triangles);
+        self.triangle_live.truncate(triangles);
     }
 
     /// Write back one triangle's corners and adjacency together.
@@ -445,6 +523,9 @@ impl MeshState {
     ) {
         let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
         for &triangle in region {
+            if !self.is_triangle_live(triangle) {
+                continue;
+            }
             let corners = self.triangles[triangle];
             for corner in 0..3 {
                 let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
@@ -452,6 +533,9 @@ impl MeshState {
             }
         }
         for &triangle in region {
+            if !self.is_triangle_live(triangle) {
+                continue;
+            }
             let corners = self.triangles[triangle];
             for corner in 0..3 {
                 let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
@@ -480,8 +564,9 @@ impl MeshState {
         if count == 0 {
             return 0.0;
         }
-        let total: f64 = self.vertices[MESH_STATE_FIRST_ID..]
-            .iter()
+        let total: f64 = self
+            .active_vertex_slots()
+            .map(|vertex| self.vertices[vertex])
             .map(|point| (point.x * point.x + point.y * point.y + point.z * point.z).sqrt())
             .sum();
         total / count as f64
@@ -500,7 +585,7 @@ impl MeshState {
     pub fn open_edges_in(&self, region: &std::collections::BTreeSet<usize>) -> usize {
         region
             .iter()
-            .filter(|&&triangle| triangle >= MESH_STATE_FIRST_ID && triangle < self.triangles.len())
+            .filter(|&&triangle| self.is_triangle_live(triangle))
             .map(|&triangle| {
                 self.neighbours[triangle]
                     .iter()
@@ -521,7 +606,7 @@ impl MeshState {
     ) -> Result<(), Vec<MeshStateError>> {
         let mut errors = Vec::new();
         for &triangle in region {
-            if triangle < MESH_STATE_FIRST_ID || triangle >= self.triangles.len() {
+            if !self.is_triangle_live(triangle) {
                 continue;
             }
             self.validate_triangle_row(triangle, &mut errors);
@@ -542,12 +627,10 @@ impl MeshState {
     pub fn validate(&self) -> Result<(), Vec<MeshStateError>> {
         let mut errors = Vec::new();
         let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-        for triangle in MESH_STATE_FIRST_ID..self.triangles.len() {
+        for triangle in self.active_triangle_slots() {
             self.validate_triangle_row(triangle, &mut errors);
             let corners = self.triangles[triangle];
-            if corners
-                .iter()
-                .all(|&corner| valid_vertex_slot(corner, self.vertices.len()))
+            if corners.iter().all(|corner| self.is_vertex_live(*corner))
                 && corners[0] != corners[1]
                 && corners[1] != corners[2]
                 && corners[0] != corners[2]
@@ -582,7 +665,7 @@ impl MeshState {
     fn validate_triangle_row(&self, triangle: usize, errors: &mut Vec<MeshStateError>) {
         let corners = self.triangles[triangle];
         for &corner in &corners {
-            if !valid_vertex_slot(corner, self.vertices.len()) {
+            if !self.is_vertex_live(corner) {
                 errors.push(MeshStateError::UnknownVertex {
                     triangle,
                     vertex: corner,
@@ -600,10 +683,7 @@ impl MeshState {
         errors: &mut Vec<MeshStateError>,
     ) {
         let corners = self.triangles[triangle];
-        if corners
-            .iter()
-            .any(|&corner| !valid_vertex_slot(corner, self.vertices.len()))
-        {
+        if corners.iter().any(|corner| !self.is_vertex_live(*corner)) {
             return;
         }
         for corner in 0..3 {
@@ -612,7 +692,7 @@ impl MeshState {
                 continue;
             }
             let edge = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
-            if neighbour >= self.triangles.len()
+            if !self.is_triangle_live(neighbour)
                 || !self.neighbour_points_back_across_edge(neighbour, triangle, edge)
             {
                 errors.push(MeshStateError::AsymmetricNeighbour {
@@ -630,10 +710,7 @@ impl MeshState {
         edge: (usize, usize),
     ) -> bool {
         let corners = self.triangles[neighbour];
-        if corners
-            .iter()
-            .any(|&corner| !valid_vertex_slot(corner, self.vertices.len()))
-        {
+        if corners.iter().any(|corner| !self.is_vertex_live(*corner)) {
             return false;
         }
         for corner in 0..3 {

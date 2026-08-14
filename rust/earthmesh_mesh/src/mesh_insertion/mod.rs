@@ -25,7 +25,10 @@ use std::collections::BTreeSet;
 use crate::coordinates::magnitude;
 use crate::mesh_patch::PatchError;
 use crate::mesh_predicates::{in_circle_on_sphere, orientation_on_sphere, Ambiguous, Sign};
-use crate::mesh_state::{FaceId, MeshState, MeshStateError, VertexId, MESH_STATE_FIRST_ID};
+#[cfg(test)]
+use crate::mesh_state::MESH_STATE_FIRST_ID;
+use crate::mesh_state::{FaceId, MeshState, MeshStateError, VertexId};
+use crate::mesh_voronoi::VoronoiError;
 use crate::CartesianPoint;
 
 /// Why a site could not be placed.
@@ -36,6 +39,14 @@ pub enum InsertionError {
     /// The walk crossed more triangles than the mesh has, or ran off an edge
     /// with the point still beyond it.
     LocationWalkDidNotSettle { visited: usize },
+    /// A ring site's degree could not be measured while forecasting an insertion.
+    DegreeUnavailable { site: usize, source: VoronoiError },
+    /// The cavity bookkeeping cannot produce a valid post-insertion degree.
+    InvalidForecastDegree {
+        site: usize,
+        degree: usize,
+        lost_edges: usize,
+    },
     /// The point is already a site.
     Duplicate { existing: usize },
     /// The candidate is not on the sphere the mesh lives on.
@@ -67,6 +78,21 @@ impl std::fmt::Display for InsertionError {
             Self::LocationWalkDidNotSettle { visited } => write!(
                 formatter,
                 "the point location walk visited {visited} triangles without settling"
+            ),
+            Self::DegreeUnavailable { site, source } => {
+                write!(
+                    formatter,
+                    "cannot forecast the degree of site {site}: {source}"
+                )
+            }
+            Self::InvalidForecastDegree {
+                site,
+                degree,
+                lost_edges,
+            } => write!(
+                formatter,
+                "site {site} has degree {degree}, but the insertion forecast would remove \
+                 {lost_edges} incident cavity edge(s) after adding one neighbour"
             ),
             Self::Duplicate { existing } => {
                 write!(formatter, "a site is already at this position: {existing}")
@@ -163,8 +189,9 @@ impl MeshState {
     ) -> Result<usize, InsertionError> {
         let triangles = self.triangles();
         let mut current = hint
-            .filter(|&triangle| triangle >= MESH_STATE_FIRST_ID && triangle < triangles.len())
-            .unwrap_or(MESH_STATE_FIRST_ID);
+            .filter(|&triangle| self.is_triangle_live(triangle))
+            .or_else(|| self.active_triangle_slots().next())
+            .ok_or(InsertionError::LocationWalkDidNotSettle { visited: 0 })?;
         let limit = self.triangle_count() + 1;
         for visited in 0..limit {
             let corners = triangles[current];
@@ -185,7 +212,7 @@ impl MeshState {
                 );
                 if outside {
                     let neighbour = self.neighbours()[current][corner];
-                    if neighbour == 0 {
+                    if neighbour == 0 || !self.is_triangle_live(neighbour) {
                         return Err(InsertionError::LocationWalkDidNotSettle { visited });
                     }
                     current = neighbour;
@@ -202,7 +229,7 @@ impl MeshState {
 
     /// Triangles whose circumcircle contains `point`, grown from `seed`.
     ///
-    /// Breadth first over adjacency rather than a scan: the set is connected,
+    /// Depth first over adjacency rather than a scan: the set is connected,
     /// so a neighbour that passes the test is a wall.
     pub fn delaunay_cavity(
         &self,
@@ -215,7 +242,10 @@ impl MeshState {
         while let Some(triangle) = queue.pop() {
             for corner in 0..3 {
                 let neighbour = self.neighbours()[triangle][corner];
-                if neighbour == 0 || cavity.contains(&neighbour) {
+                if neighbour == 0
+                    || !self.is_triangle_live(neighbour)
+                    || cavity.contains(&neighbour)
+                {
                     continue;
                 }
                 let corners = self.triangles()[neighbour];
@@ -273,14 +303,13 @@ impl MeshState {
         region: &BTreeSet<usize>,
         protected: &dyn Fn(usize, usize) -> bool,
     ) -> Option<Encroachment> {
-        let edges = region.iter().flat_map(|&triangle| {
-            let corners = self.triangles().get(triangle).copied().unwrap_or([0, 0, 0]);
-            (0..3)
-                .filter(move |_| {
-                    triangle >= MESH_STATE_FIRST_ID && triangle < self.triangles().len()
-                })
-                .map(move |corner| (corners[(corner + 1) % 3], corners[(corner + 2) % 3]))
-        });
+        let edges = region
+            .iter()
+            .filter(|&&triangle| self.is_triangle_live(triangle))
+            .map(|&triangle| self.triangles()[triangle])
+            .flat_map(|corners| {
+                (0..3).map(move |corner| (corners[(corner + 1) % 3], corners[(corner + 2) % 3]))
+            });
         self.encroached_segment_edges(point, edges.filter(|&(a, b)| protected(a, b)))
     }
 
@@ -356,7 +385,8 @@ impl MeshState {
             let corners = self.triangles()[triangle];
             for corner in 0..3 {
                 let neighbour = self.neighbours()[triangle][corner];
-                if neighbour != 0 && cavity.contains(&neighbour) {
+                if neighbour != 0 && self.is_triangle_live(neighbour) && cavity.contains(&neighbour)
+                {
                     let a = corners[(corner + 1) % 3];
                     let b = corners[(corner + 2) % 3];
                     lost_edges.insert([a.min(b), a.max(b)]);
@@ -371,7 +401,7 @@ impl MeshState {
         for &site in &ring {
             let degree = self
                 .vertex_degree(site)
-                .map_err(|_| InsertionError::LocationWalkDidNotSettle { visited: 0 })?;
+                .map_err(|source| InsertionError::DegreeUnavailable { site, source })?;
             let lost = lost_edges
                 .iter()
                 .filter(|edge| edge.contains(&site))
@@ -379,7 +409,11 @@ impl MeshState {
             let after = degree
                 .checked_add(1)
                 .and_then(|degree| degree.checked_sub(lost))
-                .ok_or(InsertionError::LocationWalkDidNotSettle { visited: 0 })?;
+                .ok_or(InsertionError::InvalidForecastDegree {
+                    site,
+                    degree,
+                    lost_edges: lost,
+                })?;
             worst = worst.max(after);
         }
         Ok(DegreeForecast {
@@ -441,6 +475,45 @@ impl MeshState {
             .open_edge_triangle(tail, head)
             .ok_or(InsertionError::BoundaryEdgeNotOpen { tail, head })
             .map_err(InsertionTransactionError::Insert)?;
+        self.insert_site_on_boundary_edge_from_transactionally(
+            point,
+            containing,
+            tail,
+            head,
+            postcondition,
+        )
+    }
+
+    /// Insert on an open boundary edge when its incident triangle is already known.
+    ///
+    /// This is the same transaction as
+    /// [`insert_site_on_boundary_edge_transactionally`](Self::insert_site_on_boundary_edge_transactionally),
+    /// without repeating a whole-mesh lookup performed by the caller.
+    pub fn insert_site_on_boundary_edge_from_transactionally(
+        &mut self,
+        point: CartesianPoint,
+        containing: usize,
+        tail: usize,
+        head: usize,
+        postcondition: impl FnOnce(&Self, &InsertionReport) -> bool,
+    ) -> Result<InsertionReport, InsertionTransactionError> {
+        let key = (tail.min(head), tail.max(head));
+        let edge_is_open = self
+            .triangles()
+            .get(containing)
+            .zip(self.neighbours().get(containing))
+            .is_some_and(|(corners, neighbours)| {
+                (0..3).any(|corner| {
+                    let a = corners[(corner + 1) % 3];
+                    let b = corners[(corner + 2) % 3];
+                    (a.min(b), a.max(b)) == key && neighbours[corner] == 0
+                })
+            });
+        if !edge_is_open {
+            return Err(InsertionTransactionError::Insert(
+                InsertionError::BoundaryEdgeNotOpen { tail, head },
+            ));
+        }
         let cavity = self
             .delaunay_cavity(point, containing)
             .map_err(InsertionTransactionError::Insert)?;
@@ -472,7 +545,7 @@ impl MeshState {
 
     fn open_edge_triangle(&self, tail: usize, head: usize) -> Option<usize> {
         let key = (tail.min(head), tail.max(head));
-        for triangle in MESH_STATE_FIRST_ID..self.triangles().len() {
+        for triangle in self.active_triangle_slots() {
             let corners = self.triangles()[triangle];
             for corner in 0..3 {
                 let a = corners[(corner + 1) % 3];
@@ -495,7 +568,23 @@ impl MeshState {
         self.insert_site_with_cavity(point, containing, &cavity)
     }
 
-    pub(crate) fn insert_site_with_cavity(
+    /// Insert into a cavity the caller already carved.
+    ///
+    /// Public because a caller that has to be able to *undo* the insertion
+    /// cannot use [`insert_site`](Self::insert_site): that one locates the point
+    /// again from no hint and carves its own cavity, so a rollback patch taken
+    /// around the caller's cavity need not cover what the insertion overwrote.
+    /// The two locations agree on a mesh whose triangles do not overlap, and
+    /// differ on one whose triangles do -- and nothing here refuses an inverted
+    /// triangle, so that is reachable rather than hypothetical. Threading the
+    /// cavity through is what keeps the snapshot and the edit talking about the
+    /// same triangles.
+    ///
+    /// `containing` and `cavity` must come from one
+    /// [`locate_triangle`](Self::locate_triangle) and
+    /// [`delaunay_cavity`](Self::delaunay_cavity) pair over the mesh as it is
+    /// now; passing a stale pair is what this exists to prevent.
+    pub fn insert_site_with_cavity(
         &mut self,
         point: CartesianPoint,
         containing: usize,
@@ -538,7 +627,8 @@ impl MeshState {
             let corners = self.triangles()[triangle];
             for corner in 0..3 {
                 let neighbour = self.neighbours()[triangle][corner];
-                if neighbour != 0 && cavity.contains(&neighbour) {
+                if neighbour != 0 && self.is_triangle_live(neighbour) && cavity.contains(&neighbour)
+                {
                     continue;
                 }
                 ring.push((
@@ -637,7 +727,8 @@ impl MeshState {
             let corners = self.triangles()[triangle];
             for corner in 0..3 {
                 let neighbour = self.neighbours()[triangle][corner];
-                if neighbour != 0 && cavity.contains(&neighbour) {
+                if neighbour != 0 && self.is_triangle_live(neighbour) && cavity.contains(&neighbour)
+                {
                     continue;
                 }
                 let tail = corners[(corner + 1) % 3];

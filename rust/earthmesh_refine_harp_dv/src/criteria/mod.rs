@@ -71,6 +71,15 @@ pub trait CellCriterion {
     /// Read this cell. Returning satisfied evidence is how a criterion says
     /// "not here", and is not the same as an error.
     fn evaluate(&self, cell: &CellView<'_>) -> Result<DemandEvidence>;
+
+    /// Desired cell scale at a point, when this criterion defines one there.
+    ///
+    /// HARP's post-refinement optimiser needs the same size field that drove
+    /// insertion. Keeping this on the criterion prevents it from reconstructing
+    /// regions or reaching into another backend's H-field implementation.
+    fn target_scale_m_at(&self, _point: LonLatDegrees, _radius_m: f64) -> Option<f64> {
+        None
+    }
 }
 
 /// Refine until every cell inside a region is at most `target_scale_m` across.
@@ -197,6 +206,18 @@ impl CellCriterion for TargetScale {
             stop_reason,
         })
     }
+
+    fn target_scale_m_at(&self, point: LonLatDegrees, radius_m: f64) -> Option<f64> {
+        if self
+            .source_resolution_m
+            .is_some_and(|floor| self.target_scale_m < floor)
+        {
+            return None;
+        }
+        self.region
+            .contains(point, radius_m)
+            .then_some(self.target_scale_m)
+    }
 }
 
 /// Refine while any triangle at a cell has an angle below `min_angle_deg`.
@@ -247,12 +268,14 @@ pub(crate) fn smallest_angle_deg_for_test(points: [CartesianPoint; 3]) -> f64 {
 /// refuses, so the gate that keeps one out measures the same thing the
 /// criterion does.
 pub(crate) fn smallest_triangle_angle_deg(points: [CartesianPoint; 3]) -> f64 {
-    smallest_angle_deg(points)
+    triangle_angles_deg(points)
+        .map(|angles| angles.into_iter().fold(f64::MAX, f64::min))
+        .unwrap_or(0.0)
 }
 
-/// The smallest angle of a spherical triangle, in degrees.
-fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
-    let mut smallest = f64::MAX;
+/// All three angles of a spherical triangle, in degrees.
+pub(crate) fn triangle_angles_deg(points: [CartesianPoint; 3]) -> Option<[f64; 3]> {
+    let mut angles = [0.0; 3];
     for corner in 0..3 {
         let apex = points[corner];
         let a = points[(corner + 1) % 3];
@@ -271,13 +294,53 @@ fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
         let (u, v) = (to(a), to(b));
         let lengths =
             (u.x * u.x + u.y * u.y + u.z * u.z).sqrt() * (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-        if lengths <= 0.0 {
-            return 0.0;
+        if !lengths.is_finite() || lengths <= 0.0 {
+            return None;
         }
         let cosine = ((u.x * v.x + u.y * v.y + u.z * v.z) / lengths).clamp(-1.0, 1.0);
-        smallest = smallest.min(cosine.acos().to_degrees());
+        let angle = cosine.acos().to_degrees();
+        if !angle.is_finite() {
+            return None;
+        }
+        angles[corner] = angle;
     }
-    smallest
+    Some(angles)
+}
+
+/// Planar area-length quality of a local spherical triangle.
+///
+/// This is the same normalized metric reported as `triangle_eta_local` by
+/// `earthmesh_quality`: one for equilateral, zero for degenerate. HARP keeps a
+/// local copy to stay independent of the reporting crate and to use the metric
+/// inside transactions before a gridfile exists.
+pub(crate) fn triangle_eta(points: [CartesianPoint; 3]) -> Option<f64> {
+    let lengths = [
+        earthmesh_mesh::arc_length_unit_sphere(points[0], points[1]),
+        earthmesh_mesh::arc_length_unit_sphere(points[1], points[2]),
+        earthmesh_mesh::arc_length_unit_sphere(points[2], points[0]),
+    ];
+    if lengths
+        .iter()
+        .any(|length| !length.is_finite() || *length <= 0.0)
+    {
+        return None;
+    }
+    let semiperimeter = lengths.iter().sum::<f64>() * 0.5;
+    let area = (semiperimeter
+        * (semiperimeter - lengths[0])
+        * (semiperimeter - lengths[1])
+        * (semiperimeter - lengths[2]))
+        .max(0.0)
+        .sqrt();
+    let sum_squared = lengths.iter().map(|length| length * length).sum::<f64>();
+    (area > 0.0 && sum_squared > 0.0)
+        .then_some(4.0 * 3.0_f64.sqrt() * area / sum_squared)
+        .filter(|eta| eta.is_finite())
+}
+
+/// The smallest angle of a spherical triangle, in degrees.
+fn smallest_angle_deg(points: [CartesianPoint; 3]) -> f64 {
+    smallest_triangle_angle_deg(points)
 }
 
 impl CellCriterion for MinAngle {

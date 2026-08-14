@@ -118,6 +118,70 @@ fn a_cell_outside_the_region_is_satisfied() {
 }
 
 #[test]
+fn target_scale_exposes_the_same_size_field_the_criterion_evaluates() {
+    let state = state(6);
+    let cell = state.voronoi_cell(40).expect("cell");
+    let view = view(&state, &cell);
+    let centre = view.centre();
+    let criterion = TargetScale {
+        id: "target".to_string(),
+        target_scale_m: 12_500.0,
+        region: TargetRegion::Circle {
+            centre,
+            radius_m: 1_000.0,
+        },
+        source_resolution_m: None,
+    };
+
+    assert_eq!(
+        criterion.target_scale_m_at(centre, state.sphere_radius()),
+        Some(12_500.0)
+    );
+    assert_eq!(
+        criterion.target_scale_m_at(
+            LonLatDegrees::new(centre.lon_degrees + 180.0, -centre.lat_degrees),
+            state.sphere_radius(),
+        ),
+        None
+    );
+}
+
+#[test]
+fn an_unsatisfiable_target_is_not_exposed_to_the_optimizer() {
+    let criterion = TargetScale {
+        id: "below-source-resolution".to_string(),
+        target_scale_m: 100.0,
+        region: TargetRegion::Global,
+        source_resolution_m: Some(200.0),
+    };
+    assert_eq!(
+        criterion.target_scale_m_at(LonLatDegrees::new(0.0, 0.0), 1.0),
+        None
+    );
+}
+
+#[test]
+fn triangle_eta_is_one_for_an_equilateral_triangle_and_falls_with_distortion() {
+    let latitude_ring =
+        |longitude: f64| lonlat_degrees_to_unit_xyz(LonLatDegrees::new(longitude, 60.0));
+    let equilateral = triangle_eta([
+        latitude_ring(0.0),
+        latitude_ring(120.0),
+        latitude_ring(-120.0),
+    ])
+    .expect("eta");
+    let distorted = triangle_eta([
+        latitude_ring(0.0),
+        latitude_ring(25.0),
+        latitude_ring(155.0),
+    ])
+    .expect("eta");
+
+    assert!((equilateral - 1.0).abs() < 1.0e-12);
+    assert!(distorted < equilateral);
+}
+
+#[test]
 fn indexed_circles_are_one_target_with_the_same_great_circle_membership() {
     let state = state(6);
     let cell = state.voronoi_cell(40).expect("cell");

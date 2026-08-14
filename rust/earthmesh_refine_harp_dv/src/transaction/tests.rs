@@ -1,6 +1,8 @@
 use super::*;
 
-use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, LonLatDegrees, TriangularMesh};
+use earthmesh_mesh::{
+    lonlat_degrees_to_unit_xyz, normalize_cartesian_to_radius, LonLatDegrees, TriangularMesh,
+};
 
 /// Gates with the sliver floor off.
 ///
@@ -39,7 +41,8 @@ fn candidates(count: usize) -> Vec<(f64, f64)> {
 
 fn worst_degree(mesh: &AdaptiveMesh) -> usize {
     let state = mesh.state();
-    (MESH_STATE_FIRST_ID..state.vertices().len())
+    state
+        .active_vertex_slots()
         .filter_map(|site| state.vertex_degree(site).ok())
         .max()
         .unwrap_or(0)
@@ -168,10 +171,27 @@ fn a_committed_site_is_recorded_where_the_report_says() {
     assert_eq!(mesh.sites().len(), before_sites + 1);
     let site = mesh.sites().last().expect("the new row");
     assert_eq!(site.site_id, report.site_id);
+    assert_eq!(site.parent_site_id, None);
     assert!(site.active);
     assert_eq!(site.birth_cycle, 1, "created by adaptation, not inherited");
     assert_eq!(report.triangles_created, report.triangles_removed + 2);
     assert!(report.max_degree_touched <= GRIDFILE_MAX_VERTEX_DEGREE);
+}
+
+#[test]
+fn an_invalid_parent_vertex_records_no_parent_site() {
+    let mut mesh = sphere(6);
+    let point = on(&mesh, 41.0, 19.0);
+
+    let outcome = mesh
+        .propose_site_for(point, None, permissive(), usize::MAX)
+        .expect("propose");
+    outcome.committed().expect("this one passes");
+
+    assert_eq!(
+        mesh.sites().last().expect("the new row").parent_site_id,
+        None
+    );
 }
 
 /// The same proposals in the same order give the same mesh and the same ids.
@@ -196,6 +216,78 @@ fn proposing_is_deterministic() {
 }
 
 /// A point off the mesh's sphere is refused as a proposal, not as a panic.
+#[test]
+fn protected_segment_encroachment_scans_the_segment_list_not_the_hint_ring() {
+    let mut mesh = sphere(6);
+    let state = mesh.state();
+    let [tail, head, _] = state.triangles()[20];
+    let edge = [tail.min(head), tail.max(head)];
+    let point = normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            state.vertices()[tail].x + state.vertices()[head].x,
+            state.vertices()[tail].y + state.vertices()[head].y,
+            state.vertices()[tail].z + state.vertices()[head].z,
+        ),
+        state.sphere_radius(),
+    )
+    .expect("segment midpoint");
+
+    let remote_hint = state
+        .active_triangle_slots()
+        .find(|&hint| {
+            let mut region = std::collections::BTreeSet::from([hint]);
+            region.extend(
+                state.neighbours()[hint]
+                    .iter()
+                    .copied()
+                    .filter(|&other| other >= MESH_STATE_FIRST_ID),
+            );
+            !region.iter().any(|&triangle| {
+                state.triangles()[triangle]
+                    .iter()
+                    .enumerate()
+                    .any(|(corner, _)| {
+                        let corners = state.triangles()[triangle];
+                        let a = corners[(corner + 1) % 3];
+                        let b = corners[(corner + 2) % 3];
+                        [a.min(b), a.max(b)] == edge
+                    })
+            })
+        })
+        .expect("a non-local hint exists on the sphere");
+
+    mesh.protect_segments([(tail, head)]);
+    let mut old_region = std::collections::BTreeSet::from([remote_hint]);
+    old_region.extend(
+        mesh.state().neighbours()[remote_hint]
+            .iter()
+            .copied()
+            .filter(|&other| other >= MESH_STATE_FIRST_ID),
+    );
+    assert!(
+        mesh.state()
+            .encroached_segment(point, &old_region, &|a, b| mesh.segments.contains(a, b))
+            .is_none(),
+        "the old hint-ring scan misses this protected segment"
+    );
+
+    let candidate = Candidate {
+        point,
+        source: CandidateSource::Witness,
+        hint: remote_hint,
+    };
+    let encroachment = mesh
+        .encroachment_of(&candidate)
+        .expect("explicit segment scan finds the protected segment");
+    assert_eq!(
+        [
+            encroachment.tail.min(encroachment.head),
+            encroachment.tail.max(encroachment.head)
+        ],
+        edge
+    );
+}
+
 #[test]
 fn a_candidate_off_the_sphere_is_refused() {
     let mut mesh = sphere(6);
@@ -314,6 +406,7 @@ fn a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone() {
 #[test]
 fn refining_a_refined_site_records_the_next_generation() {
     let mut mesh = sphere(6);
+    let first_parent_id = mesh.sites()[40 - MESH_STATE_FIRST_ID].site_id;
 
     let first = mesh
         .refine_cell(40, None, CandidatePolicy::default(), permissive())
@@ -321,11 +414,10 @@ fn refining_a_refined_site_records_the_next_generation() {
         .resolved()
         .expect("first commit")
         .clone();
-    assert_eq!(
-        mesh.sites()[first.vertex - MESH_STATE_FIRST_ID].depth,
-        1,
-        "a first-level demand records depth 1"
-    );
+    let first_site = &mesh.sites()[first.vertex - MESH_STATE_FIRST_ID];
+    assert_eq!(first_site.depth, 1, "a first-level demand records depth 1");
+    assert_eq!(first_site.parent_site_id, Some(first_parent_id));
+    let first_site_id = first_site.site_id;
 
     let second = mesh
         .refine_cell(first.vertex, None, CandidatePolicy::default(), permissive())
@@ -333,11 +425,12 @@ fn refining_a_refined_site_records_the_next_generation() {
         .resolved()
         .expect("second commit")
         .clone();
+    let second_site = &mesh.sites()[second.vertex - MESH_STATE_FIRST_ID];
     assert_eq!(
-        mesh.sites()[second.vertex - MESH_STATE_FIRST_ID].depth,
-        2,
+        second_site.depth, 2,
         "refining an inserted site must not be flattened back to depth 1"
     );
+    assert_eq!(second_site.parent_site_id, Some(first_site_id));
     let written = mesh.to_triangular_mesh().expect("writeable mesh");
     let deepest = written
         .w_faces
@@ -464,7 +557,8 @@ fn a_witness_is_tried_first() {
 fn a_higher_sliver_floor_buys_a_better_worst_angle() {
     let worst_angle = |mesh: &AdaptiveMesh| {
         let state = mesh.state();
-        (MESH_STATE_FIRST_ID..state.triangles().len())
+        state
+            .active_triangle_slots()
             .map(|triangle| {
                 let corners = state.triangles()[triangle];
                 crate::criteria::smallest_angle_deg_for_test([

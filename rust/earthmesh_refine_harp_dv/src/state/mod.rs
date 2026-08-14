@@ -4,9 +4,21 @@ mod id_allocator;
 
 pub use id_allocator::SiteIdAllocator;
 
-use earthmesh_mesh::{xyz_to_lonlat_degrees, LonLatDegrees, MeshState, MESH_STATE_FIRST_ID};
+use earthmesh_boundary::local_equal_area_overlap_fraction_lonlat;
+use earthmesh_mesh::{
+    xyz_to_lonlat_degrees, LonLatDegrees, MeshState, RetirementError, RetirementReport,
+    MESH_STATE_FIRST_ID,
+};
 
 use crate::error::{HarpDvError, Result};
+
+/// One conservative transfer from a pre-adaptation cell to a post-adaptation cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConservativeRemapWeight {
+    pub old_site_id: SiteId,
+    pub new_site_id: SiteId,
+    pub overlap_fraction: f64,
+}
 
 /// How far apart two positions are along the sphere, in metres.
 fn displacement_metres(from: LonLatDegrees, to: LonLatDegrees) -> f64 {
@@ -41,6 +53,7 @@ pub enum SiteMobility {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdaptiveSite {
     pub site_id: SiteId,
+    pub parent_site_id: Option<SiteId>,
     pub position: LonLatDegrees,
     /// The cycle that created it. Zero means it came in with the mesh.
     pub birth_cycle: u32,
@@ -61,6 +74,7 @@ impl AdaptiveSite {
     pub fn inherited(site_id: SiteId, position: LonLatDegrees) -> Self {
         Self {
             site_id,
+            parent_site_id: None,
             position,
             birth_cycle: 0,
             depth: 0,
@@ -90,7 +104,10 @@ pub struct AdaptiveMesh {
     /// twelve however much refining happens. Without them a run cannot be
     /// written out at all.
     impent: [usize; 12],
+    /// Site records indexed by `SiteId.0`. Rows are tombstones once retired.
     sites: Vec<AdaptiveSite>,
+    /// Mesh vertex row -> stable site id. Slots 0 and 1 are the mesh placeholders.
+    vertex_site_ids: Vec<Option<SiteId>>,
     allocator: SiteIdAllocator,
     cycles_completed: u32,
     /// The site whose demand is being served, so a new one can be recorded a
@@ -109,6 +126,7 @@ pub struct AdaptiveMesh {
     /// this backend's. Nothing here has to undo a split: it happens only after
     /// a transaction commits, so a rollback never sees one.
     pub(crate) segments: earthmesh_boundary::SegmentList,
+    conservative_remap: Vec<ConservativeRemapWeight>,
 }
 
 impl AdaptiveMesh {
@@ -132,18 +150,23 @@ impl AdaptiveMesh {
         })?;
         let mut allocator = SiteIdAllocator::default();
         let mut sites = Vec::with_capacity(state.vertex_count());
-        for vertex in MESH_STATE_FIRST_ID..state.vertices().len() {
+        let mut vertex_site_ids = vec![None; state.vertices().len()];
+        for vertex in state.active_vertex_slots() {
             let position = xyz_to_lonlat_degrees(state.vertices()[vertex]);
-            sites.push(AdaptiveSite::inherited(allocator.allocate(), position));
+            let site = AdaptiveSite::inherited(allocator.allocate(), position);
+            vertex_site_ids[vertex] = Some(site.site_id);
+            sites.push(site);
         }
         Ok(Self {
             state,
             impent: [MESH_STATE_FIRST_ID; 12],
             sites,
+            vertex_site_ids,
             allocator,
             cycles_completed: 0,
             refining: None,
             segments: earthmesh_boundary::SegmentList::default(),
+            conservative_remap: Vec::new(),
         })
     }
 
@@ -170,26 +193,19 @@ impl AdaptiveMesh {
     /// The generation carried per face is the depth of the site that made it,
     /// so a reader can tell an original face from one adaptation produced.
     pub fn to_triangular_mesh(&self) -> Result<earthmesh_mesh::TriangularMesh> {
-        // The site table and the triangulation must agree, because the levels
-        // below are looked up by subtracting `MESH_STATE_FIRST_ID` from a
-        // vertex id. If they ever drift the lookup misses and `unwrap_or(1)`
-        // reports generation 1 for every face -- a wrong answer that reads
-        // exactly like an unrefined mesh.
-        if self.sites.len() != self.state.vertex_count() {
+        if self.vertex_site_ids.len() != self.state.vertices().len() {
             return Err(HarpDvError::InvalidMesh(format!(
-                "the site table has {} rows and the triangulation {} sites; a rollback or an \
-                 insertion left them out of step",
-                self.sites.len(),
-                self.state.vertex_count()
+                "the vertex-site map has {} rows and the triangulation {} vertex rows",
+                self.vertex_site_ids.len(),
+                self.state.vertices().len()
             )));
         }
         let mut levels = vec![1usize; self.state.triangles().len()];
-        for (triangle, level) in levels.iter_mut().enumerate().skip(MESH_STATE_FIRST_ID) {
-            *level = self.state.triangles()[triangle]
+        for triangle in self.state.active_triangle_slots() {
+            levels[triangle] = self.state.triangles()[triangle]
                 .iter()
                 .filter_map(|&corner| {
-                    self.sites
-                        .get(corner.checked_sub(MESH_STATE_FIRST_ID)?)
+                    self.site_for_vertex(corner)
                         .map(|site| usize::from(site.depth) + 1)
                 })
                 .max()
@@ -227,25 +243,48 @@ impl AdaptiveMesh {
     /// thirteen.
     pub(crate) fn adopt_inserted_site(&mut self, vertex: usize, parent: Option<usize>) -> SiteId {
         let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
+        let parent_site = parent
+            .and_then(|parent| self.site_for_vertex(parent))
+            .map(|site| (site.site_id, site.depth));
         let site_id = self.allocator.allocate();
         let mut site = AdaptiveSite::inherited(site_id, position);
+        site.parent_site_id = parent_site.map(|(site_id, _)| site_id);
         site.birth_cycle = self.cycles_completed + 1;
-        site.depth = parent
-            .and_then(|parent| self.sites.get(parent.checked_sub(MESH_STATE_FIRST_ID)?))
-            .map_or(1, |parent| parent.depth.saturating_add(1));
+        site.depth = parent_site.map_or(1, |(_, depth)| depth.saturating_add(1));
         self.sites.push(site);
+        if vertex >= self.vertex_site_ids.len() {
+            self.vertex_site_ids.resize(vertex + 1, None);
+        }
+        self.vertex_site_ids[vertex] = Some(site_id);
         site_id
     }
 
-    /// Record that a site moved: its position, and what that cost its budget.
-    pub(crate) fn record_moved_site(&mut self, vertex: usize) -> SiteId {
-        let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
-        let row = vertex - MESH_STATE_FIRST_ID;
-        let site = &mut self.sites[row];
-        let unit_from = crate::state::displacement_metres(site.position, position);
-        site.cumulative_displacement_m += unit_from;
-        site.position = position;
-        site.site_id
+    /// Record that sites moved: their positions, and what that cost their budgets.
+    pub(crate) fn record_moved_sites(&mut self, vertices: &[usize]) -> Option<SiteId> {
+        let site_ids = vertices
+            .iter()
+            .map(|&vertex| {
+                self.vertex_site_ids
+                    .get(vertex)
+                    .and_then(|site_id| *site_id)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if site_ids.iter().any(|site_id| {
+            self.sites
+                .get(site_id.0 as usize)
+                .is_none_or(|site| !site.active)
+        }) {
+            return None;
+        }
+        let first = *site_ids.first()?;
+        for (&vertex, site_id) in vertices.iter().zip(site_ids) {
+            let position = xyz_to_lonlat_degrees(self.state.vertices()[vertex]);
+            let site = &mut self.sites[site_id.0 as usize];
+            let unit_from = crate::state::displacement_metres(site.position, position);
+            site.cumulative_displacement_m += unit_from;
+            site.position = position;
+        }
+        Some(first)
     }
 
     /// Give the refinement the boundary it must respect, as segments.
@@ -256,19 +295,90 @@ impl AdaptiveMesh {
         self.segments = earthmesh_boundary::SegmentList::from_pairs(segments);
     }
 
-    pub(crate) fn is_protected_edge(&self, tail: usize, head: usize) -> bool {
-        self.segments.contains(tail, head)
-    }
-
     pub(crate) fn segments_are_empty(&self) -> bool {
         self.segments.is_empty()
     }
 
     pub(crate) fn can_move_site(&self, vertex: usize) -> bool {
-        vertex
-            .checked_sub(MESH_STATE_FIRST_ID)
-            .and_then(|row| self.sites.get(row))
+        self.site_for_vertex(vertex)
             .is_some_and(|site| site.mobility == SiteMobility::Interior)
+    }
+
+    pub(crate) fn site_for_vertex(&self, vertex: usize) -> Option<&AdaptiveSite> {
+        self.vertex_site_ids
+            .get(vertex)
+            .and_then(|site_id| *site_id)
+            .and_then(|site_id| self.sites.get(site_id.0 as usize))
+            .filter(|site| site.active)
+    }
+
+    pub(crate) fn is_retirable_leaf(&self, vertex: usize) -> bool {
+        let Some(site) = self.site_for_vertex(vertex) else {
+            return false;
+        };
+        site.parent_site_id.is_some()
+            && site.mobility == SiteMobility::Interior
+            && !self.impent.contains(&vertex)
+            && !self
+                .sites
+                .iter()
+                .any(|child| child.active && child.parent_site_id == Some(site.site_id))
+    }
+
+    pub(crate) fn retire_leaf_transactionally(
+        &mut self,
+        vertex: usize,
+        mut postcondition: impl FnMut(&MeshState, &RetirementReport) -> bool,
+    ) -> std::result::Result<RetirementReport, RetirementError> {
+        if !self.is_retirable_leaf(vertex) {
+            return Err(RetirementError::Rejected);
+        }
+        let site_id = self.vertex_site_ids[vertex].expect("a retirable leaf has a stable id");
+        let before_state = self.state.clone();
+        let mut remap = None;
+        let report = self
+            .state
+            .retire_vertex_transactionally(vertex, |state, report| {
+                if !postcondition(state, report) {
+                    return false;
+                }
+                remap = conservative_remap_for_retirement(
+                    &before_state,
+                    state,
+                    &self.vertex_site_ids,
+                    vertex,
+                    report,
+                );
+                remap.is_some()
+            })?;
+        self.sites[site_id.0 as usize].active = false;
+        self.vertex_site_ids[vertex] = None;
+        let remap = remap.expect("the retirement postcondition required a remap");
+        if self.conservative_remap.is_empty() {
+            self.conservative_remap = remap;
+        } else {
+            self.conservative_remap = compose_conservative_remap(&self.conservative_remap, &remap);
+        }
+        Ok(report)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retire_degree_four_leaf_transactionally(
+        &mut self,
+        vertex: usize,
+        postcondition: impl FnMut(&MeshState, &RetirementReport) -> bool,
+    ) -> std::result::Result<RetirementReport, RetirementError> {
+        if self.state.vertex_degree(vertex).ok() != Some(4) {
+            return Err(RetirementError::Rejected);
+        }
+        self.retire_leaf_transactionally(vertex, postcondition)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn vertex_for_site_id(&self, site_id: SiteId) -> Option<usize> {
+        self.vertex_site_ids
+            .iter()
+            .position(|mapped| *mapped == Some(site_id))
     }
 
     /// Replace a segment with its two halves, once its midpoint exists.
@@ -307,5 +417,290 @@ impl AdaptiveMesh {
     /// The id the next adapted site would take.
     pub fn next_site_id(&self) -> SiteId {
         self.allocator.peek()
+    }
+
+    pub fn conservative_remap(&self) -> &[ConservativeRemapWeight] {
+        &self.conservative_remap
+    }
+}
+
+fn voronoi_ring_lonlat(state: &MeshState, vertex: usize) -> Option<Vec<(f64, f64)>> {
+    Some(
+        state
+            .voronoi_cell(vertex)
+            .ok()?
+            .corners
+            .into_iter()
+            .map(xyz_to_lonlat_degrees)
+            .map(|point| (point.lon_degrees, point.lat_degrees))
+            .collect(),
+    )
+}
+
+fn conservative_remap_for_retirement(
+    before: &MeshState,
+    after: &MeshState,
+    vertex_site_ids: &[Option<SiteId>],
+    retired_vertex: usize,
+    report: &RetirementReport,
+) -> Option<Vec<ConservativeRemapWeight>> {
+    let mut affected = report
+        .fan
+        .iter()
+        .flat_map(|&triangle| before.triangles()[triangle])
+        .filter(|&vertex| vertex != retired_vertex)
+        .collect::<std::collections::BTreeSet<_>>();
+    affected.insert(retired_vertex);
+    let new_vertices = affected
+        .iter()
+        .copied()
+        .filter(|&vertex| vertex != retired_vertex && after.is_vertex_live(vertex))
+        .collect::<Vec<_>>();
+    let new_rings = new_vertices
+        .iter()
+        .map(|&vertex| Some((vertex, voronoi_ring_lonlat(after, vertex)?)))
+        .collect::<Option<Vec<_>>>()?;
+    let mut rows = Vec::new();
+    for old_vertex in affected {
+        let old_site_id = vertex_site_ids.get(old_vertex).and_then(|id| *id)?;
+        let old_ring = voronoi_ring_lonlat(before, old_vertex)?;
+        let mut weights = new_rings
+            .iter()
+            .filter_map(|(new_vertex, new_ring)| {
+                let overlap = local_equal_area_overlap_fraction_lonlat(&old_ring, new_ring)?;
+                (overlap > 1.0e-12).then_some((*new_vertex, overlap))
+            })
+            .collect::<Vec<_>>();
+        let sum: f64 = weights.iter().map(|(_, weight)| *weight).sum();
+        if !sum.is_finite() || (sum - 1.0).abs() > 1.0e-5 {
+            return None;
+        }
+        for (new_vertex, weight) in weights.drain(..) {
+            rows.push(ConservativeRemapWeight {
+                old_site_id,
+                new_site_id: vertex_site_ids.get(new_vertex).and_then(|id| *id)?,
+                overlap_fraction: weight / sum,
+            });
+        }
+    }
+    Some(rows)
+}
+
+fn compose_conservative_remap(
+    prior: &[ConservativeRemapWeight],
+    next: &[ConservativeRemapWeight],
+) -> Vec<ConservativeRemapWeight> {
+    let next_by_old = next.iter().fold(
+        std::collections::BTreeMap::<SiteId, Vec<(SiteId, f64)>>::new(),
+        |mut rows, weight| {
+            rows.entry(weight.old_site_id)
+                .or_default()
+                .push((weight.new_site_id, weight.overlap_fraction));
+            rows
+        },
+    );
+    let mut composed = std::collections::BTreeMap::<(SiteId, SiteId), f64>::new();
+    let prior_old = prior
+        .iter()
+        .map(|weight| weight.old_site_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    for weight in prior {
+        if let Some(replacements) = next_by_old.get(&weight.new_site_id) {
+            for &(new_site_id, fraction) in replacements {
+                *composed
+                    .entry((weight.old_site_id, new_site_id))
+                    .or_default() += weight.overlap_fraction * fraction;
+            }
+        } else {
+            *composed
+                .entry((weight.old_site_id, weight.new_site_id))
+                .or_default() += weight.overlap_fraction;
+        }
+    }
+    for weight in next {
+        if !prior_old.contains(&weight.old_site_id) {
+            *composed
+                .entry((weight.old_site_id, weight.new_site_id))
+                .or_default() += weight.overlap_fraction;
+        }
+    }
+    composed
+        .into_iter()
+        .filter(|(_, fraction)| *fraction > 1.0e-12)
+        .map(
+            |((old_site_id, new_site_id), overlap_fraction)| ConservativeRemapWeight {
+                old_site_id,
+                new_site_id,
+                overlap_fraction,
+            },
+        )
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::transaction::{Acceptance, HardGates};
+    use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, CartesianPoint, TriangularMesh};
+
+    fn sphere(nxp: usize) -> AdaptiveMesh {
+        let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        AdaptiveMesh::from_triangular_mesh(&mesh).expect("adaptive mesh")
+    }
+
+    fn on(mesh: &AdaptiveMesh, lon: f64, lat: f64) -> CartesianPoint {
+        let unit = lonlat_degrees_to_unit_xyz(LonLatDegrees::new(lon, lat));
+        let radius = mesh.state().sphere_radius();
+        CartesianPoint::new(unit.x * radius, unit.y * radius, unit.z * radius)
+    }
+
+    fn permissive() -> HardGates {
+        HardGates {
+            min_triangle_angle_deg: 0.0,
+            ..HardGates::default()
+        }
+    }
+
+    #[test]
+    fn from_mesh_state_ignores_retired_slots() {
+        let mut fixture = None;
+        'search: for lon in (-160..=160).step_by(20) {
+            for lat in (-60..=60).step_by(20) {
+                let mut trial = sphere(6);
+                if let Acceptance::Committed(report) = trial
+                    .propose_site(on(&trial, lon as f64, lat as f64), permissive())
+                    .expect("proposal")
+                {
+                    if trial.state().vertex_degree(report.vertex).ok() == Some(4)
+                        && !trial.pentagon_ids().contains(&report.vertex)
+                    {
+                        let retired_vertex = report.vertex;
+                        let impent = trial.pentagon_ids();
+                        let mut state = trial.into_state();
+                        if let Ok(retirement) = state.retire_degree_four_vertex_transactionally(
+                            retired_vertex,
+                            |state, _| state.validate().is_ok(),
+                        ) {
+                            fixture = Some((state, impent, retired_vertex, retirement));
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let (state, impent, retired_vertex, report) =
+            fixture.expect("fixture has a retirable degree-four inserted site");
+        assert!(!state.is_vertex_live(retired_vertex));
+        assert!(report
+            .retired_faces
+            .iter()
+            .all(|&face| !state.is_triangle_live(face)));
+
+        let mut adaptive = AdaptiveMesh::from_mesh_state(state.clone()).expect("adaptive mesh");
+        adaptive.impent = impent;
+
+        assert_eq!(adaptive.active_site_count(), state.vertex_count());
+        assert_eq!(adaptive.sites().len(), state.vertex_count());
+        assert!(adaptive.site_for_vertex(retired_vertex).is_none());
+        assert!(state
+            .active_vertex_slots()
+            .all(|vertex| adaptive.site_for_vertex(vertex).is_some()));
+        adaptive
+            .to_triangular_mesh()
+            .expect("export skips dead faces");
+    }
+
+    #[test]
+    fn degree_four_leaf_retirement_tombstones_its_stable_id() {
+        let mut fixture = None;
+        'search: for lon in (-160..=160).step_by(20) {
+            for lat in (-60..=60).step_by(20) {
+                let mut trial = sphere(6);
+                let parent = 20;
+                if let Acceptance::Committed(report) = trial
+                    .propose_site_for(
+                        on(&trial, lon as f64, lat as f64),
+                        None,
+                        permissive(),
+                        parent,
+                    )
+                    .expect("proposal")
+                {
+                    if trial.state().vertex_degree(report.vertex).ok() == Some(4)
+                        && !trial.pentagon_ids().contains(&report.vertex)
+                    {
+                        let vertex = report.vertex;
+                        let site_id = report.site_id;
+                        let before = trial.active_site_count();
+                        if trial
+                            .retire_degree_four_leaf_transactionally(vertex, |state, _| {
+                                state.validate().is_ok()
+                            })
+                            .is_ok()
+                        {
+                            fixture = Some((trial, vertex, site_id, before));
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let (mesh, vertex, site_id, before) =
+            fixture.expect("fixture has a retirable degree-four leaf");
+
+        assert_eq!(mesh.active_site_count(), before - 1);
+        assert!(!mesh.sites()[site_id.0 as usize].active);
+        assert!(mesh.vertex_for_site_id(site_id).is_none());
+        assert!(!mesh.state().is_vertex_live(vertex));
+        let rows = mesh.conservative_remap();
+        assert!(rows.iter().any(|row| row.old_site_id == site_id));
+        for old_site_id in rows
+            .iter()
+            .map(|row| row.old_site_id)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            let sum: f64 = rows
+                .iter()
+                .filter(|row| row.old_site_id == old_site_id)
+                .map(|row| row.overlap_fraction)
+                .sum();
+            assert!((sum - 1.0).abs() <= 1.0e-12, "{old_site_id:?}: {sum}");
+        }
+        mesh.to_triangular_mesh()
+            .expect("tombstones compact on export");
+    }
+
+    #[test]
+    fn consecutive_retirement_maps_compose_past_tombstoned_targets() {
+        let prior = [ConservativeRemapWeight {
+            old_site_id: SiteId(1),
+            new_site_id: SiteId(2),
+            overlap_fraction: 1.0,
+        }];
+        let next = [
+            ConservativeRemapWeight {
+                old_site_id: SiteId(2),
+                new_site_id: SiteId(3),
+                overlap_fraction: 0.4,
+            },
+            ConservativeRemapWeight {
+                old_site_id: SiteId(2),
+                new_site_id: SiteId(4),
+                overlap_fraction: 0.6,
+            },
+        ];
+
+        let rows = compose_conservative_remap(&prior, &next);
+
+        assert!(!rows.iter().any(|row| row.new_site_id == SiteId(2)));
+        for old_site_id in [SiteId(1), SiteId(2)] {
+            let sum: f64 = rows
+                .iter()
+                .filter(|row| row.old_site_id == old_site_id)
+                .map(|row| row.overlap_fraction)
+                .sum();
+            assert!((sum - 1.0).abs() <= 1.0e-12);
+        }
     }
 }

@@ -400,6 +400,36 @@ fn degree_forecast_is_exact_for_an_on_edge_split() {
 }
 
 #[test]
+fn degree_forecast_reports_an_open_vertex_fan_as_a_degree_error() {
+    let state = MeshState::from_parts(
+        vec![
+            CartesianPoint::new(0.0, 0.0, 0.0),
+            CartesianPoint::new(0.0, 0.0, 0.0),
+            p(0.0, 0.0),
+            p(90.0, 0.0),
+            p(0.0, 90.0),
+        ],
+        vec![[1, 1, 1], [1, 1, 1], [2, 3, 4]],
+    )
+    .expect("open triangle");
+    let point =
+        normalize_cartesian_to_radius(CartesianPoint::new(1.0, 1.0, 1.0), state.sphere_radius())
+            .expect("interior point");
+
+    let error = state
+        .forecast_degrees(point, Some(MESH_STATE_FIRST_ID))
+        .expect_err("an open vertex fan has no closed degree");
+
+    assert!(matches!(
+        error,
+        InsertionError::DegreeUnavailable {
+            source: VoronoiError::FanIsOpen { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
 fn boundary_edge_insertion_splits_open_edge_without_degenerate_fan() {
     let mut state = MeshState::from_parts(
         vec![
@@ -439,6 +469,34 @@ fn boundary_edge_insertion_splits_open_edge_without_degenerate_fan() {
     assert!(state.triangles()[MESH_STATE_FIRST_ID..]
         .iter()
         .any(|corners| corners.contains(&3) && corners.contains(&report.site)));
+}
+
+#[test]
+fn boundary_edge_insertion_rejects_a_stale_known_face() {
+    let mut state = sphere(6);
+    let before = state.clone();
+    let [tail, head, _] = state.triangles()[20];
+    let point = normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            state.vertices()[tail].x + state.vertices()[head].x,
+            state.vertices()[tail].y + state.vertices()[head].y,
+            state.vertices()[tail].z + state.vertices()[head].z,
+        ),
+        state.sphere_radius(),
+    )
+    .expect("edge midpoint");
+
+    let error = state
+        .insert_site_on_boundary_edge_from_transactionally(point, usize::MAX, tail, head, |_, _| {
+            true
+        })
+        .expect_err("a stale face cannot authorize a boundary insertion");
+
+    assert!(matches!(
+        error,
+        InsertionTransactionError::Insert(InsertionError::BoundaryEdgeNotOpen { .. })
+    ));
+    assert_eq!(state, before);
 }
 
 fn p(lon: f64, lat: f64) -> CartesianPoint {

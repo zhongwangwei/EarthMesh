@@ -33,7 +33,7 @@ use std::io;
 use crate::mesh_rebuild::method_c_mesh_from_triangle_seeds;
 use crate::mesh_state::{MeshState, MESH_STATE_FIRST_ID};
 use crate::mesh_triangle_seed::MethodCTriangleSeed;
-use crate::TriangularMesh;
+use crate::{CartesianPoint, TriangularMesh};
 
 impl MeshState {
     /// Build the three-table mesh, deriving edges, incidence and ordering.
@@ -64,36 +64,52 @@ impl MeshState {
         face_levels: Option<&[usize]>,
         ngr: usize,
     ) -> io::Result<TriangularMesh> {
-        if let Some(&stranger) = impent
-            .iter()
-            .find(|&&site| site < MESH_STATE_FIRST_ID || site >= self.vertices().len())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("pentagon id {stranger} is not a site of this mesh"),
-            ));
+        let vertex_slots: Vec<_> = self.active_vertex_slots().collect();
+        let triangle_slots: Vec<_> = self.active_triangle_slots().collect();
+
+        let mut vertex_remap = vec![0usize; self.vertices().len()];
+        let mut points =
+            vec![CartesianPoint::new(0.0, 0.0, 0.0); vertex_slots.len() + MESH_STATE_FIRST_ID];
+        for (new_slot, old_slot) in vertex_slots.iter().copied().enumerate() {
+            let new_slot = new_slot + MESH_STATE_FIRST_ID;
+            vertex_remap[old_slot] = new_slot;
+            points[new_slot] = self.vertices()[old_slot];
         }
 
-        let seeds: Vec<MethodCTriangleSeed> = (MESH_STATE_FIRST_ID..self.triangles().len())
-            .map(|triangle| {
+        let mut compact_impent = [0usize; 12];
+        for (index, site) in impent.into_iter().enumerate() {
+            let Some(&mapped) = vertex_remap.get(site) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("pentagon id {site} is not a site of this mesh"),
+                ));
+            };
+            if mapped == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("pentagon id {site} is not a site of this mesh"),
+                ));
+            }
+            compact_impent[index] = mapped;
+        }
+
+        let seeds: Vec<MethodCTriangleSeed> = triangle_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(new_index, triangle)| {
                 let level = face_levels
                     .and_then(|levels| levels.get(triangle))
                     .copied()
                     .unwrap_or(1);
-                MethodCTriangleSeed::new(self.triangles()[triangle], (level, level, ngr))
-                    // Keep the id. Every report, lineage and demand the caller
-                    // is holding names a face by it.
-                    .with_target_iw(triangle)
+                let corners = self.triangles()[triangle].map(|site| vertex_remap[site]);
+                MethodCTriangleSeed::new(corners, (level, level, ngr))
+                    .with_target_iw(new_index + MESH_STATE_FIRST_ID)
                     .with_mrow(0)
             })
             .collect();
 
-        method_c_mesh_from_triangle_seeds(
-            self.vertices().len() - 1,
-            impent,
-            self.vertices().to_vec(),
-            &seeds,
-        )
+        method_c_mesh_from_triangle_seeds(points.len() - 1, compact_impent, points, &seeds)
     }
 }
 

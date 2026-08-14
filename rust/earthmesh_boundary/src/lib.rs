@@ -16,8 +16,13 @@
 //! splitting, sliding, narrow-feature policy -- belong to whichever backend is
 //! doing the adapting.
 
+pub mod equal_area;
 pub mod rings;
 pub mod segments;
+pub use equal_area::{
+    bounds_overlap, is_convex, local_equal_area_overlap_fraction,
+    local_equal_area_overlap_fraction_lonlat, ring_bounds, LocalEqualArea, SphericalCap,
+};
 pub use rings::{closed_rings, RingError};
 pub use segments::SegmentList;
 

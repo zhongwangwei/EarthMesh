@@ -3,7 +3,7 @@
 //! run that is honest and repeatable.
 
 use super::*;
-use earthmesh_mesh::TriangularMesh;
+use earthmesh_mesh::{TriangularMesh, MESH_STATE_FIRST_ID};
 
 fn base_mesh() -> TriangularMesh {
     TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base mesh")
@@ -130,13 +130,20 @@ fn wrapping_a_mesh_gives_every_site_an_identity() {
     ids.dedup();
     assert_eq!(ids.len(), expected, "no id is handed out twice");
 
-    for site in adaptive.sites() {
+    for (offset, site) in adaptive.sites().iter().enumerate() {
+        let vertex = MESH_STATE_FIRST_ID + offset;
+        assert_eq!(adaptive.vertex_for_site_id(site.site_id), Some(vertex));
+        assert_eq!(
+            adaptive.site_for_vertex(vertex).map(|site| site.site_id),
+            Some(site.site_id)
+        );
         assert_eq!(
             site.position, site.origin_position,
             "an inherited site has not moved yet"
         );
         assert_eq!(site.cumulative_displacement_m, 0.0);
         assert_eq!(site.birth_cycle, 0, "it came in with the mesh");
+        assert_eq!(site.parent_site_id, None, "inherited sites have no parent");
     }
 }
 
@@ -194,6 +201,11 @@ fn a_request_with_nothing_to_do_returns_the_mesh_it_was_given() {
     assert_eq!(outcome.report.final_sites, sites_before);
     assert_eq!(outcome.report.transactions_attempted, 0);
     assert_eq!(outcome.report.unresolved_count, 0);
+    assert_eq!(
+        outcome.report.angle_window_40_80_verdict,
+        AngleWindowVerdict::NotEvaluated,
+        "an empty request must not claim that it measured mesh quality"
+    );
     assert!(outcome.report.deterministic);
     assert_eq!(
         outcome.report.schema_version,

@@ -1477,6 +1477,16 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
 }
 
 #[test]
+fn harp_dv_does_not_lower_the_generic_spring() {
+    let mut project = sample();
+    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    let lowered = project.lower();
+
+    assert_eq!(lowered.refine.spring_global_type, 0);
+    assert_eq!(lowered.refine.spring_regional_type, 0);
+}
+
+#[test]
 fn hfield_raster_targets_eight_base_cells_per_raster_cell() {
     // Measured window, in base cells per raster cell: 4 fails (aliased), 6.9-12
     // passes at both resolutions, 32 fails (fragmented). Target the middle.
@@ -2081,7 +2091,11 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
     project.refinement.backend = crate::RefinementBackend::HarpDv;
     project.quality.on_violation = ViolationPolicy::AutoRefine;
-    assert_eq!(project.lower().mkgrd.nxp, 81);
+    assert_eq!(
+        project.lower().mkgrd.nxp,
+        80,
+        "HARP-DV owns its quality repair and must not inherit Method-C's stride-three lattice"
+    );
 }
 
 #[test]

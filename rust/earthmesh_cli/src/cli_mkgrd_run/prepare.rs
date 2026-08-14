@@ -77,6 +77,7 @@ fn compile_project_arg(
     };
     if project.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
         && project.refinement.enabled
+        && project.refinement.backend != earthmesh_project::RefinementBackend::HarpDv
     {
         let target_nxp = project.try_lower()?.mkgrd.nxp;
         project.refinement.max_passes = earthmesh_project::effective_auto_refine_pass(
@@ -923,6 +924,40 @@ mod tests {
         let mut args = vec![path.to_string_lossy().into_owned()].into_iter();
         let prepared = compile_project_arg(&mut args).unwrap();
         assert_eq!(prepared.project.unwrap().config.refinement.max_passes, 2);
+    }
+
+    #[test]
+    fn project_cli_does_not_apply_method_c_pass_clamping_to_harp_dv() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_harp_auto_pass_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "harp_auto_pass",
+            MeshIntentPreset::CoastalOcean,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(80),
+        );
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        project.refinement.backend = earthmesh_project::RefinementBackend::HarpDv;
+        project.refinement.specified_circle =
+            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                lon: 0.0,
+                lat: 0.0,
+                radius_km: 100.0,
+            }));
+        project.quality.on_violation = ViolationPolicy::AutoRefine;
+        let path = root.join("project.yaml");
+        fs::write(&path, project.to_yaml().unwrap()).unwrap();
+        let mut args = vec![path.to_string_lossy().into_owned()].into_iter();
+
+        let prepared = compile_project_arg(&mut args).unwrap();
+        assert_eq!(prepared.project.unwrap().config.refinement.max_passes, 1);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

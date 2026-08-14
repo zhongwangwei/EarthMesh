@@ -381,6 +381,12 @@ impl ProjectConfig {
                 .spring_regional_type
                 .unwrap_or(refine.spring_regional_type);
         }
+        if self.refinement.backend == crate::RefinementBackend::HarpDv {
+            // HARP-DV smooths through accepted transactional site moves and
+            // Delaunay legalization, not the fixed-topology generic spring.
+            refine.spring_global_type = 0;
+            refine.spring_regional_type = 0;
+        }
         if let Some(enabled) = self.expert.isolated_ocean {
             mkgrd.isolated_ocean = enabled;
         }
@@ -449,7 +455,8 @@ impl ProjectConfig {
             && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical;
         if (canonical_method_c && (hfield.is_some() || adaptive.is_some()))
             || hydro_local_refinement
-            || self.quality.on_violation == ViolationPolicy::AutoRefine
+            || (backend != crate::RefinementBackend::HarpDv
+                && self.quality.on_violation == ViolationPolicy::AutoRefine)
         {
             let increment = (3 - mkgrd.nxp.rem_euclid(3)) % 3;
             mkgrd.nxp = mkgrd

@@ -2984,11 +2984,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
+    const springControls = algorithm === "harp_dv"
+      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"HARP-DV 使用带 Delaunay 合法化和质量验收的事务式点位调整；固定拓扑的通用弹簧不适用于该后端。":"HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance; the fixed-topology generic spring does not apply to this backend."}</div>`
+      : `${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
+        ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
     const expertRefine = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)"}</span>
+      <span class="expert-tag">⚙ ${algorithm === "harp_dv" ? (z ? "HARP-DV 后处理" : "HARP-DV post-processing") : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)")}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
-        ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}
+        ${springControls}
         ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"通用输出清理：仅保留最大连通水体":"common output cleanup: keep only the largest connected water body")}
       </div>
     </div>`;

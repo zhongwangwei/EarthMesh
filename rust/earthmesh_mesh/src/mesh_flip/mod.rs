@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 
 use crate::mesh_predicates::{in_circle_on_sphere, orientation_on_sphere, Ambiguous, Sign};
-use crate::mesh_state::{MeshState, MESH_STATE_FIRST_ID};
+use crate::mesh_state::MeshState;
 
 /// Why an edge could not be turned.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,8 +100,11 @@ impl MeshState {
     /// Both triangles keep their ids. A caller holding either across the flip
     /// still holds a triangle -- a different one, in the same place.
     pub fn flip_edge(&mut self, triangle: usize, corner: usize) -> Result<(), FlipError> {
+        if !self.is_triangle_live(triangle) {
+            return Err(FlipError::EdgeIsOnTheBoundary { triangle, corner });
+        }
         let neighbour = self.neighbours()[triangle][corner];
-        if neighbour < MESH_STATE_FIRST_ID {
+        if !self.is_triangle_live(neighbour) {
             return Err(FlipError::EdgeIsOnTheBoundary { triangle, corner });
         }
         let here = self.triangles()[triangle];
@@ -152,7 +155,7 @@ impl MeshState {
                 self.neighbours()[face]
                     .iter()
                     .copied()
-                    .filter(|&other| other >= MESH_STATE_FIRST_ID),
+                    .filter(|&other| self.is_triangle_live(other)),
             );
         }
         self.repair_adjacency_across(&region, &changed);
@@ -163,8 +166,11 @@ impl MeshState {
     /// criterion: the triangle across it has a corner inside this one's
     /// circumcircle.
     pub fn edge_is_illegal(&self, triangle: usize, corner: usize) -> Result<bool, FlipError> {
+        if !self.is_triangle_live(triangle) {
+            return Ok(false);
+        }
         let neighbour = self.neighbours()[triangle][corner];
-        if neighbour < MESH_STATE_FIRST_ID {
+        if !self.is_triangle_live(neighbour) {
             return Ok(false);
         }
         let here = self.triangles()[triangle];
@@ -214,11 +220,11 @@ impl MeshState {
         let mut pending: Vec<usize> = seed
             .iter()
             .copied()
-            .filter(|&t| t >= MESH_STATE_FIRST_ID && t < self.triangles().len())
+            .filter(|&triangle| self.is_triangle_live(triangle))
             .collect();
         let mut flips = 0usize;
         while let Some(triangle) = pending.pop() {
-            if triangle >= self.triangles().len() {
+            if !self.is_triangle_live(triangle) {
                 continue;
             }
             for corner in 0..3 {
@@ -254,7 +260,7 @@ impl MeshState {
                         self.neighbours()[face]
                             .iter()
                             .copied()
-                            .filter(|&other| other >= MESH_STATE_FIRST_ID),
+                            .filter(|&other| self.is_triangle_live(other)),
                     );
                 }
                 break;

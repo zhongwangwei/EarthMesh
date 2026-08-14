@@ -2928,10 +2928,10 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
         .expect("harp_dv backend should run through the refinement pipeline");
 
     assert_eq!(run.max_level, 2);
-    assert_eq!(run.spring_nest_iterations, 20);
+    assert_eq!(run.spring_nest_iterations, 0);
     assert_eq!(
         run.spring_nest_passes, 0,
-        "the regional spring must reject this fixture's worse-angle candidate"
+        "HARP-DV owns smoothing through transactional site moves"
     );
     assert!(run.output.output.exists());
     assert!(
@@ -3058,6 +3058,32 @@ fn harp_dv_backend_consumes_adaptive_landcover_criteria_without_named_regions() 
         harp.transactions_committed > 0,
         "adaptive landcover criteria must do work: {harp:?}"
     );
+    assert!(harp.active_adaptive_sites >= harp.active_leaf_sites);
+    assert_eq!(
+        harp.leaf_degree_4
+            + harp.leaf_degree_5
+            + harp.leaf_degree_6
+            + harp.leaf_degree_7
+            + harp.leaf_degree_other,
+        harp.active_leaf_sites
+    );
+    assert!(harp.leaf_birth_cycle_min <= harp.leaf_birth_cycle_max);
+    assert!(harp.leaf_target_scale_min_m <= harp.leaf_target_scale_max_m);
+    assert!(harp.interior_leaf_sites <= harp.active_leaf_sites);
+    assert!(harp.leaf_target_scale_measured <= harp.active_leaf_sites);
+    assert!(harp.lineage_unknown_adaptive_sites <= harp.active_adaptive_sites);
+    assert!(
+        harp.angles_below_40_at_interior_leaf_vertices <= harp.angles_below_40_at_leaf_vertices
+    );
+    assert!(
+        harp.angles_above_80_at_interior_leaf_vertices <= harp.angles_above_80_at_leaf_vertices
+    );
+    assert!(
+        harp.violating_triangles_touching_interior_leaf <= harp.violating_triangles_touching_leaf
+    );
+    assert_eq!(harp.d4_leaf_retirement_candidates, 0);
+    assert!(harp.d4_leaf_retirement_fully_acceptable <= harp.d4_leaf_retirement_quality_improving);
+    assert!(harp.d4_leaf_retirement_fully_acceptable <= harp.d4_leaf_retirement_candidates);
     assert!(
         run.realized_region_halvings > 0.0,
         "adaptive circles must reach the achieved-resolution measurement"
@@ -3300,6 +3326,7 @@ fn harp_dv_output_passes_the_mesh_quality_gate() {
         .expect("hex quality input");
     let report =
         earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
+    let harp = run.harp_dv_run.as_ref().expect("HARP-DV report");
 
     println!(
         "harp_dv quality: cells {}, min angle {:.2} deg, max angle {:.2} deg, area ratio {:.3}, \
@@ -3324,6 +3351,9 @@ fn harp_dv_output_passes_the_mesh_quality_gate() {
     assert_eq!(report.topology.non_manifold_vertex_fan_count, 0);
     assert_eq!(report.topology.invalid_vertex_index_count, 0);
     assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
+    assert!(harp.quality_optimiser_moves > 0);
+    assert!(harp.triangle_eta_min.is_finite() && harp.triangle_eta_min > 0.0);
+    assert!(harp.triangle_eta_p1 >= harp.triangle_eta_min);
 }
 
 /// The native spawn refuses a route it would otherwise swallow -- and only then.

@@ -100,6 +100,14 @@ check(
 log("niter_refine default remains engine-owned");
 
 check(
+  html.includes('const springControls = algorithm === "harp_dv"') &&
+    html.includes("HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance") &&
+    html.includes('${springControls}'),
+  "HARP-DV must explain and hide the inapplicable generic spring controls",
+);
+log("HARP-DV hides the inapplicable generic spring controls");
+
+check(
   html.includes('id="thresholdRefineOn"') &&
     html.includes("thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary))") &&
     html.includes("thresholdEnabled: !!thresholdRefine.enabled") &&
@@ -1144,9 +1152,9 @@ check(
     html.includes('+ algorithmOptionsBlock\n        + expertRefine') &&
     !html.includes('id="expertSpringStrategy"') &&
     !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")'),
-  "spring strategy and iterations must have one visible home for every refinement algorithm",
+  "spring strategy and iterations must have one visible home for every applicable algorithm",
 );
-log("common spring controls are algorithm-independent");
+log("common spring controls stay visible for every applicable algorithm");
 
 {
   // These are preserved from an opened project for namelist fidelity, but no

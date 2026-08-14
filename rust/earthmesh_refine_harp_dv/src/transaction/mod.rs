@@ -241,18 +241,8 @@ impl AdaptiveMesh {
         if self.segments_are_empty() {
             return None;
         }
-        let state = self.state();
-        let mut region: BTreeSet<usize> = BTreeSet::new();
-        region.insert(candidate.hint);
-        region.extend(
-            state.neighbours()[candidate.hint]
-                .iter()
-                .copied()
-                .filter(|&other| other >= MESH_STATE_FIRST_ID),
-        );
-        state.encroached_segment(candidate.point, &region, &|tail, head| {
-            self.is_protected_edge(tail, head)
-        })
+        self.state()
+            .encroached_segment_edges(candidate.point, self.segments.iter())
     }
 }
 
@@ -261,7 +251,7 @@ impl AdaptiveMesh {
 /// Only the neighbourhood: everything else was equal before the change and the
 /// change is local, so a global sweep per transaction would re-measure an
 /// unchanged mesh once per site inserted.
-fn check(
+pub(crate) fn check(
     state: &MeshState,
     touched: &BTreeSet<usize>,
     gates: HardGates,
@@ -271,11 +261,14 @@ fn check(
     // them. Everything else was closed and valid before and was not touched.
     let mut region = touched.clone();
     for &triangle in touched {
+        if !state.is_triangle_live(triangle) {
+            continue;
+        }
         region.extend(
             state.neighbours()[triangle]
                 .iter()
                 .copied()
-                .filter(|&neighbour| neighbour >= MESH_STATE_FIRST_ID),
+                .filter(|&neighbour| state.is_triangle_live(neighbour)),
         );
     }
     if gates.require_closed_surface {
@@ -287,7 +280,7 @@ fn check(
     // Slivers, checked over the triangles the change actually made or moved.
     if gates.min_triangle_angle_deg > 0.0 {
         for &triangle in touched {
-            if triangle < MESH_STATE_FIRST_ID || triangle >= state.triangles().len() {
+            if !state.is_triangle_live(triangle) {
                 continue;
             }
             let corners = state.triangles()[triangle];
@@ -321,6 +314,63 @@ fn check(
                         angle_deg: angle,
                     });
                 }
+            }
+        }
+    }
+
+    // Every triangle here has to wind the same way, and none of them may be
+    // degenerate.
+    //
+    // Nothing else in this function looks. Open edges, degree, pentagons and
+    // `validate_region` are all satisfied by a mesh that has turned part of
+    // itself inside out: the adjacency still pairs up and the surface is still
+    // closed, the triangles simply overlap. Measured, a committed move is what
+    // folds the first one -- and once two triangles cover the same patch of
+    // sphere, `locate_triangle` answers differently depending on where its walk
+    // started, which is what makes the next rollback unsound.
+    //
+    // Read over `region` rather than `touched`, so the untouched ring is in the
+    // comparison: it says which way this neighbourhood was already wound, and
+    // no global convention has to be assumed. A closed spherical triangulation
+    // has one winding throughout, so a disagreement inside one patch is the
+    // fold itself.
+    //
+    // After the angle floor, not before it, so a triangle that is degenerate
+    // *and* thin keeps being reported as the sliver it is; and outside that
+    // block, because `min_triangle_angle_deg = 0` switches off both the sliver
+    // gate and the circumcentre test, and a run that asks for no angle floor is
+    // still not asking for a mesh that is inside out.
+    let mut winding = None;
+    for &triangle in &region {
+        if !state.is_triangle_live(triangle) {
+            continue;
+        }
+        let corners = state.triangles()[triangle];
+        let sign = earthmesh_mesh::orientation_on_sphere(
+            state.vertices()[corners[0]],
+            state.vertices()[corners[1]],
+            state.vertices()[corners[2]],
+        )
+        .map_err(|_| Rejection::TopologyInvalid {
+            faults: vec![format!("triangle {triangle} has an undecidable winding")],
+        })?;
+        if sign == earthmesh_mesh::Sign::Zero {
+            return Err(Rejection::TopologyInvalid {
+                faults: vec![format!(
+                    "triangle {triangle} is degenerate: its three corners lie on one great circle"
+                )],
+            });
+        }
+        match winding {
+            None => winding = Some(sign),
+            Some(first) if first == sign => {}
+            Some(_) => {
+                return Err(Rejection::TopologyInvalid {
+                    faults: vec![format!(
+                        "triangle {triangle} winds against the rest of its neighbourhood; the \
+                         change folded the surface"
+                    )],
+                })
             }
         }
     }
@@ -416,8 +466,16 @@ impl AdaptiveMesh {
                 allowed: gates.max_patch_triangles,
             }));
         }
-
-        let report = match self.state_mut().insert_site(point) {
+        // The cavity this snapshot was taken around, not one the insertion
+        // carves for itself. `insert_site` re-locates from no hint, and on a
+        // mesh with overlapping triangles it lands somewhere else -- then it
+        // rewrites triangles the patch does not hold, and the rollback below
+        // truncates the new vertex away while leaving triangles that still name
+        // it. The next cavity walk indexes one of those and panics.
+        let report = match self
+            .state_mut()
+            .insert_site_with_cavity(point, containing, &cavity)
+        {
             Ok(report) => report,
             Err(error) => {
                 // Nothing was written, so there is nothing to put back; the
@@ -592,7 +650,15 @@ impl AdaptiveMesh {
         };
         match verdict {
             Ok(max_degree_touched) => {
-                let site_id = self.record_moved_site(site);
+                let Some(site_id) = self.record_moved_sites(&[site]) else {
+                    self.state_mut().move_vertex(site, origin);
+                    self.state_mut()
+                        .restore_patch(patch)
+                        .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                    return Ok(Acceptance::RolledBack(Rejection::TopologyInvalid {
+                        faults: vec![format!("moved vertex {site} has no active site id")],
+                    }));
+                };
                 Ok(Acceptance::Committed(TransactionReport {
                     site_id,
                     vertex: site,
@@ -694,8 +760,19 @@ impl AdaptiveMesh {
         };
         match verdict {
             Ok(max_degree_touched) => {
-                let site_id = self.record_moved_site(first.0);
-                self.record_moved_site(second.0);
+                let Some(site_id) = self.record_moved_sites(&[first.0, second.0]) else {
+                    self.state_mut().move_vertex(first.0, first_origin);
+                    self.state_mut().move_vertex(second.0, second_origin);
+                    self.state_mut()
+                        .restore_patch(patch)
+                        .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                    return Ok(Acceptance::RolledBack(Rejection::TopologyInvalid {
+                        faults: vec![format!(
+                            "one of moved vertices [{}, {}] has no active site id",
+                            first.0, second.0
+                        )],
+                    }));
+                };
                 Ok(Acceptance::Committed(TransactionReport {
                     site_id,
                     vertex: first.0,
@@ -816,9 +893,8 @@ impl AdaptiveMesh {
 
         let mut refusals = Vec::with_capacity(ladder.len());
         for candidate in ladder {
-            // Ruppert's rule: a point inside a protected segment's diametral
-            // circle is never inserted -- the segment is split at its midpoint
-            // instead, and that split is what makes the refinement terminate.
+            // Ruppert's rule: split an encroached protected segment instead of
+            // inserting inside its diametral circle.
             let encroached = self.encroachment_of(&candidate);
             let candidate = match &encroached {
                 Some(split) => Candidate {
@@ -829,8 +905,7 @@ impl AdaptiveMesh {
             };
             match self.propose_site_for(candidate.point, Some(candidate.hint), gates, site)? {
                 Acceptance::Committed(report) => {
-                    // The halves are segments too, or the induction stops
-                    // exactly where it was just applied.
+                    // Keep both halves protected, or the rule stops after one split.
                     if let Some(split) = encroached {
                         self.split_segment(split.tail, split.head, report.vertex);
                     }
