@@ -358,8 +358,11 @@ module MOD_refine
                 write(io6, *)  "num_ref_weak_concav = ", num_ref_weak_concav
                 write(io6, *)  "num_weak_concav_segment(n+n)or(1+n) = ", num_weak_concav_segment
                 write(io6, *)  "num_weak_concav_pair(1+1) = ", num_weak_concav_pair
+                CALL bdy_refine_segment_renew(set_dis_in, num_bdy_refine_segment, bdy_refine_segment, n_bdy_refine_segment)
+                write(io6, *) "num_bdy_refine_segment turn to ", num_bdy_refine_segment
                 write(io6, *)  "weak concav segment make finish"
                 write(io6, *)  ""
+                write(io6, *) ""
                 if (set_dis_in == 1) then
                     if (num_weak_concav_pair /= 0) STOP "ERROR! num_weak_concav_pair must equal to zero when set_dis_in == 1"
                 end if
@@ -1246,6 +1249,43 @@ module MOD_refine
 
     END SUBROUTINE bdy_connection_closed_curve
 
+    SUBROUTINE bdy_refine_segment_renew(set_dis_in, num_bdy_refine_segment, bdy_refine_segment, n_bdy_refine_segment)
+        IMPLICIT NONE
+        integer, intent(in)    :: set_dis_in
+        integer, intent(inout) :: num_bdy_refine_segment
+        integer, allocatable, intent(inout) :: bdy_refine_segment(:,:)
+        integer, allocatable, intent(inout) :: n_bdy_refine_segment(:)
+        integer :: i, num
+        integer, allocatable :: bdy_refine_segment_temp(:, :), n_bdy_refine_segment_temp(:)
+
+        num = 0
+        do i = 1, num_bdy_refine_segment, 1
+            if (n_bdy_refine_segment(i) == 0) cycle ! 跳过不符合的过渡等级
+            num = num + 1
+        end do
+
+        allocate(bdy_refine_segment_temp(set_dis_in, num))
+        allocate(n_bdy_refine_segment_temp(num))
+
+        num = 0
+        do i = 1, num_bdy_refine_segment, 1
+            if (n_bdy_refine_segment(i) == 0) cycle ! 跳过不符合的过渡等级
+            num = num + 1
+            bdy_refine_segment_temp(:,num) = bdy_refine_segment(:,i)
+            n_bdy_refine_segment_temp(num) = n_bdy_refine_segment(i)
+        end do
+        deallocate(bdy_refine_segment, n_bdy_refine_segment)
+
+        allocate(bdy_refine_segment(set_dis_in, num))
+        allocate(n_bdy_refine_segment(num))
+        num_bdy_refine_segment = num
+        bdy_refine_segment = bdy_refine_segment_temp
+        n_bdy_refine_segment = n_bdy_refine_segment_temp
+        
+        deallocate(bdy_refine_segment_temp, n_bdy_refine_segment_temp)
+
+    END SUBROUTINE bdy_refine_segment_renew
+
     SUBROUTINE bdy_refine_segment_make(iswrite, set_dis_in, num_closed_curve, close_curve, n_close_curve, ngrwm, n_ngrwm, mrl_new, bdy_refine_segment, n_bdy_refine_segment, num_bdy_refine_segment, num_bdy_refine_segment_curve)
         ! 根据mrl和ngrwm一起判断是弱凹（四个细化三角形）还是强凹（两个细化三角形），直线（三个细化三角形）和转折（一个细化三角形）
         IMPLICIT NONE
@@ -1480,6 +1520,8 @@ module MOD_refine
                         weak_concav_pair_temp(num_weak_concav_pair + 2) = m2 ! 记录弱凹三角形编号  
                         num_weak_concav_pair = num_weak_concav_pair + 2 ! 针对长度为1的情况进行特殊处理
                     else ! 两段长度都为n
+                        print*, "!!!!!!!!!!!! 两段长度都为n(n>1)!!!!!!!!!!!"
+                        print*, ""
                         weak_concav_segment_temp(:, num_weak_concav_segment+1) = bdy_refine_segment(:, i)
                         weak_concav_segment_temp(:, num_weak_concav_segment+2) = bdy_refine_segment(:, j)
                         n_weak_concav_segment_temp(num_weak_concav_segment+1:num_weak_concav_segment+2) = n_bdy_refine_segment(i)
@@ -1489,24 +1531,40 @@ module MOD_refine
                 bdy_refine_segment_temp(:, [i,j]) = 1
                 n_bdy_refine_segment_temp([i,j]) = 0
 
-            else if (num_diff == 1) then
+            else if (num_diff == 1) then ! 1+2, 2+1, 2+3, 3+2, 3+4, 4+3
                 ! STOP "ERROR! only 1+1 and n+n HERE!"
                 if (num_min < 3) then ! 1+2或者2+3情况
                     weak_concav_segment_temp(1, num_weak_concav_segment+1) = bdy_refine_segment(n_bdy_refine_segment(i), i)
                     weak_concav_segment_temp(1, num_weak_concav_segment+2) = bdy_refine_segment(1, j)
                     n_weak_concav_segment_temp(num_weak_concav_segment+1:num_weak_concav_segment+2) = 1
                     num_weak_concav_segment = num_weak_concav_segment + 2
-                    if (num_min == 2) then ! 2+3 = 1+2 and 2
-                        if (n_bdy_refine_segment(i) > n_bdy_refine_segment(j)) then
+
+                    if (num_min == 1) then
+                        print*, "! 1+2"
+                        print*, ""
+                        ! delete bdy_refine_segment if be selected as weak concav segment
+                        if (n_bdy_refine_segment_temp(i) == 1) then
+                            n_bdy_refine_segment_temp(i) = 0
+                            bdy_refine_segment_temp(:,i) = 1
+                        else
+                            n_bdy_refine_segment_temp(j) = 0
+                            bdy_refine_segment_temp(:,j) = 1
+                        end if
+                    elseif (num_min == 2) then ! 2+3 = 1+2 and 2
+                        print*, "! 2+3 or 3+2"
+                        print*, ""
+                        if (n_bdy_refine_segment(i) > n_bdy_refine_segment(j)) then !3+2 => 2 and 1+2
                             bdy_refine_segment_temp(n_bdy_refine_segment(i), i) = 1
                             n_bdy_refine_segment_temp(i) = n_bdy_refine_segment_temp(i) - 1
-                        else
+                        else ! 2+3 => 2+1 and 2
                             bdy_refine_segment_temp(1:n_bdy_refine_segment(j)-1, j) = bdy_refine_segment(2:n_bdy_refine_segment(j), j)
                             bdy_refine_segment_temp(n_bdy_refine_segment(j), j) = 1
                             n_bdy_refine_segment_temp(j) = n_bdy_refine_segment_temp(j) - 1
                         end if
                     end if
-                else ! n1+n2(n1,n2>2) = 1+1 and n1-1 and n2-1
+                else ! n1+n2(3+4,or 4+3) => 1+1 and n1-1 and n2-1 sperate into 3 part
+                    print*, "! n1+n2(3+4,or 4+3) => 1+1 and n1-1 and n2-1"
+                    print*, ""
                     weak_concav_pair_temp(num_weak_concav_pair + 1) = m1 ! 记录弱凹三角形编号   
                     weak_concav_pair_temp(num_weak_concav_pair + 2) = m2 ! 记录弱凹三角形编号  
                     num_weak_concav_pair = num_weak_concav_pair + 2 ! 针对长度为1的情况进行特殊处理
@@ -1522,6 +1580,8 @@ module MOD_refine
             else ! num_diff >=2
                 ! STOP "ERROR! only 1+1 and n+n HERE!"
                 if (num_min == 1) then ! 1+n（n>2） ! 情况A2 1+n(n>=3) 分为1+1和n-1
+                    print*, "! 1+n（n>2） ! 情况A2 1+n(n>=3) 分为1+1和n-1"
+                    print*, ""
                     weak_concav_pair_temp(num_weak_concav_pair + 1) = m1 ! 记录弱凹三角形编号   
                     weak_concav_pair_temp(num_weak_concav_pair + 2) = m2 ! 记录弱凹三角形编号  
                     num_weak_concav_pair = num_weak_concav_pair + 2 ! 针对长度为1的情况进行特殊处理
@@ -1533,17 +1593,46 @@ module MOD_refine
                     n_bdy_refine_segment_temp(i) = n_bdy_refine_segment_temp(i) - 1
                     n_bdy_refine_segment_temp(j) = n_bdy_refine_segment_temp(j) - 1
                 else ! num_min > 2 n1+n2(n1,n2>2) ---> num_min+min_min and num_diff
-                    bdy_refine_segment_temp(num_diff+1:n_bdy_refine_segment(i), i) = 1
-                    if (n_bdy_refine_segment(j) /= num_min) then
-                        bdy_refine_segment_temp(1:num_diff, j) = bdy_refine_segment(n_bdy_refine_segment(j)-num_diff+1:n_bdy_refine_segment(j), j)
+                    print*, "! num_min > 2 n1+n2(n1,n2>2) ---> num_min+min_min and num_diff"
+                    print*, ""
+                    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    ! renew
+                    ! make sure num_min level connection
+                    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+1) = bdy_refine_segment(n_bdy_refine_segment(i)-num_min+1:n_bdy_refine_segment(i), i)
+                    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+2) = bdy_refine_segment(1:num_min, j)
+                    n_weak_concav_segment_temp(num_weak_concav_segment+1:num_weak_concav_segment+2) = num_min
+                    num_weak_concav_segment = num_weak_concav_segment + 2
+                    if (n_bdy_refine_segment(i) > n_bdy_refine_segment(j)) then ! sperate into num_diff and num_min+min_min          
+                        bdy_refine_segment_temp(num_diff+1:n_bdy_refine_segment(i), i) = 1
+                        n_bdy_refine_segment_temp(i)  = n_bdy_refine_segment_temp(i) - num_min
+                        bdy_refine_segment_temp(:, j) = 1
+                        n_bdy_refine_segment_temp(j)  = 0
+                    else ! sperate into num_min+min_min and num_diff
+                        bdy_refine_segment_temp(:, i) = 1
+                        n_bdy_refine_segment_temp(i)  = 0
+                        bdy_refine_segment_temp(1:num_diff, j) = &
+                        bdy_refine_segment_temp(num_min+1:n_bdy_refine_segment_temp(j), j)
+                        bdy_refine_segment_temp(num_diff+1:n_bdy_refine_segment(i), i) = 1
+                        n_bdy_refine_segment_temp(j) = n_bdy_refine_segment_temp(j) - num_min
                     end if
-                    bdy_refine_segment_temp(num_diff+1:n_bdy_refine_segment(j), j) = 1
-                    n_bdy_refine_segment_temp(i) = n_bdy_refine_segment_temp(i) - num_min
-                    n_bdy_refine_segment_temp(j) = n_bdy_refine_segment_temp(j) - num_min
-                    weak_concav_segment_temp(:, num_weak_concav_segment+1) = bdy_refine_segment_temp(:, i)
-                    weak_concav_segment_temp(:, num_weak_concav_segment+2) = bdy_refine_segment_temp(:, j)
-                    n_weak_concav_segment_temp(num_weak_concav_segment+1:num_weak_concav_segment+2) = n_bdy_refine_segment(i)
-                    num_weak_concav_segment = num_weak_concav_segment + 2 ! 针对两侧长度一致且不为1的处理
+                    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    !bdy_refine_segment_temp(num_diff+1:n_bdy_refine_segment(i), i) = 1
+                    !if (n_bdy_refine_segment(j) /= num_min) then! right side is longer than left side
+                    !    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+1) = bdy_refine_segment(1:num_min, i)
+                    !    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+2) = bdy_refine_segment(1:num_min, j)
+                    !    bdy_refine_segment_temp(:, i) = 1
+                    !    bdy_refine_segment_temp(:, j) = 1
+                    !    bdy_refine_segment_temp(1:num_diff, j) = bdy_refine_segment(num_min+1:n_bdy_refine_segment(j), j)
+                    !else! right side is shorter than left side
+                    !    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+1) = bdy_refine_segment(num_diff+1:set_dis_in, i)
+                    !    weak_concav_segment_temp(1:num_min, num_weak_concav_segment+2) = bdy_refine_segment(1:num_min, j)
+                    !    bdy_refine_segment_temp(num_diff+1:set_dis_in, i) = 1
+                    !    bdy_refine_segment_temp(1:set_dis_in, j) = 1
+                    !end if
+                    !n_bdy_refine_segment_temp(i) = n_bdy_refine_segment_temp(i) - num_min
+                    !n_bdy_refine_segment_temp(j) = n_bdy_refine_segment_temp(j) - num_min
+                    !n_weak_concav_segment_temp(num_weak_concav_segment+1:num_weak_concav_segment+2) = num_min
+                    !num_weak_concav_segment = num_weak_concav_segment + 2 ! 针对两侧长度一致且不为1的处理
                 end if
             end if
         end do
@@ -2162,7 +2251,9 @@ module MOD_refine
         CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(1), mp_f))
         CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(2), ngrmw_f))
         CALL CHECK(NF90_CLOSE(ncID))
-        
+       
+        !if (2*(num_dbx-3) /= num_sjx-1) STOP "ERROR! num_dbx mismatch num_sjx"
+
         ! 更新ngrmw_f和ngrwm_f
         allocate(ngrwm_f(7, num_dbx)); ngrwm_f   = 1 ! 记录相邻三角形编号，初始化为1
         allocate(n_ngrwm_f(num_dbx));  n_ngrwm_f = 0 ! 记录相邻三角形
@@ -2177,6 +2268,17 @@ module MOD_refine
         
         !write(io6, *)  "n_ngrwm_f(93404) = ", n_ngrwm_f(93404)
         !if (n_ngrwm_f(93404) == 0) STOP "ERROR! n_ngrwm_f(i) = 0"
+        lndname = trim(file_dir) // "tmpfile/gridfile_NXP" // trim(nxpc)  // "_" // trim(stepc) // "_ngrwm.nc4"
+        ! write(io6, *)  lndname
+        CALL CHECK(NF90_CREATE(trim(lndname), ior(nf90_clobber, nf90_netcdf4), ncid))
+        CALL CHECK(NF90_DEF_DIM(ncID, "lbx_points", num_wp(iter), lpDimID))
+        CALL CHECK(NF90_DEF_DIM(ncID, "dim_b", 7, DimbID))
+        CALL CHECK(NF90_DEF_VAR(ncID, "ngrwm_f_orial", NF90_INT, (/ DimbID, lpDimID /), ncVarID(1)))
+        CALL CHECK(NF90_DEF_VAR(ncID, "n_ngrwm_f_orial", NF90_INT, (/ lpDimID /), ncVarID(2)))
+        CALL CHECK(NF90_ENDDEF(ncID))
+        CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(1), ngrwm_f))
+        CALL CHECK(NF90_PUT_VAR(ncID, ncvarid(2), n_ngrwm_f))
+        CALL CHECK(NF90_CLOSE(ncID))
 
         ! 基于边行走的多边形排序方法，适用于球面凹/凸多边形
         CALL GetSortNew(num_dbx, n_ngrwm_f, ngrmw_f, mp_f, ngrwm_f)
