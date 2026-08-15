@@ -653,13 +653,18 @@ fn region_score(
     // score misses exactly the ratio that a local recovery can push across its
     // boundary.
     let mut measured_sites = region.clone();
+    // Keep the fans this loop walks. The sweep below needs the same ones, and
+    // the region is scored once per candidate move -- walking every region
+    // site's ring twice a score is the largest single cost in a recovery.
+    let mut region_fans: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &site in region {
         let fan = fan_with_cached_seed(state, site, seeds)?;
         measured_sites.extend(
-            fan.into_iter()
-                .flat_map(|triangle| state.triangles()[triangle])
+            fan.iter()
+                .flat_map(|&triangle| state.triangles()[triangle])
                 .filter(|&corner| corner != site),
         );
+        region_fans.insert(site, fan);
     }
     let mut scales: BTreeMap<usize, f64> = BTreeMap::new();
     let mut fans: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -667,7 +672,10 @@ fn region_score(
     let mut pending_sites = BTreeSet::new();
     let mut saturated = 0usize;
     for site in measured_sites {
-        let fan = fan_with_cached_seed(state, site, seeds)?;
+        let fan = match region_fans.remove(&site) {
+            Some(fan) => fan,
+            None => fan_with_cached_seed(state, site, seeds)?,
+        };
         let cell = state.voronoi_cell_from(site, *fan.first()?).ok()?;
         let view = CellView {
             site,
