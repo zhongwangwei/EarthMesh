@@ -1,0 +1,15 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c)
+
+running 1 test
+harp_dv cycle 1/100: 530 insertions, 5 r-adaptations, 15 unresolved (0 angle-constrained), productive fallback 0/0, 64532 active cells
+harp_dv cycle 2/100: 955 insertions, 57 r-adaptations, 115 unresolved (0 angle-constrained), productive fallback 0/0, 65487 active cells
+test cycle::tests::natural_length_ab_on_the_nxp_proxy has been running for over 60 seconds
+harp_dv cycle 3/100: 1572 insertions, 214 r-adaptations, 416 unresolved (0 angle-constrained), productive fallback 0/0, 67059 active cells
+harp_dv cycle 4/100: 2155 insertions, 265 r-adaptations, 464 unresolved (0 angle-constrained), productive fallback 0/0, 69214 active cells
+harp_dv cycle 5/100: 697 insertions, 186 r-adaptations, 225 unresolved (0 angle-constrained), productive fallback 1/1, 69911 active cells
+harp_dv cycle 6/100: 231 insertions, 113 r-adaptations, 92 unresolved (0 angle-constrained), productive fallback 4/5, 70142 active cells
+error: test failed, to rerun pass `-p earthmesh_refine_harp_dv --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/zhongwangwei/Downloads/EarthMesh-3.0.0-alpha2/target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c natural_length_ab_on_the_nxp_proxy --ignored --nocapture` (signal: 15, SIGTERM: termination signal)

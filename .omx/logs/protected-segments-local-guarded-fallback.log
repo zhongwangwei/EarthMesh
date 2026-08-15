@@ -1,0 +1,80 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c)
+
+running 1 test
+harp_dv cycle 1/40: 2 insertions, 0 r-adaptations, 1 unresolved (0 angle-constrained), productive fallback 0/0, 364 active cells
+harp_dv cycle 2/40: 1 insertions, 0 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 365 active cells
+harp_dv cycle 3/40: 1 insertions, 0 r-adaptations, 5 unresolved (0 angle-constrained), productive fallback 0/0, 366 active cells
+harp_dv cycle 4/40: 0 insertions, 0 r-adaptations, 6 unresolved (0 angle-constrained), productive fallback 0/0, 366 active cells
+harp_dv quality optimiser skipped: protected boundary segments are present
+harp_dv cycle 1/40: 2 insertions, 1 r-adaptations, 1 unresolved (0 angle-constrained), productive fallback 0/0, 364 active cells
+harp_dv cycle 2/40: 6 insertions, 0 r-adaptations, 0 unresolved (0 angle-constrained), productive fallback 0/0, 370 active cells
+harp_dv cycle 3/40: 10 insertions, 0 r-adaptations, 0 unresolved (0 angle-constrained), productive fallback 0/0, 380 active cells
+harp_dv cycle 4/40: 10 insertions, 3 r-adaptations, 3 unresolved (0 angle-constrained), productive fallback 0/0, 390 active cells
+harp_dv cycle 5/40: 21 insertions, 4 r-adaptations, 3 unresolved (0 angle-constrained), productive fallback 0/0, 411 active cells
+harp_dv cycle 6/40: 29 insertions, 11 r-adaptations, 9 unresolved (0 angle-constrained), productive fallback 1/1, 440 active cells
+harp_dv cycle 7/40: 27 insertions, 10 r-adaptations, 9 unresolved (0 angle-constrained), productive fallback 0/0, 467 active cells
+harp_dv cycle 8/40: 13 insertions, 16 r-adaptations, 9 unresolved (0 angle-constrained), productive fallback 0/0, 480 active cells
+harp_dv cycle 9/40: 16 insertions, 10 r-adaptations, 5 unresolved (0 angle-constrained), productive fallback 0/0, 496 active cells
+harp_dv cycle 10/40: 7 insertions, 5 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 503 active cells
+harp_dv cycle 11/40: 5 insertions, 12 r-adaptations, 13 unresolved (0 angle-constrained), productive fallback 2/3, 508 active cells
+harp_dv cycle 12/40: 10 insertions, 7 r-adaptations, 8 unresolved (0 angle-constrained), productive fallback 1/1, 518 active cells
+harp_dv cycle 13/40: 9 insertions, 0 r-adaptations, 0 unresolved (0 angle-constrained), productive fallback 0/0, 527 active cells
+harp_dv cycle 14/40: 7 insertions, 8 r-adaptations, 3 unresolved (0 angle-constrained), productive fallback 0/0, 534 active cells
+harp_dv cycle 15/40: 5 insertions, 2 r-adaptations, 1 unresolved (0 angle-constrained), productive fallback 1/1, 539 active cells
+harp_dv frozen target field angle diagnostic: below_40=0, in_40_80=3222, above_80=0, unmeasurable=0, worst_deviation=0.000
+harp_dv low-degree repair pass 1/4: 4 moved site(s), 2 -> 0 vertices below degree 5
+harp_dv quality optimiser eta pass 1/16: processing 226 of 226 eligible / 226 current movable worst-first sites
+harp_dv quality optimiser eta pass 1/16: retained 216 tentative moves (natural/eta/window=159/57/0), outside 400 -> 310, worst_deviation 51.977078 -> 32.442440, margin_min=-32.442440, eta_min=0.481678 -> 0.647339, eta_p1=0.735446, triangles_below_eta_0_89=167
+harp_dv quality optimiser eta pass 2/16: processing 230 of 230 eligible / 230 current movable worst-first sites
+harp_dv quality optimiser eta pass 2/16: retained 219 tentative moves (natural/eta/window=165/54/0), outside 310 -> 221, worst_deviation 32.442440 -> 24.359034, margin_min=-24.359034, eta_min=0.647339 -> 0.718945, eta_p1=0.779952, triangles_below_eta_0_89=102
+harp_dv quality optimiser eta pass 3/16: processing 225 of 225 eligible / 225 current movable worst-first sites
+harp_dv quality optimiser eta pass 3/16: retained 207 tentative moves (natural/eta/window=11/196/0), outside 221 -> 156, worst_deviation 24.359034 -> 16.528142, margin_min=-16.528142, eta_min=0.718945 -> 0.778984, eta_p1=0.832006, triangles_below_eta_0_89=63
+harp_dv quality optimiser eta pass 4/16: processing 228 of 228 eligible / 228 current movable worst-first sites
+harp_dv quality optimiser eta pass 4/16: retained 202 tentative moves (natural/eta/window=18/184/0), outside 156 -> 131, worst_deviation 16.528142 -> 15.695349, margin_min=-15.695349, eta_min=0.778984 -> 0.802618, eta_p1=0.838160, triangles_below_eta_0_89=36
+harp_dv quality optimiser eta pass 5/16: processing 212 of 212 eligible / 212 current movable worst-first sites
+harp_dv quality optimiser eta pass 5/16: retained 178 tentative moves (natural/eta/window=17/161/0), outside 131 -> 96, worst_deviation 15.695349 -> 14.556884, margin_min=-14.556884, eta_min=0.802618 -> 0.821450, eta_p1=0.868973, triangles_below_eta_0_89=25
+harp_dv quality optimiser eta pass 6/16: processing 215 of 215 eligible / 215 current movable worst-first sites
+harp_dv quality optimiser eta pass 6/16: retained 174 tentative moves (natural/eta/window=12/162/0), outside 96 -> 88, worst_deviation 14.556884 -> 13.161948, margin_min=-13.161948, eta_min=0.821450 -> 0.834143, eta_p1=0.876071, triangles_below_eta_0_89=19
+harp_dv quality optimiser eta pass 7/16: processing 211 of 211 eligible / 211 current movable worst-first sites
+harp_dv quality optimiser eta pass 7/16: retained 161 tentative moves (natural/eta/window=17/144/0), outside 88 -> 83, worst_deviation 13.161948 -> 10.304999, margin_min=-10.304999, eta_min=0.834143 -> 0.847926, eta_p1=0.884870, triangles_below_eta_0_89=17
+harp_dv quality optimiser eta pass 8/16: processing 189 of 189 eligible / 189 current movable worst-first sites
+harp_dv quality optimiser eta pass 8/16: retained 140 tentative moves (natural/eta/window=22/118/0), outside 83 -> 74, worst_deviation 10.304999 -> 9.573234, margin_min=-9.573234, eta_min=0.847926 -> 0.858659, eta_p1=0.887905, triangles_below_eta_0_89=14
+harp_dv quality optimiser eta pass 9/16: processing 186 of 186 eligible / 186 current movable worst-first sites
+harp_dv quality optimiser eta pass 9/16: retained 122 tentative moves (natural/eta/window=20/102/0), outside 74 -> 67, worst_deviation 9.573234 -> 8.744120, margin_min=-8.744120, eta_min=0.858659 -> 0.859621, eta_p1=0.892961, triangles_below_eta_0_89=10
+harp_dv quality optimiser eta pass 10/16: processing 180 of 180 eligible / 180 current movable worst-first sites
+harp_dv quality optimiser eta pass 10/16: retained 103 tentative moves (natural/eta/window=25/78/0), outside 67 -> 64, worst_deviation 8.744120 -> 8.744120, margin_min=-8.744120, eta_min=0.859621 -> 0.861231, eta_p1=0.897082, triangles_below_eta_0_89=6
+harp_dv quality optimiser eta pass 11/16: processing 185 of 185 eligible / 185 current movable worst-first sites
+harp_dv quality optimiser eta pass 11/16: retained 104 tentative moves (natural/eta/window=26/78/0), outside 64 -> 68, worst_deviation 8.744120 -> 9.385290, margin_min=-9.385290, eta_min=0.861231 -> 0.865929, eta_p1=0.899897, triangles_below_eta_0_89=7
+harp_dv quality optimiser eta pass 12/16: processing 184 of 184 eligible / 184 current movable worst-first sites
+harp_dv quality optimiser eta pass 12/16: retained 95 tentative moves (natural/eta/window=29/66/0), outside 68 -> 63, worst_deviation 9.385290 -> 8.654356, margin_min=-8.654356, eta_min=0.865929 -> 0.872450, eta_p1=0.897067, triangles_below_eta_0_89=6
+harp_dv quality optimiser eta pass 13/16: processing 179 of 179 eligible / 179 current movable worst-first sites
+harp_dv quality optimiser eta pass 13/16: retained 81 tentative moves (natural/eta/window=23/58/0), outside 63 -> 63, worst_deviation 8.654356 -> 8.654356, margin_min=-8.654356, eta_min=0.872450 -> 0.872450, eta_p1=0.899985, triangles_below_eta_0_89=6
+harp_dv quality optimiser eta pass 14/16: processing 170 of 170 eligible / 170 current movable worst-first sites
+harp_dv quality optimiser eta pass 14/16: retained 62 tentative moves (natural/eta/window=20/42/0), outside 63 -> 58, worst_deviation 8.654356 -> 8.654356, margin_min=-8.654356, eta_min=0.872450 -> 0.872450, eta_p1=0.901825, triangles_below_eta_0_89=6
+harp_dv quality optimiser eta pass 15/16: processing 168 of 168 eligible / 168 current movable worst-first sites
+harp_dv quality optimiser eta pass 15/16: retained 66 tentative moves (natural/eta/window=19/47/0), outside 58 -> 62, worst_deviation 8.654356 -> 8.654356, margin_min=-8.654356, eta_min=0.872450 -> 0.872450, eta_p1=0.902008, triangles_below_eta_0_89=6
+harp_dv quality optimiser eta pass 16/16: processing 167 of 167 eligible / 167 current movable worst-first sites
+harp_dv quality optimiser eta pass 16/16: retained 44 tentative moves (natural/eta/window=15/29/0), outside 62 -> 60, worst_deviation 8.654356 -> 8.654356, margin_min=-8.654356, eta_min=0.872450 -> 0.872450, eta_p1=0.902097, triangles_below_eta_0_89=6
+harp_dv quality optimiser window pass 1/32: processing 101 of 101 eligible / 101 current movable worst-first sites
+harp_dv quality optimiser window pass 1/32: retained 15 tentative moves (natural/eta/window=6/0/9), outside 60 -> 55, worst_deviation 8.654356 -> 6.851271, margin_min=-6.851271, eta_min=0.872450 -> 0.875913, eta_p1=0.902097, triangles_below_eta_0_89=7
+harp_dv quality optimiser window pass 2/32: processing 12 of 12 eligible / 91 current movable worst-first sites
+harp_dv quality optimiser window pass 2/32: retained 3 tentative moves (natural/eta/window=2/0/1), outside 55 -> 54, worst_deviation 6.851271 -> 6.851271, margin_min=-6.851271, eta_min=0.875913 -> 0.875913, eta_p1=0.902097, triangles_below_eta_0_89=7
+harp_dv quality optimiser window pass 3/32: processing 88 of 88 eligible / 88 current movable worst-first sites
+harp_dv quality optimiser window pass 3/32: retained 1 tentative moves (natural/eta/window=0/0/1), outside 54 -> 53, worst_deviation 6.851271 -> 6.851271, margin_min=-6.851271, eta_min=0.875913 -> 0.875913, eta_p1=0.902097, triangles_below_eta_0_89=7
+harp_dv quality optimiser window pass 4/32: processing 1 of 1 eligible / 87 current movable worst-first sites
+harp_dv quality optimiser window pass 4/32: retained 0 tentative moves (natural/eta/window=0/0/0), outside 53 -> 53, worst_deviation 6.851271 -> 6.851271, margin_min=-6.851271, eta_min=0.875913 -> 0.875913, eta_p1=0.902097, triangles_below_eta_0_89=7
+harp_dv quality optimiser window pass 5/32: processing 87 of 87 eligible / 87 current movable worst-first sites
+harp_dv quality optimiser window pass 5/32: retained 0 tentative moves (natural/eta/window=0/0/0), outside 53 -> 53, worst_deviation 6.851271 -> 6.851271, margin_min=-6.851271, eta_min=0.875913 -> 0.875913, eta_p1=0.902097, triangles_below_eta_0_89=7
+harp_dv quality optimiser complete: 2197 moves, margin_min -51.977078 -> -6.851271, eta_min 0.481678 -> 0.875913, angle-window violations 400 -> 53, 4.5s
+harp_dv quality optimiser candidates (generated/line-search/retained): natural 3444/8452/606, eta 3444/13474/1576, window 288/1435/11, low-degree retained 4
+test cycle::tests::protected_segments_make_a_quality_target_terminate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 4.64s
+
+     Running tests/end_to_end.rs (target/release/deps/end_to_end-7bacbbe01691f4c6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

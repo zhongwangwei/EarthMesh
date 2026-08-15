@@ -1,0 +1,870 @@
+Analysis of sampling earthmesh_refine_harp_dv-14e69942aaacc54c (pid 68944) every 1 millisecond
+Process:         earthmesh_refine_harp_dv-14e69942aaacc54c [68944]
+Path:            /Users/USER/Downloads/*/earthmesh_refine_harp_dv-14e69942aaacc54c
+Load Address:    0x100bf4000
+Identifier:      earthmesh_refine_harp_dv-14e69942aaacc54c
+Version:         ???
+Code Type:       ARM64
+Parent Process:  cargo [68500]
+Target Type:     live task
+
+Date/Time:       2026-08-15 13:20:46.115 +0800
+Launch Time:     2026-08-15 13:20:46.073 +0800
+OS Version:      macOS 26.5.2 (25F84)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         28.9M
+Physical footprint (peak):  28.9M
+Idle exit:                  untracked
+----
+
+Call graph:
+    1204 Thread_23931971: Main Thread
+    + 1200 _dyld_start  (in dyld) + 0  [0x100ec09c0]
+    + 2 start  (in dyld) + 6904  [0x188913da8]
+    + ! 2 dyld4::start(dyld4::KernelArgs*, void*, void*, unsigned long long)::$_1::operator()() const  (in dyld) + 320  [0x18891444c]
+    + !   2 dyld4::prepare(dyld4::APIs&, mach_o::UnsafeHeader const*)  (in dyld) + 3692  [0x1889152d4]
+    + !     2 dyld4::RuntimeState::notifyDebuggerLoad(std::span<dyld4::Loader const*, 18446744073709551615ul> const&)  (in dyld) + 528  [0x18892443c]
+    + !       2 dyld4::ExternallyViewableState::addImages(lsl::Allocator&, lsl::Allocator&, std::span<dyld4::ExternallyViewableState::ImageInfo, 18446744073709551615ul> const&)  (in dyld) + 1084  [0x18892e3bc]
+    + !         2 dyld4::ExternallyViewableState::triggerNotifications(dyld_image_mode, unsigned int, dyld_image_info const*)  (in dyld) + 296  [0x18892dc60]
+    + !           2 dyld4::RemoteNotificationResponder::blockOnSynchronousEvent(unsigned int)  (in dyld) + 48  [0x18896a6f4]
+    + !             2 dyld4::RemoteNotificationResponder::sendMessage(int, unsigned int, mach_msg_header_t*)  (in dyld) + 244  [0x18896a368]
+    + !               2 mach_msg_overwrite  (in dyld) + 244  [0x188983a40]
+    + !                 2 mach_msg2_internal  (in dyld) + 76  [0x188983898]
+    + !                   2 mach_msg2_trap  (in dyld) + 8  [0x1888f572c]
+    + 1 start  (in dyld) + 4740  [0x100edb534]
+    + ! 1 lsl::MemoryManager::writeProtect(bool)  (in dyld) + 656  [0x100f30224]
+    + !   1 vm_protect  (in dyld) + 52  [0x100ec13c0]
+    + !     1 _kernelrpc_mach_vm_protect_trap  (in dyld) + 8  [0x100ebd5b8]
+    + 1 start  (in dyld) + 4028  [0x18891326c]
+    +   1 dyld4::ExternallyViewableState::createMinimalInfo(lsl::Allocator&, unsigned long long, char const*, unsigned long long, char const*, DyldSharedCache const*)  (in dyld) + 2116  [0x18892d390]
+    +     1 dyld4::ExternallyViewableState::triggerNotifications(dyld_image_mode, unsigned int, dyld_image_info const*)  (in dyld) + 296  [0x18892dc60]
+    +       1 dyld4::RemoteNotificationResponder::blockOnSynchronousEvent(unsigned int)  (in dyld) + 48  [0x18896a6f4]
+    +         1 dyld4::RemoteNotificationResponder::sendMessage(int, unsigned int, mach_msg_header_t*)  (in dyld) + 244  [0x18896a368]
+    +           1 mach_msg_overwrite  (in dyld) + 244  [0x188983a40]
+    +             1 mach_msg2_internal  (in dyld) + 76  [0x188983898]
+    +               1 mach_msg2_trap  (in dyld) + 8  [0x1888f572c]
+    11430 Thread_23931971   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 11429 start  (in dyld) + 6992  [0x188913e00]
+    + ! 11429 main  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 52  [0x100cbef54]
+    + !   11429 _RNvNtCs106jutQF6X5_3std2rt19lang_start_internal  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 952  [0x100ceec40]
+    + !     11429 _RNCINvNtCs106jutQF6X5_3std2rt10lang_startuE0Csh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100c4ed94]  rt.rs:206
+    + !       11429 _RINvNtNtCs106jutQF6X5_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12  [0x100c36bc4]  backtrace.rs:166
+    + !         11429 _RNvCskVlA1Y7zLWT_4test16test_main_static  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 916  [0x100d0c0cc]
+    + !           11429 _RNvNtCskVlA1Y7zLWT_4test7console17run_tests_console  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 6256  [0x100d1bd4c]
+    + !             11429 _RNvMs1_NtNtNtCs106jutQF6X5_3std4sync4mpmc4listINtB5_7ChannelNtNtCskVlA1Y7zLWT_4test5event13CompletedTestE4recvB10_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 436  [0x100d12530]
+    + !               11429 _RNCNvMs1_NtNtNtCs106jutQF6X5_3std4sync4mpmc4listINtB7_7ChannelNtNtCskVlA1Y7zLWT_4test5event13CompletedTestE4recvs_0B12_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 312  [0x100d08aac]
+    + !                 11429 _dispatch_semaphore_wait_slow  (in libdispatch.dylib) + 76  [0x188b18ae8]
+    + !                   11429 _dispatch_sema4_timedwait  (in libdispatch.dylib) + 64  [0x188b4bdb8]
+    + !                     11429 semaphore_timedwait_trap  (in libsystem_kernel.dylib) + 8  [0x188c8dbc8]
+    + 1 start  (in dyld) + 6904  [0x188913da8]
+    +   1 dyld4::start(dyld4::KernelArgs*, void*, void*, unsigned long long)::$_1::operator()() const  (in dyld) + 320  [0x18891444c]
+    +     1 dyld4::prepare(dyld4::APIs&, mach_o::UnsafeHeader const*)  (in dyld) + 3880  [0x188915390]
+    +       1 dyld4::APIs::runAllInitializersForMain()  (in dyld) + 100  [0x188908850]
+    +         1 dyld4::PrebuiltLoader::runInitializers(dyld4::RuntimeState&) const  (in dyld) + 44  [0x188964fb8]
+    +           1 dyld4::Loader::findAndRunAllInitializers(dyld4::RuntimeState&) const  (in dyld) + 528  [0x18893b7d4]
+    +             1 dyld3::MachOAnalyzer::forEachInitializer(Diagnostics&, dyld3::MachOAnalyzer::VMAddrConverter const&, void (unsigned int) block_pointer, void const*) const  (in dyld) + 516  [0x18894bc08]
+    +               1 mach_o::UnsafeHeader::forEachSection(void (mach_o::UnsafeHeader::SectionInfo const&, bool&) block_pointer) const  (in dyld) + 124  [0x188980c3c]
+    +                 1 mach_o::UnsafeHeader::forEachLoadCommand(void (load_command const*, bool&) block_pointer) const  (in dyld) + 208  [0x18897f394]
+    +                   1 invocation function for block in mach_o::UnsafeHeader::forEachSection(void (mach_o::UnsafeHeader::SectionInfo const&, bool&) block_pointer) const  (in dyld) + 312  [0x188982860]
+    +                     1 invocation function for block in dyld3::MachOAnalyzer::forEachInitializer(Diagnostics&, dyld3::MachOAnalyzer::VMAddrConverter const&, void (unsigned int) block_pointer, void const*) const  (in dyld) + 320  [0x18894c114]
+    +                       1 invocation function for block in dyld4::Loader::findAndRunAllInitializers(dyld4::RuntimeState&) const::$_0::operator()() const  (in dyld) + 180  [0x188940e30]
+    +                         1 libSystem_initializer  (in libSystem.B.dylib) + 400  [0x198b213ec]
+    +                           1 os_variant_has_internal_diagnostics  (in libsystem_darwin.dylib) + 20  [0x18cca8c78]
+    11429 Thread_23932069: cycle::tests::natural_length_ab_on_the_nxp_proxy
+      11428 thread_start  (in libsystem_pthread.dylib) + 8  [0x188cccc1c]
+      ! 11428 _pthread_start  (in libsystem_pthread.dylib) + 136  [0x188cd1c58]
+      !   11428 _RNvNvMs0_NtNtNtCs106jutQF6X5_3std3sys6thread4unixNtB7_6Thread3new12thread_start  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 400  [0x100cf5940]
+      !     11428 _RNSNvYNCINvNtNtCs106jutQF6X5_3std6thread9lifecycle15spawn_uncheckedNCNvCskVlA1Y7zLWT_4test8run_tests_0uEs_0INtNtNtCsaTNopw4qKPP_4core3ops8function6FnOnceuE9call_once6vtableB17_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100d0a90c]
+      !       11428 _RINvNtNtCs106jutQF6X5_3std3sys9backtrace28___rust_begin_short_backtraceNCNvCskVlA1Y7zLWT_4test8run_tests_0uEB1b_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 136  [0x100d026e8]
+      !         11428 _RNCNvCskVlA1Y7zLWT_4test8run_test0B3_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 656  [0x100d077bc]
+      !           11428 _RINvCskVlA1Y7zLWT_4test28___rust_begin_short_backtraceINtNtCsaTNopw4qKPP_4core6result6ResultuNtNtCs3XW7gbOxCtj_5alloc6string6StringEFEBQ_EB2_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 24  [0x100cfc40c]
+      !             10701 _RNvYNCNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests34natural_length_ab_on_the_nxp_proxy0INtNtNtCsaTNopw4qKPP_4core3ops8function6FnOnceuE9call_onceBa_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1076  [0x100ca4294]  function.rs:250
+      !             : 10701 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle29production_quality_checkpoint  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 288  [0x100c78638]  mod.rs:3088
+      !             :   3531 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 644  [0x100c5c0d0]  mod.rs:3135
+      !             :   | 3409 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 628  [0x100c7df88]  mod.rs:2978
+      !             :   | + 1780 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,140,...  [0x100c11924,0x100c118f8,...]  mod.rs:245
+      !             :   | + 1599 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + ! 1580 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + ! 7 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + ! : 7 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + ! :   5 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + ! :   | 5 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + ! :   |   4 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + ! :   |   + 4 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + ! :   |   +   2 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+      !             :   | + ! :   |   +   ! 2 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 8  [0x188aee8c8]
+      !             :   | + ! :   |   +   2 xzm_realloc  (in libsystem_malloc.dylib) + 852  [0x188aeee48]
+      !             :   | + ! :   |   +     2 _platform_memmove  (in libsystem_platform.dylib) + 460  [0x188cdb52c]
+      !             :   | + ! :   |   1 _realloc  (in libsystem_malloc.dylib) + 252  [0x188afedc8]
+      !             :   | + ! :   |     1 xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 0  [0x188af94a4]
+      !             :   | + ! :   2 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68,84  [0x100d30ab4,0x100d30ac4]  mod.rs:528
+      !             :   | + ! 3 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 392,568  [0x100c12224,0x100c122d4]  mod.rs:165
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 36  [0x100c120c0]  mod.rs:131
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 472  [0x100c12274]  mod.rs:156
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520,548  [0x100c122a4,0x100c122c0]  mod.rs:162
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 456  [0x100c12264]  mod.rs:155
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 624  [0x100c1230c]  mod.rs:160
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c121c4]  mod.rs:173
+      !             :   | + 11 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 660,696,...  [0x100c11b00,0x100c11b24,...]  mod.rs:249
+      !             :   | + 8 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 624  [0x100c11adc]  mod.rs:249
+      !             :   | + ! 6 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 792,220,...  [0x100c1165c,0x100c11420,...]  mod.rs:285
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 92,132  [0x100c113a0,0x100c113c8]  mod.rs:279
+      !             :   | + 6 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 736  [0x100c11b4c]  mod.rs:249
+      !             :   | + ! 5 _RINvNvMs2_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100d31d9c]  mod.rs:668
+      !             :   | + ! : 4 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 228  [0x100d32124]  mod.rs:556
+      !             :   | + ! : | 4 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + ! : |   4 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + ! : |     2 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   | + ! : |     + 1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   | + ! : |     + ! 1 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   | + ! : |     + 1 _xzm_free  (in libsystem_malloc.dylib) + 624  [0x188aef2dc]
+      !             :   | + ! : |     2 xzm_realloc  (in libsystem_malloc.dylib) + 264,292  [0x188aeebfc,0x188aeec18]
+      !             :   | + ! : 1 _realloc  (in libsystem_malloc.dylib) + 496  [0x188afeebc]
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 624  [0x100c11adc]  mod.rs:249
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c11344]  mod.rs:274
+      !             :   | + 4 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 328  [0x100c119b4]  mod.rs:249
+      !             :   | + ! 3 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 248,444,...  [0x100c1143c,0x100c11500,...]  mod.rs:285
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 180  [0x100c113f8]  mod.rs:282
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 312  [0x100c121d4]  mod.rs:173
+      !             :   | 95 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 704  [0x100c7dfd4]  mod.rs:2987
+      !             :   | + 84 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | + ! 19 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   | + ! : 6 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c2518c]  mod.rs:15
+      !             :   | + ! : | 6 atan2  (in libsystem_m.dylib) + 412,84,...  [0x198a7ca9c,0x198a7c954,...]
+      !             :   | + ! : 5 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 156  [0x100c25158]  mod.rs:13
+      !             :   | + ! : | 5 atan2  (in libsystem_m.dylib) + 100,388,...  [0x198a7c964,0x198a7ca84,...]
+      !             :   | + ! : 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c2517c]  mod.rs:14
+      !             :   | + ! : | 1 DYLD-STUB$$asin  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a3e4]
+      !             :   | + ! : | 1 asin  (in libsystem_m.dylib) + 36  [0x198a80fa8]
+      !             :   | + ! : 2 asin  (in libsystem_m.dylib) + 208  [0x198a81054]
+      !             :   | + ! : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 152  [0x100c25154]  mod.rs:13
+      !             :   | + ! : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 244  [0x100c251b0]  mod.rs:16
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x25484  [0x198a9e484]
+      !             :   | + ! : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   | + ! : | 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   | + ! : |   1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10a8  [0x198a7a0a8]
+      !             :   | + ! : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 300  [0x100c251e8]  mod.rs:24
+      !             :   | + ! :   1 DYLD-STUB$$cos  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a45c]
+      !             :   | + ! 8 asin  (in libsystem_m.dylib) + 232,76,...  [0x198a8106c,0x198a80fd0,...]
+      !             :   | + ! 7 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+      !             :   | + ! : 2 DYLD-STUB$$cos  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a45c]
+      !             :   | + ! : 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x108c  [0x198a7a08c]
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1094  [0x198a7a094]
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             :   | + ! : 1 cos  (in libsystem_m.dylib) + 16  [0x198a79ae4]
+      !             :   | + ! 6 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c25300]  mod.rs:36
+      !             :   | + ! : 6 atan2  (in libsystem_m.dylib) + 360,480,...  [0x198a7ca68,0x198a7cae0,...]
+      !             :   | + ! 5 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 516  [0x100c25444]  mod.rs:37
+      !             :   | + ! : 5 atan2  (in libsystem_m.dylib) + 648,36,...  [0x198a7cb88,0x198a7c924,...]
+      !             :   | + ! 5 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :   | + ! : 5 atan2  (in libsystem_m.dylib) + 188,268,...  [0x198a7c9bc,0x198a7ca0c,...]
+      !             :   | + ! 4 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 248  [0x100c25338]  mod.rs:36
+      !             :   | + ! : 4 atan2  (in libsystem_m.dylib) + 268,336,...  [0x198a7ca0c,0x198a7ca50,...]
+      !             :   | + ! 4 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 556  [0x100c2546c]  mod.rs:37
+      !             :   | + ! : 2 asin  (in libsystem_m.dylib) + 32  [0x198a80fa4]
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x253b4  [0x198a9e3b4]
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x25484  [0x198a9e484]
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2541c  [0x198a9e41c]
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2546c  [0x198a9e46c]
+      !             :   | + ! 4 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 432,484,...  [0x100c253f0,0x100c25424,...]  mod.rs:37
+      !             :   | + ! 4 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 768  [0x100c25540]  mod.rs:40
+      !             :   | + ! : 3 tan  (in libsystem_m.dylib) + 388,36  [0x198a79f3c,0x198a79ddc]
+      !             :   | + ! : 1 DYLD-STUB$$tan  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a8b8]
+      !             :   | + ! 3 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 232  [0x100c25328]  mod.rs:36
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x253c0  [0x198a9e3c0]
+      !             :   | + ! : 1 DYLD-STUB$$asin  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a3e4]
+      !             :   | + ! : 1 asin  (in libsystem_m.dylib) + 12  [0x198a80f90]
+      !             :   | + ! 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 284  [0x100c2535c]  mod.rs:36
+      !             :   | + ! : 1 DYLD-STUB$$asin  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a3e4]
+      !             :   | + ! : 1 asin  (in libsystem_m.dylib) + 32  [0x198a80fa4]
+      !             :   | + ! :   1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x253d8  [0x198a9e3d8]
+      !             :   | + ! 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 80  [0x100c25290]  mod.rs:36
+      !             :   | + ! 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 800  [0x100c25560]  mod.rs:42
+      !             :   | + ! : 2 tan  (in libsystem_m.dylib) + 4,372  [0x198a79dbc,0x198a79f2c]
+      !             :   | + ! 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 836  [0x100c25584]  mod.rs:45
+      !             :   | + ! : 2 atan  (in libsystem_m.dylib) + 940,1024  [0x198a804c8,0x198a8051c]
+      !             :   | + ! 2 tan  (in libsystem_m.dylib) + 392  [0x198a79f40]
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 316  [0x100c2537c]  mod.rs:36
+      !             :   | + ! : 1 sin  (in libsystem_m.dylib) + 40  [0x198a79990]
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 344  [0x100c25398]  mod.rs:36
+      !             :   | + ! : 1 cos  (in libsystem_m.dylib) + 36  [0x198a79af8]
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 640  [0x100c254c0]  mod.rs:37
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 668  [0x100c254dc]  mod.rs:37
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 816  [0x100c25570]  mod.rs:43
+      !             :   | + !   1 tan  (in libsystem_m.dylib) + 352  [0x198a79f18]
+      !             :   | + 5 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 504  [0x100c0e428]  mod.rs:65
+      !             :   | + ! 2 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             :   | + ! : 2 mach_absolute_time  (in libsystem_kernel.dylib) + 16,108  [0x188c8e0b0,0x188c8e10c]
+      !             :   | + ! 2 _xzm_free  (in libsystem_malloc.dylib) + 196,636  [0x188aef130,0x188aef2e8]
+      !             :   | + ! 1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   | + !   1 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   | + 4 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 488,448  [0x100c0e418,0x100c0e3f0]  mod.rs:64
+      !             :   | + 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 848,876  [0x100c25590,0x100c255ac]  mod.rs:46
+      !             :   | 15 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 992  [0x100c7e0f4]  mod.rs:3005
+      !             :   | + 6 _RNvXs0_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB5_11TargetScaleNtB5_13CellCriterion8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 256  [0x100c89484]  mod.rs:173
+      !             :   | + ! 3 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB4_12TargetRegion8contains  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 160  [0x100c5880c]  mod.rs:153
+      !             :   | + ! : 2 __sincos_stret  (in libsystem_m.dylib) + 348  [0x198a79d74]
+      !             :   | + ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             :   | + ! 2 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB4_12TargetRegion8contains  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 180  [0x100c58820]  mod.rs:154
+      !             :   | + ! : 1 __sincos_stret  (in libsystem_m.dylib) + 372  [0x198a79d8c]
+      !             :   | + ! : | 1 __sincos_stret  (in libsystem_m.dylib) + 372  [0x198a79d8c]
+      !             :   | + ! : |   1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1150  [0x198a7a150]
+      !             :   | + ! : 1 __sincos_stret  (in libsystem_m.dylib) + 392  [0x198a79da0]
+      !             :   | + ! :   1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1144  [0x198a7a144]
+      !             :   | + ! 1 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB4_12TargetRegion8contains  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 196  [0x100c58830]  mod.rs:154
+      !             :   | + !   1 __sincos_stret  (in libsystem_m.dylib) + 392  [0x198a79da0]
+      !             :   | + !     1 __sincos_stret  (in libsystem_m.dylib) + 392  [0x198a79da0]
+      !             :   | + !       1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10a8  [0x198a7a0a8]
+      !             :   | + 5 _RNvXs0_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB5_11TargetScaleNtB5_13CellCriterion8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 268  [0x100c89490]  mod.rs:176
+      !             :   | + ! 5 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | + !   2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   | + !   : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c2517c]  mod.rs:14
+      !             :   | + !   : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2546c  [0x198a9e46c]
+      !             :   | + !   : 1 asin  (in libsystem_m.dylib) + 48  [0x198a80fb4]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 516  [0x100c25444]  mod.rs:37
+      !             :   | + !   : 1 atan2  (in libsystem_m.dylib) + 400  [0x198a7ca90]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :   | + !   : 1 atan2  (in libsystem_m.dylib) + 620  [0x198a7cb6c]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 836  [0x100c25584]  mod.rs:45
+      !             :   | + !     1 atan  (in libsystem_m.dylib) + 0  [0x198a8011c]
+      !             :   | + 2 _RNvXs0_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB5_11TargetScaleNtB5_13CellCriterion8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c89454]  mod.rs:172
+      !             :   | + ! 1 DYLD-STUB$$atan2  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a3fc]
+      !             :   | + ! 1 atan2  (in libsystem_m.dylib) + 412  [0x198a7ca9c]
+      !             :   | + 1 _RNvXs0_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB5_11TargetScaleNtB5_13CellCriterion8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 496  [0x100c89574]  mod.rs:0
+      !             :   | + ! 1 _platform_memmove  (in libsystem_platform.dylib) + 452  [0x188cdb524]
+      !             :   | + 1 _RNvXs0_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteriaNtB5_11TargetScaleNtB5_13CellCriterion8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c89554]  mod.rs:0
+      !             :   | 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1768  [0x100c7e3fc]  mod.rs:3045
+      !             :   | + 2 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   | + ! 2 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   | + 2 _xzm_free  (in libsystem_malloc.dylib) + 48,164  [0x188aef09c,0x188aef110]
+      !             :   | 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1032,1048,...  [0x100c7e11c,0x100c7e12c,...]  mod.rs:3005
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1128  [0x100c7e17c]  mod.rs:3010
+      !             :   | + 2 _xzm_free  (in libsystem_malloc.dylib) + 164,580  [0x188aef110,0x188aef2b0]
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1784  [0x100c7e40c]  mod.rs:3045
+      !             :   | + 2 _xzm_free  (in libsystem_malloc.dylib) + 20,124  [0x188aef080,0x188aef0e8]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle8evaluate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1448  [0x100c7e2bc]  mod.rs:3045
+      !             :   3486 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 752  [0x100c5c13c]  mod.rs:3141
+      !             :   | 1884 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 260,292,...  [0x100c66d9c,0x100c66dbc,...]  mod.rs:111
+      !             :   | 1596 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 324  [0x100c66ddc]  mod.rs:111
+      !             :   | + 1583 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + 7 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + ! 7 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !   7 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !     6 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + !     : 6 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + !     :   5 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + !     :   | 2 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+      !             :   | + !     :   | + 1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 112  [0x188aee144]
+      !             :   | + !     :   | + 1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 24  [0x188aee8d8]
+      !             :   | + !     :   | 2 xzm_realloc  (in libsystem_malloc.dylib) + 292,1056  [0x188aeec18,0x188aeef14]
+      !             :   | + !     :   | 1 xzm_realloc  (in libsystem_malloc.dylib) + 852  [0x188aeee48]
+      !             :   | + !     :   |   1 DYLD-STUB$$_platform_memmove  (in libsystem_malloc.dylib) + 12  [0x188b06818]
+      !             :   | + !     :   1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 144  [0x188afe670]
+      !             :   | + !     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 36  [0x100d30a0c]  mod.rs:548
+      !             :   | + 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 492,520  [0x100c12288,0x100c122a4]  mod.rs:162
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 332  [0x100c121e8]  mod.rs:0
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100c120dc]  mod.rs:141
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 164  [0x100c12140]  mod.rs:151
+      !             :   | + ! 1 _RNvNtCs3XW7gbOxCtj_5alloc5boxed14box_new_uninit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100c1b938]  boxed.rs:248
+      !             :   | + !   1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 32  [0x188aee8e0]
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 404  [0x100c12230]  range.rs:0
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 720  [0x100c66f68]  mod.rs:126
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1208  [0x100c67150]  mod.rs:132
+      !             :   | + 2 _xzm_free  (in libsystem_malloc.dylib) + 0  [0x188aef06c]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 448  [0x100c66e58]  mod.rs:0
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 904  [0x100c67020]  mod.rs:116
+      !             :   1085 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1580  [0x100c5c478]  mod.rs:3183
+      !             :   | 909 _RNvMs5_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh23refine_cell_with_ladder  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 172  [0x100c567d4]  mod.rs:913
+      !             :   | + 847 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2676  [0x100c18c64]  mod.rs:403
+      !             :   | + ! 564 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 148,108,...  [0x100c11cb4,0x100c11c8c,...]  mod.rs:205
+      !             :   | + ! 283 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+      !             :   | + !   282 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + !     1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !         1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + !           1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + !             1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + !               1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   | + !                 1 _xzm_free  (in libsystem_malloc.dylib) + 580  [0x188aef2b0]
+      !             :   | + 57 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 52  [0x100c18224]  mod.rs:379
+      !             :   | + ! 54 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 52  [0x100c18224]  mod.rs:379
+      !             :   | + ! : 54 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15locate_triangle  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 160,180,...  [0x100c16d78,0x100c16d8c,...]  mod.rs:195
+      !             :   | + ! 2 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15locate_triangle  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 440  [0x100c16e90]  mod.rs:208
+      !             :   | + ! : 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh15mesh_predicates16determinant_sign  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 188,536  [0x100c1f188,0x100c1f2e4]
+      !             :   | + ! 1 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15locate_triangle  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 380  [0x100c16e54]  mod.rs:198
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh15mesh_predicates16determinant_sign  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 180  [0x100c1f180]
+      !             :   | + 3 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2328  [0x100c18b08]  mod.rs:423
+      !             :   | + ! 2 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             :   | + ! : 2 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188c8e10c]
+      !             :   | + ! 1 _RINvNtCsaTNopw4qKPP_4core3ptr9drop_glueINtNtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3set8BTreeSetAjj2_EECs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100c04f34]  mod.rs:825
+      !             :   | + 2 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 96  [0x100c18250]  mod.rs:380
+      !             :   | +   1 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15delaunay_cavity  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 100  [0x100c1677c]  mod.rs:241
+      !             :   | +   : 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c1ad50]  map.rs:1045
+      !             :   | +   1 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15delaunay_cavity  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1156  [0x100c16b9c]  mod.rs:265
+      !             :   | +     1 _xzm_free  (in libsystem_malloc.dylib) + 48  [0x188aef09c]
+      !             :   | 159 _RNvMs5_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh23refine_cell_with_ladder  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 808  [0x100c56a50]  mod.rs:938
+      !             :   | + 105 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 444  [0x100c545bc]  mod.rs:521
+      !             :   | + ! 102 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2112  [0x100c5b5ec]  mod.rs:419
+      !             :   | + ! : 101 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | + ! : 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 528  [0x100c122ac]  mod.rs:162
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 412  [0x100c5af48]  mod.rs:264
+      !             :   | + ! : 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 116  [0x100c59824]  map.rs:1049
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 484  [0x100c5af90]  mod.rs:264
+      !             :   | + ! : 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 268  [0x100c598bc]  map.rs:1052
+      !             :   | + ! :   1 _platform_memmove  (in libsystem_platform.dylib) + 684  [0x188cdb60c]
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1816  [0x100c5b4c4]  mod.rs:414
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState14sites_touching  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 496  [0x100c11f40]  mod.rs:223
+      !             :   | + !     1 _RNvMs4_NtNtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3map5entryINtB5_11VacantEntryjjE12insert_entryCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 160  [0x100c1a388]  entry.rs:394
+      !             :   | + !       1 _platform_memmove  (in libsystem_platform.dylib) + 676  [0x188cdb604]
+      !             :   | + 31 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 324  [0x100c54544]  mod.rs:509
+      !             :   | + ! 27 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState23insert_site_with_cavity  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 408  [0x100c1971c]  mod.rs:617
+      !             :   | + ! 4 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState23insert_site_with_cavity  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2416  [0x100c19ef4]  mod.rs:678
+      !             :   | + !   2 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState23repair_adjacency_across  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2432  [0x100c15ad0]  mod.rs:554
+      !             :   | + !   | 1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   | + !   | + 1 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   | + !   | 1 _xzm_free  (in libsystem_malloc.dylib) + 256  [0x188aef16c]
+      !             :   | + !   1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState23repair_adjacency_across  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1028  [0x100c15554]  mod.rs:532
+      !             :   | + !   | 1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !   |   1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !   |     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 92  [0x100d30a44]  mod.rs:559
+      !             :   | + !   |       1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 12  [0x188afe044]
+      !             :   | + !   1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState23repair_adjacency_across  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2060  [0x100c1595c]  mod.rs:542
+      !             :   | + 20 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 72  [0x100c54448]  mod.rs:485
+      !             :   | + ! 20 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 72  [0x100c54448]  mod.rs:485
+      !             :   | + !   20 _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15locate_triangle  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 160  [0x100c16d78]  mod.rs:195
+      !             :   | + 2 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c544d0]  mod.rs:493
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c11004]  mod.rs:103
+      !             :   | + ! : 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 168  [0x100c1adf8]  map.rs:1052
+      !             :   | + ! :   1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 136  [0x188aee15c]
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 620  [0x100c11148]  mod.rs:122
+      !             :   | + 1 _RNvMs2_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh17propose_site_near  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 792  [0x100c54718]  mod.rs:540
+      !             :   | +   1 _RNvMsz_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8IntoIterNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5state6SiteIdNtNtB7_7set_val9SetValZSTE10dying_nextB1b_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 332  [0x100c5a728]  map.rs:1936
+      !             :   | +     1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             :   | +       1 mach_absolute_time  (in libsystem_kernel.dylib) + 16  [0x188c8e0b0]
+      !             :   | 17 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1164,1160  [0x100c5c2d8,0x100c5c2d4]  mod.rs:3171
+      !             :   993 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 13740  [0x100c5f3f8]  mod.rs:3449
+      !             :   | 549 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 600  [0x100c68090]  mod.rs:230
+      !             :   | + 321 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             :   | + ! 194 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,172,...  [0x100c11924,0x100c11918,...]  mod.rs:245
+      !             :   | + ! 124 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + ! : 122 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + ! : 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520  [0x100c122a4]  mod.rs:162
+      !             :   | + ! : 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + ! :   1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + ! :     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + ! :       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + ! :         1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + ! :           1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + ! :             1 xzm_realloc  (in libsystem_malloc.dylib) + 416  [0x188aeec94]
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 624  [0x100c11adc]  mod.rs:249
+      !             :   | + ! : 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 676,932  [0x100c115e8,0x100c116e8]  mod.rs:285
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 584  [0x100c11ab4]  mod.rs:249
+      !             :   | + 221 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             :   | + 6 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             :   | + ! 6 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | + !   3 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   | + !   : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c2518c]  mod.rs:15
+      !             :   | + !   : | 1 atan2  (in libsystem_m.dylib) + 196  [0x198a7c9c4]
+      !             :   | + !   : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   | + !   : | 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   | + !   : |   1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1080  [0x198a7a080]
+      !             :   | + !   : 1 asin  (in libsystem_m.dylib) + 136  [0x198a8100c]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 384  [0x100c253c0]  mod.rs:36
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :   | + !   : 1 atan2  (in libsystem_m.dylib) + 620  [0x198a7cb6c]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 768  [0x100c25540]  mod.rs:40
+      !             :   | + !     1 tan  (in libsystem_m.dylib) + 388  [0x198a79f3c]
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 364  [0x100c65084]  mod.rs:254
+      !             :   | +   1 _xzm_free  (in libsystem_malloc.dylib) + 0  [0x188aef06c]
+      !             :   | 226 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 316  [0x100c67f74]  mod.rs:229
+      !             :   | + 131 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             :   | + ! 74 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 172,140,...  [0x100c11918,0x100c118f8,...]  mod.rs:245
+      !             :   | + ! 57 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + !   56 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 540  [0x100c122b8]  mod.rs:162
+      !             :   | + 91 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             :   | + 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             :   | +   4 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 284  [0x100c2535c]  mod.rs:36
+      !             :   | +     : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x25484  [0x198a9e484]
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 316  [0x100c2537c]  mod.rs:36
+      !             :   | +     : 1 DYLD-STUB$$sin  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a87c]
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 432  [0x100c253f0]  mod.rs:37
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 816  [0x100c25570]  mod.rs:43
+      !             :   | +       1 tan  (in libsystem_m.dylib) + 300  [0x198a79ee4]
+      !             :   | 136 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1436  [0x100c683d4]  mod.rs:214
+      !             :   | + 136 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1208,1184,...  [0x100c682f0,0x100c682d8,...]  mod.rs:208
+      !             :   | 68 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1244  [0x100c68314]  mod.rs:208
+      !             :   | + 66 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 528  [0x100c122ac]  mod.rs:162
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | +   1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | +     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | +       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | +         1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | +           1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | +             1 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+      !             :   | +               1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 64  [0x188aee900]
+      !             :   | 10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 13740  [0x100c5f3f8]  mod.rs:3449
+      !             :   | + 10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1196,1140,...  [0x100c682e4,0x100c682ac,...]  mod.rs:208
+      !             :   | 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 168  [0x100c67ee0]  mod.rs:220
+      !             :   | + 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c67f48]  mod.rs:229
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 556  [0x100c68064]  mod.rs:230
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1416  [0x100c683c0]  mod.rs:211
+      !             :   |   1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapTjjENtNtB7_7set_val9SetValZSTE6insertCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 128  [0x100c59244]  map.rs:1049
+      !             :   721 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12080  [0x100c5ed7c]  mod.rs:3431
+      !             :   | 393 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 600  [0x100c68090]  mod.rs:230
+      !             :   | + 234 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             :   | + ! 142 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,172,...  [0x100c11924,0x100c11918,...]  mod.rs:245
+      !             :   | + ! 92 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + !   90 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520  [0x100c122a4]  mod.rs:162
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + !     1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !         1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + !           1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + !             1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + !               1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   | + !                 1 _xzm_free  (in libsystem_malloc.dylib) + 196  [0x188aef130]
+      !             :   | + 154 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             :   | + 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             :   | + ! 4 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | + !   2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   | + !   : 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c2518c]  mod.rs:15
+      !             :   | + !   :   2 atan2  (in libsystem_m.dylib) + 148,420  [0x198a7c994,0x198a7caa4]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 516  [0x100c25444]  mod.rs:37
+      !             :   | + !   : 1 atan2  (in libsystem_m.dylib) + 608  [0x198a7cb60]
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 784  [0x100c25550]  mod.rs:41
+      !             :   | + !     1 tan  (in libsystem_m.dylib) + 324  [0x198a79efc]
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 380  [0x100c65094]  mod.rs:254
+      !             :   | +   1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   | +     1 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   | 173 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 316  [0x100c67f74]  mod.rs:229
+      !             :   | + 103 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             :   | + ! 62 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 152,172,...  [0x100c11904,0x100c11918,...]  mod.rs:245
+      !             :   | + ! 41 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + !   40 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + !   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520  [0x100c122a4]  mod.rs:162
+      !             :   | + 67 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             :   | + 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             :   | +   3 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+      !             :   | +     : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :   | +     : 1 atan2  (in libsystem_m.dylib) + 652  [0x198a7cb8c]
+      !             :   | +     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   | +       1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 284  [0x100c251d8]  mod.rs:22
+      !             :   | +         1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             :   | 92 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1436  [0x100c683d4]  mod.rs:214
+      !             :   | + 92 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1196,1184,...  [0x100c682e4,0x100c682d8,...]  mod.rs:208
+      !             :   | 53 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1244  [0x100c68314]  mod.rs:208
+      !             :   | + 52 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520  [0x100c122a4]  mod.rs:162
+      !             :   | 10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12080  [0x100c5ed7c]  mod.rs:3431
+      !             :   |   10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1164,1208,...  [0x100c682c4,0x100c682f0,...]  mod.rs:208
+      !             :   452 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 264  [0x100c5bf54]  mod.rs:3108
+      !             :   | 452 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17median_cell_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 220  [0x100c69338]  mod.rs:1871
+      !             :   |   240 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             :   |   + 137 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,172,...  [0x100c11924,0x100c11918,...]  mod.rs:245
+      !             :   |   + 99 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   |   + ! 97 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   |   + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   |   + !   2 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   |   + !     2 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   |   + !       2 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   |   + !         1 _realloc  (in libsystem_malloc.dylib) + 252  [0x188afedc8]
+      !             :   |   + !         | 1 xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 604  [0x188af9700]
+      !             :   |   + !         1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   |   + !           1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   |   + !             1 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+      !             :   |   + !               1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 168  [0x188aee968]
+      !             :   |   + 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 736  [0x100c11b4c]  mod.rs:249
+      !             :   |   + ! 2 _RINvNvMs2_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100d31d9c]  mod.rs:668
+      !             :   |   + !   2 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 228  [0x100d32124]  mod.rs:556
+      !             :   |   + !     1 _realloc  (in libsystem_malloc.dylib) + 252  [0x188afedc8]
+      !             :   |   + !     : 1 xzm_malloc_zone_size  (in libsystem_malloc.dylib) + 108  [0x188af9510]
+      !             :   |   + !     1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   |   + !       1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   |   + !         1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   |   + !           1 _xzm_free  (in libsystem_malloc.dylib) + 48  [0x188aef09c]
+      !             :   |   + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 660  [0x100c11b00]  mod.rs:249
+      !             :   |   + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 312  [0x100c121d4]  mod.rs:173
+      !             :   |   201 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             :   |   10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             :   |   + 10 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :   |   +   3 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :   |   +   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c2517c]  mod.rs:14
+      !             :   |   +   ! : 1 asin  (in libsystem_m.dylib) + 0  [0x198a80f84]
+      !             :   |   +   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c2518c]  mod.rs:15
+      !             :   |   +   ! : 1 atan2  (in libsystem_m.dylib) + 344  [0x198a7ca58]
+      !             :   |   +   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   |   +   !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   |   +   !     1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x108c  [0x198a7a08c]
+      !             :   |   +   2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c25300]  mod.rs:36
+      !             :   |   +   ! 2 atan2  (in libsystem_m.dylib) + 268,592  [0x198a7ca0c,0x198a7cb50]
+      !             :   |   +   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 248  [0x100c25338]  mod.rs:36
+      !             :   |   +   ! 1 atan2  (in libsystem_m.dylib) + 332  [0x198a7ca4c]
+      !             :   |   +   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 80  [0x100c25290]  mod.rs:36
+      !             :   |   +   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :   |   +   ! 1 atan2  (in libsystem_m.dylib) + 268  [0x198a7ca0c]
+      !             :   |   +   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 680  [0x100c254e8]  mod.rs:37
+      !             :   |   +   ! 1 cos  (in libsystem_m.dylib) + 296  [0x198a79bfc]
+      !             :   |   +   1 asin  (in libsystem_m.dylib) + 232  [0x198a8106c]
+      !             :   |   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 364  [0x100c65084]  mod.rs:254
+      !             :   |     1 _xzm_free  (in libsystem_malloc.dylib) + 220  [0x188aef148]
+      !             :   210 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 19108  [0x100c608f0]  mod.rs:3340
+      !             :   | 130 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 780  [0x100c303b8]  mod.rs:664
+      !             :   | + 122 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2112  [0x100c5b5ec]  mod.rs:419
+      !             :   | + ! 119 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + ! 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 492,520  [0x100c12288,0x100c122a4]  mod.rs:162
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 472  [0x100c12274]  mod.rs:156
+      !             :   | + 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1180  [0x100c5b248]  mod.rs:343
+      !             :   | + ! 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria12triangle_eta  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 36  [0x100c80984]  mod.rs:318
+      !             :   | + ! : 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 244  [0x100c251b0]  mod.rs:16
+      !             :   | + ! : | 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2546c  [0x198a9e46c]
+      !             :   | + ! : 1 asin  (in libsystem_m.dylib) + 84  [0x198a80fd8]
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria12triangle_eta  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 116  [0x100c809d4]  mod.rs:319
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 156  [0x100c25158]  mod.rs:13
+      !             :   | + !     1 atan2  (in libsystem_m.dylib) + 84  [0x198a7c954]
+      !             :   | + 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 944  [0x100c5b15c]  mod.rs:291
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria19triangle_angles_deg  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 380  [0x100c80cc8]  mod.rs:294
+      !             :   | + ! 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria19triangle_angles_deg  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 552  [0x100c80d74]  mod.rs:301
+      !             :   | + !   1 acos  (in libsystem_m.dylib) + 272  [0x198a7ff28]
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 412  [0x100c5af48]  mod.rs:264
+      !             :   | + ! 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100c597f0]  map.rs:1049
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1168  [0x100c5b23c]  mod.rs:318
+      !             :   | + ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh27spherical_circumcenter_mesh28circumcenter_is_local_enough  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 304  [0x100c27044]  mod.rs:30
+      !             :   | + !   1 acos  (in libsystem_m.dylib) + 12  [0x198a7fe24]
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2352  [0x100c5b6dc]  mod.rs:438
+      !             :   | +   1 _RNvMsz_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8IntoIterjdE10dying_nextCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100c5ac3c]  map.rs:1940
+      !             :   | 33 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 76  [0x100c300f8]  mod.rs:608
+      !             :   | + 17 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 124,136,...  [0x100c549ec,0x100c549f8,...]  mod.rs:548
+      !             :   | + 15 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c54a40]  mod.rs:548
+      !             :   | + ! 15 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | + 1 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 320  [0x100c54ab0]  mod.rs:549
+      !             :   | +   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 348  [0x100c11038]  mod.rs:104
+      !             :   | +     1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 236  [0x100c1ae3c]  map.rs:1052
+      !             :   | 25 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 808  [0x100c303d4]  mod.rs:668
+      !             :   | + 25 _RNCNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycless0_0B5_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 36  [0x100c4f0d8]  mod.rs:3332
+      !             :   | +   16 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 128,148,...  [0x100c11ca0,0x100c11cb4,...]  mod.rs:205
+      !             :   | +   9 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+      !             :   | +     9 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | 19 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 320  [0x100c301ec]  mod.rs:648
+      !             :   | + 15 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 72,92  [0x100c128e4,0x100c128f8]  mod.rs:219
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 472  [0x100c12a74]  mod.rs:224
+      !             :   | + ! 1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 548  [0x188af40f8]
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1484  [0x100c12e68]  mod.rs:231
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15edge_is_illegal  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 320  [0x100c127d4]  mod.rs:181
+      !             :   | + !   1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh15mesh_predicates19in_circle_on_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 288  [0x100c1f50c]  mod.rs:0
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1444  [0x100c12e40]  mod.rs:243
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState9flip_edge  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 764  [0x100c13514]  mod.rs:154
+      !             :   | + !   1 _RINvXs2J_NtNtCsaTNopw4qKPP_4core5slice4iterINtB7_4IterjENtNtNtNtBb_4iter6traits8iterator8Iterator4folduNCINvNtNtBY_8adapters6copied9copy_foldjuNCINvNtB1K_6filter11filter_foldjuNCNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB2Y_10mesh_state9MeshState9flip_edges0_0NCINvNvBS_8for_each4calljNCINvXsl_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3setINtB4S_8BTreeSetjEINtNtBW_7collect6ExtendjE6extendINtB2m_6FilterINtB1I_6CopiedBF_EB2O_EE0E0E0E0EB2Y_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 56  [0x100c0acfc]  macros.rs:284
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1748  [0x100c12f70]  mod.rs:243
+      !             :   | +   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState9flip_edge  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 808  [0x100c13540]  mod.rs:161
+      !             :   | +     1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState23repair_adjacency_across  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2432  [0x100c15ad0]  mod.rs:554
+      !             :   | +       1 _xzm_free  (in libsystem_malloc.dylib) + 1536  [0x188aef66c]
+      !             :   | 2 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 168  [0x100c30154]  mod.rs:619
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 640  [0x100c1115c]  mod.rs:122
+      !             :   | + 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 220  [0x100c1ae2c]  map.rs:1056
+      !             :   | 1 _RINvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB8_5state12AdaptiveMesh19propose_move_cachedjEB8_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1568  [0x100c306cc]  mod.rs:710
+      !             :   |   1 _RNvMsz_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8IntoIterNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5state6SiteIdNtNtB7_7set_val9SetValZSTE10dying_nextB1b_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100c5a61c]  map.rs:1940
+      !             :   75 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 13668  [0x100c5f3b0]  mod.rs:3449
+      !             :   | 70 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2112  [0x100c5b5ec]  mod.rs:419
+      !             :   | + 67 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | + 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + ! 2 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !   2 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + !     : 1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + !     :   1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + !     :     1 xzm_realloc  (in libsystem_malloc.dylib) + 1056  [0x188aeef14]
+      !             :   | + !     1 _realloc  (in libsystem_malloc.dylib) + 504  [0x188afeec4]
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 392  [0x100c12224]  mod.rs:165
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 944  [0x100c5b15c]  mod.rs:291
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria19triangle_angles_deg  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 552  [0x100c80d74]  mod.rs:301
+      !             :   | + ! 1 acos  (in libsystem_m.dylib) + 256  [0x198a7ff18]
+      !             :   | + 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv8criteria19triangle_angles_deg  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 840  [0x100c80e94]  mod.rs:301
+      !             :   | +   1 acos  (in libsystem_m.dylib) + 272  [0x198a7ff28]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1728  [0x100c5b46c]  mod.rs:381
+      !             :   | + 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh15mesh_predicates16determinant_sign  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 92  [0x100c1f128]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1816  [0x100c5b4c4]  mod.rs:414
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState14sites_touching  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 440  [0x100c11f08]  mod.rs:223
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transaction5check  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2160  [0x100c5b61c]  mod.rs:419
+      !             :   |   1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+      !             :   |     1 __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+      !             :   43 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1444  [0x100c5c3f0]  mod.rs:3183
+      !             :   | 39 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv9candidate19candidates_for_site  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100c80f48]  mod.rs:132
+      !             :   | + 22 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | + ! 21 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | + ! 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             :   | + !   1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             :   | + !     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             :   | + !       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             :   | + !         1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   | + !           1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   | + !             1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   | + !               1 _xzm_free  (in libsystem_malloc.dylib) + 256  [0x188aef16c]
+      !             :   | + 17 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,132,...  [0x100c11924,0x100c118f0,...]  mod.rs:245
+      !             :   | 2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv9candidate19candidates_for_site  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 3980  [0x100c81e7c]  mod.rs:216
+      !             :   | + 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+      !             :   | + ! 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             :   | + 1 asin  (in libsystem_m.dylib) + 148  [0x198a81018]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv9candidate19candidates_for_site  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 732  [0x100c811cc]  mod.rs:152
+      !             :   | + 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2543c  [0x198a9e43c]
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv9candidate19candidates_for_site  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2240  [0x100c817b0]  mod.rs:186
+      !             :   |   1 _RINvNvMs2_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100d32a78]  mod.rs:668
+      !             :   |     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 228  [0x100d33108]  mod.rs:556
+      !             :   |       1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   |         1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   |           1 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+      !             :   |             1 _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 228  [0x188aee9a4]
+      !             :   24 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12500  [0x100c5ef20]  mod.rs:3440
+      !             :   | 16 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2336  [0x100c6fca8]  mod.rs:448
+      !             :   | + 11 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 172,152,...  [0x100c11918,0x100c11904,...]  mod.rs:245
+      !             :   | + 5 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             :   | +   5 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             :   | 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 784  [0x100c6f698]  mod.rs:431
+      !             :   | + 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2000,2040  [0x100c6fb58,0x100c6fb80]  mod.rs:438
+      !             :   | 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 260  [0x100c6f48c]  mod.rs:424
+      !             :   | + 3 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12500  [0x100c5ef20]  mod.rs:3440
+      !             :   |   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c6f460]  mod.rs:424
+      !             :   21 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12716  [0x100c5eff8]  mod.rs:3449
+      !             :   | 15 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 124,136,...  [0x100c549ec,0x100c549f8,...]  mod.rs:548
+      !             :   | 3 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c54a40]  mod.rs:548
+      !             :   | + 3 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | 2 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 320  [0x100c54ab0]  mod.rs:549
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 328  [0x100c11024]  mod.rs:104
+      !             :   | + ! 1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 64  [0x100c1ad90]  map.rs:1049
+      !             :   | + 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_patchNtNtB7_10mesh_state9MeshState15snapshot_around  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 348  [0x100c11038]  mod.rs:104
+      !             :   | +   1 _RNvMsi_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8BTreeMapjNtNtB7_7set_val9SetValZSTE6insertCs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 268  [0x100c1ae5c]  map.rs:1052
+      !             :   | +     1 _platform_memmove  (in libsystem_platform.dylib) + 684  [0x188cdb60c]
+      !             :   | 1 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 304  [0x100c54aa0]  mod.rs:548
+      !             :   |   1 _RINvXsd_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3setINtB6_8BTreeSetjEINtNtNtNtCsaTNopw4qKPP_4core4iter6traits7collect12FromIteratorjE9from_iterINtNtNtBc_3vec9into_iter8IntoIterjEECsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 360  [0x100c4e688]  set.rs:1479
+      !             :   11 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 18908  [0x100c60828]  mod.rs:3324
+      !             :   | 6 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+      !             :   | + 6 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   | 5 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 116,128,...  [0x100c11c94,0x100c11ca0,...]  mod.rs:205
+      !             :   10 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 13140  [0x100c5f1a0]  mod.rs:3449
+      !             :   | 9 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 72,92  [0x100c128e4,0x100c128f8]  mod.rs:219
+      !             :   | 1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1444  [0x100c12e40]  mod.rs:243
+      !             :   |   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState9flip_edge  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 636  [0x100c13494]  mod.rs:151
+      !             :   |     1 _RINvXsd_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3setINtB6_8BTreeSetjEINtNtNtNtCsaTNopw4qKPP_4core4iter6traits7collect12FromIteratorjE9from_iterINtNtNtB1j_5array4iter8IntoIterjKj2_EECs4qKZQk6XrCi_14earthmesh_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 252  [0x100c0afb4]  set.rs:1479
+      !             :   9 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 11780  [0x100c5ec50]  mod.rs:3431
+      !             :   | 6 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 136,156,...  [0x100c549f8,0x100c54a0c,...]  mod.rs:548
+      !             :   | 3 _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 208  [0x100c54a40]  mod.rs:548
+      !             :   |   3 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224  [0x100c1217c]  mod.rs:153
+      !             :   7 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 18960  [0x100c6085c]  mod.rs:3333
+      !             :   | 5 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 128,108,...  [0x100c11ca0,0x100c11c8c,...]  mod.rs:205
+      !             :   | 2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+      !             :   |   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 244  [0x100c12190]  mod.rs:153
+      !             :   |   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 520  [0x100c122a4]  mod.rs:162
+      !             :   7 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 18996  [0x100c60880]  mod.rs:3337
+      !             :   | 7 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle26degree_relief_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100c7604c]  mod.rs:295
+      !             :   |   6 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15neighbour_sites  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 108,124,...  [0x100c67580,0x100c67590,...]  mod.rs:279
+      !             :   |   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15neighbour_sites  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c675ec]  mod.rs:279
+      !             :   |     1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224  [0x100c1217c]  mod.rs:153
+      !             :   6 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4392  [0x100c5cf74]  mod.rs:3243
+      !             :   | 6 _RNvMs5_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh23refine_cell_with_ladder  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 172  [0x100c567d4]  mod.rs:913
+      !             :   |   6 _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState16forecast_degrees  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2676  [0x100c18c64]  mod.rs:403
+      !             :   |     4 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 116,108,...  [0x100c11c94,0x100c11c8c,...]  mod.rs:205
+      !             :   |     2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+      !             :   |       2 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244  [0x100c1217c,0x100c12190]  mod.rs:153
+      !             :   4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1740  [0x100c5c518]  mod.rs:3195
+      !             :   | 4 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1160,1164  [0x100c5c2d4,0x100c5c2d8]  mod.rs:3171
+      !             :   3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 12516  [0x100c5ef30]  mod.rs:3441
+      !             :   | 3 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle26degree_relief_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100c7604c]  mod.rs:295
+      !             :   |   2 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15neighbour_sites  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 108,132  [0x100c67580,0x100c67598]  mod.rs:279
+      !             :   |   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15neighbour_sites  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c675ec]  mod.rs:279
+      !             :   |     1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224  [0x100c1217c]  mod.rs:153
+      !             :   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 6188  [0x100c5d678]  mod.rs:3143
+      !             :   | 1 _RINvNvMs2_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100d32a78]  mod.rs:668
+      !             :   |   1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCsh9EeSBeEeSk_24earthmesh_refine_harp_dv  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 228  [0x100d33108]  mod.rs:556
+      !             :   |     1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             :   |       1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             :   |         1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             :   |           1 _xzm_free_outlined  (in libsystem_malloc.dylib) + 512  [0x188af7614]
+      !             :   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 14332  [0x100c5f648]  mod.rs:3449
+      !             :   | 1 _RNvMsz_NtNtNtCs3XW7gbOxCtj_5alloc11collections5btree3mapINtB5_8IntoIterNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5state6SiteIdNtNtB7_7set_val9SetValZSTE10dying_nextB1b_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 332  [0x100c5a728]  map.rs:1936
+      !             :   |   1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             :   |     1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188c8e10c]
+      !             :   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 17680  [0x100c6035c]  mod.rs:3564
+      !             :     1 _RNvNtNtCs106jutQF6X5_3std2io5stdio7__eprint  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 84  [0x100cf0aa0]
+      !             :       1 _RNvXso_NtNtCs106jutQF6X5_3std2io5stdioRNtB5_6StderrNtB7_5Write9write_fmt  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 76  [0x100cfa21c]
+      !             :         1 _RNvNtCsaTNopw4qKPP_4core3fmt5write  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 144  [0x100bf8c88]
+      !             :           1 _RNvXNvNtCs106jutQF6X5_3std2io17default_write_fmtINtB2_7AdapterNtNtB4_5stdio10StderrLockENtNtCsaTNopw4qKPP_4core3fmt5Write9write_strB6_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 112  [0x100cf622c]
+      !             :             1 write  (in libsystem_kernel.dylib) + 8  [0x188c91834]
+      !             459 _RNvYNCNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests34natural_length_ab_on_the_nxp_proxy0INtNtNtCsaTNopw4qKPP_4core3ops8function6FnOnceuE9call_onceBa_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 900  [0x100ca41e4]  function.rs:250
+      !             : 458 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17median_cell_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 220  [0x100c69338]  mod.rs:1871
+      !             : | 246 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+      !             : | + 128 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184,172,...  [0x100c11924,0x100c11918,...]  mod.rs:245
+      !             : | + 118 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             : | +   117 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             : | +   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+      !             : | +     1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !             : | +       1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !             : | +         1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+      !             : | +           1 _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+      !             : | +             1 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+      !             : | +               1 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+      !             : | +                 1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             : | +                   1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188c8e10c]
+      !             : | 203 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 212,100,...  [0x100c64fec,0x100c64f7c,...]  mod.rs:251
+      !             : | 9 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+      !             : |   6 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             : |   ! 2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 516  [0x100c25444]  mod.rs:37
+      !             : |   ! : 2 atan2  (in libsystem_m.dylib) + 84,648  [0x198a7c954,0x198a7cb88]
+      !             : |   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 328  [0x100c25388]  mod.rs:36
+      !             : |   ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             : |   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+      !             : |   ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             : |   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 608  [0x100c254a0]  mod.rs:37
+      !             : |   ! : 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x2546c  [0x198a9e46c]
+      !             : |   ! 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 800  [0x100c25560]  mod.rs:42
+      !             : |   !   1 tan  (in libsystem_m.dylib) + 380  [0x198a79f34]
+      !             : |   2 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 504  [0x100c0e428]  mod.rs:65
+      !             : |   ! 2 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !             : |   !   2 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188c8e10c]
+      !             : |   1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 324  [0x100c0e374]  mod.rs:64
+      !             : 1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17median_cell_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 104  [0x100c692c4]  mod.rs:1871
+      !             :   1 _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c64f18]  mod.rs:245
+      !             251 _RNvYNCNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests34natural_length_ab_on_the_nxp_proxy0INtNtNtCsaTNopw4qKPP_4core3ops8function6FnOnceuE9call_onceBa_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 916  [0x100ca41f4]  function.rs:250
+      !             : 242 _RNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests14coarsest_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 348  [0x100c8542c]  tests.rs:55
+      !             : | 127 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 172,184,...  [0x100c11918,0x100c11924,...]  mod.rs:245
+      !             : | 115 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+      !             : |   114 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 224,244,...  [0x100c1217c,0x100c12190,...]  mod.rs:153
+      !             : |   1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 332  [0x100c121e8]  mod.rs:0
+      !             : 9 _RNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests14coarsest_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 396  [0x100c8545c]  tests.rs:55
+      !             :   9 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+      !             :     2 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c25300]  mod.rs:36
+      !             :     + 2 atan2  (in libsystem_m.dylib) + 400,488  [0x198a7ca90,0x198a7cae8]
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100c25250]  mod.rs:35
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 284  [0x100c2535c]  mod.rs:36
+      !             :     + 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x253d4  [0x198a9e3d4]
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+      !             :     + 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :     + 1 atan2  (in libsystem_m.dylib) + 508  [0x198a7cafc]
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 652  [0x100c254cc]  mod.rs:37
+      !             :     + 1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+      !             :     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+      !             :       1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 312  [0x100c251f4]  mod.rs:24
+      !             :         1 ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+      !             17 _RNvYNCNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests34natural_length_ab_on_the_nxp_proxy0INtNtNtCsaTNopw4qKPP_4core3ops8function6FnOnceuE9call_onceBa_  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 892  [0x100ca41dc]  function.rs:250
+      !               13 _RNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests6sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 88  [0x100c87960]  tests.rs:21
+      !               | 8 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5stateNtB4_12AdaptiveMesh20from_triangular_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 52  [0x100c58290]  mod.rs:179
+      !               | + 8 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState20from_triangular_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 728  [0x100c14b98]  mod.rs:283
+      !               | +   3 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2520,2536  [0x100c13fc8,0x100c13fd8]  mod.rs:210
+      !               | +   2 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 920,1212  [0x100c13988,0x100c13aac]  mod.rs:190
+      !               | +   1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1104  [0x100c13a40]  mod.rs:190
+      !               | +   ! 1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !               | +   !   1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !               | +   !     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 92  [0x100d30a44]  mod.rs:559
+      !               | +   !       1 _xzm_xzone_malloc_freelist_outlined  (in libsystem_malloc.dylib) + 756  [0x188af592c]
+      !               | +   1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1320  [0x100c13b18]  mod.rs:190
+      !               | +   ! 1 _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+      !               | +   !   1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+      !               | +   !     1 _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 92  [0x100d30a44]  mod.rs:559
+      !               | +   !       1 _xzm_xzone_thread_cache_fill_and_malloc  (in libsystem_malloc.dylib) + 120  [0x188af55d0]
+      !               | +   1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 3180  [0x100c1425c]  mod.rs:236
+      !               | +     1 DYLD-STUB$$free  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 4  [0x100d3a510]
+      !               | 5 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5stateNtB4_12AdaptiveMesh20from_triangular_mesh  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 192  [0x100c5831c]  mod.rs:181
+      !               |   5 _RNvMs_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5stateNtB4_12AdaptiveMesh15from_mesh_state  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 148  [0x100c56f10]  mod.rs:140
+      !               |     4 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState8validate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 408,608,...  [0x100c16300,0x100c163c8,...]  mod.rs:640
+      !               |     1 _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState8validate  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1192  [0x100c16610]  mod.rs:657
+      !               |       1 _xzm_free  (in libsystem_malloc.dylib) + 220  [0x188aef148]
+      !               4 _RNvNtNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle5tests6sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 48  [0x100c87938]  tests.rs:20
+      !                 1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh16primal_dual_meshNtB2_14TriangularMesh16from_icosahedron  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 132  [0x100c0e4d8]  mod.rs:131
+      !                 + 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20icosahedron_diamonds35icosahedron_fill_diamonds_canonical  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 292  [0x100c24aa8]  mod.rs:70
+      !                 1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh16primal_dual_meshNtB2_14TriangularMesh16from_icosahedron  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c0e50c]  mod.rs:133
+      !                 + 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh23icosahedron_u_neighbors40derive_icosahedron_u_neighbors_canonical  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 492  [0x100c26758]  mod.rs:12
+      !                 1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh16primal_dual_meshNtB2_14TriangularMesh16from_icosahedron  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 232  [0x100c0e53c]  mod.rs:133
+      !                 + 1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh23icosahedron_m_neighbors64derive_icosahedron_m_neighbors_canonical_checked_with_prognostic  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 1032  [0x100c2613c]  mod.rs:115
+      !                 +   1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+      !                 +     1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x188c8e10c]
+      !                 1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh16primal_dual_meshNtB2_14TriangularMesh16from_icosahedron  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 992  [0x100c0e834]  mod.rs:150
+      !                   1 _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh24mesh_topology_validationNtNtB4_16primal_dual_mesh14TriangularMesh17validate_topology  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 2328  [0x100c0fbb8]  mod.rs:139
+      !                     1 _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh17mesh_table_checks19require_method_c_id  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100c2263c]  mod.rs:13
+      1 ???  (in <unknown binary>)  [0x16f411df8]
+        1 _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 468  [0x100c11a40]  mod.rs:249
+          1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 560  [0x188af4104]
+
+Total number in stack (recursive counted multiple, when >=5):
+        27       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c1209c]  mod.rs:153
+        22       atan2  (in libsystem_m.dylib) + 0  [0x198a7c900]
+        16       _xzm_free  (in libsystem_malloc.dylib) + 0  [0x188aef06c]
+        14       _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x188afe674]
+        14       _realloc  (in libsystem_malloc.dylib) + 452  [0x188afee90]
+        13       _RNvMs3_NtCs3XW7gbOxCtj_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 16  [0x100d309d4]  mod.rs:188
+        13       _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner14grow_amortizedCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30ab4]  mod.rs:528
+        11       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c1209c]  mod.rs:162
+        10       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c1186c]  mod.rs:245
+        10       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 216  [0x100c11944]  mod.rs:245
+        10       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 588  [0x100c122e8]  mod.rs:165
+        10       _RNvMs4_NtCs3XW7gbOxCtj_5alloc7raw_vecNtB5_11RawVecInner11finish_growCs1qa8j6BBUm4_15crossbeam_utils  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 68  [0x100d30a2c]  mod.rs:556
+        10       asin  (in libsystem_m.dylib) + 0  [0x198a80f84]
+        9       _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 464  [0x100c0e400]  mod.rs:64
+        8       tan  (in libsystem_m.dylib) + 0  [0x198a79db8]
+        7       ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]
+        7       _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives22arc_length_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 272  [0x100c251cc]  mod.rs:21
+        7       _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 740  [0x100c25524]  mod.rs:38
+        7       _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x188aef484]
+        7       mach_absolute_time  (in libsystem_kernel.dylib) + 0  [0x188c8e0a0]
+        7       xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x188aeee60]
+        6       ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]
+        6       _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 572  [0x100c2547c]  mod.rs:37
+        6       _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c64f18]  mod.rs:251
+        6       _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 296  [0x100c65040]  mod.rs:253
+        6       _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 32  [0x100c64f38]  mod.rs:246
+        6       __bzero  (in libsystem_platform.dylib) + 0  [0x188cdb030]
+        6       _xzm_free  (in libsystem_malloc.dylib) + 352  [0x188aef1cc]
+        6       _xzm_xzone_malloc  (in libsystem_malloc.dylib) + 0  [0x188aee8c0]
+        5       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 0  [0x100c11c20]  mod.rs:205
+        5       _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 184  [0x100c11cd8]  mod.rs:205
+        5       _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c) + 356  [0x100c253a4]  mod.rs:36
+        5       _platform_memmove  (in libsystem_platform.dylib) + 0  [0x188cdb360]
+        5       xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x188aeee00]
+
+Sort by top of stack, same collapsed (when >= 5):
+        semaphore_timedwait_trap  (in libsystem_kernel.dylib)        11429
+        _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState17triangle_fan_from  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        4588
+        _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12voronoi_cell  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        2685
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15balance_demands  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        1888
+        _dyld_start  (in dyld)        1200
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10site_scale  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        938
+        _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState13vertex_degree  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        594
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle17balance_objective  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        251
+        _RNvMs3_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState15locate_triangle  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        74
+        atan2  (in libsystem_m.dylib)        51
+        _RNvMs3_NtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv11transactionNtNtB7_5state12AdaptiveMesh18move_neighbourhood  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        38
+        _RNvMs4_NtCs4qKZQk6XrCi_14earthmesh_mesh14mesh_insertionNtNtB7_10mesh_state9MeshState23insert_site_with_cavity  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        27
+        _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh9mesh_flipNtNtB7_10mesh_state9MeshState15legalize_within  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        24
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle10run_cycles  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        21
+        _xzm_free  (in libsystem_malloc.dylib)        21
+        asin  (in libsystem_m.dylib)        18
+        _RNvMs1_NtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtNtB7_10mesh_state9MeshState12circumcentre  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        15
+        _RNvNtCs4qKZQk6XrCi_14earthmesh_mesh20mesh_area_primitives28spherical_triangle_area_unit  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        13
+        tan  (in libsystem_m.dylib)        12
+        mach_absolute_time  (in libsystem_kernel.dylib)        10
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle15neighbour_sites  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        8
+        ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x1154  [0x198a7a154]        7
+        __bzero  (in libsystem_platform.dylib)        7
+        _xzm_xzone_malloc  (in libsystem_malloc.dylib)        7
+        ???  (in libsystem_m.dylib)  load address 0x198a79000 + 0x10ac  [0x198a7a0ac]        6
+        _platform_memmove  (in libsystem_platform.dylib)        6
+        xzm_realloc  (in libsystem_malloc.dylib)        6
+        _RNvMNtCs4qKZQk6XrCi_14earthmesh_mesh12mesh_voronoiNtB2_11VoronoiCell19area_on_unit_sphere  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        5
+        _RNvMs2_NtCs4qKZQk6XrCi_14earthmesh_mesh10mesh_stateNtB5_9MeshState10from_parts  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        5
+        _RNvNtCsh9EeSBeEeSk_24earthmesh_refine_harp_dv5cycle20balance_destinations  (in earthmesh_refine_harp_dv-14e69942aaacc54c)        5
+
+Binary images description not available
+

@@ -714,12 +714,23 @@ fn close_transition_rows(
     // rather than absorbed -- `weak_concavity_count` is zero otherwise and the
     // maker would have nothing to build from.
     let mut weak = if weak_concavity_count > 0 {
-        Some(crate::refine_weak_concav_segment_make_one_based(
+        let weak = crate::refine_weak_concav_segment_make_one_based(
             settings.max_transition_row,
             weak_concavity_count,
             &mesh.cells_on_triangle,
             &segments.bdy_refine_segment,
-        )?)
+            &segments.n_bdy_refine_segment,
+            &segments.curve_segment_ends,
+        )?;
+        // Canonical declares both ordinary-segment arrays `intent(inout)`.
+        // Keep the same ownership transfer before any downstream consumer.
+        segments
+            .bdy_refine_segment
+            .clone_from(&weak.bdy_refine_segment);
+        segments
+            .n_bdy_refine_segment
+            .clone_from(&weak.n_bdy_refine_segment);
+        Some(weak)
     } else {
         None
     };

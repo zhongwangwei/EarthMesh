@@ -1800,7 +1800,7 @@ fn layer_role_labels_are_schema_owned() {
 }
 
 #[test]
-fn quality_default_is_single_project_source() {
+fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
     assert_eq!(
         QualityConfig::default().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
@@ -1811,8 +1811,8 @@ fn quality_default_is_single_project_source() {
     );
     assert_eq!(
         HarpDvRefinementRecipe::default().minimum_triangle_angle_deg,
-        QualityConfig::default().min_angle_deg,
-        "HARP-DV must not reject refinement more strictly than the default quality gate"
+        0.0,
+        "HARP-DV reports the warning but does not enforce it by default"
     );
 }
 

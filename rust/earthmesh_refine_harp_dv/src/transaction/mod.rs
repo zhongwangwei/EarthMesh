@@ -49,13 +49,8 @@ pub struct HardGates {
     /// The smallest angle any triangle the change touches may have, in
     /// degrees.
     ///
-    /// A sliver is not a coarser answer to the same question. The gridfile
-    /// writer refuses a triangle whose circumcentre is not local to it -- which
-    /// is what a sliver has -- so a run that makes one has produced a mesh
-    /// nobody can write, and it finds out at the writer rather than at the
-    /// transaction that caused it.
-    ///
-    /// Zero disables the gate.
+    /// Zero disables this angle gate. Writer admissibility is checked
+    /// independently and remains active.
     pub min_triangle_angle_deg: f64,
     /// Whether the mesh must still be closed afterwards.
     ///
@@ -85,11 +80,11 @@ impl Default for HardGates {
     fn default() -> Self {
         Self {
             max_vertex_degree: GRIDFILE_MAX_VERTEX_DEGREE,
-            // Not merely a floor against degeneracy: measured, this *is* the
-            // lever on mesh quality. Every insertion that would leave a thin
-            // triangle is refused, the ladder moves to a later and more
-            // conservative rung, and the finished mesh's worst angle tracks
-            // this number (guide 11.33, 11.34):
+            // Off by default. This floor is a real lever on quality and not
+            // merely a guard against degeneracy -- every insertion that would
+            // leave a thin triangle is refused, the ladder falls to a more
+            // conservative rung, and the finished mesh's worst angle tracks the
+            // number (guide 11.33, 11.34):
             //
             //      5 deg -> 17.07 worst, 7723 cells
             //     28     -> 28.12,       7371
@@ -98,12 +93,14 @@ impl Default for HardGates {
             //     32     -> 32.01,       4835
             //     36     -> no refinement survives at all
             //
-            // The old 30-degree default was the knee of a small NXP-21 sweep,
-            // but it rejected 7,470 production demands whose candidate ladder
-            // could satisfy the project's actual 25-degree quality gate.  The
-            // backend default now matches that shared gate; users can still
-            // request a stricter floor explicitly and the report names the
-            // cells that strictness leaves unserved.
+            // It is a lever in both directions, which is why it is now zero:
+            // 30 rejected 7,470 production demands, 25 rejected fewer, and the
+            // insertion audit of guide 11.65 measured 133 of 232 repair
+            // candidates dying on the hard gates with the floor among them. A
+            // run that wants the angles bought back sets
+            // `NL%minimum_triangle_angle_deg`; the shared quality report still
+            // warns at 25 either way, so the cost of leaving it off is
+            // reported rather than hidden.
             min_triangle_angle_deg: earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG,
             require_closed_surface: true,
             max_patch_triangles: earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS,
@@ -180,8 +177,8 @@ impl std::fmt::Display for Rejection {
                 angle_deg,
             } => write!(
                 formatter,
-                "triangle {triangle} would have an angle of {angle_deg:.2} degrees; the gridfile \
-                 writer refuses a triangle that thin, and refusing it here keeps the cause"
+                "triangle {triangle} would have an angle of {angle_deg:.2} degrees, below the \
+                 requested transaction minimum"
             ),
             Self::ProtectedPentagonDisturbed { site, degree } => write!(
                 formatter,
@@ -278,43 +275,78 @@ pub(crate) fn check(
         }
     }
     // Slivers, checked over the triangles the change actually made or moved.
-    if gates.min_triangle_angle_deg > 0.0 {
-        for &triangle in touched {
-            if !state.is_triangle_live(triangle) {
-                continue;
-            }
-            let corners = state.triangles()[triangle];
-            let points = [
-                state.vertices()[corners[0]],
-                state.vertices()[corners[1]],
-                state.vertices()[corners[2]],
-            ];
-            let angle = crate::criteria::smallest_triangle_angle_deg(points);
-            if angle < gates.min_triangle_angle_deg {
-                return Err(Rejection::SliverTriangle {
-                    triangle,
-                    angle_deg: angle,
-                });
-            }
-            // And the writer's own test, which an angle floor does not imply: a
-            // large obtuse triangle can clear five degrees and still have a
-            // circumcentre nowhere near it, which is what
-            // `circumcenter_spherical` refuses. Gating on the writer's
-            // predicate rather than on a proxy for it is the difference
-            // between a refused transaction and a run that dies at output.
-            let barycentre = CartesianPoint::new(
-                (points[0].x + points[1].x + points[2].x) / 3.0,
-                (points[0].y + points[1].y + points[2].y) / 3.0,
-                (points[0].z + points[1].z + points[2].z) / 3.0,
-            );
-            if let Ok(centre) = state.circumcentre(triangle) {
-                if !earthmesh_mesh::circumcenter_is_local_enough(barycentre, centre, points) {
-                    return Err(Rejection::SliverTriangle {
-                        triangle,
-                        angle_deg: angle,
-                    });
-                }
-            }
+    //
+    // The angle floor is optional and is zero by default; the writer's
+    // admissibility test below is not, and used to be switched off with it.
+    for &triangle in touched {
+        if !state.is_triangle_live(triangle) {
+            continue;
+        }
+        let corners = state.triangles()[triangle];
+        let points = [
+            state.vertices()[corners[0]],
+            state.vertices()[corners[1]],
+            state.vertices()[corners[2]],
+        ];
+        let angle = crate::criteria::smallest_triangle_angle_deg(points);
+        if gates.min_triangle_angle_deg > 0.0 && angle < gates.min_triangle_angle_deg {
+            return Err(Rejection::SliverTriangle {
+                triangle,
+                angle_deg: angle,
+            });
+        }
+        // The writer's own test, which an angle floor does not imply: a large
+        // obtuse triangle can clear five degrees and still have a circumcentre
+        // nowhere near it, which is what `circumcenter_spherical` refuses.
+        // Gating on the writer's predicate rather than on a proxy for it is the
+        // difference between a refused transaction and a run that dies at
+        // output -- so it runs whatever the floor is set to. Nesting it inside
+        // the floor's guard, as it was, meant turning the floor off also turned
+        // this off, silently, and only at the gridfile would anyone find out.
+        let barycentre = CartesianPoint::new(
+            (points[0].x + points[1].x + points[2].x) / 3.0,
+            (points[0].y + points[1].y + points[2].y) / 3.0,
+            (points[0].z + points[1].z + points[2].z) / 3.0,
+        );
+        let centre = state
+            .circumcentre(triangle)
+            .map_err(|error| Rejection::TopologyInvalid {
+                faults: vec![format!(
+                    "triangle {triangle} has no usable spherical circumcentre: {error}"
+                )],
+            })?;
+        if !earthmesh_mesh::circumcenter_is_local_enough(barycentre, centre, points) {
+            return Err(Rejection::TopologyInvalid {
+                faults: vec![format!(
+                    "triangle {triangle} has a non-local spherical circumcentre"
+                )],
+            });
+        }
+        // Measurability, on the same argument as the circumcentre test above and
+        // with the same scope: gate on the predicate the reader actually uses,
+        // not on a proxy for it. `triangle_eta` is what the quality optimiser
+        // measures with, and `None` from it aborts the whole optimisation pass
+        // with "triangle area-length quality is not measurable" -- a transaction
+        // that commits such a triangle fails no gate here and kills the run one
+        // phase later, which is the worst place to find out.
+        //
+        // Not implied by the winding check below. That one asks
+        // `orientation_on_sphere` for a sign and refuses `Zero`; this one asks
+        // whether Heron's formula still resolves a positive area from three arc
+        // lengths. They are different predicates over different quantities, and
+        // the second fails first -- Heron loses the area of a needle to
+        // cancellation while the determinant still has a decidable sign.
+        //
+        // Angle-independent by construction, so it holds with the floor at zero.
+        // Until the floor was turned off, 25 degrees was quietly doing this job
+        // too, and nothing recorded that it was.
+        if crate::criteria::triangle_eta(points).is_none() {
+            return Err(Rejection::TopologyInvalid {
+                faults: vec![format!(
+                    "triangle {triangle} has no measurable area-length quality; its smallest \
+                     angle is {angle:.6} degrees"
+                )],
+            });
         }
     }
 
@@ -336,10 +368,10 @@ pub(crate) fn check(
     // fold itself.
     //
     // After the angle floor, not before it, so a triangle that is degenerate
-    // *and* thin keeps being reported as the sliver it is; and outside that
-    // block, because `min_triangle_angle_deg = 0` switches off both the sliver
-    // gate and the circumcentre test, and a run that asks for no angle floor is
-    // still not asking for a mesh that is inside out.
+    // *and* thin keeps being reported as the sliver it is. It never depended on
+    // the floor being set -- a run that asks for no angle floor is still not
+    // asking for a mesh that is inside out -- and now neither does the
+    // circumcentre test above it.
     let mut winding = None;
     for &triangle in &region {
         if !state.is_triangle_live(triangle) {
