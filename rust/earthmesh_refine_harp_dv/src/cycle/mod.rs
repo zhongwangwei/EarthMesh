@@ -246,8 +246,15 @@ fn balance_objective(state: &MeshState, sites: &AffectedSites, bound: f64) -> Op
     // valid start for that corner's fan, and `voronoi_cell_from` pins the ring
     // to its lowest triangle, so which one is picked cannot reach the result.
     let mut seeds = sites.clone();
+    let radius_m = state.sphere_radius();
+    let mut cached = BTreeMap::new();
     for (&site, &seed) in sites {
-        for triangle in state.triangle_fan_from(site, seed).ok()? {
+        // The cell carries the fan that built it, so this loop reads each of
+        // these sites once. Walking the ring here for the edges and again for
+        // the scale below was the same walk twice, and the ring walk is what
+        // the objective now spends nearly all of its time in.
+        let cell = state.voronoi_cell_from(site, seed).ok()?;
+        for &triangle in &cell.triangles {
             for corner in state.triangles()[triangle] {
                 seeds.entry(corner).or_insert(triangle);
                 if corner != site {
@@ -255,9 +262,17 @@ fn balance_objective(state: &MeshState, sites: &AffectedSites, bound: f64) -> Op
                 }
             }
         }
+        cached.insert(
+            site,
+            CellView {
+                site,
+                cell: &cell,
+                state,
+                radius_m,
+            }
+            .effective_scale_m()?,
+        );
     }
-    let radius_m = state.sphere_radius();
-    let mut cached = BTreeMap::new();
     let mut violations = 0usize;
     let mut worst = 1.0_f64;
     let mut energy = 0.0;
