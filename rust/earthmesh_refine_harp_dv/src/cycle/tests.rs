@@ -1992,6 +1992,8 @@ fn a_region_score_includes_scale_ratios_crossing_its_boundary() {
         limits,
         &region,
         &std::cell::RefCell::new(BTreeMap::new()),
+        &std::cell::RefCell::new(BTreeMap::new()),
+        &AffectedSites::new(),
     )
     .expect("score");
     assert!(

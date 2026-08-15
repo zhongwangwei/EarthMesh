@@ -639,6 +639,22 @@ fn fan_with_cached_seed(
 /// Reads the same criteria the driver reads and the same neighbour-scale bound
 /// the balance demands are raised from, so "unresolved" here means what it means
 /// in the report rather than a proxy for it.
+/// One measured site's contribution to a region score.
+type RegionCell = (std::rc::Rc<Vec<usize>>, f64, bool);
+
+/// The region's cells as they stand before any candidate move.
+///
+/// A recovery scores the whole region once per candidate, and a candidate only
+/// changes the cells around the site it moves. Everything else is the same
+/// answer rebuilt -- and rebuilding it is the ring walk, which a sample puts at
+/// 97% of the score.
+type RegionCells = std::cell::RefCell<BTreeMap<usize, RegionCell>>;
+
+/// `dirty` names the sites whose cells this state may have changed, which is
+/// what the transaction hands the objective. They are measured fresh and not
+/// stored, so a rejected candidate leaves the cache describing the base state
+/// it was scored against; a committed one clears it.
+#[allow(clippy::too_many_arguments)]
 fn region_score(
     state: &MeshState,
     criteria: &[Box<dyn CellCriterion>],
@@ -646,36 +662,32 @@ fn region_score(
     limits: CycleLimits,
     region: &BTreeSet<usize>,
     seeds: &std::cell::RefCell<BTreeMap<usize, usize>>,
+    cells: &RegionCells,
+    dirty: &AffectedSites,
 ) -> Option<RegionScore> {
     let radius_m = state.sphere_radius();
     // A fixed guard site's Voronoi cell can still change when a movable site
     // beside it moves. Measure the neighbour on the far side as well, or the
     // score misses exactly the ratio that a local recovery can push across its
     // boundary.
-    let mut measured_sites = region.clone();
-    // Keep the fans this loop walks. The sweep below needs the same ones, and
-    // the region is scored once per candidate move -- walking every region
-    // site's ring twice a score is the largest single cost in a recovery.
-    let mut region_fans: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for &site in region {
+    // One entry per measured site, taken from the cache whenever this state did
+    // not disturb it. Collecting the sites to measure needs the region's fans,
+    // and so does the sweep below, so both come from the same lookup -- walking
+    // the ring here and again there was the shape of the previous attempt, and
+    // it left the cache reaching only the sites outside the region.
+    let mut entries: BTreeMap<usize, RegionCell> = BTreeMap::new();
+    let measure = |site: usize, entries: &mut BTreeMap<usize, RegionCell>| -> Option<()> {
+        if entries.contains_key(&site) {
+            return Some(());
+        }
+        let stale = dirty.contains_key(&site);
+        if !stale {
+            if let Some(entry) = cells.borrow().get(&site) {
+                entries.insert(site, entry.clone());
+                return Some(());
+            }
+        }
         let fan = fan_with_cached_seed(state, site, seeds)?;
-        measured_sites.extend(
-            fan.iter()
-                .flat_map(|&triangle| state.triangles()[triangle])
-                .filter(|&corner| corner != site),
-        );
-        region_fans.insert(site, fan);
-    }
-    let mut scales: BTreeMap<usize, f64> = BTreeMap::new();
-    let mut fans: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut unresolved = 0usize;
-    let mut pending_sites = BTreeSet::new();
-    let mut saturated = 0usize;
-    for site in measured_sites {
-        let fan = match region_fans.remove(&site) {
-            Some(fan) => fan,
-            None => fan_with_cached_seed(state, site, seeds)?,
-        };
         let cell = state.voronoi_cell_from(site, *fan.first()?).ok()?;
         let view = CellView {
             site,
@@ -687,18 +699,49 @@ fn region_score(
         if !scale.is_finite() || scale <= 0.0 {
             return None;
         }
+        let mut demanding = false;
+        if region.contains(&site) && scale > limits.minimum_cell_width_m {
+            for criterion in criteria {
+                if criterion.evaluate(&view).ok()?.demands_work() {
+                    demanding = true;
+                    break;
+                }
+            }
+        }
+        let entry = (std::rc::Rc::new(fan), scale, demanding);
+        if !stale {
+            cells.borrow_mut().insert(site, entry.clone());
+        }
+        entries.insert(site, entry);
+        Some(())
+    };
+
+    let mut measured_sites = region.clone();
+    for &site in region {
+        measure(site, &mut entries)?;
+        let fan = std::rc::Rc::clone(&entries.get(&site)?.0);
+        measured_sites.extend(
+            fan.iter()
+                .flat_map(|&triangle| state.triangles()[triangle])
+                .filter(|&corner| corner != site),
+        );
+    }
+
+    let mut scales: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut fans: BTreeMap<usize, std::rc::Rc<Vec<usize>>> = BTreeMap::new();
+    let mut unresolved = 0usize;
+    let mut pending_sites = BTreeSet::new();
+    let mut saturated = 0usize;
+    for site in measured_sites {
+        measure(site, &mut entries)?;
+        let (fan, scale, demanding) = entries.get(&site)?.clone();
         if region.contains(&site) {
             if fan.len() >= gates.max_vertex_degree {
                 saturated += 1;
             }
-            if scale > limits.minimum_cell_width_m {
-                for criterion in criteria {
-                    if criterion.evaluate(&view).ok()?.demands_work() {
-                        unresolved += 1;
-                        pending_sites.insert(site);
-                        break;
-                    }
-                }
+            if demanding {
+                unresolved += 1;
+                pending_sites.insert(site);
             }
             fans.insert(site, fan);
         }
@@ -711,7 +754,7 @@ fn region_score(
     let mut counted = BTreeSet::new();
     let mut counted_edges = BTreeSet::new();
     for (&site, fan) in &fans {
-        for &triangle in fan {
+        for &triangle in fan.iter() {
             let corners = state.triangles()[triangle];
             if counted.insert(triangle) {
                 let angle = crate::criteria::smallest_triangle_angle_deg([
@@ -902,8 +945,11 @@ fn recover_one_region(
     let region: BTreeSet<usize> = rings.iter().flatten().copied().collect();
     let frozen = rings.last().cloned().unwrap_or_default();
     let seeds = std::cell::RefCell::new(BTreeMap::new());
-    let objective = |state: &MeshState, _: &AffectedSites| {
-        region_score(state, criteria, gates, limits, &region, &seeds)
+    let cells: RegionCells = std::cell::RefCell::new(BTreeMap::new());
+    let objective = |state: &MeshState, affected: &AffectedSites| {
+        region_score(
+            state, criteria, gates, limits, &region, &seeds, &cells, affected,
+        )
     };
 
     let mut committed = 0usize;
@@ -936,8 +982,11 @@ fn recover_one_region(
                         gates,
                         &objective,
                         Some(&before),
-                        false,
+                        true,
                     )? {
+                        // The cache describes the state the candidates were
+                        // scored against, and that state is gone.
+                        cells.borrow_mut().clear();
                         moved = true;
                         moved_this_sweep += 1;
                         break;
@@ -963,6 +1012,7 @@ fn recover_one_region(
                         &objective,
                         Some(&before),
                     )? {
+                        cells.borrow_mut().clear();
                         moved_this_sweep += 1;
                         break;
                     }
