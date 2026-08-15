@@ -3805,3 +3805,87 @@ fn local_recovery_ab_on_the_nxp_proxy() {
          {local_unbalanced}, runtime {off_runtime:.1}s -> {local_runtime:.1}s"
     );
 }
+
+/// How far apart are a fan's triangles in the arrays the walk indexes?
+///
+/// The ring walk is six steps, and its cost still grows with mesh size --
+/// 1.05ms a line-search attempt at NXP40 against 4.69ms at NXP80, with the two
+/// profiles the same shape. That is the memory hierarchy, not different work.
+///
+/// # What it measured, and why triangle renumbering was not done
+///
+/// At NXP40, 71% of the steps between consecutive fan members land within four
+/// rows of each other -- one cache line -- and the median step is one. Fans are
+/// already packed. Renumbering could only reach the other 29%, of a walk that
+/// is about two thirds of the optimiser, so its ceiling is under a fifth even
+/// assuming every non-local step is a full miss and every local one is free.
+///
+/// The misses come from somewhere renumbering cannot reach: `quality_problem_sites`
+/// orders a pass worst-margin-first, which is spatially arbitrary, so
+/// consecutive sites in a pass sit nowhere near each other and each arrives
+/// cold. NXP40's triangles, neighbours and vertices come to about 2.6MB and
+/// mostly stay resident; NXP80's come to 8.5MB and do not. Fixing that means
+/// changing the order sites are processed in, which changes which moves the
+/// greedy pass finds -- a different mesh, not a faster one.
+#[test]
+#[ignore = "locality probe; run explicitly"]
+fn how_scattered_is_a_fan_in_the_triangle_arrays() {
+    let (nxp, max_cycles) = nxp_and_cycles(40, 20);
+    let gates = HardGates::default();
+    let limits = limits(max_cycles, 200_000);
+    let mut production = sphere(nxp);
+    let criteria = steep_target(&production);
+    let start = production_quality_checkpoint(
+        &mut production,
+        &criteria,
+        CandidatePolicy::default(),
+        gates,
+        limits,
+    );
+    let state = start.state();
+    let seeds = active_site_triangle_seeds(state);
+
+    let mut spreads = Vec::new();
+    let mut steps = Vec::new();
+    for site in state.active_vertex_slots() {
+        let Some(seed) = seeds[site] else { continue };
+        let Ok(fan) = state.triangle_fan_from(site, seed) else {
+            continue;
+        };
+        let low = fan.iter().copied().min().expect("a fan");
+        let high = fan.iter().copied().max().expect("a fan");
+        spreads.push(high - low);
+        for pair in fan.windows(2) {
+            steps.push(pair[1].abs_diff(pair[0]));
+        }
+    }
+    spreads.sort_unstable();
+    steps.sort_unstable();
+    let at = |values: &[usize], percent: usize| values[values.len() * percent / 100];
+    eprintln!(
+        "\nnxp {nxp}: {} triangles, {} fans",
+        state.triangle_count(),
+        spreads.len()
+    );
+    eprintln!(
+        "fan index spread  p50 {}  p90 {}  p99 {}  max {}",
+        at(&spreads, 50),
+        at(&spreads, 90),
+        at(&spreads, 99),
+        spreads.last().expect("a fan")
+    );
+    eprintln!(
+        "step between consecutive fan members  p50 {}  p90 {}  p99 {}",
+        at(&steps, 50),
+        at(&steps, 90),
+        at(&steps, 99)
+    );
+    // A cache line holds four `[usize; 3]` rows. Anything much past that is a
+    // miss per step.
+    let within_a_line = steps.iter().filter(|&&step| step <= 4).count();
+    eprintln!(
+        "steps landing within four rows: {within_a_line} of {} ({:.1}%)",
+        steps.len(),
+        100.0 * within_a_line as f64 / steps.len() as f64
+    );
+}
