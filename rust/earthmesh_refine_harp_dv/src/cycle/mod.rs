@@ -2597,21 +2597,180 @@ fn repair_low_degree_stars(
     Ok(committed)
 }
 
+/// Whether one cell is still asking, and how big it is.
+///
+/// Exactly the predicate `evaluate` applies -- built from the same evidences
+/// and filtered by the same floor -- factored out so the pass guard can refresh
+/// one site without sweeping the mesh.
+fn guard_cell(
+    state: &MeshState,
+    criteria: &[Box<dyn CellCriterion>],
+    limits: CycleLimits,
+    site: usize,
+    seed: usize,
+    radius_m: f64,
+) -> Result<(Option<f64>, bool)> {
+    let Ok(cell) = state.voronoi_cell_from(site, seed) else {
+        return Ok((None, false));
+    };
+    let view = CellView {
+        site,
+        cell: &cell,
+        state,
+        radius_m,
+    };
+    let scale = view.effective_scale_m();
+    let at_floor = scale.is_some_and(|scale| scale <= limits.minimum_cell_width_m);
+    let mut evidences = Vec::new();
+    for criterion in criteria {
+        let evidence = criterion.evaluate(&view)?;
+        if evidence.demands_work() || !evidence.satisfiable {
+            evidences.push(evidence);
+        }
+    }
+    let demand =
+        RefinementDemand::from_evidence(site as u64, evidences, RefinementCause::UserSpecified);
+    Ok((scale, demand.demands_work() && !at_floor))
+}
+
+/// Every cell's scale, and which cells still ask, kept across quality passes.
+///
+/// The guard used to call `evaluate` once per pass, which builds a Voronoi cell
+/// for every active site: 70,685 of them, 48 times, at NXP80. A sample put 805
+/// of the guard's 813 samples in that sweep and 797 of those in the ring walk.
+///
+/// A pass only moves the neighbourhoods it commits to, so only those cells can
+/// have changed. Refreshing them and keeping the rest is the same answer for
+/// a fraction of the work -- and because a rejected pass restores the mesh, the
+/// cache is snapshotted and restored with it.
+#[derive(Clone)]
+struct GuardCells {
+    scales: Vec<Option<f64>>,
+    demanding: BTreeSet<usize>,
+}
+
+impl GuardCells {
+    fn full(
+        state: &MeshState,
+        criteria: &[Box<dyn CellCriterion>],
+        limits: CycleLimits,
+    ) -> Result<Self> {
+        let mut cells = Self {
+            scales: vec![None; state.vertices().len()],
+            demanding: BTreeSet::new(),
+        };
+        let sites: BTreeSet<usize> = state.active_vertex_slots().collect();
+        cells.refresh(state, criteria, limits, &sites)?;
+        Ok(cells)
+    }
+
+    fn refresh(
+        &mut self,
+        state: &MeshState,
+        criteria: &[Box<dyn CellCriterion>],
+        limits: CycleLimits,
+        sites: &BTreeSet<usize>,
+    ) -> Result<()> {
+        let radius_m = state.sphere_radius();
+        let seeds = active_site_triangle_seeds(state);
+        for &site in sites {
+            let (scale, demanding) = match seeds.get(site).copied().flatten() {
+                Some(seed) => guard_cell(state, criteria, limits, site, seed, radius_m)?,
+                None => (None, false),
+            };
+            self.scales[site] = scale;
+            if demanding {
+                self.demanding.insert(site);
+            } else {
+                self.demanding.remove(&site);
+            }
+        }
+        Ok(())
+    }
+
+    /// The cells a committed move can have changed, generously bounded.
+    ///
+    /// A move rewrites its own star and whatever legalising flipped around it,
+    /// which is inside the two rings the transaction snapshots. Three rings is
+    /// the same set with room to spare: over-invalidating costs a rebuild, and
+    /// under-invalidating leaves a stale number in a guard that decides whether
+    /// a whole pass is kept.
+    fn dirty_around(state: &MeshState, moved: &BTreeSet<usize>) -> BTreeSet<usize> {
+        topological_rings(state, moved, 3)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
+// Compare the incrementally kept cells against a fresh sweep. Off unless a test
+// asks for it. The failure this guards against is silent: a dirty set that
+// misses a cell leaves a stale scale in a number that decides whether a whole
+// pass is kept, so the run stays valid and diverges.
+#[cfg(test)]
+thread_local! {
+    static VERIFY_GUARD_CELLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn verify_guard_cells(
+    state: &MeshState,
+    criteria: &[Box<dyn CellCriterion>],
+    limits: CycleLimits,
+    cells: &GuardCells,
+) -> Result<()> {
+    if !VERIFY_GUARD_CELLS.with(|verify| verify.get()) {
+        return Ok(());
+    }
+    let full = GuardCells::full(state, criteria, limits)?;
+    for (site, (kept, fresh)) in cells.scales.iter().zip(&full.scales).enumerate() {
+        assert_eq!(
+            kept.map(f64::to_bits),
+            fresh.map(f64::to_bits),
+            "site {site} kept a stale scale"
+        );
+    }
+    assert_eq!(
+        cells.demanding, full.demanding,
+        "the kept set of demanding cells drifted from a fresh sweep"
+    );
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn verify_guard_cells(
+    _: &MeshState,
+    _: &[Box<dyn CellCriterion>],
+    _: CycleLimits,
+    _: &GuardCells,
+) -> Result<()> {
+    Ok(())
+}
+
 impl QualityGuardMetrics {
+    #[cfg(test)]
     fn read(
         mesh: &AdaptiveMesh,
         criteria: &[Box<dyn CellCriterion>],
         limits: CycleLimits,
     ) -> Result<Self> {
-        // One sweep. `pending_site_count` used to run its own `evaluate` after
-        // `balance_survey` had already built the same scales, so the guard read
-        // every cell twice per pass.
-        let (demands, _, scales) = evaluate(mesh, criteria, limits)?;
-        let balance = balance_demands(mesh, &scales, limits);
+        let cells = GuardCells::full(mesh.state(), criteria, limits)?;
+        Self::read_with(mesh, limits, &cells)
+    }
+
+    fn read_with(mesh: &AdaptiveMesh, limits: CycleLimits, cells: &GuardCells) -> Result<Self> {
+        let scales = &cells.scales;
+        let balance = balance_demands(mesh, scales, limits);
         let (unbalanced, worst_scale_ratio) =
-            balance_survey_from_scales(mesh.state(), &scales, limits);
+            balance_survey_from_scales(mesh.state(), scales, limits);
+        let pending: BTreeSet<u64> = cells
+            .demanding
+            .iter()
+            .map(|&site| site as u64)
+            .chain(balance.iter().map(|demand| demand.cell))
+            .collect();
         Ok(Self {
-            pending: pending_sites(&demands, &balance).len(),
+            pending: pending.len(),
             unbalanced,
             worst_scale_ratio,
             angles: angle_window_survey(mesh.state()),
@@ -2807,7 +2966,8 @@ fn optimise_mesh_quality_with_natural_length(
     let started = std::time::Instant::now();
     let initial_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
     audit.low_degree_committed = initial_low_degree_moves;
-    let initial = QualityGuardMetrics::read(mesh, criteria, limits)?;
+    let mut guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
+    let initial = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     let mut previous = initial.clone();
     let mut committed = initial_low_degree_moves;
     let mut eta_stopped = false;
@@ -2837,6 +2997,7 @@ fn optimise_mesh_quality_with_natural_length(
             excluded_sites.clear();
         }
         let pass_checkpoint = mesh.clone();
+        let cells_checkpoint = guard_cells.clone();
         let pass_before = previous.clone();
         let retained_before = audit.retained_commits();
         let (sites, found, eligible) = quality_problem_sites(mesh, window_first, &excluded_sites);
@@ -2861,6 +3022,7 @@ fn optimise_mesh_quality_with_natural_length(
         }
         let attempted_sites = sites.clone();
         let mut unproductive_sites: BTreeSet<_> = attempted_sites.iter().copied().collect();
+        let mut moved_this_pass = BTreeSet::new();
         let mut committed_this_pass = 0usize;
         for site in sites {
             let objective = |state: &MeshState, affected: &AffectedSites| {
@@ -2947,6 +3109,7 @@ fn optimise_mesh_quality_with_natural_length(
                     )? {
                         audit.committed(source);
                         committed_this_pass += 1;
+                        moved_this_pass.insert(site);
                         unproductive_sites.remove(&site);
                         break 'candidate;
                     }
@@ -2954,7 +3117,13 @@ fn optimise_mesh_quality_with_natural_length(
             }
         }
 
-        let after = match QualityGuardMetrics::read(mesh, criteria, limits) {
+        let dirty = GuardCells::dirty_around(mesh.state(), &moved_this_pass);
+        if let Err(error) = guard_cells.refresh(mesh.state(), criteria, limits, &dirty) {
+            *mesh = pass_checkpoint;
+            return Err(error);
+        }
+        verify_guard_cells(mesh.state(), criteria, limits, &guard_cells)?;
+        let after = match QualityGuardMetrics::read_with(mesh, limits, &guard_cells) {
             Ok(after) => after,
             Err(error) => {
                 *mesh = pass_checkpoint;
@@ -2993,6 +3162,7 @@ fn optimise_mesh_quality_with_natural_length(
         );
         if let Some(guard) = regression {
             *mesh = pass_checkpoint;
+            guard_cells = cells_checkpoint;
             audit.restore_retained_commits(retained_before);
             eprintln!(
                 "harp_dv quality optimiser rejected {phase} pass {phase_pass} after {} move(s): {}",
@@ -3038,7 +3208,8 @@ fn optimise_mesh_quality_with_natural_length(
     committed += final_low_degree_moves;
     audit.low_degree_committed += final_low_degree_moves;
     if final_low_degree_moves > 0 {
-        previous = QualityGuardMetrics::read(mesh, criteria, limits)?;
+        guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
+        previous = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     }
     eprintln!(
         "harp_dv quality optimiser complete: {} moves, margin_min {:.6} -> {:.6}, eta_min {:.6} -> {:.6}, angle-window violations {} -> {}, {:.1}s",
@@ -3088,15 +3259,6 @@ const QUALITY_ASCENT_EDGE_FRACTION: f64 = 0.5;
 const MAXIMUM_LOW_DEGREE_PASSES: usize = 4;
 const LOW_DEGREE_LINE_SEARCH_STEPS: [f64; 4] = [0.25, 0.125, 0.0625, 0.03125];
 const LOW_DEGREE_PAIR_LINE_SEARCH_STEPS: [f64; 5] = [0.5, 0.25, 0.125, 0.0625, 0.03125];
-
-/// The cells still asking, physical and balance together.
-fn pending_sites(demands: &[RefinementDemand], balance: &[RefinementDemand]) -> BTreeSet<u64> {
-    demands
-        .iter()
-        .chain(balance.iter())
-        .map(|demand| demand.cell)
-        .collect()
-}
 
 /// What a pass over the cells found, beyond the demands themselves.
 ///

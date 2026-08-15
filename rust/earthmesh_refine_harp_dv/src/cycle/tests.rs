@@ -3889,3 +3889,122 @@ fn how_scattered_is_a_fan_in_the_triangle_arrays() {
         100.0 * within_a_line as f64 / steps.len() as f64
     );
 }
+
+/// The kept cell survey must equal a fresh one after every pass.
+///
+/// `GuardCells` refreshes only the neighbourhoods a pass moved, which is the
+/// whole point and also the whole risk: a dirty set that misses a cell leaves a
+/// stale scale in the guard that decides whether a pass is kept, and the run
+/// carries on producing a valid mesh that is not the one it would have made.
+/// This turns that comparison on and runs the optimiser through it.
+#[test]
+fn the_kept_cell_survey_never_drifts_from_a_fresh_sweep() {
+    let gates = HardGates::default();
+    let limits = limits(40, 200_000);
+    let mut mesh = sphere(6);
+    let background_scale_m = median_cell_scale(mesh.state());
+    let criteria = steep_target(&mesh);
+    stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
+
+    VERIFY_GUARD_CELLS.with(|verify| verify.set(true));
+    let outcome = optimise_mesh_quality(&mut mesh, &criteria, gates, limits, background_scale_m);
+    VERIFY_GUARD_CELLS.with(|verify| verify.set(false));
+    let (moves, _) = outcome.expect("the optimiser runs");
+
+    assert!(
+        moves > 0,
+        "the fixture never committed a move, so nothing was verified"
+    );
+}
+
+/// Who is the triangle the optimiser never touches, and where did it come from?
+///
+/// At NXP80 the run ends with a 0.19-degree corner and a 172.58-degree one, and
+/// `margin_min` is the same number before the first quality pass and after the
+/// last -- across every arm of the natural-length A/B and both sides of the
+/// performance work. The optimiser's improvement on it is exactly zero, which
+/// is a different thing from optimising it badly.
+///
+/// Read-only. The triangle is already there at the quality boundary, so the
+/// checkpoint path is enough and no production code changes.
+#[test]
+#[ignore = "degenerate-triangle attribution; run explicitly"]
+fn who_made_the_triangle_the_optimiser_cannot_touch() {
+    let (nxp, max_cycles) = nxp_and_cycles(80, 100);
+    let gates = HardGates::default();
+    let limits = limits(max_cycles, 200_000);
+    let mut production = sphere(nxp);
+    let criteria = steep_target(&production);
+    let start = production_quality_checkpoint(
+        &mut production,
+        &criteria,
+        CandidatePolicy::default(),
+        gates,
+        limits,
+    );
+    let state = start.state();
+
+    let worst = state
+        .active_triangle_slots()
+        .filter_map(|triangle| Some((triangle, triangle_window_margin(state, triangle)?)))
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("a measurable triangle");
+    let (triangle, margin) = worst;
+    let corners = state.triangles()[triangle];
+    let angles = crate::criteria::triangle_angles_deg([
+        state.vertices()[corners[0]],
+        state.vertices()[corners[1]],
+        state.vertices()[corners[2]],
+    ]);
+
+    eprintln!("\nnxp {nxp}: worst triangle {triangle}, window margin {margin:.6}");
+    eprintln!("angles {angles:?}");
+    eprintln!("eta {:?}", triangle_eta_value(state, triangle));
+    eprintln!(
+        "\n{:>8} {:>9} {:>6} {:>6} {:>6} {:>10} {:>12} {:>10}",
+        "vertex", "degree", "birth", "depth", "parent", "mobility", "movable", "displaced"
+    );
+    for corner in corners {
+        let site = start.site_for_vertex(corner);
+        eprintln!(
+            "{corner:>8} {:>9} {:>6} {:>6} {:>6} {:>10} {:>12} {:>10.1}",
+            state
+                .vertex_degree(corner)
+                .map_or("-".to_string(), |degree| degree.to_string()),
+            site.map_or("-".to_string(), |site| site.birth_cycle.to_string()),
+            site.map_or("-".to_string(), |site| site.depth.to_string()),
+            site.map_or("-".to_string(), |site| site
+                .parent_site_id
+                .map_or("none".to_string(), |parent| parent.0.to_string())),
+            site.map_or("-".to_string(), |site| format!("{:?}", site.mobility)),
+            start.can_move_site(corner),
+            site.map_or(f64::NAN, |site| site.cumulative_displacement_m)
+        );
+        let point = xyz_to_lonlat_degrees(state.vertices()[corner]);
+        eprintln!("         lon {:+.5} lat {:+.5}", point.lon, point.lat);
+    }
+
+    // Does the optimiser even look at it? A pass takes the worst-first movable
+    // sites, capped; a triangle whose corners never reach that list is not
+    // being optimised badly, it is not being optimised.
+    for window_first in [false, true] {
+        let (selected, found, eligible) =
+            quality_problem_sites(&start, window_first, &BTreeSet::new());
+        let picked: Vec<usize> = corners
+            .into_iter()
+            .filter(|corner| selected.contains(corner))
+            .collect();
+        eprintln!(
+            "\n{} pass: {} of {} eligible / {} movable selected; corners in the list: {:?}",
+            if window_first { "window" } else { "eta" },
+            selected.len(),
+            eligible,
+            found,
+            picked
+        );
+        for corner in corners {
+            let rank = selected.iter().position(|&site| site == corner);
+            eprintln!("  vertex {corner}: rank {rank:?}");
+        }
+    }
+}
