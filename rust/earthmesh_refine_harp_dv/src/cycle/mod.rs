@@ -3221,6 +3221,25 @@ fn production_quality_checkpoint(
     gates: HardGates,
     limits: CycleLimits,
 ) -> AdaptiveMesh {
+    production_quality_checkpoint_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        LocalRecoveryPolicy::OFF,
+    )
+}
+
+#[cfg(test)]
+fn production_quality_checkpoint_with_local_recovery(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+    local_recovery: LocalRecoveryPolicy,
+) -> AdaptiveMesh {
     CAPTURE_QUALITY_CHECKPOINT.with(|capture| {
         assert!(
             !capture.replace(true),
@@ -3231,7 +3250,7 @@ fn production_quality_checkpoint(
         assert!(checkpoint.borrow_mut().take().is_none());
     });
 
-    let run = run_cycles(mesh, criteria, policy, gates, limits);
+    let run = run_cycles_with_local_recovery(mesh, criteria, policy, gates, limits, local_recovery);
     CAPTURE_QUALITY_CHECKPOINT.with(|capture| capture.set(false));
     run.expect("production refinement reaches the quality boundary");
     QUALITY_CHECKPOINT
@@ -3240,12 +3259,62 @@ fn production_quality_checkpoint(
 }
 
 /// Run cycles until something says to stop, and say which.
+/// When a cycle may escalate a stall that is local rather than global.
+///
+/// Every escalation the loop has -- the broader ladder, pair relief, multi-ring
+/// recovery -- triggers on "nothing was accepted anywhere this cycle". That
+/// scalar is false whenever any corner of the mesh still accepts an insertion,
+/// which on a production mesh is every cycle: measured zero firings in 11
+/// cycles at NXP40 and in 100 at NXP80, while a degree-blocked site was waiting
+/// in 10 and 100 of them (`.omx/plans/harp-dv-stall-escalation-diagnosis.md`).
+///
+/// Letting persistence alone open the gate is the thing the note above the
+/// fallback ladder records as tried and rejected: it took the crate's own suite
+/// from 32 seconds past 30 minutes without finishing, and says what was missing
+/// -- "a bound on how much broadening a cycle may buy". Hence the seed cap.
+///
+/// Off in production until an A/B says otherwise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LocalRecoveryPolicy {
+    /// Cycles a site must stay degree-blocked before it may seed a recovery.
+    minimum_consecutive_cycles: u32,
+    /// The most seeds one cycle may hand to `recover_stalled_regions`. Zero
+    /// leaves the escalation exactly where it is.
+    maximum_seeds_per_cycle: usize,
+}
+
+impl LocalRecoveryPolicy {
+    /// Shipped behaviour: escalation stays behind the global scalar.
+    const OFF: Self = Self {
+        minimum_consecutive_cycles: 0,
+        maximum_seeds_per_cycle: 0,
+    };
+}
+
 pub fn run_cycles(
     mesh: &mut AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
     policy: CandidatePolicy,
     gates: HardGates,
     limits: CycleLimits,
+) -> Result<CycleOutcome> {
+    run_cycles_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        LocalRecoveryPolicy::OFF,
+    )
+}
+
+fn run_cycles_with_local_recovery(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+    local_recovery: LocalRecoveryPolicy,
 ) -> Result<CycleOutcome> {
     let initial_sites = mesh.active_site_count();
     // Freeze the input mesh's representative background scale. Recomputing it
@@ -3266,6 +3335,9 @@ pub fn run_cycles(
     // -- while the stalls it exists to clear are local.
     let mut escalation_eligible_cycles = 0usize;
     let mut escalation_fired_cycles = 0usize;
+    let mut local_escalation_cycles = 0usize;
+    let mut local_escalation_seeds = 0usize;
+    let mut consecutive_degree_blocked: BTreeMap<usize, u32> = BTreeMap::new();
     let mut degree_blocked_total = 0usize;
     let mut tier1_single_moves = 0usize;
     let mut tier1_pair_moves = 0usize;
@@ -3479,6 +3551,17 @@ pub fn run_cycles(
             escalation_eligible_cycles += 1;
         }
         degree_blocked_total += degree_blocked_sites.len();
+        // How long each site has been blocked, counting this cycle. A site that
+        // clears drops out, so the count is consecutive by construction.
+        consecutive_degree_blocked = degree_blocked_sites
+            .iter()
+            .map(|&site| {
+                (
+                    site,
+                    consecutive_degree_blocked.get(&site).copied().unwrap_or(0) + 1,
+                )
+            })
+            .collect();
         for &blocked_site in &degree_blocked_sites {
             if !mesh.can_move_site(blocked_site)
                 || mesh.state().vertex_degree(blocked_site).ok() < Some(gates.max_vertex_degree)
@@ -3659,6 +3742,38 @@ pub fn run_cycles(
             r_adapted += recovered;
             adapted_this_cycle += recovered;
             multi_ring_adapted += recovered;
+        } else if local_recovery.maximum_seeds_per_cycle > 0 && mesh.segments_are_empty() {
+            // The same widening, offered to the sites that have been blocked
+            // longest rather than to a globally idle cycle. Bounded twice: a
+            // site must have persisted, and a cycle may seed only so many.
+            let mut ranked: Vec<(u32, usize)> = consecutive_degree_blocked
+                .iter()
+                .filter(|(_, &cycles)| cycles >= local_recovery.minimum_consecutive_cycles)
+                .map(|(&site, &cycles)| (cycles, site))
+                .collect();
+            // Longest-blocked first, then by site so the choice is the same on
+            // every run.
+            ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+            let seeds: BTreeSet<usize> = ranked
+                .into_iter()
+                .take(local_recovery.maximum_seeds_per_cycle)
+                .map(|(_, site)| site)
+                .collect();
+            if !seeds.is_empty() {
+                local_escalation_cycles += 1;
+                local_escalation_seeds += seeds.len();
+                let recovered = recover_stalled_regions(
+                    mesh,
+                    criteria,
+                    gates,
+                    limits,
+                    &seeds,
+                    RECOVERY_MOVABLE_RINGS,
+                )?;
+                r_adapted += recovered;
+                adapted_this_cycle += recovered;
+                multi_ring_adapted += recovered;
+            }
         }
         // Site motion is only useful if the demands it was meant to unlock are
         // retried against the moved geometry. Do that once as a batch, for
@@ -3781,7 +3896,9 @@ pub fn run_cycles(
         "harp_dv stall escalation audit: {cycles} cycle(s), escalation eligible in \
          {escalation_eligible_cycles}, fired in {escalation_fired_cycles}; \
          degree-blocked site-cycles {degree_blocked_total}; \
-         tier-1 relief {tier1_single_moves} single / {tier1_pair_moves} pair move(s)"
+         tier-1 relief {tier1_single_moves} single / {tier1_pair_moves} pair move(s); \
+         local escalation in {local_escalation_cycles} cycle(s) over \
+         {local_escalation_seeds} seed(s)"
     );
 
     // HARP owns its final geometry.  Improve the preferred angle window with

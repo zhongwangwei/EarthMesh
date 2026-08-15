@@ -3734,3 +3734,74 @@ fn triangle_fan_ids_are_independent_of_the_seed() {
         );
     }
 }
+
+/// Does a bounded, local stall escalation clear what the global one never sees?
+///
+/// The escalations all trigger on "nothing was accepted anywhere this cycle",
+/// which measured zero firings at both NXP40 and NXP80 while degree-blocked
+/// sites waited in almost every cycle. This offers the same widening to the
+/// sites that have been blocked longest instead, under the bound the
+/// tried-and-rejected note asks for: a persistence floor and a per-cycle seed
+/// cap. Read-out is the refinement residual, so the checkpoint path is enough
+/// -- the optimiser moves sites but does not resolve demands.
+#[test]
+#[ignore = "bounded local-recovery A/B; run explicitly"]
+fn local_recovery_ab_on_the_nxp_proxy() {
+    let (nxp, max_cycles) = nxp_and_cycles(40, 20);
+    let gates = HardGates::default();
+    let limits = limits(max_cycles, 200_000);
+    let arms = [
+        ("OFF", LocalRecoveryPolicy::OFF),
+        (
+            "LOCAL-2/16",
+            LocalRecoveryPolicy {
+                minimum_consecutive_cycles: 2,
+                maximum_seeds_per_cycle: 16,
+            },
+        ),
+    ];
+
+    eprintln!(
+        "\nnxp arm         sites pending unbal below40 above80 min_angle max_angle runtime_s"
+    );
+    let mut results = Vec::new();
+    for (name, local_recovery) in arms {
+        let mut production = sphere(nxp);
+        let criteria = steep_target(&production);
+        let started = std::time::Instant::now();
+        let start = production_quality_checkpoint_with_local_recovery(
+            &mut production,
+            &criteria,
+            CandidatePolicy::default(),
+            gates,
+            limits,
+            local_recovery,
+        );
+        let runtime_s = started.elapsed().as_secs_f64();
+        let metrics = QualityGuardMetrics::read(&start, &criteria, limits).expect("metrics");
+        eprintln!(
+            "{nxp:3} {name:<11} {:5} {:7} {:5} {:7} {:7} {:9.4} {:9.4} {runtime_s:9.1}",
+            start.active_site_count(),
+            metrics.pending,
+            metrics.unbalanced,
+            metrics.angles.below,
+            metrics.angles.above_80,
+            metrics.angles.min_deg,
+            metrics.angles.max_deg
+        );
+        start
+            .state()
+            .validate()
+            .unwrap_or_else(|error| panic!("{name} left an invalid triangulation: {error:?}"));
+        assert_eq!(start.state().open_edge_count(), 0);
+        assert!(worst_degree(&start) <= gates.max_vertex_degree);
+        results.push((name, metrics.pending, metrics.unbalanced, runtime_s));
+    }
+
+    let (_, off_pending, off_unbalanced, off_runtime) = results[0];
+    let (_, local_pending, local_unbalanced, local_runtime) = results[1];
+    eprintln!(
+        "\npending {off_pending} -> {local_pending}, unbalanced {off_unbalanced} -> \
+         {local_unbalanced}, runtime {off_runtime:.1}s -> {local_runtime:.1}s"
+    );
+}
