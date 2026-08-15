@@ -3981,7 +3981,10 @@ fn who_made_the_triangle_the_optimiser_cannot_touch() {
             site.map_or(f64::NAN, |site| site.cumulative_displacement_m)
         );
         let point = xyz_to_lonlat_degrees(state.vertices()[corner]);
-        eprintln!("         lon {:+.5} lat {:+.5}", point.lon, point.lat);
+        eprintln!(
+            "         lon {:+.5} lat {:+.5}",
+            point.lon_degrees, point.lat_degrees
+        );
     }
 
     // Does the optimiser even look at it? A pass takes the worst-first movable
