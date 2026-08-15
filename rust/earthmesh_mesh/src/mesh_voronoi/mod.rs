@@ -227,8 +227,19 @@ impl MeshState {
     }
 
     /// The Voronoi cell of one site, given a triangle it belongs to.
+    ///
+    /// The ring is pinned to its lowest triangle before the corners are taken,
+    /// so the cell does not depend on which incident triangle the caller
+    /// happened to know about. That matters for more than tidiness: the corners
+    /// come back in ring order and their areas are summed in that order, so a
+    /// rotation is a different float. [`Self::voronoi_cell`] scans for the
+    /// lowest incident triangle, which makes this the rotation it already
+    /// returns -- seeding the walk is then free of any effect on the result.
     pub fn voronoi_cell_from(&self, site: usize, seed: usize) -> Result<VoronoiCell, VoronoiError> {
-        let triangles = self.triangle_fan_from(site, seed)?;
+        let mut triangles = self.triangle_fan_from(site, seed)?;
+        if let Some((start, _)) = triangles.iter().enumerate().min_by_key(|(_, &t)| t) {
+            triangles.rotate_left(start);
+        }
         let corners = triangles
             .iter()
             .map(|&triangle| self.circumcentre(triangle))

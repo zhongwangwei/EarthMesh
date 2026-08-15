@@ -1625,7 +1625,7 @@ fn target_field_and_natural_length_use_metres_once() {
         "mesh arc lengths are already metres; multiplying by the radius again would be wrong"
     );
 
-    let current = site_scale(state, site).expect("scale");
+    let current = site_scale(state, site, state.sphere_radius()).expect("scale");
     let target = vec![current; state.vertices().len()];
     assert!(natural_length_destination(state, &target, site).is_some());
 }
@@ -3267,7 +3267,7 @@ fn full_sweep_fixtures() -> Vec<(&'static str, AdaptiveMesh)> {
     fixtures.push(("after insertions", inserted.clone()));
 
     let mut moved = inserted.clone();
-    let objective = |_: &MeshState, _: &BTreeSet<usize>| Some(0usize);
+    let objective = |_: &MeshState, _: &AffectedSites| Some(0usize);
     let site = moved
         .state()
         .active_vertex_slots()
@@ -3353,6 +3353,19 @@ fn full_cell_sweeps_match_the_scanned_reference() {
             reference_vertices_below_degree_5(state),
             "{name}: the degree-below-five set differs from the scanned reference"
         );
+
+        // The seeded scale, with the radius passed in rather than recomputed
+        // per site, against the scanned original.
+        let seeds = active_site_triangle_seeds(state);
+        let radius_m = state.sphere_radius();
+        for site in state.active_vertex_slots() {
+            let Some(seed) = seeds[site] else { continue };
+            assert_eq!(
+                site_scale_from(state, site, seed, radius_m).map(f64::to_bits),
+                reference_site_scale(state, site).map(f64::to_bits),
+                "{name}: site {site} seeded scale differs from the scanned reference"
+            );
+        }
 
         // The merged retirement sweep has to answer both guards exactly as the
         // two separate sweeps did.
@@ -3571,4 +3584,153 @@ fn the_full_production_path_on_the_nxp_proxy() {
     });
     assert_eq!(mesh.state().open_edge_count(), 0);
     assert!(worst_degree(&mesh) <= gates.max_vertex_degree);
+}
+
+// ---------------------------------------------------------------------------
+// Reference implementations for the seeded-objective work.
+//
+// The transaction objective still finds a fan seed by scanning, once per
+// affected site per line-search step. These pin what it produces today so the
+// seeded version can be shown to produce the same thing.
+// ---------------------------------------------------------------------------
+
+/// The pre-optimisation cell read: the seed is found by scanning the mesh.
+fn reference_voronoi_cell_scanned(
+    state: &MeshState,
+    site: usize,
+) -> Option<earthmesh_mesh::VoronoiCell> {
+    state.voronoi_cell(site).ok()
+}
+
+/// The pre-optimisation `triangle_fan_ids`: a scanned fan per site.
+fn reference_triangle_fan_ids(
+    state: &MeshState,
+    sites: &BTreeSet<usize>,
+) -> Option<BTreeSet<usize>> {
+    let mut triangles = BTreeSet::new();
+    for &site in sites {
+        triangles.extend(state.triangle_fan(site).ok()?);
+    }
+    Some(triangles)
+}
+
+/// The pre-optimisation `site_scale`, with the radius recomputed inside.
+fn reference_site_scale(state: &MeshState, site: usize) -> Option<f64> {
+    let cell = state.voronoi_cell(site).ok()?;
+    CellView {
+        site,
+        cell: &cell,
+        state,
+        radius_m: state.sphere_radius(),
+    }
+    .effective_scale_m()
+}
+
+/// Any incident triangle must seed the cell the scan produces, bit for bit.
+///
+/// This is the precondition for feeding the objective from `sites_touching`,
+/// whose seed is the lowest triangle *within the change's reach* rather than
+/// within the whole mesh. `triangle_fan_from` starts the fan at whatever seed
+/// it is given, so two seeds give the same ring rotated -- the same cell, and a
+/// different order to sum its corner areas in.
+///
+/// **This test is expected to fail until `voronoi_cell_from` pins the fan to
+/// its lowest triangle.** A version of it that passes before then is a version
+/// that never tried a non-minimal seed, which is why the count is asserted.
+#[test]
+fn every_incident_seed_builds_the_same_cell_as_the_scan() {
+    let mut checked = 0usize;
+    let mut non_minimal = 0usize;
+    for (name, mesh) in full_sweep_fixtures() {
+        let state = mesh.state();
+        let radius_m = state.sphere_radius();
+        for site in state.active_vertex_slots() {
+            let Some(expected) = reference_voronoi_cell_scanned(state, site) else {
+                continue;
+            };
+            let expected_scale = CellView {
+                site,
+                cell: &expected,
+                state,
+                radius_m,
+            }
+            .effective_scale_m();
+            // The scan takes the first active triangle naming the site, so the
+            // fan it returns starts at the lowest-numbered incident one.
+            let minimal = expected.triangles[0];
+            for &seed in &expected.triangles {
+                non_minimal += usize::from(seed != minimal);
+                let produced = state
+                    .voronoi_cell_from(site, seed)
+                    .expect("an incident triangle seeds a cell");
+                assert_eq!(
+                    produced.triangles, expected.triangles,
+                    "{name}: site {site} seeded from {seed} produced a differently ordered fan"
+                );
+                let produced_scale = CellView {
+                    site,
+                    cell: &produced,
+                    state,
+                    radius_m,
+                }
+                .effective_scale_m();
+                assert_eq!(
+                    produced_scale.map(f64::to_bits),
+                    expected_scale.map(f64::to_bits),
+                    "{name}: site {site} seeded from {seed} produced a different scale"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        non_minimal > 0,
+        "no fixture exercised a non-minimal seed, so this test proves nothing"
+    );
+    eprintln!("checked {checked} (site, seed) pairs, {non_minimal} with a non-minimal seed");
+}
+
+/// `triangle_fan_ids` must not care which incident triangle seeded each fan.
+///
+/// Unlike the cell read above this one needs no normalisation: the ids go into
+/// a `BTreeSet` and the values `sorted_triangle_values` derives from them are
+/// sorted, so the ring's starting point cannot reach the result.
+#[test]
+fn triangle_fan_ids_are_independent_of_the_seed() {
+    for (name, mesh) in full_sweep_fixtures() {
+        let state = mesh.state();
+        let seeds = active_site_triangle_seeds(state);
+        for site in state.active_vertex_slots() {
+            let Ok(scanned) = state.triangle_fan(site) else {
+                continue;
+            };
+            let expected: BTreeSet<usize> = scanned.iter().copied().collect();
+            for &seed in &scanned {
+                let produced: BTreeSet<usize> = state
+                    .triangle_fan_from(site, seed)
+                    .expect("an incident triangle seeds a fan")
+                    .into_iter()
+                    .collect();
+                assert_eq!(
+                    produced, expected,
+                    "{name}: site {site} seeded from {seed} yielded a different triangle set"
+                );
+            }
+            assert_eq!(
+                seeds[site],
+                Some(scanned[0]),
+                "{name}: the seed table disagrees with the scan at site {site}"
+            );
+        }
+        let seeded: AffectedSites = state
+            .active_vertex_slots()
+            .filter_map(|site| Some((site, seeds[site]?)))
+            .collect();
+        let sites: BTreeSet<usize> = seeded.keys().copied().collect();
+        assert_eq!(
+            triangle_fan_ids(state, &seeded),
+            reference_triangle_fan_ids(state, &sites),
+            "{name}: the fan-id collection differs from the scanned reference"
+        );
+    }
 }

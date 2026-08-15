@@ -41,6 +41,15 @@ use crate::state::{AdaptiveMesh, SiteId};
 /// The most neighbours a cell can have and still be written to a gridfile.
 pub const GRIDFILE_MAX_VERTEX_DEGREE: usize = earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE;
 
+/// The sites a change touches, each with a triangle that names it.
+///
+/// The seed is the point: a neighbourhood read that scans for one is linear in
+/// the whole mesh, which makes a per-change check cost more the less of the
+/// mesh it changed. `sites_touching` already knows one for every site it
+/// returns, and this carries it through to the objective instead of dropping
+/// it on the way.
+pub(crate) type AffectedSites = std::collections::BTreeMap<usize, usize>;
+
 /// What a transaction must satisfy to be kept.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HardGates {
@@ -553,15 +562,10 @@ impl AdaptiveMesh {
     pub(crate) fn score_before_move<Score>(
         &self,
         site: usize,
-        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+        objective: &dyn Fn(&MeshState, &AffectedSites) -> Option<Score>,
     ) -> Option<Score> {
         let (_, reach) = self.move_neighbourhood(site).ok()?;
-        let affected_sites = self
-            .state()
-            .sites_touching(&reach)
-            .keys()
-            .copied()
-            .collect();
+        let affected_sites = self.state().sites_touching(&reach);
         objective(self.state(), &affected_sites)
     }
 
@@ -592,7 +596,7 @@ impl AdaptiveMesh {
         gates: HardGates,
         improves: &dyn Fn(&MeshState) -> bool,
     ) -> Result<Acceptance> {
-        let objective = |state: &MeshState, _: &BTreeSet<usize>| Some(!improves(state));
+        let objective = |state: &MeshState, _: &AffectedSites| Some(!improves(state));
         self.propose_move_cached(site, destination, gates, &objective, Some(&true), false)
     }
 
@@ -601,7 +605,7 @@ impl AdaptiveMesh {
         site: usize,
         destination: CartesianPoint,
         gates: HardGates,
-        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+        objective: &dyn Fn(&MeshState, &AffectedSites) -> Option<Score>,
         cached_before: Option<&Score>,
         objective_reads_affected_sites: bool,
     ) -> Result<Acceptance> {
@@ -628,13 +632,9 @@ impl AdaptiveMesh {
             }));
         }
         let affected_sites = if objective_reads_affected_sites {
-            self.state()
-                .sites_touching(&reach)
-                .keys()
-                .copied()
-                .collect()
+            self.state().sites_touching(&reach)
         } else {
-            BTreeSet::new()
+            AffectedSites::new()
         };
         let computed_before = if cached_before.is_none() {
             objective(self.state(), &affected_sites)
@@ -660,6 +660,26 @@ impl AdaptiveMesh {
             }
         };
 
+        // Seeds taken before the move do not survive it: legalising rewrites the
+        // corner arrays of the triangles it flips, so a slot that named this
+        // site may no longer. Take them again from the same reach, and require
+        // the same sites -- the objective compares two scores over one set of
+        // cells, and a set that changed underneath it is not a comparison.
+        let affected_sites = if objective_reads_affected_sites {
+            let after = self.state().sites_touching(&reach);
+            if let Some(&missing) = affected_sites.keys().find(|site| !after.contains_key(site)) {
+                self.state_mut().move_vertex(site, origin);
+                self.state_mut()
+                    .restore_patch(patch)
+                    .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(
+                    VoronoiError::SiteIsInNoTriangle { site: missing },
+                )));
+            }
+            after
+        } else {
+            affected_sites
+        };
         let pentagons = self.pentagon_ids();
         let verdict = match check(self.state(), &touched, gates, &pentagons) {
             Ok(max_degree_touched) => {
@@ -719,7 +739,7 @@ impl AdaptiveMesh {
         first: (usize, CartesianPoint),
         second: (usize, CartesianPoint),
         gates: HardGates,
-        objective: &dyn Fn(&MeshState, &BTreeSet<usize>) -> Option<Score>,
+        objective: &dyn Fn(&MeshState, &AffectedSites) -> Option<Score>,
         cached_before: Option<&Score>,
     ) -> Result<Acceptance> {
         if first.0 == second.0 {
@@ -745,12 +765,7 @@ impl AdaptiveMesh {
                 allowed: gates.max_patch_triangles,
             }));
         }
-        let affected_sites: BTreeSet<usize> = self
-            .state()
-            .sites_touching(&reach)
-            .keys()
-            .copied()
-            .collect();
+        let affected_sites = self.state().sites_touching(&reach);
         let computed_before = cached_before
             .is_none()
             .then(|| objective(self.state(), &affected_sites))
@@ -772,6 +787,23 @@ impl AdaptiveMesh {
             )));
         }
 
+        // Same reason as the single-site path: legalising can rewrite the slot
+        // that named a site, so the seeds have to be taken again from the
+        // moved mesh and the site set has to be the one the before-score used.
+        let affected_sites = {
+            let after = self.state().sites_touching(&reach);
+            if let Some(&missing) = affected_sites.keys().find(|site| !after.contains_key(site)) {
+                self.state_mut().move_vertex(first.0, first_origin);
+                self.state_mut().move_vertex(second.0, second_origin);
+                self.state_mut()
+                    .restore_patch(patch)
+                    .map_err(|error| HarpDvError::TopologyViolation(error.to_string()))?;
+                return Ok(Acceptance::RolledBack(Rejection::Unmeasurable(
+                    VoronoiError::SiteIsInNoTriangle { site: missing },
+                )));
+            }
+            after
+        };
         let pentagons = self.pentagon_ids();
         let verdict = match check(self.state(), &reach, gates, &pentagons) {
             Ok(max_degree_touched) => {

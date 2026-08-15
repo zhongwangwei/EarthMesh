@@ -1,7 +1,7 @@
 # HARP-DV 事务目标函数去扫描实施计划
 
 日期：2026-08-15
-状态：待执行
+状态：**已执行（2026-08-15）——结果见 §11**
 范围：质量优化器与 low-degree repair 的**局部**路径；前置计划
 `.omx/plans/harp-dv-voronoi-performance-plan.md` 已完成全网格路径
 
@@ -49,7 +49,7 @@ NXP80 完整路径运行中采样（5024 样本，质量优化器 window pass 11
 |---|---|---|
 | NXP40 checkpoint | 见 §5 阶段 0 | 6.79 s（2026-08-15 实测） |
 | NXP40 退休门 | `leaf_retirement_on_the_production_checkpoint` | 3.70 s（同上） |
-| NXP40 完整路径 | `the_full_production_path_on_the_nxp_proxy` | 待测 |
+| NXP40 完整路径 | `the_full_production_path_on_the_nxp_proxy` | **723.7 s**（同上，优化器 716.7 s = 99.0%） |
 | NXP80 checkpoint | `natural_length_ab_on_the_nxp_proxy` + `LOCATE_PENDING` | 422.0 s（同上） |
 | NXP80 完整路径 | 同上，`EARTHMESH_TEST_NXP=80` | **5887.3 s**（同上） |
 
@@ -297,3 +297,60 @@ git diff --check
 - 阶段 5 采样显示扫描帧显著下降；
 - 全部门禁通过；
 - 没有新依赖，没有原语语义、预算或 schema 变化。
+
+
+## 11. 执行结果（2026-08-15）
+
+### 11.1 性能
+
+| 场景 | 改前 | 改后 | 变化 |
+|---|---:|---:|---|
+| NXP40 checkpoint | 6.79 s | **5.73 s** | −16% |
+| **NXP40 完整路径** | **723.7 s** | **241.2 s** | **−67%** |
+| ├ 质量优化器 | 716.7 s | **235.4 s** | −67% |
+| └ 叶退休 | 0.5 s | 0.6 s | 持平 |
+| crate 测试套件 | 325.7 s | 169.9 s | −48% |
+| NXP80 完整路径 | 5887.3 s | 待补 | |
+
+分阶段：阶段 1（半径提升）把 checkpoint 从 6.79 降到 6.46；阶段 2–4（seed 管道 + fan
+规范化）再降到 5.73，并把优化器砍掉三分之二。
+
+### 11.2 等价性
+
+NXP40 完整路径改前改后**逐项相同**：13,381 次移动、margin_min −63.522602 → −12.710471、
+eta_min 0.157919 → 0.838451、角度窗违规 3723 → 245、17,921 sites、stop `AllSatisfied`、
+below40 22 / above80 221 / min 36.7917 / max 92.7105、unresolved 0、unbalanced 0。
+
+其中 below40 22 / above80 221 / min 36.7917 / max 92.7105 还**逐项等于**
+`harp-natural-length-ab.md` §9 记录的 NXP40 生产基线——那份基线记于本日全部改动之前。
+
+对照测试：
+- `every_incident_seed_builds_the_same_cell_as_the_scan`：9,210 对 (站点, seed)，其中
+  7,667 对为非最小 seed，全部与扫描版逐位相同。**该测试在规范化落地前确实失败过**
+  （`site 2 seeded from 290 produced a differently ordered fan`），符合 §5 阶段 0 的要求。
+- `triangle_fan_ids_are_independent_of_the_seed`：落地前即通过，证实该链无需规范化。
+- `full_cell_sweeps_match_the_scanned_reference` 增测了 `site_scale_from` 对
+  `reference_site_scale` 的逐位相等。
+
+### 11.3 阶段 5 采样（NXP80 优化器 eta pass 3/16）
+
+| 帧 | 改前 | 改后 |
+|---|---:|---:|
+| `voronoi_cell` 内联 `find` 扫描（`mesh_voronoi:245`） | 1882 | **0** |
+| `triangle_fan_from` 走环（`mesh_voronoi:153`） | 1412 | 6146 |
+| `triangle_fan_ids` | ~1026（含扫描） | 1721（纯走环） |
+
+扫描帧归零；走环占比上升是 §5 阶段 5 预注册的预期，不是回归。**剩余开销已是绕顶点一圈
+这件不可约的工作**，进一步提速需要复用 `triangle_fan_from` 的分配缓冲区，或按 §4 的非目标
+重新评估并行。
+
+### 11.4 与计划的偏离
+
+1. **`voronoi_cell_from` 的规范化提前到阶段 0 之后立刻做**，而非留到阶段 4。原因是阶段 0
+   的红测试一旦观察到失败，把套件留红会挡住后续每一次门禁；而规范化本身在当时不改变任何
+   行为（彼时没有调用方传非最小 seed）。红测试已按要求先观察到失败再转绿。
+2. **阶段 2/3/4 合并实施**。签名从 `&BTreeSet<usize>` 改为 `&AffectedSites` 会让所有调用点
+   同时失效，分三次提交需要人为造中间态，收益为零。
+3. `balance_objective` 需要为**环外的邻居**也提供 seed（`edges` 会引用不在 `sites` 里的
+   角点）。做法是建边时顺手记下每个角点所在的三角形——任何含该角点的三角形都是合法 seed，
+   而规范化保证了选哪个都不影响结果。

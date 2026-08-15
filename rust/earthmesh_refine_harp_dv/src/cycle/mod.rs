@@ -35,7 +35,7 @@ use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
 use crate::report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason};
 use crate::state::{AdaptiveMesh, SiteId, SiteMobility};
-use crate::transaction::{check, Acceptance, DemandOutcome, HardGates, Rejection};
+use crate::transaction::{check, Acceptance, AffectedSites, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
 
 /// What bounds a run, over and above the per-transaction gates.
@@ -240,17 +240,23 @@ fn directed_neighbour_pairs(state: &MeshState) -> impl Iterator<Item = (usize, u
 /// Every edge not incident to `sites` contributes the same value before and
 /// after the move, so comparing this tuple is exactly the global objective
 /// delta without rescanning the whole mesh for every candidate.
-fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> Option<[f64; 3]> {
+fn balance_objective(state: &MeshState, sites: &AffectedSites, bound: f64) -> Option<[f64; 3]> {
     let mut edges = BTreeSet::new();
-    for &site in sites {
-        for triangle in state.triangle_fan(site).ok()? {
+    // A seed for the ring's own sites too: every triangle naming a corner is a
+    // valid start for that corner's fan, and `voronoi_cell_from` pins the ring
+    // to its lowest triangle, so which one is picked cannot reach the result.
+    let mut seeds = sites.clone();
+    for (&site, &seed) in sites {
+        for triangle in state.triangle_fan_from(site, seed).ok()? {
             for corner in state.triangles()[triangle] {
+                seeds.entry(corner).or_insert(triangle);
                 if corner != site {
                     edges.insert((site.min(corner), site.max(corner)));
                 }
             }
         }
     }
+    let radius_m = state.sphere_radius();
     let mut cached = BTreeMap::new();
     let mut violations = 0usize;
     let mut worst = 1.0_f64;
@@ -260,7 +266,7 @@ fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> 
             if let Some(value) = cached.get(&site) {
                 return Some(*value);
             }
-            let value = site_scale(state, site)?;
+            let value = site_scale_from(state, site, *seeds.get(&site)?, radius_m)?;
             cached.insert(site, value);
             Some(value)
         };
@@ -280,13 +286,24 @@ fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> 
     Some([violations as f64, worst, energy])
 }
 
-fn site_scale(state: &MeshState, site: usize) -> Option<f64> {
-    let cell = state.voronoi_cell(site).ok()?;
+/// The scale of one cell, at a radius the caller already has.
+///
+/// `MeshState::sphere_radius` averages over every active vertex, so asking it
+/// per site inside a loop is a full pass over the mesh per iteration for a
+/// value that cannot change while the loop runs.
+#[cfg(test)]
+fn site_scale(state: &MeshState, site: usize, radius_m: f64) -> Option<f64> {
+    site_scale_from(state, site, state.triangle_fan(site).ok()?[0], radius_m)
+}
+
+/// The same, from a triangle the caller already knows names the site.
+fn site_scale_from(state: &MeshState, site: usize, seed: usize, radius_m: f64) -> Option<f64> {
+    let cell = state.voronoi_cell_from(site, seed).ok()?;
     CellView {
         site,
         cell: &cell,
         state,
-        radius_m: state.sphere_radius(),
+        radius_m,
     }
     .effective_scale_m()
 }
@@ -862,7 +879,7 @@ fn recover_one_region(
     let region: BTreeSet<usize> = rings.iter().flatten().copied().collect();
     let frozen = rings.last().cloned().unwrap_or_default();
     let seeds = std::cell::RefCell::new(BTreeMap::new());
-    let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+    let objective = |state: &MeshState, _: &AffectedSites| {
         region_score(state, criteria, gates, limits, &region, &seeds)
     };
 
@@ -883,7 +900,7 @@ fn recover_one_region(
                 if !mesh.can_move_site(site) {
                     continue;
                 }
-                let Some(before) = objective(mesh.state(), &BTreeSet::new()) else {
+                let Some(before) = objective(mesh.state(), &AffectedSites::new()) else {
                     continue;
                 };
                 let mut destinations = balance_destinations(mesh, site);
@@ -1026,10 +1043,10 @@ fn angle_window_survey(state: &MeshState) -> AngleWindowSurvey {
     survey
 }
 
-fn triangle_fan_ids(state: &MeshState, sites: &BTreeSet<usize>) -> Option<BTreeSet<usize>> {
+fn triangle_fan_ids(state: &MeshState, sites: &AffectedSites) -> Option<BTreeSet<usize>> {
     let mut triangles = BTreeSet::new();
-    for &site in sites {
-        triangles.extend(state.triangle_fan(site).ok()?);
+    for (&site, &seed) in sites {
+        triangles.extend(state.triangle_fan_from(site, seed).ok()?);
     }
     Some(triangles)
 }
@@ -1070,11 +1087,11 @@ fn sorted_triangle_values(
     Some(values)
 }
 
-fn triangle_eta_values(state: &MeshState, sites: &BTreeSet<usize>) -> Option<Vec<f64>> {
+fn triangle_eta_values(state: &MeshState, sites: &AffectedSites) -> Option<Vec<f64>> {
     sorted_triangle_values(state, triangle_fan_ids(state, sites)?, triangle_eta_value)
 }
 
-fn triangle_window_margins(state: &MeshState, sites: &BTreeSet<usize>) -> Option<Vec<f64>> {
+fn triangle_window_margins(state: &MeshState, sites: &AffectedSites) -> Option<Vec<f64>> {
     sorted_triangle_values(
         state,
         triangle_fan_ids(state, sites)?,
@@ -2348,8 +2365,8 @@ impl PartialOrd for LowDegreeScore {
     }
 }
 
-fn low_degree_deficit(state: &MeshState, sites: &BTreeSet<usize>) -> Option<usize> {
-    let mut degrees: BTreeMap<usize, usize> = sites.iter().map(|&site| (site, 0)).collect();
+fn low_degree_deficit(state: &MeshState, sites: &AffectedSites) -> Option<usize> {
+    let mut degrees: BTreeMap<usize, usize> = sites.keys().map(|&site| (site, 0)).collect();
     for triangle in state
         .active_triangle_slots()
         .map(|triangle| &state.triangles()[triangle])
@@ -2429,16 +2446,17 @@ fn repair_low_degree_stars(
             {
                 continue;
             }
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
                 let mut unresolved = 0;
-                'site: for &site in affected {
-                    let cell = state.voronoi_cell(site).ok()?;
+                let radius_m = state.sphere_radius();
+                'site: for (&site, &seed) in affected {
+                    let cell = state.voronoi_cell_from(site, seed).ok()?;
                     let view = CellView {
                         site,
                         cell: &cell,
                         state,
-                        radius_m: state.sphere_radius(),
+                        radius_m,
                     };
                     for criterion in criteria {
                         if criterion.evaluate(&view).ok()?.demands_work() {
@@ -2830,16 +2848,17 @@ fn optimise_mesh_quality_with_natural_length(
         let mut unproductive_sites: BTreeSet<_> = attempted_sites.iter().copied().collect();
         let mut committed_this_pass = 0usize;
         for site in sites {
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
                 let mut unresolved = 0usize;
-                for &site in affected {
-                    let cell = state.voronoi_cell(site).ok()?;
+                let radius_m = state.sphere_radius();
+                for (&site, &seed) in affected {
+                    let cell = state.voronoi_cell_from(site, seed).ok()?;
                     let view = CellView {
                         site,
                         cell: &cell,
                         state,
-                        radius_m: state.sphere_radius(),
+                        radius_m,
                     };
                     for criterion in criteria {
                         if criterion.evaluate(&view).ok()?.demands_work() {
@@ -3470,7 +3489,7 @@ pub fn run_cycles(
             // phase below; scoring it here was expensive and admitted moves
             // that balanced a neighbourhood without lowering this degree.
             let objective =
-                |state: &MeshState, _: &BTreeSet<usize>| state.vertex_degree(blocked_site).ok();
+                |state: &MeshState, _: &AffectedSites| state.vertex_degree(blocked_site).ok();
             let Ok(before) = mesh.state().vertex_degree(blocked_site) else {
                 continue;
             };
@@ -3533,7 +3552,7 @@ pub fn run_cycles(
                 if !mesh.can_move_site(moving_site) {
                     continue;
                 }
-                let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+                let objective = |state: &MeshState, _: &AffectedSites| {
                     let left = *state.vertices().get(pentagon)?;
                     let right = *state.vertices().get(demand_site)?;
                     let distance_squared = (left.x - right.x).powi(2)
@@ -3544,7 +3563,7 @@ pub fn run_cycles(
                         -distance_squared,
                     ])
                 };
-                let Some(before) = objective(mesh.state(), &BTreeSet::new()) else {
+                let Some(before) = objective(mesh.state(), &AffectedSites::new()) else {
                     continue;
                 };
                 for destination in degree_relief_destinations(mesh.state(), moving_site) {
@@ -3568,7 +3587,7 @@ pub fn run_cycles(
             if !mesh.can_move_site(site) {
                 continue;
             }
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 balance_objective(state, affected, limits.max_neighbour_scale_ratio)
             };
             let Some(before) = mesh.score_before_move(site, &objective) else {
