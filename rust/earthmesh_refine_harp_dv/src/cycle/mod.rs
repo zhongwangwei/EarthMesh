@@ -2767,7 +2767,11 @@ impl GuardCells {
 // pass is kept, so the run stays valid and diverges.
 #[cfg(test)]
 thread_local! {
-    static VERIFY_GUARD_CELLS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many more passes to check. Drift shows up as soon as a cell the
+    /// refresh missed is read, and the early passes commit the most moves, so a
+    /// bounded count catches it without running the comparison forty-eight
+    /// times over -- which in a debug build is most of the test's runtime.
+    static VERIFY_GUARD_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -2777,9 +2781,11 @@ fn verify_guard_cells(
     limits: CycleLimits,
     cells: &GuardCells,
 ) -> Result<()> {
-    if !VERIFY_GUARD_CELLS.with(|verify| verify.get()) {
+    let remaining = VERIFY_GUARD_CELLS.with(|verify| verify.get());
+    if remaining == 0 {
         return Ok(());
     }
+    VERIFY_GUARD_CELLS.with(|verify| verify.set(remaining - 1));
     let full = GuardCells::full(state, criteria, limits)?;
     for (site, (kept, fresh)) in cells.scales.iter().zip(&full.scales).enumerate() {
         assert_eq!(

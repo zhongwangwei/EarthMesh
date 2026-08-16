@@ -3024,7 +3024,17 @@ fn the_natural_length_arms_differ_only_in_the_natural_candidate() {
     let limits = limits(40, 200_000);
     let mut production = sphere(6);
     let background_scale_m = median_cell_scale(production.state());
-    let criteria = steep_target(&production);
+    // A narrower patch than `steep_target`'s. What this pins is the wiring --
+    // that OFF removes the candidate from every phase and CURRENT still makes
+    // one -- and a smaller refined region reaches a converged checkpoint for a
+    // fraction of the debug-build runtime.
+    let criteria = target(
+        coarsest_scale(&production) * 0.4,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 500_000.0,
+        },
+    );
     let start = production_quality_checkpoint(
         &mut production,
         &criteria,
@@ -3581,6 +3591,45 @@ fn the_full_production_path_on_the_nxp_proxy() {
         report.unbalanced_pairs_remaining
     );
 
+    // Where the tail actually is. "Outside the window" counts a 39-degree
+    // corner and a 0.2-degree one alike, and those mean very different things
+    // to whatever consumes the mesh.
+    let mut corners = Vec::new();
+    let mut worst_triangles = Vec::new();
+    for triangle in mesh.state().active_triangle_slots() {
+        let [a, b, c] = mesh.state().triangles()[triangle];
+        let Some(angles) = crate::criteria::triangle_angles_deg([
+            mesh.state().vertices()[a],
+            mesh.state().vertices()[b],
+            mesh.state().vertices()[c],
+        ]) else {
+            continue;
+        };
+        worst_triangles.push(angles.iter().copied().fold(f64::MAX, f64::min));
+        corners.extend(angles);
+    }
+    worst_triangles.sort_by(f64::total_cmp);
+    let below = |limit: f64| worst_triangles.partition_point(|angle| *angle < limit);
+    eprintln!(
+        "triangles by smallest angle: <1 {}, <5 {}, <15 {}, <25 {}, <30 {}, <40 {} of {}",
+        below(1.0),
+        below(5.0),
+        below(15.0),
+        below(25.0),
+        below(30.0),
+        below(40.0),
+        worst_triangles.len()
+    );
+    corners.sort_by(|left, right| right.total_cmp(left));
+    eprintln!(
+        "widest corners: {:?}",
+        corners
+            .iter()
+            .take(8)
+            .map(|angle| (angle * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    );
+
     mesh.state().validate().unwrap_or_else(|error| {
         panic!("the production path left an invalid triangulation: {error:?}")
     });
@@ -3902,20 +3951,27 @@ fn how_scattered_is_a_fan_in_the_triangle_arrays() {
 #[test]
 fn the_kept_cell_survey_never_drifts_from_a_fresh_sweep() {
     let gates = HardGates::default();
-    let limits = limits(40, 200_000);
+    // Three refinement cycles, not forty: the comparison is per pass and does
+    // not need a large mesh to find a cell the refresh missed.
+    let limits = limits(3, 100_000);
     let mut mesh = sphere(6);
     let background_scale_m = median_cell_scale(mesh.state());
     let criteria = steep_target(&mesh);
     stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
 
-    VERIFY_GUARD_CELLS.with(|verify| verify.set(true));
+    const CHECKED_PASSES: usize = 8;
+    VERIFY_GUARD_CELLS.with(|verify| verify.set(CHECKED_PASSES));
     let outcome = optimise_mesh_quality(&mut mesh, &criteria, gates, limits, background_scale_m);
-    VERIFY_GUARD_CELLS.with(|verify| verify.set(false));
+    let unused = VERIFY_GUARD_CELLS.with(|verify| verify.replace(0));
     let (moves, _) = outcome.expect("the optimiser runs");
 
     assert!(
         moves > 0,
         "the fixture never committed a move, so nothing was verified"
+    );
+    assert!(
+        unused < CHECKED_PASSES,
+        "no pass was compared against a fresh sweep"
     );
 }
 
