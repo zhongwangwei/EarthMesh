@@ -452,7 +452,17 @@ fn a_run_blocked_only_by_the_angle_floor_names_the_constraint() {
 #[test]
 fn the_cycle_limit_is_reported_as_the_cycle_limit() {
     let mut mesh = sphere(6);
-    let criteria = target(coarsest_scale(&mesh) * 0.5, TargetRegion::Global);
+    // A patch, not the globe. What this asserts is about the cycle loop's
+    // report, and `run_cycles` goes on to spend forty-eight quality passes on
+    // whatever the loop produced -- so a global target makes this test pay for
+    // optimising a mesh it never looks at.
+    let criteria = target(
+        coarsest_scale(&mesh) * 0.5,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 600_000.0,
+        },
+    );
 
     let outcome = run_cycles(
         &mut mesh,
@@ -604,6 +614,22 @@ fn ratio_survey(mesh: &AdaptiveMesh, bound: f64) -> (f64, usize) {
     (worst, over)
 }
 
+/// The same shape as `steep_target` over a smaller patch.
+///
+/// For tests whose claim is about the cycle loop's report rather than about the
+/// size of the refined region. `run_cycles` spends forty-eight quality passes on
+/// whatever the loop leaves behind, so the patch is what those tests are really
+/// paying for.
+fn small_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
+    target(
+        coarsest_scale(mesh) * 0.3,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 600_000.0,
+        },
+    )
+}
+
 fn steep_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
     target(
         coarsest_scale(mesh) * 0.3,
@@ -679,6 +705,8 @@ fn angle_window_penalties_keep_legacy_and_delivery_semantics_separate() {
 #[test]
 fn degree_relief_moves_reduce_the_wall_without_breaking_quality_gates() {
     let mut mesh = sphere(6);
+    // Kept at `steep_target`'s reach: shrinking it was measured to make this
+    // test slower, 38s to 67s, not faster.
     let criteria = steep_target(&mesh);
     let gates = HardGates {
         min_triangle_angle_deg: 20.0,
@@ -766,7 +794,7 @@ fn final_unresolved_cells_are_reevaluated_after_the_last_adaptation() {
 #[test]
 fn scale_balance_and_r_adaptation_close_the_gap() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -819,7 +847,7 @@ fn scale_balance_and_r_adaptation_close_the_gap() {
 #[test]
 fn without_balance_the_same_target_breaks_the_bound() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     run_cycles(
         &mut mesh,
         &criteria,
@@ -850,7 +878,7 @@ fn without_balance_the_same_target_breaks_the_bound() {
 #[test]
 fn the_report_separates_balance_from_what_was_asked_for() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -886,7 +914,7 @@ fn the_report_separates_balance_from_what_was_asked_for() {
 #[test]
 fn the_refusals_are_counted_by_kind() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -945,7 +973,7 @@ fn the_refusals_are_counted_by_kind() {
 fn the_degree_budget_saturates() {
     let run = |budget: usize| {
         let mut mesh = sphere(6);
-        let criteria = steep_target(&mesh);
+        let criteria = small_target(&mesh);
         run_cycles(
             &mut mesh,
             &criteria,
@@ -976,6 +1004,14 @@ fn the_degree_budget_saturates() {
     // and the claim does not rest on which.
 
     let (cells_seven, _worst_seven) = run(7);
+    // Non-vacuity: the tighter budget has to actually cost cells. If all three
+    // runs agree the equality above is true of a mesh that never reached any
+    // bound, and the test asserts nothing.
+    assert!(
+        cells_seven < cells_nine,
+        "a budget of seven cost nothing ({cells_seven} against {cells_nine}), so this fixture \
+         never reaches the degree wall the claim is about"
+    );
     assert!(
         (cells_nine as f64) < cells_seven as f64 * 1.10,
         "removing the degree bound bought {cells_seven} -> {cells_nine} cells; if that is now a \
@@ -992,6 +1028,10 @@ fn the_degree_budget_saturates() {
 #[test]
 fn the_wall_behind_degree_is_the_pentagons() {
     let mut mesh = sphere(6);
+    // Kept at `steep_target`'s reach. A smaller patch never touches one of the
+    // twelve pentagons, so `refusals.pentagon > 0` below stops holding -- the
+    // wall this is about is simply not met, and the test would pass by never
+    // reaching what it names.
     let criteria = steep_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
@@ -1041,6 +1081,10 @@ fn protected_segments_make_a_quality_target_terminate() {
         let mut mesh = AdaptiveMesh::from_triangular_mesh(&base).expect("adaptive");
         let coarsest = coarsest_scale(&mesh);
         let centre = LonLatDegrees::new(105.0, 35.0);
+        // Left at 1,200 km deliberately: shrinking it was measured to make this
+        // test *slower*, 73s to 113s. The work here is driven by the `MinAngle`
+        // criterion below, which carries no region and so refines the whole
+        // sphere; the protected circle's size does not reach it.
         let reach = 1_200_000.0;
         if protect {
             // The boundary as segments: mesh edges that straddle the circle,
@@ -1305,7 +1349,7 @@ fn target_scale_optimizer_improves_eta_tail_without_spending_harp_gates() {
     let limits = limits(40, 200_000);
     let mut mesh = sphere(6);
     let background_scale_m = median_cell_scale(mesh.state());
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
     let before = all_triangle_eta_values(mesh.state()).expect("eta");
     let angles_before = angle_window_survey(mesh.state());
@@ -2074,7 +2118,7 @@ fn the_surviving_residue_is_attributed_to_refinement_or_to_optimisation() {
     let limits = limits(40, 200_000);
     let mut mesh = sphere(6);
     let background_scale_m = median_cell_scale(mesh.state());
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
 
     let after_refinement = angle_window_survey(mesh.state());
