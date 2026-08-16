@@ -2300,6 +2300,7 @@ fn export_the_frozen_target_scale_field() {
 /// beside it. Without that, a later change to the shipped ladder would let the
 /// control drift while the test still passed.
 #[test]
+#[ignore = "bounded frontal placement A/B; run explicitly"]
 fn frontal_placement_ab_on_the_nxp6_proxy() {
     use super::frontal_prototype::{refine_with_frontal, rho_bar_for, Selection};
 
