@@ -150,7 +150,14 @@ impl MeshState {
 
         let mut fan = vec![seed];
         let mut current = seed;
-        let limit = self.triangle_count() + 1;
+        // Slots, not the active count. This is a runaway backstop, so any bound
+        // at least as large as the number of live triangles is correct, and the
+        // slot count is one in O(1) where `triangle_count` scans every slot to
+        // get an exact figure nothing here needs. A fan is about six triangles;
+        // paying a full sweep of the mesh to decide how far it may walk made
+        // this the dominant cost of the quality optimiser -- 90.9 percent of
+        // samples on the NXP=21 CLI fixture were inside `triangle_count`.
+        let limit = self.triangles().len() + 1;
         for _ in 0..limit {
             let next = self.neighbours()[current][(corner + 1) % 3];
             if next == 0 || !self.is_triangle_live(next) {

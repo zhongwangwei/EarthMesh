@@ -23,7 +23,7 @@ jobs:
   fast:
     name: fast (fmt + no-netcdf crates)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Install rustfmt + clippy
@@ -75,7 +75,7 @@ jobs:
   heavy:
     name: heavy (cli, system NetCDF)
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - name: Install NetCDF system deps

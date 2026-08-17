@@ -192,7 +192,10 @@ impl MeshState {
             .filter(|&triangle| self.is_triangle_live(triangle))
             .or_else(|| self.active_triangle_slots().next())
             .ok_or(InsertionError::LocationWalkDidNotSettle { visited: 0 })?;
-        let limit = self.triangle_count() + 1;
+        // Slots, not the active count: a walk bound only needs to be at
+        // least the number of live triangles, and the slot count is that in
+        // O(1). See the note in `triangle_fan_from`.
+        let limit = self.triangles().len() + 1;
         for visited in 0..limit {
             let corners = triangles[current];
             let winding = orientation_on_sphere(
