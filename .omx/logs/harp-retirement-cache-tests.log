@@ -1,0 +1,131 @@
+   Compiling earthmesh_refine_harp_dv v3.0.0-alpha4 (/Users/zhongwangwei/Downloads/EarthMesh-3.0.0-alpha2/rust/earthmesh_refine_harp_dv)
+    Finished `release` profile [optimized + debuginfo] target(s) in 10.00s
+     Running unittests src/lib.rs (target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c)
+
+running 107 tests
+test candidate::tests::a_site_that_is_not_there_is_an_error_not_an_empty_ladder ... ok
+test candidate::tests::the_ladder_is_deterministic ... ok
+test candidate::tests::the_ladder_runs_witness_then_farthest_then_off_centre_then_edge ... ok
+test candidate::tests::the_off_centre_is_short_of_the_corner_it_aims_at ... ok
+test candidate::tests::every_candidate_is_on_the_sphere ... ok
+test candidate::tests::the_separation_floor_removes_candidates_too_near_a_site ... ok
+test criteria::tests::a_cell_outside_the_region_is_satisfied ... ok
+test candidate::tests::the_stalled_fallback_is_broader_without_retrying_the_ladder ... ok
+test criteria::tests::an_unsatisfiable_target_is_not_exposed_to_the_optimizer ... ok
+test criteria::tests::a_cell_over_the_target_reports_the_measurement_and_the_threshold ... ok
+test criteria::tests::a_cell_that_meets_the_target_is_satisfied ... ok
+test criteria::tests::a_target_below_the_source_resolution_is_unsatisfiable ... ok
+test criteria::tests::indexed_circles_are_one_target_with_the_same_great_circle_membership ... ok
+test criteria::tests::triangle_eta_is_one_for_an_equilateral_triangle_and_falls_with_distortion ... ok
+test criteria::tests::target_scale_exposes_the_same_size_field_the_criterion_evaluates ... ok
+test cycle::tests::a_region_score_cannot_buy_progress_with_a_worse_boundary_ratio ... ok
+test cycle::tests::a_rejected_quality_pass_does_not_claim_retained_moves ... ok
+test criteria::tests::cell_areas_are_in_square_metres_and_add_up_to_the_sphere ... ok
+test criteria::tests::the_effective_scale_is_the_radius_of_a_disc_with_the_same_area ... ok
+test candidate::tests::the_hint_is_a_triangle_at_the_site ... ok
+test cycle::tests::a_natural_length_step_lengthens_edges_the_field_wants_longer ... ok
+test cycle::tests::angle_window_penalties_keep_legacy_and_delivery_semantics_separate ... ok
+test cycle::tests::a_natural_length_step_shortens_edges_the_field_wants_shorter ... ok
+test cycle::tests::angle_window_survey_counts_every_triangle_corner ... ok
+test cycle::tests::degree_gain_candidates_are_the_vertices_across_a_low_degree_star ... ok
+test cycle::tests::export_the_frozen_target_scale_field ... ignored, writes a CSV for the offline experiment; run explicitly
+test cycle::tests::eta_phase_restores_the_existing_eta_first_semantics ... ok
+test cycle::tests::adaptive_sites_without_lineage_are_not_retirement_leaves ... ok
+test cycle::tests::leaf_lineage_survey_keeps_strict_angle_ownership_separate_from_touching ... ok
+test cycle::tests::low_degree_score_requires_a_real_deficit_reduction_without_quality_regression ... ok
+test cycle::tests::a_region_score_includes_scale_ratios_crossing_its_boundary ... ok
+test cycle::tests::natural_length_ab_on_the_nxp_proxy ... ignored, bounded natural-length A/B; run explicitly
+test cycle::tests::clone_degree_four_leaf_retirement_has_a_quality_improving_candidate ... ok
+test cycle::tests::quality_score_does_not_buy_eta_regression_with_window_margin ... ok
+test cycle::tests::quality_score_does_not_trade_fewer_scale_violations_for_a_worse_ratio ... ok
+test cycle::tests::a_region_that_covers_no_cell_reports_satisfied_not_thwarted ... ok
+test cycle::tests::quality_score_ignores_ratio_changes_inside_the_satisfied_bound ... ok
+test cycle::tests::quality_score_prefers_window_margin_when_eta_is_no_worse ... ok
+test cycle::tests::quality_score_rejects_a_better_worst_margin_that_increases_local_penalty ... ok
+test cycle::tests::quality_score_keeps_unresolved_and_scale_as_vetoes ... ok
+test cycle::tests::a_cell_at_the_minimum_width_stops_asking ... ok
+test cycle::tests::a_satisfied_target_stops_at_once_and_changes_nothing ... ok
+test cycle::tests::a_mesh_that_meets_its_target_still_reports_all_satisfied ... ok
+test cycle::tests::target_angle_survey_measures_the_frozen_size_field ... ok
+test cycle::tests::target_field_and_natural_length_use_metres_once ... ok
+test cycle::tests::retirement_audit_reads_clones_without_mutating_the_mesh ... ok
+test cycle::tests::target_field_is_continuous_and_reaches_every_site ... ok
+test cycle::tests::final_unresolved_cells_are_reevaluated_after_the_last_adaptation ... ok
+test cycle::tests::the_floor_angle_scan_in_the_cell_where_frontal_helps ... ignored, parameter scan; run explicitly after section 11.66
+test cycle::tests::a_run_blocked_only_by_the_angle_floor_names_the_constraint ... ok
+test cycle::tests::evaluation_retains_only_evidence_that_can_affect_the_demand ... ok
+test cycle::tests::refining_makes_the_demand_go_away ... ok
+test cycle::tests::a_regional_target_refines_where_it_applies_and_nowhere_else ... ok
+test cycle::tests::a_run_is_deterministic ... ok
+test cycle::tests::the_site_budget_stops_the_run_under_its_own_name ... ok
+test cycle::tests::transaction_floor_0_vs_25_vs_40_on_the_nxp6_proxy ... ignored, bounded NXP6 comparison; run explicitly
+test cycle::tests::a_run_that_cannot_place_anything_says_so ... ok
+test cycle::tests::worst_first_eta_accepts_a_better_worst_triangle_despite_a_worse_average ... ok
+test state::tests::consecutive_retirement_maps_compose_past_tombstoned_targets ... ok
+test cycle::tests::multi_ring_recovery_serves_a_residue_one_ring_cannot ... ok
+test state::tests::degree_four_leaf_retirement_tombstones_its_stable_id ... ok
+test tests::a_config_that_cannot_be_honoured_is_refused_with_the_field_that_is_wrong ... ok
+test tests::a_mesh_with_no_sites_is_refused ... ok
+test tests::a_patch_budget_larger_than_the_mesh_budget_is_refused ... ok
+test tests::a_request_with_nothing_to_do_returns_the_mesh_it_was_given ... ok
+test tests::a_run_validates_its_config_before_touching_the_mesh ... ok
+test tests::satisfied_evidence_demands_no_work ... ok
+test tests::site_ids_are_monotonic_and_never_reissued ... ok
+test state::tests::from_mesh_state_ignores_retired_slots ... ok
+test tests::two_identical_empty_runs_agree ... ok
+test tests::wrapping_a_mesh_gives_every_site_an_identity ... ok
+test tests::wrapping_keeps_the_triangulation_and_drops_the_generations ... ok
+test transaction::tests::a_cached_move_score_is_not_recomputed_for_every_candidate ... ok
+test transaction::tests::a_candidate_off_the_sphere_is_refused ... ok
+test transaction::tests::a_committed_site_is_recorded_where_the_report_says ... ok
+test transaction::tests::a_demand_the_ladder_cannot_satisfy_leaves_the_mesh_alone ... ok
+test transaction::tests::a_higher_sliver_floor_buys_a_better_worst_angle ... ok
+test transaction::tests::a_pair_move_commits_or_restores_both_sites_as_one_transaction ... ok
+test transaction::tests::a_patch_over_budget_is_refused_by_name ... ok
+test transaction::tests::a_location_hint_does_not_change_the_outcome ... ok
+test transaction::tests::a_refusal_says_which_site_and_by_how_much ... ok
+test transaction::tests::a_rejected_proposal_leaves_the_mesh_and_the_site_table_untouched ... ok
+test transaction::tests::a_witness_is_tried_first ... ok
+test transaction::tests::an_invalid_parent_vertex_records_no_parent_site ... ok
+test transaction::tests::each_rung_is_undone_before_the_next_is_tried ... ok
+test transaction::tests::proposing_is_deterministic ... ok
+test transaction::tests::protected_segment_encroachment_scans_the_segment_list_not_the_hint_ring ... ok
+test transaction::tests::refining_a_cell_keeps_the_first_candidate_that_survives ... ok
+test transaction::tests::refining_a_refined_site_records_the_next_generation ... ok
+test transaction::tests::the_degree_gate_keeps_the_mesh_writable ... ok
+test transaction::tests::the_patch_bound_covers_a_move_as_well_as_an_insertion ... ok
+test transaction::tests::the_stalled_fallback_can_serve_a_demand_the_short_ladder_cannot ... ok
+test transaction::tests::a_proposal_touches_a_neighbourhood_whatever_the_mesh_size ... ok
+test cycle::tests::a_recovery_that_improves_nothing_leaves_the_mesh_exactly_as_it_was ... ok
+test cycle::tests::the_refusals_are_counted_by_kind ... ok
+test cycle::tests::scale_balance_and_r_adaptation_close_the_gap ... ok
+test cycle::tests::the_report_separates_balance_from_what_was_asked_for ... ok
+test cycle::tests::without_balance_the_same_target_breaks_the_bound ... ok
+test cycle::tests::degree_relief_moves_reduce_the_wall_without_breaking_quality_gates ... ok
+test cycle::tests::the_wall_behind_degree_is_the_pentagons ... ok
+test cycle::tests::target_scale_optimizer_improves_eta_tail_without_spending_harp_gates ... ok
+test cycle::tests::the_surviving_residue_is_attributed_to_refinement_or_to_optimisation ... ok
+test cycle::tests::the_natural_length_arms_differ_only_in_the_natural_candidate ... ok
+test cycle::tests::protected_segments_make_a_quality_target_terminate ... ok
+test cycle::tests::the_degree_budget_saturates ... ok
+test cycle::tests::the_cycle_limit_is_reported_as_the_cycle_limit ... ok
+test cycle::tests::frontal_placement_ab_on_the_nxp6_proxy has been running for over 60 seconds
+test cycle::tests::frontal_placement_ab_on_the_nxp6_proxy ... ok
+
+test result: ok. 103 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 328.85s
+
+     Running tests/end_to_end.rs (target/release/deps/end_to_end-7bacbbe01691f4c6)
+
+running 3 tests
+test a_run_with_no_criteria_returns_the_mesh_it_was_given ... ok
+test a_refined_run_converts_to_the_tables_the_writers_consume ... ok
+test a_regional_target_produces_a_finer_mesh_that_still_holds_together ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+   Doc-tests earthmesh_refine_harp_dv
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

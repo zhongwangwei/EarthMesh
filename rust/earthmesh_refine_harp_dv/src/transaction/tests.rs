@@ -700,7 +700,7 @@ fn a_cached_move_score_is_not_recomputed_for_every_candidate() {
     let origin = earthmesh_mesh::xyz_to_lonlat_degrees(mesh.state().vertices()[site]);
     let destination = on(&mesh, origin.lon_degrees + 0.001, origin.lat_degrees);
     let calls = std::cell::Cell::new(0usize);
-    let objective = |_: &MeshState, _: &BTreeSet<usize>| {
+    let objective = |_: &MeshState, _: &AffectedSites| {
         calls.set(calls.get() + 1);
         Some(0usize)
     };
@@ -738,7 +738,7 @@ fn a_pair_move_commits_or_restores_both_sites_as_one_transaction() {
         let b = mesh.state().vertices()[right];
         (separate(a, b), separate(b, a))
     };
-    let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+    let objective = |state: &MeshState, _: &AffectedSites| {
         let a = state.vertices()[40];
         let b = state.vertices()[41];
         Some(-((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)))

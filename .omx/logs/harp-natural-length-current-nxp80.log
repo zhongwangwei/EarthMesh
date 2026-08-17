@@ -1,0 +1,122 @@
+   Compiling earthmesh_refine_harp_dv v3.0.0-alpha4 (/Users/zhongwangwei/Downloads/EarthMesh-3.0.0-alpha2/rust/earthmesh_refine_harp_dv)
+    Finished `release` profile [optimized + debuginfo] target(s) in 14.19s
+     Running unittests src/lib.rs (target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c)
+
+running 1 test
+harp_dv cycle 1/100: 530 insertions, 5 r-adaptations, 15 unresolved (0 angle-constrained), 64532 active cells
+test cycle::tests::natural_length_ab_on_the_nxp_proxy has been running for over 60 seconds
+harp_dv cycle 2/100: 955 insertions, 57 r-adaptations, 115 unresolved (0 angle-constrained), 65487 active cells
+harp_dv cycle 3/100: 1572 insertions, 214 r-adaptations, 416 unresolved (0 angle-constrained), 67059 active cells
+harp_dv cycle 4/100: 2155 insertions, 265 r-adaptations, 464 unresolved (0 angle-constrained), 69214 active cells
+harp_dv cycle 5/100: 696 insertions, 187 r-adaptations, 225 unresolved (0 angle-constrained), 69910 active cells
+harp_dv cycle 6/100: 226 insertions, 117 r-adaptations, 97 unresolved (0 angle-constrained), 70136 active cells
+harp_dv cycle 7/100: 104 insertions, 31 r-adaptations, 31 unresolved (0 angle-constrained), 70240 active cells
+harp_dv cycle 8/100: 27 insertions, 20 r-adaptations, 18 unresolved (0 angle-constrained), 70267 active cells
+harp_dv cycle 9/100: 14 insertions, 9 r-adaptations, 11 unresolved (0 angle-constrained), 70281 active cells
+harp_dv cycle 10/100: 4 insertions, 1 r-adaptations, 7 unresolved (0 angle-constrained), 70285 active cells
+harp_dv cycle 11/100: 6 insertions, 6 r-adaptations, 1 unresolved (0 angle-constrained), 70291 active cells
+harp_dv cycle 12/100: 8 insertions, 2 r-adaptations, 1 unresolved (0 angle-constrained), 70299 active cells
+harp_dv cycle 13/100: 3 insertions, 5 r-adaptations, 8 unresolved (0 angle-constrained), 70302 active cells
+harp_dv cycle 14/100: 5 insertions, 3 r-adaptations, 1 unresolved (0 angle-constrained), 70307 active cells
+harp_dv cycle 15/100: 1 insertions, 7 r-adaptations, 5 unresolved (0 angle-constrained), 70308 active cells
+harp_dv cycle 16/100: 1 insertions, 2 r-adaptations, 4 unresolved (0 angle-constrained), 70309 active cells
+harp_dv cycle 17/100: 1 insertions, 1 r-adaptations, 4 unresolved (0 angle-constrained), 70310 active cells
+harp_dv cycle 18/100: 3 insertions, 6 r-adaptations, 1 unresolved (0 angle-constrained), 70313 active cells
+harp_dv cycle 19/100: 2 insertions, 4 r-adaptations, 6 unresolved (0 angle-constrained), 70315 active cells
+harp_dv cycle 20/100: 5 insertions, 5 r-adaptations, 1 unresolved (0 angle-constrained), 70320 active cells
+harp_dv cycle 21/100: 5 insertions, 11 r-adaptations, 10 unresolved (0 angle-constrained), 70325 active cells
+harp_dv cycle 22/100: 1 insertions, 4 r-adaptations, 7 unresolved (0 angle-constrained), 70326 active cells
+harp_dv cycle 23/100: 6 insertions, 3 r-adaptations, 1 unresolved (0 angle-constrained), 70332 active cells
+harp_dv cycle 24/100: 4 insertions, 15 r-adaptations, 11 unresolved (0 angle-constrained), 70336 active cells
+harp_dv cycle 25/100: 6 insertions, 11 r-adaptations, 3 unresolved (0 angle-constrained), 70342 active cells
+harp_dv cycle 26/100: 2 insertions, 14 r-adaptations, 14 unresolved (0 angle-constrained), 70344 active cells
+harp_dv cycle 27/100: 4 insertions, 5 r-adaptations, 10 unresolved (0 angle-constrained), 70348 active cells
+harp_dv cycle 28/100: 4 insertions, 12 r-adaptations, 5 unresolved (0 angle-constrained), 70352 active cells
+harp_dv cycle 29/100: 3 insertions, 11 r-adaptations, 16 unresolved (0 angle-constrained), 70355 active cells
+harp_dv cycle 30/100: 1 insertions, 9 r-adaptations, 16 unresolved (0 angle-constrained), 70356 active cells
+harp_dv cycle 31/100: 3 insertions, 6 r-adaptations, 14 unresolved (0 angle-constrained), 70359 active cells
+harp_dv cycle 32/100: 5 insertions, 12 r-adaptations, 15 unresolved (0 angle-constrained), 70364 active cells
+harp_dv cycle 33/100: 3 insertions, 12 r-adaptations, 16 unresolved (0 angle-constrained), 70367 active cells
+harp_dv cycle 34/100: 3 insertions, 11 r-adaptations, 14 unresolved (0 angle-constrained), 70370 active cells
+harp_dv cycle 35/100: 3 insertions, 13 r-adaptations, 16 unresolved (0 angle-constrained), 70373 active cells
+harp_dv cycle 36/100: 3 insertions, 10 r-adaptations, 15 unresolved (0 angle-constrained), 70376 active cells
+harp_dv cycle 37/100: 1 insertions, 9 r-adaptations, 15 unresolved (0 angle-constrained), 70377 active cells
+harp_dv cycle 38/100: 3 insertions, 6 r-adaptations, 14 unresolved (0 angle-constrained), 70380 active cells
+harp_dv cycle 39/100: 1 insertions, 5 r-adaptations, 14 unresolved (0 angle-constrained), 70381 active cells
+harp_dv cycle 40/100: 11 insertions, 9 r-adaptations, 3 unresolved (0 angle-constrained), 70392 active cells
+harp_dv cycle 41/100: 3 insertions, 14 r-adaptations, 21 unresolved (0 angle-constrained), 70395 active cells
+harp_dv cycle 42/100: 2 insertions, 11 r-adaptations, 21 unresolved (0 angle-constrained), 70397 active cells
+harp_dv cycle 43/100: 1 insertions, 11 r-adaptations, 21 unresolved (0 angle-constrained), 70398 active cells
+harp_dv cycle 44/100: 3 insertions, 5 r-adaptations, 19 unresolved (0 angle-constrained), 70401 active cells
+harp_dv cycle 45/100: 3 insertions, 2 r-adaptations, 18 unresolved (0 angle-constrained), 70404 active cells
+harp_dv cycle 46/100: 1 insertions, 4 r-adaptations, 18 unresolved (0 angle-constrained), 70405 active cells
+harp_dv cycle 47/100: 1 insertions, 3 r-adaptations, 18 unresolved (0 angle-constrained), 70406 active cells
+harp_dv cycle 48/100: 11 insertions, 8 r-adaptations, 6 unresolved (0 angle-constrained), 70417 active cells
+harp_dv cycle 49/100: 7 insertions, 14 r-adaptations, 24 unresolved (0 angle-constrained), 70424 active cells
+harp_dv cycle 50/100: 6 insertions, 10 r-adaptations, 22 unresolved (0 angle-constrained), 70430 active cells
+harp_dv cycle 51/100: 5 insertions, 5 r-adaptations, 21 unresolved (0 angle-constrained), 70435 active cells
+harp_dv cycle 52/100: 5 insertions, 6 r-adaptations, 22 unresolved (0 angle-constrained), 70440 active cells
+harp_dv cycle 53/100: 1 insertions, 7 r-adaptations, 21 unresolved (0 angle-constrained), 70441 active cells
+harp_dv cycle 54/100: 2 insertions, 4 r-adaptations, 20 unresolved (0 angle-constrained), 70443 active cells
+harp_dv cycle 55/100: 16 insertions, 4 r-adaptations, 4 unresolved (0 angle-constrained), 70459 active cells
+harp_dv cycle 56/100: 5 insertions, 19 r-adaptations, 31 unresolved (0 angle-constrained), 70464 active cells
+harp_dv cycle 57/100: 4 insertions, 8 r-adaptations, 27 unresolved (0 angle-constrained), 70468 active cells
+harp_dv cycle 58/100: 4 insertions, 10 r-adaptations, 30 unresolved (0 angle-constrained), 70472 active cells
+harp_dv cycle 59/100: 21 insertions, 8 r-adaptations, 8 unresolved (0 angle-constrained), 70493 active cells
+harp_dv cycle 60/100: 7 insertions, 25 r-adaptations, 35 unresolved (0 angle-constrained), 70500 active cells
+harp_dv cycle 61/100: 4 insertions, 12 r-adaptations, 31 unresolved (0 angle-constrained), 70504 active cells
+harp_dv cycle 62/100: 6 insertions, 11 r-adaptations, 30 unresolved (0 angle-constrained), 70510 active cells
+harp_dv cycle 63/100: 1 insertions, 14 r-adaptations, 31 unresolved (0 angle-constrained), 70511 active cells
+harp_dv cycle 64/100: 1 insertions, 4 r-adaptations, 30 unresolved (0 angle-constrained), 70512 active cells
+harp_dv cycle 65/100: 1 insertions, 7 r-adaptations, 30 unresolved (0 angle-constrained), 70513 active cells
+harp_dv cycle 66/100: 2 insertions, 7 r-adaptations, 31 unresolved (0 angle-constrained), 70515 active cells
+harp_dv cycle 67/100: 2 insertions, 6 r-adaptations, 30 unresolved (0 angle-constrained), 70517 active cells
+harp_dv cycle 68/100: 2 insertions, 9 r-adaptations, 32 unresolved (0 angle-constrained), 70519 active cells
+harp_dv cycle 69/100: 2 insertions, 11 r-adaptations, 33 unresolved (0 angle-constrained), 70521 active cells
+harp_dv cycle 70/100: 3 insertions, 6 r-adaptations, 30 unresolved (0 angle-constrained), 70524 active cells
+harp_dv cycle 71/100: 4 insertions, 8 r-adaptations, 32 unresolved (0 angle-constrained), 70528 active cells
+harp_dv cycle 72/100: 3 insertions, 5 r-adaptations, 31 unresolved (0 angle-constrained), 70531 active cells
+harp_dv cycle 73/100: 3 insertions, 12 r-adaptations, 34 unresolved (0 angle-constrained), 70534 active cells
+harp_dv cycle 74/100: 3 insertions, 14 r-adaptations, 38 unresolved (0 angle-constrained), 70537 active cells
+harp_dv cycle 75/100: 5 insertions, 5 r-adaptations, 34 unresolved (0 angle-constrained), 70542 active cells
+harp_dv cycle 76/100: 5 insertions, 7 r-adaptations, 36 unresolved (0 angle-constrained), 70547 active cells
+harp_dv cycle 77/100: 4 insertions, 3 r-adaptations, 37 unresolved (0 angle-constrained), 70551 active cells
+harp_dv cycle 78/100: 2 insertions, 4 r-adaptations, 37 unresolved (0 angle-constrained), 70553 active cells
+harp_dv cycle 79/100: 1 insertions, 1 r-adaptations, 37 unresolved (0 angle-constrained), 70554 active cells
+harp_dv cycle 80/100: 23 insertions, 17 r-adaptations, 14 unresolved (0 angle-constrained), 70577 active cells
+harp_dv cycle 81/100: 7 insertions, 29 r-adaptations, 52 unresolved (0 angle-constrained), 70584 active cells
+harp_dv cycle 82/100: 4 insertions, 21 r-adaptations, 46 unresolved (0 angle-constrained), 70588 active cells
+harp_dv cycle 83/100: 3 insertions, 10 r-adaptations, 43 unresolved (0 angle-constrained), 70591 active cells
+harp_dv cycle 84/100: 1 insertions, 11 r-adaptations, 43 unresolved (0 angle-constrained), 70592 active cells
+harp_dv cycle 85/100: 25 insertions, 15 r-adaptations, 17 unresolved (0 angle-constrained), 70617 active cells
+harp_dv cycle 86/100: 7 insertions, 26 r-adaptations, 59 unresolved (0 angle-constrained), 70624 active cells
+harp_dv cycle 87/100: 5 insertions, 20 r-adaptations, 57 unresolved (0 angle-constrained), 70629 active cells
+harp_dv cycle 88/100: 4 insertions, 28 r-adaptations, 58 unresolved (0 angle-constrained), 70633 active cells
+harp_dv cycle 89/100: 2 insertions, 15 r-adaptations, 53 unresolved (0 angle-constrained), 70635 active cells
+harp_dv cycle 90/100: 1 insertions, 8 r-adaptations, 50 unresolved (0 angle-constrained), 70636 active cells
+harp_dv cycle 91/100: 1 insertions, 4 r-adaptations, 50 unresolved (0 angle-constrained), 70637 active cells
+harp_dv cycle 92/100: 19 insertions, 20 r-adaptations, 29 unresolved (0 angle-constrained), 70656 active cells
+harp_dv cycle 93/100: 12 insertions, 26 r-adaptations, 58 unresolved (0 angle-constrained), 70668 active cells
+harp_dv cycle 94/100: 7 insertions, 20 r-adaptations, 56 unresolved (0 angle-constrained), 70675 active cells
+harp_dv cycle 95/100: 4 insertions, 13 r-adaptations, 53 unresolved (0 angle-constrained), 70679 active cells
+harp_dv cycle 96/100: 1 insertions, 14 r-adaptations, 54 unresolved (0 angle-constrained), 70680 active cells
+harp_dv cycle 97/100: 1 insertions, 10 r-adaptations, 54 unresolved (0 angle-constrained), 70681 active cells
+harp_dv cycle 98/100: 1 insertions, 4 r-adaptations, 54 unresolved (0 angle-constrained), 70682 active cells
+harp_dv cycle 99/100: 2 insertions, 4 r-adaptations, 52 unresolved (0 angle-constrained), 70684 active cells
+harp_dv cycle 100/100: 2 insertions, 6 r-adaptations, 52 unresolved (0 angle-constrained), 70686 active cells
+
+thread 'cycle::tests::natural_length_ab_on_the_nxp_proxy' (22266246) panicked at rust/earthmesh_refine_harp_dv/src/cycle/tests.rs:2762:5:
+assertion `left == right` failed: A/B requires a completed production refinement checkpoint
+  left: 54
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test cycle::tests::natural_length_ab_on_the_nxp_proxy ... FAILED
+
+failures:
+
+failures:
+    cycle::tests::natural_length_ab_on_the_nxp_proxy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 106 filtered out; finished in 3892.96s
+
+error: test failed, to rerun pass `-p earthmesh_refine_harp_dv --lib`

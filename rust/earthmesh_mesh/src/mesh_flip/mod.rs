@@ -216,7 +216,8 @@ impl MeshState {
         // Generous, and a bound rather than a guess: Lawson's argument says
         // this terminates, so hitting the cap means the premise failed and the
         // caller should hear about it rather than get a partial repair.
-        let limit = 16 * self.triangle_count() + 64;
+        // Slots, not the active count -- see the note in `triangle_fan_from`.
+        let limit = 16 * self.triangles().len() + 64;
         let mut pending: Vec<usize> = seed
             .iter()
             .copied()

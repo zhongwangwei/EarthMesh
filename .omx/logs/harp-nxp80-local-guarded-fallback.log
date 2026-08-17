@@ -1,0 +1,178 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/release/deps/earthmesh_refine_harp_dv-14e69942aaacc54c)
+
+running 1 test
+harp_dv cycle 1/100: 530 insertions, 5 r-adaptations, 15 unresolved (0 angle-constrained), productive fallback 0/0, 64532 active cells
+harp_dv cycle 2/100: 955 insertions, 57 r-adaptations, 115 unresolved (0 angle-constrained), productive fallback 0/0, 65487 active cells
+test cycle::tests::natural_length_ab_on_the_nxp_proxy has been running for over 60 seconds
+harp_dv cycle 3/100: 1572 insertions, 214 r-adaptations, 416 unresolved (0 angle-constrained), productive fallback 0/0, 67059 active cells
+harp_dv cycle 4/100: 2155 insertions, 265 r-adaptations, 464 unresolved (0 angle-constrained), productive fallback 0/0, 69214 active cells
+harp_dv cycle 5/100: 697 insertions, 186 r-adaptations, 225 unresolved (0 angle-constrained), productive fallback 1/1, 69911 active cells
+harp_dv cycle 6/100: 232 insertions, 106 r-adaptations, 92 unresolved (0 angle-constrained), productive fallback 5/5, 70143 active cells
+harp_dv cycle 7/100: 99 insertions, 30 r-adaptations, 32 unresolved (0 angle-constrained), productive fallback 0/2, 70242 active cells
+harp_dv cycle 8/100: 31 insertions, 14 r-adaptations, 17 unresolved (0 angle-constrained), productive fallback 1/3, 70273 active cells
+harp_dv cycle 9/100: 12 insertions, 8 r-adaptations, 15 unresolved (0 angle-constrained), productive fallback 1/3, 70285 active cells
+harp_dv cycle 10/100: 4 insertions, 4 r-adaptations, 10 unresolved (0 angle-constrained), productive fallback 0/1, 70289 active cells
+harp_dv cycle 11/100: 8 insertions, 13 r-adaptations, 2 unresolved (0 angle-constrained), productive fallback 0/0, 70297 active cells
+harp_dv cycle 12/100: 5 insertions, 6 r-adaptations, 13 unresolved (0 angle-constrained), productive fallback 2/2, 70302 active cells
+harp_dv cycle 13/100: 3 insertions, 3 r-adaptations, 1 unresolved (0 angle-constrained), productive fallback 0/0, 70305 active cells
+harp_dv cycle 14/100: 3 insertions, 0 r-adaptations, 0 unresolved (0 angle-constrained), productive fallback 0/0, 70308 active cells
+harp_dv cycle 15/100: 3 insertions, 11 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 70311 active cells
+harp_dv cycle 16/100: 2 insertions, 8 r-adaptations, 5 unresolved (0 angle-constrained), productive fallback 0/1, 70313 active cells
+harp_dv cycle 17/100: 2 insertions, 13 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/2, 70315 active cells
+harp_dv cycle 18/100: 3 insertions, 4 r-adaptations, 5 unresolved (0 angle-constrained), productive fallback 2/3, 70318 active cells
+harp_dv cycle 19/100: 2 insertions, 5 r-adaptations, 2 unresolved (0 angle-constrained), productive fallback 0/2, 70320 active cells
+harp_dv cycle 20/100: 1 insertions, 10 r-adaptations, 7 unresolved (0 angle-constrained), productive fallback 0/2, 70321 active cells
+harp_dv cycle 21/100: 5 insertions, 7 r-adaptations, 7 unresolved (0 angle-constrained), productive fallback 1/3, 70326 active cells
+harp_dv cycle 22/100: 2 insertions, 4 r-adaptations, 6 unresolved (0 angle-constrained), productive fallback 1/4, 70328 active cells
+harp_dv cycle 23/100: 3 insertions, 10 r-adaptations, 6 unresolved (0 angle-constrained), productive fallback 1/5, 70331 active cells
+harp_dv cycle 24/100: 2 insertions, 16 r-adaptations, 9 unresolved (0 angle-constrained), productive fallback 0/6, 70333 active cells
+harp_dv cycle 25/100: 3 insertions, 11 r-adaptations, 7 unresolved (0 angle-constrained), productive fallback 0/6, 70336 active cells
+harp_dv cycle 26/100: 2 insertions, 12 r-adaptations, 8 unresolved (0 angle-constrained), productive fallback 0/6, 70338 active cells
+harp_dv cycle 27/100: 4 insertions, 9 r-adaptations, 3 unresolved (0 angle-constrained), productive fallback 0/0, 70342 active cells
+harp_dv cycle 28/100: 5 insertions, 14 r-adaptations, 8 unresolved (0 angle-constrained), productive fallback 1/2, 70347 active cells
+harp_dv cycle 29/100: 5 insertions, 11 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 70352 active cells
+harp_dv cycle 30/100: 2 insertions, 11 r-adaptations, 9 unresolved (0 angle-constrained), productive fallback 0/4, 70354 active cells
+harp_dv cycle 31/100: 4 insertions, 14 r-adaptations, 8 unresolved (0 angle-constrained), productive fallback 1/6, 70358 active cells
+harp_dv cycle 32/100: 3 insertions, 6 r-adaptations, 7 unresolved (0 angle-constrained), productive fallback 2/6, 70361 active cells
+harp_dv cycle 33/100: 1 insertions, 5 r-adaptations, 6 unresolved (0 angle-constrained), productive fallback 0/5, 70362 active cells
+harp_dv cycle 34/100: 5 insertions, 0 r-adaptations, 0 unresolved (0 angle-constrained), productive fallback 0/0, 70367 active cells
+harp_dv cycle 35/100: 2 insertions, 8 r-adaptations, 11 unresolved (0 angle-constrained), productive fallback 0/0, 70369 active cells
+harp_dv cycle 36/100: 9 insertions, 17 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 70378 active cells
+harp_dv cycle 37/100: 5 insertions, 13 r-adaptations, 18 unresolved (0 angle-constrained), productive fallback 0/2, 70383 active cells
+harp_dv cycle 38/100: 2 insertions, 19 r-adaptations, 16 unresolved (0 angle-constrained), productive fallback 0/8, 70385 active cells
+harp_dv cycle 39/100: 14 insertions, 2 r-adaptations, 1 unresolved (0 angle-constrained), productive fallback 0/0, 70399 active cells
+harp_dv cycle 40/100: 4 insertions, 26 r-adaptations, 25 unresolved (0 angle-constrained), productive fallback 0/1, 70403 active cells
+harp_dv cycle 41/100: 3 insertions, 22 r-adaptations, 20 unresolved (0 angle-constrained), productive fallback 0/8, 70406 active cells
+harp_dv cycle 42/100: 3 insertions, 14 r-adaptations, 21 unresolved (0 angle-constrained), productive fallback 0/8, 70409 active cells
+harp_dv cycle 43/100: 4 insertions, 12 r-adaptations, 20 unresolved (0 angle-constrained), productive fallback 0/8, 70413 active cells
+harp_dv cycle 44/100: 3 insertions, 9 r-adaptations, 19 unresolved (0 angle-constrained), productive fallback 0/8, 70416 active cells
+harp_dv cycle 45/100: 2 insertions, 4 r-adaptations, 18 unresolved (0 angle-constrained), productive fallback 0/8, 70418 active cells
+harp_dv cycle 46/100: 1 insertions, 5 r-adaptations, 18 unresolved (0 angle-constrained), productive fallback 0/8, 70419 active cells
+harp_dv cycle 47/100: 16 insertions, 16 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 70435 active cells
+harp_dv cycle 48/100: 3 insertions, 25 r-adaptations, 27 unresolved (0 angle-constrained), productive fallback 0/4, 70438 active cells
+harp_dv cycle 49/100: 1 insertions, 20 r-adaptations, 24 unresolved (0 angle-constrained), productive fallback 0/8, 70439 active cells
+harp_dv cycle 50/100: 5 insertions, 13 r-adaptations, 17 unresolved (0 angle-constrained), productive fallback 0/8, 70444 active cells
+harp_dv cycle 51/100: 5 insertions, 13 r-adaptations, 18 unresolved (0 angle-constrained), productive fallback 0/8, 70449 active cells
+harp_dv cycle 52/100: 4 insertions, 8 r-adaptations, 20 unresolved (0 angle-constrained), productive fallback 0/8, 70453 active cells
+harp_dv cycle 53/100: 3 insertions, 8 r-adaptations, 21 unresolved (0 angle-constrained), productive fallback 0/8, 70456 active cells
+harp_dv cycle 54/100: 1 insertions, 4 r-adaptations, 22 unresolved (0 angle-constrained), productive fallback 0/8, 70457 active cells
+harp_dv cycle 55/100: 2 insertions, 5 r-adaptations, 20 unresolved (0 angle-constrained), productive fallback 0/8, 70459 active cells
+harp_dv cycle 56/100: 2 insertions, 3 r-adaptations, 19 unresolved (0 angle-constrained), productive fallback 0/8, 70461 active cells
+harp_dv cycle 57/100: 16 insertions, 17 r-adaptations, 4 unresolved (0 angle-constrained), productive fallback 0/0, 70477 active cells
+harp_dv cycle 58/100: 9 insertions, 23 r-adaptations, 27 unresolved (0 angle-constrained), productive fallback 0/4, 70486 active cells
+harp_dv cycle 59/100: 7 insertions, 34 r-adaptations, 27 unresolved (0 angle-constrained), productive fallback 1/8, 70493 active cells
+harp_dv cycle 60/100: 8 insertions, 31 r-adaptations, 27 unresolved (0 angle-constrained), productive fallback 1/8, 70501 active cells
+harp_dv cycle 61/100: 8 insertions, 20 r-adaptations, 28 unresolved (0 angle-constrained), productive fallback 1/8, 70509 active cells
+harp_dv cycle 62/100: 3 insertions, 20 r-adaptations, 30 unresolved (0 angle-constrained), productive fallback 0/8, 70512 active cells
+harp_dv cycle 63/100: 3 insertions, 21 r-adaptations, 28 unresolved (0 angle-constrained), productive fallback 0/8, 70515 active cells
+harp_dv cycle 64/100: 4 insertions, 11 r-adaptations, 29 unresolved (0 angle-constrained), productive fallback 1/8, 70519 active cells
+harp_dv cycle 65/100: 1 insertions, 14 r-adaptations, 28 unresolved (0 angle-constrained), productive fallback 0/8, 70520 active cells
+harp_dv cycle 66/100: 2 insertions, 8 r-adaptations, 28 unresolved (0 angle-constrained), productive fallback 1/8, 70522 active cells
+harp_dv cycle 67/100: 18 insertions, 21 r-adaptations, 10 unresolved (0 angle-constrained), productive fallback 0/0, 70540 active cells
+harp_dv cycle 68/100: 5 insertions, 29 r-adaptations, 39 unresolved (0 angle-constrained), productive fallback 0/8, 70545 active cells
+harp_dv cycle 69/100: 3 insertions, 20 r-adaptations, 38 unresolved (0 angle-constrained), productive fallback 0/8, 70548 active cells
+harp_dv cycle 70/100: 7 insertions, 16 r-adaptations, 34 unresolved (0 angle-constrained), productive fallback 2/8, 70555 active cells
+harp_dv cycle 71/100: 2 insertions, 14 r-adaptations, 31 unresolved (0 angle-constrained), productive fallback 0/8, 70557 active cells
+harp_dv cycle 72/100: 1 insertions, 9 r-adaptations, 30 unresolved (0 angle-constrained), productive fallback 0/8, 70558 active cells
+harp_dv cycle 73/100: 1 insertions, 6 r-adaptations, 30 unresolved (0 angle-constrained), productive fallback 0/8, 70559 active cells
+harp_dv cycle 74/100: 1 insertions, 8 r-adaptations, 33 unresolved (0 angle-constrained), productive fallback 0/8, 70560 active cells
+harp_dv cycle 75/100: 25 insertions, 10 r-adaptations, 7 unresolved (0 angle-constrained), productive fallback 0/0, 70585 active cells
+harp_dv cycle 76/100: 15 insertions, 33 r-adaptations, 53 unresolved (0 angle-constrained), productive fallback 1/7, 70600 active cells
+harp_dv cycle 77/100: 4 insertions, 39 r-adaptations, 52 unresolved (0 angle-constrained), productive fallback 0/8, 70604 active cells
+harp_dv cycle 78/100: 4 insertions, 32 r-adaptations, 46 unresolved (0 angle-constrained), productive fallback 0/8, 70608 active cells
+harp_dv cycle 79/100: 4 insertions, 25 r-adaptations, 45 unresolved (0 angle-constrained), productive fallback 0/8, 70612 active cells
+harp_dv cycle 80/100: 8 insertions, 14 r-adaptations, 44 unresolved (0 angle-constrained), productive fallback 0/8, 70620 active cells
+harp_dv cycle 81/100: 5 insertions, 9 r-adaptations, 45 unresolved (0 angle-constrained), productive fallback 0/8, 70625 active cells
+harp_dv cycle 82/100: 3 insertions, 10 r-adaptations, 44 unresolved (0 angle-constrained), productive fallback 0/8, 70628 active cells
+harp_dv cycle 83/100: 3 insertions, 7 r-adaptations, 44 unresolved (0 angle-constrained), productive fallback 0/8, 70631 active cells
+harp_dv cycle 84/100: 3 insertions, 11 r-adaptations, 47 unresolved (0 angle-constrained), productive fallback 0/8, 70634 active cells
+harp_dv cycle 85/100: 2 insertions, 7 r-adaptations, 47 unresolved (0 angle-constrained), productive fallback 0/8, 70636 active cells
+harp_dv cycle 86/100: 2 insertions, 16 r-adaptations, 51 unresolved (0 angle-constrained), productive fallback 0/8, 70638 active cells
+harp_dv cycle 87/100: 3 insertions, 4 r-adaptations, 48 unresolved (0 angle-constrained), productive fallback 0/8, 70641 active cells
+harp_dv cycle 88/100: 1 insertions, 1 r-adaptations, 47 unresolved (0 angle-constrained), productive fallback 0/8, 70642 active cells
+harp_dv cycle 89/100: 34 insertions, 20 r-adaptations, 13 unresolved (0 angle-constrained), productive fallback 0/0, 70676 active cells
+harp_dv cycle 90/100: 18 insertions, 50 r-adaptations, 65 unresolved (0 angle-constrained), productive fallback 0/8, 70694 active cells
+harp_dv cycle 91/100: 15 insertions, 36 r-adaptations, 58 unresolved (0 angle-constrained), productive fallback 0/8, 70709 active cells
+harp_dv cycle 92/100: 8 insertions, 35 r-adaptations, 57 unresolved (0 angle-constrained), productive fallback 0/8, 70717 active cells
+harp_dv cycle 93/100: 7 insertions, 16 r-adaptations, 52 unresolved (0 angle-constrained), productive fallback 0/8, 70724 active cells
+harp_dv cycle 94/100: 2 insertions, 10 r-adaptations, 51 unresolved (0 angle-constrained), productive fallback 1/8, 70726 active cells
+harp_dv cycle 95/100: 1 insertions, 6 r-adaptations, 50 unresolved (0 angle-constrained), productive fallback 0/8, 70727 active cells
+harp_dv cycle 96/100: 29 insertions, 23 r-adaptations, 23 unresolved (0 angle-constrained), productive fallback 0/0, 70756 active cells
+harp_dv cycle 97/100: 11 insertions, 28 r-adaptations, 65 unresolved (0 angle-constrained), productive fallback 0/8, 70767 active cells
+harp_dv cycle 98/100: 6 insertions, 19 r-adaptations, 63 unresolved (0 angle-constrained), productive fallback 0/8, 70773 active cells
+harp_dv cycle 99/100: 3 insertions, 8 r-adaptations, 60 unresolved (0 angle-constrained), productive fallback 0/8, 70776 active cells
+harp_dv cycle 100/100: 2 insertions, 11 r-adaptations, 61 unresolved (0 angle-constrained), productive fallback 0/8, 70778 active cells
+
+PENDING AUDIT: 0 physical demands, 60 balance demands, 60 unique sites
+site  42427 lon  +96.05298 lat +26.91916 degree 6 cause ScaleBalance { ratio_before: 1.8113586509778734 } => fallback-resolves; evidence [scale-balance:1.811359>1.750000 (+3.506%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  42507 lon  +94.91428 lat +27.31701 degree 7 cause ScaleBalance { ratio_before: 2.0937018323404555 } => blocked; evidence [scale-balance:2.093702>1.750000 (+19.640%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  64882 lon  +95.53447 lat +27.77613 degree 6 cause ScaleBalance { ratio_before: 2.2483826741260007 } => fallback-resolves; evidence [scale-balance:2.248383>1.750000 (+28.479%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  65508 lon  +95.38275 lat +27.51034 degree 6 cause ScaleBalance { ratio_before: 2.394573641442432 } => blocked; evidence [scale-balance:2.394574>1.750000 (+36.833%)]; refusals RejectionTally { degree: 20, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  67121 lon  +95.42103 lat +27.62868 degree 7 cause ScaleBalance { ratio_before: 2.842747314120039 } => blocked; evidence [scale-balance:2.842747>1.750000 (+62.443%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  69257 lon  +94.59761 lat +28.35021 degree 7 cause ScaleBalance { ratio_before: 6.119412711457628 } => blocked; evidence [scale-balance:6.119413>1.750000 (+249.681%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  69942 lon  +94.32480 lat +28.12381 degree 7 cause ScaleBalance { ratio_before: 5.170138656202946 } => fallback-resolves; evidence [scale-balance:5.170139>1.750000 (+195.436%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70306 lon  +95.23659 lat +28.38775 degree 7 cause ScaleBalance { ratio_before: 10.532602733187826 } => blocked; evidence [scale-balance:10.532603>1.750000 (+501.863%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70327 lon  +94.98687 lat +28.43693 degree 7 cause ScaleBalance { ratio_before: 3.640161125931613 } => blocked; evidence [scale-balance:3.640161>1.750000 (+108.009%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70342 lon  +95.07875 lat +28.52217 degree 6 cause ScaleBalance { ratio_before: 1.8296226201103591 } => ordinary-resolves; evidence [scale-balance:1.829623>1.750000 (+4.550%)]; refusals RejectionTally { degree: 0, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70349 lon  +94.87632 lat +28.47459 degree 7 cause ScaleBalance { ratio_before: 3.7068525394711465 } => fallback-resolves; evidence [scale-balance:3.706853>1.750000 (+111.820%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70359 lon  +95.01781 lat +28.46748 degree 7 cause ScaleBalance { ratio_before: 3.817027988843879 } => blocked; evidence [scale-balance:3.817028>1.750000 (+118.116%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70361 lon  +95.46026 lat +28.15821 degree 7 cause ScaleBalance { ratio_before: 4.502612199164511 } => blocked; evidence [scale-balance:4.502612>1.750000 (+157.292%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70364 lon  +95.20539 lat +28.47576 degree 5 cause ScaleBalance { ratio_before: 3.080925223194454 } => fallback-resolves; evidence [scale-balance:3.080925>1.750000 (+76.053%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70368 lon  +94.48291 lat +28.28624 degree 7 cause ScaleBalance { ratio_before: 5.457148804208293 } => blocked; evidence [scale-balance:5.457149>1.750000 (+211.837%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70376 lon  +94.69419 lat +28.38298 degree 7 cause ScaleBalance { ratio_before: 3.817487150791039 } => blocked; evidence [scale-balance:3.817487>1.750000 (+118.142%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70380 lon  +95.54923 lat +27.93151 degree 7 cause ScaleBalance { ratio_before: 2.012715762617553 } => fallback-resolves; evidence [scale-balance:2.012716>1.750000 (+15.012%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70387 lon  +95.48195 lat +28.11436 degree 7 cause ScaleBalance { ratio_before: 6.231085727852438 } => blocked; evidence [scale-balance:6.231086>1.750000 (+256.062%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70389 lon  +95.22734 lat +28.44304 degree 7 cause ScaleBalance { ratio_before: 2.6926511818227654 } => fallback-resolves; evidence [scale-balance:2.692651>1.750000 (+53.866%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70394 lon  +94.63849 lat +28.37547 degree 6 cause ScaleBalance { ratio_before: 2.086713729623769 } => blocked; evidence [scale-balance:2.086714>1.750000 (+19.241%)]; refusals RejectionTally { degree: 20, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70396 lon  +94.46881 lat +28.31155 degree 7 cause ScaleBalance { ratio_before: 2.010080422713311 } => fallback-resolves; evidence [scale-balance:2.010080>1.750000 (+14.862%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70421 lon  +95.00366 lat +28.44751 degree 7 cause ScaleBalance { ratio_before: 4.7438216386405 } => blocked; evidence [scale-balance:4.743822>1.750000 (+171.076%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70422 lon  +95.42875 lat +28.21090 degree 7 cause ScaleBalance { ratio_before: 6.045590526819073 } => blocked; evidence [scale-balance:6.045591>1.750000 (+245.462%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70431 lon  +95.47173 lat +27.73948 degree 7 cause ScaleBalance { ratio_before: 3.2868704920249487 } => blocked; evidence [scale-balance:3.286870>1.750000 (+87.821%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70445 lon  +95.51369 lat +27.87279 degree 7 cause ScaleBalance { ratio_before: 12.419075580073565 } => blocked; evidence [scale-balance:12.419076>1.750000 (+609.661%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70448 lon  +94.24875 lat +27.89361 degree 7 cause ScaleBalance { ratio_before: 3.576678758002534 } => fallback-resolves; evidence [scale-balance:3.576679>1.750000 (+104.382%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70464 lon  +95.49774 lat +28.08838 degree 7 cause ScaleBalance { ratio_before: 7.120851399876086 } => blocked; evidence [scale-balance:7.120851>1.750000 (+306.906%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70471 lon  +95.12135 lat +28.50870 degree 7 cause ScaleBalance { ratio_before: 7.719645542802437 } => blocked; evidence [scale-balance:7.719646>1.750000 (+341.123%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70474 lon  +95.54013 lat +27.83906 degree 7 cause ScaleBalance { ratio_before: 2.893064006236423 } => fallback-resolves; evidence [scale-balance:2.893064>1.750000 (+65.318%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70475 lon  +95.04096 lat +28.49133 degree 7 cause ScaleBalance { ratio_before: 3.3122757326428984 } => fallback-resolves; evidence [scale-balance:3.312276>1.750000 (+89.273%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70476 lon  +94.92283 lat +28.45440 degree 7 cause ScaleBalance { ratio_before: 7.010182710647365 } => fallback-resolves; evidence [scale-balance:7.010183>1.750000 (+300.582%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70502 lon  +95.53265 lat +27.93446 degree 7 cause ScaleBalance { ratio_before: 4.990121550972609 } => fallback-resolves; evidence [scale-balance:4.990122>1.750000 (+185.150%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70503 lon  +95.52868 lat +27.96090 degree 7 cause ScaleBalance { ratio_before: 11.9622549598033 } => fallback-resolves; evidence [scale-balance:11.962255>1.750000 (+583.557%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70510 lon  +94.97378 lat +28.44146 degree 7 cause ScaleBalance { ratio_before: 4.934339656116788 } => blocked; evidence [scale-balance:4.934340>1.750000 (+181.962%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70523 lon  +95.25371 lat +28.37948 degree 7 cause ScaleBalance { ratio_before: 12.337450753656967 } => fallback-resolves; evidence [scale-balance:12.337451>1.750000 (+604.997%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70524 lon  +95.27583 lat +28.36997 degree 7 cause ScaleBalance { ratio_before: 10.812582958726791 } => fallback-resolves; evidence [scale-balance:10.812583>1.750000 (+517.862%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70525 lon  +94.46089 lat +28.27614 degree 6 cause ScaleBalance { ratio_before: 4.158079764324256 } => fallback-resolves; evidence [scale-balance:4.158080>1.750000 (+137.605%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70533 lon  +95.11229 lat +28.51206 degree 7 cause ScaleBalance { ratio_before: 3.3609389845175537 } => fallback-resolves; evidence [scale-balance:3.360939>1.750000 (+92.054%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70555 lon  +95.52901 lat +27.96845 degree 7 cause ScaleBalance { ratio_before: 7.485280108263842 } => blocked; evidence [scale-balance:7.485280>1.750000 (+327.730%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70556 lon  +95.39714 lat +28.28176 degree 7 cause ScaleBalance { ratio_before: 1.8620781576124696 } => fallback-resolves; evidence [scale-balance:1.862078>1.750000 (+6.404%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70559 lon  +95.18316 lat +28.49026 degree 7 cause ScaleBalance { ratio_before: 4.467801970803304 } => fallback-resolves; evidence [scale-balance:4.467802>1.750000 (+155.303%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70560 lon  +95.51609 lat +28.04930 degree 7 cause ScaleBalance { ratio_before: 6.465134258677109 } => fallback-resolves; evidence [scale-balance:6.465134>1.750000 (+269.436%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70566 lon  +95.49207 lat +28.11788 degree 7 cause ScaleBalance { ratio_before: 2.1522234951946113 } => fallback-resolves; evidence [scale-balance:2.152223>1.750000 (+22.984%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70571 lon  +94.27924 lat +27.68507 degree 7 cause ScaleBalance { ratio_before: 5.285395574942388 } => fallback-resolves; evidence [scale-balance:5.285396>1.750000 (+202.023%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70579 lon  +95.13172 lat +28.51389 degree 6 cause ScaleBalance { ratio_before: 2.7355258596903083 } => fallback-resolves; evidence [scale-balance:2.735526>1.750000 (+56.316%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70586 lon  +95.09844 lat +27.28527 degree 7 cause ScaleBalance { ratio_before: 2.3496870046371994 } => fallback-resolves; evidence [scale-balance:2.349687>1.750000 (+34.268%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70627 lon  +95.52793 lat +28.00283 degree 7 cause ScaleBalance { ratio_before: 7.045398124337561 } => fallback-resolves; evidence [scale-balance:7.045398>1.750000 (+302.594%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70648 lon  +95.39610 lat +28.26375 degree 7 cause ScaleBalance { ratio_before: 6.425693223319337 } => blocked; evidence [scale-balance:6.425693>1.750000 (+267.182%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70649 lon  +94.91100 lat +28.45849 degree 7 cause ScaleBalance { ratio_before: 5.197715694956216 } => blocked; evidence [scale-balance:5.197716>1.750000 (+197.012%)]; refusals RejectionTally { degree: 23, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70658 lon  +94.73202 lat +28.46224 degree 7 cause ScaleBalance { ratio_before: 1.7545543433587318 } => fallback-resolves; evidence [scale-balance:1.754554>1.750000 (+0.260%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70696 lon  +94.36287 lat +28.20937 degree 6 cause ScaleBalance { ratio_before: 1.967218794468506 } => fallback-resolves; evidence [scale-balance:1.967219>1.750000 (+12.413%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70719 lon  +95.31493 lat +28.35347 degree 6 cause ScaleBalance { ratio_before: 2.927725575949956 } => fallback-resolves; evidence [scale-balance:2.927726>1.750000 (+67.299%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70726 lon  +94.42977 lat +28.26565 degree 4 cause ScaleBalance { ratio_before: 1.8356331688788228 } => fallback-resolves; evidence [scale-balance:1.835633>1.750000 (+4.893%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70728 lon  +94.82465 lat +28.47749 degree 5 cause ScaleBalance { ratio_before: 2.0425032942091264 } => fallback-resolves; evidence [scale-balance:2.042503>1.750000 (+16.714%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70730 lon  +95.53299 lat +27.95256 degree 7 cause ScaleBalance { ratio_before: 2.3536883129528405 } => fallback-resolves; evidence [scale-balance:2.353688>1.750000 (+34.496%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70736 lon  +94.44571 lat +28.27099 degree 7 cause ScaleBalance { ratio_before: 2.487917302858697 } => fallback-resolves; evidence [scale-balance:2.487917>1.750000 (+42.167%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70739 lon  +95.17894 lat +28.49571 degree 7 cause ScaleBalance { ratio_before: 2.246466472559646 } => fallback-resolves; evidence [scale-balance:2.246466>1.750000 (+28.370%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70758 lon  +94.84099 lat +28.47540 degree 7 cause ScaleBalance { ratio_before: 3.398870552096609 } => fallback-resolves; evidence [scale-balance:3.398871>1.750000 (+94.221%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70775 lon  +95.57811 lat +27.76008 degree 7 cause ScaleBalance { ratio_before: 1.9748654572057278 } => fallback-resolves; evidence [scale-balance:1.974865>1.750000 (+12.849%)]; refusals RejectionTally { degree: 3, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+site  70778 lon  +95.10611 lat +28.65976 degree 7 cause ScaleBalance { ratio_before: 1.8120503830521852 } => ordinary-resolves; evidence [scale-balance:1.812050>1.750000 (+3.546%)]; refusals RejectionTally { degree: 0, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+PENDING AUDIT SUMMARY: ordinary_resolved=2 fallback_resolved=36 blocked=22 refusals=RejectionTally { degree: 608, pentagon: 0, not_insertable: 0, topology: 0, sliver: 0, no_improvement: 0, unmeasurable: 0 }
+test cycle::tests::natural_length_ab_on_the_nxp_proxy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 1688.25s
+
+     Running tests/end_to_end.rs (target/release/deps/end_to_end-7bacbbe01691f4c6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

@@ -35,7 +35,7 @@ use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
 use crate::report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason};
 use crate::state::{AdaptiveMesh, SiteId, SiteMobility};
-use crate::transaction::{check, Acceptance, DemandOutcome, HardGates, Rejection};
+use crate::transaction::{check, Acceptance, AffectedSites, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
 
 /// What bounds a run, over and above the per-transaction gates.
@@ -69,24 +69,50 @@ pub struct CycleOutcome {
 }
 
 /// Every cell's effective scale, indexed by site. `None` where unreadable.
+/// One triangle per site, for walks that would otherwise scan to find it.
+///
+/// `MeshState::triangle_fan` finds its seed with a linear `find` over the
+/// active triangles, which is affordable once and quadratic for a full sweep
+/// that does it per site -- the mesh's own doc comments say so and point at
+/// `triangle_fan_from`. This builds the whole seed table in one pass instead.
+///
+/// The seed must be the *first* active triangle naming each site, because that
+/// is what the scan returns: it fixes where the fan starts, and with it the
+/// order the Voronoi corners are visited and the order their areas are summed.
+/// Any other choice would still be a correct cell and would not be the same
+/// float.
+fn active_site_triangle_seeds(state: &MeshState) -> Vec<Option<usize>> {
+    let mut seeds = vec![None; state.vertices().len()];
+    for triangle in state.active_triangle_slots() {
+        for corner in state.triangles()[triangle] {
+            if seeds[corner].is_none() {
+                seeds[corner] = Some(triangle);
+            }
+        }
+    }
+    seeds
+}
+
 fn state_scales(state: &MeshState) -> Vec<Option<f64>> {
     let radius_m = state.sphere_radius();
-    {
-        let mut scales = vec![None; state.vertices().len()];
-        for site in state.active_vertex_slots() {
-            let Ok(cell) = state.voronoi_cell(site) else {
-                continue;
-            };
-            scales[site] = CellView {
-                site,
-                cell: &cell,
-                state,
-                radius_m,
-            }
-            .effective_scale_m();
+    let seeds = active_site_triangle_seeds(state);
+    let mut scales = vec![None; state.vertices().len()];
+    for site in state.active_vertex_slots() {
+        let Some(seed) = seeds[site] else {
+            continue;
+        };
+        let Ok(cell) = state.voronoi_cell_from(site, seed) else {
+            continue;
+        };
+        scales[site] = CellView {
+            site,
+            cell: &cell,
+            state,
+            radius_m,
         }
-        scales
+        .effective_scale_m();
     }
+    scales
 }
 
 /// Demands raised by the mesh against itself, where two neighbours differ in
@@ -103,34 +129,34 @@ fn balance_demands(
     // Worst offender per cell, so one cell surrounded by fine neighbours
     // produces one demand rather than six.
     let mut worst: BTreeMap<usize, f64> = BTreeMap::new();
-    for site in state.active_vertex_slots() {
-        let Some(here) = scales[site] else { continue };
+    for (site, corner) in directed_neighbour_pairs(state) {
+        let (Some(here), Some(there)) = (scales[site], scales[corner]) else {
+            continue;
+        };
         if here <= limits.minimum_cell_width_m {
             continue;
         }
-        let Ok(fan) = state.triangle_fan(site) else {
+        // Only the coarser side is asked to refine.
+        if here <= there {
             continue;
-        };
-        for triangle in fan {
-            for corner in state.triangles()[triangle] {
-                if corner == site {
-                    continue;
-                }
-                let Some(there) = scales[corner] else {
-                    continue;
-                };
-                // Only the coarser side is asked to refine.
-                if here <= there {
-                    continue;
-                }
-                let ratio = here / there;
-                if ratio > limits.max_neighbour_scale_ratio {
-                    let entry = worst.entry(site).or_insert(ratio);
-                    *entry = entry.max(ratio);
-                }
-            }
+        }
+        let ratio = here / there;
+        if ratio > limits.max_neighbour_scale_ratio {
+            let entry = worst.entry(site).or_insert(ratio);
+            *entry = entry.max(ratio);
         }
     }
+    balance_demands_from_worst(worst, limits)
+}
+
+/// Turn the worst ratio per cell into the demands the ladder consumes.
+///
+/// Split out so a reference implementation of the sweep above can produce
+/// demands through exactly this code and differ only where it is meant to.
+fn balance_demands_from_worst(
+    worst: BTreeMap<usize, f64>,
+    limits: CycleLimits,
+) -> Vec<RefinementDemand> {
     worst
         .into_iter()
         .map(|(site, ratio_before)| {
@@ -165,36 +191,48 @@ fn balance_demands(
 /// Reported even though unconstrained r-adaptation normally closes them: a
 /// protected-segment run does not move sites, and a hard gate may still leave
 /// a residue that the caller must decide on.
+#[cfg(test)]
 fn balance_survey(mesh: &AdaptiveMesh, limits: CycleLimits) -> (usize, f64) {
     balance_survey_state(mesh.state(), limits)
 }
 
 fn balance_survey_state(state: &MeshState, limits: CycleLimits) -> (usize, f64) {
-    let scales = state_scales(state);
+    balance_survey_from_scales(state, &state_scales(state), limits)
+}
+
+/// The same survey against scales the caller already has.
+fn balance_survey_from_scales(
+    state: &MeshState,
+    scales: &[Option<f64>],
+    limits: CycleLimits,
+) -> (usize, f64) {
     let mut over = 0;
     let mut worst = 1.0_f64;
-    for site in state.active_vertex_slots() {
-        let Some(here) = scales[site] else { continue };
-        let Ok(fan) = state.triangle_fan(site) else {
+    for (site, corner) in directed_neighbour_pairs(state) {
+        let (Some(here), Some(there)) = (scales[site], scales[corner]) else {
             continue;
         };
-        for triangle in fan {
-            for corner in state.triangles()[triangle] {
-                if corner == site {
-                    continue;
-                }
-                let Some(there) = scales[corner] else {
-                    continue;
-                };
-                let ratio = here.max(there) / here.min(there);
-                worst = worst.max(ratio);
-                if ratio > limits.max_neighbour_scale_ratio {
-                    over += 1;
-                }
-            }
+        let ratio = here.max(there) / here.min(there);
+        worst = worst.max(ratio);
+        if ratio > limits.max_neighbour_scale_ratio {
+            over += 1;
         }
     }
     (over, worst)
+}
+
+/// Every ordered corner pair of every active triangle.
+///
+/// Walking the triangles once replaces a scanned fan per site. The repeats are
+/// deliberate and load-bearing: an undirected edge is visited by both incident
+/// triangles and in both directions, and `over` has always counted it that many
+/// times. De-duplicating here would quietly change what the balance survey
+/// reports, so the traversal reproduces the old multiset exactly.
+fn directed_neighbour_pairs(state: &MeshState) -> impl Iterator<Item = (usize, usize)> + '_ {
+    state.active_triangle_slots().flat_map(|triangle| {
+        let [a, b, c] = state.triangles()[triangle];
+        [(a, b), (a, c), (b, a), (b, c), (c, a), (c, b)]
+    })
 }
 
 /// The part of the global scale objective that a local move can change.
@@ -202,18 +240,39 @@ fn balance_survey_state(state: &MeshState, limits: CycleLimits) -> (usize, f64) 
 /// Every edge not incident to `sites` contributes the same value before and
 /// after the move, so comparing this tuple is exactly the global objective
 /// delta without rescanning the whole mesh for every candidate.
-fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> Option<[f64; 3]> {
+fn balance_objective(state: &MeshState, sites: &AffectedSites, bound: f64) -> Option<[f64; 3]> {
     let mut edges = BTreeSet::new();
-    for &site in sites {
-        for triangle in state.triangle_fan(site).ok()? {
+    // A seed for the ring's own sites too: every triangle naming a corner is a
+    // valid start for that corner's fan, and `voronoi_cell_from` pins the ring
+    // to its lowest triangle, so which one is picked cannot reach the result.
+    let mut seeds = sites.clone();
+    let radius_m = state.sphere_radius();
+    let mut cached = BTreeMap::new();
+    for (&site, &seed) in sites {
+        // The cell carries the fan that built it, so this loop reads each of
+        // these sites once. Walking the ring here for the edges and again for
+        // the scale below was the same walk twice, and the ring walk is what
+        // the objective now spends nearly all of its time in.
+        let cell = state.voronoi_cell_from(site, seed).ok()?;
+        for &triangle in &cell.triangles {
             for corner in state.triangles()[triangle] {
+                seeds.entry(corner).or_insert(triangle);
                 if corner != site {
                     edges.insert((site.min(corner), site.max(corner)));
                 }
             }
         }
+        cached.insert(
+            site,
+            CellView {
+                site,
+                cell: &cell,
+                state,
+                radius_m,
+            }
+            .effective_scale_m()?,
+        );
     }
-    let mut cached = BTreeMap::new();
     let mut violations = 0usize;
     let mut worst = 1.0_f64;
     let mut energy = 0.0;
@@ -222,7 +281,7 @@ fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> 
             if let Some(value) = cached.get(&site) {
                 return Some(*value);
             }
-            let value = site_scale(state, site)?;
+            let value = site_scale_from(state, site, *seeds.get(&site)?, radius_m)?;
             cached.insert(site, value);
             Some(value)
         };
@@ -242,13 +301,24 @@ fn balance_objective(state: &MeshState, sites: &BTreeSet<usize>, bound: f64) -> 
     Some([violations as f64, worst, energy])
 }
 
-fn site_scale(state: &MeshState, site: usize) -> Option<f64> {
-    let cell = state.voronoi_cell(site).ok()?;
+/// The scale of one cell, at a radius the caller already has.
+///
+/// `MeshState::sphere_radius` averages over every active vertex, so asking it
+/// per site inside a loop is a full pass over the mesh per iteration for a
+/// value that cannot change while the loop runs.
+#[cfg(test)]
+fn site_scale(state: &MeshState, site: usize, radius_m: f64) -> Option<f64> {
+    site_scale_from(state, site, state.triangle_fan(site).ok()?[0], radius_m)
+}
+
+/// The same, from a triangle the caller already knows names the site.
+fn site_scale_from(state: &MeshState, site: usize, seed: usize, radius_m: f64) -> Option<f64> {
+    let cell = state.voronoi_cell_from(site, seed).ok()?;
     CellView {
         site,
         cell: &cell,
         state,
-        radius_m: state.sphere_radius(),
+        radius_m,
     }
     .effective_scale_m()
 }
@@ -569,6 +639,22 @@ fn fan_with_cached_seed(
 /// Reads the same criteria the driver reads and the same neighbour-scale bound
 /// the balance demands are raised from, so "unresolved" here means what it means
 /// in the report rather than a proxy for it.
+/// One measured site's contribution to a region score.
+type RegionCell = (std::rc::Rc<Vec<usize>>, f64, bool);
+
+/// The region's cells as they stand before any candidate move.
+///
+/// A recovery scores the whole region once per candidate, and a candidate only
+/// changes the cells around the site it moves. Everything else is the same
+/// answer rebuilt -- and rebuilding it is the ring walk, which a sample puts at
+/// 97% of the score.
+type RegionCells = std::cell::RefCell<BTreeMap<usize, RegionCell>>;
+
+/// `dirty` names the sites whose cells this state may have changed, which is
+/// what the transaction hands the objective. They are measured fresh and not
+/// stored, so a rejected candidate leaves the cache describing the base state
+/// it was scored against; a committed one clears it.
+#[allow(clippy::too_many_arguments)]
 fn region_score(
     state: &MeshState,
     criteria: &[Box<dyn CellCriterion>],
@@ -576,27 +662,31 @@ fn region_score(
     limits: CycleLimits,
     region: &BTreeSet<usize>,
     seeds: &std::cell::RefCell<BTreeMap<usize, usize>>,
+    cells: &RegionCells,
+    dirty: &AffectedSites,
 ) -> Option<RegionScore> {
     let radius_m = state.sphere_radius();
     // A fixed guard site's Voronoi cell can still change when a movable site
     // beside it moves. Measure the neighbour on the far side as well, or the
     // score misses exactly the ratio that a local recovery can push across its
     // boundary.
-    let mut measured_sites = region.clone();
-    for &site in region {
-        let fan = fan_with_cached_seed(state, site, seeds)?;
-        measured_sites.extend(
-            fan.into_iter()
-                .flat_map(|triangle| state.triangles()[triangle])
-                .filter(|&corner| corner != site),
-        );
-    }
-    let mut scales: BTreeMap<usize, f64> = BTreeMap::new();
-    let mut fans: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut unresolved = 0usize;
-    let mut pending_sites = BTreeSet::new();
-    let mut saturated = 0usize;
-    for site in measured_sites {
+    // One entry per measured site, taken from the cache whenever this state did
+    // not disturb it. Collecting the sites to measure needs the region's fans,
+    // and so does the sweep below, so both come from the same lookup -- walking
+    // the ring here and again there was the shape of the previous attempt, and
+    // it left the cache reaching only the sites outside the region.
+    let mut entries: BTreeMap<usize, RegionCell> = BTreeMap::new();
+    let measure = |site: usize, entries: &mut BTreeMap<usize, RegionCell>| -> Option<()> {
+        if entries.contains_key(&site) {
+            return Some(());
+        }
+        let stale = dirty.contains_key(&site);
+        if !stale {
+            if let Some(entry) = cells.borrow().get(&site) {
+                entries.insert(site, entry.clone());
+                return Some(());
+            }
+        }
         let fan = fan_with_cached_seed(state, site, seeds)?;
         let cell = state.voronoi_cell_from(site, *fan.first()?).ok()?;
         let view = CellView {
@@ -609,18 +699,49 @@ fn region_score(
         if !scale.is_finite() || scale <= 0.0 {
             return None;
         }
+        let mut demanding = false;
+        if region.contains(&site) && scale > limits.minimum_cell_width_m {
+            for criterion in criteria {
+                if criterion.evaluate(&view).ok()?.demands_work() {
+                    demanding = true;
+                    break;
+                }
+            }
+        }
+        let entry = (std::rc::Rc::new(fan), scale, demanding);
+        if !stale {
+            cells.borrow_mut().insert(site, entry.clone());
+        }
+        entries.insert(site, entry);
+        Some(())
+    };
+
+    let mut measured_sites = region.clone();
+    for &site in region {
+        measure(site, &mut entries)?;
+        let fan = std::rc::Rc::clone(&entries.get(&site)?.0);
+        measured_sites.extend(
+            fan.iter()
+                .flat_map(|&triangle| state.triangles()[triangle])
+                .filter(|&corner| corner != site),
+        );
+    }
+
+    let mut scales: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut fans: BTreeMap<usize, std::rc::Rc<Vec<usize>>> = BTreeMap::new();
+    let mut unresolved = 0usize;
+    let mut pending_sites = BTreeSet::new();
+    let mut saturated = 0usize;
+    for site in measured_sites {
+        measure(site, &mut entries)?;
+        let (fan, scale, demanding) = entries.get(&site)?.clone();
         if region.contains(&site) {
             if fan.len() >= gates.max_vertex_degree {
                 saturated += 1;
             }
-            if scale > limits.minimum_cell_width_m {
-                for criterion in criteria {
-                    if criterion.evaluate(&view).ok()?.demands_work() {
-                        unresolved += 1;
-                        pending_sites.insert(site);
-                        break;
-                    }
-                }
+            if demanding {
+                unresolved += 1;
+                pending_sites.insert(site);
             }
             fans.insert(site, fan);
         }
@@ -633,7 +754,7 @@ fn region_score(
     let mut counted = BTreeSet::new();
     let mut counted_edges = BTreeSet::new();
     for (&site, fan) in &fans {
-        for &triangle in fan {
+        for &triangle in fan.iter() {
             let corners = state.triangles()[triangle];
             if counted.insert(triangle) {
                 let angle = crate::criteria::smallest_triangle_angle_deg([
@@ -824,8 +945,11 @@ fn recover_one_region(
     let region: BTreeSet<usize> = rings.iter().flatten().copied().collect();
     let frozen = rings.last().cloned().unwrap_or_default();
     let seeds = std::cell::RefCell::new(BTreeMap::new());
-    let objective = |state: &MeshState, _: &BTreeSet<usize>| {
-        region_score(state, criteria, gates, limits, &region, &seeds)
+    let cells: RegionCells = std::cell::RefCell::new(BTreeMap::new());
+    let objective = |state: &MeshState, affected: &AffectedSites| {
+        region_score(
+            state, criteria, gates, limits, &region, &seeds, &cells, affected,
+        )
     };
 
     let mut committed = 0usize;
@@ -845,7 +969,7 @@ fn recover_one_region(
                 if !mesh.can_move_site(site) {
                     continue;
                 }
-                let Some(before) = objective(mesh.state(), &BTreeSet::new()) else {
+                let Some(before) = objective(mesh.state(), &AffectedSites::new()) else {
                     continue;
                 };
                 let mut destinations = balance_destinations(mesh, site);
@@ -858,8 +982,11 @@ fn recover_one_region(
                         gates,
                         &objective,
                         Some(&before),
-                        false,
+                        true,
                     )? {
+                        // The cache describes the state the candidates were
+                        // scored against, and that state is gone.
+                        cells.borrow_mut().clear();
                         moved = true;
                         moved_this_sweep += 1;
                         break;
@@ -885,6 +1012,7 @@ fn recover_one_region(
                         &objective,
                         Some(&before),
                     )? {
+                        cells.borrow_mut().clear();
                         moved_this_sweep += 1;
                         break;
                     }
@@ -988,10 +1116,10 @@ fn angle_window_survey(state: &MeshState) -> AngleWindowSurvey {
     survey
 }
 
-fn triangle_fan_ids(state: &MeshState, sites: &BTreeSet<usize>) -> Option<BTreeSet<usize>> {
+fn triangle_fan_ids(state: &MeshState, sites: &AffectedSites) -> Option<BTreeSet<usize>> {
     let mut triangles = BTreeSet::new();
-    for &site in sites {
-        triangles.extend(state.triangle_fan(site).ok()?);
+    for (&site, &seed) in sites {
+        triangles.extend(state.triangle_fan_from(site, seed).ok()?);
     }
     Some(triangles)
 }
@@ -1032,11 +1160,11 @@ fn sorted_triangle_values(
     Some(values)
 }
 
-fn triangle_eta_values(state: &MeshState, sites: &BTreeSet<usize>) -> Option<Vec<f64>> {
+fn triangle_eta_values(state: &MeshState, sites: &AffectedSites) -> Option<Vec<f64>> {
     sorted_triangle_values(state, triangle_fan_ids(state, sites)?, triangle_eta_value)
 }
 
-fn triangle_window_margins(state: &MeshState, sites: &BTreeSet<usize>) -> Option<Vec<f64>> {
+fn triangle_window_margins(state: &MeshState, sites: &AffectedSites) -> Option<Vec<f64>> {
     sorted_triangle_values(
         state,
         triangle_fan_ids(state, sites)?,
@@ -1269,11 +1397,23 @@ pub(crate) fn target_angle_window_survey(
 }
 
 fn vertices_below_degree_5(state: &MeshState) -> usize {
+    vertices_below_degree_5_set(state).len()
+}
+
+/// Which sites are below degree five, from one pass over the triangles.
+///
+/// The retirement guards used to ask `vertex_degree` per site, which scans for
+/// a fan seed and is linear in the mesh each time. `vertex_degrees` counts
+/// incidences instead. On a closed triangulation the two agree; they are held
+/// to that by `full_cell_sweeps_match_the_scanned_reference`, because a broken
+/// fan makes `vertex_degree` return an error while the incidence count still
+/// reports a degree.
+fn vertices_below_degree_5_set(state: &MeshState) -> BTreeSet<usize> {
     let degrees = vertex_degrees(state);
     state
         .active_vertex_slots()
         .filter(|&site| degrees[site] < 5)
-        .count()
+        .collect()
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1441,13 +1581,23 @@ struct RetirementPostcondition<'a> {
     before_margin: Option<f64>,
 }
 
+fn retirement_touched_triangles(report: &earthmesh_mesh::RetirementReport) -> BTreeSet<usize> {
+    let mut touched = BTreeSet::new();
+    touched.extend(report.reused_faces.iter().copied());
+    touched.extend(report.retired_faces.iter().copied());
+    if touched.is_empty() {
+        touched.extend(report.fan.iter().copied());
+    }
+    touched
+}
+
 impl RetirementPostcondition<'_> {
-    fn accepts(&self, state: &MeshState) -> bool {
-        let touched: BTreeSet<_> = state.active_triangle_slots().collect();
+    fn accepts(&self, state: &MeshState, report: &earthmesh_mesh::RetirementReport) -> bool {
+        let touched = retirement_touched_triangles(report);
         if check(state, &touched, self.gates, &self.pentagons).is_err() {
             return false;
         }
-        let after_demands = demanded_cells_in_state(state, self.criteria);
+        let (after_demands, after_scales) = demanded_cells_and_scales(state, self.criteria);
         if !self
             .before_demands
             .zip(after_demands)
@@ -1455,17 +1605,14 @@ impl RetirementPostcondition<'_> {
         {
             return false;
         }
-        let after_balance = balance_survey_state(state, self.limits);
+        let after_balance = balance_survey_from_scales(state, &after_scales, self.limits);
         if after_balance.0 > self.before_balance.0
             || (after_balance.0 > 0 && after_balance.1 > self.before_balance.1)
         {
             return false;
         }
         let after_angles = angle_window_survey(state);
-        let after_vertices_below_degree_5 = state
-            .active_vertex_slots()
-            .filter(|&site| state.vertex_degree(site).is_ok_and(|degree| degree < 5))
-            .collect::<BTreeSet<_>>();
+        let after_vertices_below_degree_5 = vertices_below_degree_5_set(state);
         let after_eta = all_triangle_eta_values(state).and_then(|values| values.first().copied());
         let after_margin =
             all_triangle_window_margins(state).and_then(|values| values.first().copied());
@@ -1488,6 +1635,55 @@ impl RetirementPostcondition<'_> {
     }
 }
 
+/// Which interior leaves are worth trying to retire, worst window margin first.
+///
+/// Separate from the retirement loop so the ordering can be held to a reference
+/// implementation: the loop truncates this list, so a change that reorders it
+/// silently retires a different set of sites while the commit count and the
+/// runtime both look ordinary.
+fn retirement_candidates(
+    state: &MeshState,
+    leaves: &LeafLineageSurvey,
+    maximum_degree: usize,
+) -> Vec<usize> {
+    // Degrees first, from one pass over the triangles: asking `vertex_degree`
+    // per site scans for a fan seed each time, and the old order evaluated it
+    // before the cheap leaf lookup could rule the site out.
+    let degrees = vertex_degrees(state);
+    let seeds = active_site_triangle_seeds(state);
+    let mut scored: Vec<(usize, f64)> = state
+        .active_vertex_slots()
+        .filter(|&site| {
+            leaves.interior_leaf.get(site).copied().unwrap_or(false)
+                && (4..=maximum_degree).contains(&degrees[site])
+        })
+        .filter_map(|site| {
+            // The fan and its margins, once per surviving candidate: the old
+            // comparator rebuilt both on every comparison.
+            let fan = seeds[site].and_then(|seed| state.triangle_fan_from(site, seed).ok())?;
+            let mut worst = f64::INFINITY;
+            let mut breaches_the_window = false;
+            for triangle in fan {
+                let Some(margin) = triangle_window_margin(state, triangle) else {
+                    continue;
+                };
+                worst = worst.min(margin);
+                breaches_the_window |= margin < 0.0;
+            }
+            breaches_the_window.then_some((site, worst))
+        })
+        .collect();
+    // `f64` is not `Ord`, so neither `sort_by_key` nor `sort_by_cached_key`
+    // applies, and `to_bits` orders negatives backwards -- which is exactly the
+    // half of the range that matters here.
+    scored.sort_by(|left, right| {
+        left.1
+            .total_cmp(&right.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scored.into_iter().map(|(site, _)| site).collect()
+}
+
 fn retire_quality_leaf_sites(
     mesh: &mut AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
@@ -1499,59 +1695,36 @@ fn retire_quality_leaf_sites(
     if !mesh.segments_are_empty() {
         return (0, 0);
     }
-    let candidates = mesh
-        .state()
-        .active_vertex_slots()
-        .filter(|&site| {
-            let degree = mesh.state().vertex_degree(site).ok();
-            leaves.interior_leaf.get(site).copied().unwrap_or(false)
-                && degree.is_some_and(|degree| (4..=maximum_degree).contains(&degree))
-                && mesh.state().triangle_fan(site).is_ok_and(|fan| {
-                    fan.into_iter().any(|triangle| {
-                        triangle_window_margin(mesh.state(), triangle)
-                            .is_some_and(|margin| margin < 0.0)
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    let mut candidates = candidates;
-    candidates.sort_by(|&left, &right| {
-        let worst = |site| {
-            mesh.state()
-                .triangle_fan(site)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(|triangle| triangle_window_margin(mesh.state(), triangle))
-                .fold(f64::INFINITY, f64::min)
-        };
-        worst(left)
-            .total_cmp(&worst(right))
-            .then_with(|| left.cmp(&right))
-    });
+    let started = std::time::Instant::now();
+    let mut candidates = retirement_candidates(mesh.state(), leaves, maximum_degree);
+    let found = candidates.len();
     // ponytail: each candidate still runs global postcondition scans; cap the
     // pass until those checks use local deltas.
     candidates.truncate(64);
+    let read_baseline = |state: &MeshState| {
+        let (demanded, scales) = demanded_cells_and_scales(state, criteria);
+        (
+            demanded,
+            balance_survey_from_scales(state, &scales, limits),
+            angle_window_survey(state),
+            vertices_below_degree_5_set(state),
+            all_triangle_eta_values(state).and_then(|values| values.first().copied()),
+            all_triangle_window_margins(state).and_then(|values| values.first().copied()),
+        )
+    };
+    let (
+        mut before_demands,
+        mut before_balance,
+        mut before_angles,
+        mut before_vertices_below_degree_5,
+        mut before_eta,
+        mut before_margin,
+    ) = read_baseline(mesh.state());
     let mut committed = 0;
     let mut committed_d4 = 0;
+    let attempted = candidates.len();
     for site in candidates {
         let degree = mesh.state().vertex_degree(site).unwrap_or(0);
-        let before_demands = demanded_cells_in_state(mesh.state(), criteria);
-        let before_balance = balance_survey_state(mesh.state(), limits);
-        let before_angles = angle_window_survey(mesh.state());
-        let before_vertices_below_degree_5 = mesh
-            .state()
-            .active_vertex_slots()
-            .filter(|&site| {
-                mesh.state()
-                    .vertex_degree(site)
-                    .is_ok_and(|degree| degree < 5)
-            })
-            .collect();
-        let before_eta =
-            all_triangle_eta_values(mesh.state()).and_then(|values| values.first().copied());
-        let before_margin =
-            all_triangle_window_margins(mesh.state()).and_then(|values| values.first().copied());
         let postcondition = RetirementPostcondition {
             criteria,
             gates,
@@ -1560,18 +1733,34 @@ fn retire_quality_leaf_sites(
             before_demands,
             before_balance,
             before_angles,
-            before_vertices_below_degree_5,
+            before_vertices_below_degree_5: before_vertices_below_degree_5.clone(),
             before_eta,
             before_margin,
         };
         if mesh
-            .retire_leaf_transactionally(site, |state, _| postcondition.accepts(state))
+            .retire_leaf_transactionally(site, |state, report| postcondition.accepts(state, report))
             .is_ok()
         {
             committed += 1;
             committed_d4 += usize::from(degree == 4);
+            (
+                before_demands,
+                before_balance,
+                before_angles,
+                before_vertices_below_degree_5,
+                before_eta,
+                before_margin,
+            ) = read_baseline(mesh.state());
         }
     }
+    // This phase used to print nothing at all, which on a large mesh reads as a
+    // hung run: it comes after the last cycle line and can outlast every other
+    // phase put together.
+    eprintln!(
+        "harp_dv leaf retirement: {attempted} of {found} candidate(s) tried, {committed} retired \
+         ({committed_d4} degree-four), {:.1}s",
+        started.elapsed().as_secs_f64()
+    );
     (committed, committed_d4)
 }
 
@@ -1688,14 +1877,59 @@ fn clone_without_degree_four_site(state: &MeshState, site: usize) -> Vec<(MeshSt
     rebuilt
 }
 
+/// One cell sweep answering both retirement guards.
+///
+/// `accepts` used to count demanded cells and then survey balance, each
+/// building every Voronoi cell again. The count keeps its all-or-nothing
+/// contract -- `None` if any cell or criterion could not be read -- while the
+/// scales keep `state_scales`'s: unreadable cells are simply absent.
+fn demanded_cells_and_scales(
+    state: &MeshState,
+    criteria: &[Box<dyn CellCriterion>],
+) -> (Option<usize>, Vec<Option<f64>>) {
+    let radius_m = state.sphere_radius();
+    let seeds = active_site_triangle_seeds(state);
+    let mut scales = vec![None; state.vertices().len()];
+    let mut demanded = Some(0usize);
+    for site in state.active_vertex_slots() {
+        let cell = seeds[site].and_then(|seed| state.voronoi_cell_from(site, seed).ok());
+        let Some(cell) = cell else {
+            demanded = None;
+            continue;
+        };
+        let view = CellView {
+            site,
+            cell: &cell,
+            state,
+            radius_m,
+        };
+        scales[site] = view.effective_scale_m();
+        let demands = criteria
+            .iter()
+            .filter(|criterion| criterion.semantics() != CriterionSemantics::MeshQuality)
+            .try_fold(false, |demands, criterion| {
+                criterion
+                    .evaluate(&view)
+                    .map(|evidence| demands || evidence.demands_work())
+            });
+        match demands {
+            Ok(true) => demanded = demanded.map(|count| count + 1),
+            Ok(false) => {}
+            Err(_) => demanded = None,
+        }
+    }
+    (demanded, scales)
+}
+
 fn demanded_cells_in_state(
     state: &MeshState,
     criteria: &[Box<dyn CellCriterion>],
 ) -> Option<usize> {
     let radius_m = state.sphere_radius();
+    let seeds = active_site_triangle_seeds(state);
     let mut demanded = 0;
     for site in state.active_vertex_slots() {
-        let cell = state.voronoi_cell(site).ok()?;
+        let cell = state.voronoi_cell_from(site, seeds[site]?).ok()?;
         let view = CellView {
             site,
             cell: &cell,
@@ -1842,9 +2076,10 @@ fn vertex_degrees(state: &MeshState) -> Vec<usize> {
 }
 
 fn median_cell_scale(state: &MeshState) -> Option<f64> {
+    let cell_scales = state_scales(state);
     let mut scales = state
         .active_vertex_slots()
-        .map(|site| site_scale(state, site))
+        .map(|site| cell_scales[site])
         .collect::<Option<Vec<_>>>()?;
     scales.sort_by(f64::total_cmp);
     scales.get(scales.len() / 2).copied()
@@ -2203,8 +2438,8 @@ impl PartialOrd for LowDegreeScore {
     }
 }
 
-fn low_degree_deficit(state: &MeshState, sites: &BTreeSet<usize>) -> Option<usize> {
-    let mut degrees: BTreeMap<usize, usize> = sites.iter().map(|&site| (site, 0)).collect();
+fn low_degree_deficit(state: &MeshState, sites: &AffectedSites) -> Option<usize> {
+    let mut degrees: BTreeMap<usize, usize> = sites.keys().map(|&site| (site, 0)).collect();
     for triangle in state
         .active_triangle_slots()
         .map(|triangle| &state.triangles()[triangle])
@@ -2284,16 +2519,17 @@ fn repair_low_degree_stars(
             {
                 continue;
             }
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
                 let mut unresolved = 0;
-                'site: for &site in affected {
-                    let cell = state.voronoi_cell(site).ok()?;
+                let radius_m = state.sphere_radius();
+                'site: for (&site, &seed) in affected {
+                    let cell = state.voronoi_cell_from(site, seed).ok()?;
                     let view = CellView {
                         site,
                         cell: &cell,
                         state,
-                        radius_m: state.sphere_radius(),
+                        radius_m,
                     };
                     for criterion in criteria {
                         if criterion.evaluate(&view).ok()?.demands_work() {
@@ -2419,15 +2655,186 @@ fn repair_low_degree_stars(
     Ok(committed)
 }
 
+/// Whether one cell is still asking, and how big it is.
+///
+/// Exactly the predicate `evaluate` applies -- built from the same evidences
+/// and filtered by the same floor -- factored out so the pass guard can refresh
+/// one site without sweeping the mesh.
+fn guard_cell(
+    state: &MeshState,
+    criteria: &[Box<dyn CellCriterion>],
+    limits: CycleLimits,
+    site: usize,
+    seed: usize,
+    radius_m: f64,
+) -> Result<(Option<f64>, bool)> {
+    let Ok(cell) = state.voronoi_cell_from(site, seed) else {
+        return Ok((None, false));
+    };
+    let view = CellView {
+        site,
+        cell: &cell,
+        state,
+        radius_m,
+    };
+    let scale = view.effective_scale_m();
+    let at_floor = scale.is_some_and(|scale| scale <= limits.minimum_cell_width_m);
+    let mut evidences = Vec::new();
+    for criterion in criteria {
+        let evidence = criterion.evaluate(&view)?;
+        if evidence.demands_work() || !evidence.satisfiable {
+            evidences.push(evidence);
+        }
+    }
+    let demand =
+        RefinementDemand::from_evidence(site as u64, evidences, RefinementCause::UserSpecified);
+    Ok((scale, demand.demands_work() && !at_floor))
+}
+
+/// Every cell's scale, and which cells still ask, kept across quality passes.
+///
+/// The guard used to call `evaluate` once per pass, which builds a Voronoi cell
+/// for every active site: 70,685 of them, 48 times, at NXP80. A sample put 805
+/// of the guard's 813 samples in that sweep and 797 of those in the ring walk.
+///
+/// A pass only moves the neighbourhoods it commits to, so only those cells can
+/// have changed. Refreshing them and keeping the rest is the same answer for
+/// a fraction of the work -- and because a rejected pass restores the mesh, the
+/// cache is snapshotted and restored with it.
+#[derive(Clone)]
+struct GuardCells {
+    scales: Vec<Option<f64>>,
+    demanding: BTreeSet<usize>,
+}
+
+impl GuardCells {
+    fn full(
+        state: &MeshState,
+        criteria: &[Box<dyn CellCriterion>],
+        limits: CycleLimits,
+    ) -> Result<Self> {
+        let mut cells = Self {
+            scales: vec![None; state.vertices().len()],
+            demanding: BTreeSet::new(),
+        };
+        let sites: BTreeSet<usize> = state.active_vertex_slots().collect();
+        cells.refresh(state, criteria, limits, &sites)?;
+        Ok(cells)
+    }
+
+    fn refresh(
+        &mut self,
+        state: &MeshState,
+        criteria: &[Box<dyn CellCriterion>],
+        limits: CycleLimits,
+        sites: &BTreeSet<usize>,
+    ) -> Result<()> {
+        let radius_m = state.sphere_radius();
+        let seeds = active_site_triangle_seeds(state);
+        for &site in sites {
+            let (scale, demanding) = match seeds.get(site).copied().flatten() {
+                Some(seed) => guard_cell(state, criteria, limits, site, seed, radius_m)?,
+                None => (None, false),
+            };
+            self.scales[site] = scale;
+            if demanding {
+                self.demanding.insert(site);
+            } else {
+                self.demanding.remove(&site);
+            }
+        }
+        Ok(())
+    }
+
+    /// The cells a committed move can have changed, generously bounded.
+    ///
+    /// A move rewrites its own star and whatever legalising flipped around it,
+    /// which is inside the two rings the transaction snapshots. Three rings is
+    /// the same set with room to spare: over-invalidating costs a rebuild, and
+    /// under-invalidating leaves a stale number in a guard that decides whether
+    /// a whole pass is kept.
+    fn dirty_around(state: &MeshState, moved: &BTreeSet<usize>) -> BTreeSet<usize> {
+        topological_rings(state, moved, 3)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
+// Compare the incrementally kept cells against a fresh sweep. Off unless a test
+// asks for it. The failure this guards against is silent: a dirty set that
+// misses a cell leaves a stale scale in a number that decides whether a whole
+// pass is kept, so the run stays valid and diverges.
+#[cfg(test)]
+thread_local! {
+    /// How many more passes to check. Drift shows up as soon as a cell the
+    /// refresh missed is read, and the early passes commit the most moves, so a
+    /// bounded count catches it without running the comparison forty-eight
+    /// times over -- which in a debug build is most of the test's runtime.
+    static VERIFY_GUARD_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn verify_guard_cells(
+    state: &MeshState,
+    criteria: &[Box<dyn CellCriterion>],
+    limits: CycleLimits,
+    cells: &GuardCells,
+) -> Result<()> {
+    let remaining = VERIFY_GUARD_CELLS.with(|verify| verify.get());
+    if remaining == 0 {
+        return Ok(());
+    }
+    VERIFY_GUARD_CELLS.with(|verify| verify.set(remaining - 1));
+    let full = GuardCells::full(state, criteria, limits)?;
+    for (site, (kept, fresh)) in cells.scales.iter().zip(&full.scales).enumerate() {
+        assert_eq!(
+            kept.map(f64::to_bits),
+            fresh.map(f64::to_bits),
+            "site {site} kept a stale scale"
+        );
+    }
+    assert_eq!(
+        cells.demanding, full.demanding,
+        "the kept set of demanding cells drifted from a fresh sweep"
+    );
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn verify_guard_cells(
+    _: &MeshState,
+    _: &[Box<dyn CellCriterion>],
+    _: CycleLimits,
+    _: &GuardCells,
+) -> Result<()> {
+    Ok(())
+}
+
 impl QualityGuardMetrics {
+    #[cfg(test)]
     fn read(
         mesh: &AdaptiveMesh,
         criteria: &[Box<dyn CellCriterion>],
         limits: CycleLimits,
     ) -> Result<Self> {
-        let (unbalanced, worst_scale_ratio) = balance_survey(mesh, limits);
+        let cells = GuardCells::full(mesh.state(), criteria, limits)?;
+        Self::read_with(mesh, limits, &cells)
+    }
+
+    fn read_with(mesh: &AdaptiveMesh, limits: CycleLimits, cells: &GuardCells) -> Result<Self> {
+        let scales = &cells.scales;
+        let balance = balance_demands(mesh, scales, limits);
+        let (unbalanced, worst_scale_ratio) =
+            balance_survey_from_scales(mesh.state(), scales, limits);
+        let pending: BTreeSet<u64> = cells
+            .demanding
+            .iter()
+            .map(|&site| site as u64)
+            .chain(balance.iter().map(|demand| demand.cell))
+            .collect();
         Ok(Self {
-            pending: pending_site_count(mesh, criteria, limits)?,
+            pending: pending.len(),
             unbalanced,
             worst_scale_ratio,
             angles: angle_window_survey(mesh.state()),
@@ -2474,6 +2881,85 @@ impl QualityGuardMetrics {
     }
 }
 
+/// Which destination a quality move came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MoveSource {
+    Natural,
+    Eta,
+    Window,
+}
+
+/// Where the quality optimiser's moves came from.
+///
+/// Diagnostic only: it is not serialised, does not reach the run report, and
+/// counts nothing outside the three-candidate loop -- the low-degree repair
+/// moves are tallied separately. Generated and line-search counts describe all
+/// work attempted; committed counts describe only moves retained after the
+/// pass-level guard. It exists because a summary that only shows the finished
+/// mesh cannot tell "the candidate never fired" from "the candidate fired and
+/// was overruled", and those two call for opposite fixes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct QualityMoveAudit {
+    natural_generated: usize,
+    natural_line_search_attempts: usize,
+    natural_committed: usize,
+    eta_generated: usize,
+    eta_line_search_attempts: usize,
+    eta_committed: usize,
+    window_generated: usize,
+    window_line_search_attempts: usize,
+    window_committed: usize,
+    low_degree_committed: usize,
+}
+
+impl QualityMoveAudit {
+    /// A destination was computed, whether or not the loop got as far as it.
+    fn generated(&mut self, source: MoveSource) {
+        match source {
+            MoveSource::Natural => self.natural_generated += 1,
+            MoveSource::Eta => self.eta_generated += 1,
+            MoveSource::Window => self.window_generated += 1,
+        }
+    }
+
+    /// A step along that destination reached the transaction.
+    fn attempted(&mut self, source: MoveSource) {
+        match source {
+            MoveSource::Natural => self.natural_line_search_attempts += 1,
+            MoveSource::Eta => self.eta_line_search_attempts += 1,
+            MoveSource::Window => self.window_line_search_attempts += 1,
+        }
+    }
+
+    fn committed(&mut self, source: MoveSource) {
+        match source {
+            MoveSource::Natural => self.natural_committed += 1,
+            MoveSource::Eta => self.eta_committed += 1,
+            MoveSource::Window => self.window_committed += 1,
+        }
+    }
+
+    fn retained_commits(&self) -> [usize; 3] {
+        [
+            self.natural_committed,
+            self.eta_committed,
+            self.window_committed,
+        ]
+    }
+
+    fn restore_retained_commits(&mut self, retained: [usize; 3]) {
+        [
+            self.natural_committed,
+            self.eta_committed,
+            self.window_committed,
+        ] = retained;
+    }
+
+    fn retained_total(&self) -> usize {
+        self.retained_commits().into_iter().sum::<usize>() + self.low_degree_committed
+    }
+}
+
 fn optimise_mesh_quality(
     mesh: &mut AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
@@ -2481,13 +2967,43 @@ fn optimise_mesh_quality(
     limits: CycleLimits,
     background_scale_m: Option<f64>,
 ) -> Result<(usize, AngleWindowSurvey)> {
+    let (committed, angles, _) = optimise_mesh_quality_with_natural_length(
+        mesh,
+        criteria,
+        gates,
+        limits,
+        background_scale_m,
+        true,
+        NATURAL_LENGTH_PASSES,
+    )?;
+    Ok((committed, angles))
+}
+
+/// The optimiser with the natural-length candidate under test.
+///
+/// `natural_length_enabled` removes the candidate from every phase rather than
+/// merely demoting it -- setting the priority passes to zero still leaves it in
+/// the list behind the eta ascent, which is a different arm and a different
+/// question. Neither knob is user-visible: `optimise_mesh_quality` is the only
+/// production entry and it always ships the shipped semantics.
+#[allow(clippy::too_many_arguments)]
+fn optimise_mesh_quality_with_natural_length(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+    background_scale_m: Option<f64>,
+    natural_length_enabled: bool,
+    natural_length_priority_passes: usize,
+) -> Result<(usize, AngleWindowSurvey, QualityMoveAudit)> {
+    let audit = QualityMoveAudit::default();
     if !mesh.segments_are_empty() {
         eprintln!("harp_dv quality optimiser skipped: protected boundary segments are present");
-        return Ok((0, AngleWindowSurvey::default()));
+        return Ok((0, AngleWindowSurvey::default(), audit));
     }
     let Some(background_scale_m) = background_scale_m else {
         eprintln!("harp_dv quality optimiser skipped: initial cell scale is not measurable");
-        return Ok((0, AngleWindowSurvey::default()));
+        return Ok((0, AngleWindowSurvey::default(), audit));
     };
     let Some(target_cell_scale) = target_cell_scales(
         mesh.state(),
@@ -2496,8 +3012,9 @@ fn optimise_mesh_quality(
         background_scale_m,
     ) else {
         eprintln!("harp_dv quality optimiser skipped: no usable target-scale criterion");
-        return Ok((0, AngleWindowSurvey::default()));
+        return Ok((0, AngleWindowSurvey::default(), audit));
     };
+    let mut audit = audit;
     let target_angles = target_angle_window_survey(mesh.state(), &target_cell_scale);
     eprintln!(
         "harp_dv frozen target field angle diagnostic: below_40={}, in_40_80={}, above_80={}, unmeasurable={}, worst_deviation={:.3}",
@@ -2512,7 +3029,9 @@ fn optimise_mesh_quality(
     // from the geometry produced by the previous pass.
     let started = std::time::Instant::now();
     let initial_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
-    let initial = QualityGuardMetrics::read(mesh, criteria, limits)?;
+    audit.low_degree_committed = initial_low_degree_moves;
+    let mut guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
+    let initial = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     let mut previous = initial.clone();
     let mut committed = initial_low_degree_moves;
     let mut eta_stopped = false;
@@ -2542,7 +3061,9 @@ fn optimise_mesh_quality(
             excluded_sites.clear();
         }
         let pass_checkpoint = mesh.clone();
+        let cells_checkpoint = guard_cells.clone();
         let pass_before = previous.clone();
+        let retained_before = audit.retained_commits();
         let (sites, found, eligible) = quality_problem_sites(mesh, window_first, &excluded_sites);
         let breadth_sweep_exhausted =
             window_first && eligible <= MAXIMUM_QUALITY_SITES_PER_PASS && found > eligible;
@@ -2565,18 +3086,20 @@ fn optimise_mesh_quality(
         }
         let attempted_sites = sites.clone();
         let mut unproductive_sites: BTreeSet<_> = attempted_sites.iter().copied().collect();
+        let mut moved_this_pass = BTreeSet::new();
         let mut committed_this_pass = 0usize;
         for site in sites {
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
                 let mut unresolved = 0usize;
-                for &site in affected {
-                    let cell = state.voronoi_cell(site).ok()?;
+                let radius_m = state.sphere_radius();
+                for (&site, &seed) in affected {
+                    let cell = state.voronoi_cell_from(site, seed).ok()?;
                     let view = CellView {
                         site,
                         cell: &cell,
                         state,
-                        radius_m: state.sphere_radius(),
+                        radius_m,
                     };
                     for criterion in criteria {
                         if criterion.evaluate(&view).ok()?.demands_work() {
@@ -2598,23 +3121,48 @@ fn optimise_mesh_quality(
                 continue;
             };
             let here = mesh.state().vertices()[site];
-            let natural = natural_length_destination(mesh.state(), &target_cell_scale, site);
+            let natural = natural_length_enabled
+                .then(|| natural_length_destination(mesh.state(), &target_cell_scale, site))
+                .flatten();
             let eta_ascent = worst_triangle_ascent_destination(mesh.state(), site);
             let window_ascent = window_first
                 .then(|| star_window_ascent_destination(mesh.state(), site))
                 .flatten();
             let targets = if window_first {
-                [window_ascent, eta_ascent, natural]
-            } else if pass < NATURAL_LENGTH_PASSES {
-                [natural, eta_ascent, None]
+                [
+                    (MoveSource::Window, window_ascent),
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Natural, natural),
+                ]
+            } else if pass < natural_length_priority_passes {
+                [
+                    (MoveSource::Natural, natural),
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Window, None),
+                ]
             } else {
-                [eta_ascent, natural, None]
+                [
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Natural, natural),
+                    (MoveSource::Window, None),
+                ]
             };
-            'candidate: for target in targets.into_iter().flatten() {
+            // Counted here rather than inside the loop below: a destination that
+            // exists but is never reached because an earlier candidate committed
+            // has still been generated, and reading it as ungenerated would point
+            // the diagnosis at the wiring instead of at the ordering.
+            for (source, target) in targets {
+                if target.is_some() {
+                    audit.generated(source);
+                }
+            }
+            'candidate: for (source, target) in targets {
+                let Some(target) = target else { continue };
                 for step in QUALITY_LINE_SEARCH_STEPS {
                     let Some(destination) = projected_step(here, target, step) else {
                         continue;
                     };
+                    audit.attempted(source);
                     if let Acceptance::Committed(_) = mesh.propose_move_cached(
                         site,
                         destination,
@@ -2623,7 +3171,9 @@ fn optimise_mesh_quality(
                         Some(&before),
                         true,
                     )? {
+                        audit.committed(source);
                         committed_this_pass += 1;
+                        moved_this_pass.insert(site);
                         unproductive_sites.remove(&site);
                         break 'candidate;
                     }
@@ -2631,7 +3181,13 @@ fn optimise_mesh_quality(
             }
         }
 
-        let after = match QualityGuardMetrics::read(mesh, criteria, limits) {
+        let dirty = GuardCells::dirty_around(mesh.state(), &moved_this_pass);
+        if let Err(error) = guard_cells.refresh(mesh.state(), criteria, limits, &dirty) {
+            *mesh = pass_checkpoint;
+            return Err(error);
+        }
+        verify_guard_cells(mesh.state(), criteria, limits, &guard_cells)?;
+        let after = match QualityGuardMetrics::read_with(mesh, limits, &guard_cells) {
             Ok(after) => after,
             Err(error) => {
                 *mesh = pass_checkpoint;
@@ -2640,16 +3196,38 @@ fn optimise_mesh_quality(
         };
         let eta_p1 = after.eta[(after.eta.len() / 100).min(after.eta.len().saturating_sub(1))];
         let below_eta_0_89 = after.eta.partition_point(|value| *value < 0.89);
+        let retained_after = audit.retained_commits();
+        let retained_this_pass = [
+            retained_after[0] - retained_before[0],
+            retained_after[1] - retained_before[1],
+            retained_after[2] - retained_before[2],
+        ];
+        let regression = after.regression_from(&pass_before, window_first);
+        let decision = if regression.is_some() {
+            "rejected"
+        } else {
+            "retained"
+        };
         eprintln!(
-            "harp_dv quality optimiser {phase} pass {phase_pass}/{phase_passes}: {} moves committed, margin_min={:.6}, eta_min={:.6}, eta_p1={:.6}, triangles_below_eta_0_89={}",
+            "harp_dv quality optimiser {phase} pass {phase_pass}/{phase_passes}: {decision} {} tentative moves (natural/eta/window={}/{}/{}), outside {} -> {}, worst_deviation {:.6} -> {:.6}, margin_min={:.6}, eta_min={:.6} -> {:.6}, eta_p1={:.6}, triangles_below_eta_0_89={}",
             committed_this_pass,
+            retained_this_pass[0],
+            retained_this_pass[1],
+            retained_this_pass[2],
+            pass_before.angles.below + pass_before.angles.above_80,
+            after.angles.below + after.angles.above_80,
+            pass_before.angles.worst_deviation_deg,
+            after.angles.worst_deviation_deg,
             after.margins[0],
+            pass_before.eta[0],
             after.eta[0],
             eta_p1,
             below_eta_0_89
         );
-        if let Some(guard) = after.regression_from(&pass_before, window_first) {
+        if let Some(guard) = regression {
             *mesh = pass_checkpoint;
+            guard_cells = cells_checkpoint;
+            audit.restore_retained_commits(retained_before);
             eprintln!(
                 "harp_dv quality optimiser rejected {phase} pass {phase_pass} after {} move(s): {}",
                 committed_this_pass, guard
@@ -2692,8 +3270,10 @@ fn optimise_mesh_quality(
     }
     let final_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
     committed += final_low_degree_moves;
+    audit.low_degree_committed += final_low_degree_moves;
     if final_low_degree_moves > 0 {
-        previous = QualityGuardMetrics::read(mesh, criteria, limits)?;
+        guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
+        previous = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     }
     eprintln!(
         "harp_dv quality optimiser complete: {} moves, margin_min {:.6} -> {:.6}, eta_min {:.6} -> {:.6}, angle-window violations {} -> {}, {:.1}s",
@@ -2706,7 +3286,25 @@ fn optimise_mesh_quality(
         previous.angles.below + previous.angles.above_80,
         started.elapsed().as_secs_f64()
     );
-    Ok((committed, target_angles))
+    eprintln!(
+        "harp_dv quality optimiser candidates (generated/line-search/retained): natural {}/{}/{}, eta {}/{}/{}, window {}/{}/{}, low-degree retained {}",
+        audit.natural_generated,
+        audit.natural_line_search_attempts,
+        audit.natural_committed,
+        audit.eta_generated,
+        audit.eta_line_search_attempts,
+        audit.eta_committed,
+        audit.window_generated,
+        audit.window_line_search_attempts,
+        audit.window_committed,
+        audit.low_degree_committed,
+    );
+    assert_eq!(
+        audit.retained_total(),
+        committed,
+        "quality move audit must account for every retained move"
+    );
+    Ok((committed, target_angles, audit))
 }
 
 const QUALITY_ETA_TARGET: f64 = 0.9375;
@@ -2725,20 +3323,6 @@ const QUALITY_ASCENT_EDGE_FRACTION: f64 = 0.5;
 const MAXIMUM_LOW_DEGREE_PASSES: usize = 4;
 const LOW_DEGREE_LINE_SEARCH_STEPS: [f64; 4] = [0.25, 0.125, 0.0625, 0.03125];
 const LOW_DEGREE_PAIR_LINE_SEARCH_STEPS: [f64; 5] = [0.5, 0.25, 0.125, 0.0625, 0.03125];
-
-fn pending_site_count(
-    mesh: &AdaptiveMesh,
-    criteria: &[Box<dyn CellCriterion>],
-    limits: CycleLimits,
-) -> Result<usize> {
-    let (demands, _, scales) = evaluate(mesh, criteria, limits)?;
-    Ok(demands
-        .iter()
-        .chain(balance_demands(mesh, &scales, limits).iter())
-        .map(|demand| demand.cell)
-        .collect::<BTreeSet<_>>()
-        .len())
-}
 
 /// What a pass over the cells found, beyond the demands themselves.
 ///
@@ -2767,6 +3351,7 @@ fn evaluate(
 ) -> Result<(Vec<RefinementDemand>, EvaluationTally, Vec<Option<f64>>)> {
     let state = mesh.state();
     let radius_m = state.sphere_radius();
+    let seeds = active_site_triangle_seeds(state);
     let mut demands = Vec::new();
     let mut tally = EvaluationTally::default();
     let mut scales = vec![None; state.vertices().len()];
@@ -2774,7 +3359,10 @@ fn evaluate(
         // A cell that cannot be read is not a demand. Skipping it here keeps
         // evaluation total; the transaction layer reports the same cell as
         // `NotAttempted` if anything later asks for it.
-        let Ok(cell) = state.voronoi_cell(site) else {
+        let Some(seed) = seeds[site] else {
+            continue;
+        };
+        let Ok(cell) = state.voronoi_cell_from(site, seed) else {
             continue;
         };
         let view = CellView {
@@ -2845,13 +3433,129 @@ fn evaluate(
     Ok((demands, tally, scales))
 }
 
+// Test-only capture support for the exact production boundary before quality
+// work. Thread-local state keeps parallel tests independent.
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_QUALITY_CHECKPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static QUALITY_CHECKPOINT: std::cell::RefCell<Option<AdaptiveMesh>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn capture_quality_checkpoint(mesh: &AdaptiveMesh) -> bool {
+    let requested = CAPTURE_QUALITY_CHECKPOINT.with(|capture| capture.get());
+    if requested {
+        QUALITY_CHECKPOINT.with(|checkpoint| {
+            *checkpoint.borrow_mut() = Some(mesh.clone());
+        });
+    }
+    requested
+}
+
+/// Build the same refinement/r-adaptation state production hands to the
+/// quality optimiser, then return the captured state for controlled A/B tests.
+#[cfg(test)]
+fn production_quality_checkpoint(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+) -> AdaptiveMesh {
+    production_quality_checkpoint_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        LocalRecoveryPolicy::OFF,
+    )
+}
+
+#[cfg(test)]
+fn production_quality_checkpoint_with_local_recovery(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+    local_recovery: LocalRecoveryPolicy,
+) -> AdaptiveMesh {
+    CAPTURE_QUALITY_CHECKPOINT.with(|capture| {
+        assert!(
+            !capture.replace(true),
+            "quality checkpoint capture is not re-entrant"
+        );
+    });
+    QUALITY_CHECKPOINT.with(|checkpoint| {
+        assert!(checkpoint.borrow_mut().take().is_none());
+    });
+
+    let run = run_cycles_with_local_recovery(mesh, criteria, policy, gates, limits, local_recovery);
+    CAPTURE_QUALITY_CHECKPOINT.with(|capture| capture.set(false));
+    run.expect("production refinement reaches the quality boundary");
+    QUALITY_CHECKPOINT
+        .with(|checkpoint| checkpoint.borrow_mut().take())
+        .expect("production run did not reach the quality boundary")
+}
+
 /// Run cycles until something says to stop, and say which.
+/// When a cycle may escalate a stall that is local rather than global.
+///
+/// Every escalation the loop has -- the broader ladder, pair relief, multi-ring
+/// recovery -- triggers on "nothing was accepted anywhere this cycle". That
+/// scalar is false whenever any corner of the mesh still accepts an insertion,
+/// which on a production mesh is every cycle: measured zero firings in 11
+/// cycles at NXP40 and in 100 at NXP80, while a degree-blocked site was waiting
+/// in 10 and 100 of them (`.omx/plans/harp-dv-stall-escalation-diagnosis.md`).
+///
+/// Letting persistence alone open the gate is the thing the note above the
+/// fallback ladder records as tried and rejected: it took the crate's own suite
+/// from 32 seconds past 30 minutes without finishing, and says what was missing
+/// -- "a bound on how much broadening a cycle may buy". Hence the seed cap.
+///
+/// Off in production until an A/B says otherwise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LocalRecoveryPolicy {
+    /// Cycles a site must stay degree-blocked before it may seed a recovery.
+    minimum_consecutive_cycles: u32,
+    /// The most seeds one cycle may hand to `recover_stalled_regions`. Zero
+    /// leaves the escalation exactly where it is.
+    maximum_seeds_per_cycle: usize,
+}
+
+impl LocalRecoveryPolicy {
+    /// Shipped behaviour: escalation stays behind the global scalar.
+    const OFF: Self = Self {
+        minimum_consecutive_cycles: 0,
+        maximum_seeds_per_cycle: 0,
+    };
+}
+
 pub fn run_cycles(
     mesh: &mut AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
     policy: CandidatePolicy,
     gates: HardGates,
     limits: CycleLimits,
+) -> Result<CycleOutcome> {
+    run_cycles_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        LocalRecoveryPolicy::OFF,
+    )
+}
+
+fn run_cycles_with_local_recovery(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+    local_recovery: LocalRecoveryPolicy,
 ) -> Result<CycleOutcome> {
     let initial_sites = mesh.active_site_count();
     // Freeze the input mesh's representative background scale. Recomputing it
@@ -2865,6 +3569,19 @@ pub fn run_cycles(
     let mut fallback_committed = 0usize;
     let mut refusals = RejectionTally::default();
     let mut relieved = 0usize;
+    // Read-only stall-escalation audit. Diagnosis
+    // `.omx/plans/harp-dv-stall-escalation-diagnosis.md` predicts that on a
+    // production-scale mesh the multi-ring recovery never runs, because its
+    // trigger is a global scalar -- "nothing was accepted anywhere this cycle"
+    // -- while the stalls it exists to clear are local.
+    let mut escalation_eligible_cycles = 0usize;
+    let mut escalation_fired_cycles = 0usize;
+    let mut local_escalation_cycles = 0usize;
+    let mut local_escalation_seeds = 0usize;
+    let mut consecutive_degree_blocked: BTreeMap<usize, u32> = BTreeMap::new();
+    let mut degree_blocked_total = 0usize;
+    let mut tier1_single_moves = 0usize;
+    let mut tier1_pair_moves = 0usize;
     let mut r_adapted = 0usize;
     let mut pair_adapted = 0usize;
     let mut multi_ring_adapted = 0usize;
@@ -3071,6 +3788,21 @@ pub fn run_cycles(
             .collect();
         stalled_last_cycle = std::mem::take(&mut stalled_demand_sites);
         balance_blocked_sites.extend(persistently_stalled.iter().copied());
+        if !degree_blocked_sites.is_empty() {
+            escalation_eligible_cycles += 1;
+        }
+        degree_blocked_total += degree_blocked_sites.len();
+        // How long each site has been blocked, counting this cycle. A site that
+        // clears drops out, so the count is consecutive by construction.
+        consecutive_degree_blocked = degree_blocked_sites
+            .iter()
+            .map(|&site| {
+                (
+                    site,
+                    consecutive_degree_blocked.get(&site).copied().unwrap_or(0) + 1,
+                )
+            })
+            .collect();
         for &blocked_site in &degree_blocked_sites {
             if !mesh.can_move_site(blocked_site)
                 || mesh.state().vertex_degree(blocked_site).ok() < Some(gates.max_vertex_degree)
@@ -3081,7 +3813,7 @@ pub fn run_cycles(
             // phase below; scoring it here was expensive and admitted moves
             // that balanced a neighbourhood without lowering this degree.
             let objective =
-                |state: &MeshState, _: &BTreeSet<usize>| state.vertex_degree(blocked_site).ok();
+                |state: &MeshState, _: &AffectedSites| state.vertex_degree(blocked_site).ok();
             let Ok(before) = mesh.state().vertex_degree(blocked_site) else {
                 continue;
             };
@@ -3098,6 +3830,7 @@ pub fn run_cycles(
                     false,
                 )? {
                     relieved += 1;
+                    tier1_single_moves += 1;
                     r_adapted += 1;
                     adapted_this_cycle += 1;
                     moved = true;
@@ -3118,6 +3851,7 @@ pub fn run_cycles(
                     &objective,
                     Some(&before),
                 )? {
+                    tier1_pair_moves += 1;
                     relieved += 1;
                     r_adapted += 2;
                     pair_adapted += 2;
@@ -3142,7 +3876,7 @@ pub fn run_cycles(
                 if !mesh.can_move_site(moving_site) {
                     continue;
                 }
-                let objective = |state: &MeshState, _: &BTreeSet<usize>| {
+                let objective = |state: &MeshState, _: &AffectedSites| {
                     let left = *state.vertices().get(pentagon)?;
                     let right = *state.vertices().get(demand_site)?;
                     let distance_squared = (left.x - right.x).powi(2)
@@ -3153,7 +3887,7 @@ pub fn run_cycles(
                         -distance_squared,
                     ])
                 };
-                let Some(before) = objective(mesh.state(), &BTreeSet::new()) else {
+                let Some(before) = objective(mesh.state(), &AffectedSites::new()) else {
                     continue;
                 };
                 for destination in degree_relief_destinations(mesh.state(), moving_site) {
@@ -3177,7 +3911,7 @@ pub fn run_cycles(
             if !mesh.can_move_site(site) {
                 continue;
             }
-            let objective = |state: &MeshState, affected: &BTreeSet<usize>| {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
                 balance_objective(state, affected, limits.max_neighbour_scale_ratio)
             };
             let Some(before) = mesh.score_before_move(site, &objective) else {
@@ -3220,6 +3954,7 @@ pub fn run_cycles(
         // alternative is another identical cycle and is not worth doing while
         // the ordinary ladder is still productive.
         if accepted_this_cycle == 0 && mesh.segments_are_empty() {
+            escalation_fired_cycles += 1;
             let mut recovery_seeds = persistently_stalled.clone();
             recovery_seeds.extend(degree_blocked_sites.iter().copied());
             recovery_seeds.extend(balance_blocked_sites.iter().copied());
@@ -3248,6 +3983,38 @@ pub fn run_cycles(
             r_adapted += recovered;
             adapted_this_cycle += recovered;
             multi_ring_adapted += recovered;
+        } else if local_recovery.maximum_seeds_per_cycle > 0 && mesh.segments_are_empty() {
+            // The same widening, offered to the sites that have been blocked
+            // longest rather than to a globally idle cycle. Bounded twice: a
+            // site must have persisted, and a cycle may seed only so many.
+            let mut ranked: Vec<(u32, usize)> = consecutive_degree_blocked
+                .iter()
+                .filter(|(_, &cycles)| cycles >= local_recovery.minimum_consecutive_cycles)
+                .map(|(&site, &cycles)| (cycles, site))
+                .collect();
+            // Longest-blocked first, then by site so the choice is the same on
+            // every run.
+            ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+            let seeds: BTreeSet<usize> = ranked
+                .into_iter()
+                .take(local_recovery.maximum_seeds_per_cycle)
+                .map(|(_, site)| site)
+                .collect();
+            if !seeds.is_empty() {
+                local_escalation_cycles += 1;
+                local_escalation_seeds += seeds.len();
+                let recovered = recover_stalled_regions(
+                    mesh,
+                    criteria,
+                    gates,
+                    limits,
+                    &seeds,
+                    RECOVERY_MOVABLE_RINGS,
+                )?;
+                r_adapted += recovered;
+                adapted_this_cycle += recovered;
+                multi_ring_adapted += recovered;
+            }
         }
         // Site motion is only useful if the demands it was meant to unlock are
         // retried against the moved geometry. Do that once as a batch, for
@@ -3342,9 +4109,17 @@ pub fn run_cycles(
                 };
                 break;
             }
-            let signature = (physical_demand_count, balance_demand_count);
-            if adaptation_probe.is_some_and(|before: (usize, usize)| {
-                signature.0 >= before.0 && signature.1 >= before.1
+            let signature = (
+                physical_demand_count,
+                balance_demand_count,
+                unresolved_cells.len(),
+                quality_constrained_cells.len(),
+            );
+            if adaptation_probe.is_some_and(|before: (usize, usize, usize, usize)| {
+                signature.0 >= before.0
+                    && signature.1 >= before.1
+                    && signature.2 >= before.2
+                    && signature.3 >= before.3
             }) {
                 stop_reason = StopReason::NoProductiveAdaptation;
                 break;
@@ -3355,9 +4130,31 @@ pub fn run_cycles(
         }
     }
 
+    // Read-only: what the stall-escalation diagnosis predicts. `fired` counts
+    // cycles that reached `recover_stalled_regions`; `eligible` counts cycles
+    // that had a degree-blocked site waiting for it.
+    eprintln!(
+        "harp_dv stall escalation audit: {cycles} cycle(s), escalation eligible in \
+         {escalation_eligible_cycles}, fired in {escalation_fired_cycles}; \
+         degree-blocked site-cycles {degree_blocked_total}; \
+         tier-1 relief {tier1_single_moves} single / {tier1_pair_moves} pair move(s); \
+         local escalation in {local_escalation_cycles} cycle(s) over \
+         {local_escalation_seeds} seed(s)"
+    );
+
     // HARP owns its final geometry.  Improve the preferred angle window with
     // the same transactional moves and hard gates used by its refinement;
     // downstream Method-C repair is neither needed nor allowed here.
+    #[cfg(test)]
+    if capture_quality_checkpoint(mesh) {
+        // Checkpoint-only tests inspect the saved clone. Running optimisation
+        // and leaf-retirement audits on the throwaway working mesh is pure
+        // cost, and becomes dominant on large NXP fixtures.
+        return Ok(CycleOutcome {
+            report: HarpDvRunReport::empty(mesh.active_site_count(), stop_reason),
+            unresolved_cells: Vec::new(),
+        });
+    }
     let (quality_optimiser_moves, target_angle_window) =
         optimise_mesh_quality(mesh, criteria, gates, limits, background_scale_m)?;
     r_adapted += quality_optimiser_moves;
@@ -3416,7 +4213,8 @@ pub fn run_cycles(
     // Counted at the end rather than tracked through: it is what a caller has
     // to decide on, and a number carried through the loop would be the one
     // from whichever cycle last looked.
-    let unbalanced_pairs_remaining = balance_survey(mesh, limits).0;
+    let unbalanced_pairs_remaining =
+        balance_survey_from_scales(mesh.state(), &final_scales, limits).0;
 
     let angle_window = angle_window_survey(mesh.state());
     let triangle_eta = all_triangle_eta_values(mesh.state()).ok_or_else(|| {
@@ -3530,6 +4328,10 @@ pub fn run_cycles(
         unresolved_cells,
     })
 }
+
+/// Prototype: frontal point placement under demand-driven scheduling.
+#[cfg(test)]
+mod frontal_prototype;
 
 #[cfg(test)]
 mod tests;

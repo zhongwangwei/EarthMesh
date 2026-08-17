@@ -150,7 +150,14 @@ impl MeshState {
 
         let mut fan = vec![seed];
         let mut current = seed;
-        let limit = self.triangle_count() + 1;
+        // Slots, not the active count. This is a runaway backstop, so any bound
+        // at least as large as the number of live triangles is correct, and the
+        // slot count is one in O(1) where `triangle_count` scans every slot to
+        // get an exact figure nothing here needs. A fan is about six triangles;
+        // paying a full sweep of the mesh to decide how far it may walk made
+        // this the dominant cost of the quality optimiser -- 90.9 percent of
+        // samples on the NXP=21 CLI fixture were inside `triangle_count`.
+        let limit = self.triangles().len() + 1;
         for _ in 0..limit {
             let next = self.neighbours()[current][(corner + 1) % 3];
             if next == 0 || !self.is_triangle_live(next) {
@@ -227,8 +234,19 @@ impl MeshState {
     }
 
     /// The Voronoi cell of one site, given a triangle it belongs to.
+    ///
+    /// The ring is pinned to its lowest triangle before the corners are taken,
+    /// so the cell does not depend on which incident triangle the caller
+    /// happened to know about. That matters for more than tidiness: the corners
+    /// come back in ring order and their areas are summed in that order, so a
+    /// rotation is a different float. [`Self::voronoi_cell`] scans for the
+    /// lowest incident triangle, which makes this the rotation it already
+    /// returns -- seeding the walk is then free of any effect on the result.
     pub fn voronoi_cell_from(&self, site: usize, seed: usize) -> Result<VoronoiCell, VoronoiError> {
-        let triangles = self.triangle_fan_from(site, seed)?;
+        let mut triangles = self.triangle_fan_from(site, seed)?;
+        if let Some((start, _)) = triangles.iter().enumerate().min_by_key(|(_, &t)| t) {
+            triangles.rotate_left(start);
+        }
         let corners = triangles
             .iter()
             .map(|&triangle| self.circumcentre(triangle))

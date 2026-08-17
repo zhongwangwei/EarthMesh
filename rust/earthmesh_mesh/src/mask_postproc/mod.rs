@@ -6,6 +6,12 @@ pub struct RefineBoundarySegments {
     pub num_bdy_refine_segment: usize,
     pub bdy_refine_segment: Vec<Vec<usize>>,
     pub n_bdy_refine_segment: Vec<usize>,
+    /// Exclusive segment-array end for each closed curve.
+    ///
+    /// A flat segment table alone cannot say which first segment the last
+    /// segment of a curve wraps to. Canonical carries the same information as
+    /// `num_bdy_refine_segment_curve`.
+    pub curve_segment_ends: Vec<usize>,
 }
 
 /// Result of `MOD_refine.F90:weak_concav_segment_make`.

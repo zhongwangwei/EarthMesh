@@ -4,9 +4,9 @@ use crate::{is_ngrmm, RefineWeakConcavitySegments};
 
 /// Public pure-data port of `MOD_refine.F90:weak_concav_segment_make`.
 ///
-/// The input boundary segments are Rust vectors in Canonical traversal order
-/// (`bdy_refine_segment[:, i]` becomes one `Vec<usize>`).  Adjacent segment
-/// pairs whose boundary triangles are opposite neighbors by `IsNgrmm` are
+/// The input rows retain Canonical's fixed `set_dis_in` width; their logical
+/// lengths are carried separately. Adjacent segment pairs within each closed
+/// curve whose boundary triangles are opposite neighbors by `IsNgrmm` are
 /// removed from the ordinary boundary segment list and emitted either as
 /// singleton weak-concavity pairs (`weak_concav_pair`) or as weak-concavity
 /// transition segments (`weak_concav_segment`).
@@ -15,6 +15,8 @@ pub fn refine_weak_concav_segment_make_one_based(
     num_ref_weak_concav: usize,
     cells_on_triangle: &[[usize; 3]],
     bdy_refine_segment: &[Vec<usize>],
+    n_bdy_refine_segment: &[usize],
+    curve_segment_ends: &[usize],
 ) -> io::Result<RefineWeakConcavitySegments> {
     if set_dis_in == 0 {
         return Err(io::Error::new(
@@ -22,84 +24,127 @@ pub fn refine_weak_concav_segment_make_one_based(
             "set_dis_in must be positive like MOD_refine:weak_concav_segment_make",
         ));
     }
+    if bdy_refine_segment.len() != n_bdy_refine_segment.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "boundary segment rows and logical lengths must have the same size",
+        ));
+    }
+    if bdy_refine_segment
+        .iter()
+        .zip(n_bdy_refine_segment)
+        .any(|(row, &len)| row.len() != set_dis_in || len > set_dis_in)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "boundary segment rows must be set_dis_in wide and contain a valid logical length",
+        ));
+    }
+    if curve_segment_ends.last().copied().unwrap_or(0) != bdy_refine_segment.len()
+        || curve_segment_ends.windows(2).any(|ends| ends[0] >= ends[1])
+        || curve_segment_ends.first().is_some_and(|end| *end == 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "closed-curve segment ends must be increasing and cover the segment table",
+        ));
+    }
 
-    let mut bdy_refine_segment_next = bdy_refine_segment.to_vec();
+    // Canonical stores fixed-width columns and carries their logical lengths
+    // separately. Slice once at this boundary so the existing Rust vector
+    // operations keep expressing logical removal rather than moving padding.
+    let bdy_refine_segment = bdy_refine_segment
+        .iter()
+        .zip(n_bdy_refine_segment)
+        .map(|(row, &len)| row[..len].to_vec())
+        .collect::<Vec<_>>();
+    let mut bdy_refine_segment_next = bdy_refine_segment.clone();
     let mut weak_concav_segment = Vec::<Vec<usize>>::new();
     let mut weak_concav_pair = Vec::<[usize; 2]>::new();
-    let num_bdy_refine_segment = bdy_refine_segment.len();
-
-    for i in 0..num_bdy_refine_segment {
-        let j = (i + 1) % num_bdy_refine_segment;
-        if bdy_refine_segment_next[i].is_empty() || bdy_refine_segment_next[j].is_empty() {
-            continue;
-        }
-        let segment_i = &bdy_refine_segment[i];
-        let segment_j = &bdy_refine_segment[j];
-        if segment_i.is_empty() || segment_j.is_empty() {
-            continue;
-        }
-        let m1 = *segment_i.last().expect("non-empty segment");
-        let m2 = segment_j[0];
-        if m1 >= cells_on_triangle.len() || m2 >= cells_on_triangle.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("weak-concavity pair canonicals triangles {m1} and {m2} outside cells_on_triangle"),
-            ));
-        }
-        if is_ngrmm(cells_on_triangle[m1], cells_on_triangle[m2]).is_none() {
-            continue;
-        }
-
-        let len_i = segment_i.len();
-        let len_j = segment_j.len();
-        let num_max = len_i.max(len_j);
-        let num_min = len_i.min(len_j);
-        let num_diff = num_max - num_min;
-
-        if num_diff == 0 {
-            if len_i == 1 {
-                weak_concav_pair.push([m1, 0]);
-                weak_concav_pair.push([m2, 0]);
+    let mut curve_start = 0usize;
+    for &curve_end in curve_segment_ends {
+        for i in curve_start..curve_end {
+            let j = if i + 1 == curve_end {
+                curve_start
             } else {
-                weak_concav_segment.push(segment_i.clone());
-                weak_concav_segment.push(segment_j.clone());
+                i + 1
+            };
+            if bdy_refine_segment_next[i].is_empty() || bdy_refine_segment_next[j].is_empty() {
+                continue;
             }
-            bdy_refine_segment_next[i].clear();
-            bdy_refine_segment_next[j].clear();
-        } else if num_diff == 1 {
-            if num_min < 3 {
-                weak_concav_segment.push(vec![m1]);
-                weak_concav_segment.push(vec![m2]);
-                if num_min == 2 {
-                    if len_i > len_j {
+            let segment_i = &bdy_refine_segment[i];
+            let segment_j = &bdy_refine_segment[j];
+            if segment_i.is_empty() || segment_j.is_empty() {
+                continue;
+            }
+            let m1 = *segment_i.last().expect("non-empty segment");
+            let m2 = segment_j[0];
+            if m1 >= cells_on_triangle.len() || m2 >= cells_on_triangle.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("weak-concavity pair canonicals triangles {m1} and {m2} outside cells_on_triangle"),
+                ));
+            }
+            if is_ngrmm(cells_on_triangle[m1], cells_on_triangle[m2]).is_none() {
+                continue;
+            }
+
+            let len_i = segment_i.len();
+            let len_j = segment_j.len();
+            let num_max = len_i.max(len_j);
+            let num_min = len_i.min(len_j);
+            let num_diff = num_max - num_min;
+
+            if num_diff == 0 {
+                if set_dis_in == 1 || len_i > 1 {
+                    weak_concav_segment.push(segment_i.clone());
+                    weak_concav_segment.push(segment_j.clone());
+                } else {
+                    weak_concav_pair.push([m1, 0]);
+                    weak_concav_pair.push([m2, 0]);
+                }
+                bdy_refine_segment_next[i].clear();
+                bdy_refine_segment_next[j].clear();
+            } else if num_diff == 1 {
+                if num_min < 3 {
+                    weak_concav_segment.push(vec![m1]);
+                    weak_concav_segment.push(vec![m2]);
+                    if num_min == 1 {
+                        if len_i == 1 {
+                            bdy_refine_segment_next[i].clear();
+                        } else {
+                            bdy_refine_segment_next[j].clear();
+                        }
+                    } else if len_i > len_j {
                         bdy_refine_segment_next[i].pop();
                     } else if !bdy_refine_segment_next[j].is_empty() {
                         bdy_refine_segment_next[j].remove(0);
                     }
+                } else {
+                    weak_concav_pair.push([m1, 0]);
+                    weak_concav_pair.push([m2, 0]);
+                    bdy_refine_segment_next[i].pop();
+                    if !bdy_refine_segment_next[j].is_empty() {
+                        bdy_refine_segment_next[j].remove(0);
+                    }
                 }
-            } else {
+            } else if num_min == 1 {
                 weak_concav_pair.push([m1, 0]);
                 weak_concav_pair.push([m2, 0]);
                 bdy_refine_segment_next[i].pop();
                 if !bdy_refine_segment_next[j].is_empty() {
                     bdy_refine_segment_next[j].remove(0);
                 }
+            } else {
+                let common_len = num_min;
+                let weak_i_start = len_i.saturating_sub(common_len);
+                weak_concav_segment.push(segment_i[weak_i_start..].to_vec());
+                weak_concav_segment.push(segment_j[..common_len].to_vec());
+                bdy_refine_segment_next[i].truncate(weak_i_start);
+                bdy_refine_segment_next[j] = segment_j[common_len..].to_vec();
             }
-        } else if num_min == 1 {
-            weak_concav_pair.push([m1, 0]);
-            weak_concav_pair.push([m2, 0]);
-            bdy_refine_segment_next[i].pop();
-            if !bdy_refine_segment_next[j].is_empty() {
-                bdy_refine_segment_next[j].remove(0);
-            }
-        } else {
-            let common_len = num_min;
-            let weak_i_start = len_i.saturating_sub(common_len);
-            weak_concav_segment.push(segment_i[weak_i_start..].to_vec());
-            weak_concav_segment.push(segment_j[..common_len].to_vec());
-            bdy_refine_segment_next[i].truncate(weak_i_start);
-            bdy_refine_segment_next[j] = segment_j[common_len..].to_vec();
         }
+        curve_start = curve_end;
     }
 
     let num_weak_concav_segment = weak_concav_segment.len();
@@ -129,6 +174,9 @@ pub fn refine_weak_concav_segment_make_one_based(
         .iter()
         .map(Vec::len)
         .collect::<Vec<_>>();
+    for row in &mut bdy_refine_segment_next {
+        row.resize(set_dis_in, 1);
+    }
 
     Ok(RefineWeakConcavitySegments {
         num_ref_weak_concav,

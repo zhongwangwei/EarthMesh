@@ -31,6 +31,7 @@ fn boundary_segments_make_splits_each_edge_when_transition_distance_is_one() {
 
     assert_eq!(segments.num_bdy_refine_segment, 4);
     assert_eq!(segments.n_bdy_refine_segment, vec![1, 1, 1, 1]);
+    assert_eq!(segments.curve_segment_ends, vec![4]);
     assert_eq!(
         segments.bdy_refine_segment,
         vec![vec![2], vec![3], vec![4], vec![5]]
@@ -69,12 +70,46 @@ fn boundary_segments_make_rotates_from_first_turn_and_splits_long_runs() {
 
     assert_eq!(segments.num_bdy_refine_segment, 2);
     assert_eq!(segments.n_bdy_refine_segment, vec![3, 2]);
+    assert_eq!(segments.curve_segment_ends, vec![2]);
     // Rows are the band's width, as `MOD_refine.F90:1411` allocates them; the
     // short segment's spare slot carries the "triangle id 1" placeholder, and
     // `n_bdy_refine_segment` is what says how much of the row is real.
     assert_eq!(
         segments.bdy_refine_segment,
         vec![vec![22, 23, 24], vec![20, 21, 1]]
+    );
+}
+
+#[test]
+fn boundary_segments_make_records_each_closed_curve_end() {
+    let mut triangles_on_cell = vec![Vec::<usize>::new(); 23];
+    let mut edge_counts = vec![0usize; 23];
+    let mrl = vec![1i32; 8];
+    for (cell, triangles) in [
+        (10, vec![4, 2]),
+        (11, vec![2, 3]),
+        (12, vec![3, 4]),
+        (20, vec![7, 5]),
+        (21, vec![5, 6]),
+        (22, vec![6, 7]),
+    ] {
+        edge_counts[cell] = triangles.len();
+        triangles_on_cell[cell] = triangles;
+    }
+
+    let segments = refine_boundary_segments_make_one_based(
+        1,
+        &[vec![10, 11, 12], vec![20, 21, 22]],
+        &triangles_on_cell,
+        &edge_counts,
+        &mrl,
+    )
+    .expect("two boundary curves");
+
+    assert_eq!(segments.curve_segment_ends, vec![3, 6]);
+    assert_eq!(
+        segments.bdy_refine_segment,
+        vec![vec![2], vec![3], vec![4], vec![5], vec![6], vec![7]]
     );
 }
 
