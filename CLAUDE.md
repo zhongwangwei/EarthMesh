@@ -90,6 +90,19 @@ is not where the v3 line lives.
    ```
 3. `gh release create v<version> --prerelease --notes-file …` for an alpha.
 
+**The same name collision silently misreads on the way back in.** `git fetch
+origin v3.0.0-alpha4` and `git checkout v3.0.0-alpha4` do not fail the way the
+push does — they resolve, to the *tag*, which stays where it was cut while the
+branch moves on. After merging into the branch, that reads back as "the merge
+did not happen": a real merge into `refs/heads/v3.0.0-alpha4` still showed the
+month-old tag commit as the tip. Use the full ref, or ask the API, when the
+answer matters:
+
+```
+git fetch origin refs/heads/v3.0.0-alpha4:refs/remotes/origin/v3.0.0-alpha4
+gh api repos/zhongwangwei/EarthMesh/git/ref/heads/v3.0.0-alpha4 --jq .object.sha
+```
+
 **Pushing over HTTPS fails when the commit touches `.github/workflows/`**: the
 `gh` OAuth token carries `gist, read:org, repo` but not `workflow`. SSH
 (`git@github.com:zhongwangwei/EarthMesh.git`) works and is what `gh` is
