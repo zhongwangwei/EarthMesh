@@ -115,6 +115,17 @@ Two traps that follow from that case:
   changed results; the oracle test caught the one real discrepancy — which
   turned out to be the oracle's own bug, and only a direct comparison could
   have told the difference.
+- **A runaway guard that scans to get its bound is the runaway.** `MeshState`
+  has cheap-looking helpers that walk every slot — `triangle_count()` is
+  `active_triangle_slots().count()`. Three loops called it just to size a
+  "stop if this spins" limit, so a six-triangle fan paid a sweep of the whole
+  mesh on every objective evaluation: 90.9% of samples, and CI timing out for
+  two weeks. Such a limit needs an upper bound, never an exact count, and
+  `triangles().len()` is one in O(1). Guide 11.68; 11.3 is the same defect
+  class in a different loop.
+- **A job that times out reports nothing about what came after it.** The `fast`
+  job hid a genuine assertion failure behind its timeout for two weeks. Before
+  reading a green-ish CI history as evidence, check the jobs actually finished.
 
 ## Reading the code
 
