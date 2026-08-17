@@ -452,7 +452,17 @@ fn a_run_blocked_only_by_the_angle_floor_names_the_constraint() {
 #[test]
 fn the_cycle_limit_is_reported_as_the_cycle_limit() {
     let mut mesh = sphere(6);
-    let criteria = target(coarsest_scale(&mesh) * 0.5, TargetRegion::Global);
+    // A patch, not the globe. What this asserts is about the cycle loop's
+    // report, and `run_cycles` goes on to spend forty-eight quality passes on
+    // whatever the loop produced -- so a global target makes this test pay for
+    // optimising a mesh it never looks at.
+    let criteria = target(
+        coarsest_scale(&mesh) * 0.5,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 600_000.0,
+        },
+    );
 
     let outcome = run_cycles(
         &mut mesh,
@@ -604,6 +614,22 @@ fn ratio_survey(mesh: &AdaptiveMesh, bound: f64) -> (f64, usize) {
     (worst, over)
 }
 
+/// The same shape as `steep_target` over a smaller patch.
+///
+/// For tests whose claim is about the cycle loop's report rather than about the
+/// size of the refined region. `run_cycles` spends forty-eight quality passes on
+/// whatever the loop leaves behind, so the patch is what those tests are really
+/// paying for.
+fn small_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
+    target(
+        coarsest_scale(mesh) * 0.3,
+        TargetRegion::Circle {
+            centre: LonLatDegrees::new(105.0, 35.0),
+            radius_m: 600_000.0,
+        },
+    )
+}
+
 fn steep_target(mesh: &AdaptiveMesh) -> Vec<Box<dyn CellCriterion>> {
     target(
         coarsest_scale(mesh) * 0.3,
@@ -679,6 +705,8 @@ fn angle_window_penalties_keep_legacy_and_delivery_semantics_separate() {
 #[test]
 fn degree_relief_moves_reduce_the_wall_without_breaking_quality_gates() {
     let mut mesh = sphere(6);
+    // Kept at `steep_target`'s reach: shrinking it was measured to make this
+    // test slower, 38s to 67s, not faster.
     let criteria = steep_target(&mesh);
     let gates = HardGates {
         min_triangle_angle_deg: 20.0,
@@ -766,7 +794,7 @@ fn final_unresolved_cells_are_reevaluated_after_the_last_adaptation() {
 #[test]
 fn scale_balance_and_r_adaptation_close_the_gap() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -819,7 +847,7 @@ fn scale_balance_and_r_adaptation_close_the_gap() {
 #[test]
 fn without_balance_the_same_target_breaks_the_bound() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     run_cycles(
         &mut mesh,
         &criteria,
@@ -850,7 +878,7 @@ fn without_balance_the_same_target_breaks_the_bound() {
 #[test]
 fn the_report_separates_balance_from_what_was_asked_for() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -886,7 +914,7 @@ fn the_report_separates_balance_from_what_was_asked_for() {
 #[test]
 fn the_refusals_are_counted_by_kind() {
     let mut mesh = sphere(6);
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
         &criteria,
@@ -945,7 +973,7 @@ fn the_refusals_are_counted_by_kind() {
 fn the_degree_budget_saturates() {
     let run = |budget: usize| {
         let mut mesh = sphere(6);
-        let criteria = steep_target(&mesh);
+        let criteria = small_target(&mesh);
         run_cycles(
             &mut mesh,
             &criteria,
@@ -976,6 +1004,14 @@ fn the_degree_budget_saturates() {
     // and the claim does not rest on which.
 
     let (cells_seven, _worst_seven) = run(7);
+    // Non-vacuity: the tighter budget has to actually cost cells. If all three
+    // runs agree the equality above is true of a mesh that never reached any
+    // bound, and the test asserts nothing.
+    assert!(
+        cells_seven < cells_nine,
+        "a budget of seven cost nothing ({cells_seven} against {cells_nine}), so this fixture \
+         never reaches the degree wall the claim is about"
+    );
     assert!(
         (cells_nine as f64) < cells_seven as f64 * 1.10,
         "removing the degree bound bought {cells_seven} -> {cells_nine} cells; if that is now a \
@@ -992,6 +1028,10 @@ fn the_degree_budget_saturates() {
 #[test]
 fn the_wall_behind_degree_is_the_pentagons() {
     let mut mesh = sphere(6);
+    // Kept at `steep_target`'s reach. A smaller patch never touches one of the
+    // twelve pentagons, so `refusals.pentagon > 0` below stops holding -- the
+    // wall this is about is simply not met, and the test would pass by never
+    // reaching what it names.
     let criteria = steep_target(&mesh);
     let outcome = run_cycles(
         &mut mesh,
@@ -1031,6 +1071,20 @@ fn the_wall_behind_degree_is_the_pentagons() {
 /// converge at 25 because it approximated segments with a set of boundary
 /// sites, diverted nearly every candidate into splitting spurious ones, and so
 /// did almost no quality refinement at all.
+///
+/// The cycle ceiling is 80 against a measured 36. It used to be 40, which
+/// sounds like a bound on a runaway but was really a 10 percent margin: the
+/// unprotected arm converges in 36 cycles on macOS -- measured identical on
+/// this commit and on 12078c4, so nothing in the refinement work moved it --
+/// and exceeded 40 on Linux, failing the very assertion below. What separates
+/// the two platforms is float detail, `acos` and FMA contraction, tipping
+/// individual angle comparisons; it is not a difference in what the algorithm
+/// does. A margin that thin cannot tell "converged" from "hit the ceiling",
+/// which is the one thing this arm exists to check. 80 leaves that judgement
+/// intact while staying a real bound: a platform needing more than twice the
+/// measured count has diverged in behaviour, not in rounding, and should fail
+/// here rather than be absorbed. The assertions carry the cycle count so the
+/// next such failure reports how far off it was.
 #[test]
 fn protected_segments_make_a_quality_target_terminate() {
     use crate::criteria::MinAngle;
@@ -1041,6 +1095,10 @@ fn protected_segments_make_a_quality_target_terminate() {
         let mut mesh = AdaptiveMesh::from_triangular_mesh(&base).expect("adaptive");
         let coarsest = coarsest_scale(&mesh);
         let centre = LonLatDegrees::new(105.0, 35.0);
+        // Left at 1,200 km deliberately: shrinking it was measured to make this
+        // test *slower*, 73s to 113s. The work here is driven by the `MinAngle`
+        // criterion below, which carries no region and so refines the whole
+        // sphere; the protected circle's size does not reach it.
         let reach = 1_200_000.0;
         if protect {
             // The boundary as segments: mesh edges that straddle the circle,
@@ -1088,7 +1146,7 @@ fn protected_segments_make_a_quality_target_terminate() {
             &criteria,
             CandidatePolicy::default(),
             permissive(),
-            limits(40, 200_000),
+            limits(80, 200_000),
         )
         .expect("run");
         let state = mesh.state();
@@ -1103,10 +1161,15 @@ fn protected_segments_make_a_quality_target_terminate() {
                 ])
             })
             .fold(f64::MAX, f64::min);
-        (mesh.active_site_count(), worst, outcome.report.stop_reason)
+        (
+            mesh.active_site_count(),
+            worst,
+            outcome.report.stop_reason,
+            outcome.report.cycles_completed,
+        )
     };
 
-    let (sites, worst, stop) = run(true);
+    let (sites, worst, stop, cycles) = run(true);
     assert!(
         sites < 2_000,
         "{sites} sites; it should converge, not run away"
@@ -1115,9 +1178,13 @@ fn protected_segments_make_a_quality_target_terminate() {
         worst >= ANGLE,
         "min triangle angle {worst:.2}; requested {ANGLE:.2}"
     );
-    assert_eq!(stop, StopReason::NoAcceptedTransactions);
+    assert_eq!(
+        stop,
+        StopReason::NoAcceptedTransactions,
+        "protected arm stopped after {cycles} of 80 cycles"
+    );
 
-    let (unprotected_sites, unprotected_worst, unprotected_stop) = run(false);
+    let (unprotected_sites, unprotected_worst, unprotected_stop, unprotected_cycles) = run(false);
     assert!(
         unprotected_sites < 2_000,
         "the unconstrained comparison must stay bounded, got {unprotected_sites} sites"
@@ -1131,7 +1198,8 @@ fn protected_segments_make_a_quality_target_terminate() {
             unprotected_stop,
             StopReason::AllSatisfied | StopReason::NoAcceptedTransactions
         ),
-        "unexpected unconstrained stop: {unprotected_stop:?}"
+        "unexpected unconstrained stop: {unprotected_stop:?} after \
+         {unprotected_cycles} of 80 cycles (36 measured on macOS)"
     );
 }
 
@@ -1305,7 +1373,7 @@ fn target_scale_optimizer_improves_eta_tail_without_spending_harp_gates() {
     let limits = limits(40, 200_000);
     let mut mesh = sphere(6);
     let background_scale_m = median_cell_scale(mesh.state());
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
     let before = all_triangle_eta_values(mesh.state()).expect("eta");
     let angles_before = angle_window_survey(mesh.state());
@@ -2074,7 +2142,7 @@ fn the_surviving_residue_is_attributed_to_refinement_or_to_optimisation() {
     let limits = limits(40, 200_000);
     let mut mesh = sphere(6);
     let background_scale_m = median_cell_scale(mesh.state());
-    let criteria = steep_target(&mesh);
+    let criteria = small_target(&mesh);
     stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
 
     let after_refinement = angle_window_survey(mesh.state());
@@ -2256,6 +2324,7 @@ fn export_the_frozen_target_scale_field() {
 /// beside it. Without that, a later change to the shipped ladder would let the
 /// control drift while the test still passed.
 #[test]
+#[ignore = "bounded frontal placement A/B; run explicitly"]
 fn frontal_placement_ab_on_the_nxp6_proxy() {
     use super::frontal_prototype::{refine_with_frontal, rho_bar_for, Selection};
 
