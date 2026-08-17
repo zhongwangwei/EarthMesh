@@ -1071,6 +1071,20 @@ fn the_wall_behind_degree_is_the_pentagons() {
 /// converge at 25 because it approximated segments with a set of boundary
 /// sites, diverted nearly every candidate into splitting spurious ones, and so
 /// did almost no quality refinement at all.
+///
+/// The cycle ceiling is 80 against a measured 36. It used to be 40, which
+/// sounds like a bound on a runaway but was really a 10 percent margin: the
+/// unprotected arm converges in 36 cycles on macOS -- measured identical on
+/// this commit and on 12078c4, so nothing in the refinement work moved it --
+/// and exceeded 40 on Linux, failing the very assertion below. What separates
+/// the two platforms is float detail, `acos` and FMA contraction, tipping
+/// individual angle comparisons; it is not a difference in what the algorithm
+/// does. A margin that thin cannot tell "converged" from "hit the ceiling",
+/// which is the one thing this arm exists to check. 80 leaves that judgement
+/// intact while staying a real bound: a platform needing more than twice the
+/// measured count has diverged in behaviour, not in rounding, and should fail
+/// here rather than be absorbed. The assertions carry the cycle count so the
+/// next such failure reports how far off it was.
 #[test]
 fn protected_segments_make_a_quality_target_terminate() {
     use crate::criteria::MinAngle;
@@ -1132,7 +1146,7 @@ fn protected_segments_make_a_quality_target_terminate() {
             &criteria,
             CandidatePolicy::default(),
             permissive(),
-            limits(40, 200_000),
+            limits(80, 200_000),
         )
         .expect("run");
         let state = mesh.state();
@@ -1147,10 +1161,15 @@ fn protected_segments_make_a_quality_target_terminate() {
                 ])
             })
             .fold(f64::MAX, f64::min);
-        (mesh.active_site_count(), worst, outcome.report.stop_reason)
+        (
+            mesh.active_site_count(),
+            worst,
+            outcome.report.stop_reason,
+            outcome.report.cycles_completed,
+        )
     };
 
-    let (sites, worst, stop) = run(true);
+    let (sites, worst, stop, cycles) = run(true);
     assert!(
         sites < 2_000,
         "{sites} sites; it should converge, not run away"
@@ -1159,9 +1178,13 @@ fn protected_segments_make_a_quality_target_terminate() {
         worst >= ANGLE,
         "min triangle angle {worst:.2}; requested {ANGLE:.2}"
     );
-    assert_eq!(stop, StopReason::NoAcceptedTransactions);
+    assert_eq!(
+        stop,
+        StopReason::NoAcceptedTransactions,
+        "protected arm stopped after {cycles} of 80 cycles"
+    );
 
-    let (unprotected_sites, unprotected_worst, unprotected_stop) = run(false);
+    let (unprotected_sites, unprotected_worst, unprotected_stop, unprotected_cycles) = run(false);
     assert!(
         unprotected_sites < 2_000,
         "the unconstrained comparison must stay bounded, got {unprotected_sites} sites"
@@ -1175,7 +1198,8 @@ fn protected_segments_make_a_quality_target_terminate() {
             unprotected_stop,
             StopReason::AllSatisfied | StopReason::NoAcceptedTransactions
         ),
-        "unexpected unconstrained stop: {unprotected_stop:?}"
+        "unexpected unconstrained stop: {unprotected_stop:?} after \
+         {unprotected_cycles} of 80 cycles (36 measured on macOS)"
     );
 }
 
