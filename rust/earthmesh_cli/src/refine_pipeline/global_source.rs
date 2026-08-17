@@ -444,9 +444,22 @@ pub fn run_refine_pipeline_namelist(
     let spring_nest_iterations =
         effective_refinement_spring_iterations(backend, requested_spring_nest_iterations);
     if requested_spring_nest_iterations > 0 && spring_nest_iterations == 0 {
+        // Name the settings that were dropped, not the mechanism. The message
+        // used to say "regional Laplacian spring", which reads as "not you" to
+        // the far more common configuration that reaches here: a namelist with
+        // RL%SpringRegional_type = 0 and RL%SpringGlobal_type = 1, whose
+        // RL%niter_refine is the number actually being discarded.
+        let requested_by = match (refine.spring_global_type, refine.spring_regional_type) {
+            (1, r) if r > 0 => "RL%SpringGlobal_type = 1 and RL%SpringRegional_type",
+            (1, _) => "RL%SpringGlobal_type = 1",
+            _ => "RL%SpringRegional_type",
+        };
         eprintln!(
-            "earthmesh_cli: HARP-DV uses transactional site moves with Delaunay legalization; \
-             the generic regional Laplacian spring is disabled for this backend"
+            "earthmesh_cli: ignoring {requested_by} and the {requested_spring_nest_iterations} \
+             refinement spring iteration(s) they ask for. HARP-DV smooths through transactional \
+             site moves with Delaunay legalization, and a Laplacian spring on top of that fights \
+             its acceptance test. Use NL%refine_backend = method_c to run the spring instead. \
+             This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
         );
     }
     let file_dir = PathBuf::from(config.file_dir());

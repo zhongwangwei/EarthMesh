@@ -3270,3 +3270,57 @@ let limit = self.triangle_count() + 1;
 - **先归因再动手。** 本例最初被归因为"优化器跑满 48 遍",据此写的改动会改变
   交付网格,而真实主因与遍数无关、量级大三个数量级。一次五秒的采样把归因
   纠正了过来。
+
+### 11.69 真实数据 NXP80 全路径的阶段分摊（2026-08-17 实测）
+
+§11.68 的加速是在 `the_full_production_path_on_the_nxp_proxy` 上量的,而那是
+`sphere(80)` 加合成判据。代理不覆盖 NetCDF 读入、掩膜链、gridinit 和写出,
+所以"内核快 9.3 倍"能兑现多少到端到端,需要真实数据才能回答。
+
+配置取自 `examples/default/land_hex_global.nml`,只改四处:NXP 64→80、
+`NL%refine_backend = 'harp_dv'`、landtype 换成 IGBP(125 MB 真实栅格)、
+输出目录。其余保持生产原样。**NXP=80 需要 `--max-tris`**:默认上限 100,000,
+而 NXP80 的 gridinit 就要 128,000 个三角形,否则第 1 秒即报错退出。
+
+479 秒跑完(exit=0),阶段分摊:
+
+| 阶段 | 累计 | 占比 |
+|---|---|---|
+| gridinit + 125MB landtype 读入 + 掩膜链 | 0→1s | **0.2%** |
+| HARP-DV 细化 12 个周期(至 101,622 单元) | 1→79s | 16% |
+| 冻结目标场角度诊断 | 79→105s | 5% |
+| 低度数修复(第一轮) | 105→241s | 28% |
+| 质量优化 + 第二轮低度数修复 | 241→451s | 44% |
+| leaf 退役 + 写出 | 451→479s | 6% |
+
+**结论与预期相反**:I/O 和 gridinit 合计只占 0.2%,**约 99% 的墙钟在 HARP-DV
+里面**。所以 §11.68 的加速基本全额兑现到端到端,不存在被 I/O 稀释的问题。
+125 MB 栅格读入之所以可以忽略,是因为它只驱动陆海掩膜,不参与逐周期的循环。
+
+质量结果:`below_40=1, in_40_80=610541, above_80=6`,
+`balance_demands_remaining=0`,`quality_constrained_cells=0`,
+`unbalanced_pairs=0`,`landtype_masked_cells=45079`。61 万个角度里 7 个在窗口外。
+
+**注意这不是 §11.68 那 207.1s 的可比对象**:代理跑满 100 周期且判据陡峭,
+这里 12 个周期就收敛。两者工作量不同,倍数不可直接搬用。本节量的是分摊结构,
+不是加速比。
+
+#### gridinit 的弹性松弛确实在跑,只是跑在基网格上
+
+`NL%niter = 5000` 在一秒内完成,看起来像被跳过,其实没有。
+`method_c_gridinit_factorization_canonical(80)` 给出
+**base_nxp = 40,expansion_factor = 2**:松弛跑在 NXP=40 的基网格(32,000 个
+三角形)上,之后解析地 ×2 展开。`niter=0` 与 `niter=5000` 产出的 gridfile
+校验和不同,可证它在做功。
+
+#### 细化阶段的弹性松弛被丢弃,提示词曾指错对象
+
+harp_dv 后端下 `effective_refinement_spring_iterations` 把细化弹簧归零——这是
+`12078c4` 的有意设计,Laplacian 弹簧会和事务性移动的接受判据打架。丢弃时有提示,
+但原文写的是 "the generic **regional** Laplacian spring",而到达这里最常见的
+配置恰恰是 `RL%SpringRegional_type = 0` 加 `RL%SpringGlobal_type = 1` ——
+读起来像"说的不是我",于是 5000 步被静默丢弃而无人察觉。
+
+提示已改为指名实际设置与被丢弃的步数,并说明它不影响 `NL%niter`。这是
+§11.1 那类沉默失败的一个变体:**提示存在,却描述了一个不匹配的对象,效果
+等同于没有提示**。
