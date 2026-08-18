@@ -3279,8 +3279,8 @@ let limit = self.triangle_count() + 1;
 
 配置取自 `examples/default/land_hex_global.nml`,只改四处:NXP 64→80、
 `NL%refine_backend = 'harp_dv'`、landtype 换成 IGBP(125 MB 真实栅格)、
-输出目录。其余保持生产原样。**NXP=80 需要 `--max-tris`**:默认上限 100,000,
-而 NXP80 的 gridinit 就要 128,000 个三角形,否则第 1 秒即报错退出。
+输出目录。其余保持生产原样。**NXP=80 当时需要 `--max-tris`**(已修,见本节末):默认上限 100,000,
+而 NXP80 的 gridinit 要 128,000 个三角形,否则第 1 秒即报错退出。
 
 479 秒跑完(exit=0),阶段分摊:
 
@@ -3324,3 +3324,31 @@ harp_dv 后端下 `effective_refinement_spring_iterations` 把细化弹簧归零
 提示已改为指名实际设置与被丢弃的步数,并说明它不影响 `NL%niter`。这是
 §11.1 那类沉默失败的一个变体:**提示存在,却描述了一个不匹配的对象,效果
 等同于没有提示**。
+
+#### 同一个字面量在两条路径上扮演相反角色
+
+`--max-tris` 的默认值,namelist 路径写的是 `.unwrap_or(100_000)` —— 一个裸
+字面量,无命名常量、无注释,而且**这条路径根本不读 NXP**。三角形数是
+`20 × NXP²`,于是它把全球算例静默卡在 **NXP ≤ 70**(20×70²=98,000 过,
+20×71²=100,820 不过)。
+
+而 `--project` 路径上,同一个 100,000 是**下限**:
+
+```rust
+let base = 20 * nxp * nxp;              // 按分辨率精确算
+base.checked_shl(passes * 2)            // 每轮细化 ×4
+    .map(|budget| budget.max(100_000))  // 至少 100,000
+```
+
+同一个数字,一处是地板一处是天花板;同一个分辨率,走 project 有余量,走
+namelist 直接退出。字面量由 `ebddef6` 引入。
+
+`max_tris` 全仓**只被比较,从不用于分配**(`gridinit_voronoi_state_canonical`
+里的一次上限校验),所以 100,000 不对应任何真实资源约束。namelist 路径已改为
+同样从 NXP 推导,保留 100,000 作为地板——因此这个改动**只会抬高上限、不会
+降低**,原先能过的运行仍然能过。NXP=80 现在无需 `--max-tris` 即可跑通,
+cycle 1 的数字与显式给 4,000,000 时逐项一致。
+
+顺带:`refine_gridfile.rs` 把 `max_tris` 传给 `from_icosahedron` 的第五个形参,
+而那个形参是 `_diagnostic_every` ——带下划线前缀,完全被忽略。传错但无害,
+记在此处以免下次有人当成实参去读。

@@ -78,11 +78,10 @@ fn run_prepared_mkgrd(
     let project_workdir = prepared.project_run_dir.clone();
     let mut namelist = prepared.namelist;
     let mut project = prepared.project;
-    let mut max_tris = project
-        .as_ref()
-        .map(|spec| project_triangle_budget(&spec.config))
-        .transpose()?
-        .unwrap_or(100_000);
+    let mut max_tris = match project.as_ref() {
+        Some(spec) => project_triangle_budget(&spec.config)?,
+        None => namelist_triangle_budget(&namelist),
+    };
     let mut run_refine_passthrough = false;
     let mut run_refine_landtype_source = false;
     let mut run_mask_restart_ocean = false;
@@ -764,6 +763,39 @@ fn run_prepared_mkgrd(
     }
 
     Err("internal error: explicit mkgrd execution mode was not dispatched".to_string())
+}
+
+/// The gridinit ceiling a namelist run needs, read from the resolution it asked
+/// for.
+///
+/// `project_triangle_budget` already sizes this from NXP and treats 100,000 as
+/// a floor. The namelist path used the same literal as a fixed ceiling and
+/// never looked at NXP at all, so the same number played opposite roles in the
+/// two paths: a global run at NXP 71 or above -- 20 * 71^2 is 100,820
+/// triangles -- died in gridinit with "triangle count exceeds max_tris", while
+/// the identical resolution through `--project` was given room for it. Nothing
+/// about 100,000 corresponds to a real limit; `max_tris` is only ever compared
+/// against, never allocated from.
+///
+/// The floor stays, so this can only raise the ceiling, never lower it: a run
+/// that passed before still passes. A namelist that cannot be read or parsed
+/// falls back to the floor rather than failing here -- the later stages parse
+/// it again and report the real problem with the context to explain it.
+fn namelist_triangle_budget(namelist_source: &str) -> usize {
+    const FLOOR: usize = 100_000;
+    let Ok(contents) = fs::read_to_string(namelist_source) else {
+        return FLOOR;
+    };
+    let Ok(config) = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&contents) else {
+        return FLOOR;
+    };
+    let Ok(nxp) = usize::try_from(config.nxp) else {
+        return FLOOR;
+    };
+    20usize
+        .checked_mul(nxp)
+        .and_then(|scaled| scaled.checked_mul(nxp))
+        .map_or(FLOOR, |base| base.max(FLOOR))
 }
 
 fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<usize, String> {
