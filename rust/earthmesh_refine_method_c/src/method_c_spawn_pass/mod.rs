@@ -161,14 +161,29 @@ impl MethodCMesh {
                             // So this branch does one of two wrong things: above
                             // `nmd` it skips a repair that should have run (the
                             // production coastal failure, guide 11.5), and below
-                            // `nmd` it would repair an unrelated parent point.
-                            // Measured 2026-08-19: it fires zero times across the
-                            // 226 tests in this crate, so nothing observable
-                            // depends on either branch today. Left as it is rather
-                            // than changed blind -- the fix is to translate the id
-                            // through `imnew` at emit scope, where the map lives,
-                            // and that needs the reproduction guide 11.5 describes
-                            // before it can be told apart from a guess.
+                            // `nmd` it fills around a parent point that is not the
+                            // one that failed.
+                            //
+                            // The second is not hypothetical and not rare.
+                            // Measured over this crate's lib suite: the branch is
+                            // entered 527 times and 379 of those return a mask the
+                            // ladder then adopts, every one of them at an id well
+                            // inside `nmd` (136 against 513, 189 against 711).
+                            // Deleting it fails the Canonical parity test
+                            // `method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary`
+                            // and takes the suite from 29s to 213s, so the
+                            // agreement with Canonical currently rests on a fill
+                            // applied at the wrong place -- it perturbs the mask
+                            // enough for the ladder to converge, which is not the
+                            // same thing as repairing the offending point.
+                            //
+                            // Left as it is. Translating the id at emit scope
+                            // makes the rung target the right point and rescues
+                            // eighteen of eighteen valence failures in a
+                            // 216-configuration sweep, all topologically valid,
+                            // but it also carries the two-level corridor past a
+                            // wall Canonical treats as fatal. Guide 11.5 has both
+                            // measurements.
                             if im <= self.nmd {
                                 self.try_fill_method_c_specific_m_point(
                                     &selected,
