@@ -113,7 +113,9 @@
 
 ## 3. grid_preprocess 三角细化管线
 
-> **集成状态（2026-08-06 起改造中）：内核齐备、驱动循环与接线在建，代码位于 `rust/earthmesh_refine_redgreen`。** 本节内核（iterB/C/D/E/F/G 判定、1→2 过渡细分、LOP 翻边、弱凹清理、`ngr_renew`）已逐个移植并由 73 个测试驱动；`refine_loop` 驱动循环、`num_ref_cal`、`OnedivideFour_renew` 与 CLI/GUI 接线尚未完成，因此主程序目前仍只走第 4 节 Method-C。
+> **集成状态（2026-08-06 接线完成，2026-08-19 复核）：可用的生产后端，代码位于 `rust/earthmesh_refine_redgreen`。** 本节内核（iterB/C/D/E/F/G 判定、1→2 过渡细分、LOP 翻边、弱凹清理、`ngr_renew`）已逐个移植；`refine_loop`（`refine_redgreen_round_one_based` / `RedGreenMesh` / `RedGreenSettings`）、`num_ref_cal`（`refine_num_ref_cal_one_based`）、`OnedivideFour_renew`（`refine_onedivide_four_renew_one_based`）都已导出，CLI 经 `refine_backend_name` 分派 `NL%refine_backend = 'red_green'`，GUI 的算法选项里也有它。运行时契约见 §11.6。
+>
+> **它不服务的那些会明确报错，不会静默退回 Method-C。** 它读具名区域和点+半径判据规约出的圆；`&hfield` 是 Method-C 的，native surface expansion（`NL%sfcgrid_res_factor`）也不服务，遇到就返回 `Unsupported` 并指名改用 `method_c`。这一点本身是修过的缺陷——旧分派对每个不认识的值都落到 Method-C，于是 `redgreen`、`harp-dv`、`method-c` 三种拼法各自静默产出 Method-C 网格（§11.37）。
 >
 > **为什么把它扶正**：判定链遇到不可行的标记集时**扩张**它，从不拒绝——本 crate 的全部错误分支都是输入校验（数组长度、索引越界、连通性不闭合），没有一条是"这个区域形状不对"。Method-C 会拒绝：种子点阵每次跨三格、周界必须是 3 的倍数、过渡补丁伸到掩膜外两层面。这就是"任意海岸带都能细化"与"只能细化 Method-C 造得出的块形"之间的全部差别。Method-C 换来的是顶点价数锁在 {5,6,7}，那是六边形对偶可用的前提；直接吃三角形的模型（如 FVCOM）不为它付账。
 >
@@ -768,7 +770,26 @@ if component_id == retained_component || (demanded && !alone) {
 86%)被拒。机制:带状掩膜两臂在一个顶点以两段弧接触(与雕刻的 pinch 同构),
 两臂的过渡行各自加边,顶点价数破 7,发射后的邻居表重建拒绝全网格。失败点
 M 132536 是**发射新造的点**,现有定点修复 `try_fill_method_c_specific_m_point`
-因 `im <= nmd` 前置条件而跳过。两条候选设计:
+因 `im <= nmd` 前置条件而跳过。
+
+**2026-08-19 复查:这个前置条件比原诊断记的更糟——它是两个 id 空间的混用。**
+价数错误在 `emit_method_c_tables` 里用 **`nmd0`**(子网格计数)调
+`derive_icosahedron_m_neighbors_canonical_checked_with_prognostic` 时抛出,所以
+`payload.m_point` 命名的是**发射后子网格**里的点;而 `try_fill_method_c_specific_m_point`
+索引的是**父网格**。发射会重编号:`imnew` 每个父 M 点前进 1,每遇一条被细分的 U 边
+再多前进 1,因此两个 id 空间**只在第一次细分之前重合**,而长在细分边上的子网格新点
+根本没有对应的父 id。
+
+于是 `if im <= self.nmd` 这道门做的是两件错事之一:**大于 `nmd` 时跳过了本该跑的
+修复**(就是本节这个生产失败),**小于等于 `nmd` 时会去修一个毫不相干的父网格点**。
+
+**实测(2026-08-19):这条分支在本 crate 226 个测试里触发 0 次**,所以今天没有任何
+可观测行为依赖它——但也意味着它从未被测试覆盖过。**没有盲改**:正确的修法是在
+`emit_method_c_tables` 作用域内(`imnew` 就在那里)把 id 翻译回父网格再抛,而这需要
+先有本节描述的那个重放复现,否则改完无法与猜测区分。§11.31 记过同一个教训:一次
+量出来但没敢应用的修正,后来证明直接应用会让运行死在写出层。
+
+原记的两条候选设计:
 1. 扩展 `MethodCRepairableKind::Valence` 载荷,在发射作用域携带 imnew/iwnew
    逆查,把后继网格坐标映射回父网格,让定点填充生效;
 2. 发射前在父掩膜上精确预测"双弧且两侧都将细分"的顶点并预填 —— 注意:朴素的
@@ -3297,9 +3318,44 @@ let limit = self.triangle_count() + 1;
 里面**。所以 §11.68 的加速基本全额兑现到端到端,不存在被 I/O 稀释的问题。
 125 MB 栅格读入之所以可以忽略,是因为它只驱动陆海掩膜,不参与逐周期的循环。
 
-质量结果:`below_40=1, in_40_80=610541, above_80=6`,
-`balance_demands_remaining=0`,`quality_constrained_cells=0`,
-`unbalanced_pairs=0`,`landtype_masked_cells=45079`。61 万个角度里 7 个在窗口外。
+收敛类指标干净:`balance_demands_remaining=0`、`quality_constrained_cells=0`、
+`unbalanced_pairs=0`、`unresolved_cells=0`、`landtype_masked_cells=45079`。
+
+#### 别把目标场的角度当成交付网格的角度
+
+`harp_dv_target_triangle_angles_below_40_deg=1` / `above_80=6` / `count=610548`
+读起来像"61 万个角里只有 7 个出窗",实际不是。字段注释写的是
+**"measured from the frozen desired edge lengths rather than the realised
+mesh"** —— 它量的是**冻结目标场自身的自洽性**:如果网格完美实现了目标尺寸场,
+三角形会长成什么角度。目标场平滑,所以它几乎必然接近理想,7/610548 说明的是
+目标场没有内在矛盾,**不是交付网格的质量**。
+
+同一份日志里量交付网格的是另一组:`angles_below_40_at_leaf_vertices=5292`、
+`angles_above_80_at_leaf_vertices=9613`、`violating_triangles_touching_leaf=21916`。
+
+从 `tmpfile/gridfile_NXP0080_05_refine_raw_hex.nc4` 直接重算全部 203,500 个
+三角形(球面面积合计 12.566371 = 4π,Euler V=101752 相符,可证连通性读对了):
+
+| | 值 |
+|---|---|
+| 角度总数 | 610,500 |
+| min / max | 28.22° / 108.11° |
+| 中位数 / 均值 | 60.12° / 60.00° |
+| p1 / p99 | 37.72° / 85.04° |
+| < 40° | 11,022(1.81%) |
+| > 80° | 17,297(2.83%) |
+| 窗外合计 | 28,319(**4.64%**) |
+| < 30° | 18 |
+| > 90° | 638 |
+
+即**交付网格是 4.64% 出窗,不是 0.001%**。分布单峰、以 60° 为中心、
+79.8% 落在 [50,70)、88.2% 落在 [45,75),尾巴很短(最差 28.2°/108.1°,无退化三角形),
+这是一个健康的结果——但和目标场那 7 个差三个数量级,两者**不可互相替代引用**。
+`triangle_eta_min=0.702859`、`eta_p1=0.831945`、`triangles_below_eta_0_89=13723`
+(占 6.7%)与之一致。
+
+这是 §11.1 沉默失败的又一变体:**两个名字相近的指标,一个量意图一个量结果,
+日志把它们并排打印而不区分**,引用时极易取到那个必然好看的。
 
 **注意这不是 §11.68 那 207.1s 的可比对象**:代理跑满 100 周期且判据陡峭,
 这里 12 个周期就收敛。两者工作量不同,倍数不可直接搬用。本节量的是分摊结构,
@@ -3349,6 +3405,12 @@ namelist 直接退出。字面量由 `ebddef6` 引入。
 降低**,原先能过的运行仍然能过。NXP=80 现在无需 `--max-tris` 即可跑通,
 cycle 1 的数字与显式给 4,000,000 时逐项一致。
 
-顺带:`refine_gridfile.rs` 把 `max_tris` 传给 `from_icosahedron` 的第五个形参,
-而那个形参是 `_diagnostic_every` ——带下划线前缀,完全被忽略。传错但无害,
-记在此处以免下次有人当成实参去读。
+顺带:`refine_gridfile.rs` 曾把 `max_tris` 传给 `from_icosahedron` 的第五个形参,
+而那个形参是 `_diagnostic_every` ——带下划线前缀,完全被忽略。传错但无害(这条
+路径的网格大小由 `nxp0` 决定,真正的上限校验在 gridinit 里),然而调用点在说谎。
+
+**2026-08-19 已删掉这个形参。** 它在全仓 190 个调用点里没有一个被使用过:除这一处
+外全部传 `0` 或 `100`,而函数体从不读它。**一个永远被忽略的形参就是陷阱**——恰好
+有一个调用方以为它是三角形预算。删掉之后这个误用写不出来了。`MethodCMesh::from_icosahedron`
+的同名转发形参和 `voronoi_gridinit` 里随之失效的 `METHOD_C_DIAGNOSTIC_EVERY` 常量
+一并移除。

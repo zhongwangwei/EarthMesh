@@ -145,6 +145,30 @@ impl MethodCMesh {
                     };
                     if repaired.is_none() {
                         repaired = if let Some(im) = valence_m {
+                            // `im` is a bound check, not a validity check, and
+                            // the two are not the same thing here.
+                            //
+                            // The valence error is raised while deriving the
+                            // *child* mesh's M neighbours -- `emit_method_c_tables`
+                            // calls the derivation with `nmd0`, so the id names a
+                            // point in the emitted mesh. `try_fill_method_c_specific_m_point`
+                            // indexes the *parent*. Emission renumbers: `imnew`
+                            // advances one per parent M point plus one more for
+                            // every subdivided U edge, so the two id spaces agree
+                            // only up to the first subdivision, and a child point
+                            // created on a subdivided edge has no parent id at all.
+                            //
+                            // So this branch does one of two wrong things: above
+                            // `nmd` it skips a repair that should have run (the
+                            // production coastal failure, guide 11.5), and below
+                            // `nmd` it would repair an unrelated parent point.
+                            // Measured 2026-08-19: it fires zero times across the
+                            // 226 tests in this crate, so nothing observable
+                            // depends on either branch today. Left as it is rather
+                            // than changed blind -- the fix is to translate the id
+                            // through `imnew` at emit scope, where the map lives,
+                            // and that needs the reproduction guide 11.5 describes
+                            // before it can be told apart from a guess.
                             if im <= self.nmd {
                                 self.try_fill_method_c_specific_m_point(
                                     &selected,
