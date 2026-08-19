@@ -1,7 +1,7 @@
 use super::super::*;
 
 fn base_mesh() -> MethodCMesh {
-    MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh")
+    MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh")
 }
 
 /// Great-circle distance in meters between two (lon, lat) degree points.
@@ -46,8 +46,7 @@ fn face_centroid_lonlat(mesh: &MethodCMesh, iw: usize) -> LonLatDegrees {
 #[test]
 fn canonical_thirdm_lattice_rad3_footprints_cover_active_base_faces() {
     for nxp in [6, 12, 80] {
-        let mesh =
-            MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base Method-C mesh");
         let neighbors = mesh.method_c_m_neighbors().expect("M neighbors");
         let start = mesh.impent[0];
         let mut jdone = vec![[false; 6]; mesh.nmd + 1];
@@ -270,7 +269,7 @@ fn cartesian_hfield_rejects_self_consistent_ghost_inner_and_outer_redirects() {
 
 #[test]
 fn mixed_point_and_edge_midpoint_corridor_is_covered_without_truncation() {
-    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25).expect("base Method-C mesh");
     let first = (2..=mesh.nmd)
         .find(|im| !mesh.impent.contains(im))
         .expect("regular M point");
@@ -487,7 +486,7 @@ fn disconnected_hfield_demands_select_every_component() {
 
 #[test]
 fn disconnected_hfield_preserves_every_demand_point() {
-    let mesh = MethodCMesh::from_icosahedron(12, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(12, 0, 1.0, 0.25).expect("base Method-C mesh");
     let nearest_regular_m = |target_lon: f64, target_lat: f64| {
         (2..=mesh.nmd)
             .filter(|im| !mesh.impent.contains(im))
@@ -744,7 +743,7 @@ fn two_level_field_spawn_nests_and_deeper_passes_stop_cleanly() {
 
 #[test]
 fn discontinuous_deeper_hfield_at_parent_boundary_is_rejected() {
-    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(18, 0, 1.0, 0.25).expect("base Method-C mesh");
     // Equal radii make the level-1 branch unreachable, so this target jumps
     // directly from level 2 to 0. A gradient-limited HField never does this;
     // reject it rather than silently returning a partially satisfied mesh.

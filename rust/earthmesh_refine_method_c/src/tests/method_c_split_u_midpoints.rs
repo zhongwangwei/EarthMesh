@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_split_u_midpoint_coordinates_match_canonical_edge_average_projection() {
-    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("active mesh radius");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),

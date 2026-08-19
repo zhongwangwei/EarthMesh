@@ -1048,8 +1048,8 @@ mod tests {
     use super::*;
 
     fn icosahedron(nxp: usize) -> RedGreenMesh {
-        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let mesh =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
     }

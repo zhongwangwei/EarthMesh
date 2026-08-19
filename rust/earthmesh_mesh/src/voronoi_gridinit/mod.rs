@@ -1,7 +1,5 @@
 use super::*;
 
-const METHOD_C_DIAGNOSTIC_EVERY: usize = 100;
-
 /// In-memory Rust orchestration for the global `mkgrd.F90:gridinit` mesh path.
 ///
 /// This composes the current deterministic kernels without writing NetCDF:
@@ -40,19 +38,13 @@ pub fn gridinit_voronoi_state_canonical(
             format!("invalid Method-C gridinit NXP {nxp0}"),
         )
     })?;
-    let mut mesh = TriangularMesh::from_icosahedron(
-        factors.base_nxp,
-        nspring,
-        beta,
-        spring_relax,
-        METHOD_C_DIAGNOSTIC_EVERY,
-    )
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "failed to build validated Method-C icosahedron grid",
-        )
-    })?;
+    let mut mesh = TriangularMesh::from_icosahedron(factors.base_nxp, nspring, beta, spring_relax)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "failed to build validated Method-C icosahedron grid",
+            )
+        })?;
     if factors.expansion_factor > 1 {
         mesh = mesh.expand_by_factor(factors.expansion_factor)?;
     }

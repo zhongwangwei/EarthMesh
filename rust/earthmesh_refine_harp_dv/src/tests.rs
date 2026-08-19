@@ -6,7 +6,7 @@ use super::*;
 use earthmesh_mesh::{TriangularMesh, MESH_STATE_FIRST_ID};
 
 fn base_mesh() -> TriangularMesh {
-    TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base mesh")
+    TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh")
 }
 
 /// Each field is checked, and the message names the field.

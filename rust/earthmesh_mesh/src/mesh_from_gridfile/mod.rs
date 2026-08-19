@@ -239,8 +239,7 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_restores_persisted_refinement_ownership() {
-        let mesh =
-            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        let mesh = TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();
@@ -270,8 +269,7 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_rejects_negative_refinement_levels() {
-        let mesh =
-            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        let mesh = TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();
@@ -312,8 +310,7 @@ mod tests {
 
     #[test]
     fn gridfile_rebuild_restores_original_levels_and_ngr() {
-        let mesh =
-            TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+        let mesh = TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25).expect("base Method-C mesh");
         let points = (1..=mesh.nmd)
             .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
             .collect::<Vec<_>>();

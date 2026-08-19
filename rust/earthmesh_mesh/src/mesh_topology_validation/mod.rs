@@ -279,8 +279,7 @@ mod tests {
 
     #[test]
     fn topology_rejects_out_of_range_prognostic_owners_before_periodic_skip() {
-        let base =
-            TriangularMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+        let base = TriangularMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C mesh");
 
         let mut invalid_m = base.clone();
         invalid_m.m_prognostic[2] = invalid_m.nmd + 1;
@@ -301,7 +300,7 @@ mod tests {
     #[test]
     fn topology_rejects_periodic_owner_chains() {
         let mut mesh =
-            TriangularMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+            TriangularMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C mesh");
         mesh.u_prognostic[2] = 3;
         mesh.u_prognostic[3] = 4;
 

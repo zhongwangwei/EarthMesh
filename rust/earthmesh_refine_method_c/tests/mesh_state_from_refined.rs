@@ -9,7 +9,7 @@ use earthmesh_refine_method_c::MethodCMesh;
 /// would need.
 #[test]
 fn a_refined_method_c_mesh_also_converts() {
-    let mesh = MethodCMesh::from_icosahedron(9, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = MethodCMesh::from_icosahedron(9, 0, 1.0, 0.25).expect("base mesh");
     let refined = mesh
         .spawn_nest(
             &[earthmesh_mesh::RefinementRegion::Circle {

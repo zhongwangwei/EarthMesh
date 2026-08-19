@@ -120,13 +120,7 @@ impl TriangularMesh {
 
     /// Build a validated Method-C Delaunay mesh from the current global
     /// icosahedron path.
-    pub fn from_icosahedron(
-        nxp0: usize,
-        niter: usize,
-        beta: f64,
-        relax: f64,
-        _diagnostic_every: usize,
-    ) -> Option<Self> {
+    pub fn from_icosahedron(nxp0: usize, niter: usize, beta: f64, relax: f64) -> Option<Self> {
         let initial = icosahedron_initial_grid_canonical(nxp0)?;
         let mut connectivity = icosahedron_fill_diamonds_canonical(nxp0)?;
         let m_neighbors =

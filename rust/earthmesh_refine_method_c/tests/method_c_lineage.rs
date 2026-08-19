@@ -10,7 +10,7 @@ use earthmesh_refine_method_c::MethodCMesh;
 const NXP: usize = 21;
 
 fn base_mesh() -> MethodCMesh {
-    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25).expect("base mesh")
 }
 
 #[test]

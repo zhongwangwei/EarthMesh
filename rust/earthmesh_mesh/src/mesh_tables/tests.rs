@@ -3,7 +3,7 @@ use super::*;
 use crate::mesh_state::MeshState;
 
 fn base(nxp: usize) -> TriangularMesh {
-    TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh")
+    TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh")
 }
 
 /// A mesh survives the round trip through the neutral type.

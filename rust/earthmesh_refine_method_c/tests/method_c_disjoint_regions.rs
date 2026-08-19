@@ -20,7 +20,7 @@ fn base_meters() -> f64 {
 }
 
 fn mesh() -> MethodCMesh {
-    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25).expect("base mesh")
 }
 
 fn circle(lon: f64, lat: f64) -> RefinementRegion {

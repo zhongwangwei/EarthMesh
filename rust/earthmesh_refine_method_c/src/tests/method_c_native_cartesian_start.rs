@@ -8,7 +8,7 @@ use earthmesh_mesh::{active_mesh_radius, LonLatDegrees, RefinementRegion};
 
 #[test]
 fn method_c_native_cartesian_start_uses_imcent_not_global_pentagon_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh.method_c_m_neighbors().expect("Method-C M neighbors");
     let pentagon = mesh.impent[0];
     let non_pentagon = (2..=mesh.nmd)
@@ -41,7 +41,7 @@ fn method_c_native_cartesian_start_uses_imcent_not_global_pentagon_like_canonica
 
 #[test]
 fn method_c_selected_faces_do_not_pre_expand_for_future_levels_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region_level_one = RefinementRegion::Circle {
         center: LonLatDegrees::new(105.0, 35.0),
         radius_meters: 2_500_000.0,

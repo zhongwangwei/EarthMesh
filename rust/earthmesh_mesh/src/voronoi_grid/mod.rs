@@ -150,8 +150,7 @@ mod tests {
 
     #[test]
     fn spherical_voronoi_rejects_invalid_radius() {
-        let mesh =
-            TriangularMesh::from_icosahedron(1, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+        let mesh = TriangularMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid Method-C mesh");
         for radius in [-1.0, 0.0, f64::NAN, f64::INFINITY] {
             let error = voronoi_grid_from_triangular_mesh(&mesh, radius)
                 .expect_err("invalid spherical radius must be rejected");

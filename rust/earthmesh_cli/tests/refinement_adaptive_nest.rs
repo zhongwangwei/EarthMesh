@@ -66,7 +66,7 @@ fn plan_inputs<'a>(landtype: &'a Path, refine_coastline: bool) -> DemandPlanInpu
 }
 
 fn base_mesh() -> MethodCMesh {
-    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25, 0).expect("base mesh")
+    MethodCMesh::from_icosahedron(NXP, 0, 1.0, 0.25).expect("base mesh")
 }
 
 #[test]

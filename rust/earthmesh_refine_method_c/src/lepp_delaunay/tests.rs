@@ -398,7 +398,7 @@ fn repeated_search_is_identical() {
 
 #[test]
 fn method_c_icosahedron_pseudorandom_faces_all_terminate() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let face_count = state.triangles().len() - earthmesh_mesh::MESH_STATE_FIRST_ID;
     let config = LeppSearchConfig {
@@ -444,7 +444,7 @@ fn terminal_midpoint_uses_endpoint_directions_when_radii_differ() {
 
 #[test]
 fn lepp_terminal_midpoint_inserts_transactionally_and_round_trips() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let gates = LeppInsertionGates::for_method_c(method_c.mesh().impent);
     let mut blocked = original.clone();
@@ -551,7 +551,7 @@ fn post_quality_config(
 
 #[test]
 fn post_quality_config_requires_a_trigger_and_positive_limit() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     assert!(matches!(
         improve_lepp_post_quality(&mut state, &LeppPostQualityConfig::default()),
@@ -579,7 +579,7 @@ fn post_quality_config_requires_a_trigger_and_positive_limit() {
 
 #[test]
 fn post_quality_no_violations_does_not_touch_the_mesh() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let mut config = post_quality_config(&method_c, 3);
@@ -593,7 +593,7 @@ fn post_quality_no_violations_does_not_touch_the_mesh() {
 
 #[test]
 fn post_quality_is_deterministic_and_round_trips_after_a_commit() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let config = post_quality_config(&method_c, 1);
     let mut first = original.clone();
@@ -638,7 +638,7 @@ fn post_quality_in_threads(
 
 #[test]
 fn post_quality_parallel_scan_is_thread_count_deterministic() {
-    let method_c = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(7, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let config = post_quality_config(&method_c, 2);
 
@@ -651,7 +651,7 @@ fn post_quality_parallel_scan_is_thread_count_deterministic() {
 
 #[test]
 fn post_quality_rejects_unimproving_attempts_without_mutating() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let mut config = post_quality_config(&method_c, 2);
@@ -877,7 +877,7 @@ fn adaptive_circle(method_c: &MethodCMesh, level: usize) -> RefinementRegion {
 
 #[test]
 fn adaptive_hybrid_target_level_converts_from_local_median_edge() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let level0 = RefinementRegion::Bbox {
         west_degrees: -180.0,
@@ -902,7 +902,7 @@ fn adaptive_hybrid_target_level_converts_from_local_median_edge() {
 
 #[test]
 fn adaptive_hybrid_respects_explicit_target_edge() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let mut demand = AdaptiveHybridDemand::user_region("explicit", adaptive_circle(&method_c, 5));
@@ -918,7 +918,7 @@ fn adaptive_hybrid_respects_explicit_target_edge() {
 
 #[test]
 fn adaptive_hybrid_rejects_invalid_demand_region() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let demand = AdaptiveHybridDemand::user_region(
         "bad-level",
@@ -937,7 +937,7 @@ fn adaptive_hybrid_rejects_invalid_demand_region() {
 
 #[test]
 fn adaptive_hybrid_refines_region_and_reports_physical_insertions() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let demand = AdaptiveHybridDemand::physical_region("circle", adaptive_circle(&method_c, 1));
@@ -959,7 +959,7 @@ fn adaptive_hybrid_refines_region_and_reports_physical_insertions() {
 
 #[test]
 fn adaptive_hybrid_stops_after_multiple_limited_cycles_without_dropping_hard_demands() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let demand = AdaptiveHybridDemand::user_region("hard", adaptive_circle(&method_c, 3));
 
@@ -974,7 +974,7 @@ fn adaptive_hybrid_stops_after_multiple_limited_cycles_without_dropping_hard_dem
 
 #[test]
 fn adaptive_hybrid_reports_source_resolution_unresolved() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let mut demand = AdaptiveHybridDemand::user_region("source", adaptive_circle(&method_c, 2));
@@ -992,7 +992,7 @@ fn adaptive_hybrid_reports_source_resolution_unresolved() {
 
 #[test]
 fn adaptive_hybrid_does_not_report_source_floor_for_an_already_satisfied_face() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let mut state = original.clone();
     let mut demand = AdaptiveHybridDemand::user_region("source", adaptive_circle(&method_c, 1));
@@ -1028,7 +1028,7 @@ fn adaptive_hybrid_in_threads(
 
 #[test]
 fn adaptive_hybrid_parallel_scan_is_thread_count_deterministic() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let demand = AdaptiveHybridDemand::user_region("repeat", adaptive_circle(&method_c, 1));
     let config = adaptive_config(&method_c, 2, 2);
@@ -1108,7 +1108,7 @@ fn constrained_lepp_restores_segments_when_encroached_split_is_rejected() {
 
 #[test]
 fn adaptive_hybrid_tiny_circle_uses_representative_face_when_no_centroid_is_inside() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let center = crate::xyz_to_lonlat_degrees(test_face_center(&original, MESH_STATE_FIRST_ID));
     let mut state = original.clone();
@@ -1255,7 +1255,7 @@ fn adaptive_hybrid_report_bounds_details_but_keeps_the_exact_count() {
 
 #[test]
 fn adaptive_hybrid_quality_insertions_strictly_improve_the_quality_objective() {
-    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut state = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
     let original = state.clone();
     let mut config = adaptive_config(&method_c, 1, 1);

@@ -23,7 +23,7 @@ fn method_c_nest_mrow_distance_multiplier_matches_canonical_transition_rows() {
 
 #[test]
 fn method_c_perim_mrow_preserves_existing_adjacent_rows_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -52,7 +52,7 @@ fn method_c_perim_mrow_preserves_existing_adjacent_rows_like_canonical() {
 
 #[test]
 fn method_c_perim_mrow_rejects_crossing_existing_border_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -81,7 +81,7 @@ fn method_c_perim_mrow_rejects_crossing_existing_border_like_canonical() {
 
 #[test]
 fn method_c_perim_mrow_overwrites_old_outer_rows_below_minus_two_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -111,7 +111,7 @@ fn method_c_perim_mrow_overwrites_old_outer_rows_below_minus_two_like_canonical(
 
 #[test]
 fn method_c_perim_mrow_uses_canonical_half_step_row_growth() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -136,7 +136,7 @@ fn method_c_perim_mrow_uses_canonical_half_step_row_growth() {
 
 #[test]
 fn method_c_nest_movable_points_match_canonical_transition_rule() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -169,7 +169,7 @@ fn method_c_nest_movable_points_match_canonical_transition_rule() {
 
 #[test]
 fn method_c_nest_movable_points_use_mrow_not_boundary_row_cache() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -204,7 +204,7 @@ fn method_c_nest_movable_points_use_mrow_not_boundary_row_cache() {
 
 #[test]
 fn method_c_nest_move_interior_keeps_parent_grid_m_points_stationary() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -224,7 +224,7 @@ fn method_c_nest_move_interior_keeps_parent_grid_m_points_stationary() {
 
 #[test]
 fn method_c_nest_transition_movement_filters_parent_grid_m_points() {
-    let mut mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mut mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let boundary_iw = 2;
     mesh.boundary_rows = vec![boundary_iw];
     mesh.w_faces[boundary_iw].mrow = 1;
@@ -246,7 +246,7 @@ fn method_c_nest_transition_movement_filters_parent_grid_m_points() {
 
 #[test]
 fn method_c_nest_spring_ignores_mrlu_outside_moving_stencil() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -312,7 +312,7 @@ fn method_c_nest_spring_ignores_mrlu_outside_moving_stencil() {
 
 #[test]
 fn method_c_nest_spring_ignores_degenerate_edge_outside_compu_stencil() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

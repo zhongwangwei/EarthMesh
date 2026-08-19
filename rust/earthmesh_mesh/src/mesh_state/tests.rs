@@ -106,7 +106,7 @@ fn an_edge_claimed_by_three_triangles_is_refused() {
 /// bookkeeping.
 #[test]
 fn a_method_c_mesh_converts_to_the_neutral_state_and_closes() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
     let state = MeshState::from_triangular_mesh(&mesh).expect("convert");
 
     assert_eq!(state.vertex_count(), mesh.nmd - 1);
@@ -194,7 +194,7 @@ fn reserved_vertex_slots_are_rejected_as_unknown_vertices() {
 
 #[test]
 fn triangular_mesh_conversion_rejects_short_tables_before_indexing() {
-    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
 
     let mut short_points = mesh.clone();
     short_points.m_points.truncate(short_points.nmd);

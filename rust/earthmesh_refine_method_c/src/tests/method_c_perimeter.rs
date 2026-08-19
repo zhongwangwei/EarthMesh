@@ -2,7 +2,7 @@ use super::super::*;
 
 #[test]
 fn method_c_suppresses_center_perimeter_segment_faces_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,
@@ -135,7 +135,7 @@ fn method_c_suppresses_center_perimeter_segment_faces_like_canonical() {
 
 #[test]
 fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -195,7 +195,7 @@ fn method_c_repairs_non_triplet_perimeter_by_local_growth() {
 
 #[test]
 fn preserving_demand_spawn_repairs_a_vertex_only_perimeter_contact() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -258,7 +258,7 @@ fn preserving_demand_spawn_rejects_a_shrink_that_uncovers_an_anchor() {
 
 #[test]
 fn method_c_perim_ngr_matches_perimeter_next_point() {
-    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25).expect("base Method-C mesh");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -315,7 +315,7 @@ fn method_c_perim_ngr_matches_perimeter_next_point() {
 
 #[test]
 fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
-    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(66, 0, 1.0, 0.25).expect("base Method-C mesh");
     let child_grid_number = 4;
     let mut refined_case = None;
 
@@ -376,7 +376,7 @@ fn method_c_full_subdivision_uses_grid_number_for_w_face_ngr() {
 
 #[test]
 fn method_c_pass_uses_canonical_table_numbering_counts() {
-    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

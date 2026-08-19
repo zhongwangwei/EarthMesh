@@ -19,7 +19,6 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
     nspring: usize,
     beta: f64,
     spring_relax: f64,
-    max_tris: usize,
 ) -> io::Result<TriangularMesh> {
     let m_point_lonlat = mesh
         .w_points
@@ -91,9 +90,8 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
             format!("invalid Method-C gridinit NXP {nxp}"),
         )
     })?;
-    let mut mesh =
-        TriangularMesh::from_icosahedron(factors.base_nxp, nspring, beta, spring_relax, max_tris)
-            .ok_or_else(|| {
+    let mut mesh = TriangularMesh::from_icosahedron(factors.base_nxp, nspring, beta, spring_relax)
+        .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(

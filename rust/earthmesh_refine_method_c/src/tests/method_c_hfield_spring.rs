@@ -4,7 +4,7 @@ use super::super::*;
 /// NXP-6 icosahedral base with one level-1 circular nest (same recipe as the
 /// mrow tests).
 fn refined_test_mesh() -> MethodCMesh {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let region = RefinementRegion::Circle {
         center: LonLatDegrees::new(115.0, 25.0),
         radius_meters: 2_500_000.0,

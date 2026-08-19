@@ -17,7 +17,7 @@ fn permissive() -> HardGates {
 }
 
 fn sphere(nxp: usize) -> AdaptiveMesh {
-    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
     AdaptiveMesh::from_triangular_mesh(&mesh).expect("adaptive mesh")
 }
 
@@ -1091,7 +1091,7 @@ fn protected_segments_make_a_quality_target_terminate() {
     const ANGLE: f64 = 20.0;
 
     let run = |protect: bool| {
-        let base = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base");
+        let base = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base");
         let mut mesh = AdaptiveMesh::from_triangular_mesh(&base).expect("adaptive");
         let coarsest = coarsest_scale(&mesh);
         let centre = LonLatDegrees::new(105.0, 35.0);

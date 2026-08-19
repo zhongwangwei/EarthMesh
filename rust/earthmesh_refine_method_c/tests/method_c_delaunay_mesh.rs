@@ -14,8 +14,8 @@ fn distance(a: CartesianPoint, b: CartesianPoint) -> f64 {
 
 #[test]
 fn method_c_delaunay_mesh_from_icosahedron_has_closed_muw_topology() {
-    let mesh = MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25, 100)
-        .expect("valid Method-C icosahedron mesh");
+    let mesh =
+        MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid Method-C icosahedron mesh");
 
     assert_eq!(mesh.nmd, 13);
     assert_eq!(mesh.nud, 31);
@@ -37,8 +37,8 @@ fn method_c_delaunay_mesh_from_icosahedron_has_closed_muw_topology() {
 
 #[test]
 fn method_c_topology_rejects_duplicate_or_non_pentagonal_protected_points() {
-    let mesh = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
-        .expect("valid Method-C icosahedron mesh");
+    let mesh =
+        MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C icosahedron mesh");
 
     let mut duplicate = mesh.clone();
     duplicate.impent[1] = duplicate.impent[0];
@@ -199,10 +199,10 @@ fn method_c_cart_hex_orders_outer_w_faces_for_fill_rad3_sectors() {
 
 #[test]
 fn method_c_global_spring_preserves_nxp2_equilibrium_within_canonical_storage_precision() {
-    let unsprung = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25, 100)
-        .expect("unsprung Method-C icosahedron mesh");
-    let sprung = MethodCMesh::from_icosahedron(2, 2, 1.0, 0.25, 100)
-        .expect("sprung Method-C icosahedron mesh");
+    let unsprung =
+        MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("unsprung Method-C icosahedron mesh");
+    let sprung =
+        MethodCMesh::from_icosahedron(2, 2, 1.0, 0.25).expect("sprung Method-C icosahedron mesh");
 
     let max_displacement = (2..=unsprung.nmd)
         .map(|point_id| distance(sprung.m_points[point_id], unsprung.m_points[point_id]))
@@ -215,8 +215,8 @@ fn method_c_global_spring_preserves_nxp2_equilibrium_within_canonical_storage_pr
 
 #[test]
 fn method_c_delaunay_mesh_can_drive_voronoi_grid_generation() {
-    let mesh = MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25, 100)
-        .expect("valid Method-C icosahedron mesh");
+    let mesh =
+        MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid Method-C icosahedron mesh");
 
     let state = voronoi_grid_from_triangular_mesh(&mesh, METHOD_C_CANONICAL_EARTH_RADIUS_METERS)
         .expect("Method-C Voronoi state");
@@ -252,8 +252,7 @@ fn method_c_gridinit_factorization_matches_get_factors_selection_rules() {
 
 #[test]
 fn method_c_expand_global2_subdivides_each_triangle_and_rebuilds_topology() {
-    let mesh =
-        MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25, 100).expect("valid base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid base Method-C mesh");
 
     let expanded = mesh.expand_global2().expect("factor-2 Method-C expansion");
 
@@ -277,8 +276,7 @@ fn method_c_expand_global2_subdivides_each_triangle_and_rebuilds_topology() {
 
 #[test]
 fn method_c_expand_global3_trisects_each_triangle_and_rebuilds_topology() {
-    let mesh =
-        MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25, 100).expect("valid base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid base Method-C mesh");
 
     let expanded = mesh.expand_global3().expect("factor-3 Method-C expansion");
 
@@ -302,8 +300,7 @@ fn method_c_expand_global3_trisects_each_triangle_and_rebuilds_topology() {
 
 #[test]
 fn method_c_expand_by_factor_applies_factor2_and_rejects_unsupported_products() {
-    let mesh =
-        MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25, 100).expect("valid base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(1, 0, 1.0, 0.25).expect("valid base Method-C mesh");
 
     let doubled = mesh.expand_by_factor(2).expect("factor 2 expansion");
     assert_eq!(doubled.nmd, 43);
@@ -328,8 +325,7 @@ fn method_c_expand_by_factor_applies_factor2_and_rejects_unsupported_products() 
 
 #[test]
 fn method_c_global_spring_preserves_topology_radius_and_moves_fortran_pentagons() {
-    let mut mesh =
-        MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+    let mut mesh = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C mesh");
     let pentagon_id = mesh.impent[0];
     let adjacent_edge = mesh.m_neighbors[pentagon_id].iu[0];
     let [edge_start, edge_end] = mesh.u_edges[adjacent_edge].im;
@@ -391,8 +387,7 @@ fn method_c_global_spring_preserves_topology_radius_and_moves_fortran_pentagons(
 
 #[test]
 fn method_c_global_cartesian_spring_keeps_points_unprojected_like_canonical_mdomain_ge_two() {
-    let mut mesh =
-        MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+    let mut mesh = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C mesh");
     let regular_point_id = (2..=mesh.nmd)
         .find(|point_id| !mesh.impent.contains(point_id))
         .expect("non-pentagon M point");
@@ -412,7 +407,7 @@ fn method_c_global_cartesian_spring_keeps_points_unprojected_like_canonical_mdom
 
 #[test]
 fn method_c_global_cartesian_spring_uses_canonical_deltax_target_distance() {
-    let mesh = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25, 100).expect("valid Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(2, 0, 1.0, 0.25).expect("valid Method-C mesh");
     let regular_point_id = (2..=mesh.nmd)
         .find(|point_id| !mesh.impent.contains(point_id))
         .expect("non-pentagon M point");

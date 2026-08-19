@@ -66,14 +66,8 @@ impl MethodCMesh {
     ///
     /// `Deref` does not reach associated functions, so the shared
     /// constructors are named again here rather than inherited.
-    pub fn from_icosahedron(
-        nxp0: usize,
-        niter: usize,
-        beta: f64,
-        relax: f64,
-        diagnostic_every: usize,
-    ) -> Option<Self> {
-        TriangularMesh::from_icosahedron(nxp0, niter, beta, relax, diagnostic_every).map(Self::new)
+    pub fn from_icosahedron(nxp0: usize, niter: usize, beta: f64, relax: f64) -> Option<Self> {
+        TriangularMesh::from_icosahedron(nxp0, niter, beta, relax).map(Self::new)
     }
 
     pub fn from_relaxed_icosahedron(relaxed: &IcosahedronRelaxedGrid) -> Self {

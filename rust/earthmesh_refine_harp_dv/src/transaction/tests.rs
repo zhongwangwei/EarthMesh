@@ -17,7 +17,7 @@ fn permissive() -> HardGates {
 }
 
 fn sphere(nxp: usize) -> AdaptiveMesh {
-    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
     AdaptiveMesh::from_triangular_mesh(&mesh).expect("adaptive mesh")
 }
 

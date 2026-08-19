@@ -413,7 +413,6 @@ pub fn run_refine_pipeline_namelist(
             })?,
             config.beta,
             config.relax,
-            max_tris,
         )?
     };
     let requested_spring_nest_iterations = if native_only_spawn {
@@ -3808,8 +3807,7 @@ mod tests {
 
     #[test]
     fn lepp_region_constraints_are_real_mesh_edges() {
-        let method_c =
-            MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0).expect("base Method-C mesh");
+        let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
         let state = MeshState::from_triangular_mesh(method_c.mesh()).expect("mesh state");
         let region = earthmesh_mesh::RefinementRegion::Bbox {
             west_degrees: -20.0,
@@ -3872,7 +3870,7 @@ mod tests {
 
     #[test]
     fn backend_neutral_regional_spring_moves_only_safe_region_interiors() {
-        let base = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+        let base = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25)
             .expect("base mesh")
             .into_inner();
         let neighbors = base.m_neighbors.clone();
@@ -3925,7 +3923,7 @@ mod tests {
 
     #[test]
     fn redgreen_consumes_the_configured_refinement_spring() {
-        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
+        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25)
             .expect("base mesh")
             .into_inner();
         let region = earthmesh_mesh::RefinementRegion::Bbox {

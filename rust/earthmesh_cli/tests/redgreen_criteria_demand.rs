@@ -85,7 +85,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
     );
 
     let base =
-        earthmesh_mesh::TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25, 0).expect("base mesh");
+        earthmesh_mesh::TriangularMesh::from_icosahedron(21, 0, 1.0, 0.25).expect("base mesh");
     let neighbors = base.m_neighbors.clone();
     let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
         .expect("bridge in");
@@ -162,8 +162,8 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
         ("mid-latitude", 45.0, 45.0),
     ] {
         // NXP 33: the smallest size at which every one of these failed before.
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
@@ -225,7 +225,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         ..earthmesh_core::RefineConfig::default()
     };
     let base =
-        earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25, 0).expect("base mesh");
+        earthmesh_mesh::TriangularMesh::from_icosahedron(33, 0, 1.0, 0.25).expect("base mesh");
     let neighbors = base.m_neighbors.clone();
     let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
         .expect("bridge in");

@@ -2,7 +2,7 @@ use super::*;
 use crate::{lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, TriangularMesh};
 
 fn sphere(nxp: usize) -> MeshState {
-    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = TriangularMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
     MeshState::from_triangular_mesh(&mesh).expect("neutral state")
 }
 

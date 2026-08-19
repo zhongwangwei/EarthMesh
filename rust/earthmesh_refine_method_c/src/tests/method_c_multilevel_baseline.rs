@@ -73,7 +73,7 @@ fn multilevel_failures_are_counted_by_the_gate_that_produced_them() {
         std::collections::BTreeMap<Gate, usize>,
     )> = Vec::new();
     for nxp in [21usize, 40] {
-        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
         for levels in [2usize, 3, 4] {
             let mut rng = Lcg(0xE0_0001_u64 + (nxp * 100 + levels) as u64);
             let (mut ok, mut err) = (0usize, 0usize);
@@ -145,7 +145,7 @@ fn the_inter_level_clearance_is_swept_against_the_gate_that_fails() {
     println!("E0-1b clearance sweep (40 concentric cases per row, levels = 3)");
     println!("nxp halo_rows  ok  err  gates");
     for nxp in [21usize, 40] {
-        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
         // The cell the base generation carries, which every level halves.
         let base_cell = 2.0 * std::f64::consts::PI * 6_371_000.0 / (5.0 * nxp as f64);
         for halo_rows in [0usize, 1, 2, 3, 4, 6] {
@@ -202,7 +202,7 @@ fn refused_cases_are_offered_a_larger_parent_as_well_as_a_smaller_one() {
     println!("E0-1c rescue by direction (levels = 3, 60 cases per row)");
     println!("nxp  refused  rescued_by_smaller  rescued_by_larger  only_larger  neither");
     for nxp in [21usize, 40] {
-        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
         let mut rng = Lcg(0xE0_1C00_u64 + nxp as u64);
         let (mut refused, mut smaller, mut larger, mut only_larger, mut neither) =
             (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -262,7 +262,7 @@ fn refused_cases_are_offered_a_larger_parent_as_well_as_a_smaller_one() {
 fn the_remaining_refusals_are_offered_a_moved_first_level() {
     println!("E0-1d first-level rescue (levels = 3, 60 cases)");
     for nxp in [21usize] {
-        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+        let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
         let mut rng = Lcg(0xE0_1D00_u64 + nxp as u64);
         let (mut refused, mut rescued_head, mut rescued_all) = (0usize, 0usize, 0usize);
         for _ in 0..60 {

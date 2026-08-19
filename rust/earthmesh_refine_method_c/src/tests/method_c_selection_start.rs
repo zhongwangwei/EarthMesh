@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn method_c_region_start_prefers_contained_global_pentagon() {
-    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("mesh radius");
     let method_c_m_neighbors =
         derive_icosahedron_m_neighbors_canonical_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
@@ -57,7 +57,7 @@ fn method_c_region_start_prefers_contained_global_pentagon() {
 
 #[test]
 fn method_c_region_start_marches_from_nearby_global_pentagon() {
-    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("mesh radius");
     let method_c_m_neighbors =
         derive_icosahedron_m_neighbors_canonical_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
@@ -121,8 +121,7 @@ fn method_c_region_start_marches_from_nearby_global_pentagon() {
 
 #[test]
 fn method_c_region_start_skips_nearby_global_pentagon_with_different_mrlm() {
-    let mut mesh =
-        MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mut mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("mesh radius");
     let method_c_m_neighbors =
         derive_icosahedron_m_neighbors_canonical_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
@@ -187,8 +186,7 @@ fn method_c_region_start_skips_nearby_global_pentagon_with_different_mrlm() {
 
 #[test]
 fn method_c_near_pentagon_march_uses_marched_start_mrlm_for_parent_ownership() {
-    let mut mesh =
-        MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mut mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("mesh radius");
     let method_c_m_neighbors =
         derive_icosahedron_m_neighbors_canonical_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
@@ -264,7 +262,7 @@ fn method_c_near_pentagon_march_uses_marched_start_mrlm_for_parent_ownership() {
 
 #[test]
 fn method_c_near_pentagon_march_preserves_canonical_jdone_between_steps() {
-    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).expect("base Method-C mesh");
     let radius = active_mesh_radius(&mesh).expect("mesh radius");
     let method_c_m_neighbors =
         derive_icosahedron_m_neighbors_canonical_checked(mesh.nmd, &mesh.u_edges, &mesh.w_faces)
@@ -325,7 +323,7 @@ fn method_c_near_pentagon_march_preserves_canonical_jdone_between_steps() {
 
 #[test]
 fn method_c_thirdm_walks_straight_opposite_edges_and_marks_reciprocal_done_like_canonical() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base mesh should build");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh should build");
     let method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M-neighbor table should derive");
@@ -372,7 +370,7 @@ fn method_c_thirdm_walks_straight_opposite_edges_and_marks_reciprocal_done_like_
 
 #[test]
 fn method_c_thirdm_rejects_broken_topology_instead_of_skipping_path() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");
@@ -400,7 +398,7 @@ fn method_c_thirdm_rejects_broken_topology_instead_of_skipping_path() {
 
 #[test]
 fn method_c_thirdm_skips_intermediate_zero_npoly_path() {
-    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25, 100).expect("base Method-C mesh");
+    let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let mut method_c_m_neighbors = mesh
         .derive_icosahedron_m_neighbors_canonical()
         .expect("Method-C M neighbors");

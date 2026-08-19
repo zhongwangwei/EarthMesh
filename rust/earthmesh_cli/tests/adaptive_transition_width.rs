@@ -85,7 +85,7 @@ fn run(
     let root = temp_root(&format!("n{nxp}_m{max_mrows}_s{spring_iterations}"));
     let landtype = root.join("landtype.nc");
     write_open_ocean(&landtype);
-    let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
     let (refined, _) = spawn_nest_adaptive_with_named_regions(
         &mesh,
         &RefineConfig::default(),

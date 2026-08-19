@@ -35,7 +35,7 @@ fn nests_to_depth(nxp: usize, center: LonLatDegrees, depth: usize) {
             level: index + 1,
         })
         .collect();
-    let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25, 0).expect("base mesh");
+    let mesh = MethodCMesh::from_icosahedron(nxp, 0, 1.0, 0.25).expect("base mesh");
     let refined = mesh
         .spawn_nest(&regions, depth)
         .unwrap_or_else(|error| panic!("nxp {nxp} depth {depth} radii {radii:?}: {error}"));

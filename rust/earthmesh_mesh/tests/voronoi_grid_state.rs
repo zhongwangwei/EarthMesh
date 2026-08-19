@@ -203,7 +203,7 @@ fn gridinit_voronoi_state_enforces_max_tris() {
 #[test]
 fn gridinit_voronoi_state_uses_method_c_factor2_expansion_when_selected() {
     let base =
-        TriangularMesh::from_icosahedron(24, 0, 1.0, 0.25, 100).expect("Method-C base NXP 24 mesh");
+        TriangularMesh::from_icosahedron(24, 0, 1.0, 0.25).expect("Method-C base NXP 24 mesh");
     let expanded = base
         .expand_by_factor(2)
         .expect("Method-C factor-2 expansion");

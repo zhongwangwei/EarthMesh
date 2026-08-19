@@ -71,8 +71,8 @@ mod tests {
     fn a_refined_mesh_arrives_with_every_table_intact() {
         // The tables are the same five under different names, so the test that
         // matters is that none of them loses a row or a slot on the way.
-        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let mesh =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         let redgreen = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors)
             .expect("bridge in");
@@ -527,8 +527,8 @@ mod marking_tests {
     use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
     fn base() -> earthmesh_refine_redgreen::RedGreenMesh {
-        let mesh = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let mesh =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
     }
@@ -693,8 +693,8 @@ mod level_tests {
     fn a_named_circle_refines_and_arrives_as_a_writable_mesh() {
         // The chain end to end: regions -> marking -> round -> gridfile tables.
         // Every link has its own test; this is the one that says they compose.
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
@@ -741,8 +741,8 @@ mod level_tests {
     /// its checks, and resolved every connectivity id one row off.
     #[test]
     fn a_refined_mesh_keeps_both_arrays_on_the_same_row_layout() {
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
@@ -786,8 +786,8 @@ mod level_tests {
     /// be asked about.
     #[test]
     fn a_deeper_level_is_held_inside_the_one_above_it() {
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(9, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(9, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
@@ -851,8 +851,8 @@ mod level_tests {
 
     #[test]
     fn triangular_red_green_does_not_turn_distributed_demand_into_global_refinement() {
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25, 0)
-            .expect("base mesh");
+        let base =
+            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = base.m_neighbors.clone();
         let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
             .expect("bridge in");
