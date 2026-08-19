@@ -1,5 +1,20 @@
 use super::super::*;
 
+/// Parity with the reduced Canonical probe, and -- unintentionally -- the only
+/// thing standing between the repair ladder's fixed-point valence rung and
+/// someone deleting it.
+///
+/// That rung hands a child-mesh id to a parent-indexed fill, so it repairs the
+/// wrong point; it looks removable and is not. Removing it fails the second
+/// assertion below, because the ladder then reaches perimeter triple grouping
+/// and reports the perimeter it built there instead of the boundary problem the
+/// caller can act on, and it takes this crate's lib suite from 29s to 213s.
+/// Measured counts are in guide 11.5, and
+/// `tests/method_c_valence_id_space.rs` pins the id space itself.
+///
+/// So if this test fails with "cannot be grouped into transition triples", read
+/// 11.5 before adjusting anything here: the two candidate designs and the two
+/// stopping rules measurement already refuted are recorded there.
 #[test]
 fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary() {
     let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
