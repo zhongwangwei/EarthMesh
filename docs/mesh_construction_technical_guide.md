@@ -407,7 +407,35 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    **实现中踩到的一个几何约束**：块划分随半径变化，于是各层圆心在层间偏移，深层的圆会落到浅层没细化的位置——实测在第 4 层报 `crosses the parent boundary`。修法是所有层用**最细一层的半径**做块划分，各层只改半径不改圆心，于是各层同心，退化成实测通过的单要素同心阶梯；块足够小，最细的圆也仍能覆盖自己的块。
 
-   仍是近似的一点：判据是在**源栅格的等尺度邻域**上求的，不是在细化后网格的真实单元上求的（那需要未移植的 `getref_mean_std`）。所以**尺度对了、位置是网格对齐的方块而非真实单元**。
+   仍是近似的一点：判据是在**源栅格的等尺度邻域**上求的，不是在细化后网格的真实单元上求的。所以**尺度对了、位置是网格对齐的方块而非真实单元**。
+
+   **那个方块不只是位置上的妥协,它同时是内存可行性的来源(2026-08-20 查实)。**
+   `landcover_heterogeneity_demand` 走的是 `PeriodicLandtypeLookup::read(file,
+   gridnum_perdegree, bounds, radius_cells)` —— **按窗口读**,不把整张栅格拿进内存。
+
+   按真实单元求判据需要三角形→源格点的包含索引。逐单元的**测量**已经写好并对照
+   Fortran 验证过(`refinement_demand::cell_stats`,`GetRef_Lnd` 的 `n_landtypes` 与
+   `f_mainarea`),索引本身也早已移植 —— `FlatContainMesh` 就是 `mp_id`/`mp_ii`,
+   `is_in_area_ustr` 就是 `IsInRfArea_sjx`。**但它的构建函数放不进生产规模:**
+
+   ```rust
+   pub fn getcontain_containment_matrix_flat_one_based<T, U>(
+       ..., is_in_area_grid: &[Vec<T>], seaorland: &[Vec<U>], ...
+   )
+   ```
+
+   两个入参都是**整栅格的二维数组**。生产 landtype 栅格在 `gridnum_perdegree = 120`
+   下是 **43,200 × 86,400 = 37.3 亿格点**;`AreaJudgeGridPayload` 把它读成
+   `Vec<Vec<i32>>`,即约 **15 GB**,单是这一个数组。现有 CLI 路径能跑,是因为它作用在
+   `nlons_select × nlats_select` 的**选中子网格**上——区域算例没问题,全球算例就退回
+   整张栅格。
+
+   所以缺的不是判据,是**一个内存不随整栅格增长的包含索引**。形状是现成的:对每个
+   三角形只读它经纬包围盒覆盖的那一小片(和现在的窗口读取同思路,只是窗口由单元定而非
+   由方块定),总读取量仍与栅格线性,峰值内存降到单个单元的包围盒。代价是随机 I/O 变多。
+
+   **别在小算例上验证这条路径就下结论**——区域算例走的是选中子网格,永远碰不到这堵墙。
+   §11.3 记的是同一个陷阱的另一个实例。
 
    **点+半径已是默认路线**（2026-08）。代码里这条路叫 **adaptive**（`&adaptive` 组、`AdaptiveRefinementRecipe`、`spawn_nest_adaptive`）——**"点+半径"与"adaptive"是同一条路的两个名字**：前者说的是形状（需求归约成圆），后者说的是行为（每层细化前重新求判据）。namelist 侧 `&adaptive`（`adaptive_on` / `adaptive_max_level` / `adaptive_base_m` / `adaptive_coastline`）与 `&hfield` 一样是 opt-in；Project 侧 `refinement.adaptive` 缺省即启用，而 `refinement.hfield` 改为**纯显式**——不再"缺省就发 h 场"。
 
