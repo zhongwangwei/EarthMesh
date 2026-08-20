@@ -46,6 +46,7 @@
 //!   hyperbolic partial differential equations. Journal of Computational
 //!   Physics 53(3), 484-512. doi:10.1016/0021-9991(84)90073-1
 
+pub mod cell_stats;
 mod class_counts;
 pub mod ladder;
 pub mod landtype;
