@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_boundary"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "Backend-neutral spherical boundary topology: loops, roles and holes that survive as constraints rather than being re-read each pass."
 license = "GPL-2.0-only"

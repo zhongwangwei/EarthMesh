@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine_method_c"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "Method-C nested refinement for EarthMesh"
 license = "GPL-2.0-only"

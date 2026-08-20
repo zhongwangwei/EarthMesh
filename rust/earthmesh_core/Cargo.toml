@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_core"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "Typed Rust core constants and configuration for EarthMesh runtime architecture"
 license = "GPL-2.0-only"

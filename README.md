@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha4
+# EarthMesh v3.0.0-alpha5
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -267,6 +267,12 @@ For questions or support, please contact:
   removed generic `io` writers. The diagnostic `run_manifest.json` contract is
   now explicitly versioned as schema 1; its current minimal fields replace the
   earlier experimental manifest shape.
+- 2026.08.20 - v3.0.0-alpha5 restores CI to a working state by removing a mesh-wide
+  scan that a six-step loop was using as its runaway bound, sizes the namelist
+  triangle budget from the resolution asked for instead of a literal that capped
+  global runs at NXP 70, gives Method-C's valence repair the M point that actually
+  overflowed rather than one from the emitted mesh's id space, and names the spring
+  settings HARP-DV drops instead of one it does not.
 - 2026.08.08 - v3.0.0-alpha4 makes all three backends serve a closed curve, wires the
   boundary subsystem into the carve, and fixes a spring the default refinement route
   had been dropping in silence.

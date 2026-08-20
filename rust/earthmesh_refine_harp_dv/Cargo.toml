@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine_harp_dv"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "HARP-DV: threshold-driven, multi-cycle adaptive refinement of spherical Delaunay-Voronoi meshes."
 license = "GPL-2.0-only"

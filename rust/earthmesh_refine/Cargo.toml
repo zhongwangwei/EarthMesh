@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "The layer above the refinement backends: how a request is expressed, what a criterion says, and what that becomes as demand."
 license = "GPL-2.0-only"

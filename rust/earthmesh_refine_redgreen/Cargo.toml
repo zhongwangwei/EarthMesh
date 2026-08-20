@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_refine_redgreen"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 edition = "2021"
 description = "Bit-for-bit compatibility port of the MOD_grid_preprocess.F90 triangle refinement pipeline. Not part of the production engine."
 license = "GPL-2.0-only"

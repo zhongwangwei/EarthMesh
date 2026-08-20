@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_boundary"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_cli"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_boundary",
  "earthmesh_core",
@@ -184,18 +184,18 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_core"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 
 [[package]]
 name = "earthmesh_geometry"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
 ]
 
 [[package]]
 name = "earthmesh_hfield"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_mesh",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_mesh"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_boundary",
  "earthmesh_core",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_project"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_quality"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_hfield",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine_harp_dv"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_boundary",
  "earthmesh_core",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine_method_c"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_boundary",
  "earthmesh_core",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine_planner"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_geometry",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "earthmesh_refine_redgreen"
-version = "3.0.0-alpha4"
+version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_hfield",
  "earthmesh_mesh",
