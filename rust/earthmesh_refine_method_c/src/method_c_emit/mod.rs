@@ -324,20 +324,66 @@ impl MethodCMesh {
             .enumerate()
             .skip(2)
             .any(|(iw, &partner)| partner > 1 && partner != iw);
+        // The valence error below names a point in the mesh being built, because
+        // that is the mesh the derivation walks. Every consumer of the payload is
+        // on the parent side -- the repair ladder in `method_c_spawn_pass` indexes
+        // `self` -- and the two id spaces part company at the first subdivision:
+        // `imnew` advances one per parent M point and one more for every
+        // subdivided U edge. Translating here is exact, because `imnew` and
+        // `nest_ud` are still in scope; leaving it to the caller was not, and is
+        // how a bound check (`im <= nmd`) came to stand in for a validity check.
+        //
+        // A child point that came from a parent M point maps back to it. One
+        // created as the midpoint of a subdivided parent U edge has no parent of
+        // its own, so it is attributed to that edge's first end point -- a parent
+        // point whose own neighbourhood contains the new one.
+        let mut parent_of_child = vec![0usize; nmd0 + 1];
+        for parent_im in 2..=self.nmd {
+            if let Some(slot) = parent_of_child.get_mut(imnew[parent_im]) {
+                *slot = parent_im;
+            }
+        }
+        for (iu, nest) in nest_ud.iter().enumerate().take(self.nud + 1).skip(2) {
+            if nest.im > 1 {
+                if let Some(slot) = parent_of_child.get_mut(nest.im) {
+                    *slot = self.u_edges[iu].im[0];
+                }
+            }
+        }
+        let to_parent_m_point = |error: io::Error| -> io::Error {
+            let Some(payload) = method_c_repairable_payload(&error) else {
+                return error;
+            };
+            if payload.kind != RepairableKind::Valence {
+                return error;
+            }
+            let Some(child) = payload.m_point else {
+                return error;
+            };
+            let parent = parent_of_child.get(child).copied().unwrap_or(0);
+            if parent <= 1 {
+                return error;
+            }
+            let message = format!("{error}; child M point {child} is parent M point {parent}");
+            repairable_error(RepairableKind::Valence, Some(parent), message)
+        };
+
         let m_neighbors = if has_prognostic_w_faces {
             derive_cart_hex_m_neighbors_from_active_faces(
                 nmd0,
                 &connectivity.u_edges,
                 &connectivity.w_faces,
                 &w_prognostic,
-            )?
+            )
+            .map_err(to_parent_m_point)?
         } else {
             derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
                 nmd0,
                 &connectivity.u_edges,
                 &connectivity.w_faces,
                 None,
-            )?
+            )
+            .map_err(to_parent_m_point)?
         };
 
         let mut mesh = MethodCMesh::new(TriangularMesh {

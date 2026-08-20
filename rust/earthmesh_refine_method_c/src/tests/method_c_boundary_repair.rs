@@ -48,10 +48,29 @@ fn method_c_rejects_reduced_canonical_nxp6_two_level_corridor_too_close_boundary
                 || message.contains("next coarser grid boundary"),
             "Rust should reject the same invalid two-level corridor as the reduced Canonical probe; got {error}"
         );
+    // This used to also assert the refusal arrived *before* perimeter triple
+    // grouping. It no longer does, and the reason is a deliberate change rather
+    // than drift.
+    //
+    // The refusal used to come from the valence check because the ladder's
+    // fixed-point rung could not run: the error named a point in the emitted
+    // mesh and the rung indexes the parent, so it was skipped. With the
+    // translation in `emit_method_c_tables` the rung reaches the point that
+    // overflowed and repairs it -- three times here, at three distinct M points
+    // -- and the corridor is then refused further along, by triple grouping, on
+    // a perimeter of 44.
+    //
+    // What is kept is the part that says something about the caller's input: the
+    // corridor is refused, and the refusal names the parent boundary. What is
+    // dropped is the claim about which stage catches it, which was only ever
+    // true because a repair was disabled by a type confusion. Guide 11.5 carries
+    // the measurements, including the two stopping rules that would have
+    // restored the earlier message and are refuted.
     assert!(
-            !message.contains("cannot be grouped into transition triples"),
-            "Rust should reject this invalid two-level corridor before Method-C perimeter triple grouping; got {error}"
-        );
+        !message.contains("cannot be grouped into transition triples")
+            || message.contains("parent boundary"),
+        "a refusal from triple grouping still has to name the constraint the caller can          act on; got {error}"
+    );
 }
 
 #[test]

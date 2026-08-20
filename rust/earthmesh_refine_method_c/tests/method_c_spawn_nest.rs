@@ -513,8 +513,21 @@ fn spawn_nest_rejects_mixed_regions_when_child_crosses_parent_mrow_like_canonica
     let error = mesh
         .spawn_nest(&[low, high_parent, high], 5)
         .expect_err("Canonical Method-C rejects child grids that cross parent mrow boundaries");
+    // `next coarser grid boundary` is the third way this codebase words the same
+    // constraint, and it is the wording the valence check uses.
+    //
+    // This list used to be `mrow` or `parent boundary`, and it matched on the
+    // trailing clause of a triple-grouping message -- the refusal arrived there
+    // because the ladder's fixed-point valence rung was disabled by a type
+    // confusion and could not run. With that repaired, the refusal arrives at the
+    // valence check instead, which is the constraint this test is named for, so
+    // the assertion now accepts the wording that check uses. The corridor test in
+    // `method_c_boundary_repair` has always accepted all three. Guide 11.5.
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("mrow") || error.to_string().contains("parent boundary"),
+        message.contains("mrow")
+            || message.contains("parent boundary")
+            || message.contains("next coarser grid boundary"),
         "unexpected error: {error}"
     );
 }
