@@ -362,13 +362,21 @@ EasyMesh 给 EarthMesh 的实际借鉴限定在质量链路：三角主单元、
 
    实现上有一处语义必须分开：`region_sources` 里多点共用一份半径的既有约定是 **Corridor**——沿折线扫出的管道，正是 v2 用来细化**河流**的形状（`examples/merit_hydro/gba/case.nml` 是可运行实例）。海岸圆链不是折线，它是栅格扫描出的一组互不相干的圆，串成 corridor 会在扫描换行处横跨地图连出假管道。所以 `inline:circles:` 逐个成圆下发（各自复用同一套父级 halo 推导），不走 corridor 分支；`merge_refine_regions_by_shape` 再把半径重叠刻意造成的重复圆折掉。域（domain）方向则明确拒绝圆链——域是单个区域，圆链描述的是细化需求。
 
-   **尚未做的一环：判据不逐轮重算，分辨率相关的判据因此是错位的。** 现在三条路径都在细化开始前把需求算完：
+   **判据逐轮重算这一环,默认路线上已经做了(2026-08),下表描述的是另外三条。** 本节
+   后文"逐层重算已实现"那一段是当前状态:`spawn_nest_adaptive` 里
+   `for level in 1..=max_level` 每层用 `cell_meters = base_cell_meters / 2^(level-1)`
+   重新求一次需求,分辨率相关的判据因此在每层得到不同答案。**别把下表读成"这件事没做"**——
+   它列的是不走 adaptive 的那三条路,它们仍然在细化开始前把需求算完:
 
    | 路径 | 判据在哪算 | 是否逐轮 |
    |---|---|---|
    | Method-C 直接路径 | `refine_pipeline/global_source.rs` 一次性组装 regions 再调 `spawn_nest` | 否 |
    | h 场 | `read_threshold_stats_on_hfield_masked` —— 在 **h 场栅格格点**上 | 否 |
    | area_judge/getcontain | 每轮读当前网格算 `IsInRfArea_sjx`，但只是对**固定的栅格掩膜**做包含判定 | 判据不重算 |
+
+   **真正还欠的是位置,不是时机。** adaptive 路线在正确的*尺度*上求判据,但求在**源栅格
+   的网格对齐方块**上,不是细化后网格的真实单元上——那需要未移植的 `getref_mean_std`。
+   本节后文对这一点有完整说明。
 
    `getref_mean_std_*`（逐三角形均值/标准差）**未移植到 Rust**；第 3.1 节那句描述的是参考 Fortran 算法。
 
