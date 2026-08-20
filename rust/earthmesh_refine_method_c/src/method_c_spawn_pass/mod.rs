@@ -98,9 +98,23 @@ impl MethodCMesh {
         }
         self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
 
+        // Measured, not guessed: over this crate's tests, 411 spawn passes that
+        // repair at all finish in one iteration, 7 in two, and the deepest ever
+        // seen is 14. Passes that get past 32 are ones that fail anyway, and they
+        // are the expensive ones -- the ladder grows the mask on every round, so
+        // a doomed pass pays more per iteration the longer it runs. The old
+        // budget of 64 was reached: 57 is the deepest observed, all of it in
+        // passes that then failed.
+        //
+        // 32 keeps a factor of two over the worst success and is still a runaway
+        // backstop rather than a schedule. Raising it costs failing runs time and
+        // buys nothing measured; lowering it further would start to crowd the
+        // fourteen-iteration case.
+        const MAX_REPAIR_ITERATIONS: usize = 32;
+
         let mut last_repairable_error = None;
         let mut attempted_masks = std::collections::HashSet::new();
-        for _ in 0..64 {
+        for _ in 0..MAX_REPAIR_ITERATIONS {
             let perimeter = self.repair_method_c_non_triplet_perimeter(
                 &mut selected,
                 &method_c_m_neighbors,
