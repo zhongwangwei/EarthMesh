@@ -139,6 +139,23 @@ Two traps that follow from that case:
 - **A job that times out reports nothing about what came after it.** The `fast`
   job hid a genuine assertion failure behind its timeout for two weeks. Before
   reading a green-ish CI history as evidence, check the jobs actually finished.
+  A **cancelled** job says just as little, and the usual cause is self-inflicted:
+  pushing again while a run is in flight cancels it through the concurrency
+  group, and `heavy` is the only job that runs `refine_pipeline` in full. Hold
+  doc-only commits until the run finishes rather than throwing away the one
+  result that covers the CLI.
+- **Before concluding from silence, check the instrument can speak.** Three times
+  in one session an absent signal was read as an absent event, and every time the
+  tool was suppressing it: `eprintln!` probes print nothing without
+  `--nocapture`, so a live branch measured as "fires zero times" and was nearly
+  deleted as dead; `cmd | grep | tail` emits nothing until the stream ends, so a
+  running test suite looked hung; a cancelled CI job looked like a failing one.
+  When a measurement returns nothing, prove the path works — probe something that
+  definitely happens — before believing the nothing. Related: an analysis can lie
+  the same way a tool can. A per-invocation counter restarting at 1 was used to
+  split runs apart, which paired one pass's opening value with another's closing
+  value and produced a 65x growth that does not exist. Print both ends on one
+  line instead of reconstructing pairs afterwards.
 
 ## Reading the code
 
