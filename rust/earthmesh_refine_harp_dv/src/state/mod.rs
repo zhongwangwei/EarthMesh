@@ -414,6 +414,10 @@ impl AdaptiveMesh {
         self.cycles_completed
     }
 
+    pub(crate) fn record_cycle_completed(&mut self) {
+        self.cycles_completed += 1;
+    }
+
     /// The id the next adapted site would take.
     pub fn next_site_id(&self) -> SiteId {
         self.allocator.peek()

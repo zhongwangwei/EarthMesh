@@ -349,6 +349,13 @@ fn refining_makes_the_demand_go_away() {
     )
     .expect("run");
 
+    assert_eq!(outcome.report.cycles_completed, 2, "fixture changed");
+    assert_eq!(
+        mesh.sites().iter().map(|site| site.birth_cycle).max(),
+        Some(2),
+        "sites inserted in the second cycle must say so"
+    );
+
     assert!(
         matches!(
             outcome.report.stop_reason,

@@ -4080,6 +4080,7 @@ fn run_cycles_with_local_recovery(
             }
         }
         cycles += 1;
+        mesh.record_cycle_completed();
         eprintln!(
             "harp_dv cycle {cycles}/{}: {} insertions, {} r-adaptations, {} unresolved ({} \
              angle-constrained), {} active cells",
