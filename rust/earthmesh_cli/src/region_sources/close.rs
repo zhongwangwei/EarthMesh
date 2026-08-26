@@ -7,7 +7,7 @@ use earthmesh_project::{
     GeometryPoint,
 };
 
-use super::shared::method_c_calculated_region_level;
+use super::shared::{method_c_calculated_region_level, require_specified_region_level};
 use crate::{
     parse_close_mask_nml, read_close_mask_netcdf, source_extension, unsupported_mask_source,
     LonLatPoint,
@@ -23,20 +23,14 @@ pub(crate) fn read_method_c_close_refinement_regions(
     apply_parent_halos: bool,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
-        Some("nml") => parse_close_mask_nml(source, max_level)?,
-        Some("nc") | Some("nc4") => {
-            let mask = read_close_mask_netcdf(source)?;
-            if mask.refine_degree > max_level {
-                None
-            } else {
-                Some(mask)
-            }
-        }
+        Some("nml") => parse_close_mask_nml(source, usize::MAX)?,
+        Some("nc") | Some("nc4") => Some(read_close_mask_netcdf(source)?),
         _ => return Err(unsupported_mask_source(source)),
     };
     let Some(mask) = mask else {
         return Ok(());
     };
+    require_specified_region_level(source, mask.refine_degree, max_level)?;
     if mask.refine_degree == 0 {
         return Ok(());
     }

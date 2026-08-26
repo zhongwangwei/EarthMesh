@@ -583,3 +583,45 @@ fn a_malformed_circle_chain_is_rejected() {
         );
     }
 }
+
+#[test]
+fn specified_regions_above_the_active_level_are_rejected() {
+    for (kind, contents) in [
+        (
+            "bbox",
+            "bbox_num = 1\nbbox_refine = 2\n100.0 102.0 12.0 10.0\n",
+        ),
+        (
+            "circle",
+            "circle_num = 1\ncircle_refine = 2\n101.0 11.0 100.0\n",
+        ),
+        (
+            "close",
+            "close_num = 4\nclose_refine = 2\n100.0 10.0\n102.0 10.0\n102.0 12.0\n100.0 12.0\n",
+        ),
+    ] {
+        let source = std::env::temp_dir().join(format!(
+            "earthmesh_specified_level_{kind}_{}_{}.nml",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::write(&source, contents).expect("write specified refinement source");
+        let refine = RefineConfig {
+            mask_refine_spc_type: kind.to_string(),
+            mask_refine_spc_fprefix: source.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        let error = read_method_c_specified_refinement_regions(&refine, 1, 40, false)
+            .expect_err("a specified instruction must not disappear above max_iter_spc");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error
+                .to_string()
+                .contains("requested level 2 exceeds max_iter_spc 1"),
+            "{kind}: {error}"
+        );
+        assert!(error.to_string().contains(&source.display().to_string()));
+        let _ = fs::remove_file(source);
+    }
+}

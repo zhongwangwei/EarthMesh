@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 
 use earthmesh_mesh::LonLatDegrees;
 use earthmesh_project::{GeometryIr, GeometryPrimitive};
@@ -115,4 +116,21 @@ pub(crate) fn method_c_calculated_region_level(
     } else {
         None
     }
+}
+
+pub(crate) fn require_specified_region_level(
+    source: &Path,
+    requested: usize,
+    max_level: usize,
+) -> io::Result<()> {
+    if requested > max_level {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "specified refinement source {} requested level {requested} exceeds max_iter_spc {max_level}",
+                source.display()
+            ),
+        ));
+    }
+    Ok(())
 }
