@@ -391,6 +391,8 @@ pub fn run_refine_pipeline_namelist(
         let source_gridfile = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
         let source_levels =
             crate::grid_quality_pipeline::read_gridfile_mesh_points(&gridinit.gridfile.output)?;
+        let source_lineages =
+            crate::grid_quality_pipeline::read_gridfile_cell_lineages(&gridinit.gridfile.output)?;
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
             MethodCGridfileMetadataSlices {
@@ -404,8 +406,8 @@ pub fn run_refine_pipeline_namelist(
                 w_refine_level_orig: (!source_levels.w_refine_level_orig.is_empty())
                     .then_some(source_levels.w_refine_level_orig.as_slice()),
                 w_ngr: (!source_levels.w_ngr.is_empty()).then_some(source_levels.w_ngr.as_slice()),
-                m_lineage: None,
-                w_lineage: None,
+                m_lineage: (!source_lineages.m.is_empty()).then_some(source_lineages.m.as_slice()),
+                w_lineage: (!source_lineages.w.is_empty()).then_some(source_lineages.w.as_slice()),
             },
             nxp,
             usize::try_from(config.niter).map_err(|_| {

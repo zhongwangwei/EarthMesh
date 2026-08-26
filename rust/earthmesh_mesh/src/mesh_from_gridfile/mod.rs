@@ -4,9 +4,11 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MethodCGridfileMetadata<'a> {
+    pub m_lineage: Option<&'a [i64]>,
     pub m_refine_level: Option<&'a [i32]>,
     pub m_refine_level_orig: Option<&'a [i32]>,
     pub m_ngr: Option<&'a [i32]>,
+    pub w_lineage: Option<&'a [i64]>,
     pub w_refine_level: Option<&'a [i32]>,
     pub w_refine_level_orig: Option<&'a [i32]>,
     pub w_ngr: Option<&'a [i32]>,
@@ -85,6 +87,8 @@ impl TriangularMesh {
         ] {
             validate_gridfile_metadata(name, values, expected)?;
         }
+        let m_lineage = parse_gridfile_lineage("M lineage", metadata.m_lineage, nwd)?;
+        let w_lineage = parse_gridfile_lineage("W lineage", metadata.w_lineage, nmd)?;
         if nmd < 2 || nwd < 2 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -200,8 +204,42 @@ impl TriangularMesh {
                 mesh.m_metadata[row + 1].ngr = ngr as usize;
             }
         }
+        if let Some(lineage) = m_lineage {
+            mesh.w_lineage = lineage;
+        }
+        if let Some(lineage) = w_lineage {
+            mesh.m_lineage = lineage;
+        }
         Ok(mesh)
     }
+}
+
+fn parse_gridfile_lineage(
+    name: &str,
+    values: Option<&[i64]>,
+    expected: usize,
+) -> io::Result<Option<Vec<usize>>> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    require_method_c_len(&format!("Method-C gridfile {name}"), values.len(), expected)?;
+    let mut parsed = Vec::with_capacity(expected + 1);
+    parsed.push(0);
+    for (row, &value) in values.iter().enumerate() {
+        if value <= 0 || (row == 0 && value != 1) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Method-C gridfile {name} {value} is invalid at row {row}"),
+            ));
+        }
+        parsed.push(usize::try_from(value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Method-C gridfile {name} {value} exceeds usize at row {row}"),
+            )
+        })?);
+    }
+    Ok(Some(parsed))
 }
 
 fn validate_gridfile_metadata(
@@ -344,6 +382,7 @@ mod tests {
                 w_refine_level: Some(&w_level),
                 w_refine_level_orig: Some(&w_orig),
                 w_ngr: Some(&w_ngr),
+                ..Default::default()
             },
         )
         .expect("full Method-C metadata rebuild");
@@ -354,5 +393,40 @@ mod tests {
         assert_eq!(rebuilt.m_metadata[2].mrlm, 4);
         assert_eq!(rebuilt.m_metadata[2].mrlm_orig, 2);
         assert_eq!(rebuilt.m_metadata[2].ngr, 8);
+    }
+
+    #[test]
+    fn gridfile_rebuild_restores_persisted_lineage() {
+        let mesh = TriangularMesh::from_icosahedron(3, 0, 1.0, 0.25).expect("base Method-C mesh");
+        let points = (1..=mesh.nmd)
+            .map(|im| xyz_to_lonlat_degrees(mesh.m_points[im]))
+            .collect::<Vec<_>>();
+        let faces = (1..=mesh.nwd)
+            .map(|iw| mesh.w_faces[iw].im)
+            .collect::<Vec<_>>();
+        let counts = (1..=mesh.nmd)
+            .map(|im| mesh.m_neighbors[im].npoly)
+            .collect::<Vec<_>>();
+        let mut m_lineage = (1..=mesh.nwd as i64).collect::<Vec<_>>();
+        let mut w_lineage = (1..=mesh.nmd as i64).collect::<Vec<_>>();
+        m_lineage[1] = 3;
+        w_lineage[1] = 4;
+
+        let rebuilt = TriangularMesh::from_voronoi_gridfile_tables_with_metadata(
+            &points,
+            &faces,
+            &counts,
+            MethodCGridfileMetadata {
+                m_lineage: Some(&m_lineage),
+                w_lineage: Some(&w_lineage),
+                ..Default::default()
+            },
+        )
+        .expect("lineage-aware gridfile rebuild");
+
+        assert_eq!(rebuilt.w_lineage[2], 3);
+        assert_eq!(rebuilt.m_lineage[2], 4);
+        assert_eq!(rebuilt.w_lineage[1], 1);
+        assert_eq!(rebuilt.m_lineage[1], 1);
     }
 }
