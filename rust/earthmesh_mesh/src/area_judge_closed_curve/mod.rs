@@ -98,7 +98,7 @@ pub fn area_judge_closed_curve_fill_one_based(
         }
         intersections.sort_by(f64::total_cmp);
 
-        for pair in intersections.chunks_exact(2) {
+        for pair in intersections.as_chunks::<2>().0 {
             let minlon_source = area_judge_source_find_one_based(
                 pair[0],
                 lon_vertex,
