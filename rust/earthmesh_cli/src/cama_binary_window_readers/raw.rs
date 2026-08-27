@@ -11,12 +11,14 @@ pub(super) fn read_cama_f32_row_window(
     let mut bytes = vec![0_u8; byte_len];
     handle.read_exact(&mut bytes).map_err(binary_window_eof)?;
     Ok(bytes
-        .chunks_exact(std::mem::size_of::<f32>())
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             if little_endian {
-                f32::from_le_bytes(chunk.try_into().expect("f32 chunk size"))
+                f32::from_le_bytes(*chunk)
             } else {
-                f32::from_be_bytes(chunk.try_into().expect("f32 chunk size"))
+                f32::from_be_bytes(*chunk)
             }
         })
         .collect())
@@ -32,12 +34,14 @@ pub(super) fn read_cama_i32_row_window(
     let mut bytes = vec![0_u8; byte_len];
     handle.read_exact(&mut bytes).map_err(binary_window_eof)?;
     Ok(bytes
-        .chunks_exact(std::mem::size_of::<i32>())
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
             if little_endian {
-                i32::from_le_bytes(chunk.try_into().expect("i32 chunk size"))
+                i32::from_le_bytes(*chunk)
             } else {
-                i32::from_be_bytes(chunk.try_into().expect("i32 chunk size"))
+                i32::from_be_bytes(*chunk)
             }
         })
         .collect())
