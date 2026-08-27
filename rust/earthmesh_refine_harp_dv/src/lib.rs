@@ -31,6 +31,7 @@
 //!
 pub mod api;
 pub mod candidate;
+pub mod certifier;
 pub mod config;
 pub mod criteria;
 pub mod cycle;
@@ -48,6 +49,7 @@ pub use error::{HarpDvError, Result};
 // backends reading the same evidence is the point; a private copy per backend
 // would be three vocabularies that drift.
 pub use candidate::{Candidate, CandidatePolicy, CandidateSource};
+pub use certifier::{certify_mesh, AngleViolation, AngleViolationKind, MeshCertification};
 pub use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
     RefinementCause, RefinementDemand,

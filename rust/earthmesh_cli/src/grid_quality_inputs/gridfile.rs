@@ -842,4 +842,138 @@ mod tests {
             .to_string()
             .contains("corner count 1 must be between 3 and 3"));
     }
+
+    #[test]
+    #[ignore = "requires EARTHMESH_REAL_IGBP_NXP80_GRIDFILE"]
+    fn real_igbp_nxp80_mesh_certification() {
+        use std::collections::BTreeMap;
+
+        use earthmesh_mesh::{
+            lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, MeshState,
+        };
+        use earthmesh_refine_harp_dv::{certify_mesh, AdaptiveMesh};
+
+        let Some(path) =
+            std::env::var_os("EARTHMESH_REAL_IGBP_NXP80_GRIDFILE").map(std::path::PathBuf::from)
+        else {
+            eprintln!("skipped: set EARTHMESH_REAL_IGBP_NXP80_GRIDFILE");
+            return;
+        };
+        let source = read_gridfile_mesh_points(&path).expect("read real IGBP NXP80 gridfile");
+        let w_layout = gridfile_w_row_layout(&source);
+        let mut vertex_for_w_row = vec![None; source.w_lon.len()];
+        let mut w_row_for_vertex = vec![None, None];
+        let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); 2];
+        for row in 0..source.w_lon.len() {
+            if !w_layout.is_physical_row(row) {
+                continue;
+            }
+            vertex_for_w_row[row] = Some(vertices.len());
+            w_row_for_vertex.push(Some(row));
+            vertices.push(lonlat_degrees_to_unit_xyz(LonLatDegrees::new(
+                source.w_lon[row],
+                source.w_lat[row],
+            )));
+        }
+        let mut triangles = vec![[1usize; 3]; 2];
+        for (_, corners) in
+            tri_quality_cells_from_gridfile(&source).expect("read real IGBP triangles")
+        {
+            let corners: [usize; 3] = corners.try_into().expect("triangles have three corners");
+            triangles.push(corners.map(|row| {
+                vertex_for_w_row[row].expect("triangle corner maps to a physical W row")
+            }));
+        }
+        let state = MeshState::from_parts(vertices, triangles).unwrap_or_else(|errors| {
+            panic!(
+                "real IGBP gridfile must form a mesh: {}",
+                errors
+                    .iter()
+                    .take(4)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        });
+        let mesh = AdaptiveMesh::from_mesh_state(state).expect("adapt real IGBP mesh read-only");
+        let mut report = certify_mesh(&mesh, &[]);
+        // `from_mesh_state` marks every input site as inherited. Replace that
+        // placeholder lineage with the gridfile metadata before attribution.
+        for violation in &mut report.violations {
+            let source_row = w_row_for_vertex[violation.corner_vertex]
+                .expect("certified vertex maps back to a physical W row");
+            violation.refinement_depth = source
+                .w_refine_level
+                .get(source_row)
+                .and_then(|&depth| u16::try_from(depth).ok());
+            violation.birth_cycle = None;
+        }
+        let refinement_level_histogram = report.violations.iter().fold(
+            BTreeMap::<Option<u16>, usize>::new(),
+            |mut histogram, violation| {
+                *histogram.entry(violation.refinement_depth).or_default() += 1;
+                histogram
+            },
+        );
+        let min = report.min_angle_deg.expect("measurable minimum angle");
+        let max = report.max_angle_deg.expect("measurable maximum angle");
+        let violation_count = report.below_40_count + report.above_80_count;
+        let violation_percent =
+            100.0 * violation_count as f64 / report.measurable_angle_count as f64;
+
+        eprintln!("fixture_kind=real");
+        eprintln!("source_mesh=real_igbp_nxp80 path={}", path.display());
+        eprintln!("criterion=igbp");
+        eprintln!(
+            "angles_deg min={min:.6} p1={:.6} p99={:.6} max={max:.6}",
+            report.p1_angle_deg.expect("measurable p1"),
+            report.p99_angle_deg.expect("measurable p99")
+        );
+        eprintln!(
+            "violations below_40={} above_80={} total={} percent={violation_percent:.6}",
+            report.below_40_count, report.above_80_count, violation_count
+        );
+        eprintln!("degree_histogram={:?}", report.degree_histogram);
+        eprintln!(
+            "degree_attribution le_4={} ge_5={}",
+            report.violating_angles_at_degree_le_4, report.violating_angles_at_degree_ge_5
+        );
+        eprintln!(
+            "topology euler={} charge={} open_edges={} errors={}",
+            report.euler_characteristic,
+            report.euler_degree_charge,
+            report.open_edge_count,
+            report.topology_error_count
+        );
+        eprintln!(
+            "violation_refinement_depth_source=earthmesh_w_refine_level histogram={refinement_level_histogram:?}"
+        );
+        eprintln!("birth_cycle=unavailable_from_gridfile");
+        eprintln!("target_scale_ratio=unavailable_without_criterion");
+
+        assert!((min - 28.22).abs() < 0.01, "unexpected minimum angle {min}");
+        assert!(
+            (max - 108.11).abs() < 0.01,
+            "unexpected maximum angle {max}"
+        );
+        assert_eq!(report.measurable_angle_count, 610_500);
+        assert_eq!(report.below_40_count, 11_022);
+        assert_eq!(report.above_80_count, 17_297);
+        assert_eq!(report.violating_angles_at_degree_le_4, 402);
+        assert_eq!(report.violating_angles_at_degree_ge_5, 27_917);
+        assert!(report.violations.iter().all(|violation| {
+            violation.refinement_depth.is_some()
+                && violation.birth_cycle.is_none()
+                && violation.realized_to_target_scale_ratio.is_none()
+        }));
+        assert_eq!(report.euler_characteristic, 2);
+        assert_eq!(report.euler_degree_charge, 12);
+        assert_eq!(report.open_edge_count, 0);
+        assert_eq!(report.topology_error_count, 0);
+        assert_eq!(report.degree_sum, report.twice_edge_count);
+        assert_eq!(
+            report.violating_angles_at_degree_le_4 + report.violating_angles_at_degree_ge_5,
+            violation_count
+        );
+    }
 }

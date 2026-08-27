@@ -3273,7 +3273,7 @@ fn reference_retirement_candidates(
         .filter(|&site| {
             let degree = state.vertex_degree(site).ok();
             leaves.interior_leaf.get(site).copied().unwrap_or(false)
-                && degree.is_some_and(|degree| (4..=maximum_degree).contains(&degree))
+                && degree.is_some_and(|degree| (3..=maximum_degree).contains(&degree))
                 && state.triangle_fan(site).is_ok_and(|fan| {
                     fan.into_iter().any(|triangle| {
                         triangle_window_margin(state, triangle).is_some_and(|margin| margin < 0.0)
@@ -3496,6 +3496,58 @@ fn retirement_candidate_order_matches_the_scanned_reference() {
         longest > 1,
         "the fixtures produced no candidate list long enough to have an order"
     );
+}
+
+#[test]
+fn quality_leaf_retirement_schedules_and_commits_a_degree_three_leaf() {
+    let mut mesh = sphere(4);
+    let report = mesh
+        .propose_site_for(on(&mesh, -170.0, -5.0), None, permissive(), 20)
+        .expect("degree-three proposal")
+        .committed()
+        .expect("degree-three proposal commits")
+        .clone();
+    let leaf = report.vertex;
+    let site_id = report.site_id;
+    assert_eq!(mesh.state().vertex_degree(leaf), Ok(3));
+    let certification = crate::certifier::certify_mesh(&mesh, &[]);
+    let owned_violations = certification
+        .violations
+        .iter()
+        .filter(|violation| violation.corner_vertex == leaf)
+        .collect::<Vec<_>>();
+    assert_eq!(owned_violations.len(), 3);
+    assert!(owned_violations
+        .iter()
+        .all(|violation| violation.triangle_degree_triplet == [3, 7, 7]));
+
+    let criteria = Vec::<Box<dyn CellCriterion>>::new();
+    let leaves = leaf_lineage_survey(&mesh, &criteria);
+    assert!(leaves.interior_leaf[leaf]);
+    assert_eq!(retirement_candidates(mesh.state(), &leaves, 3), [leaf]);
+    let before_low_degree = vertices_below_degree_5_set(mesh.state());
+    let before_angles = angle_window_survey(mesh.state());
+
+    let counts = retire_quality_leaf_sites(
+        &mut mesh,
+        &criteria,
+        HardGates::default(),
+        limits(1, 100_000),
+        &leaves,
+        3,
+    );
+
+    assert_eq!(counts, (1, 0));
+    assert!(vertices_below_degree_5_set(mesh.state()).len() < before_low_degree.len());
+    let after_angles = angle_window_survey(mesh.state());
+    assert!(
+        after_angles.below + after_angles.above_80 < before_angles.below + before_angles.above_80
+    );
+    assert!(mesh.vertex_for_site_id(site_id).is_none());
+    assert!(mesh
+        .conservative_remap()
+        .iter()
+        .any(|weight| weight.old_site_id == site_id));
 }
 
 /// Read `EARTHMESH_TEST_NXP` / `EARTHMESH_TEST_MAX_CYCLES`, with defaults.
@@ -4051,19 +4103,16 @@ fn the_kept_cell_survey_never_drifts_from_a_fresh_sweep() {
     );
 }
 
-/// Who is the triangle the optimiser never touches, and where did it come from?
+/// Attribute the synthetic steep-target degree wall at NXP80.
 ///
-/// At NXP80 the run ends with a 0.19-degree corner and a 172.58-degree one, and
-/// `margin_min` is the same number before the first quality pass and after the
-/// last -- across every arm of the natural-length A/B and both sides of the
-/// performance work. The optimiser's improvement on it is exactly zero, which
-/// is a different thing from optimising it badly.
+/// This is `sphere(80)` plus the synthetic `steep_target` criterion. It is not
+/// the real IGBP NXP80 production run and must not be cited as one.
 ///
 /// Read-only. The triangle is already there at the quality boundary, so the
 /// checkpoint path is enough and no production code changes.
 #[test]
 #[ignore = "degenerate-triangle attribution; run explicitly"]
-fn who_made_the_triangle_the_optimiser_cannot_touch() {
+fn synthetic_steep_target_nxp80_degree_wall_attribution() {
     let (nxp, max_cycles) = nxp_and_cycles(80, 100);
     let gates = HardGates::default();
     let limits = limits(max_cycles, 200_000);
@@ -4090,9 +4139,34 @@ fn who_made_the_triangle_the_optimiser_cannot_touch() {
         state.vertices()[corners[1]],
         state.vertices()[corners[2]],
     ]);
+    let mut degree_triplet = corners.map(|corner| state.vertex_degree(corner).expect("degree"));
+    degree_triplet.sort_unstable();
+    if nxp == 80 && max_cycles == 100 {
+        assert_eq!(degree_triplet, [3, 7, 7]);
+    }
+    let criterion_refs = criteria
+        .iter()
+        .map(|criterion| criterion.as_ref())
+        .collect::<Vec<_>>();
+    let certification = crate::certifier::certify_mesh(&start, &criterion_refs);
 
-    eprintln!("\nnxp {nxp}: worst triangle {triangle}, window margin {margin:.6}");
+    eprintln!("\nfixture_kind=synthetic");
+    eprintln!("source_mesh=sphere({nxp})");
+    eprintln!("criterion=steep_target");
+    eprintln!("worst triangle {triangle}, window margin {margin:.6}");
     eprintln!("angles {angles:?}");
+    eprintln!("degree_triplet={degree_triplet:?}");
+    eprintln!(
+        "certifier angles={} min={:?} p1={:?} p99={:?} max={:?} below_40={} above_80={}",
+        certification.measurable_angle_count,
+        certification.min_angle_deg,
+        certification.p1_angle_deg,
+        certification.p99_angle_deg,
+        certification.max_angle_deg,
+        certification.below_40_count,
+        certification.above_80_count
+    );
+    eprintln!("degree_histogram={:?}", certification.degree_histogram);
     eprintln!("eta {:?}", triangle_eta_value(state, triangle));
     eprintln!(
         "\n{:>8} {:>9} {:>6} {:>6} {:>6} {:>10} {:>12} {:>10}",
