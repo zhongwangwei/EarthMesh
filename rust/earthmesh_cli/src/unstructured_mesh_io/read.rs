@@ -61,7 +61,9 @@ pub fn read_unstructured_mesh_netcdf(input: impl AsRef<Path>) -> io::Result<Unst
         })
         .collect();
     let m_to_w = m_to_w_values
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|row| [row[0], row[1], row[2]])
         .collect();
     let w_to_m = w_to_m_values

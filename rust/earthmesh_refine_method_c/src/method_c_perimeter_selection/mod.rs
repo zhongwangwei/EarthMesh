@@ -41,7 +41,7 @@ impl MethodCMesh {
             }
         }
 
-        for triple in perimeter.chunks_exact(3) {
+        for triple in perimeter.as_chunks::<3>().0 {
             let center = triple[1];
             let edge = self.u_edges[center.iu];
             let suppressed_w = if center.im == edge.im[0] {

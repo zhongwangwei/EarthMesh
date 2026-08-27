@@ -53,7 +53,9 @@ pub fn read_close_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Vec<Lon
         ));
     }
     let points = values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|row| LonLatPoint {
             lon: row[0],
             lat: row[1],

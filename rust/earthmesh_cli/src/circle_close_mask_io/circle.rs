@@ -48,7 +48,9 @@ pub fn read_circle_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Circle
     }
     let mesh = CircleMesh {
         points: point_values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|row| LonLatPoint {
                 lon: row[0],
                 lat: row[1],
@@ -141,7 +143,9 @@ pub fn read_circle_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Circle
         ));
     }
     let points = point_values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|row| LonLatPoint {
             lon: row[0],
             lat: row[1],

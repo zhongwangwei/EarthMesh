@@ -26,7 +26,7 @@ fn method_c_child_w_ids_follow_canonical_parent_then_three_children_order() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {
@@ -130,7 +130,7 @@ fn method_c_midpoint_m_ids_follow_canonical_first_seen_edge_order() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {

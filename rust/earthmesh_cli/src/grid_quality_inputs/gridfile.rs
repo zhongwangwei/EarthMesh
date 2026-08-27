@@ -88,7 +88,7 @@ pub(crate) fn tri_quality_cells_from_gridfile(
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
     let mut cells = Vec::new();
-    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+    for (mi, tri) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
         if !m_layout.is_physical_row(mi) {
             continue;
         }
@@ -132,7 +132,7 @@ pub(crate) fn hex_quality_cells_from_gridfile(
             )));
         }
     }
-    for (mi, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+    for (mi, tri) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
         if !m_layout.is_physical_row(mi) {
             continue;
         }

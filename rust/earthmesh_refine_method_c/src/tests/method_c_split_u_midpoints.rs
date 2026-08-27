@@ -27,7 +27,7 @@ fn method_c_split_u_midpoint_coordinates_match_canonical_edge_average_projection
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {
@@ -134,7 +134,7 @@ fn method_c_cartesian_split_u_midpoint_coordinates_match_native_edge_average() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {

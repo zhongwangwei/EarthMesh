@@ -20,7 +20,7 @@ impl MethodCMesh {
         radius: f64,
         child_level: usize,
     ) -> io::Result<()> {
-        for triple in perimeter.chunks_exact(3) {
+        for triple in perimeter.as_chunks::<3>().0 {
             let [p1, p2, p3] = [triple[0], triple[1], triple[2]];
             let [jm1, jm2, jm3] = [p1.im, p2.im, p3.im];
             let [ju1, ju2, ju3] = [p1.iu, p2.iu, p3.iu];

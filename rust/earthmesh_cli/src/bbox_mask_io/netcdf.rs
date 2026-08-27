@@ -57,7 +57,9 @@ pub fn read_bbox_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMesh
     }
     let mesh = BBoxMesh {
         points: values
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|row| BBoxPoint {
                 west: row[0],
                 east: row[1],
@@ -134,7 +136,9 @@ pub fn read_bbox_mask_netcdf(inputfile: impl AsRef<Path>) -> io::Result<BBoxMask
         ));
     }
     let points = values
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|row| BBoxPoint {
             west: row[0],
             east: row[1],

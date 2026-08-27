@@ -45,7 +45,9 @@ pub fn read_mode4_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Mode4Me
         ));
     }
     let lonlat_bound = lonlat_values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|row| LonLatPoint {
             lon: row[0],
             lat: row[1],
@@ -69,7 +71,9 @@ pub fn read_mode4_mesh_netcdf(inputfile: impl AsRef<Path>) -> io::Result<Mode4Me
         ));
     }
     let ngr_bound = ngr_values
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|row| [row[0], row[1], row[2], row[3]])
         .collect::<Vec<_>>();
 
