@@ -11,6 +11,7 @@ pub mod coordinate_types;
 use coordinate_types::{GridRegion, LonLatPoint};
 mod fs_support;
 mod harp_dv_options;
+mod harp_trace;
 pub(crate) use fs_support::ensure_parent_dir;
 #[doc(hidden)]
 pub use fs_support::resolve_project_path;

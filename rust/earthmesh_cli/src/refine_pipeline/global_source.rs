@@ -2362,16 +2362,26 @@ fn refine_with_harp_dv(
             min_angle_deg,
         }));
     }
-    let outcome = harp::refine_harp_dv(
-        adaptive,
-        &harp::HarpDvRequest {
-            config: options.config,
-            criteria: &criteria,
-            candidate_policy: options.candidate_policy,
-            gates: options.gates,
-        },
-    )
+    let mut trace_session = crate::harp_trace::from_env()?;
+    let request = harp::HarpDvRequest {
+        config: options.config,
+        criteria: &criteria,
+        candidate_policy: options.candidate_policy,
+        gates: options.gates,
+    };
+    let outcome = if let Some(trace_session) = trace_session.as_mut() {
+        let mut emit_trace = |event: harp::HarpTraceEvent| {
+            crate::harp_trace::write_core_event(trace_session, &event)
+                .map_err(harp::HarpDvError::from)
+        };
+        harp::refine_harp_dv_traced(adaptive, &request, &mut emit_trace)
+    } else {
+        harp::refine_harp_dv(adaptive, &request)
+    }
     .map_err(|error| io::Error::other(error.to_string()))?;
+    if let Some(trace_session) = trace_session {
+        trace_session.publish()?;
+    }
 
     // What it could not do, on the run's own output rather than in a log line
     // nobody reads afterwards.
