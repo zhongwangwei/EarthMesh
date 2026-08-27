@@ -693,6 +693,59 @@ fn angle_window_survey_counts_every_triangle_corner() {
 }
 
 #[test]
+fn traced_quality_stages_split_eta_from_window_boundary() {
+    let gates = HardGates::default();
+    let limits = limits(40, 200_000);
+    let mut mesh = sphere(6);
+    let background_scale_m = median_cell_scale(mesh.state());
+    let criteria = steep_target(&mesh);
+    stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
+
+    let mut events = Vec::new();
+    let mut sink = |event| {
+        events.push(event);
+        Ok(())
+    };
+    let mut trace = TraceEmitter::on(&mut sink);
+    let (_, _, audit) = optimise_mesh_quality_with_natural_length(
+        &mut mesh,
+        &criteria,
+        gates,
+        limits,
+        background_scale_m,
+        true,
+        NATURAL_LENGTH_PASSES,
+        &mut trace,
+    )
+    .expect("optimise with trace");
+    assert!(
+        audit.window_committed > 0,
+        "fixture must exercise the window phase"
+    );
+
+    let summaries = events
+        .iter()
+        .filter_map(|event| match event {
+            HarpTraceEvent::StageSummary {
+                stage,
+                certification,
+            } => Some((*stage, certification)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let post_eta = summaries
+        .iter()
+        .position(|(stage, _)| *stage == HarpTraceStage::PostEta)
+        .expect("post_eta summary");
+    let post_window = summaries
+        .iter()
+        .position(|(stage, _)| *stage == HarpTraceStage::PostWindow)
+        .expect("post_window summary");
+    assert!(post_eta < post_window);
+    assert_ne!(summaries[post_eta].1, summaries[post_window].1);
+}
+
+#[test]
 fn angle_window_penalties_keep_legacy_and_delivery_semantics_separate() {
     let mut survey = AngleWindowSurvey::default();
     record_angle_window(&mut survey, 30.0);
@@ -2754,6 +2807,7 @@ fn run_natural_length_arm(
         background_scale_m,
         arm.enabled,
         arm.priority_passes,
+        &mut TraceEmitter::off(),
     )
     .expect("the optimiser runs");
     let runtime_s = started.elapsed().as_secs_f64();

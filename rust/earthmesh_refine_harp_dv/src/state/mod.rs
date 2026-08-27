@@ -10,6 +10,7 @@ use earthmesh_mesh::{
     MESH_STATE_FIRST_ID,
 };
 
+use crate::candidate::CandidateSource;
 use crate::error::{HarpDvError, Result};
 
 /// One conservative transfer from a pre-adaptation cell to a post-adaptation cell.
@@ -57,6 +58,8 @@ pub struct AdaptiveSite {
     pub position: LonLatDegrees,
     /// The cycle that created it. Zero means it came in with the mesh.
     pub birth_cycle: u32,
+    /// The production ladder rung that created it. None for inherited sites and low-level tests.
+    pub birth_candidate_source: Option<CandidateSource>,
     /// How many times it has been through a refinement that created it.
     pub depth: u16,
     /// False once a transaction removes it. The row stays so its id keeps
@@ -77,6 +80,7 @@ impl AdaptiveSite {
             parent_site_id: None,
             position,
             birth_cycle: 0,
+            birth_candidate_source: None,
             depth: 0,
             active: true,
             origin_position: position,
@@ -113,6 +117,7 @@ pub struct AdaptiveMesh {
     /// The site whose demand is being served, so a new one can be recorded a
     /// generation deeper than it.
     pub(crate) refining: Option<usize>,
+    pub(crate) refining_candidate_source: Option<CandidateSource>,
     /// The boundary as a list of segments, each an edge of the mesh.
     ///
     /// Ruppert's PSLG. An earlier version approximated this with a set of
@@ -165,6 +170,7 @@ impl AdaptiveMesh {
             allocator,
             cycles_completed: 0,
             refining: None,
+            refining_candidate_source: None,
             segments: earthmesh_boundary::SegmentList::default(),
             conservative_remap: Vec::new(),
         })
@@ -250,6 +256,7 @@ impl AdaptiveMesh {
         let mut site = AdaptiveSite::inherited(site_id, position);
         site.parent_site_id = parent_site.map(|(site_id, _)| site_id);
         site.birth_cycle = self.cycles_completed + 1;
+        site.birth_candidate_source = self.refining_candidate_source;
         site.depth = parent_site.map_or(1, |(_, depth)| depth.saturating_add(1));
         self.sites.push(site);
         if vertex >= self.vertex_site_ids.len() {
@@ -392,6 +399,15 @@ impl AdaptiveMesh {
 
     pub(crate) fn refining_site(&self) -> Option<usize> {
         self.refining
+    }
+
+    pub(crate) fn set_refining_context(
+        &mut self,
+        parent: Option<usize>,
+        source: Option<CandidateSource>,
+    ) {
+        self.refining = parent;
+        self.refining_candidate_source = source;
     }
 
     pub fn state(&self) -> &MeshState {

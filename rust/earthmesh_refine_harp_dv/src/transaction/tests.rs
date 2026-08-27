@@ -174,8 +174,57 @@ fn a_committed_site_is_recorded_where_the_report_says() {
     assert_eq!(site.parent_site_id, None);
     assert!(site.active);
     assert_eq!(site.birth_cycle, 1, "created by adaptation, not inherited");
+    assert_eq!(site.birth_candidate_source, None);
     assert_eq!(report.triangles_created, report.triangles_removed + 2);
     assert!(report.max_degree_touched <= GRIDFILE_MAX_VERTEX_DEGREE);
+}
+
+#[test]
+fn a_committed_candidate_records_its_ladder_source() {
+    let mut mesh = sphere(6);
+    let point = on(&mesh, 41.0, 19.0);
+    let candidate = Candidate {
+        point,
+        source: CandidateSource::OffCentre,
+        hint: 20,
+    };
+
+    let outcome = mesh
+        .propose_candidate_for(candidate, permissive(), 20)
+        .expect("propose candidate");
+    let report = outcome.committed().expect("this one passes");
+
+    let site = mesh.sites().last().expect("the new row");
+    assert_eq!(site.site_id, report.site_id);
+    assert_eq!(
+        site.birth_candidate_source,
+        Some(CandidateSource::OffCentre)
+    );
+}
+
+#[test]
+fn a_rolled_back_candidate_does_not_create_a_provenance_row() {
+    let mut mesh = sphere(6);
+    let before_sites = mesh.sites().len();
+    let point = on(&mesh, 41.0, 19.0);
+    let candidate = Candidate {
+        point,
+        source: CandidateSource::Witness,
+        hint: 20,
+    };
+
+    let outcome = mesh
+        .propose_candidate_for(
+            candidate,
+            HardGates {
+                max_patch_triangles: 1,
+                ..permissive()
+            },
+            20,
+        )
+        .expect("proposal rolls back cleanly");
+    assert!(matches!(outcome, Acceptance::RolledBack(_)));
+    assert_eq!(mesh.sites().len(), before_sites);
 }
 
 #[test]

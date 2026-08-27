@@ -38,9 +38,10 @@ pub mod cycle;
 pub mod error;
 pub mod report;
 pub mod state;
+pub mod trace;
 pub mod transaction;
 
-pub use api::{refine_harp_dv, HarpDvOutcome, HarpDvRequest};
+pub use api::{refine_harp_dv, refine_harp_dv_traced, HarpDvOutcome, HarpDvRequest};
 pub use config::HarpDvConfig;
 pub use criteria::{CellCriterion, CellView, MinAngle, TargetRegion, TargetScale};
 pub use cycle::{run_cycles, CycleLimits, CycleOutcome};
@@ -49,7 +50,9 @@ pub use error::{HarpDvError, Result};
 // backends reading the same evidence is the point; a private copy per backend
 // would be three vocabularies that drift.
 pub use candidate::{Candidate, CandidatePolicy, CandidateSource};
-pub use certifier::{certify_mesh, AngleViolation, AngleViolationKind, MeshCertification};
+pub use certifier::{
+    certify_mesh, AngleKey, AngleViolation, AngleViolationKind, MeshCertification,
+};
 pub use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
     RefinementCause, RefinementDemand,
@@ -58,6 +61,7 @@ pub use report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason
 pub use state::{
     AdaptiveMesh, AdaptiveSite, ConservativeRemapWeight, SiteId, SiteIdAllocator, SiteMobility,
 };
+pub use trace::{HarpTraceEvent, HarpTraceStage};
 pub use transaction::{
     committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,
     GRIDFILE_MAX_VERTEX_DEGREE,

@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use earthmesh_mesh::LonLatDegrees;
 
+use crate::candidate::CandidateSource;
 use crate::criteria::{triangle_angles_deg, CellCriterion, CellView};
-use crate::state::AdaptiveMesh;
+use crate::state::{AdaptiveMesh, SiteId};
 
 const LOW_ANGLE_DEG: f64 = 40.0;
 const HIGH_ANGLE_DEG: f64 = 80.0;
@@ -16,8 +17,15 @@ pub enum AngleViolationKind {
     Above80,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AngleKey {
+    pub triangle_sites: [SiteId; 3],
+    pub corner_site: SiteId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AngleViolation {
+    pub key: Option<AngleKey>,
     pub kind: AngleViolationKind,
     pub triangle: usize,
     pub corner_vertex: usize,
@@ -26,6 +34,7 @@ pub struct AngleViolation {
     pub triangle_degree_triplet: [usize; 3],
     pub refinement_depth: Option<u16>,
     pub birth_cycle: Option<u32>,
+    pub birth_candidate_source: Option<CandidateSource>,
     pub realized_to_target_scale_ratio: Option<f64>,
 }
 
@@ -127,6 +136,7 @@ pub fn certify_mesh(mesh: &AdaptiveMesh, criteria: &[&dyn CellCriterion]) -> Mes
             }
             let site = mesh.site_for_vertex(vertex);
             violations.push(AngleViolation {
+                key: angle_key(mesh, corners, vertex),
                 kind,
                 triangle,
                 corner_vertex: vertex,
@@ -135,6 +145,7 @@ pub fn certify_mesh(mesh: &AdaptiveMesh, criteria: &[&dyn CellCriterion]) -> Mes
                 triangle_degree_triplet: degree_triplet,
                 refinement_depth: site.map(|site| site.depth),
                 birth_cycle: site.map(|site| site.birth_cycle),
+                birth_candidate_source: site.and_then(|site| site.birth_candidate_source),
                 realized_to_target_scale_ratio: realized_to_target_scale_ratio(
                     mesh,
                     vertex,
@@ -153,6 +164,8 @@ pub fn certify_mesh(mesh: &AdaptiveMesh, criteria: &[&dyn CellCriterion]) -> Mes
         .iter()
         .map(|&vertex| degrees[vertex])
         .sum::<usize>();
+
+    violations.sort_by_key(|violation| violation.key);
 
     MeshCertification {
         vertex_count,
@@ -181,6 +194,20 @@ pub fn certify_mesh(mesh: &AdaptiveMesh, criteria: &[&dyn CellCriterion]) -> Mes
         violating_angles_at_degree_ge_5,
         violations,
     }
+}
+
+fn angle_key(mesh: &AdaptiveMesh, triangle: [usize; 3], corner_vertex: usize) -> Option<AngleKey> {
+    let mut triangle_sites: [SiteId; 3] = triangle
+        .map(|vertex| mesh.site_for_vertex(vertex).map(|site| site.site_id))
+        .into_iter()
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()?;
+    triangle_sites.sort_unstable();
+    Some(AngleKey {
+        triangle_sites,
+        corner_site: mesh.site_for_vertex(corner_vertex)?.site_id,
+    })
 }
 
 fn percentile(sorted: &[f64], percent: usize) -> Option<f64> {
