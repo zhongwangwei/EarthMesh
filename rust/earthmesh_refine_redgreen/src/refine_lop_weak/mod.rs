@@ -138,9 +138,7 @@ pub fn refine_weak_concav_lop_judge_one_based(
                 for offset in 0..=1 {
                     let row = segment_id_weak + offset;
                     if row < weak_concav_segment.len() {
-                        for value in &mut weak_concav_segment[row] {
-                            *value = 1;
-                        }
+                        weak_concav_segment[row].fill(1);
                     }
                 }
                 continue;

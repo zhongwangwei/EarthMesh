@@ -566,6 +566,58 @@ mod tests {
         }
     }
 
+    fn degree_three_leaf() -> (AdaptiveMesh, usize, SiteId) {
+        let mut mesh = sphere(4);
+        let report = mesh
+            .propose_site_for(on(&mesh, -170.0, -5.0), None, permissive(), 20)
+            .expect("degree-three proposal")
+            .committed()
+            .expect("degree-three proposal commits")
+            .clone();
+        assert_eq!(mesh.state.vertex_degree(report.vertex), Ok(3));
+        assert!(mesh.is_retirable_leaf(report.vertex));
+        (mesh, report.vertex, report.site_id)
+    }
+
+    #[test]
+    fn rejected_degree_three_leaf_retirement_restores_all_adaptive_state() {
+        let (mut mesh, child, _) = degree_three_leaf();
+        let before = mesh.clone();
+
+        let error = mesh
+            .retire_leaf_transactionally(child, |_, _| false)
+            .expect_err("postcondition rejects retirement");
+
+        assert_eq!(error, RetirementError::Rejected);
+        assert_eq!(mesh.state, before.state);
+        assert_eq!(mesh.impent, before.impent);
+        assert_eq!(mesh.sites, before.sites);
+        assert_eq!(mesh.vertex_site_ids, before.vertex_site_ids);
+        assert_eq!(mesh.allocator, before.allocator);
+        assert_eq!(mesh.cycles_completed, before.cycles_completed);
+        assert_eq!(mesh.refining, before.refining);
+        assert_eq!(mesh.segments, before.segments);
+        assert_eq!(mesh.conservative_remap, before.conservative_remap);
+    }
+
+    #[test]
+    fn degree_three_leaf_retirement_tombstones_id_and_builds_remap() {
+        let (mut mesh, child, child_id) = degree_three_leaf();
+        let before = mesh.active_site_count();
+
+        mesh.retire_leaf_transactionally(child, |state, _| state.validate().is_ok())
+            .expect("retire degree-three leaf");
+
+        assert_eq!(mesh.active_site_count(), before - 1);
+        assert!(!mesh.sites[child_id.0 as usize].active);
+        assert!(mesh.vertex_for_site_id(child_id).is_none());
+        assert!(!mesh.state.is_vertex_live(child));
+        assert!(mesh
+            .conservative_remap
+            .iter()
+            .any(|weight| weight.old_site_id == child_id));
+    }
+
     #[test]
     fn from_mesh_state_ignores_retired_slots() {
         let mut fixture = None;

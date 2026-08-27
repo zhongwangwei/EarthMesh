@@ -36,7 +36,7 @@ fn method_c_perim_fill3_writes_canonical_weighted_transition_coordinates() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {

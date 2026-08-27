@@ -146,8 +146,10 @@ fn decode_cached_target(bytes: &[u8], nlon: usize, nlat: usize) -> io::Result<Hy
         return Err(invalid("cached HField payload length is invalid"));
     }
     let values = bytes[cursor..]
-        .chunks_exact(8)
-        .map(|chunk| f64::from_le_bytes(chunk.try_into().expect("exact chunk")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| f64::from_le_bytes(*chunk))
         .collect();
     Ok(HydroTargetField {
         field: HField::from_values(nlon, nlat, values)?,

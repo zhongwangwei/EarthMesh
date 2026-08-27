@@ -1624,6 +1624,8 @@ impl RetirementPostcondition<'_> {
             && after_angles.worst_deviation_deg <= self.before_angles.worst_deviation_deg
             && after_angles.penalty < self.before_angles.penalty
             && after_vertices_below_degree_5.is_subset(&self.before_vertices_below_degree_5)
+            && (report.fan.len() > 4
+                || after_vertices_below_degree_5.len() < self.before_vertices_below_degree_5.len())
             && self
                 .before_eta
                 .zip(after_eta)
@@ -1655,7 +1657,7 @@ fn retirement_candidates(
         .active_vertex_slots()
         .filter(|&site| {
             leaves.interior_leaf.get(site).copied().unwrap_or(false)
-                && (4..=maximum_degree).contains(&degrees[site])
+                && (3..=maximum_degree).contains(&degrees[site])
         })
         .filter_map(|site| {
             // The fan and its margins, once per surviving candidate: the old
@@ -1721,6 +1723,7 @@ fn retire_quality_leaf_sites(
         mut before_margin,
     ) = read_baseline(mesh.state());
     let mut committed = 0;
+    let mut committed_d3 = 0;
     let mut committed_d4 = 0;
     let attempted = candidates.len();
     for site in candidates {
@@ -1742,6 +1745,7 @@ fn retire_quality_leaf_sites(
             .is_ok()
         {
             committed += 1;
+            committed_d3 += usize::from(degree == 3);
             committed_d4 += usize::from(degree == 4);
             (
                 before_demands,
@@ -1758,7 +1762,7 @@ fn retire_quality_leaf_sites(
     // phase put together.
     eprintln!(
         "harp_dv leaf retirement: {attempted} of {found} candidate(s) tried, {committed} retired \
-         ({committed_d4} degree-four), {:.1}s",
+         ({committed_d3} degree-three, {committed_d4} degree-four), {:.1}s",
         started.elapsed().as_secs_f64()
     );
     (committed, committed_d4)

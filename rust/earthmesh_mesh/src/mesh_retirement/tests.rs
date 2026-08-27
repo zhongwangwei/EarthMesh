@@ -1,5 +1,5 @@
 use super::*;
-use crate::{CartesianPoint, MESH_STATE_FIRST_ID};
+use crate::{normalized_face_center, CartesianPoint, MESH_STATE_FIRST_ID};
 
 fn point(x: f64, y: f64, z: f64) -> CartesianPoint {
     CartesianPoint::new(x, y, z)
@@ -32,6 +32,53 @@ fn octahedron() -> MeshState {
         ],
     )
     .expect("octahedron")
+}
+
+fn tetrahedron() -> MeshState {
+    MeshState::from_parts(
+        vec![
+            point(0.0, 0.0, 0.0),
+            point(0.0, 0.0, 0.0),
+            point(1.0, 1.0, 1.0),
+            point(1.0, -1.0, -1.0),
+            point(-1.0, 1.0, -1.0),
+            point(-1.0, -1.0, 1.0),
+        ],
+        vec![
+            [1, 1, 1],
+            [1, 1, 1],
+            [2, 3, 4],
+            [2, 4, 5],
+            [2, 5, 3],
+            [3, 5, 4],
+        ],
+    )
+    .expect("tetrahedron")
+}
+
+fn octahedron_with_degree_three_face_split() -> (MeshState, usize) {
+    let base = octahedron();
+    let face = 2;
+    let [a, b, c] = base.triangles()[face];
+    let mut vertices = base.vertices().to_vec();
+    let mut triangles = base.triangles().to_vec();
+    let child = vertices.len();
+    vertices.push(
+        normalized_face_center(
+            base.vertices()[a],
+            base.vertices()[b],
+            base.vertices()[c],
+            base.sphere_radius(),
+        )
+        .expect("face centre"),
+    );
+    triangles[face] = [a, b, child];
+    triangles.push([b, c, child]);
+    triangles.push([c, a, child]);
+    (
+        MeshState::from_parts(vertices, triangles).expect("split octahedron face"),
+        child,
+    )
 }
 
 fn pentagonal_bipyramid() -> MeshState {
@@ -77,7 +124,7 @@ fn euler(state: &MeshState) -> isize {
 
 #[test]
 fn polygon_triangulation_enumeration_is_complete() {
-    for (degree, expected) in [(4, 2), (5, 5), (6, 14), (7, 42)] {
+    for (degree, expected) in [(3, 1), (4, 2), (5, 5), (6, 14), (7, 42)] {
         let ring = (0..degree).collect::<Vec<_>>();
         let candidates = triangulations(&ring);
         assert_eq!(candidates.len(), expected, "degree {degree}");
@@ -151,25 +198,7 @@ fn postcondition_rejection_leaves_the_mesh_byte_for_byte_equal() {
 
 #[test]
 fn non_degree_four_vertices_are_refused_atomically() {
-    let mut state = MeshState::from_parts(
-        vec![
-            point(0.0, 0.0, 0.0),
-            point(0.0, 0.0, 0.0),
-            point(1.0, 1.0, 1.0),
-            point(1.0, -1.0, -1.0),
-            point(-1.0, 1.0, -1.0),
-            point(-1.0, -1.0, 1.0),
-        ],
-        vec![
-            [1, 1, 1],
-            [1, 1, 1],
-            [2, 3, 4],
-            [2, 4, 5],
-            [2, 5, 3],
-            [3, 5, 4],
-        ],
-    )
-    .expect("tetrahedron");
+    let mut state = tetrahedron();
     let before = state.clone();
 
     let error = state
@@ -212,6 +241,47 @@ fn slots_outside_the_local_patch_do_not_change() {
             assert_eq!(state.face_id(face), before.face_id(face));
         }
     }
+}
+
+#[test]
+fn degree_three_retirement_reuses_one_slot_and_tombstones_two() {
+    let (mut state, child) = octahedron_with_degree_three_face_split();
+    let before_v = state.vertex_count();
+    let before_f = state.triangle_count();
+
+    let report = state
+        .retire_vertex_transactionally(child, |state, report| {
+            report.replacement_faces.len() == 1 && state.validate().is_ok()
+        })
+        .expect("retire degree-three face split");
+
+    assert_eq!(state.vertex_count(), before_v - 1);
+    assert_eq!(state.triangle_count(), before_f - 2);
+    assert_eq!(euler(&state), 2);
+    assert_eq!(state.open_edge_count(), 0);
+    assert_eq!(report.fan.len(), 3);
+    assert_eq!(report.ring.len(), 3);
+    assert_eq!(report.reused_faces.len(), 1);
+    assert_eq!(report.retired_faces.len(), 2);
+    assert_eq!(report.replacement_faces.len(), 1);
+    assert_eq!(report.diagonal, None);
+    assert!(!state.is_vertex_live(child));
+    state
+        .validate()
+        .expect("valid after degree-three retirement");
+}
+
+#[test]
+fn degree_three_postcondition_rejection_is_atomic() {
+    let (mut state, child) = octahedron_with_degree_three_face_split();
+    let before = state.clone();
+
+    let error = state
+        .retire_vertex_transactionally(child, |_, _| false)
+        .expect_err("postcondition rejects the triangle fill");
+
+    assert_eq!(error, RetirementError::Rejected);
+    assert_eq!(state, before);
 }
 
 #[test]

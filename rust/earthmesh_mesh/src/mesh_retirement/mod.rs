@@ -1,6 +1,6 @@
 //! Transactional retirement of one interior site from a triangulation.
 //!
-//! A degree-`d` fan leaves a `d`-sided hole. For supported degrees 4..=7 we
+//! A degree-`d` fan leaves a `d`-sided hole. For supported degrees 3..=7 we
 //! enumerate every triangulation of that ring, try each candidate on a clone,
 //! keep the first one that validates, is locally Delaunay, and passes the
 //! caller's postcondition, then swap it in. A rejected retirement never touches
@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::mesh_predicates::{in_circle_on_sphere, orientation_on_sphere, Ambiguous, Sign};
 use crate::mesh_state::{FaceId, MeshState, MeshStateError, VertexId};
 use crate::mesh_voronoi::VoronoiError;
-use crate::spherical_triangle_area_unit;
+use crate::{magnitude, spherical_triangle_area_unit, CartesianPoint};
 
 /// Which ring diagonal closed a degree-four retired vertex's quadrilateral hole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub enum RetirementError {
     Ambiguous(Ambiguous),
     Topology(Vec<MeshStateError>),
     IllegalLocalEdge { triangle: usize, corner: usize },
+    AreaMismatch { before: f64, after: f64 },
     Rejected,
 }
 
@@ -62,7 +63,7 @@ impl std::fmt::Display for RetirementError {
             }
             Self::UnsupportedDegree { vertex, degree } => write!(
                 formatter,
-                "vertex {vertex} has degree {degree}; supported retirement degrees are 4..=7"
+                "vertex {vertex} has degree {degree}; supported retirement degrees are 3..=7"
             ),
             Self::Fan(error) => write!(formatter, "cannot walk retirement fan: {error}"),
             Self::RingIsNotAQuadrilateral { vertex } => write!(
@@ -84,7 +85,11 @@ impl std::fmt::Display for RetirementError {
                 formatter,
                 "retirement candidate leaves illegal edge opposite corner {corner} of triangle {triangle}"
             ),
-            Self::Rejected => write!(formatter, "retirement rejected by postcondition"),
+            Self::AreaMismatch { before, after } => write!(
+                formatter,
+                "retirement changes spherical patch area from {before} to {after} steradians"
+            ),
+            Self::Rejected => write!(formatter, "retirement candidate rejected"),
         }
     }
 }
@@ -98,7 +103,7 @@ impl From<Ambiguous> for RetirementError {
 }
 
 impl MeshState {
-    /// Retire one live interior vertex of degree 4..=7 transactionally.
+    /// Retire one live interior vertex of degree 3..=7 transactionally.
     pub fn retire_vertex_transactionally(
         &mut self,
         vertex: usize,
@@ -114,7 +119,7 @@ impl MeshState {
         let fan = self
             .triangle_fan_from(vertex, seed)
             .map_err(RetirementError::Fan)?;
-        if !(4..=7).contains(&fan.len()) {
+        if !(3..=7).contains(&fan.len()) {
             return Err(RetirementError::UnsupportedDegree {
                 vertex,
                 degree: fan.len(),
@@ -209,21 +214,26 @@ fn retire_on_trial(
         .copied()
         .map(|corners| oriented(state, before, corners))
         .collect::<Result<Vec<_>, _>>()?;
-    let area = |corners: [usize; 3]| {
-        spherical_triangle_area_unit([
-            state.vertices()[corners[0]],
-            state.vertices()[corners[1]],
-            state.vertices()[corners[2]],
-        ])
-        .abs()
-    };
-    let before_area: f64 = fan.iter().map(|&face| area(state.triangles()[face])).sum();
-    let after_area: f64 = new_faces.iter().copied().map(area).sum();
+    let before_area = fan
+        .iter()
+        .try_fold(0.0, |sum, &face| {
+            Some(sum + triangle_area_on_unit_sphere(state, state.triangles()[face])?)
+        })
+        .ok_or(RetirementError::Rejected)?;
+    let after_area = new_faces
+        .iter()
+        .try_fold(0.0, |sum, &face| {
+            Some(sum + triangle_area_on_unit_sphere(state, face)?)
+        })
+        .ok_or(RetirementError::Rejected)?;
     if !before_area.is_finite()
         || !after_area.is_finite()
         || (after_area - before_area).abs() > 1.0e-10_f64.max(before_area * 1.0e-8)
     {
-        return Err(RetirementError::Rejected);
+        return Err(RetirementError::AreaMismatch {
+            before: before_area,
+            after: after_area,
+        });
     }
 
     let reused_faces = fan
@@ -283,6 +293,18 @@ fn retire_on_trial(
         replacement_faces: new_faces.clone(),
         diagonal: degree_four_diagonal(ring, &new_faces),
     })
+}
+
+fn triangle_area_on_unit_sphere(state: &MeshState, corners: [usize; 3]) -> Option<f64> {
+    let mut points = corners.map(|corner| state.vertices()[corner]);
+    for point in &mut points {
+        let norm = magnitude(*point);
+        if !norm.is_finite() || norm <= f64::EPSILON {
+            return None;
+        }
+        *point = CartesianPoint::new(point.x / norm, point.y / norm, point.z / norm);
+    }
+    Some(spherical_triangle_area_unit(points).abs())
 }
 
 fn oriented(

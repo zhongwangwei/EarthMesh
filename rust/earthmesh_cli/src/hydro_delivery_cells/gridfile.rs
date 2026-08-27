@@ -69,7 +69,7 @@ pub fn gridfile_cell_polygons_geojson_with_report(
     match kind {
         GridfileCellKind::Tri => {
             let wn = mesh.w_lon.len();
-            for (ci, tri) in mesh.m_to_w.chunks_exact(3).enumerate() {
+            for (ci, tri) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
                 if !m_layout.is_physical_row(ci) {
                     continue;
                 }
@@ -269,7 +269,7 @@ fn validate_gridfile_cell_arrays(
 
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
-    for (row, triangle) in mesh.m_to_w.chunks_exact(3).enumerate() {
+    for (row, triangle) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
         if !m_layout.is_physical_row(row) {
             continue;
         }

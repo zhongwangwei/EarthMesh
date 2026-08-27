@@ -26,7 +26,7 @@ fn method_c_split_u_second_half_ids_follow_canonical_iunew_order() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {
@@ -169,7 +169,7 @@ fn method_c_split_u_m_metadata_marks_child_ownership() {
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {
@@ -280,7 +280,7 @@ fn method_c_suppressed_split_u_reuses_original_u_and_skips_midpoint_like_canonic
     let perimeter = mesh
         .perim_map2_method_c(&nest_wd, &method_c_m_neighbors)
         .expect("Method-C perimeter");
-    for triple in perimeter.chunks_exact(3) {
+    for triple in perimeter.as_chunks::<3>().0 {
         let center = triple[1];
         let edge = mesh.u_edges[center.iu];
         let suppressed_w = if center.im == edge.im[0] {
