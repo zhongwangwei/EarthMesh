@@ -1,6 +1,7 @@
 //! Typed, serialization-free live trace records for HARP-DV.
 
 use crate::certifier::{AngleViolation, MeshCertification};
+use crate::state::SiteId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HarpTraceStage {
@@ -63,4 +64,89 @@ pub enum HarpTraceEvent {
         stage: HarpTraceStage,
         reason: &'static str,
     },
+    DegreeFourRetirementSummary(DegreeFourRetirementSummary),
+    DegreeFourRetirementSite(DegreeFourRetirementSite),
+    DegreeFourRetirementTrial(DegreeFourRetirementTrial),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DegreeFourCheckStatus {
+    Pass,
+    Fail,
+    NotEvaluated,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DegreeFourCheckCounts {
+    pub pass: usize,
+    pub fail: usize,
+    pub not_evaluated: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DegreeFourRetirementCheckCounts {
+    pub geometry: DegreeFourCheckCounts,
+    pub hard_gate: DegreeFourCheckCounts,
+    pub physical_demand: DegreeFourCheckCounts,
+    pub scale_balance: DegreeFourCheckCounts,
+    pub no_new_low_degree: DegreeFourCheckCounts,
+    pub angle_count: DegreeFourCheckCounts,
+    pub worst_deviation: DegreeFourCheckCounts,
+    pub penalty: DegreeFourCheckCounts,
+    pub eta: DegreeFourCheckCounts,
+    pub margin: DegreeFourCheckCounts,
+    pub conservative_remap: DegreeFourCheckCounts,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DegreeFourRetirementSummary {
+    pub evaluated: bool,
+    pub sites_total: usize,
+    pub sites_not_leaf: usize,
+    pub sites_eligible: usize,
+    pub sites_without_window_violation: usize,
+    pub sites_audited: usize,
+    pub sites_ranked_beyond_64: usize,
+    pub sites_with_any_valid_trial: usize,
+    pub sites_with_any_fully_acceptable_trial: usize,
+    pub sites_committed: usize,
+    pub trials_total: usize,
+    pub checks: DegreeFourRetirementCheckCounts,
+    pub trials_quality_improving: usize,
+    pub trials_fully_acceptable: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DegreeFourRetirementSite {
+    pub site_id: SiteId,
+    pub vertex: usize,
+    pub interior_leaf: bool,
+    pub window_violation: bool,
+    pub candidate_rank: Option<usize>,
+    pub ranked_beyond_64: bool,
+    pub trial_count: usize,
+    pub any_valid_trial: bool,
+    pub any_fully_acceptable_trial: bool,
+    pub committed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DegreeFourRetirementTrial {
+    pub site_id: SiteId,
+    pub vertex: usize,
+    pub trial_index: u8,
+    pub ring_site_ids: Option<[SiteId; 4]>,
+    pub diagonal_site_ids: Option<[SiteId; 2]>,
+    pub geometry: DegreeFourCheckStatus,
+    pub hard_gate: DegreeFourCheckStatus,
+    pub physical_demand: DegreeFourCheckStatus,
+    pub scale_balance: DegreeFourCheckStatus,
+    pub no_new_low_degree: DegreeFourCheckStatus,
+    pub angle_count: DegreeFourCheckStatus,
+    pub worst_deviation: DegreeFourCheckStatus,
+    pub penalty: DegreeFourCheckStatus,
+    pub eta: DegreeFourCheckStatus,
+    pub margin: DegreeFourCheckStatus,
+    pub conservative_remap: DegreeFourCheckStatus,
+    pub fully_acceptable: bool,
 }

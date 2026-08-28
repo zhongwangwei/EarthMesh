@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage};
 
 pub(crate) const ENV_VAR: &str = "EARTHMESH_HARP_TRACE_JSONL";
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 pub(crate) const STAGE_COUNT: usize = 7;
 
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -217,6 +217,11 @@ impl<W: Write> TraceLineWriter<W> {
             balance_demands_remaining: report.balance_demands_remaining,
             unbalanced_pairs_remaining: report.unbalanced_pairs_remaining,
             unresolved_cells: report.unresolved_count,
+            d4_leaf_retirement_audit_evaluated: report.d4_leaf_retirement_audit_evaluated,
+            d4_leaf_retirement_sites_audited: report.d4_leaf_retirement_candidates,
+            d4_leaf_retirement_trials_evaluated: report.d4_leaf_retirement_trials_total,
+            d4_leaf_retirement_sites_committed: report.d4_leaf_retirement_committed,
+            d4_leaf_retirement_sites_fully_acceptable: report.d4_leaf_retirement_fully_acceptable,
         })
     }
 }
@@ -243,6 +248,15 @@ pub(crate) fn write_core_event(
                 stage_name: stage.name(),
                 reason,
             }),
+        earthmesh_refine_harp_dv::HarpTraceEvent::DegreeFourRetirementSummary(summary) => {
+            session.write_event(&JsonDegreeFourRetirementSummary::from_summary(summary))
+        }
+        earthmesh_refine_harp_dv::HarpTraceEvent::DegreeFourRetirementSite(site) => {
+            session.write_event(&JsonDegreeFourRetirementSite::from_site(site))
+        }
+        earthmesh_refine_harp_dv::HarpTraceEvent::DegreeFourRetirementTrial(trial) => {
+            session.write_event(&JsonDegreeFourRetirementTrial::from_trial(trial))
+        }
     }
 }
 
@@ -381,6 +395,187 @@ impl JsonAngleViolation {
 }
 
 #[derive(Serialize)]
+struct JsonDegreeFourRetirementSummary {
+    record_type: &'static str,
+    evaluated: bool,
+    sites_total: usize,
+    sites_not_leaf: usize,
+    sites_eligible: usize,
+    sites_without_window_violation: usize,
+    sites_audited: usize,
+    sites_ranked_beyond_64: usize,
+    sites_with_any_valid_trial: usize,
+    sites_with_any_fully_acceptable_trial: usize,
+    sites_committed: usize,
+    trials_total: usize,
+    checks: JsonDegreeFourRetirementCheckCounts,
+    trials_quality_improving: usize,
+    trials_fully_acceptable: usize,
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourCheckCounts {
+    pass: usize,
+    fail: usize,
+    not_evaluated: usize,
+}
+
+impl JsonDegreeFourCheckCounts {
+    fn from_counts(counts: &earthmesh_refine_harp_dv::DegreeFourCheckCounts) -> Self {
+        Self {
+            pass: counts.pass,
+            fail: counts.fail,
+            not_evaluated: counts.not_evaluated,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourRetirementCheckCounts {
+    geometry: JsonDegreeFourCheckCounts,
+    hard_gate: JsonDegreeFourCheckCounts,
+    physical_demand: JsonDegreeFourCheckCounts,
+    scale_balance: JsonDegreeFourCheckCounts,
+    no_new_low_degree: JsonDegreeFourCheckCounts,
+    angle_count: JsonDegreeFourCheckCounts,
+    worst_deviation: JsonDegreeFourCheckCounts,
+    penalty: JsonDegreeFourCheckCounts,
+    eta: JsonDegreeFourCheckCounts,
+    margin: JsonDegreeFourCheckCounts,
+    conservative_remap: JsonDegreeFourCheckCounts,
+}
+
+impl JsonDegreeFourRetirementCheckCounts {
+    fn from_counts(counts: &earthmesh_refine_harp_dv::DegreeFourRetirementCheckCounts) -> Self {
+        Self {
+            geometry: JsonDegreeFourCheckCounts::from_counts(&counts.geometry),
+            hard_gate: JsonDegreeFourCheckCounts::from_counts(&counts.hard_gate),
+            physical_demand: JsonDegreeFourCheckCounts::from_counts(&counts.physical_demand),
+            scale_balance: JsonDegreeFourCheckCounts::from_counts(&counts.scale_balance),
+            no_new_low_degree: JsonDegreeFourCheckCounts::from_counts(&counts.no_new_low_degree),
+            angle_count: JsonDegreeFourCheckCounts::from_counts(&counts.angle_count),
+            worst_deviation: JsonDegreeFourCheckCounts::from_counts(&counts.worst_deviation),
+            penalty: JsonDegreeFourCheckCounts::from_counts(&counts.penalty),
+            eta: JsonDegreeFourCheckCounts::from_counts(&counts.eta),
+            margin: JsonDegreeFourCheckCounts::from_counts(&counts.margin),
+            conservative_remap: JsonDegreeFourCheckCounts::from_counts(&counts.conservative_remap),
+        }
+    }
+}
+
+impl JsonDegreeFourRetirementSummary {
+    fn from_summary(summary: &earthmesh_refine_harp_dv::DegreeFourRetirementSummary) -> Self {
+        Self {
+            record_type: "degree_four_retirement_summary",
+            evaluated: summary.evaluated,
+            sites_total: summary.sites_total,
+            sites_not_leaf: summary.sites_not_leaf,
+            sites_eligible: summary.sites_eligible,
+            sites_without_window_violation: summary.sites_without_window_violation,
+            sites_audited: summary.sites_audited,
+            sites_ranked_beyond_64: summary.sites_ranked_beyond_64,
+            sites_with_any_valid_trial: summary.sites_with_any_valid_trial,
+            sites_with_any_fully_acceptable_trial: summary.sites_with_any_fully_acceptable_trial,
+            sites_committed: summary.sites_committed,
+            trials_total: summary.trials_total,
+            checks: JsonDegreeFourRetirementCheckCounts::from_counts(&summary.checks),
+            trials_quality_improving: summary.trials_quality_improving,
+            trials_fully_acceptable: summary.trials_fully_acceptable,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourRetirementSite {
+    record_type: &'static str,
+    site_id: u64,
+    vertex: usize,
+    interior_leaf: bool,
+    window_violation: bool,
+    candidate_rank: Option<usize>,
+    ranked_beyond_64: bool,
+    trial_count: usize,
+    any_valid_trial: bool,
+    any_fully_acceptable_trial: bool,
+    committed: bool,
+}
+
+impl JsonDegreeFourRetirementSite {
+    fn from_site(site: &earthmesh_refine_harp_dv::DegreeFourRetirementSite) -> Self {
+        Self {
+            record_type: "degree_four_retirement_site",
+            site_id: site.site_id.0,
+            vertex: site.vertex,
+            interior_leaf: site.interior_leaf,
+            window_violation: site.window_violation,
+            candidate_rank: site.candidate_rank,
+            ranked_beyond_64: site.ranked_beyond_64,
+            trial_count: site.trial_count,
+            any_valid_trial: site.any_valid_trial,
+            any_fully_acceptable_trial: site.any_fully_acceptable_trial,
+            committed: site.committed,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourRetirementTrial {
+    record_type: &'static str,
+    site_id: u64,
+    vertex: usize,
+    trial_index: u8,
+    ring_site_ids: Option<[u64; 4]>,
+    diagonal_site_ids: Option<[u64; 2]>,
+    geometry: &'static str,
+    hard_gate: &'static str,
+    physical_demand: &'static str,
+    scale_balance: &'static str,
+    no_new_low_degree: &'static str,
+    angle_count: &'static str,
+    worst_deviation: &'static str,
+    penalty: &'static str,
+    eta: &'static str,
+    margin: &'static str,
+    conservative_remap: &'static str,
+    fully_acceptable: bool,
+}
+
+impl JsonDegreeFourRetirementTrial {
+    fn from_trial(trial: &earthmesh_refine_harp_dv::DegreeFourRetirementTrial) -> Self {
+        Self {
+            record_type: "degree_four_retirement_trial",
+            site_id: trial.site_id.0,
+            vertex: trial.vertex,
+            trial_index: trial.trial_index,
+            ring_site_ids: trial.ring_site_ids.map(|sites| sites.map(|site| site.0)),
+            diagonal_site_ids: trial
+                .diagonal_site_ids
+                .map(|sites| sites.map(|site| site.0)),
+            geometry: check_status(trial.geometry),
+            hard_gate: check_status(trial.hard_gate),
+            physical_demand: check_status(trial.physical_demand),
+            scale_balance: check_status(trial.scale_balance),
+            no_new_low_degree: check_status(trial.no_new_low_degree),
+            angle_count: check_status(trial.angle_count),
+            worst_deviation: check_status(trial.worst_deviation),
+            penalty: check_status(trial.penalty),
+            eta: check_status(trial.eta),
+            margin: check_status(trial.margin),
+            conservative_remap: check_status(trial.conservative_remap),
+            fully_acceptable: trial.fully_acceptable,
+        }
+    }
+}
+
+fn check_status(status: earthmesh_refine_harp_dv::DegreeFourCheckStatus) -> &'static str {
+    match status {
+        earthmesh_refine_harp_dv::DegreeFourCheckStatus::Pass => "pass",
+        earthmesh_refine_harp_dv::DegreeFourCheckStatus::Fail => "fail",
+        earthmesh_refine_harp_dv::DegreeFourCheckStatus::NotEvaluated => "not_evaluated",
+    }
+}
+
+#[derive(Serialize)]
 struct JsonPhaseSkipped<'a> {
     record_type: &'static str,
     stage_index: u8,
@@ -441,6 +636,11 @@ struct RunEnd {
     balance_demands_remaining: usize,
     unbalanced_pairs_remaining: usize,
     unresolved_cells: usize,
+    d4_leaf_retirement_audit_evaluated: bool,
+    d4_leaf_retirement_sites_audited: usize,
+    d4_leaf_retirement_trials_evaluated: usize,
+    d4_leaf_retirement_sites_committed: usize,
+    d4_leaf_retirement_sites_fully_acceptable: usize,
 }
 
 #[cfg(test)]
@@ -806,6 +1006,126 @@ mod tests {
         assert_eq!(rows[2]["record_type"], "stage_summary");
         assert_eq!(rows[2]["stage_summary_count"], Value::Null);
         assert_eq!(rows.last().unwrap()["stage_summary_count"], STAGE_COUNT);
+    }
+
+    #[test]
+    fn degree_four_audit_events_are_stable_snake_case_json() {
+        use earthmesh_refine_harp_dv::{
+            DegreeFourCheckCounts, DegreeFourCheckStatus, DegreeFourRetirementCheckCounts,
+            DegreeFourRetirementSite, DegreeFourRetirementSummary, DegreeFourRetirementTrial,
+            HarpTraceEvent, SiteId,
+        };
+        let target = temp_path("d4.jsonl");
+        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        write_core_event(
+            &mut session,
+            &HarpTraceEvent::DegreeFourRetirementSummary(DegreeFourRetirementSummary {
+                evaluated: true,
+                sites_total: 3,
+                sites_not_leaf: 1,
+                sites_eligible: 2,
+                sites_without_window_violation: 1,
+                sites_audited: 1,
+                sites_ranked_beyond_64: 0,
+                sites_with_any_valid_trial: 1,
+                sites_with_any_fully_acceptable_trial: 0,
+                sites_committed: 0,
+                trials_total: 2,
+                checks: DegreeFourRetirementCheckCounts {
+                    geometry: DegreeFourCheckCounts {
+                        pass: 1,
+                        fail: 1,
+                        not_evaluated: 0,
+                    },
+                    hard_gate: DegreeFourCheckCounts {
+                        pass: 1,
+                        fail: 0,
+                        not_evaluated: 1,
+                    },
+                    physical_demand: DegreeFourCheckCounts {
+                        pass: 0,
+                        fail: 1,
+                        not_evaluated: 1,
+                    },
+                    ..DegreeFourRetirementCheckCounts::default()
+                },
+                trials_quality_improving: 0,
+                trials_fully_acceptable: 0,
+            }),
+        )
+        .unwrap();
+        write_core_event(
+            &mut session,
+            &HarpTraceEvent::DegreeFourRetirementSite(DegreeFourRetirementSite {
+                site_id: SiteId(10),
+                vertex: 12,
+                interior_leaf: true,
+                window_violation: true,
+                candidate_rank: Some(4),
+                ranked_beyond_64: false,
+                trial_count: 2,
+                any_valid_trial: true,
+                any_fully_acceptable_trial: false,
+                committed: false,
+            }),
+        )
+        .unwrap();
+        write_core_event(
+            &mut session,
+            &HarpTraceEvent::DegreeFourRetirementTrial(DegreeFourRetirementTrial {
+                site_id: SiteId(10),
+                vertex: 12,
+                trial_index: 1,
+                ring_site_ids: Some([SiteId(1), SiteId(2), SiteId(3), SiteId(4)]),
+                diagonal_site_ids: Some([SiteId(2), SiteId(4)]),
+                geometry: DegreeFourCheckStatus::Pass,
+                hard_gate: DegreeFourCheckStatus::Fail,
+                physical_demand: DegreeFourCheckStatus::NotEvaluated,
+                scale_balance: DegreeFourCheckStatus::Pass,
+                no_new_low_degree: DegreeFourCheckStatus::Pass,
+                angle_count: DegreeFourCheckStatus::Fail,
+                worst_deviation: DegreeFourCheckStatus::Pass,
+                penalty: DegreeFourCheckStatus::Fail,
+                eta: DegreeFourCheckStatus::Pass,
+                margin: DegreeFourCheckStatus::Pass,
+                conservative_remap: DegreeFourCheckStatus::NotEvaluated,
+                fully_acceptable: false,
+            }),
+        )
+        .unwrap();
+        write_dummy_stage_summaries(&mut session);
+        let mut report = test_report();
+        report.d4_leaf_retirement_audit_evaluated = true;
+        report.d4_leaf_retirement_candidates = 1;
+        report.d4_leaf_retirement_trials_total = 2;
+        report.d4_leaf_retirement_triangulations = 2;
+        report.d4_leaf_retirement_fully_acceptable = 0;
+        session.publish(&report).unwrap();
+        let rows = jsonl(&target);
+        assert_eq!(rows[1]["record_type"], "degree_four_retirement_summary");
+        assert_eq!(rows[1]["evaluated"], true);
+        assert_eq!(rows[1]["sites_total"], 3);
+        assert_eq!(rows[1]["checks"]["geometry"]["pass"], 1);
+        assert_eq!(rows[1]["checks"]["geometry"]["fail"], 1);
+        assert_eq!(rows[1]["checks"]["hard_gate"]["not_evaluated"], 1);
+        assert_eq!(rows[2]["record_type"], "degree_four_retirement_site");
+        assert_eq!(rows[2]["site_id"], 10);
+        assert_eq!(rows[2]["candidate_rank"], 4);
+        assert_eq!(rows[2]["trial_count"], 2);
+        assert_eq!(rows[3]["record_type"], "degree_four_retirement_trial");
+        assert_eq!(rows[3]["ring_site_ids"], serde_json::json!([1, 2, 3, 4]));
+        assert_eq!(rows[3]["diagonal_site_ids"], serde_json::json!([2, 4]));
+        assert_eq!(rows[3]["geometry"], "pass");
+        assert_eq!(rows[3]["hard_gate"], "fail");
+        assert_eq!(rows[3]["physical_demand"], "not_evaluated");
+        assert_eq!(
+            rows.last().unwrap()["d4_leaf_retirement_audit_evaluated"],
+            true
+        );
+        assert_eq!(
+            rows.last().unwrap()["d4_leaf_retirement_trials_evaluated"],
+            2
+        );
     }
 
     #[test]

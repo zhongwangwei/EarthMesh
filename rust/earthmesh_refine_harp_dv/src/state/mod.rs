@@ -369,6 +369,16 @@ impl AdaptiveMesh {
         Ok(report)
     }
 
+    pub(crate) fn retirement_has_conservative_remap(
+        &self,
+        after: &MeshState,
+        vertex: usize,
+        report: &RetirementReport,
+    ) -> bool {
+        conservative_remap_for_retirement(&self.state, after, &self.vertex_site_ids, vertex, report)
+            .is_some()
+    }
+
     #[cfg(test)]
     pub(crate) fn retire_degree_four_leaf_transactionally(
         &mut self,

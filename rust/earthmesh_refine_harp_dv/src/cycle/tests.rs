@@ -103,7 +103,7 @@ fn demanded_cells(state: &MeshState, criteria: &[Box<dyn CellCriterion>]) -> usi
 }
 
 #[test]
-fn clone_degree_four_leaf_retirement_has_a_quality_improving_candidate() {
+fn production_degree_four_retirement_has_a_quality_improving_candidate() {
     let mesh = sphere(6);
     let source = mesh.state().clone();
     let parent = 20;
@@ -147,31 +147,31 @@ fn clone_degree_four_leaf_retirement_has_a_quality_improving_candidate() {
         .fold(f64::MAX, f64::min);
     let criteria = target(coarsest_scale(&trial) * 2.0, TargetRegion::Global);
     let before_demands = demanded_cells(trial.state(), &criteria);
-    let candidates = clone_without_degree_four_site(trial.state(), leaf);
-    let survivor = candidates.into_iter().find_map(|(candidate, _)| {
-        let after_margin = all_triangle_window_margins(&candidate)
-            .and_then(|margins| margins.first().copied())
-            .unwrap_or(f64::MIN);
-        let degrees_ok = candidate.active_vertex_slots().all(|site| {
-            candidate
-                .vertex_degree(site)
-                .is_ok_and(|degree| degree <= 7)
-        });
-        let angle_floor_ok = candidate.active_triangle_slots().all(|triangle| {
-            let corners = candidate.triangles()[triangle];
-            crate::criteria::smallest_triangle_angle_deg([
-                candidate.vertices()[corners[0]],
-                candidate.vertices()[corners[1]],
-                candidate.vertices()[corners[2]],
-            ]) >= 25.0
-        });
-        (after_margin > before_margin
-            && degrees_ok
-            && angle_floor_ok
-            && demanded_cells(&candidate, &criteria) <= before_demands)
-            .then_some(candidate)
-    });
-    let retired = survivor.expect("one diagonal improves quality without breaking the hard gates");
+    let mut retired = trial.state().clone();
+    retired
+        .retire_degree_four_vertex_transactionally(leaf, |candidate, _| {
+            let after_margin = all_triangle_window_margins(candidate)
+                .and_then(|margins| margins.first().copied())
+                .unwrap_or(f64::MIN);
+            let degrees_ok = candidate.active_vertex_slots().all(|site| {
+                candidate
+                    .vertex_degree(site)
+                    .is_ok_and(|degree| degree <= 7)
+            });
+            let angle_floor_ok = candidate.active_triangle_slots().all(|triangle| {
+                let corners = candidate.triangles()[triangle];
+                crate::criteria::smallest_triangle_angle_deg([
+                    candidate.vertices()[corners[0]],
+                    candidate.vertices()[corners[1]],
+                    candidate.vertices()[corners[2]],
+                ]) >= 25.0
+            });
+            after_margin > before_margin
+                && degrees_ok
+                && angle_floor_ok
+                && demanded_cells(candidate, &criteria) <= before_demands
+        })
+        .expect("one diagonal improves quality without breaking the hard gates");
 
     assert_eq!(
         trial.state(),
@@ -190,7 +190,7 @@ fn clone_degree_four_leaf_retirement_has_a_quality_improving_candidate() {
 }
 
 #[test]
-fn retirement_audit_reads_clones_without_mutating_the_mesh() {
+fn retirement_audit_reads_production_trials_without_mutating_the_mesh() {
     let parent = 20;
     let mut fixture = None;
     'search: for lon in (-160..=160).step_by(20) {
@@ -219,13 +219,102 @@ fn retirement_audit_reads_clones_without_mutating_the_mesh() {
     let before = trial.state().clone();
     let criteria = target(coarsest_scale(&trial) * 2.0, TargetRegion::Global);
     let leaves = leaf_lineage_survey(&trial, &criteria);
-    let audit =
-        degree_four_retirement_audit(&trial, &criteria, permissive(), limits(1, 100_000), &leaves);
+    let audit = degree_four_retirement_audit(
+        &trial,
+        &criteria,
+        permissive(),
+        limits(1, 100_000),
+        &leaves,
+        4,
+    )
+    .expect("audit");
 
-    assert_eq!(audit.candidates, 1);
-    assert!(audit.triangulations > 0);
-    assert!(audit.hard_gate_safe > 0);
+    assert!(audit.summary.evaluated);
+    assert_eq!(
+        audit.summary.sites_total,
+        audit.summary.sites_not_leaf + audit.summary.sites_eligible
+    );
+    assert_eq!(
+        audit.summary.sites_eligible,
+        audit.summary.sites_without_window_violation + audit.summary.sites_audited
+    );
+    assert_eq!(audit.summary.sites_audited, 1);
+    assert_eq!(audit.sites.len(), audit.summary.sites_total);
+    assert_eq!(audit.trials.len(), audit.summary.trials_total);
+    assert_eq!(audit.summary.trials_total, 2);
+    assert_eq!(audit.sites[0].trial_count, 2);
+    assert!(audit.summary.checks.geometry.pass > 0);
+    assert!(audit.summary.checks.hard_gate.pass > 0);
+    assert_eq!(
+        audit.summary.sites_with_any_valid_trial,
+        audit
+            .sites
+            .iter()
+            .filter(|site| site.any_valid_trial)
+            .count()
+    );
+    assert_eq!(
+        audit.summary.checks.geometry.pass,
+        audit
+            .trials
+            .iter()
+            .filter(|trial| trial.geometry == DegreeFourCheckStatus::Pass)
+            .count()
+    );
+    assert!(audit
+        .trials
+        .windows(2)
+        .all(|pair| pair[0].site_id < pair[1].site_id
+            || (pair[0].site_id == pair[1].site_id && pair[0].trial_index < pair[1].trial_index)));
+    for counts in [
+        &audit.summary.checks.geometry,
+        &audit.summary.checks.hard_gate,
+        &audit.summary.checks.physical_demand,
+        &audit.summary.checks.scale_balance,
+        &audit.summary.checks.no_new_low_degree,
+        &audit.summary.checks.angle_count,
+        &audit.summary.checks.worst_deviation,
+        &audit.summary.checks.penalty,
+        &audit.summary.checks.eta,
+        &audit.summary.checks.margin,
+        &audit.summary.checks.conservative_remap,
+    ] {
+        assert_eq!(
+            counts.pass + counts.fail + counts.not_evaluated,
+            audit.summary.trials_total
+        );
+    }
     assert_eq!(trial.state(), &before);
+}
+
+#[test]
+fn geometry_failure_leaves_downstream_checks_not_evaluated() {
+    let trial = unevaluated_degree_four_trial(
+        DegreeFourTrialIdentity {
+            index: 0,
+            ring_site_ids: None,
+            diagonal_site_ids: None,
+            diagonal_vertices: None,
+        },
+        SiteId(7),
+        11,
+    );
+    assert_eq!(trial.geometry, DegreeFourCheckStatus::Fail);
+    assert!([
+        trial.hard_gate,
+        trial.physical_demand,
+        trial.scale_balance,
+        trial.no_new_low_degree,
+        trial.angle_count,
+        trial.worst_deviation,
+        trial.penalty,
+        trial.eta,
+        trial.margin,
+        trial.conservative_remap,
+    ]
+    .into_iter()
+    .all(|check| check == DegreeFourCheckStatus::NotEvaluated));
+    assert!(!trial.fully_acceptable);
 }
 
 #[test]
@@ -3591,7 +3680,8 @@ fn quality_leaf_retirement_schedules_and_commits_a_degree_three_leaf() {
         3,
     );
 
-    assert_eq!(counts, (1, 0));
+    assert_eq!((counts.0, counts.1), (1, 0));
+    assert!(counts.2.is_empty());
     assert!(vertices_below_degree_5_set(mesh.state()).len() < before_low_degree.len());
     let after_angles = angle_window_survey(mesh.state());
     assert!(
@@ -3655,7 +3745,7 @@ fn leaf_retirement_on_the_production_checkpoint() {
 
     let mut mesh = start.clone();
     let started = std::time::Instant::now();
-    let (committed, committed_d4) =
+    let (committed, committed_d4, _) =
         retire_quality_leaf_sites(&mut mesh, &criteria, gates, limits, &leaves, maximum_degree);
     let runtime_s = started.elapsed().as_secs_f64();
 
@@ -3723,7 +3813,7 @@ fn leaf_retirement_on_the_production_checkpoint() {
     );
     assert_eq!(
         (committed, committed_d4),
-        repeat_counts,
+        (repeat_counts.0, repeat_counts.1),
         "retirement is not deterministic"
     );
     assert!(

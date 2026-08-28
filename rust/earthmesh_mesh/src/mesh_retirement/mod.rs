@@ -103,6 +103,24 @@ impl From<Ambiguous> for RetirementError {
 }
 
 impl MeshState {
+    /// Return the production retirement ring for one live degree-four vertex.
+    pub fn degree_four_ring(&self, vertex: usize) -> Result<[usize; 4], RetirementError> {
+        let seed = self
+            .active_triangle_slots()
+            .find(|&triangle| self.triangles()[triangle].contains(&vertex))
+            .ok_or(RetirementError::NotDegreeFour { vertex, degree: 0 })?;
+        let fan = self
+            .triangle_fan_from(vertex, seed)
+            .map_err(RetirementError::Fan)?;
+        if fan.len() != 4 {
+            return Err(RetirementError::NotDegreeFour {
+                vertex,
+                degree: fan.len(),
+            });
+        }
+        four_ring(self, vertex, &fan)
+    }
+
     /// Retire one live interior vertex of degree 3..=7 transactionally.
     pub fn retire_vertex_transactionally(
         &mut self,
@@ -153,17 +171,7 @@ impl MeshState {
         vertex: usize,
         postcondition: impl FnMut(&Self, &RetirementReport) -> bool,
     ) -> Result<RetirementReport, RetirementError> {
-        let seed = self
-            .active_triangle_slots()
-            .find(|&triangle| self.triangles()[triangle].contains(&vertex))
-            .ok_or(RetirementError::NotDegreeFour { vertex, degree: 0 })?;
-        let degree = self
-            .triangle_fan_from(vertex, seed)
-            .map_err(RetirementError::Fan)?
-            .len();
-        if degree != 4 {
-            return Err(RetirementError::NotDegreeFour { vertex, degree });
-        }
+        self.degree_four_ring(vertex)?;
         self.retire_vertex_transactionally(vertex, postcondition)
     }
 }
@@ -383,7 +391,6 @@ fn polygon_ring(
     Ok(ring)
 }
 
-#[allow(dead_code)]
 fn four_ring(
     state: &MeshState,
     vertex: usize,

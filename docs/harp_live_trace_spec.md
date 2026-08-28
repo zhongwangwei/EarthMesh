@@ -1,7 +1,7 @@
 # HARP-DV 生产归因 trace：PR20a 微规格
 
 日期：2026-08-27
-状态：PR20a 实施规格
+状态：PR20a/PR20b 实施规格
 范围：只建立可复现的生产归因链，不改变网格决策
 
 ## 1. 目的与非目标
@@ -12,8 +12,8 @@ PR20a 回答以下问题：
 - 最终越界角对应的稳定站点身份、degree、谱系和候选来源；
 - 相同输入是否产生语义相同且排序稳定的证据。
 
-PR20a **不**实现 degree-4 逐 trial 拒绝审计、二环 patch、cavity 搜索、delta cache、
-StrictWindow 或新的放点算法。degree-4 site/trial 审计留给 PR20b。
+PR20a 不改变网格决策；PR20b 只增加 degree-4 site/trial 只读审计。二环 patch、cavity 搜索、
+delta cache、StrictWindow 或新的放点算法仍不在本规格内。
 
 ## 2. 分层
 
@@ -107,6 +107,9 @@ PR20a 的 `CandidateSource` 表示发起插入的 ladder candidate。受保护 s
 - `angle_violation`
 - `phase_skipped`
 - `harp_run_end`
+- `degree_four_retirement_summary`
+- `degree_four_retirement_site`
+- `degree_four_retirement_trial`
 
 `run_header` 至少包含 schema version、backend 和理论 stage 数。发布层必须验证七条
 `stage_summary` 严格按 S0-S6 唯一、有序出现，不能只核对数量。
@@ -114,6 +117,14 @@ PR20a 的 `CandidateSource` 表示发起插入的 ladder candidate。受保护 s
 `harp_run_end` 至少包含各事件计数、实际 stage-summary 数、stop reason、完成 cycle 数、最终
 site 数，以及 physical demand、balance demand、unbalanced pair 和 unresolved cell 残差。
 `harp_run_end` 只表示 HARP 计算和 trace 完整结束，不表示最终 NetCDF gridfile 已成功写出。
+
+启用 `EARTHMESH_HARP_D4_RETIREMENT_AUDIT` 且 mesh 无 protected segment 时，PR20b 额外写 degree-4
+retirement audit：summary 区分 `sites_total`、`sites_not_leaf`、`sites_eligible`、
+`sites_without_window_violation`、`sites_audited`、`sites_ranked_beyond_64`、site-level 成功数和 trial-level
+成功数；每个 audited site 写两条 trial，trial 身份为 `site_id + trial_index`，并包含 ring/diagonal SiteId。
+trial 直接复用生产 retirement transaction 和 conservative-remap 构造。检查状态只能是 `pass`、`fail`、
+`not_evaluated`；summary 对每项分别计数，且三者之和必须等于 `trials_total`，不得用零计数冒充
+“已评估但没有通过”。
 
 非有限浮点不得进入 JSON number；输出 `null` 并带 `measurable=false`。
 

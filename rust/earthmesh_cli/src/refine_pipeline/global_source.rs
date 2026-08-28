@@ -1357,7 +1357,9 @@ pub struct HarpDvRunRecord {
     pub angles_above_80_at_interior_leaf_vertices: usize,
     pub violating_triangles_touching_leaf: usize,
     pub violating_triangles_touching_interior_leaf: usize,
+    pub d4_leaf_retirement_audit_evaluated: bool,
     pub d4_leaf_retirement_candidates: usize,
+    pub d4_leaf_retirement_trials_total: usize,
     pub d4_leaf_retirement_triangulations: usize,
     pub d4_leaf_retirement_hard_gate_safe: usize,
     pub d4_leaf_retirement_physical_safe: usize,
@@ -2589,7 +2591,9 @@ fn refine_with_harp_dv(
             violating_triangles_touching_interior_leaf: outcome
                 .report
                 .violating_triangles_touching_interior_leaf,
+            d4_leaf_retirement_audit_evaluated: outcome.report.d4_leaf_retirement_audit_evaluated,
             d4_leaf_retirement_candidates: outcome.report.d4_leaf_retirement_candidates,
+            d4_leaf_retirement_trials_total: outcome.report.d4_leaf_retirement_trials_total,
             d4_leaf_retirement_triangulations: outcome.report.d4_leaf_retirement_triangulations,
             d4_leaf_retirement_hard_gate_safe: outcome.report.d4_leaf_retirement_hard_gate_safe,
             d4_leaf_retirement_physical_safe: outcome.report.d4_leaf_retirement_physical_safe,
