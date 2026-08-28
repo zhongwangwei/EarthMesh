@@ -2128,8 +2128,10 @@ fn evaluate_degree_four_trials(
         })
         .collect::<BTreeMap<_, _>>();
     let mut probe = mesh.state().clone();
+    let mut identity_error = None;
     let _ = probe.retire_degree_four_vertex_transactionally(site, |candidate, report| {
         let Some(diagonal) = report.diagonal else {
+            identity_error = Some("production degree-four trial has no diagonal");
             return false;
         };
         let key = if diagonal.tail < diagonal.head {
@@ -2137,27 +2139,39 @@ fn evaluate_degree_four_trials(
         } else {
             (diagonal.head, diagonal.tail)
         };
-        if let Some(&index) = by_diagonal.get(&key) {
-            trials[index] = evaluate_degree_four_trial(
-                mesh,
-                identities[index],
-                site_id,
-                site,
-                candidate,
-                report,
-                before_demands,
-                before_balance,
-                before_angles,
-                before_vertices_below_degree_5,
-                before_eta,
-                before_margin,
-                criteria,
-                gates,
-                limits,
-            );
+        let Some(&index) = by_diagonal.get(&key) else {
+            identity_error = Some("production degree-four trial has an unknown diagonal");
+            return false;
+        };
+        if trials[index].geometry == DegreeFourCheckStatus::Pass {
+            identity_error = Some("production degree-four trial repeated a diagonal");
+            return false;
         }
+        trials[index] = evaluate_degree_four_trial(
+            mesh,
+            identities[index],
+            site_id,
+            site,
+            candidate,
+            report,
+            before_demands,
+            before_balance,
+            before_angles,
+            before_vertices_below_degree_5,
+            before_eta,
+            before_margin,
+            criteria,
+            gates,
+            limits,
+        );
         false
     });
+    if let Some(message) = identity_error {
+        return Err(crate::error::HarpDvError::TopologyViolation(format!(
+            "degree-four audit site {}: {message}",
+            site_id.0
+        )));
+    }
     Ok(trials.into())
 }
 
