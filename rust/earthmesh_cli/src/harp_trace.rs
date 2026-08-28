@@ -1,24 +1,52 @@
 use serde::Serialize;
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage};
+use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage, WindowBudgetAuditMode};
 
 pub(crate) const ENV_VAR: &str = "EARTHMESH_HARP_TRACE_JSONL";
+pub(crate) const WINDOW_BUDGET_AB_ENV_VAR: &str = "EARTHMESH_HARP_WINDOW_BUDGET_AB";
+const LEAF_RETIREMENT_ENV_VAR: &str = "EARTHMESH_HARP_LEAF_RETIREMENT";
 pub(crate) const SCHEMA_VERSION: u32 = 4;
 pub(crate) const STAGE_COUNT: usize = 7;
 
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn from_env() -> io::Result<Option<HarpTraceSession>> {
-    from_env_value(env::var_os(ENV_VAR))
+    from_env_values(
+        env::var_os(ENV_VAR),
+        env::var_os(WINDOW_BUDGET_AB_ENV_VAR),
+        env::var_os(LEAF_RETIREMENT_ENV_VAR),
+    )
 }
 
-fn from_env_value(value: Option<std::ffi::OsString>) -> io::Result<Option<HarpTraceSession>> {
-    let Some(value) = value else {
+fn from_env_values(
+    trace_path: Option<OsString>,
+    window_budget_ab: Option<OsString>,
+    leaf_retirement: Option<OsString>,
+) -> io::Result<Option<HarpTraceSession>> {
+    let window_budget_audit = parse_window_budget_audit_mode(window_budget_ab)?;
+    if window_budget_audit.is_enabled() && leaf_retirement.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{WINDOW_BUDGET_AB_ENV_VAR} cannot be combined with {LEAF_RETIREMENT_ENV_VAR}; \
+                 the audit compares the shipped degree-4 S6 path"
+            ),
+        ));
+    }
+
+    let Some(value) = trace_path else {
+        if window_budget_audit.is_enabled() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{WINDOW_BUDGET_AB_ENV_VAR} requires {ENV_VAR}"),
+            ));
+        }
         return Ok(None);
     };
     let target = PathBuf::from(value);
@@ -28,17 +56,32 @@ fn from_env_value(value: Option<std::ffi::OsString>) -> io::Result<Option<HarpTr
             format!("{ENV_VAR} must be an absolute path"),
         ));
     }
-    HarpTraceSession::create(target).map(Some)
+    HarpTraceSession::create(target, window_budget_audit).map(Some)
+}
+
+fn parse_window_budget_audit_mode(value: Option<OsString>) -> io::Result<WindowBudgetAuditMode> {
+    match value {
+        None => Ok(WindowBudgetAuditMode::Off),
+        Some(value) if value == "1" => Ok(WindowBudgetAuditMode::W32W64W96),
+        Some(value) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{WINDOW_BUDGET_AB_ENV_VAR} must be exactly 1 when set, got {:?}",
+                value.to_string_lossy()
+            ),
+        )),
+    }
 }
 
 pub(crate) struct HarpTraceSession {
     target: PathBuf,
     partial: PathBuf,
     writer: Option<TraceLineWriter<BufWriter<File>>>,
+    window_budget_audit: WindowBudgetAuditMode,
 }
 
 impl HarpTraceSession {
-    fn create(target: PathBuf) -> io::Result<Self> {
+    fn create(target: PathBuf, window_budget_audit: WindowBudgetAuditMode) -> io::Result<Self> {
         match fs::symlink_metadata(&target) {
             Ok(_) => {
                 return Err(io::Error::new(
@@ -79,6 +122,7 @@ impl HarpTraceSession {
                         target,
                         partial,
                         writer: Some(TraceLineWriter::new(BufWriter::new(file))),
+                        window_budget_audit,
                     };
                     session.write_header()?;
                     return Ok(session);
@@ -112,6 +156,10 @@ impl HarpTraceSession {
 
     pub(crate) fn write_event<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
         self.writer_mut()?.write_event(record)
+    }
+
+    pub(crate) fn window_budget_audit_mode(&self) -> WindowBudgetAuditMode {
+        self.window_budget_audit
     }
 
     pub(crate) fn publish(mut self, report: &HarpDvRunReport) -> io::Result<()> {
@@ -804,6 +852,14 @@ struct JsonWindowBudgetArmSummary {
     s6_persisted_s3_cohort_key_count: usize,
     s6_kind_changed_s3_cohort_key_count: usize,
     s6_new_global_angle_key_count: usize,
+    final_pass_found_sites: usize,
+    final_pass_eligible_sites: usize,
+    unique_sites_seen: usize,
+    processed_site_slots: usize,
+    total_line_search_attempt_count: usize,
+    mean_processed_site_slots_per_unique_site: Option<f64>,
+    s4_found_sites: usize,
+    s4_found_sites_never_processed_count: usize,
     final_low_degree_moves: usize,
     default_leaf_retirements: usize,
     wall_time_ms: u64,
@@ -864,6 +920,15 @@ impl JsonWindowBudgetArmSummary {
             s6_persisted_s3_cohort_key_count: summary.s6_persisted_s3_cohort_key_count,
             s6_kind_changed_s3_cohort_key_count: summary.s6_kind_changed_s3_cohort_key_count,
             s6_new_global_angle_key_count: summary.s6_new_global_angle_key_count,
+            final_pass_found_sites: summary.final_pass_found_sites,
+            final_pass_eligible_sites: summary.final_pass_eligible_sites,
+            unique_sites_seen: summary.unique_sites_seen,
+            processed_site_slots: summary.processed_site_slots,
+            total_line_search_attempt_count: summary.total_line_search_attempt_count,
+            mean_processed_site_slots_per_unique_site: summary
+                .mean_processed_site_slots_per_unique_site,
+            s4_found_sites: summary.s4_found_sites,
+            s4_found_sites_never_processed_count: summary.s4_found_sites_never_processed_count,
             final_low_degree_moves: summary.final_low_degree_moves,
             default_leaf_retirements: summary.default_leaf_retirements,
             wall_time_ms: summary.wall_time_ms,
@@ -1070,12 +1135,12 @@ mod tests {
 
     #[test]
     fn missing_env_value_disables_trace() {
-        assert!(from_env_value(None).unwrap().is_none());
+        assert!(from_env_values(None, None, None).unwrap().is_none());
     }
 
     #[test]
     fn relative_env_value_is_rejected() {
-        let error = match from_env_value(Some("trace.jsonl".into())) {
+        let error = match from_env_values(Some("trace.jsonl".into()), None, None) {
             Ok(_) => panic!("relative trace path unexpectedly accepted"),
             Err(error) => error,
         };
@@ -1083,10 +1148,63 @@ mod tests {
     }
 
     #[test]
+    fn window_budget_env_value_is_parsed_without_touching_process_env() {
+        assert_eq!(
+            parse_window_budget_audit_mode(None).unwrap(),
+            WindowBudgetAuditMode::Off
+        );
+        assert_eq!(
+            parse_window_budget_audit_mode(Some("1".into())).unwrap(),
+            WindowBudgetAuditMode::W32W64W96
+        );
+        assert_eq!(
+            parse_window_budget_audit_mode(Some("true".into()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn window_budget_audit_requires_trace_and_excludes_leaf_retirement() {
+        assert_eq!(
+            match from_env_values(None, Some("1".into()), None) {
+                Ok(_) => panic!("window-budget audit unexpectedly ran without trace"),
+                Err(error) => error.kind(),
+            },
+            io::ErrorKind::InvalidInput
+        );
+        let combined = from_env_values(
+            Some(temp_path("trace.jsonl").into_os_string()),
+            Some("1".into()),
+            Some("1".into()),
+        );
+        assert_eq!(
+            match combined {
+                Ok(_) => panic!("window-budget audit unexpectedly allowed leaf retirement"),
+                Err(error) => error.kind(),
+            },
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn trace_session_carries_window_budget_mode() {
+        let target = temp_path("trace-mode.jsonl");
+        let session = from_env_values(Some(target.into_os_string()), Some("1".into()), None)
+            .unwrap()
+            .expect("trace enabled");
+        assert_eq!(
+            session.window_budget_audit_mode(),
+            WindowBudgetAuditMode::W32W64W96
+        );
+    }
+
+    #[test]
     fn existing_target_is_not_overwritten() {
         let target = temp_path("trace.jsonl");
         fs::write(&target, "old\n").unwrap();
-        let error = match HarpTraceSession::create(target.clone()) {
+        let error = match HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off) {
             Ok(_) => panic!("existing trace target unexpectedly accepted"),
             Err(error) => error,
         };
@@ -1099,7 +1217,7 @@ mod tests {
         let target = temp_path("root")
             .with_file_name("missing-parent")
             .join("trace.jsonl");
-        let error = match HarpTraceSession::create(target.clone()) {
+        let error = match HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off) {
             Ok(_) => panic!("trace session unexpectedly created a missing parent"),
             Err(error) => error,
         };
@@ -1110,7 +1228,8 @@ mod tests {
     #[test]
     fn publish_race_does_not_overwrite_target_and_keeps_partial() {
         let target = temp_path("trace.jsonl");
-        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        let mut session =
+            HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
         let partial = session.partial.clone();
         write_dummy_stage_summaries(&mut session);
         fs::write(&target, "sentinel\n").unwrap();
@@ -1126,7 +1245,8 @@ mod tests {
     #[test]
     fn publish_writes_header_seven_summaries_and_run_end() {
         let target = temp_path("trace.jsonl");
-        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        let mut session =
+            HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
         write_dummy_stage_summaries(&mut session);
         let mut report = test_report();
         report.stop_reason = earthmesh_refine_harp_dv::StopReason::MaximumCyclesReached;
@@ -1159,7 +1279,8 @@ mod tests {
     #[test]
     fn json_output_is_deterministic() {
         let write = |target: PathBuf| {
-            let mut session = HarpTraceSession::create(target.clone()).unwrap();
+            let mut session =
+                HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
             session
                 .write_event(&TestRecord {
                     record_type: "angle_violation",
@@ -1179,7 +1300,8 @@ mod tests {
     fn partial_without_run_end_is_not_published() {
         let target = temp_path("trace.jsonl");
         {
-            let mut session = HarpTraceSession::create(target.clone()).unwrap();
+            let mut session =
+                HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
             session
                 .write_event(&TestRecord {
                     record_type: "phase_skipped",
@@ -1201,7 +1323,8 @@ mod tests {
     #[test]
     fn publish_requires_all_stage_summaries() {
         let target = temp_path("incomplete.jsonl");
-        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        let mut session =
+            HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
         let partial = session.partial.clone();
         for stage in HarpTraceStage::ALL.into_iter().take(STAGE_COUNT - 1) {
             session
@@ -1229,7 +1352,8 @@ mod tests {
     fn stage_summaries_must_be_unique_and_ordered() {
         for unexpected in [HarpTraceStage::Input, HarpTraceStage::PostInitialLowDegree] {
             let target = temp_path(unexpected.name());
-            let mut session = HarpTraceSession::create(target.clone()).unwrap();
+            let mut session =
+                HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
             let partial = session.partial.clone();
             session
                 .write_stage_summary(
@@ -1365,7 +1489,8 @@ mod tests {
             triangle_context_angle_exposure,
             violations: vec![violation.clone()],
         };
-        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        let mut session =
+            HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
         write_core_event(
             &mut session,
             &HarpTraceEvent::AngleViolation {
@@ -1459,7 +1584,8 @@ mod tests {
             HarpTraceEvent, SiteId,
         };
         let target = temp_path("d4.jsonl");
-        let mut session = HarpTraceSession::create(target.clone()).unwrap();
+        let mut session =
+            HarpTraceSession::create(target.clone(), WindowBudgetAuditMode::Off).unwrap();
         write_core_event(
             &mut session,
             &HarpTraceEvent::DegreeFourRetirementSummary(DegreeFourRetirementSummary {
@@ -1578,7 +1704,7 @@ mod tests {
             AngleViolation, AngleViolationKind, HarpTraceEvent, HarpTraceStage,
         };
         let target = temp_path("missing-key.jsonl");
-        let mut session = HarpTraceSession::create(target).unwrap();
+        let mut session = HarpTraceSession::create(target, WindowBudgetAuditMode::Off).unwrap();
         let violation = AngleViolation {
             key: None,
             kind: AngleViolationKind::Below40,
@@ -1689,6 +1815,14 @@ mod tests {
                 s6_persisted_s3_cohort_key_count: 7,
                 s6_kind_changed_s3_cohort_key_count: 0,
                 s6_new_global_angle_key_count: 1,
+                final_pass_found_sites: 90,
+                final_pass_eligible_sites: 80,
+                unique_sites_seen: 1_000,
+                processed_site_slots: 2_000,
+                total_line_search_attempt_count: 3_000,
+                mean_processed_site_slots_per_unique_site: Some(2.0),
+                s4_found_sites: 1_200,
+                s4_found_sites_never_processed_count: 200,
                 final_low_degree_moves: 2,
                 default_leaf_retirements: 1,
                 wall_time_ms: 456,
@@ -1701,6 +1835,9 @@ mod tests {
         assert_eq!(arm["stop_reason"], "completed_no_improvement_sweep");
         assert_eq!(arm["s3_violation_key_count"], 100);
         assert_eq!(arm["s6_total_violation_count"], 7);
+        assert_eq!(arm["processed_site_slots"], 2_000);
+        assert_eq!(arm["mean_processed_site_slots_per_unique_site"], 2.0);
+        assert_eq!(arm["s4_found_sites_never_processed_count"], 200);
     }
 
     #[test]

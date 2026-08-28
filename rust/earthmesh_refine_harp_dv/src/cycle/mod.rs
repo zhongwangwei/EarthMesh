@@ -42,7 +42,7 @@ use crate::state::{AdaptiveMesh, SiteId, SiteMobility};
 use crate::trace::{
     DegreeFourCheckStatus, DegreeFourRetirementSite, DegreeFourRetirementSummary,
     DegreeFourRetirementTrial, HarpTraceEvent, HarpTraceStage, WindowBudgetArm,
-    WindowBudgetArmSummary, WindowBudgetPassSummary, WindowBudgetStopReason,
+    WindowBudgetArmSummary, WindowBudgetAuditMode, WindowBudgetPassSummary, WindowBudgetStopReason,
 };
 use crate::transaction::{check, Acceptance, AffectedSites, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
@@ -2717,7 +2717,8 @@ fn quality_problem_sites(
     mesh: &AdaptiveMesh,
     window_first: bool,
     excluded: &BTreeSet<usize>,
-) -> (Vec<usize>, usize, usize) {
+    capture_found_sites: bool,
+) -> (Vec<usize>, usize, usize, Option<BTreeSet<usize>>) {
     let state = mesh.state();
     let mut worst: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
     for triangle in state.active_triangle_slots() {
@@ -2745,6 +2746,12 @@ fn quality_problem_sites(
         .filter(|(site, _)| mesh.can_move_site(*site))
         .collect();
     let found = movable.len();
+    let found_sites = capture_found_sites.then(|| {
+        movable
+            .iter()
+            .map(|(site, _)| *site)
+            .collect::<BTreeSet<_>>()
+    });
     let mut sites: Vec<_> = movable
         .into_iter()
         .filter(|(site, _)| !excluded.contains(site))
@@ -2771,7 +2778,7 @@ fn quality_problem_sites(
         .take(MAXIMUM_QUALITY_SITES_PER_PASS)
         .map(|(site, _)| site)
         .collect();
-    (sites, found, eligible)
+    (sites, found, eligible, found_sites)
 }
 
 #[derive(Clone, Debug)]
@@ -3452,6 +3459,9 @@ fn elapsed_ms_u64(started: std::time::Instant) -> u64 {
 
 #[derive(Clone, Debug)]
 struct WindowBudgetArmResult {
+    pass_count: usize,
+    pass_32_fingerprint: Option<StateFingerprint>,
+    pass_64_fingerprint: Option<StateFingerprint>,
     s4_fingerprint: StateFingerprint,
     s6_fingerprint: StateFingerprint,
 }
@@ -3460,6 +3470,12 @@ struct WindowBudgetRecorder<'a> {
     arm: WindowBudgetArm,
     cohort: &'a WindowBudgetCohort,
     seen_sites: BTreeSet<usize>,
+    last_found_sites: BTreeSet<usize>,
+    last_eligible_sites: usize,
+    processed_site_slots: usize,
+    total_line_search_attempt_count: usize,
+    pass_32_fingerprint: Option<StateFingerprint>,
+    pass_64_fingerprint: Option<StateFingerprint>,
     started: std::time::Instant,
     pass_count: usize,
     stop_reason: WindowBudgetStopReason,
@@ -3471,6 +3487,12 @@ impl<'a> WindowBudgetRecorder<'a> {
             arm,
             cohort,
             seen_sites: BTreeSet::new(),
+            last_found_sites: BTreeSet::new(),
+            last_eligible_sites: 0,
+            processed_site_slots: 0,
+            total_line_search_attempt_count: 0,
+            pass_32_fingerprint: None,
+            pass_64_fingerprint: None,
             started: std::time::Instant::now(),
             pass_count: 0,
             stop_reason: WindowBudgetStopReason::PassLimit,
@@ -3485,7 +3507,7 @@ impl<'a> WindowBudgetRecorder<'a> {
         pass_index: usize,
         processed_sites: usize,
         eligible_sites: usize,
-        found_sites: usize,
+        found_sites: &BTreeSet<usize>,
         attempted_sites: &[usize],
         candidate_count: usize,
         line_search_attempt_count: usize,
@@ -3495,7 +3517,16 @@ impl<'a> WindowBudgetRecorder<'a> {
         trace: &mut TraceEmitter<'_>,
     ) -> Result<()> {
         self.seen_sites.extend(attempted_sites.iter().copied());
+        self.last_found_sites.clone_from(found_sites);
+        self.last_eligible_sites = eligible_sites;
+        self.processed_site_slots += processed_sites;
+        self.total_line_search_attempt_count += line_search_attempt_count;
         self.pass_count = self.pass_count.max(pass_index);
+        match pass_index {
+            32 => self.pass_32_fingerprint = Some(state_fingerprint(mesh)),
+            64 => self.pass_64_fingerprint = Some(state_fingerprint(mesh)),
+            _ => {}
+        }
         if let Some(reason) = terminal {
             self.stop_reason = reason;
         }
@@ -3510,7 +3541,7 @@ impl<'a> WindowBudgetRecorder<'a> {
                 per_pass_site_budget: MAXIMUM_QUALITY_SITES_PER_PASS,
                 processed_sites,
                 eligible_sites,
-                found_sites,
+                found_sites: found_sites.len(),
                 unique_sites_seen: self.seen_sites.len(),
                 candidate_count,
                 line_search_attempt_count,
@@ -3543,6 +3574,7 @@ impl<'a> WindowBudgetRecorder<'a> {
         s4_metrics: &QualityGuardMetrics,
         s6_metrics: &QualityGuardMetrics,
         s4_counts: CohortCounts,
+        s4_found_sites: &BTreeSet<usize>,
         final_low_degree_moves: usize,
         default_leaf_retirements: usize,
         trace: &mut TraceEmitter<'_>,
@@ -3586,6 +3618,17 @@ impl<'a> WindowBudgetRecorder<'a> {
                 s6_persisted_s3_cohort_key_count: s6_counts.persisted,
                 s6_kind_changed_s3_cohort_key_count: s6_counts.kind_changed,
                 s6_new_global_angle_key_count: s6_counts.new_global,
+                final_pass_found_sites: self.last_found_sites.len(),
+                final_pass_eligible_sites: self.last_eligible_sites,
+                unique_sites_seen: self.seen_sites.len(),
+                processed_site_slots: self.processed_site_slots,
+                total_line_search_attempt_count: self.total_line_search_attempt_count,
+                mean_processed_site_slots_per_unique_site: (!self.seen_sites.is_empty())
+                    .then_some(self.processed_site_slots as f64 / self.seen_sites.len() as f64),
+                s4_found_sites: s4_found_sites.len(),
+                s4_found_sites_never_processed_count: s4_found_sites
+                    .difference(&self.seen_sites)
+                    .count(),
                 final_low_degree_moves,
                 default_leaf_retirements,
                 wall_time_ms: elapsed_ms_u64(self.started),
@@ -3627,7 +3670,8 @@ fn run_quality_pass_batch(
         let retained_before = audit.retained_commits();
         let generated_before = audit.generated_total();
         let attempts_before = audit.line_search_attempt_total();
-        let (sites, found, eligible) = quality_problem_sites(mesh, window_first, &excluded_sites);
+        let (sites, found, eligible, found_sites) =
+            quality_problem_sites(mesh, window_first, &excluded_sites, recorder.is_some());
         let completed_breadth_sweep = window_first && eligible <= MAXIMUM_QUALITY_SITES_PER_PASS;
         let breadth_sweep_exhausted = completed_breadth_sweep && found > eligible;
         eprintln!(
@@ -3651,7 +3695,7 @@ fn run_quality_pass_batch(
                     phase_pass,
                     0,
                     eligible,
-                    found,
+                    found_sites.as_ref().expect("audit requested found sites"),
                     &[],
                     0,
                     0,
@@ -3825,7 +3869,7 @@ fn run_quality_pass_batch(
                     phase_pass,
                     attempted_sites.len(),
                     eligible,
-                    found,
+                    found_sites.as_ref().expect("audit requested found sites"),
                     &attempted_sites,
                     audit.generated_total() - generated_before,
                     audit.line_search_attempt_total() - attempts_before,
@@ -3868,7 +3912,7 @@ fn run_quality_pass_batch(
                 phase_pass,
                 attempted_sites.len(),
                 eligible,
-                found,
+                found_sites.as_ref().expect("audit requested found sites"),
                 &attempted_sites,
                 audit.generated_total() - generated_before,
                 audit.line_search_attempt_total() - attempts_before,
@@ -3886,6 +3930,39 @@ fn run_quality_pass_batch(
     Ok(stop_reason)
 }
 
+fn verify_window_budget_prefix(
+    shorter_arm: WindowBudgetArm,
+    shorter: &WindowBudgetArmResult,
+    prefix_pass: usize,
+    longer_arm: WindowBudgetArm,
+    longer: &WindowBudgetArmResult,
+) -> Result<()> {
+    if shorter.pass_count == prefix_pass {
+        let longer_prefix = match prefix_pass {
+            32 => longer.pass_32_fingerprint.as_ref(),
+            64 => longer.pass_64_fingerprint.as_ref(),
+            _ => None,
+        };
+        if longer.pass_count < prefix_pass || longer_prefix != Some(&shorter.s4_fingerprint) {
+            return Err(crate::error::HarpDvError::TopologyViolation(format!(
+                "{} pass {prefix_pass} diverged from {} S4",
+                longer_arm.name(),
+                shorter_arm.name()
+            )));
+        }
+    } else if longer.pass_count != shorter.pass_count
+        || longer.s4_fingerprint != shorter.s4_fingerprint
+    {
+        return Err(crate::error::HarpDvError::TopologyViolation(format!(
+            "{} did not reproduce {}'s early terminal prefix at pass {}",
+            longer_arm.name(),
+            shorter_arm.name(),
+            shorter.pass_count
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_window_budget_ab(
     s3_mesh: &AdaptiveMesh,
@@ -3901,6 +3978,7 @@ fn emit_window_budget_ab(
 ) -> Result<WindowBudgetArmResult> {
     let cohort = WindowBudgetCohort::from_mesh(s3_mesh)?;
     let mut w32 = None;
+    let mut w64 = None;
     for arm in WindowBudgetArm::ALL {
         let started = std::time::Instant::now();
         let mut arm_mesh = s3_mesh.clone();
@@ -3930,6 +4008,9 @@ fn emit_window_budget_ab(
         let s4_fingerprint = state_fingerprint(&arm_mesh);
         let s4_metrics = QualityGuardMetrics::read_with(&arm_mesh, limits, &guard_cells)?;
         let s4_counts = cohort.counts(&arm_mesh)?;
+        let (_, _, _, s4_found_sites) =
+            quality_problem_sites(&arm_mesh, true, &BTreeSet::new(), true);
+        let s4_found_sites = s4_found_sites.expect("audit requested S4 found sites");
         let final_low_degree_moves =
             repair_low_degree_stars(&mut arm_mesh, criteria, gates, limits)?;
         let leaves = leaf_lineage_survey(&arm_mesh, criteria);
@@ -3941,11 +4022,15 @@ fn emit_window_budget_ab(
             &s4_metrics,
             &s6_metrics,
             s4_counts,
+            &s4_found_sites,
             final_low_degree_moves,
             default_leaf_retirements,
             trace,
         )?;
         let result = WindowBudgetArmResult {
+            pass_count: recorder.pass_count,
+            pass_32_fingerprint: recorder.pass_32_fingerprint.clone(),
+            pass_64_fingerprint: recorder.pass_64_fingerprint.clone(),
             s4_fingerprint,
             s6_fingerprint: state_fingerprint(&arm_mesh),
         };
@@ -3960,8 +4045,34 @@ fn emit_window_budget_ab(
             },
             started.elapsed().as_secs_f64()
         );
-        if arm == WindowBudgetArm::W32 {
-            w32 = Some(result);
+        match arm {
+            WindowBudgetArm::W32 => w32 = Some(result),
+            WindowBudgetArm::W64 => {
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W32,
+                    w32.as_ref().expect("W32 runs before W64"),
+                    32,
+                    arm,
+                    &result,
+                )?;
+                w64 = Some(result);
+            }
+            WindowBudgetArm::W96 => {
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W32,
+                    w32.as_ref().expect("W32 runs before W96"),
+                    32,
+                    arm,
+                    &result,
+                )?;
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W64,
+                    w64.as_ref().expect("W64 runs before W96"),
+                    64,
+                    arm,
+                    &result,
+                )?;
+            }
         }
     }
     w32.ok_or_else(|| {
@@ -4422,7 +4533,7 @@ fn production_quality_checkpoint_with_local_recovery(
 struct TraceEmitter<'a> {
     sink: Option<&'a mut dyn FnMut(HarpTraceEvent) -> Result<()>>,
     frozen_target_scales: Option<Vec<f64>>,
-    window_budget_audit: bool,
+    window_budget_audit: WindowBudgetAuditMode,
     window_budget_w32: Option<WindowBudgetArmResult>,
 }
 
@@ -4431,16 +4542,19 @@ impl<'a> TraceEmitter<'a> {
         Self {
             sink: None,
             frozen_target_scales: None,
-            window_budget_audit: false,
+            window_budget_audit: WindowBudgetAuditMode::Off,
             window_budget_w32: None,
         }
     }
 
-    fn on(sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>) -> Self {
+    fn on(
+        sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+        window_budget_audit: WindowBudgetAuditMode,
+    ) -> Self {
         Self {
             sink: Some(sink),
             frozen_target_scales: None,
-            window_budget_audit: std::env::var_os("EARTHMESH_HARP_WINDOW_BUDGET_AB").is_some(),
+            window_budget_audit,
             window_budget_w32: None,
         }
     }
@@ -4463,12 +4577,12 @@ impl<'a> TraceEmitter<'a> {
     }
 
     fn window_budget_audit_enabled(&self) -> bool {
-        self.is_on() && self.window_budget_audit
+        self.is_on() && self.window_budget_audit.is_enabled()
     }
 
     #[cfg(test)]
     fn enable_window_budget_audit(&mut self) {
-        self.window_budget_audit = true;
+        self.window_budget_audit = WindowBudgetAuditMode::W32W64W96;
     }
 
     fn set_window_budget_w32(&mut self, result: WindowBudgetArmResult) {
@@ -4537,20 +4651,6 @@ impl<'a> TraceEmitter<'a> {
     }
 }
 
-fn validate_window_budget_audit_mode(
-    window_budget_audit: bool,
-    extended_leaf_retirement: bool,
-) -> Result<()> {
-    if window_budget_audit && extended_leaf_retirement {
-        return Err(crate::error::HarpDvError::InvalidConfig(
-            "EARTHMESH_HARP_WINDOW_BUDGET_AB cannot be combined with \
-             EARTHMESH_HARP_LEAF_RETIREMENT; the audit compares the shipped degree-4 S6 path"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn criteria_refs(criteria: &[Box<dyn CellCriterion>]) -> Vec<&dyn CellCriterion> {
     criteria
         .iter()
@@ -4601,9 +4701,10 @@ pub(crate) fn run_cycles_traced(
     policy: CandidatePolicy,
     gates: HardGates,
     limits: CycleLimits,
+    window_budget_audit: WindowBudgetAuditMode,
     trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
 ) -> Result<CycleOutcome> {
-    let mut trace = TraceEmitter::on(trace);
+    let mut trace = TraceEmitter::on(trace, window_budget_audit);
     run_cycles_with_local_recovery(
         mesh,
         criteria,
@@ -4624,10 +4725,6 @@ fn run_cycles_with_local_recovery(
     local_recovery: LocalRecoveryPolicy,
     trace: &mut TraceEmitter<'_>,
 ) -> Result<CycleOutcome> {
-    validate_window_budget_audit_mode(
-        trace.window_budget_audit_enabled(),
-        std::env::var_os("EARTHMESH_HARP_LEAF_RETIREMENT").is_some(),
-    )?;
     trace.emit_stage_snapshot(HarpTraceStage::Input, mesh, criteria)?;
     let initial_sites = mesh.active_site_count();
     // Freeze the input mesh's representative background scale. Recomputing it

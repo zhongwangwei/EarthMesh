@@ -41,7 +41,10 @@ pub mod state;
 pub mod trace;
 pub mod transaction;
 
-pub use api::{refine_harp_dv, refine_harp_dv_traced, HarpDvOutcome, HarpDvRequest};
+pub use api::{
+    refine_harp_dv, refine_harp_dv_traced, refine_harp_dv_traced_with_window_budget_audit,
+    HarpDvOutcome, HarpDvRequest,
+};
 pub use config::HarpDvConfig;
 pub use criteria::{CellCriterion, CellView, MinAngle, TargetRegion, TargetScale};
 pub use cycle::{run_cycles, CycleLimits, CycleOutcome};
@@ -66,7 +69,7 @@ pub use state::{
 pub use trace::{
     DegreeFourCheckCounts, DegreeFourCheckStatus, DegreeFourRetirementCheckCounts,
     DegreeFourRetirementSite, DegreeFourRetirementSummary, DegreeFourRetirementTrial,
-    HarpTraceEvent, HarpTraceStage,
+    HarpTraceEvent, HarpTraceStage, WindowBudgetAuditMode,
 };
 pub use transaction::{
     committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,

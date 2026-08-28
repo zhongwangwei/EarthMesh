@@ -1,7 +1,7 @@
 # HARP-DV window 工作预算 A/B：PR20d 微规格
 
 日期：2026-08-28
-状态：实施前微规格
+状态：已实施并完成真实生产实验
 范围：只做固定 S3 的 window-pass 工作预算实验；默认生产行为不变
 
 ## 1. 目的与非目标
@@ -36,14 +36,14 @@ PR20d 不改变默认网格决策，不调整 candidate ladder、off-centre、et
 | arm | window pass 上限 | 说明 |
 |---|---:|---|
 | W32 | 32 | 当前生产基线，必须逐 bit 重现既有 S4 |
-| W64 | 64 | 只增加 window 工作预算 |
-| W96 | 96 | 检查 W64 后是否平台化 |
+| W64 | 64 | 扩展现有工作预算，并首次执行 pass 33 后的 post-breadth 调度 |
+| W96 | 96 | 继续执行 post-breadth 调度，检查 W64 后是否平台化 |
 
 不接受三个 CLI 进程各自重放 eta，也不接受三套常量 build 作为主证据。它们最多只能证明输入等价，不能证明三个 arm 来自同一份 S3。
 
 核心 crate 只增加诊断所需的内部切点：私有 window-budget helper 和隐藏的诊断入口。该入口只返回 compact summaries，不返回可交付的替代网格，也不成为新的公共 solver 配置面。
 
-真实 CLI 实验同时设置 `EARTHMESH_HARP_TRACE_JSONL=<absolute-path>` 和 `EARTHMESH_HARP_WINDOW_BUDGET_AB=1`。后者只增加诊断工作，不选择 W64/W96 作为交付网格；JSONL schema 随新增记录升级为 v4。
+真实 CLI 实验同时设置 `EARTHMESH_HARP_TRACE_JSONL=<absolute-path>` 和 `EARTHMESH_HARP_WINDOW_BUDGET_AB=1`。环境变量只由 CLI 解析并转换为 typed audit mode；HARP core 不读取该变量。后者只增加诊断工作，不选择 W64/W96 作为交付网格；JSONL schema 随新增记录升级为 v4。
 
 为保持 S6 单变量口径，window-budget audit 与扩展的 `EARTHMESH_HARP_LEAF_RETIREMENT` 互斥；同时启用时在 refinement 前 fail closed。
 
@@ -64,6 +64,10 @@ PR20d 不改变默认网格决策，不调整 candidate ladder、off-centre、et
 - `stop_reason`：`pass_limit`、`no_retained_moves`、`completed_no_improvement_sweep` 等。
 
 文案统一称为“window optimiser 固定工作预算”，不要只归因为某一个常数。
+
+当前 `WINDOW_BREADTH_PASSES = 32`：pass 1-32 使用原有 breadth/exclusion 行为，pass 33 起清空 exclusion 并进入此前生产 W32 不可达的 post-breadth 调度。因此 W64/W96 测量的是“继续执行现有控制流”，不是在完全同质的 scheduler 下只增加迭代次数。
+
+arm summary 还必须闭合报告：最后一 pass 的 found/eligible、累计 processed-site slots、累计 line-search attempts、累计唯一站点、平均每站点处理次数，以及 S4 仍违规相关但全程从未处理的站点数。
 
 ## 5. 每-pass compact telemetry
 
@@ -158,7 +162,7 @@ s3_violation_cohort = all violating AngleKey at S3
 
 ### 开始平台化
 
-满足以下情况时，下一步转向 persistent AngleKey component 的 local patch/connectivity/cavity POC：
+满足以下情况时，下一步先转向 persistent AngleKey 的 selection-attempt-rejection 可达性审计：
 
 - W64 相对 W32 改善不足 2%；或
 - W96 相对 W64 再改善不足 1%；或
@@ -167,7 +171,7 @@ s3_violation_cohort = all violating AngleKey at S3
 
 ### 分裂结论
 
-若总数下降但最坏角不动，下一步不是全局加 pass，而是对持久 S3 AngleKey cohort 做局部拓扑归因。
+若总数下降但最坏角不动，下一步不是全局加 pass，也不能直接认定为拓扑问题。应先确认持久最坏 `AngleKey` 是否被调度、是否生成候选以及候选的拒绝原因；只有单点候选确实不可达时，才进入多点 patch 或 connectivity/cavity POC。
 
 ## 9. 真实 IGBP NXP80 验证与 artifact parity
 
@@ -191,7 +195,7 @@ Artifact parity 要求：
 
 1. 默认关闭：不改变 W32 生产路径，不新增输出；
 2. W32 arm：从固定 S3 运行后重现既有 S4；
-3. S3 固定断言：若三 arm 的分叉输入不一致，实验失败；
+3. 共享前缀断言：W64@32 = W32 S4，W96@32 = W32 S4，W96@64 = W64 S4；若提前终止则 pass count 与终态也必须一致；
 4. pass telemetry：每 pass 只有 compact summary，没有逐角 per-pass JSON；
 5. S3 cohort：resolved/persisted/new 的计数闭合；
 6. terminal reason：pass-limit 和 no-move/no-improvement 可区分；

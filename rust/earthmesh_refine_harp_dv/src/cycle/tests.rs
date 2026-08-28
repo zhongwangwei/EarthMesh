@@ -796,7 +796,7 @@ fn traced_quality_stages_split_eta_from_window_boundary() {
         events.push(event);
         Ok(())
     };
-    let mut trace = TraceEmitter::on(&mut sink);
+    let mut trace = TraceEmitter::on(&mut sink, WindowBudgetAuditMode::Off);
     let (_, _, audit) = optimise_mesh_quality_with_natural_length(
         &mut mesh,
         &criteria,
@@ -866,8 +866,7 @@ fn window_budget_audit_is_default_off_for_traced_quality() {
         events.push(event);
         Ok(())
     };
-    let mut trace = TraceEmitter::on(&mut sink);
-    trace.window_budget_audit = false;
+    let mut trace = TraceEmitter::on(&mut sink, WindowBudgetAuditMode::Off);
     optimise_mesh_quality_with_natural_length(
         &mut mesh,
         &criteria,
@@ -887,13 +886,6 @@ fn window_budget_audit_is_default_off_for_traced_quality() {
 }
 
 #[test]
-fn window_budget_audit_rejects_extended_leaf_retirement() {
-    assert!(validate_window_budget_audit_mode(false, true).is_ok());
-    assert!(validate_window_budget_audit_mode(true, false).is_ok());
-    assert!(validate_window_budget_audit_mode(true, true).is_err());
-}
-
-#[test]
 fn window_budget_audit_uses_fixed_s3_and_closes_the_cohort() {
     let gates = HardGates::default();
     let limits = limits(40, 200_000);
@@ -907,7 +899,7 @@ fn window_budget_audit_uses_fixed_s3_and_closes_the_cohort() {
         events.push(event);
         Ok(())
     };
-    let mut trace = TraceEmitter::on(&mut sink);
+    let mut trace = TraceEmitter::on(&mut sink, WindowBudgetAuditMode::Off);
     trace.enable_window_budget_audit();
     optimise_mesh_quality_with_natural_length(
         &mut mesh,
@@ -964,6 +956,37 @@ fn window_budget_audit_uses_fixed_s3_and_closes_the_cohort() {
             "{} S6 cohort denominator drifted",
             summary.arm.name()
         );
+
+        let passes = events
+            .iter()
+            .filter_map(|event| match event {
+                HarpTraceEvent::WindowBudgetPassSummary(pass) if pass.arm == summary.arm => {
+                    Some(pass)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let last = passes.last().expect("each arm must emit a pass summary");
+        assert_eq!(summary.final_pass_found_sites, last.found_sites);
+        assert_eq!(summary.final_pass_eligible_sites, last.eligible_sites);
+        assert_eq!(summary.unique_sites_seen, last.unique_sites_seen);
+        assert_eq!(
+            summary.processed_site_slots,
+            passes.iter().map(|pass| pass.processed_sites).sum()
+        );
+        assert_eq!(
+            summary.total_line_search_attempt_count,
+            passes
+                .iter()
+                .map(|pass| pass.line_search_attempt_count)
+                .sum()
+        );
+        assert_eq!(
+            summary.mean_processed_site_slots_per_unique_site,
+            (summary.unique_sites_seen != 0)
+                .then_some(summary.processed_site_slots as f64 / summary.unique_sites_seen as f64)
+        );
+        assert!(summary.s4_found_sites_never_processed_count <= summary.s4_found_sites);
     }
 
     let pass_summaries = events
@@ -989,6 +1012,49 @@ fn window_budget_audit_uses_fixed_s3_and_closes_the_cohort() {
 }
 
 #[test]
+fn window_budget_prefix_guard_checks_pass_32_and_64() {
+    let shared = state_fingerprint(&sphere(3));
+    let divergent = state_fingerprint(&sphere(4));
+    let result = |pass_count, pass_32_fingerprint, pass_64_fingerprint, s4_fingerprint| {
+        WindowBudgetArmResult {
+            pass_count,
+            pass_32_fingerprint,
+            pass_64_fingerprint,
+            s4_fingerprint,
+            s6_fingerprint: shared.clone(),
+        }
+    };
+    let w32 = result(32, Some(shared.clone()), None, shared.clone());
+    let w64 = result(
+        64,
+        Some(shared.clone()),
+        Some(shared.clone()),
+        shared.clone(),
+    );
+    let w96 = result(
+        96,
+        Some(shared.clone()),
+        Some(shared.clone()),
+        shared.clone(),
+    );
+
+    verify_window_budget_prefix(WindowBudgetArm::W32, &w32, 32, WindowBudgetArm::W64, &w64)
+        .expect("W64 must reproduce W32 through pass 32");
+    verify_window_budget_prefix(WindowBudgetArm::W64, &w64, 64, WindowBudgetArm::W96, &w96)
+        .expect("W96 must reproduce W64 through pass 64");
+
+    let divergent_w96 = result(96, Some(shared.clone()), Some(divergent), shared.clone());
+    assert!(verify_window_budget_prefix(
+        WindowBudgetArm::W64,
+        &w64,
+        64,
+        WindowBudgetArm::W96,
+        &divergent_w96,
+    )
+    .is_err());
+}
+
+#[test]
 fn trace_emitter_caches_frozen_field_only_when_enabled() {
     let target = [1.0, 2.0, 3.0];
     let mut off = TraceEmitter::off();
@@ -1000,7 +1066,7 @@ fn trace_emitter_caches_frozen_field_only_when_enabled() {
         events.push(event);
         Ok(())
     };
-    let mut on = TraceEmitter::on(&mut sink);
+    let mut on = TraceEmitter::on(&mut sink, WindowBudgetAuditMode::Off);
     on.set_frozen_target_scales(&target);
     assert_eq!(on.frozen_target_scales.as_deref(), Some(target.as_slice()));
 }
@@ -1700,11 +1766,11 @@ fn target_scale_optimizer_improves_eta_tail_without_spending_harp_gates() {
     let pending_before = pending_union(&mesh, &criteria, limits).len();
     let unbalanced_before = balance_survey(&mesh, limits).0;
     let empty = BTreeSet::new();
-    let (first_batch, found, eligible) = quality_problem_sites(&mesh, false, &empty);
+    let (first_batch, found, eligible, _) = quality_problem_sites(&mesh, false, &empty, false);
     assert_eq!(found, eligible);
     let excluded: BTreeSet<_> = first_batch.iter().copied().collect();
-    let (next_batch, found_again, eligible_after_skip) =
-        quality_problem_sites(&mesh, false, &excluded);
+    let (next_batch, found_again, eligible_after_skip, _) =
+        quality_problem_sites(&mesh, false, &excluded, false);
     assert_eq!(found_again, found);
     assert_eq!(eligible_after_skip, found - excluded.len());
     assert!(next_batch.iter().all(|site| !excluded.contains(site)));
@@ -4514,8 +4580,8 @@ fn synthetic_steep_target_nxp80_degree_wall_attribution() {
     // sites, capped; a triangle whose corners never reach that list is not
     // being optimised badly, it is not being optimised.
     for window_first in [false, true] {
-        let (selected, found, eligible) =
-            quality_problem_sites(&start, window_first, &BTreeSet::new());
+        let (selected, found, eligible, _) =
+            quality_problem_sites(&start, window_first, &BTreeSet::new(), false);
         let picked: Vec<usize> = corners
             .into_iter()
             .filter(|corner| selected.contains(corner))

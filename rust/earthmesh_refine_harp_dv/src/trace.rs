@@ -78,6 +78,19 @@ pub enum WindowBudgetArm {
     W96,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowBudgetAuditMode {
+    #[default]
+    Off,
+    W32W64W96,
+}
+
+impl WindowBudgetAuditMode {
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::W32W64W96)
+    }
+}
+
 impl WindowBudgetArm {
     pub const ALL: [Self; 3] = [Self::W32, Self::W64, Self::W96];
 
@@ -171,6 +184,14 @@ pub struct WindowBudgetArmSummary {
     pub s6_persisted_s3_cohort_key_count: usize,
     pub s6_kind_changed_s3_cohort_key_count: usize,
     pub s6_new_global_angle_key_count: usize,
+    pub final_pass_found_sites: usize,
+    pub final_pass_eligible_sites: usize,
+    pub unique_sites_seen: usize,
+    pub processed_site_slots: usize,
+    pub total_line_search_attempt_count: usize,
+    pub mean_processed_site_slots_per_unique_site: Option<f64>,
+    pub s4_found_sites: usize,
+    pub s4_found_sites_never_processed_count: usize,
     pub final_low_degree_moves: usize,
     pub default_leaf_retirements: usize,
     pub wall_time_ms: u64,
