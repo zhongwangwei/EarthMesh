@@ -30,7 +30,7 @@
 use earthmesh_mesh::{arc_length_unit_sphere, magnitude, CartesianPoint, MeshState, VoronoiError};
 
 /// Which rung of the ladder produced a point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CandidateSource {
     /// The criterion's own point: where the evidence says the mesh is wrong.
     Witness,

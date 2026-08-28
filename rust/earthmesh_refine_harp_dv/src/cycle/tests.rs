@@ -2,6 +2,7 @@ use super::*;
 
 use earthmesh_mesh::{LonLatDegrees, MeshState, TriangularMesh};
 
+use crate::certifier::TargetGradientBin;
 use crate::criteria::{TargetRegion, TargetScale};
 
 /// Gates with the sliver floor off.
@@ -832,6 +833,40 @@ fn traced_quality_stages_split_eta_from_window_boundary() {
         .expect("post_window summary");
     assert!(post_eta < post_window);
     assert_ne!(summaries[post_eta].1, summaries[post_window].1);
+    for stage in [
+        HarpTraceStage::PostInitialLowDegree,
+        HarpTraceStage::PostEta,
+        HarpTraceStage::PostWindow,
+        HarpTraceStage::PostFinalLowDegree,
+    ] {
+        let (_, certification) = summaries
+            .iter()
+            .find(|(seen, _)| *seen == stage)
+            .expect("quality stage summary");
+        assert!(certification
+            .triangle_context_angle_exposure
+            .keys()
+            .any(|key| {
+                key.frozen_gradated_target_gradient_bin != TargetGradientBin::Unavailable
+            }));
+    }
+}
+
+#[test]
+fn trace_emitter_caches_frozen_field_only_when_enabled() {
+    let target = [1.0, 2.0, 3.0];
+    let mut off = TraceEmitter::off();
+    off.set_frozen_target_scales(&target);
+    assert!(off.frozen_target_scales.is_none());
+
+    let mut events = Vec::new();
+    let mut sink = |event| {
+        events.push(event);
+        Ok(())
+    };
+    let mut on = TraceEmitter::on(&mut sink);
+    on.set_frozen_target_scales(&target);
+    assert_eq!(on.frozen_target_scales.as_deref(), Some(target.as_slice()));
 }
 
 #[test]
@@ -1814,7 +1849,7 @@ fn target_field_is_continuous_and_reaches_every_site() {
     assert_eq!(target_angles.count, mesh.state().triangle_count() * 3);
     for site in mesh.state().active_vertex_slots() {
         for neighbour in neighbour_sites(mesh.state(), site) {
-            let allowance = TARGET_SCALE_GRADIENT
+            let allowance = TARGET_SCALE_GRADIENT_LIMIT
                 * earthmesh_mesh::arc_length_unit_sphere(
                     mesh.state().vertices()[site],
                     mesh.state().vertices()[neighbour],
@@ -2424,7 +2459,7 @@ fn export_the_frozen_target_scale_field() {
         "# sphere_radius_m={:.17e} background_scale_m={:.17e} gradient={}",
         state.sphere_radius(),
         background_scale_m,
-        TARGET_SCALE_GRADIENT
+        TARGET_SCALE_GRADIENT_LIMIT
     )
     .expect("write");
     writeln!(

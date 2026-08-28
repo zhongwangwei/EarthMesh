@@ -130,16 +130,9 @@ fn emit_empty_run_trace(
                 reason: "no criteria",
             })?;
         }
-        let certification = crate::certifier::certify_mesh(mesh, &refs);
-        if certification
-            .violations
-            .iter()
-            .any(|violation| violation.key.is_none())
-        {
-            return Err(crate::error::HarpDvError::InvalidMesh(
-                "active triangle contains a vertex without a stable SiteId".to_string(),
-            ));
-        }
+        let certification =
+            crate::certifier::certify_mesh_with_frozen_target_scales(mesh, &refs, None);
+        crate::certifier::validate_trace_closure(&certification)?;
         for violation in &certification.violations {
             trace(HarpTraceEvent::AngleViolation {
                 stage,

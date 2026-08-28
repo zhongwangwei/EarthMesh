@@ -51,7 +51,9 @@ pub use error::{HarpDvError, Result};
 // would be three vocabularies that drift.
 pub use candidate::{Candidate, CandidatePolicy, CandidateSource};
 pub use certifier::{
-    certify_mesh, AngleKey, AngleViolation, AngleViolationKind, MeshCertification,
+    certify_mesh, AngleKey, AngleViolation, AngleViolationKind, BirthSourceClass,
+    LineageAngleExposure, LineageCohortKey, MeshCertification, RefinementBoundaryClass,
+    TargetGradientBin, TriangleContextAngleExposure, TriangleContextKey,
 };
 pub use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, EvidenceStopReason, RefinementBackend,
