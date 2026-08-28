@@ -2372,11 +2372,17 @@ fn refine_with_harp_dv(
         gates: options.gates,
     };
     let outcome = if let Some(trace_session) = trace_session.as_mut() {
+        let window_budget_audit = trace_session.window_budget_audit_mode();
         let mut emit_trace = |event: harp::HarpTraceEvent| {
             crate::harp_trace::write_core_event(trace_session, &event)
                 .map_err(harp::HarpDvError::from)
         };
-        harp::refine_harp_dv_traced(adaptive, &request, &mut emit_trace)
+        harp::refine_harp_dv_traced_with_window_budget_audit(
+            adaptive,
+            &request,
+            window_budget_audit,
+            &mut emit_trace,
+        )
     } else {
         harp::refine_harp_dv(adaptive, &request)
     }

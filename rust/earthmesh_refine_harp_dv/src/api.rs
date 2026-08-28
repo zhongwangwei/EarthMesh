@@ -7,7 +7,7 @@ use crate::cycle::{run_cycles, run_cycles_traced, CycleLimits};
 use crate::error::Result;
 use crate::report::{HarpDvRunReport, StopReason};
 use crate::state::AdaptiveMesh;
-use crate::trace::{HarpTraceEvent, HarpTraceStage};
+use crate::trace::{HarpTraceEvent, HarpTraceStage, WindowBudgetAuditMode};
 use crate::transaction::HardGates;
 
 /// One run's worth of instruction.
@@ -76,8 +76,18 @@ pub fn refine_harp_dv(
 
 /// Adapt a mesh and emit typed trace snapshots without adding serialization dependencies here.
 pub fn refine_harp_dv_traced(
+    mesh: AdaptiveMesh,
+    request: &HarpDvRequest<'_>,
+    trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+) -> Result<HarpDvOutcome> {
+    refine_harp_dv_traced_with_window_budget_audit(mesh, request, WindowBudgetAuditMode::Off, trace)
+}
+
+#[doc(hidden)]
+pub fn refine_harp_dv_traced_with_window_budget_audit(
     mut mesh: AdaptiveMesh,
     request: &HarpDvRequest<'_>,
+    window_budget_audit: WindowBudgetAuditMode,
     trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
 ) -> Result<HarpDvOutcome> {
     request.config.validate()?;
@@ -105,6 +115,7 @@ pub fn refine_harp_dv_traced(
         request.candidate_policy,
         gates,
         limits,
+        window_budget_audit,
         trace,
     )?;
     Ok(HarpDvOutcome {

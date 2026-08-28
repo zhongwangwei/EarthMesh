@@ -32,7 +32,8 @@ use earthmesh_refine::{
 
 use crate::candidate::CandidatePolicy;
 use crate::certifier::{
-    certify_mesh_with_frozen_target_scales, validate_trace_closure, TARGET_SCALE_GRADIENT_LIMIT,
+    certify_mesh_with_frozen_target_scales, keyed_angle_violations, validate_trace_closure,
+    AngleKey, AngleViolationKind, TARGET_SCALE_GRADIENT_LIMIT,
 };
 use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
@@ -40,7 +41,8 @@ use crate::report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopRea
 use crate::state::{AdaptiveMesh, SiteId, SiteMobility};
 use crate::trace::{
     DegreeFourCheckStatus, DegreeFourRetirementSite, DegreeFourRetirementSummary,
-    DegreeFourRetirementTrial, HarpTraceEvent, HarpTraceStage,
+    DegreeFourRetirementTrial, HarpTraceEvent, HarpTraceStage, WindowBudgetArm,
+    WindowBudgetArmSummary, WindowBudgetAuditMode, WindowBudgetPassSummary, WindowBudgetStopReason,
 };
 use crate::transaction::{check, Acceptance, AffectedSites, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
@@ -2715,7 +2717,8 @@ fn quality_problem_sites(
     mesh: &AdaptiveMesh,
     window_first: bool,
     excluded: &BTreeSet<usize>,
-) -> (Vec<usize>, usize, usize) {
+    capture_found_sites: bool,
+) -> (Vec<usize>, usize, usize, Option<BTreeSet<usize>>) {
     let state = mesh.state();
     let mut worst: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
     for triangle in state.active_triangle_slots() {
@@ -2743,6 +2746,12 @@ fn quality_problem_sites(
         .filter(|(site, _)| mesh.can_move_site(*site))
         .collect();
     let found = movable.len();
+    let found_sites = capture_found_sites.then(|| {
+        movable
+            .iter()
+            .map(|(site, _)| *site)
+            .collect::<BTreeSet<_>>()
+    });
     let mut sites: Vec<_> = movable
         .into_iter()
         .filter(|(site, _)| !excluded.contains(site))
@@ -2769,11 +2778,13 @@ fn quality_problem_sites(
         .take(MAXIMUM_QUALITY_SITES_PER_PASS)
         .map(|(site, _)| site)
         .collect();
-    (sites, found, eligible)
+    (sites, found, eligible, found_sites)
 }
 
 #[derive(Clone, Debug)]
 struct QualityGuardMetrics {
+    physical: usize,
+    balance: usize,
     pending: usize,
     unbalanced: usize,
     worst_scale_ratio: f64,
@@ -3196,7 +3207,6 @@ fn verify_guard_cells(
 }
 
 impl QualityGuardMetrics {
-    #[cfg(test)]
     fn read(
         mesh: &AdaptiveMesh,
         criteria: &[Box<dyn CellCriterion>],
@@ -3218,6 +3228,8 @@ impl QualityGuardMetrics {
             .chain(balance.iter().map(|demand| demand.cell))
             .collect();
         Ok(Self {
+            physical: cells.demanding.len(),
+            balance: balance.len(),
             pending: pending.len(),
             unbalanced,
             worst_scale_ratio,
@@ -3342,6 +3354,732 @@ impl QualityMoveAudit {
     fn retained_total(&self) -> usize {
         self.retained_commits().into_iter().sum::<usize>() + self.low_degree_committed
     }
+
+    fn generated_total(&self) -> usize {
+        self.natural_generated + self.eta_generated + self.window_generated
+    }
+
+    fn line_search_attempt_total(&self) -> usize {
+        self.natural_line_search_attempts
+            + self.eta_line_search_attempts
+            + self.window_line_search_attempts
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WindowBudgetCohort {
+    s3: BTreeMap<AngleKey, AngleViolationKind>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StateFingerprint {
+    vertices: Vec<[u64; 3]>,
+    triangles: Vec<[usize; 3]>,
+    active_vertices: Vec<usize>,
+    active_triangles: Vec<usize>,
+    vertex_site_ids: Vec<Option<SiteId>>,
+    sites: Vec<crate::state::AdaptiveSite>,
+    pentagon_ids: [usize; 12],
+    conservative_remap: Vec<crate::state::ConservativeRemapWeight>,
+}
+
+fn state_fingerprint(mesh: &AdaptiveMesh) -> StateFingerprint {
+    let state = mesh.state();
+    StateFingerprint {
+        vertices: state
+            .vertices()
+            .iter()
+            .map(|point| [point.x.to_bits(), point.y.to_bits(), point.z.to_bits()])
+            .collect(),
+        triangles: state.triangles().to_vec(),
+        active_vertices: state.active_vertex_slots().collect(),
+        active_triangles: state.active_triangle_slots().collect(),
+        vertex_site_ids: (0..state.vertices().len())
+            .map(|vertex| mesh.site_for_vertex(vertex).map(|site| site.site_id))
+            .collect(),
+        sites: mesh.sites().to_vec(),
+        pentagon_ids: mesh.pentagon_ids(),
+        conservative_remap: mesh.conservative_remap().to_vec(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CohortCounts {
+    resolved: usize,
+    persisted: usize,
+    kind_changed: usize,
+    new_global: usize,
+}
+
+impl WindowBudgetCohort {
+    fn from_mesh(mesh: &AdaptiveMesh) -> Result<Self> {
+        Ok(Self {
+            s3: keyed_angle_violations(mesh)?,
+        })
+    }
+
+    fn counts(&self, mesh: &AdaptiveMesh) -> Result<CohortCounts> {
+        let current = keyed_angle_violations(mesh)?;
+        let counts = CohortCounts {
+            resolved: self
+                .s3
+                .keys()
+                .filter(|key| !current.contains_key(key))
+                .count(),
+            persisted: self
+                .s3
+                .keys()
+                .filter(|key| current.contains_key(key))
+                .count(),
+            kind_changed: self
+                .s3
+                .iter()
+                .filter(|(key, kind)| current.get(key).is_some_and(|current| current != *kind))
+                .count(),
+            new_global: current
+                .keys()
+                .filter(|key| !self.s3.contains_key(key))
+                .count(),
+        };
+        if counts.resolved + counts.persisted != self.s3.len()
+            || counts.persisted + counts.new_global != current.len()
+            || counts.kind_changed > counts.persisted
+        {
+            return Err(crate::error::HarpDvError::InvalidMesh(
+                "window-budget AngleKey cohort does not close".to_string(),
+            ));
+        }
+        Ok(counts)
+    }
+}
+
+fn elapsed_ms_u64(started: std::time::Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[derive(Clone, Debug)]
+struct WindowBudgetArmResult {
+    pass_count: usize,
+    pass_32_fingerprint: Option<StateFingerprint>,
+    pass_64_fingerprint: Option<StateFingerprint>,
+    s4_fingerprint: StateFingerprint,
+    s6_fingerprint: StateFingerprint,
+}
+
+struct WindowBudgetRecorder<'a> {
+    arm: WindowBudgetArm,
+    cohort: &'a WindowBudgetCohort,
+    seen_sites: BTreeSet<usize>,
+    last_found_sites: BTreeSet<usize>,
+    last_eligible_sites: usize,
+    processed_site_slots: usize,
+    total_line_search_attempt_count: usize,
+    pass_32_fingerprint: Option<StateFingerprint>,
+    pass_64_fingerprint: Option<StateFingerprint>,
+    started: std::time::Instant,
+    pass_count: usize,
+    stop_reason: WindowBudgetStopReason,
+}
+
+impl<'a> WindowBudgetRecorder<'a> {
+    fn new(arm: WindowBudgetArm, cohort: &'a WindowBudgetCohort) -> Self {
+        Self {
+            arm,
+            cohort,
+            seen_sites: BTreeSet::new(),
+            last_found_sites: BTreeSet::new(),
+            last_eligible_sites: 0,
+            processed_site_slots: 0,
+            total_line_search_attempt_count: 0,
+            pass_32_fingerprint: None,
+            pass_64_fingerprint: None,
+            started: std::time::Instant::now(),
+            pass_count: 0,
+            stop_reason: WindowBudgetStopReason::PassLimit,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_pass(
+        &mut self,
+        mesh: &AdaptiveMesh,
+        metrics: &QualityGuardMetrics,
+        pass_index: usize,
+        processed_sites: usize,
+        eligible_sites: usize,
+        found_sites: &BTreeSet<usize>,
+        attempted_sites: &[usize],
+        candidate_count: usize,
+        line_search_attempt_count: usize,
+        retained_move_count: usize,
+        completed_breadth_sweep: bool,
+        terminal: Option<WindowBudgetStopReason>,
+        trace: &mut TraceEmitter<'_>,
+    ) -> Result<()> {
+        self.seen_sites.extend(attempted_sites.iter().copied());
+        self.last_found_sites.clone_from(found_sites);
+        self.last_eligible_sites = eligible_sites;
+        self.processed_site_slots += processed_sites;
+        self.total_line_search_attempt_count += line_search_attempt_count;
+        self.pass_count = self.pass_count.max(pass_index);
+        match pass_index {
+            32 => self.pass_32_fingerprint = Some(state_fingerprint(mesh)),
+            64 => self.pass_64_fingerprint = Some(state_fingerprint(mesh)),
+            _ => {}
+        }
+        if let Some(reason) = terminal {
+            self.stop_reason = reason;
+        }
+        let cohort = self.cohort.counts(mesh)?;
+        let eta_p1 =
+            metrics.eta[(metrics.eta.len() / 100).min(metrics.eta.len().saturating_sub(1))];
+        trace.emit(HarpTraceEvent::WindowBudgetPassSummary(
+            WindowBudgetPassSummary {
+                arm: self.arm,
+                pass_index,
+                window_pass_limit: self.arm.pass_limit(),
+                per_pass_site_budget: MAXIMUM_QUALITY_SITES_PER_PASS,
+                processed_sites,
+                eligible_sites,
+                found_sites: found_sites.len(),
+                unique_sites_seen: self.seen_sites.len(),
+                candidate_count,
+                line_search_attempt_count,
+                retained_move_count,
+                completed_breadth_sweep,
+                below_40_count: metrics.angles.below,
+                above_80_count: metrics.angles.above_80,
+                total_violation_count: metrics.angles.below + metrics.angles.above_80,
+                resolved_s3_cohort_key_count: cohort.resolved,
+                persisted_s3_cohort_key_count: cohort.persisted,
+                kind_changed_s3_cohort_key_count: cohort.kind_changed,
+                new_global_angle_key_count: cohort.new_global,
+                worst_window_deviation_deg: metrics.angles.worst_deviation_deg,
+                window_penalty: metrics.angles.penalty,
+                eta_min: metrics.eta[0],
+                eta_p1,
+                physical_demands_remaining: metrics.physical,
+                balance_demands_remaining: metrics.balance,
+                unbalanced_pairs_remaining: metrics.unbalanced,
+                wall_time_ms: elapsed_ms_u64(self.started),
+                stop_reason_if_terminal: terminal,
+            },
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_arm(
+        &self,
+        mesh: &AdaptiveMesh,
+        s4_metrics: &QualityGuardMetrics,
+        s6_metrics: &QualityGuardMetrics,
+        s4_counts: CohortCounts,
+        s4_found_sites: &BTreeSet<usize>,
+        final_low_degree_moves: usize,
+        default_leaf_retirements: usize,
+        trace: &mut TraceEmitter<'_>,
+    ) -> Result<()> {
+        let s6_counts = self.cohort.counts(mesh)?;
+        let s4_eta_p1 = s4_metrics.eta
+            [(s4_metrics.eta.len() / 100).min(s4_metrics.eta.len().saturating_sub(1))];
+        let s6_eta_p1 = s6_metrics.eta
+            [(s6_metrics.eta.len() / 100).min(s6_metrics.eta.len().saturating_sub(1))];
+        trace.emit(HarpTraceEvent::WindowBudgetArmSummary(
+            WindowBudgetArmSummary {
+                arm: self.arm,
+                window_pass_limit: self.arm.pass_limit(),
+                pass_count: self.pass_count,
+                s3_violation_key_count: self.cohort.s3.len(),
+                s4_below_40_count: s4_metrics.angles.below,
+                s4_above_80_count: s4_metrics.angles.above_80,
+                s4_total_violation_count: s4_metrics.angles.below + s4_metrics.angles.above_80,
+                s4_worst_window_deviation_deg: s4_metrics.angles.worst_deviation_deg,
+                s4_window_penalty: s4_metrics.angles.penalty,
+                s4_eta_min: s4_metrics.eta[0],
+                s4_eta_p1,
+                s4_physical_demands_remaining: s4_metrics.physical,
+                s4_balance_demands_remaining: s4_metrics.balance,
+                s4_unbalanced_pairs_remaining: s4_metrics.unbalanced,
+                s4_resolved_s3_cohort_key_count: s4_counts.resolved,
+                s4_persisted_s3_cohort_key_count: s4_counts.persisted,
+                s4_kind_changed_s3_cohort_key_count: s4_counts.kind_changed,
+                s4_new_global_angle_key_count: s4_counts.new_global,
+                s6_below_40_count: s6_metrics.angles.below,
+                s6_above_80_count: s6_metrics.angles.above_80,
+                s6_total_violation_count: s6_metrics.angles.below + s6_metrics.angles.above_80,
+                s6_worst_window_deviation_deg: s6_metrics.angles.worst_deviation_deg,
+                s6_window_penalty: s6_metrics.angles.penalty,
+                s6_eta_min: s6_metrics.eta[0],
+                s6_eta_p1,
+                s6_physical_demands_remaining: s6_metrics.physical,
+                s6_balance_demands_remaining: s6_metrics.balance,
+                s6_unbalanced_pairs_remaining: s6_metrics.unbalanced,
+                s6_resolved_s3_cohort_key_count: s6_counts.resolved,
+                s6_persisted_s3_cohort_key_count: s6_counts.persisted,
+                s6_kind_changed_s3_cohort_key_count: s6_counts.kind_changed,
+                s6_new_global_angle_key_count: s6_counts.new_global,
+                final_pass_found_sites: self.last_found_sites.len(),
+                final_pass_eligible_sites: self.last_eligible_sites,
+                unique_sites_seen: self.seen_sites.len(),
+                processed_site_slots: self.processed_site_slots,
+                total_line_search_attempt_count: self.total_line_search_attempt_count,
+                mean_processed_site_slots_per_unique_site: (!self.seen_sites.is_empty())
+                    .then_some(self.processed_site_slots as f64 / self.seen_sites.len() as f64),
+                s4_found_sites: s4_found_sites.len(),
+                s4_found_sites_never_processed_count: s4_found_sites
+                    .difference(&self.seen_sites)
+                    .count(),
+                final_low_degree_moves,
+                default_leaf_retirements,
+                wall_time_ms: elapsed_ms_u64(self.started),
+                stop_reason: self.stop_reason,
+            },
+        ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_quality_pass_batch(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+    target_cell_scale: &[f64],
+    natural_length_enabled: bool,
+    natural_length_priority_passes: usize,
+    window_first: bool,
+    pass_limit: usize,
+    guard_cells: &mut GuardCells,
+    previous: &mut QualityGuardMetrics,
+    audit: &mut QualityMoveAudit,
+    committed: &mut usize,
+    mut recorder: Option<&mut WindowBudgetRecorder<'_>>,
+    trace: &mut TraceEmitter<'_>,
+) -> Result<WindowBudgetStopReason> {
+    let phase = if window_first { "window" } else { "eta" };
+    let mut excluded_sites = BTreeSet::new();
+    let mut stop_reason = WindowBudgetStopReason::PassLimit;
+    for pass in 0..pass_limit {
+        let phase_pass = pass + 1;
+        if window_first && phase_pass == WINDOW_BREADTH_PASSES + 1 {
+            excluded_sites.clear();
+        }
+        let pass_checkpoint = mesh.clone();
+        let cells_checkpoint = guard_cells.clone();
+        let pass_before = previous.clone();
+        let retained_before = audit.retained_commits();
+        let generated_before = audit.generated_total();
+        let attempts_before = audit.line_search_attempt_total();
+        let (sites, found, eligible, found_sites) =
+            quality_problem_sites(mesh, window_first, &excluded_sites, recorder.is_some());
+        let completed_breadth_sweep = window_first && eligible <= MAXIMUM_QUALITY_SITES_PER_PASS;
+        let breadth_sweep_exhausted = completed_breadth_sweep && found > eligible;
+        eprintln!(
+            "harp_dv quality optimiser {phase} pass {phase_pass}/{pass_limit}: processing {} of {} eligible / {} current movable worst-first sites",
+            sites.len(),
+            eligible,
+            found
+        );
+        if sites.is_empty() {
+            let terminal = if window_first && phase_pass == pass_limit {
+                Some(WindowBudgetStopReason::PassLimit)
+            } else if window_first && phase_pass <= WINDOW_BREADTH_PASSES {
+                None
+            } else {
+                Some(WindowBudgetStopReason::NoRetainedMoves)
+            };
+            if let Some(recorder) = recorder.as_deref_mut() {
+                recorder.emit_pass(
+                    mesh,
+                    previous,
+                    phase_pass,
+                    0,
+                    eligible,
+                    found_sites.as_ref().expect("audit requested found sites"),
+                    &[],
+                    0,
+                    0,
+                    0,
+                    completed_breadth_sweep,
+                    terminal,
+                    trace,
+                )?;
+            }
+            if window_first && phase_pass <= WINDOW_BREADTH_PASSES {
+                excluded_sites.clear();
+                continue;
+            }
+            stop_reason = WindowBudgetStopReason::NoRetainedMoves;
+            break;
+        }
+        let attempted_sites = sites.clone();
+        let mut unproductive_sites: BTreeSet<_> = attempted_sites.iter().copied().collect();
+        let mut moved_this_pass = BTreeSet::new();
+        let mut committed_this_pass = 0usize;
+        for site in sites {
+            let objective = |state: &MeshState, affected: &AffectedSites| {
+                let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
+                let mut unresolved = 0usize;
+                let radius_m = state.sphere_radius();
+                for (&site, &seed) in affected {
+                    let cell = state.voronoi_cell_from(site, seed).ok()?;
+                    let view = CellView {
+                        site,
+                        cell: &cell,
+                        state,
+                        radius_m,
+                    };
+                    for criterion in criteria {
+                        if criterion.evaluate(&view).ok()?.demands_work() {
+                            unresolved += 1;
+                            break;
+                        }
+                    }
+                }
+                Some(QualityScore {
+                    unresolved,
+                    scale_violations: balance[0] as usize,
+                    worst_scale_ratio: balance[1],
+                    window_first,
+                    window_margin: triangle_window_margins(state, affected)?,
+                    triangle_eta: triangle_eta_values(state, affected)?,
+                })
+            };
+            let Some(before) = mesh.score_before_move(site, &objective) else {
+                continue;
+            };
+            let here = mesh.state().vertices()[site];
+            let natural = natural_length_enabled
+                .then(|| natural_length_destination(mesh.state(), target_cell_scale, site))
+                .flatten();
+            let eta_ascent = worst_triangle_ascent_destination(mesh.state(), site);
+            let window_ascent = window_first
+                .then(|| star_window_ascent_destination(mesh.state(), site))
+                .flatten();
+            let targets = if window_first {
+                [
+                    (MoveSource::Window, window_ascent),
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Natural, natural),
+                ]
+            } else if pass < natural_length_priority_passes {
+                [
+                    (MoveSource::Natural, natural),
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Window, None),
+                ]
+            } else {
+                [
+                    (MoveSource::Eta, eta_ascent),
+                    (MoveSource::Natural, natural),
+                    (MoveSource::Window, None),
+                ]
+            };
+            for (source, target) in targets {
+                if target.is_some() {
+                    audit.generated(source);
+                }
+            }
+            'candidate: for (source, target) in targets {
+                let Some(target) = target else { continue };
+                for step in QUALITY_LINE_SEARCH_STEPS {
+                    let Some(destination) = projected_step(here, target, step) else {
+                        continue;
+                    };
+                    audit.attempted(source);
+                    if let Acceptance::Committed(_) = mesh.propose_move_cached(
+                        site,
+                        destination,
+                        gates,
+                        &objective,
+                        Some(&before),
+                        true,
+                    )? {
+                        audit.committed(source);
+                        committed_this_pass += 1;
+                        moved_this_pass.insert(site);
+                        unproductive_sites.remove(&site);
+                        break 'candidate;
+                    }
+                }
+            }
+        }
+
+        let dirty = GuardCells::dirty_around(mesh.state(), &moved_this_pass);
+        if let Err(error) = guard_cells.refresh(mesh.state(), criteria, limits, &dirty) {
+            *mesh = pass_checkpoint;
+            return Err(error);
+        }
+        verify_guard_cells(mesh.state(), criteria, limits, guard_cells)?;
+        let after = match QualityGuardMetrics::read_with(mesh, limits, guard_cells) {
+            Ok(after) => after,
+            Err(error) => {
+                *mesh = pass_checkpoint;
+                return Err(error);
+            }
+        };
+        let eta_p1 = after.eta[(after.eta.len() / 100).min(after.eta.len().saturating_sub(1))];
+        let below_eta_0_89 = after.eta.partition_point(|value| *value < 0.89);
+        let retained_after = audit.retained_commits();
+        let retained_this_pass = [
+            retained_after[0] - retained_before[0],
+            retained_after[1] - retained_before[1],
+            retained_after[2] - retained_before[2],
+        ];
+        let regression = after.regression_from(&pass_before, window_first);
+        let decision = if regression.is_some() {
+            "rejected"
+        } else {
+            "retained"
+        };
+        eprintln!(
+            "harp_dv quality optimiser {phase} pass {phase_pass}/{pass_limit}: {decision} {} tentative moves (natural/eta/window={}/{}/{}), outside {} -> {}, worst_deviation {:.6} -> {:.6}, margin_min={:.6}, eta_min={:.6} -> {:.6}, eta_p1={:.6}, triangles_below_eta_0_89={}",
+            committed_this_pass,
+            retained_this_pass[0],
+            retained_this_pass[1],
+            retained_this_pass[2],
+            pass_before.angles.below + pass_before.angles.above_80,
+            after.angles.below + after.angles.above_80,
+            pass_before.angles.worst_deviation_deg,
+            after.angles.worst_deviation_deg,
+            after.margins[0],
+            pass_before.eta[0],
+            after.eta[0],
+            eta_p1,
+            below_eta_0_89
+        );
+        if let Some(guard) = regression {
+            *mesh = pass_checkpoint;
+            *guard_cells = cells_checkpoint;
+            audit.restore_retained_commits(retained_before);
+            eprintln!(
+                "harp_dv quality optimiser rejected {phase} pass {phase_pass} after {} move(s): {}",
+                committed_this_pass, guard
+            );
+            excluded_sites.extend(attempted_sites.iter().copied());
+            let terminal = if eligible <= MAXIMUM_QUALITY_SITES_PER_PASS {
+                Some(WindowBudgetStopReason::CompletedNoImprovementSweep)
+            } else {
+                None
+            };
+            if let Some(recorder) = recorder.as_deref_mut() {
+                recorder.emit_pass(
+                    mesh,
+                    previous,
+                    phase_pass,
+                    attempted_sites.len(),
+                    eligible,
+                    found_sites.as_ref().expect("audit requested found sites"),
+                    &attempted_sites,
+                    audit.generated_total() - generated_before,
+                    audit.line_search_attempt_total() - attempts_before,
+                    0,
+                    completed_breadth_sweep,
+                    terminal,
+                    trace,
+                )?;
+            }
+            if let Some(reason) = terminal {
+                stop_reason = reason;
+                break;
+            }
+            continue;
+        }
+        *committed += committed_this_pass;
+        *previous = after;
+        let mut terminal = None;
+        if committed_this_pass == 0 {
+            excluded_sites.extend(attempted_sites.iter().copied());
+            if window_first && found > eligible {
+                excluded_sites.clear();
+            } else if eligible <= MAXIMUM_QUALITY_SITES_PER_PASS {
+                terminal = Some(WindowBudgetStopReason::NoRetainedMoves);
+            }
+        } else if breadth_sweep_exhausted {
+            excluded_sites.clear();
+        } else if window_first && phase_pass <= WINDOW_BREADTH_PASSES {
+            excluded_sites.extend(unproductive_sites);
+        } else {
+            excluded_sites.clear();
+        }
+        if terminal.is_none() && phase_pass == pass_limit {
+            terminal = Some(WindowBudgetStopReason::PassLimit);
+        }
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.emit_pass(
+                mesh,
+                previous,
+                phase_pass,
+                attempted_sites.len(),
+                eligible,
+                found_sites.as_ref().expect("audit requested found sites"),
+                &attempted_sites,
+                audit.generated_total() - generated_before,
+                audit.line_search_attempt_total() - attempts_before,
+                committed_this_pass,
+                completed_breadth_sweep,
+                terminal,
+                trace,
+            )?;
+        }
+        if let Some(reason) = terminal {
+            stop_reason = reason;
+            break;
+        }
+    }
+    Ok(stop_reason)
+}
+
+fn verify_window_budget_prefix(
+    shorter_arm: WindowBudgetArm,
+    shorter: &WindowBudgetArmResult,
+    prefix_pass: usize,
+    longer_arm: WindowBudgetArm,
+    longer: &WindowBudgetArmResult,
+) -> Result<()> {
+    if shorter.pass_count == prefix_pass {
+        let longer_prefix = match prefix_pass {
+            32 => longer.pass_32_fingerprint.as_ref(),
+            64 => longer.pass_64_fingerprint.as_ref(),
+            _ => None,
+        };
+        if longer.pass_count < prefix_pass || longer_prefix != Some(&shorter.s4_fingerprint) {
+            return Err(crate::error::HarpDvError::TopologyViolation(format!(
+                "{} pass {prefix_pass} diverged from {} S4",
+                longer_arm.name(),
+                shorter_arm.name()
+            )));
+        }
+    } else if longer.pass_count != shorter.pass_count
+        || longer.s4_fingerprint != shorter.s4_fingerprint
+    {
+        return Err(crate::error::HarpDvError::TopologyViolation(format!(
+            "{} did not reproduce {}'s early terminal prefix at pass {}",
+            longer_arm.name(),
+            shorter_arm.name(),
+            shorter.pass_count
+        )));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_window_budget_ab(
+    s3_mesh: &AdaptiveMesh,
+    s3_guard_cells: &GuardCells,
+    s3_metrics: &QualityGuardMetrics,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+    target_cell_scale: &[f64],
+    natural_length_enabled: bool,
+    natural_length_priority_passes: usize,
+    trace: &mut TraceEmitter<'_>,
+) -> Result<WindowBudgetArmResult> {
+    let cohort = WindowBudgetCohort::from_mesh(s3_mesh)?;
+    let mut w32 = None;
+    let mut w64 = None;
+    for arm in WindowBudgetArm::ALL {
+        let started = std::time::Instant::now();
+        let mut arm_mesh = s3_mesh.clone();
+        let mut guard_cells = s3_guard_cells.clone();
+        let mut previous = s3_metrics.clone();
+        let mut audit = QualityMoveAudit::default();
+        let mut committed = 0usize;
+        let mut recorder = WindowBudgetRecorder::new(arm, &cohort);
+        let stop_reason = run_quality_pass_batch(
+            &mut arm_mesh,
+            criteria,
+            gates,
+            limits,
+            target_cell_scale,
+            natural_length_enabled,
+            natural_length_priority_passes,
+            true,
+            arm.pass_limit(),
+            &mut guard_cells,
+            &mut previous,
+            &mut audit,
+            &mut committed,
+            Some(&mut recorder),
+            trace,
+        )?;
+        recorder.stop_reason = stop_reason;
+        let s4_fingerprint = state_fingerprint(&arm_mesh);
+        let s4_metrics = QualityGuardMetrics::read_with(&arm_mesh, limits, &guard_cells)?;
+        let s4_counts = cohort.counts(&arm_mesh)?;
+        let (_, _, _, s4_found_sites) =
+            quality_problem_sites(&arm_mesh, true, &BTreeSet::new(), true);
+        let s4_found_sites = s4_found_sites.expect("audit requested S4 found sites");
+        let final_low_degree_moves =
+            repair_low_degree_stars(&mut arm_mesh, criteria, gates, limits)?;
+        let leaves = leaf_lineage_survey(&arm_mesh, criteria);
+        let (default_leaf_retirements, _, _) =
+            retire_quality_leaf_sites(&mut arm_mesh, criteria, gates, limits, &leaves, 4);
+        let s6_metrics = QualityGuardMetrics::read(&arm_mesh, criteria, limits)?;
+        recorder.emit_arm(
+            &arm_mesh,
+            &s4_metrics,
+            &s6_metrics,
+            s4_counts,
+            &s4_found_sites,
+            final_low_degree_moves,
+            default_leaf_retirements,
+            trace,
+        )?;
+        let result = WindowBudgetArmResult {
+            pass_count: recorder.pass_count,
+            pass_32_fingerprint: recorder.pass_32_fingerprint.clone(),
+            pass_64_fingerprint: recorder.pass_64_fingerprint.clone(),
+            s4_fingerprint,
+            s6_fingerprint: state_fingerprint(&arm_mesh),
+        };
+        eprintln!(
+            "harp_dv window-budget audit {}: {} pass(es), S4 outside {}, S6 outside {}, {:.1}s",
+            arm.name(),
+            recorder.pass_count,
+            s4_metrics.angles.below + s4_metrics.angles.above_80,
+            {
+                let s6 = angle_window_survey(arm_mesh.state());
+                s6.below + s6.above_80
+            },
+            started.elapsed().as_secs_f64()
+        );
+        match arm {
+            WindowBudgetArm::W32 => w32 = Some(result),
+            WindowBudgetArm::W64 => {
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W32,
+                    w32.as_ref().expect("W32 runs before W64"),
+                    32,
+                    arm,
+                    &result,
+                )?;
+                w64 = Some(result);
+            }
+            WindowBudgetArm::W96 => {
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W32,
+                    w32.as_ref().expect("W32 runs before W96"),
+                    32,
+                    arm,
+                    &result,
+                )?;
+                verify_window_budget_prefix(
+                    WindowBudgetArm::W64,
+                    w64.as_ref().expect("W64 runs before W96"),
+                    64,
+                    arm,
+                    &result,
+                )?;
+            }
+        }
+    }
+    w32.ok_or_else(|| {
+        crate::error::HarpDvError::TopologyViolation(
+            "window-budget audit did not run W32 arm".to_string(),
+        )
+    })
 }
 
 fn optimise_mesh_quality(
@@ -3486,249 +4224,58 @@ fn optimise_mesh_quality_with_natural_length(
     let initial = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     let mut previous = initial.clone();
     let mut committed = initial_low_degree_moves;
-    let mut eta_stopped = false;
-    let mut excluded_sites = BTreeSet::new();
-    let mut previous_phase = false;
-    let mut post_eta_emitted = false;
-    for pass in 0..MAXIMUM_QUALITY_PASSES {
-        let window_first = pass >= ETA_QUALITY_PASSES;
-        if window_first && !post_eta_emitted {
-            trace.emit_stage_snapshot(HarpTraceStage::PostEta, mesh, criteria)?;
-            post_eta_emitted = true;
-        }
-        if window_first != previous_phase {
-            excluded_sites.clear();
-            previous_phase = window_first;
-        }
-        if !window_first && eta_stopped {
-            continue;
-        }
-        let phase = if window_first { "window" } else { "eta" };
-        let phase_pass = if window_first {
-            pass + 1 - ETA_QUALITY_PASSES
-        } else {
-            pass + 1
-        };
-        let phase_passes = if window_first {
-            WINDOW_QUALITY_PASSES
-        } else {
-            ETA_QUALITY_PASSES
-        };
-        if window_first && phase_pass == WINDOW_BREADTH_PASSES + 1 {
-            excluded_sites.clear();
-        }
-        let pass_checkpoint = mesh.clone();
-        let cells_checkpoint = guard_cells.clone();
-        let pass_before = previous.clone();
-        let retained_before = audit.retained_commits();
-        let (sites, found, eligible) = quality_problem_sites(mesh, window_first, &excluded_sites);
-        let breadth_sweep_exhausted =
-            window_first && eligible <= MAXIMUM_QUALITY_SITES_PER_PASS && found > eligible;
-        eprintln!(
-            "harp_dv quality optimiser {phase} pass {phase_pass}/{phase_passes}: processing {} of {} eligible / {} current movable worst-first sites",
-            sites.len(),
-            eligible,
-            found
-        );
-        if sites.is_empty() {
-            if window_first && phase_pass <= WINDOW_BREADTH_PASSES {
-                excluded_sites.clear();
-                continue;
-            }
-            if window_first {
-                break;
-            }
-            eta_stopped = true;
-            continue;
-        }
-        let attempted_sites = sites.clone();
-        let mut unproductive_sites: BTreeSet<_> = attempted_sites.iter().copied().collect();
-        let mut moved_this_pass = BTreeSet::new();
-        let mut committed_this_pass = 0usize;
-        for site in sites {
-            let objective = |state: &MeshState, affected: &AffectedSites| {
-                let balance = balance_objective(state, affected, limits.max_neighbour_scale_ratio)?;
-                let mut unresolved = 0usize;
-                let radius_m = state.sphere_radius();
-                for (&site, &seed) in affected {
-                    let cell = state.voronoi_cell_from(site, seed).ok()?;
-                    let view = CellView {
-                        site,
-                        cell: &cell,
-                        state,
-                        radius_m,
-                    };
-                    for criterion in criteria {
-                        if criterion.evaluate(&view).ok()?.demands_work() {
-                            unresolved += 1;
-                            break;
-                        }
-                    }
-                }
-                Some(QualityScore {
-                    unresolved,
-                    scale_violations: balance[0] as usize,
-                    worst_scale_ratio: balance[1],
-                    window_first,
-                    window_margin: triangle_window_margins(state, affected)?,
-                    triangle_eta: triangle_eta_values(state, affected)?,
-                })
-            };
-            let Some(before) = mesh.score_before_move(site, &objective) else {
-                continue;
-            };
-            let here = mesh.state().vertices()[site];
-            let natural = natural_length_enabled
-                .then(|| natural_length_destination(mesh.state(), &target_cell_scale, site))
-                .flatten();
-            let eta_ascent = worst_triangle_ascent_destination(mesh.state(), site);
-            let window_ascent = window_first
-                .then(|| star_window_ascent_destination(mesh.state(), site))
-                .flatten();
-            let targets = if window_first {
-                [
-                    (MoveSource::Window, window_ascent),
-                    (MoveSource::Eta, eta_ascent),
-                    (MoveSource::Natural, natural),
-                ]
-            } else if pass < natural_length_priority_passes {
-                [
-                    (MoveSource::Natural, natural),
-                    (MoveSource::Eta, eta_ascent),
-                    (MoveSource::Window, None),
-                ]
-            } else {
-                [
-                    (MoveSource::Eta, eta_ascent),
-                    (MoveSource::Natural, natural),
-                    (MoveSource::Window, None),
-                ]
-            };
-            // Counted here rather than inside the loop below: a destination that
-            // exists but is never reached because an earlier candidate committed
-            // has still been generated, and reading it as ungenerated would point
-            // the diagnosis at the wiring instead of at the ordering.
-            for (source, target) in targets {
-                if target.is_some() {
-                    audit.generated(source);
-                }
-            }
-            'candidate: for (source, target) in targets {
-                let Some(target) = target else { continue };
-                for step in QUALITY_LINE_SEARCH_STEPS {
-                    let Some(destination) = projected_step(here, target, step) else {
-                        continue;
-                    };
-                    audit.attempted(source);
-                    if let Acceptance::Committed(_) = mesh.propose_move_cached(
-                        site,
-                        destination,
-                        gates,
-                        &objective,
-                        Some(&before),
-                        true,
-                    )? {
-                        audit.committed(source);
-                        committed_this_pass += 1;
-                        moved_this_pass.insert(site);
-                        unproductive_sites.remove(&site);
-                        break 'candidate;
-                    }
-                }
-            }
-        }
-
-        let dirty = GuardCells::dirty_around(mesh.state(), &moved_this_pass);
-        if let Err(error) = guard_cells.refresh(mesh.state(), criteria, limits, &dirty) {
-            *mesh = pass_checkpoint;
-            return Err(error);
-        }
-        verify_guard_cells(mesh.state(), criteria, limits, &guard_cells)?;
-        let after = match QualityGuardMetrics::read_with(mesh, limits, &guard_cells) {
-            Ok(after) => after,
-            Err(error) => {
-                *mesh = pass_checkpoint;
-                return Err(error);
-            }
-        };
-        let eta_p1 = after.eta[(after.eta.len() / 100).min(after.eta.len().saturating_sub(1))];
-        let below_eta_0_89 = after.eta.partition_point(|value| *value < 0.89);
-        let retained_after = audit.retained_commits();
-        let retained_this_pass = [
-            retained_after[0] - retained_before[0],
-            retained_after[1] - retained_before[1],
-            retained_after[2] - retained_before[2],
-        ];
-        let regression = after.regression_from(&pass_before, window_first);
-        let decision = if regression.is_some() {
-            "rejected"
-        } else {
-            "retained"
-        };
-        eprintln!(
-            "harp_dv quality optimiser {phase} pass {phase_pass}/{phase_passes}: {decision} {} tentative moves (natural/eta/window={}/{}/{}), outside {} -> {}, worst_deviation {:.6} -> {:.6}, margin_min={:.6}, eta_min={:.6} -> {:.6}, eta_p1={:.6}, triangles_below_eta_0_89={}",
-            committed_this_pass,
-            retained_this_pass[0],
-            retained_this_pass[1],
-            retained_this_pass[2],
-            pass_before.angles.below + pass_before.angles.above_80,
-            after.angles.below + after.angles.above_80,
-            pass_before.angles.worst_deviation_deg,
-            after.angles.worst_deviation_deg,
-            after.margins[0],
-            pass_before.eta[0],
-            after.eta[0],
-            eta_p1,
-            below_eta_0_89
-        );
-        if let Some(guard) = regression {
-            *mesh = pass_checkpoint;
-            guard_cells = cells_checkpoint;
-            audit.restore_retained_commits(retained_before);
-            eprintln!(
-                "harp_dv quality optimiser rejected {phase} pass {phase_pass} after {} move(s): {}",
-                committed_this_pass, guard
-            );
-            excluded_sites.extend(attempted_sites);
-            if eligible <= MAXIMUM_QUALITY_SITES_PER_PASS {
-                if window_first {
-                    break;
-                }
-                eta_stopped = true;
-            }
-            continue;
-        }
-        committed += committed_this_pass;
-        previous = after;
-        if committed_this_pass == 0 {
-            excluded_sites.extend(attempted_sites);
-            if window_first && found > eligible {
-                excluded_sites.clear();
-                continue;
-            }
-            if eligible <= MAXIMUM_QUALITY_SITES_PER_PASS {
-                if window_first {
-                    break;
-                }
-                eta_stopped = true;
-            }
-        } else if breadth_sweep_exhausted {
-            excluded_sites.clear();
-        } else {
-            if window_first && phase_pass <= WINDOW_BREADTH_PASSES {
-                // Finish a bounded breadth sweep before retrying failures. Once
-                // every current candidate has been seen, the branch above clears
-                // the set and reconsiders them on the changed mesh.
-                excluded_sites.extend(unproductive_sites);
-            } else {
-                excluded_sites.clear();
-            }
-        }
+    run_quality_pass_batch(
+        mesh,
+        criteria,
+        gates,
+        limits,
+        &target_cell_scale,
+        natural_length_enabled,
+        natural_length_priority_passes,
+        false,
+        ETA_QUALITY_PASSES,
+        &mut guard_cells,
+        &mut previous,
+        &mut audit,
+        &mut committed,
+        None,
+        trace,
+    )?;
+    trace.emit_stage_snapshot(HarpTraceStage::PostEta, mesh, criteria)?;
+    if trace.window_budget_audit_enabled() {
+        let w32 = emit_window_budget_ab(
+            mesh,
+            &guard_cells,
+            &previous,
+            criteria,
+            gates,
+            limits,
+            &target_cell_scale,
+            natural_length_enabled,
+            natural_length_priority_passes,
+            trace,
+        )?;
+        trace.set_window_budget_w32(w32);
     }
-    if !post_eta_emitted {
-        trace.emit_stage_snapshot(HarpTraceStage::PostEta, mesh, criteria)?;
-    }
+    run_quality_pass_batch(
+        mesh,
+        criteria,
+        gates,
+        limits,
+        &target_cell_scale,
+        natural_length_enabled,
+        natural_length_priority_passes,
+        true,
+        WINDOW_QUALITY_PASSES,
+        &mut guard_cells,
+        &mut previous,
+        &mut audit,
+        &mut committed,
+        None,
+        trace,
+    )?;
     trace.emit_stage_snapshot(HarpTraceStage::PostWindow, mesh, criteria)?;
+    trace.verify_window_budget_s4(mesh)?;
     let final_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
     committed += final_low_degree_moves;
     audit.low_degree_committed += final_low_degree_moves;
@@ -3775,7 +4322,6 @@ const CELL_SCALE_TO_EDGE_LENGTH: f64 = 1.904_625_613_727_914_7;
 const ETA_QUALITY_PASSES: usize = 16;
 const WINDOW_QUALITY_PASSES: usize = 32;
 const WINDOW_BREADTH_PASSES: usize = WINDOW_QUALITY_PASSES;
-const MAXIMUM_QUALITY_PASSES: usize = ETA_QUALITY_PASSES + WINDOW_QUALITY_PASSES;
 const NATURAL_LENGTH_PASSES: usize = 2;
 const MAXIMUM_QUALITY_SITES_PER_PASS: usize = 1_024;
 const QUALITY_LINE_SEARCH_STEPS: [f64; 5] = [0.5, 0.25, 0.125, 0.0625, 0.03125];
@@ -3987,6 +4533,8 @@ fn production_quality_checkpoint_with_local_recovery(
 struct TraceEmitter<'a> {
     sink: Option<&'a mut dyn FnMut(HarpTraceEvent) -> Result<()>>,
     frozen_target_scales: Option<Vec<f64>>,
+    window_budget_audit: WindowBudgetAuditMode,
+    window_budget_w32: Option<WindowBudgetArmResult>,
 }
 
 impl<'a> TraceEmitter<'a> {
@@ -3994,13 +4542,20 @@ impl<'a> TraceEmitter<'a> {
         Self {
             sink: None,
             frozen_target_scales: None,
+            window_budget_audit: WindowBudgetAuditMode::Off,
+            window_budget_w32: None,
         }
     }
 
-    fn on(sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>) -> Self {
+    fn on(
+        sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+        window_budget_audit: WindowBudgetAuditMode,
+    ) -> Self {
         Self {
             sink: Some(sink),
             frozen_target_scales: None,
+            window_budget_audit,
+            window_budget_w32: None,
         }
     }
 
@@ -4019,6 +4574,41 @@ impl<'a> TraceEmitter<'a> {
         if self.is_on() {
             self.frozen_target_scales = Some(target_cell_scale.to_vec());
         }
+    }
+
+    fn window_budget_audit_enabled(&self) -> bool {
+        self.is_on() && self.window_budget_audit.is_enabled()
+    }
+
+    #[cfg(test)]
+    fn enable_window_budget_audit(&mut self) {
+        self.window_budget_audit = WindowBudgetAuditMode::W32W64W96;
+    }
+
+    fn set_window_budget_w32(&mut self, result: WindowBudgetArmResult) {
+        self.window_budget_w32 = Some(result);
+    }
+
+    fn verify_window_budget_s4(&self, mesh: &AdaptiveMesh) -> Result<()> {
+        if let Some(result) = &self.window_budget_w32 {
+            if result.s4_fingerprint != state_fingerprint(mesh) {
+                return Err(crate::error::HarpDvError::TopologyViolation(
+                    "W32 window-budget audit arm diverged from the delivered S4 mesh".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_window_budget_s6(&self, mesh: &AdaptiveMesh) -> Result<()> {
+        if let Some(result) = &self.window_budget_w32 {
+            if result.s6_fingerprint != state_fingerprint(mesh) {
+                return Err(crate::error::HarpDvError::TopologyViolation(
+                    "W32 window-budget audit arm diverged from the delivered S6 mesh".to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn emit_stage_snapshot(
@@ -4111,9 +4701,10 @@ pub(crate) fn run_cycles_traced(
     policy: CandidatePolicy,
     gates: HardGates,
     limits: CycleLimits,
+    window_budget_audit: WindowBudgetAuditMode,
     trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
 ) -> Result<CycleOutcome> {
-    let mut trace = TraceEmitter::on(trace);
+    let mut trace = TraceEmitter::on(trace, window_budget_audit);
     run_cycles_with_local_recovery(
         mesh,
         criteria,
@@ -4831,6 +5422,9 @@ fn run_cycles_with_local_recovery(
         .unwrap_or(0.0);
     let triangles_below_eta_0_89 = triangle_eta.partition_point(|value| *value < 0.89);
     let leaf_lineage = leaf_lineage_survey(mesh, criteria);
+    if maximum_retirement_degree == 4 {
+        trace.verify_window_budget_s6(mesh)?;
+    }
     if trace.is_on() && d4_retirement.summary.evaluated {
         trace.emit(HarpTraceEvent::DegreeFourRetirementSummary(
             d4_retirement.summary.clone(),
