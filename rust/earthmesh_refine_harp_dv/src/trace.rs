@@ -67,6 +67,114 @@ pub enum HarpTraceEvent {
     DegreeFourRetirementSummary(DegreeFourRetirementSummary),
     DegreeFourRetirementSite(DegreeFourRetirementSite),
     DegreeFourRetirementTrial(DegreeFourRetirementTrial),
+    WindowBudgetPassSummary(WindowBudgetPassSummary),
+    WindowBudgetArmSummary(WindowBudgetArmSummary),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WindowBudgetArm {
+    W32,
+    W64,
+    W96,
+}
+
+impl WindowBudgetArm {
+    pub const ALL: [Self; 3] = [Self::W32, Self::W64, Self::W96];
+
+    pub const fn pass_limit(self) -> usize {
+        match self {
+            Self::W32 => 32,
+            Self::W64 => 64,
+            Self::W96 => 96,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::W32 => "W32",
+            Self::W64 => "W64",
+            Self::W96 => "W96",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowBudgetStopReason {
+    PassLimit,
+    NoRetainedMoves,
+    CompletedNoImprovementSweep,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBudgetPassSummary {
+    pub arm: WindowBudgetArm,
+    pub pass_index: usize,
+    pub window_pass_limit: usize,
+    pub per_pass_site_budget: usize,
+    pub processed_sites: usize,
+    pub eligible_sites: usize,
+    pub found_sites: usize,
+    pub unique_sites_seen: usize,
+    pub candidate_count: usize,
+    pub line_search_attempt_count: usize,
+    pub retained_move_count: usize,
+    pub completed_breadth_sweep: bool,
+    pub below_40_count: usize,
+    pub above_80_count: usize,
+    pub total_violation_count: usize,
+    pub resolved_s3_cohort_key_count: usize,
+    pub persisted_s3_cohort_key_count: usize,
+    pub kind_changed_s3_cohort_key_count: usize,
+    pub new_global_angle_key_count: usize,
+    pub worst_window_deviation_deg: f64,
+    pub window_penalty: f64,
+    pub eta_min: f64,
+    pub eta_p1: f64,
+    pub physical_demands_remaining: usize,
+    pub balance_demands_remaining: usize,
+    pub unbalanced_pairs_remaining: usize,
+    pub wall_time_ms: u64,
+    pub stop_reason_if_terminal: Option<WindowBudgetStopReason>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBudgetArmSummary {
+    pub arm: WindowBudgetArm,
+    pub window_pass_limit: usize,
+    pub pass_count: usize,
+    pub s3_violation_key_count: usize,
+    pub s4_below_40_count: usize,
+    pub s4_above_80_count: usize,
+    pub s4_total_violation_count: usize,
+    pub s4_worst_window_deviation_deg: f64,
+    pub s4_window_penalty: f64,
+    pub s4_eta_min: f64,
+    pub s4_eta_p1: f64,
+    pub s4_physical_demands_remaining: usize,
+    pub s4_balance_demands_remaining: usize,
+    pub s4_unbalanced_pairs_remaining: usize,
+    pub s4_resolved_s3_cohort_key_count: usize,
+    pub s4_persisted_s3_cohort_key_count: usize,
+    pub s4_kind_changed_s3_cohort_key_count: usize,
+    pub s4_new_global_angle_key_count: usize,
+    pub s6_below_40_count: usize,
+    pub s6_above_80_count: usize,
+    pub s6_total_violation_count: usize,
+    pub s6_worst_window_deviation_deg: f64,
+    pub s6_window_penalty: f64,
+    pub s6_eta_min: f64,
+    pub s6_eta_p1: f64,
+    pub s6_physical_demands_remaining: usize,
+    pub s6_balance_demands_remaining: usize,
+    pub s6_unbalanced_pairs_remaining: usize,
+    pub s6_resolved_s3_cohort_key_count: usize,
+    pub s6_persisted_s3_cohort_key_count: usize,
+    pub s6_kind_changed_s3_cohort_key_count: usize,
+    pub s6_new_global_angle_key_count: usize,
+    pub final_low_degree_moves: usize,
+    pub default_leaf_retirements: usize,
+    pub wall_time_ms: u64,
+    pub stop_reason: WindowBudgetStopReason,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

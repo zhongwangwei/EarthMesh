@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage};
 
 pub(crate) const ENV_VAR: &str = "EARTHMESH_HARP_TRACE_JSONL";
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 pub(crate) const STAGE_COUNT: usize = 7;
 
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -256,6 +256,12 @@ pub(crate) fn write_core_event(
         }
         earthmesh_refine_harp_dv::HarpTraceEvent::DegreeFourRetirementTrial(trial) => {
             session.write_event(&JsonDegreeFourRetirementTrial::from_trial(trial))
+        }
+        earthmesh_refine_harp_dv::HarpTraceEvent::WindowBudgetPassSummary(summary) => {
+            session.write_event(&JsonWindowBudgetPassSummary::from_summary(summary))
+        }
+        earthmesh_refine_harp_dv::HarpTraceEvent::WindowBudgetArmSummary(summary) => {
+            session.write_event(&JsonWindowBudgetArmSummary::from_summary(summary))
         }
     }
 }
@@ -668,6 +674,215 @@ fn check_status(status: earthmesh_refine_harp_dv::DegreeFourCheckStatus) -> &'st
         earthmesh_refine_harp_dv::DegreeFourCheckStatus::Pass => "pass",
         earthmesh_refine_harp_dv::DegreeFourCheckStatus::Fail => "fail",
         earthmesh_refine_harp_dv::DegreeFourCheckStatus::NotEvaluated => "not_evaluated",
+    }
+}
+
+#[derive(Serialize)]
+struct JsonWindowBudgetPassSummary {
+    record_type: &'static str,
+    arm: &'static str,
+    pass_index: usize,
+    window_pass_limit: usize,
+    per_pass_site_budget: usize,
+    processed_sites: usize,
+    eligible_sites: usize,
+    found_sites: usize,
+    unique_sites_seen: usize,
+    candidate_count: usize,
+    line_search_attempt_count: usize,
+    retained_move_count: usize,
+    completed_breadth_sweep: bool,
+    below_40_count: usize,
+    above_80_count: usize,
+    total_violation_count: usize,
+    resolved_s3_cohort_key_count: usize,
+    persisted_s3_cohort_key_count: usize,
+    kind_changed_s3_cohort_key_count: usize,
+    new_global_angle_key_count: usize,
+    worst_window_deviation_deg: Option<f64>,
+    worst_window_deviation_deg_measurable: bool,
+    window_penalty: Option<f64>,
+    window_penalty_measurable: bool,
+    eta_min: Option<f64>,
+    eta_min_measurable: bool,
+    eta_p1: Option<f64>,
+    eta_p1_measurable: bool,
+    physical_demands_remaining: usize,
+    balance_demands_remaining: usize,
+    unbalanced_pairs_remaining: usize,
+    wall_time_ms: u64,
+    stop_reason_if_terminal: Option<&'static str>,
+}
+
+impl JsonWindowBudgetPassSummary {
+    fn from_summary(summary: &earthmesh_refine_harp_dv::trace::WindowBudgetPassSummary) -> Self {
+        let (worst_window_deviation_deg, worst_window_deviation_deg_measurable) =
+            finite(summary.worst_window_deviation_deg);
+        let (window_penalty, window_penalty_measurable) = finite(summary.window_penalty);
+        let (eta_min, eta_min_measurable) = finite(summary.eta_min);
+        let (eta_p1, eta_p1_measurable) = finite(summary.eta_p1);
+        Self {
+            record_type: "window_budget_pass_summary",
+            arm: summary.arm.name(),
+            pass_index: summary.pass_index,
+            window_pass_limit: summary.window_pass_limit,
+            per_pass_site_budget: summary.per_pass_site_budget,
+            processed_sites: summary.processed_sites,
+            eligible_sites: summary.eligible_sites,
+            found_sites: summary.found_sites,
+            unique_sites_seen: summary.unique_sites_seen,
+            candidate_count: summary.candidate_count,
+            line_search_attempt_count: summary.line_search_attempt_count,
+            retained_move_count: summary.retained_move_count,
+            completed_breadth_sweep: summary.completed_breadth_sweep,
+            below_40_count: summary.below_40_count,
+            above_80_count: summary.above_80_count,
+            total_violation_count: summary.total_violation_count,
+            resolved_s3_cohort_key_count: summary.resolved_s3_cohort_key_count,
+            persisted_s3_cohort_key_count: summary.persisted_s3_cohort_key_count,
+            kind_changed_s3_cohort_key_count: summary.kind_changed_s3_cohort_key_count,
+            new_global_angle_key_count: summary.new_global_angle_key_count,
+            worst_window_deviation_deg,
+            worst_window_deviation_deg_measurable,
+            window_penalty,
+            window_penalty_measurable,
+            eta_min,
+            eta_min_measurable,
+            eta_p1,
+            eta_p1_measurable,
+            physical_demands_remaining: summary.physical_demands_remaining,
+            balance_demands_remaining: summary.balance_demands_remaining,
+            unbalanced_pairs_remaining: summary.unbalanced_pairs_remaining,
+            wall_time_ms: summary.wall_time_ms,
+            stop_reason_if_terminal: summary
+                .stop_reason_if_terminal
+                .map(window_budget_stop_reason),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonWindowBudgetArmSummary {
+    record_type: &'static str,
+    arm: &'static str,
+    window_pass_limit: usize,
+    pass_count: usize,
+    s3_violation_key_count: usize,
+    s4_below_40_count: usize,
+    s4_above_80_count: usize,
+    s4_total_violation_count: usize,
+    s4_worst_window_deviation_deg: Option<f64>,
+    s4_worst_window_deviation_deg_measurable: bool,
+    s4_window_penalty: Option<f64>,
+    s4_window_penalty_measurable: bool,
+    s4_eta_min: Option<f64>,
+    s4_eta_min_measurable: bool,
+    s4_eta_p1: Option<f64>,
+    s4_eta_p1_measurable: bool,
+    s4_physical_demands_remaining: usize,
+    s4_balance_demands_remaining: usize,
+    s4_unbalanced_pairs_remaining: usize,
+    s4_resolved_s3_cohort_key_count: usize,
+    s4_persisted_s3_cohort_key_count: usize,
+    s4_kind_changed_s3_cohort_key_count: usize,
+    s4_new_global_angle_key_count: usize,
+    s6_below_40_count: usize,
+    s6_above_80_count: usize,
+    s6_total_violation_count: usize,
+    s6_worst_window_deviation_deg: Option<f64>,
+    s6_worst_window_deviation_deg_measurable: bool,
+    s6_window_penalty: Option<f64>,
+    s6_window_penalty_measurable: bool,
+    s6_eta_min: Option<f64>,
+    s6_eta_min_measurable: bool,
+    s6_eta_p1: Option<f64>,
+    s6_eta_p1_measurable: bool,
+    s6_physical_demands_remaining: usize,
+    s6_balance_demands_remaining: usize,
+    s6_unbalanced_pairs_remaining: usize,
+    s6_resolved_s3_cohort_key_count: usize,
+    s6_persisted_s3_cohort_key_count: usize,
+    s6_kind_changed_s3_cohort_key_count: usize,
+    s6_new_global_angle_key_count: usize,
+    final_low_degree_moves: usize,
+    default_leaf_retirements: usize,
+    wall_time_ms: u64,
+    stop_reason: &'static str,
+}
+
+impl JsonWindowBudgetArmSummary {
+    fn from_summary(summary: &earthmesh_refine_harp_dv::trace::WindowBudgetArmSummary) -> Self {
+        let (s4_worst_window_deviation_deg, s4_worst_window_deviation_deg_measurable) =
+            finite(summary.s4_worst_window_deviation_deg);
+        let (s4_window_penalty, s4_window_penalty_measurable) = finite(summary.s4_window_penalty);
+        let (s4_eta_min, s4_eta_min_measurable) = finite(summary.s4_eta_min);
+        let (s4_eta_p1, s4_eta_p1_measurable) = finite(summary.s4_eta_p1);
+        let (s6_worst_window_deviation_deg, s6_worst_window_deviation_deg_measurable) =
+            finite(summary.s6_worst_window_deviation_deg);
+        let (s6_window_penalty, s6_window_penalty_measurable) = finite(summary.s6_window_penalty);
+        let (s6_eta_min, s6_eta_min_measurable) = finite(summary.s6_eta_min);
+        let (s6_eta_p1, s6_eta_p1_measurable) = finite(summary.s6_eta_p1);
+        Self {
+            record_type: "window_budget_arm_summary",
+            arm: summary.arm.name(),
+            window_pass_limit: summary.window_pass_limit,
+            pass_count: summary.pass_count,
+            s3_violation_key_count: summary.s3_violation_key_count,
+            s4_below_40_count: summary.s4_below_40_count,
+            s4_above_80_count: summary.s4_above_80_count,
+            s4_total_violation_count: summary.s4_total_violation_count,
+            s4_worst_window_deviation_deg,
+            s4_worst_window_deviation_deg_measurable,
+            s4_window_penalty,
+            s4_window_penalty_measurable,
+            s4_eta_min,
+            s4_eta_min_measurable,
+            s4_eta_p1,
+            s4_eta_p1_measurable,
+            s4_physical_demands_remaining: summary.s4_physical_demands_remaining,
+            s4_balance_demands_remaining: summary.s4_balance_demands_remaining,
+            s4_unbalanced_pairs_remaining: summary.s4_unbalanced_pairs_remaining,
+            s4_resolved_s3_cohort_key_count: summary.s4_resolved_s3_cohort_key_count,
+            s4_persisted_s3_cohort_key_count: summary.s4_persisted_s3_cohort_key_count,
+            s4_kind_changed_s3_cohort_key_count: summary.s4_kind_changed_s3_cohort_key_count,
+            s4_new_global_angle_key_count: summary.s4_new_global_angle_key_count,
+            s6_below_40_count: summary.s6_below_40_count,
+            s6_above_80_count: summary.s6_above_80_count,
+            s6_total_violation_count: summary.s6_total_violation_count,
+            s6_worst_window_deviation_deg,
+            s6_worst_window_deviation_deg_measurable,
+            s6_window_penalty,
+            s6_window_penalty_measurable,
+            s6_eta_min,
+            s6_eta_min_measurable,
+            s6_eta_p1,
+            s6_eta_p1_measurable,
+            s6_physical_demands_remaining: summary.s6_physical_demands_remaining,
+            s6_balance_demands_remaining: summary.s6_balance_demands_remaining,
+            s6_unbalanced_pairs_remaining: summary.s6_unbalanced_pairs_remaining,
+            s6_resolved_s3_cohort_key_count: summary.s6_resolved_s3_cohort_key_count,
+            s6_persisted_s3_cohort_key_count: summary.s6_persisted_s3_cohort_key_count,
+            s6_kind_changed_s3_cohort_key_count: summary.s6_kind_changed_s3_cohort_key_count,
+            s6_new_global_angle_key_count: summary.s6_new_global_angle_key_count,
+            final_low_degree_moves: summary.final_low_degree_moves,
+            default_leaf_retirements: summary.default_leaf_retirements,
+            wall_time_ms: summary.wall_time_ms,
+            stop_reason: window_budget_stop_reason(summary.stop_reason),
+        }
+    }
+}
+
+fn window_budget_stop_reason(
+    reason: earthmesh_refine_harp_dv::trace::WindowBudgetStopReason,
+) -> &'static str {
+    match reason {
+        earthmesh_refine_harp_dv::trace::WindowBudgetStopReason::PassLimit => "pass_limit",
+        earthmesh_refine_harp_dv::trace::WindowBudgetStopReason::NoRetainedMoves => {
+            "no_retained_moves"
+        }
+        earthmesh_refine_harp_dv::trace::WindowBudgetStopReason::CompletedNoImprovementSweep => {
+            "completed_no_improvement_sweep"
+        }
     }
 }
 
@@ -1391,6 +1606,101 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn window_budget_summaries_are_compact_stable_json() {
+        use earthmesh_refine_harp_dv::trace::{
+            WindowBudgetArm, WindowBudgetArmSummary, WindowBudgetPassSummary,
+            WindowBudgetStopReason,
+        };
+
+        let pass = serde_json::to_value(JsonWindowBudgetPassSummary::from_summary(
+            &WindowBudgetPassSummary {
+                arm: WindowBudgetArm::W64,
+                pass_index: 33,
+                window_pass_limit: 64,
+                per_pass_site_budget: 1_024,
+                processed_sites: 800,
+                eligible_sites: 800,
+                found_sites: 1_600,
+                unique_sites_seen: 8_000,
+                candidate_count: 2_100,
+                line_search_attempt_count: 3_200,
+                retained_move_count: 700,
+                completed_breadth_sweep: true,
+                below_40_count: 10,
+                above_80_count: 20,
+                total_violation_count: 30,
+                resolved_s3_cohort_key_count: 80,
+                persisted_s3_cohort_key_count: 20,
+                kind_changed_s3_cohort_key_count: 2,
+                new_global_angle_key_count: 3,
+                worst_window_deviation_deg: 4.5,
+                window_penalty: 9.25,
+                eta_min: 0.8,
+                eta_p1: f64::NAN,
+                physical_demands_remaining: 0,
+                balance_demands_remaining: 0,
+                unbalanced_pairs_remaining: 0,
+                wall_time_ms: 123,
+                stop_reason_if_terminal: Some(WindowBudgetStopReason::PassLimit),
+            },
+        ))
+        .unwrap();
+        assert_eq!(pass["record_type"], "window_budget_pass_summary");
+        assert_eq!(pass["arm"], "W64");
+        assert_eq!(pass["stop_reason_if_terminal"], "pass_limit");
+        assert!(pass["eta_p1"].is_null());
+        assert_eq!(pass["eta_p1_measurable"], false);
+        assert!(pass.get("angle_violation").is_none());
+
+        let arm = serde_json::to_value(JsonWindowBudgetArmSummary::from_summary(
+            &WindowBudgetArmSummary {
+                arm: WindowBudgetArm::W96,
+                window_pass_limit: 96,
+                pass_count: 72,
+                s3_violation_key_count: 100,
+                s4_below_40_count: 4,
+                s4_above_80_count: 5,
+                s4_total_violation_count: 9,
+                s4_worst_window_deviation_deg: 3.0,
+                s4_window_penalty: 8.0,
+                s4_eta_min: 0.81,
+                s4_eta_p1: 0.9,
+                s4_physical_demands_remaining: 0,
+                s4_balance_demands_remaining: 0,
+                s4_unbalanced_pairs_remaining: 0,
+                s4_resolved_s3_cohort_key_count: 91,
+                s4_persisted_s3_cohort_key_count: 9,
+                s4_kind_changed_s3_cohort_key_count: 1,
+                s4_new_global_angle_key_count: 2,
+                s6_below_40_count: 3,
+                s6_above_80_count: 4,
+                s6_total_violation_count: 7,
+                s6_worst_window_deviation_deg: 2.5,
+                s6_window_penalty: 6.0,
+                s6_eta_min: 0.82,
+                s6_eta_p1: 0.91,
+                s6_physical_demands_remaining: 0,
+                s6_balance_demands_remaining: 0,
+                s6_unbalanced_pairs_remaining: 0,
+                s6_resolved_s3_cohort_key_count: 93,
+                s6_persisted_s3_cohort_key_count: 7,
+                s6_kind_changed_s3_cohort_key_count: 0,
+                s6_new_global_angle_key_count: 1,
+                final_low_degree_moves: 2,
+                default_leaf_retirements: 1,
+                wall_time_ms: 456,
+                stop_reason: WindowBudgetStopReason::CompletedNoImprovementSweep,
+            },
+        ))
+        .unwrap();
+        assert_eq!(arm["record_type"], "window_budget_arm_summary");
+        assert_eq!(arm["arm"], "W96");
+        assert_eq!(arm["stop_reason"], "completed_no_improvement_sweep");
+        assert_eq!(arm["s3_violation_key_count"], 100);
+        assert_eq!(arm["s6_total_violation_count"], 7);
     }
 
     #[test]

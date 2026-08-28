@@ -853,6 +853,142 @@ fn traced_quality_stages_split_eta_from_window_boundary() {
 }
 
 #[test]
+fn window_budget_audit_is_default_off_for_traced_quality() {
+    let gates = HardGates::default();
+    let limits = limits(40, 200_000);
+    let mut mesh = sphere(6);
+    let background_scale_m = median_cell_scale(mesh.state());
+    let criteria = small_target(&mesh);
+    stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
+
+    let mut events = Vec::new();
+    let mut sink = |event| {
+        events.push(event);
+        Ok(())
+    };
+    let mut trace = TraceEmitter::on(&mut sink);
+    trace.window_budget_audit = false;
+    optimise_mesh_quality_with_natural_length(
+        &mut mesh,
+        &criteria,
+        gates,
+        limits,
+        background_scale_m,
+        true,
+        NATURAL_LENGTH_PASSES,
+        &mut trace,
+    )
+    .expect("optimise with ordinary trace");
+
+    assert!(events.iter().all(|event| !matches!(
+        event,
+        HarpTraceEvent::WindowBudgetPassSummary(_) | HarpTraceEvent::WindowBudgetArmSummary(_)
+    )));
+}
+
+#[test]
+fn window_budget_audit_rejects_extended_leaf_retirement() {
+    assert!(validate_window_budget_audit_mode(false, true).is_ok());
+    assert!(validate_window_budget_audit_mode(true, false).is_ok());
+    assert!(validate_window_budget_audit_mode(true, true).is_err());
+}
+
+#[test]
+fn window_budget_audit_uses_fixed_s3_and_closes_the_cohort() {
+    let gates = HardGates::default();
+    let limits = limits(40, 200_000);
+    let mut mesh = sphere(6);
+    let background_scale_m = median_cell_scale(mesh.state());
+    let criteria = small_target(&mesh);
+    stalled_by_insertion_alone(&mut mesh, &criteria, gates, limits);
+
+    let mut events = Vec::new();
+    let mut sink = |event| {
+        events.push(event);
+        Ok(())
+    };
+    let mut trace = TraceEmitter::on(&mut sink);
+    trace.enable_window_budget_audit();
+    optimise_mesh_quality_with_natural_length(
+        &mut mesh,
+        &criteria,
+        gates,
+        limits,
+        background_scale_m,
+        true,
+        NATURAL_LENGTH_PASSES,
+        &mut trace,
+    )
+    .expect("optimise with window-budget audit");
+
+    let arm_summaries = events
+        .iter()
+        .filter_map(|event| match event {
+            HarpTraceEvent::WindowBudgetArmSummary(summary) => Some(summary),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(arm_summaries.len(), 3);
+    assert_eq!(arm_summaries[0].arm, WindowBudgetArm::W32);
+    assert_eq!(arm_summaries[1].arm, WindowBudgetArm::W64);
+    assert_eq!(arm_summaries[2].arm, WindowBudgetArm::W96);
+
+    let w32 = arm_summaries[0];
+    let post_window = events
+        .iter()
+        .find_map(|event| match event {
+            HarpTraceEvent::StageSummary {
+                stage: HarpTraceStage::PostWindow,
+                certification,
+            } => Some(certification),
+            _ => None,
+        })
+        .expect("production post-window summary");
+    assert_eq!(
+        w32.s4_total_violation_count,
+        post_window.below_40_count + post_window.above_80_count,
+        "W32 audit arm must match delivered S4 statistics"
+    );
+
+    for summary in &arm_summaries {
+        assert_eq!(summary.s3_violation_key_count, w32.s3_violation_key_count);
+        assert_eq!(
+            summary.s4_resolved_s3_cohort_key_count + summary.s4_persisted_s3_cohort_key_count,
+            summary.s3_violation_key_count,
+            "{} S4 cohort denominator drifted",
+            summary.arm.name()
+        );
+        assert_eq!(
+            summary.s6_resolved_s3_cohort_key_count + summary.s6_persisted_s3_cohort_key_count,
+            summary.s3_violation_key_count,
+            "{} S6 cohort denominator drifted",
+            summary.arm.name()
+        );
+    }
+
+    let pass_summaries = events
+        .iter()
+        .filter_map(|event| match event {
+            HarpTraceEvent::WindowBudgetPassSummary(summary) => Some(summary),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !pass_summaries.is_empty(),
+        "fixture must exercise window passes"
+    );
+    for summary in pass_summaries {
+        assert_eq!(
+            summary.resolved_s3_cohort_key_count + summary.persisted_s3_cohort_key_count,
+            w32.s3_violation_key_count,
+            "{} pass {} cohort denominator drifted",
+            summary.arm.name(),
+            summary.pass_index
+        );
+    }
+}
+
+#[test]
 fn trace_emitter_caches_frozen_field_only_when_enabled() {
     let target = [1.0, 2.0, 3.0];
     let mut off = TraceEmitter::off();

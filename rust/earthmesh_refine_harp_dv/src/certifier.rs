@@ -378,6 +378,49 @@ pub(crate) fn certify_mesh_with_frozen_target_scales(
     }
 }
 
+pub(crate) fn keyed_angle_violations(
+    mesh: &AdaptiveMesh,
+) -> Result<BTreeMap<AngleKey, AngleViolationKind>> {
+    let state = mesh.state();
+    let mut keyed = BTreeMap::new();
+    for triangle in state.active_triangle_slots() {
+        let corners = state.triangles()[triangle];
+        let corner_sites = corners.map(|vertex| mesh.site_for_vertex(vertex));
+        if corner_sites.iter().any(Option::is_none) {
+            return Err(HarpDvError::TopologyViolation(
+                "active triangle corner is missing a stable SiteId".to_string(),
+            ));
+        }
+        let Some(angles) = triangle_angles_deg(corners.map(|vertex| state.vertices()[vertex]))
+        else {
+            continue;
+        };
+        if angles.iter().any(|angle| !angle.is_finite()) {
+            continue;
+        }
+        for (corner, angle) in angles.into_iter().enumerate() {
+            let kind = if angle < LOW_ANGLE_DEG {
+                AngleViolationKind::Below40
+            } else if angle > HIGH_ANGLE_DEG {
+                AngleViolationKind::Above80
+            } else {
+                continue;
+            };
+            let key = angle_key(corner_sites, corner).ok_or_else(|| {
+                HarpDvError::TopologyViolation(
+                    "angle violation is missing a stable AngleKey".to_string(),
+                )
+            })?;
+            if keyed.insert(key, kind).is_some() {
+                return Err(HarpDvError::TopologyViolation(
+                    "duplicate stable AngleKey in active mesh".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(keyed)
+}
+
 pub(crate) fn validate_trace_closure(certification: &MeshCertification) -> Result<()> {
     if certification.unmapped_identity_count > 0
         || certification.attribution_closure_error_count > 0
