@@ -77,6 +77,28 @@ pub enum DegreeFourCheckStatus {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DegreeFourCheckCounts {
+    pub pass: usize,
+    pub fail: usize,
+    pub not_evaluated: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DegreeFourRetirementCheckCounts {
+    pub geometry: DegreeFourCheckCounts,
+    pub hard_gate: DegreeFourCheckCounts,
+    pub physical_demand: DegreeFourCheckCounts,
+    pub scale_balance: DegreeFourCheckCounts,
+    pub no_new_low_degree: DegreeFourCheckCounts,
+    pub angle_count: DegreeFourCheckCounts,
+    pub worst_deviation: DegreeFourCheckCounts,
+    pub penalty: DegreeFourCheckCounts,
+    pub eta: DegreeFourCheckCounts,
+    pub margin: DegreeFourCheckCounts,
+    pub conservative_remap: DegreeFourCheckCounts,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DegreeFourRetirementSummary {
     pub evaluated: bool,
     pub sites_total: usize,
@@ -89,17 +111,8 @@ pub struct DegreeFourRetirementSummary {
     pub sites_with_any_fully_acceptable_trial: usize,
     pub sites_committed: usize,
     pub trials_total: usize,
-    pub trials_geometry_pass: usize,
-    pub trials_hard_gate_pass: usize,
-    pub trials_physical_pass: usize,
-    pub trials_scale_balance_pass: usize,
-    pub trials_no_new_low_degree_pass: usize,
-    pub trials_angle_count_pass: usize,
-    pub trials_worst_deviation_pass: usize,
-    pub trials_penalty_pass: usize,
-    pub trials_eta_pass: usize,
-    pub trials_margin_pass: usize,
-    pub trials_conservative_remap_pass: usize,
+    pub checks: DegreeFourRetirementCheckCounts,
+    pub trials_quality_improving: usize,
     pub trials_fully_acceptable: usize,
 }
 
@@ -107,6 +120,9 @@ pub struct DegreeFourRetirementSummary {
 pub struct DegreeFourRetirementSite {
     pub site_id: SiteId,
     pub vertex: usize,
+    pub interior_leaf: bool,
+    pub window_violation: bool,
+    pub candidate_rank: Option<usize>,
     pub ranked_beyond_64: bool,
     pub trial_count: usize,
     pub any_valid_trial: bool,
@@ -119,8 +135,8 @@ pub struct DegreeFourRetirementTrial {
     pub site_id: SiteId,
     pub vertex: usize,
     pub trial_index: u8,
-    pub ring_site_ids: [SiteId; 4],
-    pub diagonal_site_ids: [SiteId; 2],
+    pub ring_site_ids: Option<[SiteId; 4]>,
+    pub diagonal_site_ids: Option<[SiteId; 2]>,
     pub geometry: DegreeFourCheckStatus,
     pub hard_gate: DegreeFourCheckStatus,
     pub physical_demand: DegreeFourCheckStatus,
@@ -134,9 +150,3 @@ pub struct DegreeFourRetirementTrial {
     pub conservative_remap: DegreeFourCheckStatus,
     pub fully_acceptable: bool,
 }
-
-// Back-compatible short aliases for downstream serializers.
-pub type AuditCheckStatus = DegreeFourCheckStatus;
-pub type DegreeFourRetirementAuditSummary = DegreeFourRetirementSummary;
-pub type DegreeFourRetirementSiteAudit = DegreeFourRetirementSite;
-pub type DegreeFourRetirementTrialAudit = DegreeFourRetirementTrial;

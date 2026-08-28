@@ -219,7 +219,7 @@ impl<W: Write> TraceLineWriter<W> {
             unresolved_cells: report.unresolved_count,
             d4_leaf_retirement_audit_evaluated: report.d4_leaf_retirement_audit_evaluated,
             d4_leaf_retirement_sites_audited: report.d4_leaf_retirement_candidates,
-            d4_leaf_retirement_trials_evaluated: report.d4_leaf_retirement_triangulations,
+            d4_leaf_retirement_trials_evaluated: report.d4_leaf_retirement_trials_total,
             d4_leaf_retirement_sites_committed: report.d4_leaf_retirement_committed,
             d4_leaf_retirement_sites_fully_acceptable: report.d4_leaf_retirement_fully_acceptable,
         })
@@ -408,18 +408,59 @@ struct JsonDegreeFourRetirementSummary {
     sites_with_any_fully_acceptable_trial: usize,
     sites_committed: usize,
     trials_total: usize,
-    trials_geometry_pass: usize,
-    trials_hard_gate_pass: usize,
-    trials_physical_pass: usize,
-    trials_scale_balance_pass: usize,
-    trials_no_new_low_degree_pass: usize,
-    trials_angle_count_pass: usize,
-    trials_worst_deviation_pass: usize,
-    trials_penalty_pass: usize,
-    trials_eta_pass: usize,
-    trials_margin_pass: usize,
-    trials_conservative_remap_pass: usize,
+    checks: JsonDegreeFourRetirementCheckCounts,
+    trials_quality_improving: usize,
     trials_fully_acceptable: usize,
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourCheckCounts {
+    pass: usize,
+    fail: usize,
+    not_evaluated: usize,
+}
+
+impl JsonDegreeFourCheckCounts {
+    fn from_counts(counts: &earthmesh_refine_harp_dv::DegreeFourCheckCounts) -> Self {
+        Self {
+            pass: counts.pass,
+            fail: counts.fail,
+            not_evaluated: counts.not_evaluated,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonDegreeFourRetirementCheckCounts {
+    geometry: JsonDegreeFourCheckCounts,
+    hard_gate: JsonDegreeFourCheckCounts,
+    physical_demand: JsonDegreeFourCheckCounts,
+    scale_balance: JsonDegreeFourCheckCounts,
+    no_new_low_degree: JsonDegreeFourCheckCounts,
+    angle_count: JsonDegreeFourCheckCounts,
+    worst_deviation: JsonDegreeFourCheckCounts,
+    penalty: JsonDegreeFourCheckCounts,
+    eta: JsonDegreeFourCheckCounts,
+    margin: JsonDegreeFourCheckCounts,
+    conservative_remap: JsonDegreeFourCheckCounts,
+}
+
+impl JsonDegreeFourRetirementCheckCounts {
+    fn from_counts(counts: &earthmesh_refine_harp_dv::DegreeFourRetirementCheckCounts) -> Self {
+        Self {
+            geometry: JsonDegreeFourCheckCounts::from_counts(&counts.geometry),
+            hard_gate: JsonDegreeFourCheckCounts::from_counts(&counts.hard_gate),
+            physical_demand: JsonDegreeFourCheckCounts::from_counts(&counts.physical_demand),
+            scale_balance: JsonDegreeFourCheckCounts::from_counts(&counts.scale_balance),
+            no_new_low_degree: JsonDegreeFourCheckCounts::from_counts(&counts.no_new_low_degree),
+            angle_count: JsonDegreeFourCheckCounts::from_counts(&counts.angle_count),
+            worst_deviation: JsonDegreeFourCheckCounts::from_counts(&counts.worst_deviation),
+            penalty: JsonDegreeFourCheckCounts::from_counts(&counts.penalty),
+            eta: JsonDegreeFourCheckCounts::from_counts(&counts.eta),
+            margin: JsonDegreeFourCheckCounts::from_counts(&counts.margin),
+            conservative_remap: JsonDegreeFourCheckCounts::from_counts(&counts.conservative_remap),
+        }
+    }
 }
 
 impl JsonDegreeFourRetirementSummary {
@@ -437,17 +478,8 @@ impl JsonDegreeFourRetirementSummary {
             sites_with_any_fully_acceptable_trial: summary.sites_with_any_fully_acceptable_trial,
             sites_committed: summary.sites_committed,
             trials_total: summary.trials_total,
-            trials_geometry_pass: summary.trials_geometry_pass,
-            trials_hard_gate_pass: summary.trials_hard_gate_pass,
-            trials_physical_pass: summary.trials_physical_pass,
-            trials_scale_balance_pass: summary.trials_scale_balance_pass,
-            trials_no_new_low_degree_pass: summary.trials_no_new_low_degree_pass,
-            trials_angle_count_pass: summary.trials_angle_count_pass,
-            trials_worst_deviation_pass: summary.trials_worst_deviation_pass,
-            trials_penalty_pass: summary.trials_penalty_pass,
-            trials_eta_pass: summary.trials_eta_pass,
-            trials_margin_pass: summary.trials_margin_pass,
-            trials_conservative_remap_pass: summary.trials_conservative_remap_pass,
+            checks: JsonDegreeFourRetirementCheckCounts::from_counts(&summary.checks),
+            trials_quality_improving: summary.trials_quality_improving,
             trials_fully_acceptable: summary.trials_fully_acceptable,
         }
     }
@@ -458,6 +490,9 @@ struct JsonDegreeFourRetirementSite {
     record_type: &'static str,
     site_id: u64,
     vertex: usize,
+    interior_leaf: bool,
+    window_violation: bool,
+    candidate_rank: Option<usize>,
     ranked_beyond_64: bool,
     trial_count: usize,
     any_valid_trial: bool,
@@ -471,6 +506,9 @@ impl JsonDegreeFourRetirementSite {
             record_type: "degree_four_retirement_site",
             site_id: site.site_id.0,
             vertex: site.vertex,
+            interior_leaf: site.interior_leaf,
+            window_violation: site.window_violation,
+            candidate_rank: site.candidate_rank,
             ranked_beyond_64: site.ranked_beyond_64,
             trial_count: site.trial_count,
             any_valid_trial: site.any_valid_trial,
@@ -486,8 +524,8 @@ struct JsonDegreeFourRetirementTrial {
     site_id: u64,
     vertex: usize,
     trial_index: u8,
-    ring_site_ids: [u64; 4],
-    diagonal_site_ids: [u64; 2],
+    ring_site_ids: Option<[u64; 4]>,
+    diagonal_site_ids: Option<[u64; 2]>,
     geometry: &'static str,
     hard_gate: &'static str,
     physical_demand: &'static str,
@@ -509,8 +547,10 @@ impl JsonDegreeFourRetirementTrial {
             site_id: trial.site_id.0,
             vertex: trial.vertex,
             trial_index: trial.trial_index,
-            ring_site_ids: trial.ring_site_ids.map(|site| site.0),
-            diagonal_site_ids: trial.diagonal_site_ids.map(|site| site.0),
+            ring_site_ids: trial.ring_site_ids.map(|sites| sites.map(|site| site.0)),
+            diagonal_site_ids: trial
+                .diagonal_site_ids
+                .map(|sites| sites.map(|site| site.0)),
             geometry: check_status(trial.geometry),
             hard_gate: check_status(trial.hard_gate),
             physical_demand: check_status(trial.physical_demand),
@@ -971,8 +1011,9 @@ mod tests {
     #[test]
     fn degree_four_audit_events_are_stable_snake_case_json() {
         use earthmesh_refine_harp_dv::{
-            DegreeFourCheckStatus, DegreeFourRetirementSite, DegreeFourRetirementSummary,
-            DegreeFourRetirementTrial, HarpTraceEvent, SiteId,
+            DegreeFourCheckCounts, DegreeFourCheckStatus, DegreeFourRetirementCheckCounts,
+            DegreeFourRetirementSite, DegreeFourRetirementSummary, DegreeFourRetirementTrial,
+            HarpTraceEvent, SiteId,
         };
         let target = temp_path("d4.jsonl");
         let mut session = HarpTraceSession::create(target.clone()).unwrap();
@@ -990,17 +1031,25 @@ mod tests {
                 sites_with_any_fully_acceptable_trial: 0,
                 sites_committed: 0,
                 trials_total: 2,
-                trials_geometry_pass: 1,
-                trials_hard_gate_pass: 1,
-                trials_physical_pass: 0,
-                trials_scale_balance_pass: 1,
-                trials_no_new_low_degree_pass: 1,
-                trials_angle_count_pass: 0,
-                trials_worst_deviation_pass: 1,
-                trials_penalty_pass: 0,
-                trials_eta_pass: 1,
-                trials_margin_pass: 1,
-                trials_conservative_remap_pass: 0,
+                checks: DegreeFourRetirementCheckCounts {
+                    geometry: DegreeFourCheckCounts {
+                        pass: 1,
+                        fail: 1,
+                        not_evaluated: 0,
+                    },
+                    hard_gate: DegreeFourCheckCounts {
+                        pass: 1,
+                        fail: 0,
+                        not_evaluated: 1,
+                    },
+                    physical_demand: DegreeFourCheckCounts {
+                        pass: 0,
+                        fail: 1,
+                        not_evaluated: 1,
+                    },
+                    ..DegreeFourRetirementCheckCounts::default()
+                },
+                trials_quality_improving: 0,
                 trials_fully_acceptable: 0,
             }),
         )
@@ -1010,6 +1059,9 @@ mod tests {
             &HarpTraceEvent::DegreeFourRetirementSite(DegreeFourRetirementSite {
                 site_id: SiteId(10),
                 vertex: 12,
+                interior_leaf: true,
+                window_violation: true,
+                candidate_rank: Some(4),
                 ranked_beyond_64: false,
                 trial_count: 2,
                 any_valid_trial: true,
@@ -1024,8 +1076,8 @@ mod tests {
                 site_id: SiteId(10),
                 vertex: 12,
                 trial_index: 1,
-                ring_site_ids: [SiteId(1), SiteId(2), SiteId(3), SiteId(4)],
-                diagonal_site_ids: [SiteId(2), SiteId(4)],
+                ring_site_ids: Some([SiteId(1), SiteId(2), SiteId(3), SiteId(4)]),
+                diagonal_site_ids: Some([SiteId(2), SiteId(4)]),
                 geometry: DegreeFourCheckStatus::Pass,
                 hard_gate: DegreeFourCheckStatus::Fail,
                 physical_demand: DegreeFourCheckStatus::NotEvaluated,
@@ -1045,6 +1097,7 @@ mod tests {
         let mut report = test_report();
         report.d4_leaf_retirement_audit_evaluated = true;
         report.d4_leaf_retirement_candidates = 1;
+        report.d4_leaf_retirement_trials_total = 2;
         report.d4_leaf_retirement_triangulations = 2;
         report.d4_leaf_retirement_fully_acceptable = 0;
         session.publish(&report).unwrap();
@@ -1052,8 +1105,12 @@ mod tests {
         assert_eq!(rows[1]["record_type"], "degree_four_retirement_summary");
         assert_eq!(rows[1]["evaluated"], true);
         assert_eq!(rows[1]["sites_total"], 3);
+        assert_eq!(rows[1]["checks"]["geometry"]["pass"], 1);
+        assert_eq!(rows[1]["checks"]["geometry"]["fail"], 1);
+        assert_eq!(rows[1]["checks"]["hard_gate"]["not_evaluated"], 1);
         assert_eq!(rows[2]["record_type"], "degree_four_retirement_site");
         assert_eq!(rows[2]["site_id"], 10);
+        assert_eq!(rows[2]["candidate_rank"], 4);
         assert_eq!(rows[2]["trial_count"], 2);
         assert_eq!(rows[3]["record_type"], "degree_four_retirement_trial");
         assert_eq!(rows[3]["ring_site_ids"], serde_json::json!([1, 2, 3, 4]));

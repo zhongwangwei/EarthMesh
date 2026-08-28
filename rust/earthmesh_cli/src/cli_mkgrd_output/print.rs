@@ -308,6 +308,10 @@ pub(crate) fn print_refine_pipeline_report(
             harp.d4_leaf_retirement_candidates
         );
         println!(
+            "harp_dv_d4_leaf_retirement_trials_total={}",
+            harp.d4_leaf_retirement_trials_total
+        );
+        println!(
             "harp_dv_d4_leaf_retirement_triangulations={}",
             harp.d4_leaf_retirement_triangulations
         );

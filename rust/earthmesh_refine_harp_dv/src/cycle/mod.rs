@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use earthmesh_mesh::{
     arc_length_unit_sphere, cross, lonlat_degrees_to_unit_xyz, magnitude, xyz_to_lonlat_degrees,
-    CartesianPoint, Sign, MESH_STATE_FIRST_ID,
+    CartesianPoint, MESH_STATE_FIRST_ID,
 };
 use earthmesh_refine::{
     order_demands, CriterionSemantics, DemandEvidence, RefinementCause, RefinementDemand,
@@ -201,6 +201,7 @@ fn balance_survey(mesh: &AdaptiveMesh, limits: CycleLimits) -> (usize, f64) {
     balance_survey_state(mesh.state(), limits)
 }
 
+#[cfg(test)]
 fn balance_survey_state(state: &MeshState, limits: CycleLimits) -> (usize, f64) {
     balance_survey_from_scales(state, &state_scales(state), limits)
 }
@@ -1568,12 +1569,12 @@ struct DegreeFourRetirementAudit {
     trials: Vec<DegreeFourRetirementTrial>,
 }
 
-#[derive(Clone)]
-struct DegreeFourTrialCandidate {
+#[derive(Clone, Copy)]
+struct DegreeFourTrialIdentity {
     index: u8,
-    ring: [usize; 4],
-    diagonal: [usize; 2],
-    candidate: Option<(MeshState, Vec<usize>)>,
+    ring_site_ids: Option<[SiteId; 4]>,
+    diagonal_site_ids: Option<[SiteId; 2]>,
+    diagonal_vertices: Option<[usize; 2]>,
 }
 
 struct RetirementPostcondition<'a> {
@@ -1783,11 +1784,6 @@ fn retire_quality_leaf_sites(
     (committed, committed_d4, committed_d4_site_ids)
 }
 
-/// Rebuild compact clones without one degree-four leaf.
-///
-/// This deliberately does not mutate `AdaptiveMesh`: compacting rows loses the
-/// stable SiteId-to-row relation, so the result is evidence for (or against) a
-/// future deletion transaction, not a deletion transaction itself.
 fn degree_four_ring(state: &MeshState, site: usize) -> Option<[usize; 4]> {
     let fan = state.triangle_fan(site).ok()?;
     if fan.len() != 4 {
@@ -1812,152 +1808,67 @@ fn degree_four_ring(state: &MeshState, site: usize) -> Option<[usize; 4]> {
     ring.try_into().ok()
 }
 
-fn build_degree_four_trial(
-    state: &MeshState,
-    site: usize,
-    trial_index: u8,
-    ring: [usize; 4],
-) -> DegreeFourTrialCandidate {
-    let diagonal = if trial_index == 0 {
-        [ring[0], ring[2]]
-    } else {
-        [ring[1], ring[3]]
-    };
-    let Ok(fan) = state.triangle_fan(site) else {
-        return DegreeFourTrialCandidate {
-            index: trial_index,
-            ring,
-            diagonal,
-            candidate: None,
-        };
-    };
-    let corners = state.triangles()[fan[0]];
-    let Ok(expected) = earthmesh_mesh::orientation_on_sphere(
-        state.vertices()[corners[0]],
-        state.vertices()[corners[1]],
-        state.vertices()[corners[2]],
-    ) else {
-        return DegreeFourTrialCandidate {
-            index: trial_index,
-            ring,
-            diagonal,
-            candidate: None,
-        };
-    };
-    if expected == Sign::Zero {
-        return DegreeFourTrialCandidate {
-            index: trial_index,
-            ring,
-            diagonal,
-            candidate: None,
-        };
-    }
-    let mut replacement = if trial_index == 0 {
-        [[ring[0], ring[1], ring[2]], [ring[0], ring[2], ring[3]]]
-    } else {
-        [[ring[0], ring[1], ring[3]], [ring[1], ring[2], ring[3]]]
-    };
-    for triangle in &mut replacement {
-        match earthmesh_mesh::orientation_on_sphere(
-            state.vertices()[triangle[0]],
-            state.vertices()[triangle[1]],
-            state.vertices()[triangle[2]],
-        ) {
-            Ok(sign) if sign == expected => {}
-            Ok(Sign::Positive | Sign::Negative) => triangle.swap(1, 2),
-            _ => {
-                return DegreeFourTrialCandidate {
-                    index: trial_index,
-                    ring,
-                    diagonal,
-                    candidate: None,
-                }
+fn canonical_ring(mut ring: [(SiteId, usize); 4]) -> [(SiteId, usize); 4] {
+    let original = ring;
+    for offset in 0..4 {
+        for reverse in [false, true] {
+            let candidate = std::array::from_fn(|step| {
+                let index = if reverse {
+                    (offset + 4 - step) % 4
+                } else {
+                    (offset + step) % 4
+                };
+                original[index]
+            });
+            if candidate.map(|entry| entry.0) < ring.map(|entry| entry.0) {
+                ring = candidate;
             }
         }
     }
-
-    let fan: BTreeSet<_> = fan.into_iter().collect();
-    let mut remap = vec![usize::MAX; state.vertices().len()];
-    let mut vertices = state
-        .vertices()
-        .iter()
-        .take(MESH_STATE_FIRST_ID)
-        .copied()
-        .collect::<Vec<_>>();
-    for old in state.active_vertex_slots() {
-        if old == site {
-            continue;
-        }
-        remap[old] = vertices.len();
-        vertices.push(state.vertices()[old]);
-    }
-    let mut triangles = state
-        .triangles()
-        .iter()
-        .take(MESH_STATE_FIRST_ID)
-        .copied()
-        .collect::<Vec<_>>();
-    triangles.extend(
-        state
-            .triangles()
-            .iter()
-            .enumerate()
-            .filter(|(triangle, _)| state.is_triangle_live(*triangle) && !fan.contains(triangle))
-            .map(|(_, corners)| corners.map(|corner| remap[corner])),
-    );
-    let replacement_start = triangles.len();
-    triangles.extend(replacement.map(|corners| corners.map(|corner| remap[corner])));
-    let Ok(mut candidate) = MeshState::from_parts(vertices, triangles) else {
-        return DegreeFourTrialCandidate {
-            index: trial_index,
-            ring,
-            diagonal,
-            candidate: None,
-        };
-    };
-    let seeds: BTreeSet<_> = (replacement_start..candidate.triangles().len()).collect();
-    if candidate.legalize_around(&seeds).is_err()
-        || candidate.validate().is_err()
-        || candidate.open_edge_count() != 0
-        || candidate.active_triangle_slots().any(|triangle| {
-            (0..3).any(|corner| candidate.edge_is_illegal(triangle, corner).unwrap_or(true))
-        })
-    {
-        return DegreeFourTrialCandidate {
-            index: trial_index,
-            ring,
-            diagonal,
-            candidate: None,
-        };
-    }
-    DegreeFourTrialCandidate {
-        index: trial_index,
-        ring,
-        diagonal,
-        candidate: Some((candidate, remap)),
-    }
+    ring
 }
 
-fn degree_four_trial_candidates(state: &MeshState, site: usize) -> Vec<DegreeFourTrialCandidate> {
-    let Some(ring) = degree_four_ring(state, site) else {
-        return Vec::new();
+fn degree_four_trial_identities(
+    mesh: &AdaptiveMesh,
+    site: usize,
+) -> Result<[DegreeFourTrialIdentity; 2]> {
+    let Some(ring) = degree_four_ring(mesh.state(), site) else {
+        return Ok(std::array::from_fn(|index| DegreeFourTrialIdentity {
+            index: index as u8,
+            ring_site_ids: None,
+            diagonal_site_ids: None,
+            diagonal_vertices: None,
+        }));
     };
-    (0..2)
-        .map(|trial_index| build_degree_four_trial(state, site, trial_index, ring))
-        .collect()
-}
-
-/// Rebuild compact clones without one degree-four leaf.
-///
-/// This deliberately does not mutate `AdaptiveMesh`: compacting rows loses the
-/// stable SiteId-to-row relation, so the result is evidence for (or against)
-/// a future deletion transaction, not a deletion transaction itself.
-#[cfg(test)]
-fn clone_without_degree_four_site(state: &MeshState, site: usize) -> Vec<(MeshState, Vec<usize>)> {
-    degree_four_trial_candidates(state, site)
-        .into_iter()
-        .filter_map(|trial| trial.candidate)
-        .collect()
+    let mut stable_ring = [(SiteId(0), 0); 4];
+    for (target, vertex) in stable_ring.iter_mut().zip(ring) {
+        *target = (
+            mesh.site_for_vertex(vertex)
+                .ok_or_else(|| {
+                    crate::error::HarpDvError::InvalidMesh(format!(
+                        "degree-four ring vertex {vertex} has no stable SiteId"
+                    ))
+                })?
+                .site_id,
+            vertex,
+        );
+    }
+    let stable_ring = canonical_ring(stable_ring);
+    let ring_site_ids = stable_ring.map(|entry| entry.0);
+    let mut diagonals = [
+        [stable_ring[0], stable_ring[2]],
+        [stable_ring[1], stable_ring[3]],
+    ];
+    for diagonal in &mut diagonals {
+        diagonal.sort_by_key(|entry| entry.0);
+    }
+    diagonals.sort_by_key(|diagonal| diagonal.map(|entry| entry.0));
+    Ok(std::array::from_fn(|index| DegreeFourTrialIdentity {
+        index: index as u8,
+        ring_site_ids: Some(ring_site_ids),
+        diagonal_site_ids: Some(diagonals[index].map(|entry| entry.0)),
+        diagonal_vertices: Some(diagonals[index].map(|entry| entry.1)),
+    }))
 }
 
 /// One cell sweep answering both retirement guards.
@@ -2004,6 +1915,7 @@ fn demanded_cells_and_scales(
     (demanded, scales)
 }
 
+#[cfg(test)]
 fn demanded_cells_in_state(
     state: &MeshState,
     criteria: &[Box<dyn CellCriterion>],
@@ -2043,38 +1955,32 @@ fn status(pass: bool) -> DegreeFourCheckStatus {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn evaluate_degree_four_trial(
-    mesh: &AdaptiveMesh,
-    trial: DegreeFourTrialCandidate,
+fn measured_status(pass: Option<bool>) -> DegreeFourCheckStatus {
+    match pass {
+        Some(pass) => status(pass),
+        None => DegreeFourCheckStatus::NotEvaluated,
+    }
+}
+
+fn finite_status(
+    before: f64,
+    after: f64,
+    accepts: impl FnOnce(f64, f64) -> bool,
+) -> DegreeFourCheckStatus {
+    measured_status((before.is_finite() && after.is_finite()).then(|| accepts(before, after)))
+}
+
+fn unevaluated_degree_four_trial(
+    identity: DegreeFourTrialIdentity,
     site_id: SiteId,
     vertex: usize,
-    before_demands: Option<usize>,
-    before_balance: (usize, f64),
-    before_angles: &AngleWindowSurvey,
-    before_vertices_below_degree_5: &BTreeSet<usize>,
-    before_eta: Option<f64>,
-    before_margin: Option<f64>,
-    criteria: &[Box<dyn CellCriterion>],
-    gates: HardGates,
-    limits: CycleLimits,
 ) -> DegreeFourRetirementTrial {
-    let ring_site_ids = trial.ring.map(|vertex| {
-        mesh.site_for_vertex(vertex)
-            .map(|site| site.site_id)
-            .expect("degree-four ring vertices have stable SiteIds")
-    });
-    let diagonal_site_ids = trial.diagonal.map(|vertex| {
-        mesh.site_for_vertex(vertex)
-            .map(|site| site.site_id)
-            .expect("degree-four diagonal vertices have stable SiteIds")
-    });
-    let unevaluated = DegreeFourRetirementTrial {
+    DegreeFourRetirementTrial {
         site_id,
         vertex,
-        trial_index: trial.index,
-        ring_site_ids,
-        diagonal_site_ids,
+        trial_index: identity.index,
+        ring_site_ids: identity.ring_site_ids,
+        diagonal_site_ids: identity.diagonal_site_ids,
         geometry: DegreeFourCheckStatus::Fail,
         hard_gate: DegreeFourCheckStatus::NotEvaluated,
         physical_demand: DegreeFourCheckStatus::NotEvaluated,
@@ -2087,27 +1993,40 @@ fn evaluate_degree_four_trial(
         margin: DegreeFourCheckStatus::NotEvaluated,
         conservative_remap: DegreeFourCheckStatus::NotEvaluated,
         fully_acceptable: false,
-    };
-    let Some((candidate, remap)) = trial.candidate else {
-        return unevaluated;
-    };
-    let touched: BTreeSet<_> = candidate.active_triangle_slots().collect();
-    let hard_gate = mesh
-        .pentagon_ids()
-        .map(|pentagon| remap.get(pentagon).copied())
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .and_then(|vertices| vertices.try_into().ok())
-        .is_some_and(|pentagons| check(&candidate, &touched, gates, &pentagons).is_ok());
-    let after_demands = demanded_cells_in_state(&candidate, criteria);
-    let physical_demand = before_demands
-        .zip(after_demands)
-        .is_some_and(|(before, after)| after <= before);
-    let after_balance = balance_survey_state(&candidate, limits);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_degree_four_trial(
+    mesh: &AdaptiveMesh,
+    identity: DegreeFourTrialIdentity,
+    site_id: SiteId,
+    vertex: usize,
+    candidate: &MeshState,
+    report: &earthmesh_mesh::RetirementReport,
+    before_demands: Option<usize>,
+    before_balance: (usize, f64),
+    before_angles: &AngleWindowSurvey,
+    before_vertices_below_degree_5: &BTreeSet<usize>,
+    before_eta: Option<f64>,
+    before_margin: Option<f64>,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+) -> DegreeFourRetirementTrial {
+    let touched = retirement_touched_triangles(report);
+    let hard_gate = check(candidate, &touched, gates, &mesh.pentagon_ids()).is_ok();
+    let (after_demands, after_scales) = demanded_cells_and_scales(candidate, criteria);
+    let physical_demand = measured_status(
+        before_demands
+            .zip(after_demands)
+            .map(|(before, after)| after <= before),
+    );
+    let after_balance = balance_survey_from_scales(candidate, &after_scales, limits);
     let scale_balance = after_balance.0 <= before_balance.0
         && (after_balance.0 == 0 || after_balance.1 <= before_balance.1);
-    let after_angles = angle_window_survey(&candidate);
-    let after_vertices_below_degree_5 = vertices_below_degree_5_set(&candidate);
+    let after_angles = angle_window_survey(candidate);
+    let after_vertices_below_degree_5 = vertices_below_degree_5_set(candidate);
     let no_new_low_degree = after_vertices_below_degree_5.is_subset(before_vertices_below_degree_5)
         && after_vertices_below_degree_5.len() < before_vertices_below_degree_5.len();
     let angle_count = after_angles.unmeasurable == 0
@@ -2115,48 +2034,151 @@ fn evaluate_degree_four_trial(
         && after_angles.above_80 <= before_angles.above_80
         && after_angles.below + after_angles.above_80
             < before_angles.below + before_angles.above_80;
-    let worst_deviation = after_angles.worst_deviation_deg <= before_angles.worst_deviation_deg;
-    let penalty = after_angles.penalty < before_angles.penalty;
-    let after_eta = all_triangle_eta_values(&candidate).and_then(|values| values.first().copied());
-    let eta = before_eta
-        .zip(after_eta)
-        .is_some_and(|(before, after)| after >= before);
+    let worst_deviation = finite_status(
+        before_angles.worst_deviation_deg,
+        after_angles.worst_deviation_deg,
+        |before, after| after <= before,
+    );
+    let penalty = finite_status(
+        before_angles.penalty,
+        after_angles.penalty,
+        |before, after| after < before,
+    );
+    let after_eta = all_triangle_eta_values(candidate).and_then(|values| values.first().copied());
+    let eta = measured_status(
+        before_eta
+            .zip(after_eta)
+            .filter(|(before, after)| before.is_finite() && after.is_finite())
+            .map(|(before, after)| after >= before),
+    );
     let after_global_margin =
-        all_triangle_window_margins(&candidate).and_then(|values| values.first().copied());
-    let margin = before_margin
-        .zip(after_global_margin)
-        .is_some_and(|(before, after)| after >= before);
-    let conservative_remap = remap.iter().filter(|&&mapped| mapped != usize::MAX).count()
-        == mesh.active_site_count().saturating_sub(1);
-    let fully_acceptable = hard_gate
-        && physical_demand
-        && scale_balance
-        && no_new_low_degree
-        && angle_count
-        && worst_deviation
-        && penalty
-        && eta
-        && margin;
+        all_triangle_window_margins(candidate).and_then(|values| values.first().copied());
+    let margin = measured_status(
+        before_margin
+            .zip(after_global_margin)
+            .filter(|(before, after)| before.is_finite() && after.is_finite())
+            .map(|(before, after)| after >= before),
+    );
+    let conservative_remap = mesh.retirement_has_conservative_remap(candidate, vertex, report);
+    let statuses = [
+        status(hard_gate),
+        physical_demand,
+        status(scale_balance),
+        status(no_new_low_degree),
+        status(angle_count),
+        worst_deviation,
+        penalty,
+        eta,
+        margin,
+        status(conservative_remap),
+    ];
+    let fully_acceptable = statuses
+        .iter()
+        .all(|check| *check == DegreeFourCheckStatus::Pass);
     DegreeFourRetirementTrial {
+        site_id,
         vertex,
+        trial_index: identity.index,
+        ring_site_ids: identity.ring_site_ids,
+        diagonal_site_ids: identity.diagonal_site_ids,
         geometry: DegreeFourCheckStatus::Pass,
-        hard_gate: status(hard_gate),
-        physical_demand: status(physical_demand),
+        hard_gate: statuses[0],
+        physical_demand: statuses[1],
         scale_balance: status(scale_balance),
         no_new_low_degree: status(no_new_low_degree),
         angle_count: status(angle_count),
-        worst_deviation: status(worst_deviation),
-        penalty: status(penalty),
-        eta: status(eta),
-        margin: status(margin),
+        worst_deviation,
+        penalty,
+        eta,
+        margin,
         conservative_remap: status(conservative_remap),
         fully_acceptable,
-        ..unevaluated
     }
 }
 
-fn count_pass(status: DegreeFourCheckStatus) -> usize {
-    usize::from(status == DegreeFourCheckStatus::Pass)
+#[allow(clippy::too_many_arguments)]
+fn evaluate_degree_four_trials(
+    mesh: &AdaptiveMesh,
+    site: usize,
+    site_id: SiteId,
+    before_demands: Option<usize>,
+    before_balance: (usize, f64),
+    before_angles: &AngleWindowSurvey,
+    before_vertices_below_degree_5: &BTreeSet<usize>,
+    before_eta: Option<f64>,
+    before_margin: Option<f64>,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+) -> Result<Vec<DegreeFourRetirementTrial>> {
+    let identities = degree_four_trial_identities(mesh, site)?;
+    let mut trials =
+        identities.map(|identity| unevaluated_degree_four_trial(identity, site_id, site));
+    let by_diagonal = identities
+        .iter()
+        .filter_map(|identity| {
+            identity.diagonal_vertices.map(|vertices| {
+                let key = if vertices[0] < vertices[1] {
+                    (vertices[0], vertices[1])
+                } else {
+                    (vertices[1], vertices[0])
+                };
+                (key, identity.index as usize)
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut probe = mesh.state().clone();
+    let _ = probe.retire_degree_four_vertex_transactionally(site, |candidate, report| {
+        let Some(diagonal) = report.diagonal else {
+            return false;
+        };
+        let key = if diagonal.tail < diagonal.head {
+            (diagonal.tail, diagonal.head)
+        } else {
+            (diagonal.head, diagonal.tail)
+        };
+        if let Some(&index) = by_diagonal.get(&key) {
+            trials[index] = evaluate_degree_four_trial(
+                mesh,
+                identities[index],
+                site_id,
+                site,
+                candidate,
+                report,
+                before_demands,
+                before_balance,
+                before_angles,
+                before_vertices_below_degree_5,
+                before_eta,
+                before_margin,
+                criteria,
+                gates,
+                limits,
+            );
+        }
+        false
+    });
+    Ok(trials.into())
+}
+
+fn count_status(counts: &mut crate::trace::DegreeFourCheckCounts, status: DegreeFourCheckStatus) {
+    match status {
+        DegreeFourCheckStatus::Pass => counts.pass += 1,
+        DegreeFourCheckStatus::Fail => counts.fail += 1,
+        DegreeFourCheckStatus::NotEvaluated => counts.not_evaluated += 1,
+    }
+}
+
+fn trial_quality_improves(trial: &DegreeFourRetirementTrial) -> bool {
+    [
+        trial.angle_count,
+        trial.worst_deviation,
+        trial.penalty,
+        trial.eta,
+        trial.margin,
+    ]
+    .into_iter()
+    .all(|check| check == DegreeFourCheckStatus::Pass)
 }
 
 fn finish_degree_four_summary(audit: &mut DegreeFourRetirementAudit) {
@@ -2172,18 +2194,28 @@ fn finish_degree_four_summary(audit: &mut DegreeFourRetirementAudit) {
         .filter(|site| site.any_fully_acceptable_trial)
         .count();
     summary.trials_total = audit.trials.len();
+    summary.checks = crate::trace::DegreeFourRetirementCheckCounts::default();
+    summary.trials_quality_improving = 0;
+    summary.trials_fully_acceptable = 0;
     for trial in &audit.trials {
-        summary.trials_geometry_pass += count_pass(trial.geometry);
-        summary.trials_hard_gate_pass += count_pass(trial.hard_gate);
-        summary.trials_physical_pass += count_pass(trial.physical_demand);
-        summary.trials_scale_balance_pass += count_pass(trial.scale_balance);
-        summary.trials_no_new_low_degree_pass += count_pass(trial.no_new_low_degree);
-        summary.trials_angle_count_pass += count_pass(trial.angle_count);
-        summary.trials_worst_deviation_pass += count_pass(trial.worst_deviation);
-        summary.trials_penalty_pass += count_pass(trial.penalty);
-        summary.trials_eta_pass += count_pass(trial.eta);
-        summary.trials_margin_pass += count_pass(trial.margin);
-        summary.trials_conservative_remap_pass += count_pass(trial.conservative_remap);
+        count_status(&mut summary.checks.geometry, trial.geometry);
+        count_status(&mut summary.checks.hard_gate, trial.hard_gate);
+        count_status(&mut summary.checks.physical_demand, trial.physical_demand);
+        count_status(&mut summary.checks.scale_balance, trial.scale_balance);
+        count_status(
+            &mut summary.checks.no_new_low_degree,
+            trial.no_new_low_degree,
+        );
+        count_status(&mut summary.checks.angle_count, trial.angle_count);
+        count_status(&mut summary.checks.worst_deviation, trial.worst_deviation);
+        count_status(&mut summary.checks.penalty, trial.penalty);
+        count_status(&mut summary.checks.eta, trial.eta);
+        count_status(&mut summary.checks.margin, trial.margin);
+        count_status(
+            &mut summary.checks.conservative_remap,
+            trial.conservative_remap,
+        );
+        summary.trials_quality_improving += usize::from(trial_quality_improves(trial));
         summary.trials_fully_acceptable += usize::from(trial.fully_acceptable);
     }
 }
@@ -2195,6 +2227,124 @@ fn mark_degree_four_commits(audit: &mut DegreeFourRetirementAudit, committed: &B
     }
 }
 
+fn validate_degree_four_audit(audit: &DegreeFourRetirementAudit) -> Result<()> {
+    let summary = &audit.summary;
+    let invalid = |message: &str| {
+        crate::error::HarpDvError::TopologyViolation(format!(
+            "degree-four retirement audit does not close: {message}"
+        ))
+    };
+    if summary.sites_total != summary.sites_not_leaf + summary.sites_eligible {
+        return Err(invalid("site eligibility populations"));
+    }
+    if summary.sites_eligible != summary.sites_without_window_violation + summary.sites_audited {
+        return Err(invalid("eligible site populations"));
+    }
+    if summary.sites_committed > summary.sites_with_any_fully_acceptable_trial
+        || summary.sites_with_any_fully_acceptable_trial > summary.sites_with_any_valid_trial
+        || summary.sites_with_any_valid_trial > summary.sites_audited
+    {
+        return Err(invalid("site outcome populations"));
+    }
+    if audit.sites.len() != summary.sites_total
+        || audit
+            .sites
+            .windows(2)
+            .any(|pair| pair[0].site_id >= pair[1].site_id)
+    {
+        return Err(invalid("site rows"));
+    }
+    if audit.trials.windows(2).any(|pair| {
+        (pair[0].site_id, pair[0].trial_index) >= (pair[1].site_id, pair[1].trial_index)
+    }) {
+        return Err(invalid("trial ordering"));
+    }
+    if summary.trials_total != summary.sites_audited.saturating_mul(2)
+        || audit.trials.len() != summary.trials_total
+    {
+        return Err(invalid("trial denominator"));
+    }
+    let trial_outcomes = audit.trials.iter().fold(
+        BTreeMap::<SiteId, (usize, bool, bool)>::new(),
+        |mut outcomes, trial| {
+            let outcome = outcomes.entry(trial.site_id).or_default();
+            outcome.0 += 1;
+            outcome.1 |= trial.geometry == DegreeFourCheckStatus::Pass;
+            outcome.2 |= trial.fully_acceptable;
+            outcomes
+        },
+    );
+    for site in &audit.sites {
+        let audited = site.interior_leaf && site.window_violation;
+        if site.trial_count != if audited { 2 } else { 0 }
+            || site.candidate_rank.is_some() != site.window_violation
+            || site.ranked_beyond_64 != site.candidate_rank.is_some_and(|rank| rank >= 64)
+        {
+            return Err(invalid("site row classification"));
+        }
+        let (trial_count, any_valid, any_fully_acceptable) = trial_outcomes
+            .get(&site.site_id)
+            .copied()
+            .unwrap_or_default();
+        if trial_count != site.trial_count
+            || site.any_valid_trial != any_valid
+            || site.any_fully_acceptable_trial != any_fully_acceptable
+            || site.committed && !site.any_fully_acceptable_trial
+        {
+            return Err(invalid("site row outcomes"));
+        }
+    }
+    if summary.sites_committed != audit.sites.iter().filter(|site| site.committed).count() {
+        return Err(invalid("committed site join"));
+    }
+    for trial in &audit.trials {
+        let downstream = [
+            trial.hard_gate,
+            trial.physical_demand,
+            trial.scale_balance,
+            trial.no_new_low_degree,
+            trial.angle_count,
+            trial.worst_deviation,
+            trial.penalty,
+            trial.eta,
+            trial.margin,
+            trial.conservative_remap,
+        ];
+        if trial.geometry == DegreeFourCheckStatus::Fail
+            && downstream
+                .iter()
+                .any(|check| *check != DegreeFourCheckStatus::NotEvaluated)
+        {
+            return Err(invalid("geometry-failed trial checks"));
+        }
+        let fully_acceptable = std::iter::once(trial.geometry)
+            .chain(downstream)
+            .all(|check| check == DegreeFourCheckStatus::Pass);
+        if trial.fully_acceptable != fully_acceptable {
+            return Err(invalid("fully acceptable trial"));
+        }
+    }
+    let checks = &summary.checks;
+    for counts in [
+        &checks.geometry,
+        &checks.hard_gate,
+        &checks.physical_demand,
+        &checks.scale_balance,
+        &checks.no_new_low_degree,
+        &checks.angle_count,
+        &checks.worst_deviation,
+        &checks.penalty,
+        &checks.eta,
+        &checks.margin,
+        &checks.conservative_remap,
+    ] {
+        if counts.pass + counts.fail + counts.not_evaluated != summary.trials_total {
+            return Err(invalid("check denominator"));
+        }
+    }
+    Ok(())
+}
+
 fn degree_four_retirement_audit(
     mesh: &AdaptiveMesh,
     criteria: &[Box<dyn CellCriterion>],
@@ -2202,10 +2352,10 @@ fn degree_four_retirement_audit(
     limits: CycleLimits,
     leaves: &LeafLineageSurvey,
     maximum_degree: usize,
-) -> DegreeFourRetirementAudit {
+) -> Result<DegreeFourRetirementAudit> {
     let state = mesh.state();
-    let before_demands = demanded_cells_in_state(state, criteria);
-    let before_balance = balance_survey_state(state, limits);
+    let (before_demands, before_scales) = demanded_cells_and_scales(state, criteria);
+    let before_balance = balance_survey_from_scales(state, &before_scales, limits);
     let before_angles = angle_window_survey(state);
     let before_vertices_below_degree_5 = vertices_below_degree_5_set(state);
     let before_eta = all_triangle_eta_values(state).and_then(|values| values.first().copied());
@@ -2226,46 +2376,54 @@ fn degree_four_retirement_audit(
         },
         ..DegreeFourRetirementAudit::default()
     };
-    for site in state.active_vertex_slots() {
-        if state.vertex_degree(site).ok() != Some(4) {
-            continue;
-        }
+    let mut degree_four_sites = state
+        .active_vertex_slots()
+        .filter(|&site| state.vertex_degree(site).ok() == Some(4))
+        .map(|site| {
+            mesh.site_for_vertex(site)
+                .map(|record| (record.site_id, site))
+                .ok_or_else(|| {
+                    crate::error::HarpDvError::InvalidMesh(format!(
+                        "active degree-four vertex {site} has no stable SiteId"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    degree_four_sites.sort_by_key(|entry| entry.0);
+    for (site_id, site) in degree_four_sites {
         audit.summary.sites_total += 1;
-        if !leaves.interior_leaf.get(site).copied().unwrap_or(false) {
+        let interior_leaf = leaves.interior_leaf.get(site).copied().unwrap_or(false);
+        let candidate_rank = ranked_d4.get(&site).copied();
+        let window_violation = candidate_rank.is_some();
+        if !interior_leaf {
             audit.summary.sites_not_leaf += 1;
-            continue;
+        } else {
+            audit.summary.sites_eligible += 1;
         }
-        audit.summary.sites_eligible += 1;
-        let Some(&rank) = ranked_d4.get(&site) else {
+        if interior_leaf && !window_violation {
             audit.summary.sites_without_window_violation += 1;
-            continue;
+        }
+        let mut trials = if interior_leaf && window_violation {
+            audit.summary.sites_audited += 1;
+            audit.summary.sites_ranked_beyond_64 +=
+                usize::from(candidate_rank.is_some_and(|rank| rank >= 64));
+            evaluate_degree_four_trials(
+                mesh,
+                site,
+                site_id,
+                before_demands,
+                before_balance,
+                &before_angles,
+                &before_vertices_below_degree_5,
+                before_eta,
+                before_margin,
+                criteria,
+                gates,
+                limits,
+            )?
+        } else {
+            Vec::new()
         };
-        audit.summary.sites_audited += 1;
-        audit.summary.sites_ranked_beyond_64 += usize::from(rank >= 64);
-        let site_id = mesh
-            .site_for_vertex(site)
-            .map(|site| site.site_id)
-            .expect("active interior leaves have stable SiteIds");
-        let mut trials = degree_four_trial_candidates(state, site)
-            .into_iter()
-            .map(|trial| {
-                evaluate_degree_four_trial(
-                    mesh,
-                    trial,
-                    site_id,
-                    site,
-                    before_demands,
-                    before_balance,
-                    &before_angles,
-                    &before_vertices_below_degree_5,
-                    before_eta,
-                    before_margin,
-                    criteria,
-                    gates,
-                    limits,
-                )
-            })
-            .collect::<Vec<_>>();
         let any_valid_trial = trials
             .iter()
             .any(|trial| trial.geometry == DegreeFourCheckStatus::Pass);
@@ -2273,7 +2431,10 @@ fn degree_four_retirement_audit(
         audit.sites.push(DegreeFourRetirementSite {
             site_id,
             vertex: site,
-            ranked_beyond_64: rank >= 64,
+            interior_leaf,
+            window_violation,
+            candidate_rank,
+            ranked_beyond_64: candidate_rank.is_some_and(|rank| rank >= 64),
             trial_count: trials.len(),
             any_valid_trial,
             any_fully_acceptable_trial,
@@ -2282,7 +2443,8 @@ fn degree_four_retirement_audit(
         audit.trials.append(&mut trials);
     }
     finish_degree_four_summary(&mut audit);
-    audit
+    validate_degree_four_audit(&audit)?;
+    Ok(audit)
 }
 
 fn vertex_degrees(state: &MeshState) -> Vec<usize> {
@@ -4592,7 +4754,7 @@ fn run_cycles_with_local_recovery(
             limits,
             &pre_retirement_leaves,
             maximum_retirement_degree,
-        )
+        )?
     } else {
         DegreeFourRetirementAudit::default()
     };
@@ -4606,6 +4768,9 @@ fn run_cycles_with_local_recovery(
             maximum_retirement_degree,
         );
     mark_degree_four_commits(&mut d4_retirement, &committed_d4_site_ids);
+    if d4_retirement.summary.evaluated {
+        validate_degree_four_audit(&d4_retirement)?;
+    }
 
     // Re-read after the last insertion or move. The loop's attempted-demand
     // list predates its r-adaptation phase, so returning it here would make the
@@ -4731,11 +4896,12 @@ fn run_cycles_with_local_recovery(
                 .violating_triangles_touching_interior_leaf,
             d4_leaf_retirement_audit_evaluated: d4_retirement.summary.evaluated,
             d4_leaf_retirement_candidates: d4_retirement.summary.sites_audited,
-            d4_leaf_retirement_triangulations: d4_retirement.summary.trials_geometry_pass,
-            d4_leaf_retirement_hard_gate_safe: d4_retirement.summary.trials_hard_gate_pass,
-            d4_leaf_retirement_physical_safe: d4_retirement.summary.trials_physical_pass,
-            d4_leaf_retirement_balance_safe: d4_retirement.summary.trials_scale_balance_pass,
-            d4_leaf_retirement_quality_improving: d4_retirement.summary.trials_fully_acceptable,
+            d4_leaf_retirement_trials_total: d4_retirement.summary.trials_total,
+            d4_leaf_retirement_triangulations: d4_retirement.summary.checks.geometry.pass,
+            d4_leaf_retirement_hard_gate_safe: d4_retirement.summary.checks.hard_gate.pass,
+            d4_leaf_retirement_physical_safe: d4_retirement.summary.checks.physical_demand.pass,
+            d4_leaf_retirement_balance_safe: d4_retirement.summary.checks.scale_balance.pass,
+            d4_leaf_retirement_quality_improving: d4_retirement.summary.trials_quality_improving,
             d4_leaf_retirement_fully_acceptable: d4_retirement
                 .summary
                 .sites_with_any_fully_acceptable_trial,

@@ -122,7 +122,9 @@ site 数，以及 physical demand、balance demand、unbalanced pair 和 unresol
 retirement audit：summary 区分 `sites_total`、`sites_not_leaf`、`sites_eligible`、
 `sites_without_window_violation`、`sites_audited`、`sites_ranked_beyond_64`、site-level 成功数和 trial-level
 成功数；每个 audited site 写两条 trial，trial 身份为 `site_id + trial_index`，并包含 ring/diagonal SiteId。
-trial 检查状态只能是 `pass`、`fail`、`not_evaluated`，不得用零计数冒充“已评估但没有通过”。
+trial 直接复用生产 retirement transaction 和 conservative-remap 构造。检查状态只能是 `pass`、`fail`、
+`not_evaluated`；summary 对每项分别计数，且三者之和必须等于 `trials_total`，不得用零计数冒充
+“已评估但没有通过”。
 
 非有限浮点不得进入 JSON number；输出 `null` 并带 `measurable=false`。
 

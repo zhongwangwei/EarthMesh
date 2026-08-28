@@ -215,15 +215,15 @@ pub struct HarpDvRunReport {
     pub d4_leaf_retirement_audit_evaluated: bool,
     /// Read-only feasibility audit for retiring degree-four interior leaves.
     /// Enabled with `EARTHMESH_HARP_D4_RETIREMENT_AUDIT` on meshes without
-    /// protected segments; these counts describe compact clones and no site is
-    /// removed from the run.
+    /// protected segments; trials use the production retirement transaction.
     pub d4_leaf_retirement_candidates: usize,
+    pub d4_leaf_retirement_trials_total: usize,
     pub d4_leaf_retirement_triangulations: usize,
     pub d4_leaf_retirement_hard_gate_safe: usize,
     pub d4_leaf_retirement_physical_safe: usize,
     pub d4_leaf_retirement_balance_safe: usize,
     pub d4_leaf_retirement_quality_improving: usize,
-    /// Leaves with at least one clone triangulation passing every audit gate.
+    /// Leaves with at least one production retirement trial passing every audit gate.
     pub d4_leaf_retirement_fully_acceptable: usize,
     /// Degree-four interior leaves actually retired by the production pass.
     pub d4_leaf_retirement_committed: usize,
@@ -258,7 +258,7 @@ pub struct HarpDvRunReport {
 }
 
 impl HarpDvRunReport {
-    pub const SCHEMA_VERSION: u32 = 14;
+    pub const SCHEMA_VERSION: u32 = 15;
 
     /// The report of a run that had nothing to do.
     pub fn empty(sites: usize, stop_reason: StopReason) -> Self {
@@ -315,6 +315,7 @@ impl HarpDvRunReport {
             violating_triangles_touching_interior_leaf: 0,
             d4_leaf_retirement_audit_evaluated: false,
             d4_leaf_retirement_candidates: 0,
+            d4_leaf_retirement_trials_total: 0,
             d4_leaf_retirement_triangulations: 0,
             d4_leaf_retirement_hard_gate_safe: 0,
             d4_leaf_retirement_physical_safe: 0,

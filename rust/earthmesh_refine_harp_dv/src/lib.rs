@@ -62,8 +62,9 @@ pub use state::{
     AdaptiveMesh, AdaptiveSite, ConservativeRemapWeight, SiteId, SiteIdAllocator, SiteMobility,
 };
 pub use trace::{
-    DegreeFourCheckStatus, DegreeFourRetirementSite, DegreeFourRetirementSummary,
-    DegreeFourRetirementTrial, HarpTraceEvent, HarpTraceStage,
+    DegreeFourCheckCounts, DegreeFourCheckStatus, DegreeFourRetirementCheckCounts,
+    DegreeFourRetirementSite, DegreeFourRetirementSummary, DegreeFourRetirementTrial,
+    HarpTraceEvent, HarpTraceStage,
 };
 pub use transaction::{
     committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,
