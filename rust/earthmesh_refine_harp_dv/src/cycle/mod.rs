@@ -31,7 +31,9 @@ use earthmesh_refine::{
 };
 
 use crate::candidate::CandidatePolicy;
-use crate::certifier::certify_mesh;
+use crate::certifier::{
+    certify_mesh_with_frozen_target_scales, validate_trace_closure, TARGET_SCALE_GRADIENT_LIMIT,
+};
 use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
 use crate::report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason};
@@ -1328,7 +1330,7 @@ fn target_cell_scales(
     }
     let mut adjacency = vec![Vec::new(); state.vertices().len()];
     for (left, right) in edges {
-        let allowance = TARGET_SCALE_GRADIENT
+        let allowance = TARGET_SCALE_GRADIENT_LIMIT
             * arc_length_unit_sphere(state.vertices()[left], state.vertices()[right]);
         adjacency[left].push((right, allowance));
         adjacency[right].push((left, allowance));
@@ -3462,6 +3464,7 @@ fn optimise_mesh_quality_with_natural_length(
         }
         return Ok((0, AngleWindowSurvey::default(), audit));
     };
+    trace.set_frozen_target_scales(&target_cell_scale);
     let mut audit = audit;
     let target_angles = target_angle_window_survey(mesh.state(), &target_cell_scale);
     eprintln!(
@@ -3767,7 +3770,6 @@ fn optimise_mesh_quality_with_natural_length(
 }
 
 const QUALITY_ETA_TARGET: f64 = 0.9375;
-const TARGET_SCALE_GRADIENT: f64 = 0.3;
 // Regular triangular lattice: A_voronoi=sqrt(3)/2*l² and h=sqrt(A/pi).
 const CELL_SCALE_TO_EDGE_LENGTH: f64 = 1.904_625_613_727_914_7;
 const ETA_QUALITY_PASSES: usize = 16;
@@ -3984,15 +3986,22 @@ fn production_quality_checkpoint_with_local_recovery(
 ///
 struct TraceEmitter<'a> {
     sink: Option<&'a mut dyn FnMut(HarpTraceEvent) -> Result<()>>,
+    frozen_target_scales: Option<Vec<f64>>,
 }
 
 impl<'a> TraceEmitter<'a> {
     fn off() -> Self {
-        Self { sink: None }
+        Self {
+            sink: None,
+            frozen_target_scales: None,
+        }
     }
 
     fn on(sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>) -> Self {
-        Self { sink: Some(sink) }
+        Self {
+            sink: Some(sink),
+            frozen_target_scales: None,
+        }
     }
 
     fn is_on(&self) -> bool {
@@ -4006,6 +4015,12 @@ impl<'a> TraceEmitter<'a> {
         Ok(())
     }
 
+    fn set_frozen_target_scales(&mut self, target_cell_scale: &[f64]) {
+        if self.is_on() {
+            self.frozen_target_scales = Some(target_cell_scale.to_vec());
+        }
+    }
+
     fn emit_stage_snapshot(
         &mut self,
         stage: HarpTraceStage,
@@ -4016,16 +4031,12 @@ impl<'a> TraceEmitter<'a> {
             return Ok(());
         }
         let refs = criteria_refs(criteria);
-        let certification = certify_mesh(mesh, &refs);
-        if certification
-            .violations
-            .iter()
-            .any(|violation| violation.key.is_none())
-        {
-            return Err(crate::error::HarpDvError::InvalidMesh(
-                "active triangle contains a vertex without a stable SiteId".to_string(),
-            ));
-        }
+        let certification = certify_mesh_with_frozen_target_scales(
+            mesh,
+            &refs,
+            self.frozen_target_scales.as_deref(),
+        );
+        validate_trace_closure(&certification)?;
         for violation in &certification.violations {
             self.emit(HarpTraceEvent::AngleViolation {
                 stage,

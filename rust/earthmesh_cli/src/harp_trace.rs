@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage};
 
 pub(crate) const ENV_VAR: &str = "EARTHMESH_HARP_TRACE_JSONL";
-pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 3;
 pub(crate) const STAGE_COUNT: usize = 7;
 
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -290,6 +290,8 @@ struct JsonStageSummary<'a> {
     unmeasurable_angle_count: usize,
     violating_angles_at_degree_le_4: usize,
     violating_angles_at_degree_ge_5: usize,
+    lineage_angle_exposure: Vec<JsonLineageAngleExposure>,
+    triangle_context_angle_exposure: Vec<JsonTriangleContextAngleExposure>,
     violation_count: usize,
 }
 
@@ -334,7 +336,77 @@ impl<'a> JsonStageSummary<'a> {
             unmeasurable_angle_count: certification.unmeasurable_angle_count,
             violating_angles_at_degree_le_4: certification.violating_angles_at_degree_le_4,
             violating_angles_at_degree_ge_5: certification.violating_angles_at_degree_ge_5,
+            lineage_angle_exposure: certification
+                .lineage_angle_exposure
+                .iter()
+                .map(|(key, row)| JsonLineageAngleExposure::from_row(key, row))
+                .collect(),
+            triangle_context_angle_exposure: certification
+                .triangle_context_angle_exposure
+                .iter()
+                .map(|(key, row)| JsonTriangleContextAngleExposure::from_row(key, row))
+                .collect(),
             violation_count: certification.violations.len(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonLineageAngleExposure {
+    birth_source_class: &'static str,
+    refinement_depth: u16,
+    birth_cycle: u32,
+    active_site_count: usize,
+    sites_with_violation_count: usize,
+    measurable_angle_count: usize,
+    below_40_count: usize,
+    above_80_count: usize,
+}
+
+impl JsonLineageAngleExposure {
+    fn from_row(
+        key: &earthmesh_refine_harp_dv::certifier::LineageCohortKey,
+        row: &earthmesh_refine_harp_dv::certifier::LineageAngleExposure,
+    ) -> Self {
+        Self {
+            birth_source_class: birth_source_class(key.birth_source_class),
+            refinement_depth: key.refinement_depth,
+            birth_cycle: key.birth_cycle,
+            active_site_count: row.active_site_count,
+            sites_with_violation_count: row.sites_with_violation_count,
+            measurable_angle_count: row.measurable_angle_count,
+            below_40_count: row.below_40_count,
+            above_80_count: row.above_80_count,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonTriangleContextAngleExposure {
+    refinement_boundary_class: &'static str,
+    raw_criterion_target_gradient_bin: &'static str,
+    frozen_gradated_target_gradient_bin: &'static str,
+    measurable_angle_count: usize,
+    below_40_count: usize,
+    above_80_count: usize,
+}
+
+impl JsonTriangleContextAngleExposure {
+    fn from_row(
+        key: &earthmesh_refine_harp_dv::certifier::TriangleContextKey,
+        row: &earthmesh_refine_harp_dv::certifier::TriangleContextAngleExposure,
+    ) -> Self {
+        Self {
+            refinement_boundary_class: refinement_boundary_class(key.refinement_boundary_class),
+            raw_criterion_target_gradient_bin: target_gradient_bin(
+                key.raw_criterion_target_gradient_bin,
+            ),
+            frozen_gradated_target_gradient_bin: target_gradient_bin(
+                key.frozen_gradated_target_gradient_bin,
+            ),
+            measurable_angle_count: row.measurable_angle_count,
+            below_40_count: row.below_40_count,
+            above_80_count: row.above_80_count,
         }
     }
 }
@@ -354,6 +426,13 @@ struct JsonAngleViolation {
     refinement_depth: Option<u16>,
     birth_cycle: Option<u32>,
     birth_candidate_source: Option<&'static str>,
+    lineage_depth_span: Option<u16>,
+    raw_target_coverage_count: u8,
+    refinement_boundary_class: &'static str,
+    raw_criterion_target_gradient_to_limit_ratio: Option<f64>,
+    raw_criterion_target_gradient_to_limit_ratio_measurable: bool,
+    frozen_gradated_target_gradient_to_limit_ratio: Option<f64>,
+    frozen_gradated_target_gradient_to_limit_ratio_measurable: bool,
     realized_to_raw_criterion_target_scale_ratio: Option<f64>,
     realized_to_raw_criterion_target_scale_ratio_measurable: bool,
 }
@@ -374,6 +453,14 @@ impl JsonAngleViolation {
             realized_to_raw_criterion_target_scale_ratio,
             realized_to_raw_criterion_target_scale_ratio_measurable,
         ) = optional_finite(violation.realized_to_raw_criterion_target_scale_ratio);
+        let (
+            raw_criterion_target_gradient_to_limit_ratio,
+            raw_criterion_target_gradient_to_limit_ratio_measurable,
+        ) = optional_finite(violation.raw_criterion_target_gradient_to_limit_ratio);
+        let (
+            frozen_gradated_target_gradient_to_limit_ratio,
+            frozen_gradated_target_gradient_to_limit_ratio_measurable,
+        ) = optional_finite(violation.frozen_gradated_target_gradient_to_limit_ratio);
         Ok(Self {
             record_type: "angle_violation",
             stage_index: stage.index(),
@@ -388,6 +475,15 @@ impl JsonAngleViolation {
             refinement_depth: violation.refinement_depth,
             birth_cycle: violation.birth_cycle,
             birth_candidate_source: violation.birth_candidate_source.map(candidate_source),
+            lineage_depth_span: violation.lineage_depth_span,
+            raw_target_coverage_count: violation.raw_target_coverage_count,
+            refinement_boundary_class: refinement_boundary_class(
+                violation.refinement_boundary_class,
+            ),
+            raw_criterion_target_gradient_to_limit_ratio,
+            raw_criterion_target_gradient_to_limit_ratio_measurable,
+            frozen_gradated_target_gradient_to_limit_ratio,
+            frozen_gradated_target_gradient_to_limit_ratio_measurable,
             realized_to_raw_criterion_target_scale_ratio,
             realized_to_raw_criterion_target_scale_ratio_measurable,
         })
@@ -616,6 +712,45 @@ fn candidate_source(source: earthmesh_refine_harp_dv::CandidateSource) -> &'stat
     }
 }
 
+fn birth_source_class(
+    source: earthmesh_refine_harp_dv::certifier::BirthSourceClass,
+) -> &'static str {
+    match source {
+        earthmesh_refine_harp_dv::certifier::BirthSourceClass::Inherited => "inherited",
+        earthmesh_refine_harp_dv::certifier::BirthSourceClass::Candidate(source) => {
+            candidate_source(source)
+        }
+        earthmesh_refine_harp_dv::certifier::BirthSourceClass::Unknown => "unknown",
+    }
+}
+
+fn refinement_boundary_class(
+    class: earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass,
+) -> &'static str {
+    match class {
+        earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass::Neither => "neither",
+        earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass::LineageOnly => "lineage_only",
+        earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass::RawCriterionOnly => {
+            "raw_criterion_only"
+        }
+        earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass::Both => "both",
+        earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass::Unknown => "unknown",
+    }
+}
+
+fn target_gradient_bin(
+    bin: earthmesh_refine_harp_dv::certifier::TargetGradientBin,
+) -> &'static str {
+    match bin {
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Unavailable => "unavailable",
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Le0_25 => "le_0_25",
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Gt0_25Le0_5 => "gt_0_25_le_0_5",
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Gt0_5Le1 => "gt_0_5_le_1",
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Gt1Le2 => "gt_1_le_2",
+        earthmesh_refine_harp_dv::certifier::TargetGradientBin::Gt2 => "gt_2",
+    }
+}
+
 #[derive(Serialize)]
 struct RunHeader {
     record_type: &'static str,
@@ -790,6 +925,7 @@ mod tests {
         let rows = jsonl(&target);
         assert_eq!(rows.first().unwrap()["record_type"], "run_header");
         assert_eq!(rows.first().unwrap()["stage_count"], STAGE_COUNT);
+        assert_eq!(rows.first().unwrap()["schema_version"], SCHEMA_VERSION);
         assert_eq!(rows.last().unwrap()["record_type"], "harp_run_end");
         assert_eq!(rows.last().unwrap()["stage_summary_count"], STAGE_COUNT);
         assert_eq!(
@@ -912,6 +1048,10 @@ mod tests {
 
     #[test]
     fn core_events_are_stable_snake_case_json() {
+        use earthmesh_refine_harp_dv::certifier::{
+            BirthSourceClass, LineageAngleExposure, LineageCohortKey, RefinementBoundaryClass,
+            TargetGradientBin, TriangleContextAngleExposure, TriangleContextKey,
+        };
         use earthmesh_refine_harp_dv::{
             AngleKey, AngleViolation, AngleViolationKind, CandidateSource, HarpTraceEvent,
             HarpTraceStage, MeshCertification, SiteId,
@@ -919,6 +1059,48 @@ mod tests {
         let target = temp_path("core.jsonl");
         let mut degree_histogram = std::collections::BTreeMap::new();
         degree_histogram.insert(6, 4);
+        let mut lineage_angle_exposure = std::collections::BTreeMap::new();
+        lineage_angle_exposure.insert(
+            LineageCohortKey {
+                birth_source_class: BirthSourceClass::Inherited,
+                refinement_depth: 0,
+                birth_cycle: 0,
+            },
+            LineageAngleExposure {
+                active_site_count: 1,
+                sites_with_violation_count: 0,
+                measurable_angle_count: 3,
+                below_40_count: 0,
+                above_80_count: 0,
+            },
+        );
+        lineage_angle_exposure.insert(
+            LineageCohortKey {
+                birth_source_class: BirthSourceClass::Candidate(CandidateSource::OffCentre),
+                refinement_depth: 2,
+                birth_cycle: 3,
+            },
+            LineageAngleExposure {
+                active_site_count: 3,
+                sites_with_violation_count: 1,
+                measurable_angle_count: 9,
+                below_40_count: 0,
+                above_80_count: 1,
+            },
+        );
+        let mut triangle_context_angle_exposure = std::collections::BTreeMap::new();
+        triangle_context_angle_exposure.insert(
+            TriangleContextKey {
+                refinement_boundary_class: RefinementBoundaryClass::Both,
+                raw_criterion_target_gradient_bin: TargetGradientBin::Gt1Le2,
+                frozen_gradated_target_gradient_bin: TargetGradientBin::Unavailable,
+            },
+            TriangleContextAngleExposure {
+                measurable_angle_count: 12,
+                below_40_count: 0,
+                above_80_count: 1,
+            },
+        );
         let violation = AngleViolation {
             key: Some(AngleKey {
                 triangle_sites: [SiteId(3), SiteId(4), SiteId(5)],
@@ -933,6 +1115,11 @@ mod tests {
             refinement_depth: Some(2),
             birth_cycle: Some(3),
             birth_candidate_source: Some(CandidateSource::OffCentre),
+            lineage_depth_span: Some(2),
+            raw_target_coverage_count: 3,
+            refinement_boundary_class: RefinementBoundaryClass::Both,
+            raw_criterion_target_gradient_to_limit_ratio: Some(1.25),
+            frozen_gradated_target_gradient_to_limit_ratio: Some(f64::NAN),
             realized_to_raw_criterion_target_scale_ratio: Some(f64::NAN),
         };
         let certification = MeshCertification {
@@ -957,6 +1144,10 @@ mod tests {
             unmeasurable_angle_count: 0,
             violating_angles_at_degree_le_4: 0,
             violating_angles_at_degree_ge_5: 1,
+            unmapped_identity_count: 0,
+            attribution_closure_error_count: 0,
+            lineage_angle_exposure,
+            triangle_context_angle_exposure,
             violations: vec![violation.clone()],
         };
         let mut session = HarpTraceSession::create(target.clone()).unwrap();
@@ -999,12 +1190,49 @@ mod tests {
         assert!(rows[1].get("triangle").is_none());
         assert!(rows[1].get("corner_vertex").is_none());
         assert_eq!(rows[1]["birth_candidate_source"], "off_centre");
+        assert_eq!(rows[1]["lineage_depth_span"], 2);
+        assert_eq!(rows[1]["raw_target_coverage_count"], 3);
+        assert_eq!(rows[1]["refinement_boundary_class"], "both");
+        assert_eq!(
+            rows[1]["raw_criterion_target_gradient_to_limit_ratio"],
+            1.25
+        );
+        assert_eq!(
+            rows[1]["raw_criterion_target_gradient_to_limit_ratio_measurable"],
+            true
+        );
+        assert!(rows[1]["frozen_gradated_target_gradient_to_limit_ratio"].is_null());
+        assert_eq!(
+            rows[1]["frozen_gradated_target_gradient_to_limit_ratio_measurable"],
+            false
+        );
         assert!(rows[1]["angle_deg"].is_null());
         assert_eq!(rows[1]["angle_deg_measurable"], false);
         assert!(rows[1]["realized_to_raw_criterion_target_scale_ratio"].is_null());
         assert!(rows[1].get("realized_to_target_scale_ratio").is_none());
         assert_eq!(rows[2]["record_type"], "stage_summary");
         assert_eq!(rows[2]["stage_summary_count"], Value::Null);
+        assert_eq!(
+            rows[2]["lineage_angle_exposure"][0]["birth_source_class"],
+            "inherited"
+        );
+        assert_eq!(
+            rows[2]["lineage_angle_exposure"][1]["birth_source_class"],
+            "off_centre"
+        );
+        assert_eq!(rows[2]["lineage_angle_exposure"][1]["active_site_count"], 3);
+        assert_eq!(
+            rows[2]["triangle_context_angle_exposure"][0]["refinement_boundary_class"],
+            "both"
+        );
+        assert_eq!(
+            rows[2]["triangle_context_angle_exposure"][0]["raw_criterion_target_gradient_bin"],
+            "gt_1_le_2"
+        );
+        assert_eq!(
+            rows[2]["triangle_context_angle_exposure"][0]["frozen_gradated_target_gradient_bin"],
+            "unavailable"
+        );
         assert_eq!(rows.last().unwrap()["stage_summary_count"], STAGE_COUNT);
     }
 
@@ -1130,6 +1358,7 @@ mod tests {
 
     #[test]
     fn angle_violation_without_stable_key_is_rejected() {
+        use earthmesh_refine_harp_dv::certifier::RefinementBoundaryClass;
         use earthmesh_refine_harp_dv::{
             AngleViolation, AngleViolationKind, HarpTraceEvent, HarpTraceStage,
         };
@@ -1146,6 +1375,11 @@ mod tests {
             refinement_depth: None,
             birth_cycle: None,
             birth_candidate_source: None,
+            lineage_depth_span: Some(0),
+            raw_target_coverage_count: 0,
+            refinement_boundary_class: RefinementBoundaryClass::Neither,
+            raw_criterion_target_gradient_to_limit_ratio: None,
+            frozen_gradated_target_gradient_to_limit_ratio: None,
             realized_to_raw_criterion_target_scale_ratio: None,
         };
         let error = write_core_event(
