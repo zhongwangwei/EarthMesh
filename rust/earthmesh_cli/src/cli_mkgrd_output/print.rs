@@ -300,6 +300,10 @@ pub(crate) fn print_refine_pipeline_report(
             harp.violating_triangles_touching_interior_leaf
         );
         println!(
+            "harp_dv_d4_leaf_retirement_audit_evaluated={}",
+            harp.d4_leaf_retirement_audit_evaluated
+        );
+        println!(
             "harp_dv_d4_leaf_retirement_candidates={}",
             harp.d4_leaf_retirement_candidates
         );

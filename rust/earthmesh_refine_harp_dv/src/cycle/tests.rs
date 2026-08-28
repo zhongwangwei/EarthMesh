@@ -219,12 +219,52 @@ fn retirement_audit_reads_clones_without_mutating_the_mesh() {
     let before = trial.state().clone();
     let criteria = target(coarsest_scale(&trial) * 2.0, TargetRegion::Global);
     let leaves = leaf_lineage_survey(&trial, &criteria);
-    let audit =
-        degree_four_retirement_audit(&trial, &criteria, permissive(), limits(1, 100_000), &leaves);
+    let audit = degree_four_retirement_audit(
+        &trial,
+        &criteria,
+        permissive(),
+        limits(1, 100_000),
+        &leaves,
+        4,
+    );
 
-    assert_eq!(audit.candidates, 1);
-    assert!(audit.triangulations > 0);
-    assert!(audit.hard_gate_safe > 0);
+    assert!(audit.summary.evaluated);
+    assert_eq!(
+        audit.summary.sites_total,
+        audit.summary.sites_not_leaf + audit.summary.sites_eligible
+    );
+    assert_eq!(
+        audit.summary.sites_eligible,
+        audit.summary.sites_without_window_violation + audit.summary.sites_audited
+    );
+    assert_eq!(audit.summary.sites_audited, 1);
+    assert_eq!(audit.sites.len(), audit.summary.sites_audited);
+    assert_eq!(audit.trials.len(), audit.summary.trials_total);
+    assert_eq!(audit.summary.trials_total, 2);
+    assert_eq!(audit.sites[0].trial_count, 2);
+    assert!(audit.summary.trials_geometry_pass > 0);
+    assert!(audit.summary.trials_hard_gate_pass > 0);
+    assert_eq!(
+        audit.summary.sites_with_any_valid_trial,
+        audit
+            .sites
+            .iter()
+            .filter(|site| site.any_valid_trial)
+            .count()
+    );
+    assert_eq!(
+        audit.summary.trials_geometry_pass,
+        audit
+            .trials
+            .iter()
+            .filter(|trial| trial.geometry == DegreeFourCheckStatus::Pass)
+            .count()
+    );
+    assert!(audit
+        .trials
+        .windows(2)
+        .all(|pair| pair[0].site_id < pair[1].site_id
+            || (pair[0].site_id == pair[1].site_id && pair[0].trial_index < pair[1].trial_index)));
     assert_eq!(trial.state(), &before);
 }
 
@@ -3591,7 +3631,8 @@ fn quality_leaf_retirement_schedules_and_commits_a_degree_three_leaf() {
         3,
     );
 
-    assert_eq!(counts, (1, 0));
+    assert_eq!((counts.0, counts.1), (1, 0));
+    assert!(counts.2.is_empty());
     assert!(vertices_below_degree_5_set(mesh.state()).len() < before_low_degree.len());
     let after_angles = angle_window_survey(mesh.state());
     assert!(
@@ -3655,7 +3696,7 @@ fn leaf_retirement_on_the_production_checkpoint() {
 
     let mut mesh = start.clone();
     let started = std::time::Instant::now();
-    let (committed, committed_d4) =
+    let (committed, committed_d4, _) =
         retire_quality_leaf_sites(&mut mesh, &criteria, gates, limits, &leaves, maximum_degree);
     let runtime_s = started.elapsed().as_secs_f64();
 
@@ -3723,7 +3764,7 @@ fn leaf_retirement_on_the_production_checkpoint() {
     );
     assert_eq!(
         (committed, committed_d4),
-        repeat_counts,
+        (repeat_counts.0, repeat_counts.1),
         "retirement is not deterministic"
     );
     assert!(

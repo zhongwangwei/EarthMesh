@@ -61,7 +61,10 @@ pub use report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason
 pub use state::{
     AdaptiveMesh, AdaptiveSite, ConservativeRemapWeight, SiteId, SiteIdAllocator, SiteMobility,
 };
-pub use trace::{HarpTraceEvent, HarpTraceStage};
+pub use trace::{
+    DegreeFourCheckStatus, DegreeFourRetirementSite, DegreeFourRetirementSummary,
+    DegreeFourRetirementTrial, HarpTraceEvent, HarpTraceStage,
+};
 pub use transaction::{
     committed_site_ids, Acceptance, DemandOutcome, HardGates, Rejection, TransactionReport,
     GRIDFILE_MAX_VERTEX_DEGREE,

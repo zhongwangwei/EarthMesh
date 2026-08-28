@@ -211,6 +211,8 @@ pub struct HarpDvRunReport {
     /// Broad association, kept separate so it cannot inflate the strict signal.
     pub violating_triangles_touching_leaf: usize,
     pub violating_triangles_touching_interior_leaf: usize,
+    /// Whether the opt-in degree-four retirement audit actually ran.
+    pub d4_leaf_retirement_audit_evaluated: bool,
     /// Read-only feasibility audit for retiring degree-four interior leaves.
     /// Enabled with `EARTHMESH_HARP_D4_RETIREMENT_AUDIT` on meshes without
     /// protected segments; these counts describe compact clones and no site is
@@ -311,6 +313,7 @@ impl HarpDvRunReport {
             angles_above_80_at_interior_leaf_vertices: 0,
             violating_triangles_touching_leaf: 0,
             violating_triangles_touching_interior_leaf: 0,
+            d4_leaf_retirement_audit_evaluated: false,
             d4_leaf_retirement_candidates: 0,
             d4_leaf_retirement_triangulations: 0,
             d4_leaf_retirement_hard_gate_safe: 0,
