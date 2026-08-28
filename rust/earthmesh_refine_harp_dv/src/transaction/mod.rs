@@ -471,9 +471,35 @@ impl AdaptiveMesh {
         gates: HardGates,
         parent: usize,
     ) -> Result<Acceptance> {
-        self.refining = Some(parent);
+        self.propose_site_for_source(point, hint, gates, parent, None)
+    }
+
+    pub fn propose_candidate_for(
+        &mut self,
+        candidate: Candidate,
+        gates: HardGates,
+        parent: usize,
+    ) -> Result<Acceptance> {
+        self.propose_site_for_source(
+            candidate.point,
+            Some(candidate.hint),
+            gates,
+            parent,
+            Some(candidate.source),
+        )
+    }
+
+    fn propose_site_for_source(
+        &mut self,
+        point: CartesianPoint,
+        hint: Option<usize>,
+        gates: HardGates,
+        parent: usize,
+        source: Option<CandidateSource>,
+    ) -> Result<Acceptance> {
+        self.set_refining_context(Some(parent), source);
         let outcome = self.propose_site_near(point, hint, gates);
-        self.refining = None;
+        self.set_refining_context(None, None);
         outcome
     }
 
@@ -967,7 +993,7 @@ impl AdaptiveMesh {
                 },
                 None => candidate,
             };
-            match self.propose_site_for(candidate.point, Some(candidate.hint), gates, site)? {
+            match self.propose_candidate_for(candidate, gates, site)? {
                 Acceptance::Committed(report) => {
                     // Keep both halves protected, or the rule stops after one split.
                     if let Some(split) = encroached {

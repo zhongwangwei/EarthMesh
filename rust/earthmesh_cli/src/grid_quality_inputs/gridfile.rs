@@ -964,7 +964,9 @@ mod tests {
         assert!(report.violations.iter().all(|violation| {
             violation.refinement_depth.is_some()
                 && violation.birth_cycle.is_none()
-                && violation.realized_to_target_scale_ratio.is_none()
+                && violation
+                    .realized_to_raw_criterion_target_scale_ratio
+                    .is_none()
         }));
         assert_eq!(report.euler_characteristic, 2);
         assert_eq!(report.euler_degree_charge, 12);

@@ -3,10 +3,11 @@
 use crate::candidate::CandidatePolicy;
 use crate::config::HarpDvConfig;
 use crate::criteria::CellCriterion;
-use crate::cycle::{run_cycles, CycleLimits};
+use crate::cycle::{run_cycles, run_cycles_traced, CycleLimits};
 use crate::error::Result;
 use crate::report::{HarpDvRunReport, StopReason};
 use crate::state::AdaptiveMesh;
+use crate::trace::{HarpTraceEvent, HarpTraceStage};
 use crate::transaction::HardGates;
 
 /// One run's worth of instruction.
@@ -71,4 +72,84 @@ pub fn refine_harp_dv(
         report: outcome.report,
         unresolved_cells: outcome.unresolved_cells,
     })
+}
+
+/// Adapt a mesh and emit typed trace snapshots without adding serialization dependencies here.
+pub fn refine_harp_dv_traced(
+    mut mesh: AdaptiveMesh,
+    request: &HarpDvRequest<'_>,
+    trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+) -> Result<HarpDvOutcome> {
+    request.config.validate()?;
+    if request.criteria.is_empty() {
+        let sites = mesh.active_site_count();
+        emit_empty_run_trace(&mesh, request.criteria, trace)?;
+        return Ok(HarpDvOutcome {
+            mesh,
+            report: HarpDvRunReport::empty(sites, StopReason::AllSatisfied),
+            unresolved_cells: Vec::new(),
+        });
+    }
+
+    let limits = CycleLimits {
+        max_cycles: request.config.max_cycles,
+        max_sites: request.config.maximum_cells,
+        minimum_cell_width_m: request.config.minimum_cell_width_m,
+        max_neighbour_scale_ratio: request.config.maximum_neighbor_scale_ratio,
+    };
+    let mut gates = request.gates;
+    gates.max_patch_triangles = request.config.maximum_patch_cells;
+    let outcome = run_cycles_traced(
+        &mut mesh,
+        request.criteria,
+        request.candidate_policy,
+        gates,
+        limits,
+        trace,
+    )?;
+    Ok(HarpDvOutcome {
+        mesh,
+        report: outcome.report,
+        unresolved_cells: outcome.unresolved_cells,
+    })
+}
+
+fn emit_empty_run_trace(
+    mesh: &AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+) -> Result<()> {
+    let refs = criteria
+        .iter()
+        .map(|criterion| criterion.as_ref())
+        .collect::<Vec<_>>();
+    for stage in HarpTraceStage::ALL {
+        if stage != HarpTraceStage::Input {
+            trace(HarpTraceEvent::PhaseSkipped {
+                stage,
+                reason: "no criteria",
+            })?;
+        }
+        let certification = crate::certifier::certify_mesh(mesh, &refs);
+        if certification
+            .violations
+            .iter()
+            .any(|violation| violation.key.is_none())
+        {
+            return Err(crate::error::HarpDvError::InvalidMesh(
+                "active triangle contains a vertex without a stable SiteId".to_string(),
+            ));
+        }
+        for violation in &certification.violations {
+            trace(HarpTraceEvent::AngleViolation {
+                stage,
+                violation: violation.clone(),
+            })?;
+        }
+        trace(HarpTraceEvent::StageSummary {
+            stage,
+            certification,
+        })?;
+    }
+    Ok(())
 }

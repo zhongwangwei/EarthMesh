@@ -2967,6 +2967,67 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
 }
 
 #[test]
+fn harp_trace_failure_does_not_write_final_gridfile() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("harp_trace_existing_target_failure");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_circle_mask_netcdf(
+        sources.join("refine_circle_001.nc4"),
+        &CircleMask {
+            refine_degree: 1,
+            points: vec![LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![2_000.0],
+        },
+    )
+    .expect("write circle specified refine source");
+
+    let namelist = root.join("mkgrd_harp_trace_existing_target_failure.nml");
+    let base_dir = format!("{}/", root.display());
+    let refine_prefix = sources.join("refine_circle").display().to_string();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_harp_trace_existing_target_failure'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n&harp_dv\n  NL%max_cycles=1\n/\n",
+        ),
+    )
+    .expect("write HARP trace failure namelist");
+
+    let trace_target = root.join("harp_trace.jsonl");
+    fs::write(&trace_target, "sentinel\n").expect("write existing trace sentinel");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .arg(&namelist)
+        .arg("--max-tris")
+        .arg("200000")
+        .arg("--run-refine-passthrough")
+        .arg("--source-gridnum-perdegree")
+        .arg("1")
+        .arg("--source-nlons")
+        .arg("6")
+        .arg("--source-nlats")
+        .arg("6")
+        .arg("--source-first-triangle-id")
+        .arg("1")
+        .env("EARTHMESH_HARP_TRACE_JSONL", &trace_target)
+        .current_dir(&root)
+        .output()
+        .expect("run HARP trace failure case");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("HARP trace target already exists"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&trace_target).expect("read trace sentinel"),
+        "sentinel\n"
+    );
+    let result = root.join("case_harp_trace_existing_target_failure/result");
+    assert!(!result.join("gridfile_NXP0006_hex.nc4").exists());
+    assert!(!result.join("harp_dv_conservative_remap.csv").exists());
+}
+
+#[test]
 fn harp_dv_backend_consumes_adaptive_landcover_criteria_without_named_regions() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("harp_dv_landcover_adaptive");

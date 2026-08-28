@@ -143,6 +143,7 @@ fn wrapping_a_mesh_gives_every_site_an_identity() {
         );
         assert_eq!(site.cumulative_displacement_m, 0.0);
         assert_eq!(site.birth_cycle, 0, "it came in with the mesh");
+        assert_eq!(site.birth_candidate_source, None);
         assert_eq!(site.parent_site_id, None, "inherited sites have no parent");
     }
 }
@@ -276,4 +277,93 @@ fn satisfied_evidence_demands_no_work() {
         evidence.stop_reason,
         Some(EvidenceStopReason::AlreadySatisfied)
     );
+}
+
+#[test]
+fn traced_empty_run_emits_seven_stable_stage_summaries() {
+    let run = || {
+        let adaptive = AdaptiveMesh::from_triangular_mesh(&base_mesh()).expect("wrap");
+        let mut events = Vec::new();
+        refine_harp_dv_traced(
+            adaptive,
+            &HarpDvRequest {
+                config: HarpDvConfig::default(),
+                criteria: &[],
+                candidate_policy: crate::CandidatePolicy::default(),
+                gates: crate::HardGates::default(),
+            },
+            &mut |event| {
+                events.push(event);
+                Ok(())
+            },
+        )
+        .expect("empty traced run");
+        events
+    };
+
+    let first = run();
+    let second = run();
+    assert_eq!(first, second);
+
+    let summaries = first
+        .iter()
+        .filter_map(|event| match event {
+            HarpTraceEvent::StageSummary { stage, .. } => Some(*stage),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(summaries, HarpTraceStage::ALL);
+
+    let skipped = first
+        .iter()
+        .filter_map(|event| match event {
+            HarpTraceEvent::PhaseSkipped { stage, .. } => Some(*stage),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        skipped,
+        vec![
+            HarpTraceStage::PostRefinement,
+            HarpTraceStage::PostInitialLowDegree,
+            HarpTraceStage::PostEta,
+            HarpTraceStage::PostWindow,
+            HarpTraceStage::PostFinalLowDegree,
+            HarpTraceStage::Final,
+        ]
+    );
+}
+
+#[test]
+fn trace_stage_names_are_wire_names_without_index_prefixes() {
+    assert_eq!(HarpTraceStage::Input.name(), "input");
+    assert_eq!(HarpTraceStage::PostRefinement.name(), "post_refinement");
+    assert_eq!(
+        HarpTraceStage::PostInitialLowDegree.name(),
+        "post_initial_low_degree"
+    );
+    assert_eq!(HarpTraceStage::PostEta.name(), "post_eta");
+    assert_eq!(HarpTraceStage::PostWindow.name(), "post_window");
+    assert_eq!(
+        HarpTraceStage::PostFinalLowDegree.name(),
+        "post_final_low_degree"
+    );
+    assert_eq!(HarpTraceStage::Final.name(), "final");
+}
+
+#[test]
+fn traced_callback_failure_is_returned() {
+    let adaptive = AdaptiveMesh::from_triangular_mesh(&base_mesh()).expect("wrap");
+    let error = refine_harp_dv_traced(
+        adaptive,
+        &HarpDvRequest {
+            config: HarpDvConfig::default(),
+            criteria: &[],
+            candidate_policy: crate::CandidatePolicy::default(),
+            gates: crate::HardGates::default(),
+        },
+        &mut |_| Err(HarpDvError::Io(std::io::Error::other("trace sink failed"))),
+    )
+    .expect_err("trace failures are fail-closed");
+    assert!(error.to_string().contains("trace sink failed"), "{error}");
 }

@@ -31,10 +31,12 @@ use earthmesh_refine::{
 };
 
 use crate::candidate::CandidatePolicy;
+use crate::certifier::certify_mesh;
 use crate::criteria::{CellCriterion, CellView};
 use crate::error::Result;
 use crate::report::{AngleWindowVerdict, HarpDvRunReport, RejectionTally, StopReason};
 use crate::state::{AdaptiveMesh, SiteId, SiteMobility};
+use crate::trace::{HarpTraceEvent, HarpTraceStage};
 use crate::transaction::{check, Acceptance, AffectedSites, DemandOutcome, HardGates, Rejection};
 use earthmesh_mesh::MeshState;
 
@@ -2971,6 +2973,25 @@ fn optimise_mesh_quality(
     limits: CycleLimits,
     background_scale_m: Option<f64>,
 ) -> Result<(usize, AngleWindowSurvey)> {
+    let mut trace = TraceEmitter::off();
+    optimise_mesh_quality_traced(
+        mesh,
+        criteria,
+        gates,
+        limits,
+        background_scale_m,
+        &mut trace,
+    )
+}
+
+fn optimise_mesh_quality_traced(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    gates: HardGates,
+    limits: CycleLimits,
+    background_scale_m: Option<f64>,
+    trace: &mut TraceEmitter<'_>,
+) -> Result<(usize, AngleWindowSurvey)> {
     let (committed, angles, _) = optimise_mesh_quality_with_natural_length(
         mesh,
         criteria,
@@ -2979,6 +3000,7 @@ fn optimise_mesh_quality(
         background_scale_m,
         true,
         NATURAL_LENGTH_PASSES,
+        trace,
     )?;
     Ok((committed, angles))
 }
@@ -2999,14 +3021,45 @@ fn optimise_mesh_quality_with_natural_length(
     background_scale_m: Option<f64>,
     natural_length_enabled: bool,
     natural_length_priority_passes: usize,
+    trace: &mut TraceEmitter<'_>,
 ) -> Result<(usize, AngleWindowSurvey, QualityMoveAudit)> {
     let audit = QualityMoveAudit::default();
     if !mesh.segments_are_empty() {
         eprintln!("harp_dv quality optimiser skipped: protected boundary segments are present");
+        if trace.is_on() {
+            for stage in [
+                HarpTraceStage::PostInitialLowDegree,
+                HarpTraceStage::PostEta,
+                HarpTraceStage::PostWindow,
+                HarpTraceStage::PostFinalLowDegree,
+            ] {
+                trace.emit_skipped_stage_snapshot(
+                    stage,
+                    mesh,
+                    criteria,
+                    "protected boundary segments are present",
+                )?;
+            }
+        }
         return Ok((0, AngleWindowSurvey::default(), audit));
     }
     let Some(background_scale_m) = background_scale_m else {
         eprintln!("harp_dv quality optimiser skipped: initial cell scale is not measurable");
+        if trace.is_on() {
+            for stage in [
+                HarpTraceStage::PostInitialLowDegree,
+                HarpTraceStage::PostEta,
+                HarpTraceStage::PostWindow,
+                HarpTraceStage::PostFinalLowDegree,
+            ] {
+                trace.emit_skipped_stage_snapshot(
+                    stage,
+                    mesh,
+                    criteria,
+                    "initial cell scale is not measurable",
+                )?;
+            }
+        }
         return Ok((0, AngleWindowSurvey::default(), audit));
     };
     let Some(target_cell_scale) = target_cell_scales(
@@ -3016,6 +3069,21 @@ fn optimise_mesh_quality_with_natural_length(
         background_scale_m,
     ) else {
         eprintln!("harp_dv quality optimiser skipped: no usable target-scale criterion");
+        if trace.is_on() {
+            for stage in [
+                HarpTraceStage::PostInitialLowDegree,
+                HarpTraceStage::PostEta,
+                HarpTraceStage::PostWindow,
+                HarpTraceStage::PostFinalLowDegree,
+            ] {
+                trace.emit_skipped_stage_snapshot(
+                    stage,
+                    mesh,
+                    criteria,
+                    "no usable target-scale criterion",
+                )?;
+            }
+        }
         return Ok((0, AngleWindowSurvey::default(), audit));
     };
     let mut audit = audit;
@@ -3033,6 +3101,7 @@ fn optimise_mesh_quality_with_natural_length(
     // from the geometry produced by the previous pass.
     let started = std::time::Instant::now();
     let initial_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
+    trace.emit_stage_snapshot(HarpTraceStage::PostInitialLowDegree, mesh, criteria)?;
     audit.low_degree_committed = initial_low_degree_moves;
     let mut guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
     let initial = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
@@ -3041,8 +3110,13 @@ fn optimise_mesh_quality_with_natural_length(
     let mut eta_stopped = false;
     let mut excluded_sites = BTreeSet::new();
     let mut previous_phase = false;
+    let mut post_eta_emitted = false;
     for pass in 0..MAXIMUM_QUALITY_PASSES {
         let window_first = pass >= ETA_QUALITY_PASSES;
+        if window_first && !post_eta_emitted {
+            trace.emit_stage_snapshot(HarpTraceStage::PostEta, mesh, criteria)?;
+            post_eta_emitted = true;
+        }
         if window_first != previous_phase {
             excluded_sites.clear();
             previous_phase = window_first;
@@ -3272,6 +3346,10 @@ fn optimise_mesh_quality_with_natural_length(
             }
         }
     }
+    if !post_eta_emitted {
+        trace.emit_stage_snapshot(HarpTraceStage::PostEta, mesh, criteria)?;
+    }
+    trace.emit_stage_snapshot(HarpTraceStage::PostWindow, mesh, criteria)?;
     let final_low_degree_moves = repair_low_degree_stars(mesh, criteria, gates, limits)?;
     committed += final_low_degree_moves;
     audit.low_degree_committed += final_low_degree_moves;
@@ -3279,6 +3357,7 @@ fn optimise_mesh_quality_with_natural_length(
         guard_cells = GuardCells::full(mesh.state(), criteria, limits)?;
         previous = QualityGuardMetrics::read_with(mesh, limits, &guard_cells)?;
     }
+    trace.emit_stage_snapshot(HarpTraceStage::PostFinalLowDegree, mesh, criteria)?;
     eprintln!(
         "harp_dv quality optimiser complete: {} moves, margin_min {:.6} -> {:.6}, eta_min {:.6} -> {:.6}, angle-window violations {} -> {}, {:.1}s",
         committed,
@@ -3495,7 +3574,16 @@ fn production_quality_checkpoint_with_local_recovery(
         assert!(checkpoint.borrow_mut().take().is_none());
     });
 
-    let run = run_cycles_with_local_recovery(mesh, criteria, policy, gates, limits, local_recovery);
+    let mut trace = TraceEmitter::off();
+    let run = run_cycles_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        local_recovery,
+        &mut trace,
+    );
     CAPTURE_QUALITY_CHECKPOINT.with(|capture| capture.set(false));
     run.expect("production refinement reaches the quality boundary");
     QUALITY_CHECKPOINT
@@ -3518,6 +3606,81 @@ fn production_quality_checkpoint_with_local_recovery(
 /// from 32 seconds past 30 minutes without finishing, and says what was missing
 /// -- "a bound on how much broadening a cycle may buy". Hence the seed cap.
 ///
+struct TraceEmitter<'a> {
+    sink: Option<&'a mut dyn FnMut(HarpTraceEvent) -> Result<()>>,
+}
+
+impl<'a> TraceEmitter<'a> {
+    fn off() -> Self {
+        Self { sink: None }
+    }
+
+    fn on(sink: &'a mut dyn FnMut(HarpTraceEvent) -> Result<()>) -> Self {
+        Self { sink: Some(sink) }
+    }
+
+    fn is_on(&self) -> bool {
+        self.sink.is_some()
+    }
+
+    fn emit(&mut self, event: HarpTraceEvent) -> Result<()> {
+        if let Some(sink) = self.sink.as_deref_mut() {
+            sink(event)?;
+        }
+        Ok(())
+    }
+
+    fn emit_stage_snapshot(
+        &mut self,
+        stage: HarpTraceStage,
+        mesh: &AdaptiveMesh,
+        criteria: &[Box<dyn CellCriterion>],
+    ) -> Result<()> {
+        if !self.is_on() {
+            return Ok(());
+        }
+        let refs = criteria_refs(criteria);
+        let certification = certify_mesh(mesh, &refs);
+        if certification
+            .violations
+            .iter()
+            .any(|violation| violation.key.is_none())
+        {
+            return Err(crate::error::HarpDvError::InvalidMesh(
+                "active triangle contains a vertex without a stable SiteId".to_string(),
+            ));
+        }
+        for violation in &certification.violations {
+            self.emit(HarpTraceEvent::AngleViolation {
+                stage,
+                violation: violation.clone(),
+            })?;
+        }
+        self.emit(HarpTraceEvent::StageSummary {
+            stage,
+            certification,
+        })
+    }
+
+    fn emit_skipped_stage_snapshot(
+        &mut self,
+        stage: HarpTraceStage,
+        mesh: &AdaptiveMesh,
+        criteria: &[Box<dyn CellCriterion>],
+        reason: &'static str,
+    ) -> Result<()> {
+        self.emit(HarpTraceEvent::PhaseSkipped { stage, reason })?;
+        self.emit_stage_snapshot(stage, mesh, criteria)
+    }
+}
+
+fn criteria_refs(criteria: &[Box<dyn CellCriterion>]) -> Vec<&dyn CellCriterion> {
+    criteria
+        .iter()
+        .map(|criterion| criterion.as_ref())
+        .collect()
+}
+
 /// Off in production until an A/B says otherwise.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LocalRecoveryPolicy {
@@ -3543,6 +3706,7 @@ pub fn run_cycles(
     gates: HardGates,
     limits: CycleLimits,
 ) -> Result<CycleOutcome> {
+    let mut trace = TraceEmitter::off();
     run_cycles_with_local_recovery(
         mesh,
         criteria,
@@ -3550,6 +3714,27 @@ pub fn run_cycles(
         gates,
         limits,
         LocalRecoveryPolicy::OFF,
+        &mut trace,
+    )
+}
+
+pub(crate) fn run_cycles_traced(
+    mesh: &mut AdaptiveMesh,
+    criteria: &[Box<dyn CellCriterion>],
+    policy: CandidatePolicy,
+    gates: HardGates,
+    limits: CycleLimits,
+    trace: &mut dyn FnMut(HarpTraceEvent) -> Result<()>,
+) -> Result<CycleOutcome> {
+    let mut trace = TraceEmitter::on(trace);
+    run_cycles_with_local_recovery(
+        mesh,
+        criteria,
+        policy,
+        gates,
+        limits,
+        LocalRecoveryPolicy::OFF,
+        &mut trace,
     )
 }
 
@@ -3560,7 +3745,9 @@ fn run_cycles_with_local_recovery(
     gates: HardGates,
     limits: CycleLimits,
     local_recovery: LocalRecoveryPolicy,
+    trace: &mut TraceEmitter<'_>,
 ) -> Result<CycleOutcome> {
+    trace.emit_stage_snapshot(HarpTraceStage::Input, mesh, criteria)?;
     let initial_sites = mesh.active_site_count();
     // Freeze the input mesh's representative background scale. Recomputing it
     // from quality moves would make the optimiser chase its own output, while
@@ -4160,8 +4347,12 @@ fn run_cycles_with_local_recovery(
             unresolved_cells: Vec::new(),
         });
     }
-    let (quality_optimiser_moves, target_angle_window) =
-        optimise_mesh_quality(mesh, criteria, gates, limits, background_scale_m)?;
+    trace.emit_stage_snapshot(HarpTraceStage::PostRefinement, mesh, criteria)?;
+    let (quality_optimiser_moves, target_angle_window) = if trace.is_on() {
+        optimise_mesh_quality_traced(mesh, criteria, gates, limits, background_scale_m, trace)?
+    } else {
+        optimise_mesh_quality(mesh, criteria, gates, limits, background_scale_m)?
+    };
     r_adapted += quality_optimiser_moves;
 
     // Retirement changes both topology and cell geometry. Run it before the
@@ -4245,6 +4436,7 @@ fn run_cycles_with_local_recovery(
         committed: committed_d4_retirements,
         ..d4_retirement
     };
+    trace.emit_stage_snapshot(HarpTraceStage::Final, mesh, criteria)?;
     let final_sites = mesh.active_site_count();
     Ok(CycleOutcome {
         report: HarpDvRunReport {
