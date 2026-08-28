@@ -26,6 +26,21 @@ pub enum StopReason {
     SourceResolutionReached,
 }
 
+impl StopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllSatisfied => "all_satisfied",
+            Self::NoAcceptedTransactions => "no_accepted_transactions",
+            Self::NoProductiveAdaptation => "no_productive_adaptation",
+            Self::QualityConstraintReached => "quality_constraint_reached",
+            Self::MaximumCyclesReached => "maximum_cycles_reached",
+            Self::BudgetReached => "budget_reached",
+            Self::MinimumScaleReached => "minimum_scale_reached",
+            Self::SourceResolutionReached => "source_resolution_reached",
+        }
+    }
+}
+
 /// Whether the final HARP-DV mesh satisfies the requested angle window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AngleWindowVerdict {

@@ -35,7 +35,9 @@ pub struct AngleViolation {
     pub refinement_depth: Option<u16>,
     pub birth_cycle: Option<u32>,
     pub birth_candidate_source: Option<CandidateSource>,
-    pub realized_to_target_scale_ratio: Option<f64>,
+    /// Realised cell scale divided by the raw criterion target resampled at
+    /// the vertex's current position, not the optimiser's frozen gradated field.
+    pub realized_to_raw_criterion_target_scale_ratio: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,12 +148,13 @@ pub fn certify_mesh(mesh: &AdaptiveMesh, criteria: &[&dyn CellCriterion]) -> Mes
                 refinement_depth: site.map(|site| site.depth),
                 birth_cycle: site.map(|site| site.birth_cycle),
                 birth_candidate_source: site.and_then(|site| site.birth_candidate_source),
-                realized_to_target_scale_ratio: realized_to_target_scale_ratio(
-                    mesh,
-                    vertex,
-                    seeds[vertex],
-                    criteria,
-                ),
+                realized_to_raw_criterion_target_scale_ratio:
+                    realized_to_raw_criterion_target_scale_ratio(
+                        mesh,
+                        vertex,
+                        seeds[vertex],
+                        criteria,
+                    ),
             });
         }
     }
@@ -220,7 +223,7 @@ fn percentile(sorted: &[f64], percent: usize) -> Option<f64> {
         .copied()
 }
 
-fn realized_to_target_scale_ratio(
+fn realized_to_raw_criterion_target_scale_ratio(
     mesh: &AdaptiveMesh,
     vertex: usize,
     seed: Option<usize>,
@@ -322,7 +325,9 @@ mod tests {
                 && violation.triangle_degree_triplet == [3, 3, 3]
                 && violation.refinement_depth == Some(0)
                 && violation.birth_cycle == Some(0)
-                && violation.realized_to_target_scale_ratio.is_none()));
+                && violation
+                    .realized_to_raw_criterion_target_scale_ratio
+                    .is_none()));
     }
 
     #[test]

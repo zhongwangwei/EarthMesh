@@ -5,6 +5,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use earthmesh_refine_harp_dv::{HarpDvRunReport, HarpTraceStage};
+
 pub(crate) const ENV_VAR: &str = "EARTHMESH_HARP_TRACE_JSONL";
 pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) const STAGE_COUNT: usize = 7;
@@ -12,7 +14,11 @@ pub(crate) const STAGE_COUNT: usize = 7;
 static PARTIAL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn from_env() -> io::Result<Option<HarpTraceSession>> {
-    let Some(value) = env::var_os(ENV_VAR) else {
+    from_env_value(env::var_os(ENV_VAR))
+}
+
+fn from_env_value(value: Option<std::ffi::OsString>) -> io::Result<Option<HarpTraceSession>> {
+    let Some(value) = value else {
         return Ok(None);
     };
     let target = PathBuf::from(value);
@@ -96,28 +102,32 @@ impl HarpTraceSession {
         })
     }
 
-    pub(crate) fn write_stage_summary<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
-        self.writer_mut()?.write_counted_record(record, true)
+    pub(crate) fn write_stage_summary<T: Serialize>(
+        &mut self,
+        stage: HarpTraceStage,
+        record: &T,
+    ) -> io::Result<()> {
+        self.writer_mut()?.write_stage_summary(stage, record)
     }
 
     pub(crate) fn write_event<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
-        self.writer_mut()?.write_counted_record(record, false)
+        self.writer_mut()?.write_event(record)
     }
 
-    pub(crate) fn publish(mut self) -> io::Result<()> {
+    pub(crate) fn publish(mut self, report: &HarpDvRunReport) -> io::Result<()> {
         let mut writer = self.writer.take().ok_or_else(|| {
             io::Error::other("HARP trace session was already closed before publish")
         })?;
-        if writer.stage_summary_count != STAGE_COUNT {
+        if usize::from(writer.next_expected_stage) != STAGE_COUNT {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "HARP trace has {} stage_summary records; expected {STAGE_COUNT}",
-                    writer.stage_summary_count
+                    "HARP trace completed {} ordered stage_summary records; expected {STAGE_COUNT}",
+                    writer.next_expected_stage
                 ),
             ));
         }
-        writer.write_run_end()?;
+        writer.write_run_end(report)?;
         writer.inner.flush()?;
         writer.inner.get_ref().sync_all()?;
         drop(writer);
@@ -151,7 +161,7 @@ impl HarpTraceSession {
 struct TraceLineWriter<W: Write> {
     inner: W,
     event_count: usize,
-    stage_summary_count: usize,
+    next_expected_stage: u8,
 }
 
 impl<W: Write> TraceLineWriter<W> {
@@ -159,7 +169,7 @@ impl<W: Write> TraceLineWriter<W> {
         Self {
             inner,
             event_count: 0,
-            stage_summary_count: 0,
+            next_expected_stage: 0,
         }
     }
 
@@ -168,24 +178,45 @@ impl<W: Write> TraceLineWriter<W> {
         self.inner.write_all(b"\n")
     }
 
-    fn write_counted_record<T: Serialize>(
-        &mut self,
-        record: &T,
-        is_stage_summary: bool,
-    ) -> io::Result<()> {
+    fn write_event<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
         self.write_record(record)?;
         self.event_count += 1;
-        if is_stage_summary {
-            self.stage_summary_count += 1;
-        }
         Ok(())
     }
 
-    fn write_run_end(&mut self) -> io::Result<()> {
+    fn write_stage_summary<T: Serialize>(
+        &mut self,
+        stage: HarpTraceStage,
+        record: &T,
+    ) -> io::Result<()> {
+        if stage.index() != self.next_expected_stage {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "HARP stage_summary is {} ({}); expected stage index {}",
+                    stage.name(),
+                    stage.index(),
+                    self.next_expected_stage
+                ),
+            ));
+        }
+        self.write_event(record)?;
+        self.next_expected_stage += 1;
+        Ok(())
+    }
+
+    fn write_run_end(&mut self, report: &HarpDvRunReport) -> io::Result<()> {
         self.write_record(&RunEnd {
             record_type: "harp_run_end",
             event_count: self.event_count,
-            stage_summary_count: self.stage_summary_count,
+            stage_summary_count: usize::from(self.next_expected_stage),
+            stop_reason: report.stop_reason.as_str(),
+            cycles_completed: report.cycles_completed,
+            final_sites: report.final_sites,
+            physical_demands_remaining: report.physical_demands_remaining,
+            balance_demands_remaining: report.balance_demands_remaining,
+            unbalanced_pairs_remaining: report.unbalanced_pairs_remaining,
+            unresolved_cells: report.unresolved_count,
         })
     }
 }
@@ -198,8 +229,10 @@ pub(crate) fn write_core_event(
         earthmesh_refine_harp_dv::HarpTraceEvent::StageSummary {
             stage,
             certification,
-        } => session
-            .write_stage_summary(&JsonStageSummary::from_certification(*stage, certification)),
+        } => session.write_stage_summary(
+            *stage,
+            &JsonStageSummary::from_certification(*stage, certification),
+        ),
         earthmesh_refine_harp_dv::HarpTraceEvent::AngleViolation { stage, violation } => {
             session.write_event(&JsonAngleViolation::from_violation(*stage, violation)?)
         }
@@ -307,8 +340,8 @@ struct JsonAngleViolation {
     refinement_depth: Option<u16>,
     birth_cycle: Option<u32>,
     birth_candidate_source: Option<&'static str>,
-    realized_to_target_scale_ratio: Option<f64>,
-    realized_to_target_scale_ratio_measurable: bool,
+    realized_to_raw_criterion_target_scale_ratio: Option<f64>,
+    realized_to_raw_criterion_target_scale_ratio_measurable: bool,
 }
 
 impl JsonAngleViolation {
@@ -323,8 +356,10 @@ impl JsonAngleViolation {
             )
         })?;
         let (angle_deg, angle_deg_measurable) = finite(violation.angle_deg);
-        let (realized_to_target_scale_ratio, realized_to_target_scale_ratio_measurable) =
-            optional_finite(violation.realized_to_target_scale_ratio);
+        let (
+            realized_to_raw_criterion_target_scale_ratio,
+            realized_to_raw_criterion_target_scale_ratio_measurable,
+        ) = optional_finite(violation.realized_to_raw_criterion_target_scale_ratio);
         Ok(Self {
             record_type: "angle_violation",
             stage_index: stage.index(),
@@ -339,8 +374,8 @@ impl JsonAngleViolation {
             refinement_depth: violation.refinement_depth,
             birth_cycle: violation.birth_cycle,
             birth_candidate_source: violation.birth_candidate_source.map(candidate_source),
-            realized_to_target_scale_ratio,
-            realized_to_target_scale_ratio_measurable,
+            realized_to_raw_criterion_target_scale_ratio,
+            realized_to_raw_criterion_target_scale_ratio_measurable,
         })
     }
 }
@@ -399,6 +434,13 @@ struct RunEnd {
     record_type: &'static str,
     event_count: usize,
     stage_summary_count: usize,
+    stop_reason: &'static str,
+    cycles_completed: u32,
+    final_sites: usize,
+    physical_demands_remaining: usize,
+    balance_demands_remaining: usize,
+    unbalanced_pairs_remaining: usize,
+    unresolved_cells: usize,
 }
 
 #[cfg(test)]
@@ -429,9 +471,6 @@ mod tests {
     use serde::Serialize;
     use serde_json::Value;
     use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn temp_path(name: &str) -> PathBuf {
         let nonce = PARTIAL_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -460,34 +499,36 @@ mod tests {
     }
 
     fn write_dummy_stage_summaries(session: &mut HarpTraceSession) {
-        for stage_index in 0..STAGE_COUNT {
+        for stage in HarpTraceStage::ALL {
             session
-                .write_stage_summary(&TestRecord {
-                    record_type: "stage_summary",
-                    stage_index,
-                    stage_name: "stage",
-                    angle_deg: None,
-                })
+                .write_stage_summary(
+                    stage,
+                    &TestRecord {
+                        record_type: "stage_summary",
+                        stage_index: usize::from(stage.index()),
+                        stage_name: stage.name(),
+                        angle_deg: None,
+                    },
+                )
                 .unwrap();
         }
     }
 
-    #[test]
-    fn unset_env_disables_trace() {
-        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        env::remove_var(ENV_VAR);
-        assert!(from_env().unwrap().is_none());
+    fn test_report() -> HarpDvRunReport {
+        HarpDvRunReport::empty(4, earthmesh_refine_harp_dv::StopReason::AllSatisfied)
     }
 
     #[test]
-    fn relative_env_path_is_rejected() {
-        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
-        env::set_var(ENV_VAR, "trace.jsonl");
-        let error = match from_env() {
+    fn missing_env_value_disables_trace() {
+        assert!(from_env_value(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn relative_env_value_is_rejected() {
+        let error = match from_env_value(Some("trace.jsonl".into())) {
             Ok(_) => panic!("relative trace path unexpectedly accepted"),
             Err(error) => error,
         };
-        env::remove_var(ENV_VAR);
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
@@ -523,7 +564,7 @@ mod tests {
         let partial = session.partial.clone();
         write_dummy_stage_summaries(&mut session);
         fs::write(&target, "sentinel\n").unwrap();
-        let error = session.publish().unwrap_err();
+        let error = session.publish(&test_report()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&target).unwrap(), "sentinel\n");
         assert!(partial.exists());
@@ -536,22 +577,31 @@ mod tests {
     fn publish_writes_header_seven_summaries_and_run_end() {
         let target = temp_path("trace.jsonl");
         let mut session = HarpTraceSession::create(target.clone()).unwrap();
-        for stage_index in 0..STAGE_COUNT {
-            session
-                .write_stage_summary(&TestRecord {
-                    record_type: "stage_summary",
-                    stage_index,
-                    stage_name: "stage",
-                    angle_deg: None,
-                })
-                .unwrap();
-        }
-        session.publish().unwrap();
+        write_dummy_stage_summaries(&mut session);
+        let mut report = test_report();
+        report.stop_reason = earthmesh_refine_harp_dv::StopReason::MaximumCyclesReached;
+        report.cycles_completed = 29;
+        report.final_sites = 101_715;
+        report.physical_demands_remaining = 2;
+        report.balance_demands_remaining = 3;
+        report.unbalanced_pairs_remaining = 4;
+        report.unresolved_count = 5;
+        session.publish(&report).unwrap();
         let rows = jsonl(&target);
         assert_eq!(rows.first().unwrap()["record_type"], "run_header");
         assert_eq!(rows.first().unwrap()["stage_count"], STAGE_COUNT);
         assert_eq!(rows.last().unwrap()["record_type"], "harp_run_end");
         assert_eq!(rows.last().unwrap()["stage_summary_count"], STAGE_COUNT);
+        assert_eq!(
+            rows.last().unwrap()["stop_reason"],
+            "maximum_cycles_reached"
+        );
+        assert_eq!(rows.last().unwrap()["cycles_completed"], 29);
+        assert_eq!(rows.last().unwrap()["final_sites"], 101_715);
+        assert_eq!(rows.last().unwrap()["physical_demands_remaining"], 2);
+        assert_eq!(rows.last().unwrap()["balance_demands_remaining"], 3);
+        assert_eq!(rows.last().unwrap()["unbalanced_pairs_remaining"], 4);
+        assert_eq!(rows.last().unwrap()["unresolved_cells"], 5);
         assert_eq!(rows.len(), STAGE_COUNT + 2);
     }
 
@@ -568,7 +618,7 @@ mod tests {
                 })
                 .unwrap();
             write_dummy_stage_summaries(&mut session);
-            session.publish().unwrap();
+            session.publish(&test_report()).unwrap();
             fs::read_to_string(target).unwrap()
         };
         assert_eq!(write(temp_path("a.jsonl")), write(temp_path("b.jsonl")));
@@ -602,23 +652,62 @@ mod tests {
         let target = temp_path("incomplete.jsonl");
         let mut session = HarpTraceSession::create(target.clone()).unwrap();
         let partial = session.partial.clone();
-        for stage_index in 0..(STAGE_COUNT - 1) {
+        for stage in HarpTraceStage::ALL.into_iter().take(STAGE_COUNT - 1) {
             session
-                .write_stage_summary(&TestRecord {
-                    record_type: "stage_summary",
-                    stage_index,
-                    stage_name: "stage",
-                    angle_deg: None,
-                })
+                .write_stage_summary(
+                    stage,
+                    &TestRecord {
+                        record_type: "stage_summary",
+                        stage_index: usize::from(stage.index()),
+                        stage_name: stage.name(),
+                        angle_deg: None,
+                    },
+                )
                 .unwrap();
         }
-        let error = session.publish().unwrap_err();
+        let error = session.publish(&test_report()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!target.exists());
         assert!(partial.exists());
         assert!(!fs::read_to_string(partial)
             .unwrap()
             .contains("harp_run_end"));
+    }
+
+    #[test]
+    fn stage_summaries_must_be_unique_and_ordered() {
+        for unexpected in [HarpTraceStage::Input, HarpTraceStage::PostInitialLowDegree] {
+            let target = temp_path(unexpected.name());
+            let mut session = HarpTraceSession::create(target.clone()).unwrap();
+            let partial = session.partial.clone();
+            session
+                .write_stage_summary(
+                    HarpTraceStage::Input,
+                    &TestRecord {
+                        record_type: "stage_summary",
+                        stage_index: 0,
+                        stage_name: "input",
+                        angle_deg: None,
+                    },
+                )
+                .unwrap();
+            let error = session
+                .write_stage_summary(
+                    unexpected,
+                    &TestRecord {
+                        record_type: "stage_summary",
+                        stage_index: usize::from(unexpected.index()),
+                        stage_name: unexpected.name(),
+                        angle_deg: None,
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(!target.exists());
+            assert!(!fs::read_to_string(partial)
+                .unwrap()
+                .contains("harp_run_end"));
+        }
     }
 
     #[test]
@@ -644,7 +733,7 @@ mod tests {
             refinement_depth: Some(2),
             birth_cycle: Some(3),
             birth_candidate_source: Some(CandidateSource::OffCentre),
-            realized_to_target_scale_ratio: Some(f64::NAN),
+            realized_to_raw_criterion_target_scale_ratio: Some(f64::NAN),
         };
         let certification = MeshCertification {
             vertex_count: 4,
@@ -682,22 +771,25 @@ mod tests {
         write_core_event(
             &mut session,
             &HarpTraceEvent::StageSummary {
-                stage: HarpTraceStage::PostEta,
+                stage: HarpTraceStage::Input,
                 certification,
             },
         )
         .unwrap();
-        for stage_index in 1..STAGE_COUNT {
+        for stage in HarpTraceStage::ALL.into_iter().skip(1) {
             session
-                .write_stage_summary(&TestRecord {
-                    record_type: "stage_summary",
-                    stage_index,
-                    stage_name: "stage",
-                    angle_deg: None,
-                })
+                .write_stage_summary(
+                    stage,
+                    &TestRecord {
+                        record_type: "stage_summary",
+                        stage_index: usize::from(stage.index()),
+                        stage_name: stage.name(),
+                        angle_deg: None,
+                    },
+                )
                 .unwrap();
         }
-        session.publish().unwrap();
+        session.publish(&test_report()).unwrap();
         let rows = jsonl(&target);
         assert_eq!(rows[1]["record_type"], "angle_violation");
         assert_eq!(rows[1]["stage_index"], 3);
@@ -709,7 +801,8 @@ mod tests {
         assert_eq!(rows[1]["birth_candidate_source"], "off_centre");
         assert!(rows[1]["angle_deg"].is_null());
         assert_eq!(rows[1]["angle_deg_measurable"], false);
-        assert!(rows[1]["realized_to_target_scale_ratio"].is_null());
+        assert!(rows[1]["realized_to_raw_criterion_target_scale_ratio"].is_null());
+        assert!(rows[1].get("realized_to_target_scale_ratio").is_none());
         assert_eq!(rows[2]["record_type"], "stage_summary");
         assert_eq!(rows[2]["stage_summary_count"], Value::Null);
         assert_eq!(rows.last().unwrap()["stage_summary_count"], STAGE_COUNT);
@@ -733,7 +826,7 @@ mod tests {
             refinement_depth: None,
             birth_cycle: None,
             birth_candidate_source: None,
-            realized_to_target_scale_ratio: None,
+            realized_to_raw_criterion_target_scale_ratio: None,
         };
         let error = write_core_event(
             &mut session,
@@ -760,14 +853,14 @@ mod tests {
         }
         let mut writer = TraceLineWriter::new(FailingFlush(Vec::new()));
         writer
-            .write_counted_record(
+            .write_stage_summary(
+                HarpTraceStage::Input,
                 &TestRecord {
                     record_type: "stage_summary",
                     stage_index: 0,
                     stage_name: "input",
                     angle_deg: None,
                 },
-                true,
             )
             .unwrap();
         let error = writer.inner.flush().unwrap_err();
@@ -787,14 +880,14 @@ mod tests {
         }
         let mut writer = TraceLineWriter::new(FailingWrite);
         let error = writer
-            .write_counted_record(
+            .write_stage_summary(
+                HarpTraceStage::Input,
                 &TestRecord {
                     record_type: "stage_summary",
                     stage_index: 0,
                     stage_name: "input",
                     angle_deg: None,
                 },
-                true,
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);

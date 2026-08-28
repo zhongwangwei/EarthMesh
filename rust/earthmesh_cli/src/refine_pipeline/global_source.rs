@@ -2380,7 +2380,7 @@ fn refine_with_harp_dv(
     }
     .map_err(|error| io::Error::other(error.to_string()))?;
     if let Some(trace_session) = trace_session {
-        trace_session.publish()?;
+        trace_session.publish(&outcome.report)?;
     }
 
     // What it could not do, on the run's own output rather than in a log line

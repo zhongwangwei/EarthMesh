@@ -84,7 +84,8 @@ Face slot、triangle index 和 vertex slot 不是跨阶段身份。每个阶段�
 - `AngleKey`、kind、球面角；
 - corner degree、三顶点 degree 三元组；
 - refinement depth、birth cycle、birth candidate source；
-- realized/target scale ratio 及其 measurable 状态。
+- `realized_to_raw_criterion_target_scale_ratio` 及其 measurable 状态。这里的 target 是在
+  顶点当前位置重新采样的原始 criterion target，不是质量优化器冻结并做过梯度限制的目标场。
 
 ## 6. CandidateSource 不变量
 
@@ -107,9 +108,12 @@ PR20a 的 `CandidateSource` 表示发起插入的 ladder candidate。受保护 s
 - `phase_skipped`
 - `harp_run_end`
 
-`run_header` 至少包含 schema version、backend 和理论 stage 数；`harp_run_end` 至少包含各事件
-计数和实际 stage-summary 数。`harp_run_end` 只表示 HARP 计算和 trace 完整结束，不表示最终
-NetCDF gridfile 已成功写出。
+`run_header` 至少包含 schema version、backend 和理论 stage 数。发布层必须验证七条
+`stage_summary` 严格按 S0-S6 唯一、有序出现，不能只核对数量。
+
+`harp_run_end` 至少包含各事件计数、实际 stage-summary 数、stop reason、完成 cycle 数、最终
+site 数，以及 physical demand、balance demand、unbalanced pair 和 unresolved cell 残差。
+`harp_run_end` 只表示 HARP 计算和 trace 完整结束，不表示最终 NetCDF gridfile 已成功写出。
 
 非有限浮点不得进入 JSON number；输出 `null` 并带 `measurable=false`。
 
