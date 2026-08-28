@@ -1784,30 +1784,6 @@ fn retire_quality_leaf_sites(
     (committed, committed_d4, committed_d4_site_ids)
 }
 
-fn degree_four_ring(state: &MeshState, site: usize) -> Option<[usize; 4]> {
-    let fan = state.triangle_fan(site).ok()?;
-    if fan.len() != 4 {
-        return None;
-    }
-    let mut ring = Vec::with_capacity(4);
-    for step in 0..4 {
-        let here = state.triangles()[fan[step]];
-        let next = state.triangles()[fan[(step + 1) % 4]];
-        let shared: Vec<_> = here
-            .into_iter()
-            .filter(|corner| *corner != site && next.contains(corner))
-            .collect();
-        if shared.len() != 1 {
-            return None;
-        }
-        ring.push(shared[0]);
-    }
-    if ring.iter().copied().collect::<BTreeSet<_>>().len() != 4 {
-        return None;
-    }
-    ring.try_into().ok()
-}
-
 fn canonical_ring(mut ring: [(SiteId, usize); 4]) -> [(SiteId, usize); 4] {
     let original = ring;
     for offset in 0..4 {
@@ -1832,7 +1808,7 @@ fn degree_four_trial_identities(
     mesh: &AdaptiveMesh,
     site: usize,
 ) -> Result<[DegreeFourTrialIdentity; 2]> {
-    let Some(ring) = degree_four_ring(mesh.state(), site) else {
+    let Ok(ring) = mesh.state().degree_four_ring(site) else {
         return Ok(std::array::from_fn(|index| DegreeFourTrialIdentity {
             index: index as u8,
             ring_site_ids: None,
@@ -2015,7 +1991,7 @@ fn evaluate_degree_four_trial(
     limits: CycleLimits,
 ) -> DegreeFourRetirementTrial {
     let touched = retirement_touched_triangles(report);
-    let hard_gate = check(candidate, &touched, gates, &mesh.pentagon_ids()).is_ok();
+    let hard_gate = status(check(candidate, &touched, gates, &mesh.pentagon_ids()).is_ok());
     let (after_demands, after_scales) = demanded_cells_and_scales(candidate, criteria);
     let physical_demand = measured_status(
         before_demands
@@ -2023,17 +1999,23 @@ fn evaluate_degree_four_trial(
             .map(|(before, after)| after <= before),
     );
     let after_balance = balance_survey_from_scales(candidate, &after_scales, limits);
-    let scale_balance = after_balance.0 <= before_balance.0
-        && (after_balance.0 == 0 || after_balance.1 <= before_balance.1);
+    let scale_balance = status(
+        after_balance.0 <= before_balance.0
+            && (after_balance.0 == 0 || after_balance.1 <= before_balance.1),
+    );
     let after_angles = angle_window_survey(candidate);
     let after_vertices_below_degree_5 = vertices_below_degree_5_set(candidate);
-    let no_new_low_degree = after_vertices_below_degree_5.is_subset(before_vertices_below_degree_5)
-        && after_vertices_below_degree_5.len() < before_vertices_below_degree_5.len();
-    let angle_count = after_angles.unmeasurable == 0
-        && after_angles.below <= before_angles.below
-        && after_angles.above_80 <= before_angles.above_80
-        && after_angles.below + after_angles.above_80
-            < before_angles.below + before_angles.above_80;
+    let no_new_low_degree = status(
+        after_vertices_below_degree_5.is_subset(before_vertices_below_degree_5)
+            && after_vertices_below_degree_5.len() < before_vertices_below_degree_5.len(),
+    );
+    let angle_count = status(
+        after_angles.unmeasurable == 0
+            && after_angles.below <= before_angles.below
+            && after_angles.above_80 <= before_angles.above_80
+            && after_angles.below + after_angles.above_80
+                < before_angles.below + before_angles.above_80,
+    );
     let worst_deviation = finite_status(
         before_angles.worst_deviation_deg,
         after_angles.worst_deviation_deg,
@@ -2059,18 +2041,19 @@ fn evaluate_degree_four_trial(
             .filter(|(before, after)| before.is_finite() && after.is_finite())
             .map(|(before, after)| after >= before),
     );
-    let conservative_remap = mesh.retirement_has_conservative_remap(candidate, vertex, report);
+    let conservative_remap =
+        status(mesh.retirement_has_conservative_remap(candidate, vertex, report));
     let statuses = [
-        status(hard_gate),
+        hard_gate,
         physical_demand,
-        status(scale_balance),
-        status(no_new_low_degree),
-        status(angle_count),
+        scale_balance,
+        no_new_low_degree,
+        angle_count,
         worst_deviation,
         penalty,
         eta,
         margin,
-        status(conservative_remap),
+        conservative_remap,
     ];
     let fully_acceptable = statuses
         .iter()
@@ -2084,14 +2067,14 @@ fn evaluate_degree_four_trial(
         geometry: DegreeFourCheckStatus::Pass,
         hard_gate: statuses[0],
         physical_demand: statuses[1],
-        scale_balance: status(scale_balance),
-        no_new_low_degree: status(no_new_low_degree),
-        angle_count: status(angle_count),
+        scale_balance,
+        no_new_low_degree,
+        angle_count,
         worst_deviation,
         penalty,
         eta,
         margin,
-        conservative_remap: status(conservative_remap),
+        conservative_remap,
         fully_acceptable,
     }
 }
@@ -4837,7 +4820,6 @@ fn run_cycles_with_local_recovery(
         .unwrap_or(0.0);
     let triangles_below_eta_0_89 = triangle_eta.partition_point(|value| *value < 0.89);
     let leaf_lineage = leaf_lineage_survey(mesh, criteria);
-    d4_retirement.summary.sites_committed = committed_d4_retirements;
     if trace.is_on() && d4_retirement.summary.evaluated {
         trace.emit(HarpTraceEvent::DegreeFourRetirementSummary(
             d4_retirement.summary.clone(),
@@ -4919,7 +4901,7 @@ fn run_cycles_with_local_recovery(
             d4_leaf_retirement_fully_acceptable: d4_retirement
                 .summary
                 .sites_with_any_fully_acceptable_trial,
-            d4_leaf_retirement_committed: d4_retirement.summary.sites_committed,
+            d4_leaf_retirement_committed: committed_d4_retirements,
             quality_leaf_retirement_committed: committed_retirements,
             target_triangle_angles_below_40_deg: target_angle_window.below,
             target_triangle_angles_above_80_deg: target_angle_window.above_80,
