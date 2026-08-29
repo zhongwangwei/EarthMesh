@@ -28,6 +28,8 @@ pub struct TransitionBoundary {
 pub struct TransitionTopologyCandidate {
     pub component_id: u64,
     pub topology_id: usize,
+    pub core_parents: Vec<TriangleAddress>,
+    pub custom_transition_triangles: BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
     pub source_triangles: Vec<[usize; 3]>,
     pub source_active_vertices: Vec<usize>,
     pub source_degree_forecast: BTreeMap<usize, usize>,
@@ -317,6 +319,8 @@ fn pure_core(
         candidate: TransitionTopologyCandidate {
             component_id,
             topology_id: 0,
+            core_parents: core.iter().copied().collect(),
+            custom_transition_triangles: BTreeMap::new(),
             source_triangles: Vec::new(),
             source_active_vertices: Vec::new(),
             source_degree_forecast: BTreeMap::new(),
@@ -454,6 +458,8 @@ fn solve_once(
         candidate: TransitionTopologyCandidate {
             component_id,
             topology_id: hit.topology_id,
+            core_parents: core.iter().copied().collect(),
+            custom_transition_triangles: hit.triangles_by_parent,
             source_triangles: candidate_triangles,
             source_active_vertices: active_vertices.into_iter().collect(),
             source_degree_forecast: hit.degree_forecast,
@@ -481,6 +487,7 @@ struct ProductSearch<'a> {
 
 struct SearchHit {
     mesh: HierarchyLeafMesh,
+    triangles_by_parent: BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
     triangles: Vec<[usize; 3]>,
     degree_forecast: BTreeMap<usize, usize>,
     topology_id: usize,
@@ -494,13 +501,19 @@ impl ProductSearch<'_> {
 
         let mut indices = vec![0usize; self.variants.len()];
         loop {
-            let mut chosen = Vec::<[usize; 3]>::new();
+            let mut chosen_by_parent = BTreeMap::<TriangleAddress, Vec<[usize; 3]>>::new();
             let mut forecast = self.forecast.clone();
-            for (parent_index, variant_index) in indices.iter().copied().enumerate() {
-                let variant = &self.variants[parent_index][variant_index];
-                chosen.extend(variant.iter().copied());
-                adjust_triangles(&mut forecast, variant, 1);
+            for ((parent, parent_variants), variant_index) in self
+                .transition
+                .iter()
+                .zip(self.variants)
+                .zip(indices.iter().copied())
+            {
+                let variant = parent_variants[variant_index].clone();
+                adjust_triangles(&mut forecast, &variant, 1);
+                chosen_by_parent.insert(*parent, variant);
             }
+            let chosen = flatten_custom_triangles(&chosen_by_parent);
 
             *self.states += 1;
             if !forecast
@@ -524,6 +537,7 @@ impl ProductSearch<'_> {
                             .collect();
                         *self.closed = Some(SearchHit {
                             mesh,
+                            triangles_by_parent: chosen_by_parent,
                             triangles: chosen,
                             degree_forecast,
                             topology_id: *self.states - 1,
@@ -538,6 +552,15 @@ impl ProductSearch<'_> {
             }
         }
     }
+}
+
+fn flatten_custom_triangles(
+    triangles_by_parent: &BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+) -> Vec<[usize; 3]> {
+    triangles_by_parent
+        .values()
+        .flat_map(|triangles| triangles.iter().copied())
+        .collect()
 }
 
 fn advance_mixed_radix(indices: &mut [usize], variants: &[Vec<Vec<[usize; 3]>>]) -> bool {
