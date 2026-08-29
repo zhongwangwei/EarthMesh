@@ -412,6 +412,34 @@ pub(crate) fn print_refine_pipeline_report(
     }
     if let Some(certified) = &report.certified_run {
         println!("certified_mode={}", certified.mode);
+        println!("certified_product_outcome={}", certified.product_outcome);
+        if let Some(reason) = &certified.safe_fallback_reason {
+            println!("certified_safe_fallback_reason={reason}");
+        }
+        println!(
+            "certified_requested_level_histogram={:?}",
+            certified.fulfillment.requested_histogram
+        );
+        println!(
+            "certified_delivered_level_histogram={:?}",
+            certified.fulfillment.delivered_histogram
+        );
+        println!(
+            "certified_mixed_levels={},{}",
+            certified.fulfillment.mixed_levels_requested,
+            certified.fulfillment.mixed_levels_delivered
+        );
+        println!(
+            "certified_components={},{},{},{}",
+            certified.fulfillment.components_total,
+            certified.fulfillment.components_committed,
+            certified.fulfillment.components_promoted,
+            certified.fulfillment.components_exhausted
+        );
+        println!(
+            "certified_search_complete={}",
+            certified.fulfillment.search_complete
+        );
         println!("certified_chosen_level={}", certified.chosen_level);
         println!("certified_delivered_level={}", certified.delivered_level);
         println!(

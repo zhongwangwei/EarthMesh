@@ -109,7 +109,7 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     assert!(resources["peak_memory_bytes"].is_null());
     assert_eq!(
         fs::read_to_string(&certified.ready_marker).unwrap(),
-        "certified\n"
+        "certified_adaptive\n"
     );
 }
 
@@ -144,12 +144,11 @@ fn unsupported_mother_fails_and_reverse_mode_is_bounded_and_certified() {
         .replace("safe_mother_only", "reverse_coarsening");
     fs::write(&path, reverse).unwrap();
     let exhausted = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect("exhaustion retains the certified finer mother");
-    let exhausted = exhausted.certified_run.unwrap();
-    assert!(exhausted.search_budget_exhausted);
-    assert_eq!(exhausted.initial_mother_subdivision, 6);
-    assert_eq!(exhausted.mother_subdivision, 6);
-    assert_eq!(exhausted.accepted_patches, 0);
+        .expect_err("zero coarsening progress must not publish ordinary success");
+    assert!(exhausted.to_string().contains("CompressionIncomplete"));
+    let exhausted_result = root.join("reverse_exhausted/result");
+    assert!(!exhausted_result.join("gridfile_NXP0003_hex.nc4").exists());
+    assert!(!exhausted_result.join("certified_ready").exists());
 
     let reverse = namelist(&root, "reverse_complete", 3, 1_000)
         .replace("safe_mother_only", "reverse_coarsening")
@@ -163,6 +162,8 @@ fn unsupported_mother_fails_and_reverse_mode_is_bounded_and_certified() {
     assert_eq!(completed.mother_subdivision, 3);
     assert_eq!(completed.initial_mother_cells, 720);
     assert_eq!(completed.mother_cells, 180);
+    assert_eq!(completed.product_outcome, "certified_adaptive");
+    assert_eq!(completed.fulfillment.components_committed, 180);
     assert_eq!(completed.attempted_patches, 180);
     assert_eq!(completed.accepted_patches, 180);
     assert!(completed.removed_vertices > 0);
@@ -173,6 +174,78 @@ fn unsupported_mother_fails_and_reverse_mode_is_bounded_and_certified() {
         .map(|line| line.split(',').next().unwrap().parse::<usize>().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(targets, (0..92).collect());
+}
+
+#[test]
+fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback() {
+    let root = temp_root("mixed_fulfillment");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![800.0],
+        },
+    )
+    .unwrap();
+
+    let path = root.join("cmrc.nml");
+    let reverse = specified_circle_namelist(&root, "mixed_incomplete", &prefix)
+        .replace("safe_mother_only", "reverse_coarsening")
+        .replace("NL%search_budget=100", "NL%search_budget=1");
+    fs::write(&path, reverse).unwrap();
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect_err("mixed request with uniform delivery must fail closed");
+    assert!(error.to_string().contains("CompressionIncomplete"));
+    let incomplete = root.join("mixed_incomplete/result");
+    for artifact in [
+        "gridfile_NXP0003_hex.nc4",
+        "certified_remap.csv",
+        "certified_certificate.json",
+        "certified_manifest.json",
+        "certified_resources.json",
+        "certified_ready",
+    ] {
+        assert!(!incomplete.join(artifact).exists(), "unexpected {artifact}");
+    }
+
+    fs::write(
+        &path,
+        specified_circle_namelist(&root, "mixed_safe_fallback", &prefix),
+    )
+    .unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect("safe_mother_only explicitly permits a labeled safe fallback");
+    let certified = run.certified_run.unwrap();
+    assert_eq!(certified.product_outcome, "certified_safe_fallback");
+    assert!(certified
+        .safe_fallback_reason
+        .as_deref()
+        .unwrap()
+        .contains("mixed levels"));
+    assert!(certified.fulfillment.mixed_levels_requested);
+    assert!(!certified.fulfillment.mixed_levels_delivered);
+    assert_eq!(
+        run.output.output.file_name().unwrap().to_str().unwrap(),
+        "gridfile_NXP0003_hex_certified_safe_fallback.nc4"
+    );
+    assert_eq!(
+        fs::read_to_string(&certified.ready_marker).unwrap(),
+        "certified_safe_fallback\n"
+    );
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    assert_eq!(certificate["product_outcome"], "certified_safe_fallback");
+    assert_eq!(
+        certificate["adaptivity_fulfillment"]["mixed_levels_delivered"],
+        false
+    );
+    assert!(!root
+        .join("mixed_safe_fallback/result/gridfile_NXP0003_hex.nc4")
+        .exists());
 }
 
 #[test]
@@ -284,12 +357,12 @@ fn close_requirement_sources_are_order_invariant_and_artifact_deterministic() {
     let forward = root.join("forward/result");
     let reverse = root.join("reverse/result");
     assert_eq!(
-        fs::read(forward.join("certified_certificate.json")).unwrap(),
-        fs::read(reverse.join("certified_certificate.json")).unwrap()
+        fs::read(forward.join("certified_safe_fallback_certificate.json")).unwrap(),
+        fs::read(reverse.join("certified_safe_fallback_certificate.json")).unwrap()
     );
     assert_eq!(
-        fs::read(forward.join("certified_remap.csv")).unwrap(),
-        fs::read(reverse.join("certified_remap.csv")).unwrap()
+        fs::read(forward.join("certified_safe_fallback_remap.csv")).unwrap(),
+        fs::read(reverse.join("certified_safe_fallback_remap.csv")).unwrap()
     );
 }
 

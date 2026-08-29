@@ -20,8 +20,9 @@ pub use certificate::{
 pub use config::{CertifiedConfig, DeliveryMode};
 pub use mother_grid::{MotherGrid, TriangleAddress, TriangleOrientation, VertexAddress};
 pub use outcome::{
-    CertifiedMeshOutcome, CertifiedPrimalDualMesh, FinalCertificationEvidence,
-    GeometryCertifiedMotherGrid,
+    classify_adaptivity_delivery, AdaptivityFulfillmentReport, AdaptivityIncompleteReason,
+    CertifiedMeshOutcome, CertifiedPrimalDualMesh, CompressionIncompleteReason,
+    FinalCertificationEvidence, GeometryCertifiedMotherGrid, SafeFallbackReason,
 };
 
 pub use requirement::{

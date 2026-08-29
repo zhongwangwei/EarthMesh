@@ -56,6 +56,9 @@ pub struct LeppAdaptiveHybridRunRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CertifiedRunRecord {
     pub mode: String,
+    pub product_outcome: String,
+    pub safe_fallback_reason: Option<String>,
+    pub fulfillment: earthmesh_refine_certified::AdaptivityFulfillmentReport,
     pub chosen_level: usize,
     pub delivered_level: usize,
     pub initial_mother_subdivision: usize,

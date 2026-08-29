@@ -118,7 +118,8 @@ pub enum CertifiedCavitySolveOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CertifiedEpochLimits {
     pub max_adjacent_level_delta: usize,
-    pub search_state_budget: usize,
+    pub component_search_state_budget: usize,
+    pub total_search_state_budget: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +164,17 @@ impl CertifiedEpochReport {
             .iter()
             .filter(|attempt| attempt.status == EpochCandidateStatus::Committed)
             .count()
+    }
+
+    pub fn candidates_exhausted(&self) -> usize {
+        self.attempts
+            .iter()
+            .filter(|attempt| attempt.status == EpochCandidateStatus::SearchBudgetExhausted)
+            .count()
+    }
+
+    pub fn search_complete(&self) -> bool {
+        self.candidates_exhausted() == 0
     }
 
     pub fn vertices_removed(&self) -> usize {
@@ -902,7 +914,7 @@ pub fn run_certified_coarsening_epochs(
     let mut pool = candidates;
     sort_and_deduplicate_patches(&mut pool);
     let mut pending = (0..pool.len()).collect::<Vec<_>>();
-    let mut remaining_budget = limits.search_state_budget;
+    let mut remaining_total_budget = limits.total_search_state_budget;
     let mut report = CertifiedEpochReport {
         initial_vertices,
         final_vertices: initial_vertices,
@@ -922,7 +934,7 @@ pub fn run_certified_coarsening_epochs(
             if !mesh.is_vertex_live(patch.vertex) {
                 continue;
             }
-            if remaining_budget == 0 {
+            if limits.component_search_state_budget == 0 || limits.total_search_state_budget == 0 {
                 report.final_vertices = mesh.vertex_count();
                 return CertifiedEpochOutcome::SearchBudgetExhausted {
                     report: Box::new(report),
@@ -943,6 +955,21 @@ pub fn run_certified_coarsening_epochs(
             };
             let vertex = patch.vertex;
             let address = patch.address.clone();
+            let candidate_budget = limits
+                .component_search_state_budget
+                .min(remaining_total_budget);
+            if candidate_budget == 0 {
+                report.attempts.push(EpochCandidateAttempt {
+                    epoch,
+                    vertex,
+                    address,
+                    status: EpochCandidateStatus::SearchBudgetExhausted,
+                    states_examined: 0,
+                    reason: Some("total search budget exhausted before this candidate".into()),
+                });
+                blocked_patches.insert(vertex, patch);
+                continue;
+            }
             match solve_certified_coarsening_patch(
                 mesh,
                 &patch,
@@ -951,14 +978,14 @@ pub fn run_certified_coarsening_epochs(
                 delivered_levels_by_site,
                 coarse_level,
                 limits.max_adjacent_level_delta,
-                remaining_budget,
+                candidate_budget,
             ) {
                 CertifiedCavitySolveOutcome::Feasible {
                     report: cavity,
                     states_examined,
                     ..
                 } => {
-                    remaining_budget = remaining_budget.saturating_sub(states_examined);
+                    remaining_total_budget = remaining_total_budget.saturating_sub(states_examined);
                     report.states_examined += states_examined;
                     report.attempts.push(EpochCandidateAttempt {
                         epoch,
@@ -977,7 +1004,7 @@ pub fn run_certified_coarsening_epochs(
                     states_examined,
                     reason,
                 } => {
-                    remaining_budget = remaining_budget.saturating_sub(states_examined);
+                    remaining_total_budget = remaining_total_budget.saturating_sub(states_examined);
                     report.states_examined += states_examined;
                     report.attempts.push(EpochCandidateAttempt {
                         epoch,
@@ -990,6 +1017,7 @@ pub fn run_certified_coarsening_epochs(
                     blocked_patches.insert(vertex, patch);
                 }
                 CertifiedCavitySolveOutcome::SearchBudgetExhausted { states_examined } => {
+                    remaining_total_budget = remaining_total_budget.saturating_sub(states_examined);
                     report.states_examined += states_examined;
                     report.attempts.push(EpochCandidateAttempt {
                         epoch,
@@ -999,10 +1027,7 @@ pub fn run_certified_coarsening_epochs(
                         states_examined,
                         reason: None,
                     });
-                    report.final_vertices = mesh.vertex_count();
-                    return CertifiedEpochOutcome::SearchBudgetExhausted {
-                        report: Box::new(report),
-                    };
+                    blocked_patches.insert(vertex, patch);
                 }
                 CertifiedCavitySolveOutcome::InvalidBoundary { reason } => {
                     report.attempts.push(EpochCandidateAttempt {
@@ -1024,6 +1049,7 @@ pub fn run_certified_coarsening_epochs(
             .iter()
             .enumerate()
             .filter(|(_, patch)| mesh.is_vertex_live(patch.vertex))
+            .filter(|(_, patch)| !blocked_patches.contains_key(&patch.vertex))
             .filter_map(|(index, patch)| {
                 let patch = refreshed_patch(mesh, patch.clone())?;
                 (dirty_sites.contains(&patch.vertex)

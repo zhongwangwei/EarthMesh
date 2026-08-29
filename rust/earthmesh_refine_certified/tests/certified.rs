@@ -3,10 +3,80 @@ use earthmesh_refine_certified::requirement::{
     graded_envelope, merge_sources, one_ring_adjacency, RequirementSource,
 };
 use earthmesh_refine_certified::{
-    mother_grid::analytic_counts, safe_mother_only, Certificate, CertifiedConfig,
-    CertifiedMeshOutcome, MotherGrid, VertexAddress,
+    mother_grid::analytic_counts, safe_mother_only, AdaptivityFulfillmentReport, Certificate,
+    CertifiedConfig, CertifiedMeshOutcome, MotherGrid, VertexAddress,
 };
 use std::collections::{BTreeSet, VecDeque};
+
+#[test]
+fn mixed_requested_uniform_delivery_is_compression_incomplete_by_default() {
+    let report = AdaptivityFulfillmentReport::from_levels(
+        [0, 1, 2, 3],
+        [3, 3, 3, 3],
+        16,
+        16,
+        2,
+        0,
+        2,
+        2,
+        false,
+    );
+
+    assert!(report.mixed_levels_requested);
+    assert!(!report.mixed_levels_delivered);
+    assert_eq!(
+        report.compression_incomplete_reason(),
+        Some(
+            earthmesh_refine_certified::CompressionIncompleteReason::MixedLevelsRequestedButUniformDelivered
+        )
+    );
+}
+
+#[test]
+fn uniform_requested_uniform_delivery_is_not_compression_incomplete() {
+    let report =
+        AdaptivityFulfillmentReport::from_levels([3, 3, 3], [3, 3, 3], 3, 3, 1, 0, 0, 0, true);
+
+    assert!(!report.mixed_levels_requested);
+    assert!(!report.mixed_levels_delivered);
+    assert_eq!(report.compression_incomplete_reason(), None);
+}
+
+#[test]
+fn attempted_reverse_coarsening_with_no_commit_is_incomplete() {
+    let report =
+        AdaptivityFulfillmentReport::from_levels([3, 3], [4, 4], 80, 80, 20, 0, 20, 1, false);
+
+    assert_eq!(
+        report.compression_incomplete_reason(),
+        Some(earthmesh_refine_certified::CompressionIncompleteReason::NoCertifiedCoarseningCommit)
+    );
+}
+
+#[test]
+fn fulfillment_report_records_histograms_and_compression_ratio() {
+    let report = AdaptivityFulfillmentReport::from_levels(
+        [0, 2, 2, 3],
+        [0, 1, 1, 3],
+        16,
+        8,
+        4,
+        3,
+        1,
+        0,
+        true,
+    );
+
+    assert_eq!(report.requested_level_min, 0);
+    assert_eq!(report.requested_level_max, 3);
+    assert_eq!(report.delivered_level_min, 0);
+    assert_eq!(report.delivered_level_max, 3);
+    assert_eq!(report.requested_histogram.get(&2), Some(&2));
+    assert_eq!(report.delivered_histogram.get(&1), Some(&2));
+    assert_eq!(report.compression_ratio, 2.0);
+    assert!(report.mixed_levels_requested);
+    assert!(report.mixed_levels_delivered);
+}
 
 #[test]
 fn mother_grid_counts_and_topology_for_supported_levels() {

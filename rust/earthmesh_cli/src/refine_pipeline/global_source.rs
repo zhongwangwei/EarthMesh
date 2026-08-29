@@ -1288,6 +1288,11 @@ struct CertifiedConstruction {
     removed_vertices: usize,
     removed_faces: usize,
     search_budget_exhausted: bool,
+    components_total: usize,
+    components_committed: usize,
+    components_promoted: usize,
+    components_exhausted: usize,
+    search_complete: bool,
 }
 
 fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -1328,13 +1333,14 @@ fn build_certified_construction(
             other => return Err(certified_outcome_error(other)),
         };
         let cell_count = geometry.primal().vertex_count();
+        let face_count = geometry.primal().triangle_count();
         let pentagons = certified_mother_pentagons(geometry.primal())?;
         let remap = earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(
             geometry.primal(),
         );
         let remap_certificate = remap.certify_identity(cell_count);
         return Ok(CertifiedConstruction {
-            initial_cells: cell_count,
+            initial_cells: face_count,
             geometry,
             pentagons,
             remap,
@@ -1350,6 +1356,11 @@ fn build_certified_construction(
             removed_vertices: 0,
             removed_faces: 0,
             search_budget_exhausted: false,
+            components_total: 0,
+            components_committed: 0,
+            components_promoted: 0,
+            components_exhausted: 0,
+            search_complete: true,
         });
     }
 
@@ -1412,6 +1423,8 @@ fn build_certified_construction(
         })?;
     let initial_cells = fine.mesh.triangle_count();
     let initial_mesh = fine.mesh.clone();
+    let hierarchy_components_total =
+        earthmesh_refine_certified::coarsen::complete_four_child_patch_candidates(&fine).len();
     match earthmesh_refine_certified::coarsen::rebuild_one_level_from_complete_mother_patches(
         fine,
         options.search_budget,
@@ -1456,6 +1469,11 @@ fn build_certified_construction(
                 removed_vertices,
                 removed_faces,
                 search_budget_exhausted: false,
+                components_total: candidates.len(),
+                components_committed: candidates.len(),
+                components_promoted: 0,
+                components_exhausted: 0,
+                search_complete: true,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -1496,6 +1514,11 @@ fn build_certified_construction(
                 removed_vertices: 0,
                 removed_faces: 0,
                 search_budget_exhausted: true,
+                components_total: hierarchy_components_total,
+                components_committed: 0,
+                components_promoted: hierarchy_components_total,
+                components_exhausted: 1,
+                search_complete: false,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -1619,6 +1642,8 @@ fn build_mixed_certified_construction(
         .enumerate()
         .map(|(site, _)| mesh.is_vertex_live(site).then_some(chosen_level))
         .collect::<Vec<_>>();
+    let candidate_count = candidates.len();
+    let component_search_state_budget = (options.search_budget / candidate_count.max(1)).max(1);
     let epoch = earthmesh_refine_certified::coarsen::run_certified_coarsening_epochs(
         &mut mesh,
         candidates,
@@ -1628,16 +1653,17 @@ fn build_mixed_certified_construction(
         coarse_level,
         earthmesh_refine_certified::coarsen::CertifiedEpochLimits {
             max_adjacent_level_delta: 1,
-            search_state_budget: options.search_budget,
+            component_search_state_budget,
+            total_search_state_budget: options.search_budget,
         },
     );
-    let (report, search_budget_exhausted) = match epoch {
+    let report = match epoch {
         earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::Certified {
             report, ..
-        } => (report, false),
+        } => report,
         earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::SearchBudgetExhausted {
             report,
-        } => (report, true),
+        } => report,
         earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::NotCertifiable {
             error,
             ..
@@ -1712,7 +1738,17 @@ fn build_mixed_certified_construction(
         accepted_patches: report.candidates_accepted(),
         removed_vertices: initial_vertices - geometry.primal().vertex_count(),
         removed_faces: initial_faces - geometry.primal().triangle_count(),
-        search_budget_exhausted,
+        search_budget_exhausted: !report.search_complete(),
+        components_total: candidate_count,
+        components_committed: report.candidates_accepted(),
+        components_promoted: report
+            .transition_promotion
+            .blocked_regions
+            .iter()
+            .map(|region| region.patch_vertices.len())
+            .sum(),
+        components_exhausted: report.candidates_exhausted(),
+        search_complete: report.search_complete(),
         geometry,
         remap,
         remap_certificate,
@@ -1837,6 +1873,11 @@ fn run_certified_pipeline(
         removed_vertices,
         removed_faces,
         search_budget_exhausted,
+        components_total,
+        components_committed,
+        components_promoted,
+        components_exhausted,
+        search_complete,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
@@ -1884,6 +1925,43 @@ fn run_certified_pipeline(
                     format!("CMRC final certification failed: {error}"),
                 )
             })?;
+    let fulfillment = earthmesh_refine_certified::AdaptivityFulfillmentReport::from_levels(
+        required_levels.iter().copied(),
+        delivered_levels.levels().iter().copied(),
+        initial_cells,
+        final_mesh.primal().triangle_count(),
+        components_total,
+        components_committed,
+        components_promoted,
+        components_exhausted,
+        search_complete,
+    );
+    let (final_mesh, fulfillment, product_outcome, fallback_reason, safe_fallback) =
+        match earthmesh_refine_certified::classify_adaptivity_delivery(
+            final_mesh,
+            fulfillment,
+            options.mode == CertifiedMode::SafeMotherOnly,
+        ) {
+            earthmesh_refine_certified::CertifiedMeshOutcome::CertifiedAdaptive {
+                mesh,
+                fulfillment,
+            } => (mesh, fulfillment, "certified_adaptive", None, false),
+            earthmesh_refine_certified::CertifiedMeshOutcome::CertifiedSafeFallback {
+                mesh,
+                fulfillment,
+                reason,
+            } => (
+                mesh,
+                fulfillment,
+                "certified_safe_fallback",
+                Some(reason.to_string()),
+                true,
+            ),
+            incomplete @ earthmesh_refine_certified::CertifiedMeshOutcome::CompressionIncomplete {
+                ..
+            } => return Err(certified_outcome_error(incomplete)),
+            other => return Err(certified_outcome_error(other)),
+        };
     let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
     let state = spherical_voronoi_state(&triangular)?;
     certify_cmrc_published_dual(final_mesh.primal(), &state)?;
@@ -1897,9 +1975,19 @@ fn run_certified_pipeline(
     };
     let result_dir = file_dir.join("result");
     fs::create_dir_all(&result_dir)?;
+    let gridfile_suffix = if safe_fallback {
+        "_certified_safe_fallback"
+    } else {
+        ""
+    };
+    let artifact_stem = if safe_fallback {
+        "certified_safe_fallback"
+    } else {
+        "certified"
+    };
     let output_path = result_dir.join(format!(
-        "gridfile_NXP{base_nxp:04}_{}.nc4",
-        config.mode_grid.trim()
+        "gridfile_NXP{base_nxp:04}_{}{gridfile_suffix}.nc4",
+        config.mode_grid.trim(),
     ));
     let temporary_path = result_dir.join(format!(
         ".{}.cmrc-tmp-{}",
@@ -1909,27 +1997,27 @@ fn run_certified_pipeline(
             .unwrap_or("gridfile.nc4"),
         std::process::id()
     ));
-    let remap_path = result_dir.join("certified_remap.csv");
+    let remap_path = result_dir.join(format!("{artifact_stem}_remap.csv"));
     let temporary_remap_path = result_dir.join(format!(
         ".certified_remap.csv.cmrc-tmp-{}",
         std::process::id()
     ));
-    let certificate_path = result_dir.join("certified_certificate.json");
+    let certificate_path = result_dir.join(format!("{artifact_stem}_certificate.json"));
     let temporary_certificate_path = result_dir.join(format!(
         ".certified_certificate.json.cmrc-tmp-{}",
         std::process::id()
     ));
-    let manifest_path = result_dir.join("certified_manifest.json");
+    let manifest_path = result_dir.join(format!("{artifact_stem}_manifest.json"));
     let temporary_manifest_path = result_dir.join(format!(
         ".certified_manifest.json.cmrc-tmp-{}",
         std::process::id()
     ));
-    let resources_path = result_dir.join("certified_resources.json");
+    let resources_path = result_dir.join(format!("{artifact_stem}_resources.json"));
     let temporary_resources_path = result_dir.join(format!(
         ".certified_resources.json.cmrc-tmp-{}",
         std::process::id()
     ));
-    let ready_marker = result_dir.join("certified_ready");
+    let ready_marker = result_dir.join(format!("{artifact_stem}_ready"));
     let temporary_ready_marker =
         result_dir.join(format!(".certified_ready.cmrc-tmp-{}", std::process::id()));
     let certificate = final_mesh.certificate();
@@ -1947,6 +2035,8 @@ fn run_certified_pipeline(
     let certificate_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
         "mode": mode_name,
+        "product_outcome": product_outcome,
+        "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
@@ -1966,6 +2056,24 @@ fn run_certified_pipeline(
             "removed_vertices": removed_vertices,
             "removed_faces": removed_faces,
             "search_budget_exhausted": search_budget_exhausted,
+            "components_total": fulfillment.components_total,
+            "components_committed": fulfillment.components_committed,
+            "components_promoted": fulfillment.components_promoted,
+            "components_exhausted": fulfillment.components_exhausted,
+            "search_complete": fulfillment.search_complete,
+        },
+        "adaptivity_fulfillment": {
+            "requested_level_min": fulfillment.requested_level_min,
+            "requested_level_max": fulfillment.requested_level_max,
+            "requested_histogram": fulfillment.requested_histogram,
+            "delivered_level_min": fulfillment.delivered_level_min,
+            "delivered_level_max": fulfillment.delivered_level_max,
+            "delivered_histogram": fulfillment.delivered_histogram,
+            "mixed_levels_requested": fulfillment.mixed_levels_requested,
+            "mixed_levels_delivered": fulfillment.mixed_levels_delivered,
+            "initial_faces": fulfillment.initial_faces,
+            "final_faces": fulfillment.final_faces,
+            "compression_ratio": fulfillment.compression_ratio,
         },
         "geometry": {
             "vertices": geometry_report.vertices,
@@ -1990,6 +2098,8 @@ fn run_certified_pipeline(
     let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
         "mode": mode_name,
+        "product_outcome": product_outcome,
+        "safe_fallback_reason": fallback_reason,
         "delivery": match options.delivery {
             CertifiedDelivery::Tri => "tri",
             CertifiedDelivery::Hex => "hex",
@@ -2025,7 +2135,7 @@ fn run_certified_pipeline(
         fs::write(&temporary_remap_path, remap_csv)?;
         fs::write(&temporary_certificate_path, certificate_json)?;
         fs::write(&temporary_manifest_path, manifest_json)?;
-        fs::write(&temporary_ready_marker, b"certified\n")?;
+        fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
         let report = crate::write_unstructured_mesh_netcdf(&temporary_path, &output_mesh)?;
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
@@ -2108,6 +2218,9 @@ fn run_certified_pipeline(
         harp_dv_run: None,
         certified_run: Some(CertifiedRunRecord {
             mode: mode_name.to_string(),
+            product_outcome: product_outcome.to_string(),
+            safe_fallback_reason: fallback_reason,
+            fulfillment: *fulfillment,
             chosen_level,
             delivered_level,
             initial_mother_subdivision: initial_subdivision,
@@ -2420,7 +2533,26 @@ fn certified_outcome_error(outcome: earthmesh_refine_certified::CertifiedMeshOut
             io::ErrorKind::InvalidData,
             format!("CMRC InternalCertificationFailure: {reason}"),
         ),
-        CertifiedMeshOutcome::GeometryCertified(_) | CertifiedMeshOutcome::Certified(_) => (
+        CertifiedMeshOutcome::CompressionIncomplete {
+            fulfillment,
+            reason,
+            ..
+        } => (
+            io::ErrorKind::Other,
+            format!(
+                "CMRC CompressionIncomplete: {reason}; requested={:?}; delivered={:?}; components committed/promoted/exhausted={}/{}/{}; search_complete={}",
+                fulfillment.requested_histogram,
+                fulfillment.delivered_histogram,
+                fulfillment.components_committed,
+                fulfillment.components_promoted,
+                fulfillment.components_exhausted,
+                fulfillment.search_complete,
+            ),
+        ),
+        CertifiedMeshOutcome::GeometryCertified(_)
+        | CertifiedMeshOutcome::Certified(_)
+        | CertifiedMeshOutcome::CertifiedAdaptive { .. }
+        | CertifiedMeshOutcome::CertifiedSafeFallback { .. } => (
             io::ErrorKind::InvalidData,
             "CMRC returned an unexpected success outcome".to_string(),
         ),

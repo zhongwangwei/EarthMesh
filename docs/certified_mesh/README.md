@@ -56,7 +56,9 @@ Finite one-site cavities now have bounded `Feasible`, `ProvenInfeasible`,
 atomically certifies geometry, final-cell physical/balance requirements, and
 Voronoi remap closure. Deterministic epochs attempt each stable candidate once,
 retry only dirty one-rings, stop after a zero-commit epoch, and promote blocked
-transition components by retaining the fine level. Regular hierarchy one-site
+transition components by retaining the fine level. Candidate budgets are
+isolated under a total epoch budget, so one exhausted candidate does not stop
+later candidates from being attempted. Regular hierarchy one-site
 retirement uses a bounded deterministic relocation of its retained ring and
 transition halo when fixed coordinates do not satisfy the internal angle and
 degree windows. The original twelve icosahedron vertices and their one-rings
@@ -88,6 +90,9 @@ final pointer swap.
 
 The typed API distinguishes:
 
+- `CertifiedAdaptive`
+- `CertifiedSafeFallback`
+- `CompressionIncomplete`
 - `CellBudgetInsufficient`
 - `MaximumLevelReached`
 - `CriterionNotCertifiable`
@@ -96,9 +101,11 @@ The typed API distinguishes:
 - `SearchBudgetExhausted`
 - `InternalCertificationFailure`
 
-`SearchBudgetExhausted` means only that the bounded local compression search
-stopped. The already-certified finer mesh remains deliverable. It is not a
-proof that the requested coarsening is impossible.
+`SearchBudgetExhausted` means only that a bounded local compression search
+stopped; it is not proof that the requested coarsening is impossible. Mixed
+requirements delivered as a uniform mesh are `CompressionIncomplete` and do
+not publish an ordinary success file. Explicit `safe_mother_only` delivery may
+publish the certified mesh under `*_certified_safe_fallback.*` names instead.
 
 Conservative remap rows are sealed after construction. Safe-mother delivery
 uses Voronoi-cell identity rows; hierarchy delivery computes actual spherical
@@ -108,5 +115,6 @@ sizes, remap rows and entries, and staged artifact sizes. In-process peak RSS
 is deliberately reported as unavailable; production acceptance must measure it
 with the platform harness rather than inventing a portable value.
 
-See [proof-obligations.md](proof-obligations.md), [baseline.md](baseline.md),
-and [the real IGBP NXP80 safe-mother acceptance](igbp-nxp80-safe-mother.md).
+See the [CMRC-EBC mathematical contract](cmrc_ebc_mathematical_contract.md),
+[proof-obligations.md](proof-obligations.md), [baseline.md](baseline.md), and
+[the real IGBP NXP80 safe-mother acceptance](igbp-nxp80-safe-mother.md).

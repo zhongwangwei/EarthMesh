@@ -56,6 +56,49 @@ fn mother_with_redundant_site() -> (MeshState, CoarseningPatch) {
     (mesh, patch)
 }
 
+fn insert_redundant_site_in_face(mesh: &mut MeshState, face: usize) -> CoarseningPatch {
+    let [a, b, c] = mesh.triangles()[face];
+    let point = normalize_cartesian_to_radius(
+        CartesianPoint::new(
+            mesh.vertices()[a].x + mesh.vertices()[b].x + mesh.vertices()[c].x,
+            mesh.vertices()[a].y + mesh.vertices()[b].y + mesh.vertices()[c].y,
+            mesh.vertices()[a].z + mesh.vertices()[b].z + mesh.vertices()[c].z,
+        ),
+        1.0,
+    )
+    .unwrap();
+    let insertion = mesh
+        .insert_site_transactionally(point, |candidate, _| candidate.validate().is_ok())
+        .unwrap();
+    let fan = mesh.triangle_fan(insertion.site).unwrap();
+    let seed_face = *fan.iter().min().unwrap();
+    let mut retained_vertices = fan
+        .into_iter()
+        .flat_map(|face| mesh.triangles()[face])
+        .filter(|&site| site != insertion.site)
+        .collect::<Vec<_>>();
+    retained_vertices.sort_unstable();
+    retained_vertices.dedup();
+    CoarseningPatch {
+        vertex: insertion.site,
+        seed_face,
+        address: VertexAddress::IcosahedronFace {
+            face: 0,
+            i: 1,
+            j: 1,
+            k: 1,
+            n: 3,
+        },
+        level: 1,
+        parent_faces: Vec::new(),
+        boundary_cycle: retained_vertices.clone(),
+        retained_vertices,
+        removable_vertices: vec![insertion.site],
+        transition_halo: Vec::new(),
+        requirement_margin: 1,
+    }
+}
+
 #[test]
 fn hierarchy_site_candidates_are_stable_complete_and_requirement_ranked() {
     let grid = MotherGrid::generate(2).unwrap();
@@ -382,7 +425,8 @@ fn certified_epochs_are_finite_stable_and_end_after_a_zero_commit_epoch() {
         0,
         CertifiedEpochLimits {
             max_adjacent_level_delta: 1,
-            search_state_budget: usize::MAX,
+            component_search_state_budget: usize::MAX,
+            total_search_state_budget: usize::MAX,
         },
     );
     let CertifiedEpochOutcome::Certified {
@@ -424,7 +468,8 @@ fn certified_epoch_budget_exhaustion_is_explicit_and_atomic() {
         0,
         CertifiedEpochLimits {
             max_adjacent_level_delta: 1,
-            search_state_budget: 0,
+            component_search_state_budget: 0,
+            total_search_state_budget: 0,
         },
     );
     let CertifiedEpochOutcome::SearchBudgetExhausted { report } = outcome else {
@@ -434,6 +479,100 @@ fn certified_epoch_budget_exhaustion_is_explicit_and_atomic() {
     assert_eq!(report.candidates_attempted(), 0);
     assert_eq!(mesh, before_mesh);
     assert_eq!(delivered, before_levels);
+}
+
+#[test]
+fn exhausted_candidate_does_not_spend_later_candidate_budget() {
+    let grid = MotherGrid::generate(6).unwrap();
+    let hard = coarsening_patch_candidates(&grid, &vec![0; grid.mesh.vertices().len()], 0)
+        .into_iter()
+        .find(|patch| {
+            patch.address
+                == VertexAddress::IcosahedronEdge {
+                    a: 0,
+                    b: 10,
+                    step: 3,
+                    n: 6,
+                }
+        })
+        .unwrap();
+    let hard_sites = hard
+        .retained_vertices
+        .iter()
+        .copied()
+        .chain(
+            hard.transition_halo
+                .iter()
+                .flat_map(|&face| grid.mesh.triangles()[face]),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut mesh = grid.mesh;
+    let easy_face = mesh
+        .active_triangle_slots()
+        .find(|&face| {
+            mesh.triangles()[face]
+                .iter()
+                .all(|site| !hard_sites.contains(site))
+        })
+        .unwrap();
+    let easy = insert_redundant_site_in_face(&mut mesh, easy_face);
+    let source_mesh = mesh.clone();
+    let source_levels = SourceLevelField::from_active_voronoi_cells(
+        &source_mesh,
+        vec![0; source_mesh.vertex_count()],
+    )
+    .unwrap();
+    let mut delivered = vec![Some(1); mesh.vertices().len()];
+    let mut hard = hard;
+    hard.requirement_margin = 2;
+    let hard_vertex = hard.vertex;
+
+    let outcome = run_certified_coarsening_epochs(
+        &mut mesh,
+        vec![hard, easy.clone()],
+        &source_mesh,
+        &source_levels,
+        &mut delivered,
+        0,
+        CertifiedEpochLimits {
+            max_adjacent_level_delta: 1,
+            component_search_state_budget: 1,
+            total_search_state_budget: 2,
+        },
+    );
+    let CertifiedEpochOutcome::Certified { report, .. } = outcome else {
+        panic!("one exhausted candidate must not abort the epoch: {outcome:?}");
+    };
+
+    assert_eq!(report.candidates_exhausted(), 1);
+    assert!(!report.search_complete());
+    assert_eq!(
+        report
+            .transition_promotion
+            .blocked_regions
+            .iter()
+            .map(|region| region.patch_vertices.len())
+            .sum::<usize>(),
+        1
+    );
+    assert!(report
+        .attempts
+        .iter()
+        .any(|attempt| attempt.status == EpochCandidateStatus::SearchBudgetExhausted));
+    assert_eq!(
+        report
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.vertex == hard_vertex)
+            .count(),
+        1
+    );
+    assert!(report
+        .attempts
+        .iter()
+        .any(|attempt| attempt.vertex == easy.vertex
+            && attempt.status == EpochCandidateStatus::Committed));
+    assert_eq!(delivered[easy.vertex], None);
 }
 
 #[test]
@@ -457,7 +596,8 @@ fn infeasible_epoch_promotes_the_blocked_transition_and_keeps_the_fine_mesh() {
         0,
         CertifiedEpochLimits {
             max_adjacent_level_delta: 1,
-            search_state_budget: usize::MAX,
+            component_search_state_budget: usize::MAX,
+            total_search_state_budget: usize::MAX,
         },
     );
     let CertifiedEpochOutcome::Certified { report, .. } = outcome else {
