@@ -77,7 +77,7 @@ fn compile_project_arg(
     };
     if project.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
         && project.refinement.enabled
-        && project.refinement.backend != earthmesh_project::RefinementBackend::HarpDv
+        && !project.refinement.backend.owns_quality_repair()
     {
         let target_nxp = project.try_lower()?.mkgrd.nxp;
         project.refinement.max_passes = earthmesh_project::effective_auto_refine_pass(

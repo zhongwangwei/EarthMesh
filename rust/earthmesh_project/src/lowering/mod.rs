@@ -456,7 +456,10 @@ impl ProjectConfig {
         // backends consume it. Only turning those circles into mesh is
         // per-backend -- and that is the half suspended on Method-C, which is
         // why red-green is the one that can actually serve a coastline.
-        let adaptive = if mkgrd.refine && !hfield_requested {
+        let adaptive = if mkgrd.refine
+            && !hfield_requested
+            && backend != crate::RefinementBackend::Certified
+        {
             match &self.refinement.adaptive {
                 Some(recipe) if recipe.enabled => Some(recipe.clone()),
                 Some(_) => None,

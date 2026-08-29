@@ -187,6 +187,12 @@ pub enum RefinementBackend {
     Certified,
 }
 
+impl RefinementBackend {
+    pub fn owns_quality_repair(self) -> bool {
+        matches!(self, Self::HarpDv | Self::Certified)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MeshCellKind {
     Hex,

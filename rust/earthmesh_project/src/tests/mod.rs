@@ -2690,5 +2690,6 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     assert!(namelist.contains("NL%maximum_cells = 900000"));
     assert!(namelist.contains("NL%gradation_rings_per_level = 5"));
     assert!(namelist.contains("NL%search_budget = 12000"));
+    assert!(!namelist.contains("&adaptive"));
     assert!(!namelist.contains("legacy"));
 }

@@ -214,7 +214,7 @@ fn run_prepared_mkgrd(
             .as_ref()
             .filter(|spec| {
                 spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
-                    && !harp_owns_quality_repair(spec.config.refinement.backend)
+                    && !spec.config.refinement.backend.owns_quality_repair()
             })
             .map(|spec| {
                 let target_nxp = spec.config.try_lower()?.mkgrd.nxp;
@@ -294,20 +294,24 @@ fn run_prepared_mkgrd(
                 verdict.as_str(),
                 current_pass
             );
-            if harp_owns_quality_repair(spec.config.refinement.backend) {
+            if spec.config.refinement.backend.owns_quality_repair() {
+                let owner = match spec.config.refinement.backend {
+                    earthmesh_project::RefinementBackend::HarpDv => "HARP-DV",
+                    earthmesh_project::RefinementBackend::Certified => "CMRC",
+                    _ => unreachable!("only repair-owning backends enter this branch"),
+                };
                 let reason = match verdict {
-                    earthmesh_quality::QualityLevel::Pass => {
-                        "HARP-DV internal quality repair passed"
-                    }
+                    earthmesh_quality::QualityLevel::Pass => "internal quality gates passed",
                     earthmesh_quality::QualityLevel::Warn => {
-                        "HARP-DV completed its own transactional quality repair; Method-C local repair is not applicable"
+                        "transactional backend kept its certified mesh; Method-C local repair is not applicable"
                     }
                     earthmesh_quality::QualityLevel::Fail => {
-                        return Err(
-                            "HARP-DV internal quality repair ended with verdict=fail".to_string()
-                        )
+                        return Err(format!(
+                            "{owner} internal quality repair ended with verdict=fail"
+                        ));
                     }
                 };
+                let reason = format!("{owner} {reason}");
                 record_auto_refine_decision(
                     current_pass,
                     if verdict == earthmesh_quality::QualityLevel::Pass {
@@ -315,7 +319,7 @@ fn run_prepared_mkgrd(
                     } else {
                         "kept"
                     },
-                    reason,
+                    &reason,
                     None,
                     gridfile,
                     gridfile,
@@ -325,7 +329,7 @@ fn run_prepared_mkgrd(
                     &[],
                 )?;
                 if verdict != earthmesh_quality::QualityLevel::Pass {
-                    eprintln!("earthmesh_cli: warning: {reason}; keeping the HARP-DV mesh");
+                    eprintln!("earthmesh_cli: warning: {reason}; keeping the {owner} mesh");
                 }
                 break report;
             }
@@ -807,7 +811,7 @@ fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<
         .and_then(|value| value.checked_mul(nxp))
         .ok_or_else(|| "project base triangle count exceeds this platform".to_string())?;
     let passes = if config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
-        && !harp_owns_quality_repair(config.refinement.backend)
+        && !config.refinement.backend.owns_quality_repair()
     {
         earthmesh_project::auto_refine_level_cap(target_nxp)
     } else if config.refinement.enabled {
@@ -818,10 +822,6 @@ fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<
     base.checked_shl(u32::from(passes) * 2)
         .map(|budget| budget.max(100_000))
         .ok_or_else(|| "project refined triangle budget exceeds this platform".to_string())
-}
-
-fn harp_owns_quality_repair(backend: earthmesh_project::RefinementBackend) -> bool {
-    backend == earthmesh_project::RefinementBackend::HarpDv
 }
 
 fn final_gridfile(
@@ -966,9 +966,11 @@ mod tests {
     }
 
     #[test]
-    fn harp_dv_is_not_a_method_c_quality_repair_candidate() {
-        assert!(harp_owns_quality_repair(RefinementBackend::HarpDv));
-        assert!(!harp_owns_quality_repair(RefinementBackend::MethodC));
+    fn transactional_backends_are_not_method_c_quality_repair_candidates() {
+        assert!(RefinementBackend::HarpDv.owns_quality_repair());
+        assert!(RefinementBackend::Certified.owns_quality_repair());
+        assert!(!RefinementBackend::MethodC.owns_quality_repair());
+        assert!(!RefinementBackend::RedGreen.owns_quality_repair());
     }
 
     #[test]
