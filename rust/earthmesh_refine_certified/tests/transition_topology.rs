@@ -303,6 +303,38 @@ fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
 }
 
 #[test]
+fn topology_search_can_resume_after_a_checked_candidate_without_replay() {
+    let (fine, core, transition) = level_three_fixture();
+    let component = component(core, transition, false);
+    let limits = TransitionTopologyLimits {
+        topology_states: 1_000,
+        maximum_halo_expansions: 0,
+    };
+
+    let TransitionTopologyOutcome::Closed(first) =
+        solve_transition_topology(&fine, &component, limits)
+    else {
+        panic!("first topology candidate must close");
+    };
+    let cursor = first.report.topology_states;
+
+    let TransitionTopologyOutcome::Closed(resumed) =
+        limits.solve_from_cursor(&fine, &component, cursor)
+    else {
+        panic!("resumed topology search must find a later candidate");
+    };
+
+    assert_ne!(first.candidate.topology_id, resumed.candidate.topology_id);
+    assert_eq!(first.candidate.topology_id + 1, cursor);
+    assert_eq!(
+        resumed.candidate.topology_id + 1,
+        resumed.report.topology_states
+    );
+    assert!(resumed.report.topology_states > cursor);
+    assert_hard_topology_gates(&resumed.mesh.mesh);
+}
+
+#[test]
 fn zero_topology_budget_is_exhaustion_not_infeasibility() {
     let (fine, core, transition) = level_three_fixture();
     let component = component(core, transition, false);

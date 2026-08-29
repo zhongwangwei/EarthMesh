@@ -36,21 +36,24 @@ impl HierarchyLeafSet {
 
     pub fn condense_core(&mut self, parents: &[TriangleAddress]) -> Result<usize, String> {
         let unique = parents.iter().copied().collect::<BTreeSet<_>>();
-        let mut trial = self.leaves.clone();
+        let mut removals = Vec::with_capacity(unique.len().saturating_mul(4));
         for parent in &unique {
             let children = parent
                 .children_2_to_1()
                 .ok_or_else(|| format!("invalid hierarchy parent {parent:?}"))?;
             for child in children {
-                if !trial.remove(&child) {
+                if !self.leaves.contains(&child) {
                     return Err(format!(
                         "parent {parent:?} is not a complete core leaf patch; missing child {child:?}"
                     ));
                 }
+                removals.push(child);
             }
-            trial.insert(*parent);
         }
-        self.leaves = trial;
+        for child in removals {
+            self.leaves.remove(&child);
+        }
+        self.leaves.extend(unique.iter().copied());
         Ok(unique.len())
     }
 }

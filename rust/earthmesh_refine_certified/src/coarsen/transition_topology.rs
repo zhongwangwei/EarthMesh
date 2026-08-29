@@ -15,6 +15,17 @@ pub struct TransitionTopologyLimits {
     pub maximum_halo_expansions: usize,
 }
 
+impl TransitionTopologyLimits {
+    pub fn solve_from_cursor(
+        self,
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        topology_states_cursor: usize,
+    ) -> TransitionTopologyOutcome {
+        solve_transition_topology_from_cursor(source, component, self, topology_states_cursor)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransitionBoundary {
     pub fine_outer_cycles: Vec<Vec<usize>>,
@@ -88,6 +99,15 @@ pub fn solve_transition_topology(
     component: &HierarchyComponent,
     limits: TransitionTopologyLimits,
 ) -> TransitionTopologyOutcome {
+    solve_transition_topology_from_cursor(source, component, limits, 0)
+}
+
+pub fn solve_transition_topology_from_cursor(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    limits: TransitionTopologyLimits,
+    topology_states_cursor: usize,
+) -> TransitionTopologyOutcome {
     let mut core = set(component.core_parents.iter().copied());
     let mut transition = set(component.transition_parents.iter().copied());
     if let Err(reason) = preflight(source, component, &core, &transition) {
@@ -141,20 +161,28 @@ pub fn solve_transition_topology(
             continue;
         }
 
+        if topology_states_cursor >= limits.topology_states {
+            return TransitionTopologyOutcome::SearchBudgetExhausted {
+                states_examined: limits.topology_states,
+                halo_expansions,
+            };
+        }
         if states_examined == limits.topology_states {
             return TransitionTopologyOutcome::SearchBudgetExhausted {
                 states_examined,
                 halo_expansions,
             };
         }
-        let remaining = limits.topology_states - states_examined;
+        let local_cursor = topology_states_cursor.saturating_sub(states_examined);
+        let local_limit = limits.topology_states - states_examined;
         match solve_once(
             source,
             component.id,
             core.clone(),
             transition.clone(),
             halo_expansions,
-            remaining,
+            local_cursor,
+            local_limit,
         ) {
             TransitionTopologyOutcome::Closed(mut trial) => {
                 trial.candidate.topology_id += states_examined;
@@ -341,6 +369,7 @@ fn solve_once(
     core: BTreeSet<TriangleAddress>,
     transition: BTreeSet<TriangleAddress>,
     halo_expansions: usize,
+    start_index: usize,
     budget: usize,
 ) -> TransitionTopologyOutcome {
     let mut states = 0usize;
@@ -412,6 +441,13 @@ fn solve_once(
     let total_candidates = variants
         .iter()
         .try_fold(1usize, |total, parent| total.checked_mul(parent.len()));
+    if mixed_radix_indices(start_index, &variants).is_none() {
+        return TransitionTopologyOutcome::ProvenInfeasible {
+            states_examined: total_candidates.expect("finite product when cursor is outside it"),
+            halo_expansions,
+            reason: "no transition triangulation passed hard topology gates".into(),
+        };
+    }
     let boundary = match boundary(source, &core, &transition) {
         Ok(boundary) => boundary,
         Err(reason) => return invalid(states, halo_expansions, reason),
@@ -426,6 +462,7 @@ fn solve_once(
         leaf_set: &leaf_set,
         transition: &custom_transition,
         variants: &variants,
+        start_index,
         budget,
         states: &mut states,
         forecast: &forecast,
@@ -479,6 +516,7 @@ struct ProductSearch<'a> {
     leaf_set: &'a HierarchyLeafSet,
     transition: &'a BTreeSet<TriangleAddress>,
     variants: &'a [Vec<Vec<[usize; 3]>>],
+    start_index: usize,
     budget: usize,
     states: &'a mut usize,
     forecast: &'a BTreeMap<usize, isize>,
@@ -495,11 +533,14 @@ struct SearchHit {
 
 impl ProductSearch<'_> {
     fn run(&mut self) {
+        *self.states = self.start_index;
         if *self.states >= self.budget {
             return;
         }
 
-        let mut indices = vec![0usize; self.variants.len()];
+        let Some(mut indices) = mixed_radix_indices(self.start_index, self.variants) else {
+            return;
+        };
         loop {
             let mut chosen_by_parent = BTreeMap::<TriangleAddress, Vec<[usize; 3]>>::new();
             let mut forecast = self.forecast.clone();
@@ -561,6 +602,22 @@ fn flatten_custom_triangles(
         .values()
         .flat_map(|triangles| triangles.iter().copied())
         .collect()
+}
+
+fn mixed_radix_indices(
+    mut ordinal: usize,
+    variants: &[Vec<Vec<[usize; 3]>>],
+) -> Option<Vec<usize>> {
+    let mut indices = vec![0usize; variants.len()];
+    for position in (0..variants.len()).rev() {
+        let radix = variants[position].len();
+        if radix == 0 {
+            return None;
+        }
+        indices[position] = ordinal % radix;
+        ordinal /= radix;
+    }
+    (ordinal == 0).then_some(indices)
 }
 
 fn advance_mixed_radix(indices: &mut [usize], variants: &[Vec<Vec<[usize; 3]>>]) -> bool {

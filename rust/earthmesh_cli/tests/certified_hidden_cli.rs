@@ -303,23 +303,28 @@ fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
 
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let certified = run.certified_run.unwrap();
-    assert!(certified.search_budget_exhausted);
     assert_eq!(certified.initial_mother_subdivision, 6);
     assert_eq!(certified.mother_subdivision, 6);
     assert_eq!(certified.initial_mother_cells, 720);
-    assert_eq!(certified.mother_cells, 718);
-    assert_eq!(certified.accepted_patches, 1);
-    assert_eq!(certified.removed_vertices, 1);
+    assert!(certified.fulfillment.mixed_levels_delivered);
+    assert!(certified.fulfillment.components_committed > 0);
     assert_eq!(certified.physical_residuals, 0);
     assert_eq!(certified.balance_residuals, 0);
+    assert_eq!(certified.remap_closure_errors, 0);
     let certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
     assert_eq!(
         certificate["coarsening_strategy"],
-        "mixed_finite_cavity_with_certified_block_relocation"
+        "elastic_component_epochs"
     );
     assert_eq!(certificate["delivered_level_min"], 0);
     assert_eq!(certificate["delivered_level_max"], 1);
+    assert!(
+        certificate["elastic_component_epochs"]["aggregate"]["components_committed"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     assert_eq!(
         certificate["physical_balance_scope"],
         "final_voronoi_cells_exact_raster_overlap"

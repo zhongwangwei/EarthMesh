@@ -10,7 +10,7 @@ fn repository_root() -> PathBuf {
 
 #[test]
 #[ignore = "real IGBP NXP80 acceptance takes several minutes"]
-fn real_igbp_nxp80_coupled_safe_mother_passes_every_hard_gate() {
+fn real_igbp_nxp80_coupled_reverse_coarsening_passes_every_hard_gate() {
     let repository = repository_root();
     let landtype = repository.join("input/landtype_igbp_update.nc");
     assert!(landtype.exists(), "missing {}", landtype.display());
@@ -33,11 +33,11 @@ fn real_igbp_nxp80_coupled_safe_mother_passes_every_hard_gate() {
              NL%landtype_file='{}'\n/\n\
              &mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  \
              RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  \
-             RL%max_iter_cal=1\n  RL%mask_refine_cal_type='bbox'\n  \
+             RL%max_iter_cal=3\n  RL%mask_refine_cal_type='bbox'\n  \
              RL%mask_refine_cal_fprefix='none'\n  RL%refine_num_landtypes=.true.\n  \
              RL%th_num_landtypes=1\n/\n\
-             &certified\n  NL%mode='safe_mother_only'\n  NL%delivery='coupled'\n  \
-             NL%maximum_level=1\n  NL%maximum_cells=1000000\n  \
+             &certified\n  NL%mode='reverse_coarsening'\n  NL%delivery='coupled'\n  \
+             NL%maximum_level=3\n  NL%maximum_cells=8192000\n  \
              NL%gradation_rings_per_level=3\n  NL%search_budget=100\n/\n",
             root.display(),
             landtype.display()
@@ -46,16 +46,32 @@ fn real_igbp_nxp80_coupled_safe_mother_passes_every_hard_gate() {
     .unwrap();
 
     let run =
-        earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 1_000_000, None).unwrap();
+        earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 8_192_000, None).unwrap();
     let certified = run.certified_run.unwrap();
-    assert_eq!(certified.chosen_level, 1);
-    assert_eq!(certified.mother_subdivision, 160);
-    assert_eq!(certified.mother_cells, 512_000);
+    assert_eq!(certified.chosen_level, 3);
+    assert!(certified.mother_cells < 8_192_000);
+    assert!(certified.fulfillment.delivered_level_min < 3);
+    assert_eq!(certified.fulfillment.delivered_level_max, 3);
     assert_eq!(certified.physical_residuals, 0);
     assert_eq!(certified.balance_residuals, 0);
     assert_eq!(certified.topology_errors, 0);
     assert_eq!(certified.dual_errors, 0);
     assert_eq!(certified.remap_closure_errors, 0);
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    assert_eq!(
+        certificate["coarsening_strategy"],
+        "elastic_component_epochs"
+    );
+    assert_eq!(certificate["physical_residuals"], 0);
+    assert_eq!(certificate["balance_residuals"], 0);
+    assert_eq!(certificate["remap_closure_errors"], 0);
+    assert!(
+        certificate["elastic_component_epochs"]["aggregate"]["components_committed"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     for path in [
         run.output.output,
         certified.remap,
