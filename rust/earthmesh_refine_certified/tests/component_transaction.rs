@@ -268,7 +268,7 @@ fn elastic_budget_is_scoped_to_each_topology_candidate() {
     };
 
     assert_eq!(report.stage, ComponentTransactionStage::Elastic);
-    assert_eq!(report.topology_states, 45);
+    assert_eq!(report.topology_states, 2);
     assert_eq!(report.elastic_iterations, 2);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
@@ -289,7 +289,7 @@ fn mixed_component_exhausts_all_uncertifiable_topologies_before_rollback() {
     };
 
     assert_eq!(report.stage, ComponentTransactionStage::Elastic);
-    assert_eq!(report.topology_states, 45);
+    assert_eq!(report.topology_states, 2);
     assert_eq!(report.elastic_iterations, 218);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);

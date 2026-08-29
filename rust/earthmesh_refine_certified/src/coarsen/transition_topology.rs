@@ -554,16 +554,6 @@ fn solve_once(
         variants.push(variants_for_parent);
     }
 
-    let total_candidates = variants
-        .iter()
-        .try_fold(1usize, |total, parent| total.checked_mul(parent.len()));
-    if mixed_radix_indices(start_index, &variants).is_none() {
-        return TransitionTopologyOutcome::ProvenInfeasible {
-            states_examined: total_candidates.expect("finite product when cursor is outside it"),
-            halo_expansions,
-            reason: "no transition triangulation passed hard topology gates".into(),
-        };
-    }
     let boundary = match boundary(source, &core, &transition) {
         Ok(boundary) => boundary,
         Err(reason) => return invalid(states, halo_expansions, reason),
@@ -573,6 +563,7 @@ fn solve_once(
         Err(reason) => return invalid(states, halo_expansions, reason),
     };
     let mut closed = None;
+    let mut enumeration_exhausted = false;
     ProductSearch {
         source,
         leaf_set: &leaf_set,
@@ -583,19 +574,20 @@ fn solve_once(
         states: &mut states,
         forecast: &forecast,
         closed: &mut closed,
+        enumeration_exhausted: &mut enumeration_exhausted,
     }
     .run();
     let Some(hit) = closed else {
-        if total_candidates.is_none_or(|total| states < total) {
-            return TransitionTopologyOutcome::SearchBudgetExhausted {
+        if enumeration_exhausted {
+            return TransitionTopologyOutcome::ProvenInfeasible {
                 states_examined: states,
                 halo_expansions,
+                reason: "no transition triangulation passed hard topology gates".into(),
             };
         }
-        return TransitionTopologyOutcome::ProvenInfeasible {
+        return TransitionTopologyOutcome::SearchBudgetExhausted {
             states_examined: states,
             halo_expansions,
-            reason: "no transition triangulation passed hard topology gates".into(),
         };
     };
 
@@ -638,6 +630,7 @@ struct ProductSearch<'a> {
     states: &'a mut usize,
     forecast: &'a BTreeMap<usize, isize>,
     closed: &'a mut Option<SearchHit>,
+    enumeration_exhausted: &'a mut bool,
 }
 
 struct SearchHit {
@@ -648,6 +641,17 @@ struct SearchHit {
     topology_id: usize,
 }
 
+struct SearchVariable {
+    original_position: usize,
+    variants: Vec<VariantChoice>,
+    touched: Vec<usize>,
+}
+
+struct VariantChoice {
+    variant_index: usize,
+    delta: Vec<(usize, isize)>,
+}
+
 impl ProductSearch<'_> {
     fn run(&mut self) {
         if self.start_index >= self.budget {
@@ -656,61 +660,376 @@ impl ProductSearch<'_> {
         }
         *self.states = self.start_index;
 
-        let Some(mut indices) = mixed_radix_indices(self.start_index, self.variants) else {
+        let mut forecast = DenseForecast::new(self.source.mesh.vertices().len(), self.forecast);
+        let mut chosen = vec![None; self.variants.len()];
+        let transition = self.transition.iter().copied().collect::<Vec<_>>();
+        let (variables, preassigned_touched) =
+            search_variables(self.variants, &transition, &mut chosen);
+        for position in chosen
+            .iter()
+            .enumerate()
+            .filter_map(|(position, chosen)| chosen.map(|_| position))
+        {
+            forecast.apply_triangles(&self.variants[position][0], 1);
+        }
+        let suffix_masks = suffix_degree_masks(&variables);
+        if !forecast.can_finish_all(&preassigned_touched, &suffix_masks[0]) {
+            *self.enumeration_exhausted = true;
+            *self.states = 0;
             return;
-        };
-        loop {
-            let mut chosen_by_parent = BTreeMap::<TriangleAddress, Vec<[usize; 3]>>::new();
-            let mut forecast = self.forecast.clone();
-            for ((parent, parent_variants), variant_index) in self
-                .transition
-                .iter()
-                .zip(self.variants)
-                .zip(indices.iter().copied())
-            {
-                let variant = parent_variants[variant_index].clone();
-                adjust_triangles(&mut forecast, &variant, 1);
-                chosen_by_parent.insert(*parent, variant);
-            }
-            let chosen = flatten_custom_triangles(&chosen_by_parent);
+        }
 
-            *self.states += 1;
-            if !forecast
-                .values()
-                .any(|&degree| degree != 0 && !(5..=7).contains(&degree))
-            {
-                if let Ok(mesh) =
-                    super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
-                        self.source,
-                        self.leaf_set,
-                        self.transition,
-                        &chosen,
-                    )
-                {
-                    if let Ok(()) = hard_gate(&mesh.mesh) {
-                        let degree_forecast = forecast
-                            .iter()
-                            .filter_map(|(&site, &degree)| {
-                                usize::try_from(degree).ok().map(|degree| (site, degree))
-                            })
-                            .collect();
-                        *self.closed = Some(SearchHit {
-                            mesh,
-                            triangles_by_parent: chosen_by_parent,
-                            triangles: chosen,
-                            degree_forecast,
-                            topology_id: *self.states - 1,
-                        });
+        let mut indices = vec![0usize; variables.len()];
+        let mut position = 0usize;
+        let mut feasible_ordinal = 0usize;
+
+        loop {
+            if position == variables.len() {
+                let touched = touched_vertices(&variables, &preassigned_touched);
+                if forecast.can_finish_all(&touched, &[]) {
+                    if feasible_ordinal >= self.budget {
+                        *self.states = self.budget;
                         return;
                     }
+                    if feasible_ordinal >= self.start_index {
+                        *self.states = feasible_ordinal.saturating_add(1);
+                        let chosen_by_parent = self.chosen_by_parent(&chosen);
+                        let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
+                        if let Ok(mesh) =
+                            super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
+                                self.source,
+                                self.leaf_set,
+                                self.transition,
+                                &chosen_triangles,
+                            )
+                        {
+                            if let Ok(()) = hard_gate(&mesh.mesh) {
+                                *self.closed = Some(SearchHit {
+                                    mesh,
+                                    triangles_by_parent: chosen_by_parent,
+                                    triangles: chosen_triangles,
+                                    degree_forecast: forecast.to_map(self.forecast),
+                                    topology_id: feasible_ordinal,
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    feasible_ordinal = feasible_ordinal.saturating_add(1);
                 }
+                if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                    *self.states = feasible_ordinal;
+                    *self.enumeration_exhausted = true;
+                    return;
+                }
+                continue;
             }
 
-            if *self.states >= self.budget || !advance_mixed_radix(&mut indices, self.variants) {
-                return;
+            if indices[position] == variables[position].variants.len() {
+                indices[position] = 0;
+                if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                    *self.states = feasible_ordinal;
+                    *self.enumeration_exhausted = true;
+                    return;
+                }
+                continue;
+            }
+
+            let choice_index = indices[position];
+            indices[position] += 1;
+            let variable = &variables[position];
+            let choice = &variable.variants[choice_index];
+            forecast.apply_delta(&choice.delta, 1);
+            if forecast.can_finish_all(&variable.touched, &suffix_masks[position + 1]) {
+                chosen[variable.original_position] = Some(choice.variant_index);
+                position += 1;
+                if position < indices.len() {
+                    indices[position] = 0;
+                }
+            } else {
+                forecast.apply_delta(&choice.delta, -1);
             }
         }
     }
+
+    fn chosen_by_parent(
+        &self,
+        chosen: &[Option<usize>],
+    ) -> BTreeMap<TriangleAddress, Vec<[usize; 3]>> {
+        self.transition
+            .iter()
+            .zip(self.variants)
+            .zip(chosen.iter().copied())
+            .map(|((parent, parent_variants), variant_index)| {
+                (
+                    *parent,
+                    parent_variants[variant_index.expect("complete candidate")].clone(),
+                )
+            })
+            .collect()
+    }
+}
+
+struct DenseForecast {
+    degrees: Vec<isize>,
+}
+
+impl DenseForecast {
+    fn new(vertex_count: usize, forecast: &BTreeMap<usize, isize>) -> Self {
+        let mut degrees = vec![0; vertex_count];
+        for (&vertex, &degree) in forecast {
+            degrees[vertex] = degree;
+        }
+        Self { degrees }
+    }
+
+    fn apply_triangles(&mut self, triangles: &[[usize; 3]], sign: isize) {
+        for vertex in triangles
+            .iter()
+            .flat_map(|triangle| triangle.iter().copied())
+        {
+            self.degrees[vertex] += sign;
+        }
+    }
+
+    fn apply_delta(&mut self, delta: &[(usize, isize)], sign: isize) {
+        for &(vertex, count) in delta {
+            self.degrees[vertex] += sign * count;
+        }
+    }
+
+    fn can_finish_all(&self, vertices: &[usize], suffix_masks: &[(usize, u128)]) -> bool {
+        vertices.iter().copied().all(|vertex| {
+            let mask = suffix_masks
+                .binary_search_by_key(&vertex, |&(candidate, _)| candidate)
+                .map(|index| suffix_masks[index].1)
+                .unwrap_or(1);
+            degree_mask_can_finish(self.degrees[vertex], mask)
+        })
+    }
+
+    fn to_map(&self, keys: &BTreeMap<usize, isize>) -> BTreeMap<usize, usize> {
+        keys.iter()
+            .filter_map(|(&site, _)| {
+                usize::try_from(self.degrees[site])
+                    .ok()
+                    .map(|degree| (site, degree))
+            })
+            .collect()
+    }
+}
+
+fn backtrack(
+    position: &mut usize,
+    forecast: &mut DenseForecast,
+    chosen: &mut [Option<usize>],
+    variables: &[SearchVariable],
+) -> bool {
+    if *position == 0 {
+        return false;
+    }
+    *position -= 1;
+    let variable = &variables[*position];
+    let variant_index = chosen[variable.original_position]
+        .take()
+        .expect("only entered positions can be backtracked");
+    let choice = variable
+        .variants
+        .iter()
+        .find(|choice| choice.variant_index == variant_index)
+        .expect("chosen variant belongs to the current search variable");
+    forecast.apply_delta(&choice.delta, -1);
+    true
+}
+
+fn search_variables(
+    variants: &[Vec<Vec<[usize; 3]>>],
+    parents: &[TriangleAddress],
+    chosen: &mut [Option<usize>],
+) -> (Vec<SearchVariable>, Vec<usize>) {
+    let mut fixed_touched = BTreeSet::new();
+    let mut pending = Vec::new();
+    for (position, parent_variants) in variants.iter().enumerate() {
+        if parent_variants.len() == 1 {
+            chosen[position] = Some(0);
+            fixed_touched.extend(triangle_vertices(&parent_variants[0]));
+        } else {
+            pending.push(SearchVariable {
+                original_position: position,
+                variants: parent_variants
+                    .iter()
+                    .enumerate()
+                    .map(|(variant_index, variant)| VariantChoice {
+                        variant_index,
+                        delta: triangle_delta(variant),
+                    })
+                    .collect(),
+                touched: parent_variants
+                    .iter()
+                    .flat_map(|variant| triangle_vertices(variant))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            });
+        }
+    }
+    let mut ordered = Vec::with_capacity(pending.len());
+    let mut frontier = fixed_touched.clone();
+    while !pending.is_empty() {
+        let best = pending
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| {
+                let left_shared = shared_count(&left.touched, &frontier);
+                let right_shared = shared_count(&right.touched, &frontier);
+                left_shared
+                    .cmp(&right_shared)
+                    .then_with(|| left.touched.len().cmp(&right.touched.len()))
+                    .then_with(|| {
+                        parents[right.original_position].cmp(&parents[left.original_position])
+                    })
+            })
+            .map(|(index, _)| index)
+            .unwrap();
+        let variable = pending.remove(best);
+        frontier.extend(variable.touched.iter().copied());
+        ordered.push(variable);
+    }
+    (ordered, fixed_touched.into_iter().collect())
+}
+
+fn shared_count(vertices: &[usize], frontier: &BTreeSet<usize>) -> usize {
+    vertices
+        .iter()
+        .filter(|vertex| frontier.contains(vertex))
+        .count()
+}
+
+fn touched_vertices(variables: &[SearchVariable], fixed: &[usize]) -> Vec<usize> {
+    fixed
+        .iter()
+        .copied()
+        .chain(
+            variables
+                .iter()
+                .flat_map(|variable| variable.touched.iter().copied()),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn suffix_degree_masks(variables: &[SearchVariable]) -> Vec<Vec<(usize, u128)>> {
+    let mut suffix = vec![Vec::new(); variables.len() + 1];
+    for position in (0..variables.len()).rev() {
+        suffix[position] = combine_suffix_masks(
+            &local_degree_masks(&variables[position]),
+            &suffix[position + 1],
+        );
+    }
+    suffix
+}
+
+fn local_degree_masks(variable: &SearchVariable) -> Vec<(usize, u128)> {
+    variable
+        .touched
+        .iter()
+        .copied()
+        .map(|vertex| {
+            let mask = variable.variants.iter().fold(0u128, |mask, choice| {
+                let count = choice
+                    .delta
+                    .binary_search_by_key(&vertex, |&(candidate, _)| candidate)
+                    .map(|index| choice.delta[index].1 as usize)
+                    .unwrap_or(0);
+                mask | (1u128 << count)
+            });
+            (vertex, mask)
+        })
+        .collect()
+}
+
+fn combine_suffix_masks(left: &[(usize, u128)], right: &[(usize, u128)]) -> Vec<(usize, u128)> {
+    let mut out = Vec::new();
+    let mut left_index = 0;
+    let mut right_index = 0;
+    while left_index < left.len() || right_index < right.len() {
+        let vertex = match (left.get(left_index), right.get(right_index)) {
+            (Some((left, _)), Some((right, _))) => (*left).min(*right),
+            (Some((left, _)), None) => *left,
+            (None, Some((right, _))) => *right,
+            (None, None) => unreachable!(),
+        };
+        let left_mask = if left.get(left_index).is_some_and(|&(v, _)| v == vertex) {
+            let mask = left[left_index].1;
+            left_index += 1;
+            mask
+        } else {
+            1
+        };
+        let right_mask = if right.get(right_index).is_some_and(|&(v, _)| v == vertex) {
+            let mask = right[right_index].1;
+            right_index += 1;
+            mask
+        } else {
+            1
+        };
+        let mask = convolve_degree_masks(left_mask, right_mask);
+        if mask != 1 {
+            out.push((vertex, mask));
+        }
+    }
+    out
+}
+
+fn convolve_degree_masks(left: u128, right: u128) -> u128 {
+    let mut out = 0u128;
+    let mut left_bits = left;
+    while left_bits != 0 {
+        let l = left_bits.trailing_zeros();
+        left_bits &= left_bits - 1;
+        let mut right_bits = right;
+        while right_bits != 0 {
+            let r = right_bits.trailing_zeros();
+            right_bits &= right_bits - 1;
+            let sum = l + r;
+            if sum < u128::BITS {
+                out |= 1u128 << sum;
+            }
+        }
+    }
+    out
+}
+
+fn degree_mask_can_finish(degree: isize, mask: u128) -> bool {
+    let mut bits = mask;
+    while bits != 0 {
+        let add = bits.trailing_zeros() as isize;
+        bits &= bits - 1;
+        let final_degree = degree + add;
+        if final_degree == 0 || (5..=7).contains(&final_degree) {
+            return true;
+        }
+    }
+    false
+}
+
+fn triangle_vertices(triangles: &[[usize; 3]]) -> BTreeSet<usize> {
+    triangles
+        .iter()
+        .flat_map(|triangle| triangle.iter().copied())
+        .collect()
+}
+
+fn triangle_delta(triangles: &[[usize; 3]]) -> Vec<(usize, isize)> {
+    let mut counts = BTreeMap::new();
+    for vertex in triangles
+        .iter()
+        .flat_map(|triangle| triangle.iter().copied())
+    {
+        *counts.entry(vertex).or_default() += 1;
+    }
+    counts.into_iter().collect()
 }
 
 fn flatten_custom_triangles(
@@ -722,22 +1041,7 @@ fn flatten_custom_triangles(
         .collect()
 }
 
-fn mixed_radix_indices(
-    mut ordinal: usize,
-    variants: &[Vec<Vec<[usize; 3]>>],
-) -> Option<Vec<usize>> {
-    let mut indices = vec![0usize; variants.len()];
-    for position in (0..variants.len()).rev() {
-        let radix = variants[position].len();
-        if radix == 0 {
-            return None;
-        }
-        indices[position] = ordinal % radix;
-        ordinal /= radix;
-    }
-    (ordinal == 0).then_some(indices)
-}
-
+#[cfg(test)]
 fn advance_mixed_radix(indices: &mut [usize], variants: &[Vec<Vec<[usize; 3]>>]) -> bool {
     for position in (0..indices.len()).rev() {
         indices[position] += 1;
@@ -1016,17 +1320,6 @@ fn adjust_source_triangles(
     Ok(())
 }
 
-fn adjust_triangles(forecast: &mut BTreeMap<usize, isize>, triangles: &[[usize; 3]], delta: isize) {
-    for vertex in triangles
-        .iter()
-        .flat_map(|triangle| triangle.iter().copied())
-    {
-        *forecast
-            .get_mut(&vertex)
-            .expect("transition candidate only uses removed source-patch vertices") += delta;
-    }
-}
-
 fn source_degree(source: &MotherGrid, vertex: usize) -> Result<isize, String> {
     match source.addresses.get(vertex).and_then(Option::as_ref) {
         Some(VertexAddress::IcosahedronVertex(_)) => Ok(5),
@@ -1259,6 +1552,62 @@ mod tests {
                 vec![1, 2],
             ]
         );
+    }
+
+    #[test]
+    fn degree_prefix_bounds_keep_later_repairable_candidates() {
+        let variants = vec![
+            vec![vec![[2, 3, 4]]],
+            vec![vec![[1, 5, 6]], vec![[2, 5, 6]]],
+        ];
+        let parents = [
+            TriangleAddress {
+                base_face: 0,
+                i: 0,
+                j: 0,
+                n: 1,
+                orientation: crate::mother_grid::TriangleOrientation::Up,
+            },
+            TriangleAddress {
+                base_face: 0,
+                i: 0,
+                j: 0,
+                n: 1,
+                orientation: crate::mother_grid::TriangleOrientation::Down,
+            },
+        ];
+        let mut chosen = vec![None; variants.len()];
+        let (variables, fixed) = search_variables(&variants, &parents, &mut chosen);
+        let suffix = suffix_degree_masks(&variables);
+        let mut forecast = DenseForecast::new(
+            7,
+            &BTreeMap::from([(1, 4), (2, 4), (3, 4), (4, 4), (5, 4), (6, 4)]),
+        );
+        for position in chosen
+            .iter()
+            .enumerate()
+            .filter_map(|(position, chosen)| chosen.map(|_| position))
+        {
+            forecast.apply_triangles(&variants[position][0], 1);
+        }
+        assert!(forecast.can_finish_all(&fixed, &suffix[0]));
+
+        let repair = variables[0]
+            .variants
+            .iter()
+            .find(|choice| choice.variant_index == 0)
+            .unwrap();
+        forecast.apply_delta(&repair.delta, 1);
+        assert!(forecast.can_finish_all(&variables[0].touched, &[]));
+        forecast.apply_delta(&repair.delta, -1);
+
+        let bad = variables[0]
+            .variants
+            .iter()
+            .find(|choice| choice.variant_index == 1)
+            .unwrap();
+        forecast.apply_delta(&bad.delta, 1);
+        assert!(!forecast.can_finish_all(&variables[0].touched, &[]));
     }
 
     #[test]

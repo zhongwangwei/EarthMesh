@@ -554,7 +554,7 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
 }
 
 #[test]
-fn topology_budget_exhaustion_advances_to_final_halo_before_failing() {
+fn degree_pruned_topology_search_resumes_across_halo_layouts() {
     let (fine, center, first_ring) = level_three_fixture();
     let mut core = vec![center];
     core.extend(first_ring.iter().copied());
@@ -582,18 +582,27 @@ fn topology_budget_exhaustion_advances_to_final_halo_before_failing() {
         maximum_halo_expansions: 1,
     };
 
+    let TransitionTopologyOutcome::Closed(first) =
+        solve_transition_topology(&fine, &component, limits)
+    else {
+        panic!("first degree-feasible topology candidate must close");
+    };
+    assert_eq!(first.report.topology_states, 1);
+    assert_eq!(first.report.halo_expansions, 0);
+
+    let TransitionTopologyOutcome::Closed(resumed) = limits.solve_from_cursor(&fine, &component, 1)
+    else {
+        panic!("resumed search must find the next degree-feasible candidate after halo expansion");
+    };
+    assert_eq!(resumed.report.topology_states, 2);
+    assert_eq!(resumed.report.halo_expansions, 1);
+    assert_ne!(first.candidate.topology_id, resumed.candidate.topology_id);
+
     assert!(matches!(
-        solve_transition_topology(&fine, &component, limits),
+        limits.solve_from_cursor(&fine, &component, 2),
         TransitionTopologyOutcome::SearchBudgetExhausted {
             states_examined: 2,
-            halo_expansions: 1,
-        }
-    ));
-    assert!(matches!(
-        limits.solve_from_cursor(&fine, &component, 1),
-        TransitionTopologyOutcome::SearchBudgetExhausted {
-            states_examined: 2,
-            halo_expansions: 1,
+            halo_expansions: 0,
         }
     ));
 }
