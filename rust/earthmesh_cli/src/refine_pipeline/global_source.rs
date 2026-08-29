@@ -1276,6 +1276,7 @@ struct CertifiedConstruction {
     pentagons: [usize; 12],
     remap: earthmesh_refine_certified::remap::ConservativeRemap,
     remap_certificate: earthmesh_refine_certified::remap::RemapCertificate,
+    final_cell_requirements: Option<earthmesh_refine_certified::FinalCellRequirementCertificate>,
     delivered_level: usize,
     delivered_levels: Vec<usize>,
     coarsening_strategy: &'static str,
@@ -1338,6 +1339,7 @@ fn build_certified_construction(
             pentagons,
             remap,
             remap_certificate,
+            final_cell_requirements: None,
             delivered_level: chosen_level,
             delivered_levels: vec![chosen_level; cell_count],
             coarsening_strategy: "none",
@@ -1444,6 +1446,7 @@ fn build_certified_construction(
                 geometry: mesh,
                 remap,
                 remap_certificate,
+                final_cell_requirements: None,
                 delivered_level: chosen_level,
                 initial_subdivision,
                 final_subdivision: certified_subdivision(base_nxp, chosen_level)?,
@@ -1481,6 +1484,7 @@ fn build_certified_construction(
                 pentagons,
                 remap,
                 remap_certificate,
+                final_cell_requirements: None,
                 delivered_level: initial_level,
                 delivered_levels: vec![initial_level; cell_count],
                 coarsening_strategy: "retained_fine_mother_after_budget_exhaustion",
@@ -1565,16 +1569,14 @@ fn build_mixed_certified_construction(
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let active_sites = initial_mesh.active_vertex_slots().collect::<Vec<_>>();
-    let cell_by_site = active_sites
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(cell, site)| (site, cell))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut cell_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
+    for (cell, &site) in active_sites.iter().enumerate() {
+        cell_by_site[site] = cell;
+    }
     let mut adjacency = vec![Vec::new(); active_sites.len()];
     for (left, right) in earthmesh_refine_certified::requirement::target_site_edges(&initial_mesh) {
-        let left = cell_by_site[&left];
-        let right = cell_by_site[&right];
+        let left = cell_by_site[left];
+        let right = cell_by_site[right];
         adjacency[left].push(right);
         adjacency[right].push(left);
     }
@@ -1655,16 +1657,43 @@ fn build_mixed_certified_construction(
             delivered_by_site[site].expect("active mixed CMRC site retained a delivered level")
         })
         .collect::<Vec<_>>();
-    let remap = earthmesh_refine_certified::remap::ConservativeRemap::between_voronoi_meshes(
-        &initial_mesh,
-        &mesh,
-    )
-    .map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("CMRC mixed Voronoi remap failed: {error}"),
+    let final_cell_requirements = if mesh == initial_mesh
+        && delivered_levels.iter().all(|&level| level == chosen_level)
+    {
+        projected
+    } else {
+        let final_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
+            &mesh,
+            delivered_levels.clone(),
         )
-    })?;
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
+            raster_requirements,
+            &mesh,
+            &final_levels,
+            1,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC final-cell certification failed: {error}"),
+            )
+        })?
+    };
+    let remap = if initial_mesh == mesh {
+        earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(&mesh)
+    } else {
+        earthmesh_refine_certified::remap::ConservativeRemap::between_voronoi_meshes(
+            &initial_mesh,
+            &mesh,
+        )
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC mixed Voronoi remap failed: {error}"),
+            )
+        })?
+    };
     let remap_certificate =
         remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
     let geometry = match earthmesh_refine_certified::certify_geometry(mesh) {
@@ -1687,6 +1716,7 @@ fn build_mixed_certified_construction(
         geometry,
         remap,
         remap_certificate,
+        final_cell_requirements: Some(final_cell_requirements),
     })
 }
 
@@ -1795,6 +1825,7 @@ fn run_certified_pipeline(
         pentagons,
         remap,
         remap_certificate,
+        final_cell_requirements,
         delivered_level,
         delivered_levels,
         coarsening_strategy,
@@ -1818,28 +1849,23 @@ fn run_certified_pipeline(
         delivered_levels,
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let final_cell_requirements =
-        if coarsening_strategy == "mixed_finite_cavity_with_certified_block_relocation" {
-            earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
-                &raster_requirements,
-                geometry.primal(),
-                &delivered_levels,
-                1,
-            )
-        } else {
+    let final_cell_requirements = match final_cell_requirements {
+        Some(requirements) => requirements,
+        None => {
             earthmesh_refine_certified::certify_final_cell_requirements_from_raster_global_bound(
                 &raster_requirements,
                 geometry.primal(),
                 &delivered_levels,
                 1,
             )
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("CMRC final-cell certification failed: {error}"),
+                )
+            })?
         }
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("CMRC final-cell certification failed: {error}"),
-            )
-        })?;
+    };
     let evidence = earthmesh_refine_certified::FinalCertificationEvidence::from_final_cells(
         &final_cell_requirements,
         remap_certificate,

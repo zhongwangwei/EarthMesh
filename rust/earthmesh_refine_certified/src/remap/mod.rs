@@ -5,7 +5,8 @@ use earthmesh_geometry::{
     spherical_convex_overlap_fraction, try_spherical_polygon_excess, Point, SphericalAreaBranch,
 };
 use earthmesh_mesh::{spherical_triangle_area_unit, MeshState};
-use std::collections::{BTreeMap, BTreeSet};
+use rayon::prelude::*;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemapRow {
@@ -149,37 +150,46 @@ impl ConservativeRemap {
         let sources = to_points(source_cells)?;
         let targets = to_points(target_cells)?;
         let index = SphericalCapIndex::new(&sources)?;
-        let mut rows = Vec::with_capacity(targets.len());
-        let mut coverage_error = 0.0_f64;
-        for (target, target_ring) in targets.iter().enumerate() {
-            let target_cap = SphericalCap::for_rings(std::slice::from_ref(target_ring))
-                .ok_or_else(|| format!("target cell {target} has no spherical cap"))?;
-            let mut overlaps = Vec::new();
-            for source in index.candidates(target_cap) {
-                if !target_cap.overlaps(index.caps[source]) {
-                    continue;
+        let rows = targets
+            .par_iter()
+            .enumerate()
+            .map(|(target, target_ring)| {
+                let target_cap = SphericalCap::for_rings(std::slice::from_ref(target_ring))
+                    .ok_or_else(|| format!("target cell {target} has no spherical cap"))?;
+                let mut overlaps = Vec::new();
+                for source in index.candidates(target_cap) {
+                    if !target_cap.overlaps(index.caps[source]) {
+                        continue;
+                    }
+                    let fraction = spherical_convex_overlap_fraction(target_ring, &sources[source])
+                        .map_err(|error| {
+                            format!(
+                                "source {source} {:?} and target {target} {:?} overlap failed: {error}",
+                                source_cells[source], target_cells[target]
+                            )
+                        })?;
+                    if fraction > 1.0e-14 {
+                        overlaps.push((source, fraction));
+                    }
                 }
-                let fraction = spherical_convex_overlap_fraction(target_ring, &sources[source])
-                    .map_err(|error| {
-                        format!("source {source} and target {target} overlap failed: {error}")
-                    })?;
-                if fraction > 1.0e-14 {
-                    overlaps.push((source, fraction));
+                let covered = compensated_sum(overlaps.iter().map(|(_, weight)| *weight));
+                if !covered.is_finite() || covered <= 0.0 {
+                    return Err(format!("target cell {target} has no source overlap"));
                 }
-            }
-            let covered = compensated_sum(overlaps.iter().map(|(_, weight)| *weight));
-            if !covered.is_finite() || covered <= 0.0 {
-                return Err(format!("target cell {target} has no source overlap"));
-            }
-            coverage_error = coverage_error.max((covered - 1.0).abs());
-            for (_, weight) in &mut overlaps {
-                *weight /= covered;
-            }
-            rows.push(RemapRow {
-                target,
-                sources: overlaps,
-            });
-        }
+                for (_, weight) in &mut overlaps {
+                    *weight /= covered;
+                }
+                Ok((
+                    RemapRow {
+                        target,
+                        sources: overlaps,
+                    },
+                    (covered - 1.0).abs(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let coverage_error = rows.iter().map(|(_, error)| *error).fold(0.0_f64, f64::max);
+        let rows = rows.into_iter().map(|(row, _)| row).collect();
         Ok(Self {
             rows,
             coverage_error,
@@ -321,25 +331,52 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
 }
 
 pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, String> {
+    let mut seeds = vec![usize::MAX; mesh.vertices().len()];
+    for triangle in mesh.active_triangle_slots() {
+        for site in mesh.triangles()[triangle] {
+            if seeds[site] == usize::MAX {
+                seeds[site] = triangle;
+            }
+        }
+    }
+    let mut corners = vec![(0.0, 0.0); mesh.triangles().len()];
+    corners.par_iter_mut().enumerate().try_for_each(
+        |(triangle, corner)| -> Result<(), String> {
+            if !mesh.is_triangle_live(triangle) {
+                return Ok(());
+            }
+            let point = mesh.circumcentre(triangle).map_err(|error| {
+                format!("Voronoi triangle {triangle} cannot be remapped: {error}")
+            })?;
+            let radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+            if !radius.is_finite() || radius <= 0.0 {
+                return Err(format!(
+                    "Voronoi triangle {triangle} has a non-finite corner"
+                ));
+            }
+            let point = [point.x / radius, point.y / radius, point.z / radius];
+            *corner = (
+                point[1].atan2(point[0]).to_degrees(),
+                point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+            );
+            Ok(())
+        },
+    )?;
     mesh.active_vertex_slots()
+        .collect::<Vec<_>>()
+        .into_par_iter()
         .map(|site| {
-            let cell = mesh
-                .voronoi_cell(site)
-                .map_err(|error| format!("Voronoi cell {site} cannot be remapped: {error}"))?;
-            cell.corners
+            let seed = seeds[site];
+            if seed == usize::MAX {
+                return Err(format!("Voronoi cell {site} is in no triangle"));
+            }
+            let ring = mesh
+                .triangle_fan_from(site, seed)
+                .map_err(|error| format!("Voronoi cell {site} cannot be remapped: {error}"))?
                 .into_iter()
-                .map(|point| {
-                    let radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
-                    if !radius.is_finite() || radius <= 0.0 {
-                        return Err(format!("Voronoi cell {site} has a non-finite corner"));
-                    }
-                    let point = [point.x / radius, point.y / radius, point.z / radius];
-                    Ok((
-                        point[1].atan2(point[0]).to_degrees(),
-                        point[2].clamp(-1.0, 1.0).asin().to_degrees(),
-                    ))
-                })
-                .collect()
+                .map(|triangle| corners[triangle])
+                .collect::<Vec<_>>();
+            Ok(ring)
         })
         .collect()
 }
@@ -377,11 +414,14 @@ impl SphericalCapIndex {
         })
     }
 
-    fn candidates(&self, cap: SphericalCap) -> BTreeSet<usize> {
-        cap_bins(cap, self.nlon, self.nlat)
+    fn candidates(&self, cap: SphericalCap) -> Vec<usize> {
+        let mut candidates = cap_bins(cap, self.nlon, self.nlat)
             .into_iter()
             .flat_map(|bin| self.bins[bin].iter().copied())
-            .collect()
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
     }
 }
 
@@ -443,4 +483,31 @@ fn active_faces(grid: &MotherGrid) -> Option<Vec<(usize, TriangleAddress, f64)>>
             (area.is_finite() && area > 0.0).then_some((slot, address, area))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voronoi_ring_order_matches_the_scanned_cell_path() {
+        let grid = MotherGrid::generate(2).unwrap();
+        let rings = voronoi_rings(&grid.mesh).unwrap();
+        for (cell, site) in grid.mesh.active_vertex_slots().enumerate() {
+            let scanned = grid.mesh.voronoi_cell(site).unwrap();
+            let expected = scanned
+                .corners
+                .into_iter()
+                .map(|point| {
+                    let radius = (point.x * point.x + point.y * point.y + point.z * point.z).sqrt();
+                    let point = [point.x / radius, point.y / radius, point.z / radius];
+                    (
+                        point[1].atan2(point[0]).to_degrees(),
+                        point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(rings[cell], expected);
+        }
+    }
 }

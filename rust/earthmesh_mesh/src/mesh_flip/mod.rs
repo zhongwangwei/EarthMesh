@@ -213,6 +213,16 @@ impl MeshState {
         seed: &BTreeSet<usize>,
         allowed: Option<&BTreeSet<usize>>,
     ) -> Result<usize, FlipError> {
+        self.legalize_within_with_touched(seed, allowed)
+            .map(|(flips, _)| flips)
+    }
+
+    /// The bounded legalization together with the rows it may have rewritten.
+    pub fn legalize_within_with_touched(
+        &mut self,
+        seed: &BTreeSet<usize>,
+        allowed: Option<&BTreeSet<usize>>,
+    ) -> Result<(usize, BTreeSet<usize>), FlipError> {
         // Generous, and a bound rather than a guess: Lawson's argument says
         // this terminates, so hitting the cap means the premise failed and the
         // caller should hear about it rather than get a partial repair.
@@ -223,6 +233,7 @@ impl MeshState {
             .copied()
             .filter(|&triangle| self.is_triangle_live(triangle))
             .collect();
+        let mut touched = pending.iter().copied().collect::<BTreeSet<_>>();
         let mut flips = 0usize;
         while let Some(triangle) = pending.pop() {
             if !self.is_triangle_live(triangle) {
@@ -241,6 +252,15 @@ impl MeshState {
                         });
                     }
                 }
+                for face in [triangle, neighbour] {
+                    touched.insert(face);
+                    touched.extend(
+                        self.neighbours()[face]
+                            .iter()
+                            .copied()
+                            .filter(|&other| self.is_triangle_live(other)),
+                    );
+                }
                 match self.flip_edge(triangle, corner) {
                     Ok(()) => {}
                     // A non-convex quadrilateral cannot be turned, and leaving
@@ -256,6 +276,13 @@ impl MeshState {
                 // Both triangles changed shape, so both need re-checking, and
                 // so does whatever now lies across their edges.
                 for face in [triangle, neighbour] {
+                    touched.insert(face);
+                    touched.extend(
+                        self.neighbours()[face]
+                            .iter()
+                            .copied()
+                            .filter(|&other| self.is_triangle_live(other)),
+                    );
                     pending.push(face);
                     pending.extend(
                         self.neighbours()[face]
@@ -267,7 +294,7 @@ impl MeshState {
                 break;
             }
         }
-        Ok(flips)
+        Ok((flips, touched))
     }
 }
 

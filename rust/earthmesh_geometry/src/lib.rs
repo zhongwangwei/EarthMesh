@@ -145,24 +145,25 @@ fn unit_from_lon_lat(vertex: usize, lon: f64, lat: f64) -> Result<[f64; 3], Sphe
 }
 
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    a[0].mul_add(b[0], a[1].mul_add(b[1], a[2] * b[2]))
+}
+
+fn difference_of_products(a: f64, b: f64, c: f64, d: f64) -> f64 {
+    let left = a * b;
+    let right = c * d;
+    (left - right) + (a.mul_add(b, -left) - c.mul_add(d, -right))
 }
 
 fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
+        difference_of_products(a[1], b[2], a[2], b[1]),
+        difference_of_products(a[2], b[0], a[0], b[2]),
+        difference_of_products(a[0], b[1], a[1], b[0]),
     ]
 }
 
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
-}
-
-fn determinant3(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
-    a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-        + a[2] * (b[0] * c[1] - b[1] * c[0])
 }
 
 fn angle3(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -185,6 +186,12 @@ fn checked_spherical_polygon_units<T>(
         .collect()
 }
 
+fn same_unit_vertex(left: [f64; 3], right: [f64; 3]) -> bool {
+    left.into_iter()
+        .zip(right)
+        .all(|(left, right)| (left - right).abs() <= 4.0 * f64::EPSILON)
+}
+
 fn effective_ring_len(
     original_len: usize,
     unit_at: impl Copy + Fn(usize) -> Result<[f64; 3], SphericalPolygonError>,
@@ -195,7 +202,7 @@ fn effective_ring_len(
         });
     }
     let mut count = original_len;
-    if count > 1 && dot3(unit_at(0)?, unit_at(count - 1)?) >= 1.0 - 1.0e-14 {
+    if count > 1 && same_unit_vertex(unit_at(0)?, unit_at(count - 1)?) {
         count -= 1;
     }
     if count < 3 {
@@ -212,7 +219,7 @@ fn raw_spherical_polygon_excess_by_index(
     let count = effective_ring_len(original_len, unit_at)?;
     for index in 0..count {
         let edge_dot = dot3(unit_at(index)?, unit_at((index + 1) % count)?);
-        if edge_dot >= 1.0 - 1.0e-14 {
+        if same_unit_vertex(unit_at(index)?, unit_at((index + 1) % count)?) {
             return Err(SphericalPolygonError::DuplicateConsecutiveVertex {
                 start_vertex: index,
             });
@@ -229,7 +236,13 @@ fn raw_spherical_polygon_excess_by_index(
     for index in 1..count - 1 {
         let b = unit_at(index)?;
         let c = unit_at(index + 1)?;
-        let numerator = determinant3(anchor, b, c);
+        let numerator = dot3(
+            anchor,
+            cross3(
+                [b[0] - anchor[0], b[1] - anchor[1], b[2] - anchor[2]],
+                [c[0] - anchor[0], c[1] - anchor[1], c[2] - anchor[2]],
+            ),
+        );
         let denominator = 1.0 + dot3(anchor, b) + dot3(b, c) + dot3(c, anchor);
         if numerator.abs() <= 64.0 * f64::EPSILON && denominator.abs() <= 64.0 * f64::EPSILON {
             return Err(SphericalPolygonError::AmbiguousTriangulation { vertex: index + 1 });
@@ -313,13 +326,17 @@ fn normalized_signed_minor_excess(raw: f64) -> Result<f64, SphericalPolygonError
     }
     let half_sphere = 2.0 * std::f64::consts::PI;
     let full_sphere = 2.0 * half_sphere;
-    let normalized = (raw + half_sphere).rem_euclid(full_sphere) - half_sphere;
-    let signed_minor = if normalized == -half_sphere && raw > 0.0 {
-        half_sphere
+    let signed_minor = if (-half_sphere..=half_sphere).contains(&raw) {
+        raw
     } else {
-        normalized
+        let normalized = (raw + half_sphere).rem_euclid(full_sphere) - half_sphere;
+        if normalized == -half_sphere && raw > 0.0 {
+            half_sphere
+        } else {
+            normalized
+        }
     };
-    if signed_minor.abs() <= 64.0 * f64::EPSILON {
+    if signed_minor == 0.0 {
         Err(SphericalPolygonError::DegenerateArea)
     } else {
         Ok(signed_minor)
@@ -348,7 +365,7 @@ pub fn try_spherical_polygon_signed_minor_excess_fast<T>(
 /// Validate a directed ring and return both spherical complement candidates.
 pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, SphericalPolygonError> {
     let raw = raw_spherical_polygon_excess(ring)?;
-    if raw.abs() <= 64.0 * f64::EPSILON {
+    if raw == 0.0 {
         return Err(SphericalPolygonError::DegenerateArea);
     }
     let half_sphere = 2.0 * std::f64::consts::PI;
@@ -360,9 +377,9 @@ pub fn try_spherical_polygon_area(ring: &[Point]) -> Result<SphericalArea, Spher
         minor_sr: minor,
         major_complement_sr: full_sphere - minor,
         oriented_left_sr: raw.rem_euclid(full_sphere),
-        winding: if signed_minor > 64.0 * f64::EPSILON {
+        winding: if signed_minor > 0.0 {
             SphericalWinding::CounterClockwise
-        } else if signed_minor < -64.0 * f64::EPSILON {
+        } else if signed_minor < 0.0 {
             SphericalWinding::Clockwise
         } else {
             SphericalWinding::Indeterminate
@@ -421,7 +438,7 @@ fn great_circle_boundary_intersection(
     normal: [f64; 3],
     sign: f64,
 ) -> Option<[f64; 3]> {
-    const BOUNDARY_TOLERANCE: f64 = 1.0e-14;
+    const BOUNDARY_TOLERANCE: f64 = 4.0 * f64::EPSILON;
     let side = |point| sign * dot3(normal, point);
     let start_side = side(start);
     let end_side = side(end);
@@ -434,48 +451,34 @@ fn great_circle_boundary_intersection(
     if start_side.signum() == end_side.signum() {
         return None;
     }
-    let (mut inside_point, mut outside_point) = if start_side > 0.0 {
-        (start, end)
-    } else {
-        (end, start)
-    };
-    for _ in 0..64 {
-        let midpoint = normalize3([
-            inside_point[0] + outside_point[0],
-            inside_point[1] + outside_point[1],
-            inside_point[2] + outside_point[2],
-        ])?;
-        if side(midpoint) >= 0.0 {
-            inside_point = midpoint;
-        } else {
-            outside_point = midpoint;
-        }
+    let mut intersection = normalize3(cross3(cross3(start, end), normal))?;
+    if dot3(
+        intersection,
+        [start[0] + end[0], start[1] + end[1], start[2] + end[2]],
+    ) < 0.0
+    {
+        intersection = [-intersection[0], -intersection[1], -intersection[2]];
     }
-    normalize3([
-        inside_point[0] + outside_point[0],
-        inside_point[1] + outside_point[1],
-        inside_point[2] + outside_point[2],
-    ])
+    Some(intersection)
 }
 
 fn deduplicate_spherical_vertices(vertices: &mut Vec<[f64; 3]>) {
-    vertices.dedup_by(|left, right| dot3(*left, *right) >= 1.0 - 1.0e-13);
+    vertices.dedup_by(|left, right| same_unit_vertex(*left, *right));
     if vertices.len() > 1
-        && dot3(vertices[0], *vertices.last().expect("non-empty vertices")) >= 1.0 - 1.0e-13
+        && same_unit_vertex(vertices[0], *vertices.last().expect("non-empty vertices"))
     {
         vertices.pop();
     }
 }
 
-/// Exact great-circle half-space clipping for compact convex spherical cells.
-pub fn spherical_convex_intersection(
+fn spherical_convex_intersection_units(
     subject: &[Point],
     clip: &[Point],
-) -> Result<Vec<Point>, SphericalPolygonError> {
+) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
     try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
     try_spherical_polygon_excess(clip, SphericalAreaBranch::Minor)?;
     let mut output = checked_spherical_polygon_units(subject, |point| (point.x, point.y))?;
-    convex_clip_planes(&output)?;
+    let subject_planes = convex_clip_planes(&output)?;
     let clip_vertices = checked_spherical_polygon_units(clip, |point| (point.x, point.y))?;
     let planes = convex_clip_planes(&clip_vertices)?;
     for (normal, sign) in planes {
@@ -505,7 +508,32 @@ pub fn spherical_convex_intersection(
             return Ok(Vec::new());
         }
     }
-    Ok(output
+    for clip_vertex in clip_vertices {
+        if subject_planes
+            .iter()
+            .all(|(normal, sign)| sign * dot3(*normal, clip_vertex) >= 0.0)
+        {
+            for point in &mut output {
+                if point
+                    .iter()
+                    .zip(clip_vertex)
+                    .all(|(point, vertex)| (*point - vertex).abs() <= 1.0e-12)
+                {
+                    *point = clip_vertex;
+                }
+            }
+        }
+    }
+    deduplicate_spherical_vertices(&mut output);
+    Ok(output)
+}
+
+/// Exact great-circle half-space clipping for compact convex spherical cells.
+pub fn spherical_convex_intersection(
+    subject: &[Point],
+    clip: &[Point],
+) -> Result<Vec<Point>, SphericalPolygonError> {
+    Ok(spherical_convex_intersection_units(subject, clip)?
         .into_iter()
         .map(|point| {
             Point::new(
@@ -522,12 +550,14 @@ pub fn spherical_convex_overlap_fraction(
     clip: &[Point],
 ) -> Result<f64, SphericalPolygonError> {
     let subject_area = try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
-    let intersection = spherical_convex_intersection(subject, clip)?;
+    let intersection = spherical_convex_intersection_units(subject, clip)?;
     if intersection.len() < 3 {
         return Ok(0.0);
     }
-    let area = match try_spherical_polygon_excess(&intersection, SphericalAreaBranch::Minor) {
-        Ok(area) => area,
+    let area = match raw_spherical_polygon_excess_from_units(&intersection)
+        .and_then(normalized_signed_minor_excess)
+    {
+        Ok(area) => area.abs(),
         Err(SphericalPolygonError::DegenerateArea) => return Ok(0.0),
         Err(error) => return Err(error),
     };
@@ -1215,9 +1245,10 @@ mod tests {
     use super::{
         intersection_area, normalize_delta_lon_radians, polygon_area,
         polygon_triple_intersection_area_even_odd, polygon_union_area,
-        signed_spherical_polygon_excess, spherical_polygon_area_km2, try_spherical_polygon_area,
-        try_spherical_polygon_excess, try_spherical_polygon_signed_minor_excess_fast, Point,
-        SphericalAreaBranch, SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
+        signed_spherical_polygon_excess, spherical_convex_overlap_fraction,
+        spherical_polygon_area_km2, try_spherical_polygon_area, try_spherical_polygon_excess,
+        try_spherical_polygon_signed_minor_excess_fast, Point, SphericalAreaBranch,
+        SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
     };
 
     #[test]
@@ -1554,6 +1585,104 @@ mod tests {
             Err(SphericalPolygonError::DegenerateArea)
         );
         assert_eq!(signed_spherical_polygon_excess(&degenerate), 0.0);
+    }
+
+    #[test]
+    fn spherical_overlap_keeps_narrow_partition_slivers() {
+        let coverage = |target: &[(f64, f64)], sources: &[(f64, f64, f64, f64)]| {
+            let target = target
+                .iter()
+                .map(|&(lon, lat)| Point::new(lon, lat))
+                .collect::<Vec<_>>();
+            sources
+                .iter()
+                .map(|&(west, south, east, north)| {
+                    let source = [
+                        Point::new(west, south),
+                        Point::new(east, south),
+                        Point::new(east, north),
+                        Point::new(west, north),
+                    ];
+                    spherical_convex_overlap_fraction(&target, &source).unwrap()
+                })
+                .sum::<f64>()
+        };
+        let low_latitude = [
+            (-0.05814442925492627, -23.500064666250225),
+            (-0.031464771249952686, -23.534108783683095),
+            (0.03146477124995411, -23.534108783683095),
+            (0.058144429254925564, -23.50006466625022),
+            (0.031436741222662275, -23.441027570664808),
+            (-0.03143674122266298, -23.441027570664804),
+        ];
+        let low_latitude_sources = [
+            (-0.5, -24.0, 0.0, -23.5),
+            (0.0, -24.0, 0.5, -23.5),
+            (-0.5, -23.5, 0.0, -23.0),
+            (0.0, -23.5, 0.5, -23.0),
+        ];
+        let high_latitude = [
+            (-121.22806925981378, -63.487115663405426),
+            (-121.24656353669106, -63.547140554187),
+            (-121.12225617568596, -63.58454445058305),
+            (-121.01425375158166, -63.56118347800233),
+            (-120.99623637332131, -63.50112108113147),
+            (-121.12033150457974, -63.46383063767627),
+        ];
+        let high_latitude_sources = [
+            (-121.5, -64.0, -121.0, -63.5),
+            (-121.0, -64.0, -120.5, -63.5),
+            (-121.5, -63.5, -121.0, -63.0),
+            (-121.0, -63.5, -120.5, -63.0),
+        ];
+        let grid_vertex = [
+            (-43.07239715795721, 23.9883308622513),
+            (-42.99810428014891, 23.996373690182917),
+            (-42.9703838852658, 24.056793743389697),
+            (-43.012751391355195, 24.109460548837014),
+            (-43.087110494724854, 24.10141045178719),
+            (-43.11478492077168, 24.040970851954917),
+        ];
+        let grid_vertex_sources = [
+            (-43.5, 23.5, -43.0, 24.0),
+            (-43.0, 23.5, -42.5, 24.0),
+            (-43.5, 24.0, -43.0, 24.5),
+            (-43.0, 24.0, -42.5, 24.5),
+        ];
+
+        for (target, sources) in [
+            (&low_latitude[..], &low_latitude_sources[..]),
+            (&high_latitude[..], &high_latitude_sources[..]),
+            (&grid_vertex[..], &grid_vertex_sources[..]),
+        ] {
+            let covered = coverage(target, sources);
+            assert!((covered - 1.0).abs() < 1.0e-11, "coverage={covered}");
+        }
+
+        let polar_target = [
+            (116.595651054282, 89.9381235342476),
+            (180.0, 89.93810311936484),
+            (-116.595651054282, 89.9381235342476),
+            (-63.40434894571801, 89.9381235342476),
+            (-0.0, 89.93810311936484),
+            (63.40434894571801, 89.9381235342476),
+        ]
+        .map(|(lon, lat)| Point::new(lon, lat));
+        let polar_coverage = (0..720)
+            .map(|index| {
+                let west = -180.0 + f64::from(index) * 0.5;
+                let source = [
+                    Point::new(west, 89.5),
+                    Point::new(west + 0.5, 89.5),
+                    Point::new(0.0, 90.0),
+                ];
+                spherical_convex_overlap_fraction(&polar_target, &source).unwrap()
+            })
+            .sum::<f64>();
+        assert!(
+            (polar_coverage - 1.0).abs() < 1.0e-11,
+            "coverage={polar_coverage}"
+        );
     }
 
     #[test]

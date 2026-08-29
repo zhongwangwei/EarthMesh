@@ -12,6 +12,7 @@ use earthmesh_mesh::{
     cross, magnitude, CartesianPoint, MeshState, RetirementPostconditionOutcome, RetirementReport,
     RetirementSearchOutcome,
 };
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const BLOCK_RELOCATION_STEPS: usize = 64;
@@ -62,6 +63,7 @@ pub enum HierarchyRebuildOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoarseningPatch {
     pub vertex: usize,
+    pub seed_face: usize,
     pub address: VertexAddress,
     pub level: usize,
     pub parent_faces: Vec<TriangleAddress>,
@@ -279,15 +281,13 @@ pub fn promote_blocked_transition_halos(
         .count();
 
     let active_sites = mesh.active_vertex_slots().collect::<Vec<_>>();
-    let cell_by_site = active_sites
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(cell, site)| (site, cell))
-        .collect::<BTreeMap<_, _>>();
+    let mut cell_by_site = vec![usize::MAX; mesh.vertices().len()];
+    for (cell, &site) in active_sites.iter().enumerate() {
+        cell_by_site[site] = cell;
+    }
     let mut adjacency = vec![Vec::new(); active_sites.len()];
     for (left, right) in target_site_edges(mesh) {
-        let (&left, &right) = (&cell_by_site[&left], &cell_by_site[&right]);
+        let (left, right) = (cell_by_site[left], cell_by_site[right]);
         adjacency[left].push(right);
         adjacency[right].push(left);
     }
@@ -320,11 +320,20 @@ pub fn coarsening_patch_candidates(
     coarse_level: usize,
 ) -> Vec<CoarseningPatch> {
     let level = usize::from(grid.subdivision > 1);
+    let mut seeds = vec![usize::MAX; grid.mesh.vertices().len()];
+    for face in grid.mesh.active_triangle_slots() {
+        for site in grid.mesh.triangles()[face] {
+            if seeds[site] == usize::MAX {
+                seeds[site] = face;
+            }
+        }
+    }
     let mut patches = removable_hierarchy_sites(grid)
-        .into_iter()
+        .into_par_iter()
         .filter_map(|vertex| {
             let address = grid.addresses.get(vertex)?.as_ref()?.clone();
-            let fan = grid.mesh.triangle_fan(vertex).ok()?;
+            let seed_face = seeds[vertex];
+            let fan = grid.mesh.triangle_fan_from(vertex, seed_face).ok()?;
             let boundary_cycle = retirement_ring(&grid.mesh, vertex, &fan)?;
             let mut parent_faces = fan
                 .iter()
@@ -342,6 +351,7 @@ pub fn coarsening_patch_candidates(
             let transition_halo = outside_faces(&grid.mesh, vertex, &fan);
             Some(CoarseningPatch {
                 vertex,
+                seed_face,
                 address,
                 level,
                 parent_faces,
@@ -353,7 +363,7 @@ pub fn coarsening_patch_candidates(
             })
         })
         .collect::<Vec<_>>();
-    patches.sort_by(|left, right| {
+    patches.par_sort_unstable_by(|left, right| {
         right
             .requirement_margin
             .cmp(&left.requirement_margin)
@@ -367,6 +377,7 @@ pub fn coarsening_patch_candidates(
 fn relocate_coarsening_block(
     candidate: &MeshState,
     movable_sites: &[usize],
+    initial_region: &BTreeSet<usize>,
     search_budget: usize,
 ) -> BlockRelocationOutcome {
     if search_budget == 0 {
@@ -382,36 +393,67 @@ fn relocate_coarsening_block(
         .collect::<Vec<_>>();
     movable_sites.sort_unstable();
     movable_sites.dedup();
-    let incident = current
-        .active_triangle_slots()
-        .filter(|&face| {
+    let mut seeds = initial_region
+        .iter()
+        .copied()
+        .filter(|&face| current.is_triangle_live(face))
+        .flat_map(|face| {
             current.triangles()[face]
-                .iter()
-                .any(|site| movable_sites.binary_search(site).is_ok())
+                .into_iter()
+                .map(move |site| (site, face))
         })
-        .collect::<BTreeSet<_>>();
-    let _ = current.legalize_around(&incident);
-    if current.validate().is_err() {
-        return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        .filter(|(site, _)| movable_sites.binary_search(site).is_ok())
+        .collect::<Vec<_>>();
+    seeds.sort_unstable_by_key(|&(site, _)| site);
+    seeds.dedup_by_key(|(site, _)| *site);
+    let mut incident = BTreeSet::new();
+    for &site in &movable_sites {
+        let Ok(seed) = seeds.binary_search_by_key(&site, |&(candidate, _)| candidate) else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        let Ok(fan) = current.triangle_fan_from(site, seeds[seed].1) else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        incident.extend(fan);
     }
-    let Some(mut current_penalty) = certificate.geometry_penalty(&current) else {
+    let Ok((_, touched)) = current.legalize_within_with_touched(&incident, Some(&incident)) else {
         return BlockRelocationOutcome::ProvenInfeasible { states_examined };
     };
+    if current.validate_region(&touched).is_err() {
+        return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+    }
+    let mut changed_region = initial_region.clone();
+    changed_region.extend(incident.iter().copied());
+    changed_region.extend(touched);
 
     for step_index in 0..BLOCK_RELOCATION_STEPS {
-        if let Ok(report) = certificate.verify_geometry(&current) {
-            return BlockRelocationOutcome::Certified {
-                mesh: Box::new(current),
-                geometry: report,
-                states_examined,
-            };
+        if certificate.geometry_region_passes(&current, &changed_region) {
+            if let Ok(report) = certificate.verify_geometry(&current) {
+                return BlockRelocationOutcome::Certified {
+                    mesh: Box::new(current),
+                    geometry: report,
+                    states_examined,
+                };
+            }
         }
         let fraction = step_index as f64 / BLOCK_RELOCATION_STEPS as f64;
         let step = BLOCK_RELOCATION_INITIAL_STEP_RADIANS * (1.0 - fraction)
             + BLOCK_RELOCATION_FINAL_STEP_RADIANS;
-        let mut best = None::<(f64, MeshState)>;
+        let Some(current_penalty) = certificate.geometry_penalty_in(&current, &incident) else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        let mut best = None::<(f64, usize, CartesianPoint, BTreeSet<usize>)>;
         for &site in &movable_sites {
             let point = current.vertices()[site];
+            let Some(seed) = incident.iter().copied().find(|&face| {
+                current.is_triangle_live(face) && current.triangles()[face].contains(&site)
+            }) else {
+                continue;
+            };
+            let Ok(site_incident) = current.triangle_fan_from(site, seed) else {
+                continue;
+            };
+            let site_incident = site_incident.into_iter().collect::<BTreeSet<_>>();
             for direction in 0..BLOCK_RELOCATION_DIRECTIONS {
                 if states_examined == search_budget {
                     return BlockRelocationOutcome::SearchBudgetExhausted { states_examined };
@@ -420,34 +462,59 @@ fn relocate_coarsening_block(
                 let Some(destination) = relocation_destination(point, direction, step) else {
                     continue;
                 };
-                let mut trial = current.clone();
-                trial.move_vertex(site, destination);
-                let incident = trial
-                    .active_triangle_slots()
-                    .filter(|&face| trial.triangles()[face].contains(&site))
-                    .collect::<BTreeSet<_>>();
-                let _ = trial.legalize_around(&incident);
-                if trial.validate().is_err() {
-                    continue;
-                }
-                let Some(penalty) = certificate.geometry_penalty(&trial) else {
+                let snapshot = current.snapshot_around(&incident);
+                current.move_vertex(site, destination);
+                let trial = current
+                    .legalize_within_with_touched(&site_incident, Some(&incident))
+                    .ok()
+                    .and_then(|(_, touched)| {
+                        current
+                            .validate_region(&touched)
+                            .is_ok()
+                            .then(|| certificate.geometry_penalty_in(&current, &incident))
+                            .flatten()
+                            .map(|penalty| (penalty, touched))
+                    });
+                current.move_vertex(site, point);
+                current
+                    .restore_patch(snapshot)
+                    .expect("bounded legalization rollback restores its local rows");
+                let Some((penalty, touched)) = trial else {
                     continue;
                 };
-                if penalty + 1.0e-12 >= current_penalty
+                let improvement = penalty - current_penalty;
+                if improvement >= -1.0e-12
                     || best
                         .as_ref()
-                        .is_some_and(|(best_penalty, _)| penalty >= *best_penalty)
+                        .is_some_and(|(best_improvement, _, _, _)| improvement >= *best_improvement)
                 {
                     continue;
                 }
-                best = Some((penalty, trial));
+                best = Some((improvement, site, destination, touched));
             }
         }
-        let Some((penalty, trial)) = best else {
+        let Some((_, site, destination, expected_touched)) = best else {
             return BlockRelocationOutcome::ProvenInfeasible { states_examined };
         };
-        current = trial;
-        current_penalty = penalty;
+        let Some(seed) = incident.iter().copied().find(|&face| {
+            current.is_triangle_live(face) && current.triangles()[face].contains(&site)
+        }) else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        let Ok(site_incident) = current.triangle_fan_from(site, seed) else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        current.move_vertex(site, destination);
+        let Ok((_, touched)) = current
+            .legalize_within_with_touched(&site_incident.into_iter().collect(), Some(&incident))
+        else {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        };
+        debug_assert_eq!(touched, expected_touched);
+        if current.validate_region(&touched).is_err() {
+            return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+        }
+        changed_region.extend(touched);
     }
     match certificate.verify_geometry(&current) {
         Ok(geometry) => BlockRelocationOutcome::Certified {
@@ -593,18 +660,41 @@ pub fn solve_certified_coarsening_patch(
     match mesh.retire_vertex_with_budget_transactionally_repairing(
         patch.vertex,
         search_budget,
-        |candidate, _, relocation_budget| {
+        |candidate, retirement, relocation_budget| {
             let mut relocation_states = 0;
-            let (relocated, geometry) = match Certificate::internal().verify_geometry(candidate) {
-                Ok(geometry) => (None, geometry),
-                Err(_) => {
+            let certificate = Certificate::internal();
+            let mut changed_region = retirement
+                .fan
+                .iter()
+                .copied()
+                .filter(|&face| candidate.is_triangle_live(face))
+                .collect::<BTreeSet<_>>();
+            changed_region.extend(
+                patch
+                    .transition_halo
+                    .iter()
+                    .copied()
+                    .filter(|&face| candidate.is_triangle_live(face)),
+            );
+            let direct_geometry = certificate
+                .geometry_region_passes(candidate, &changed_region)
+                .then(|| certificate.verify_geometry(candidate))
+                .and_then(Result::ok);
+            let (relocated, geometry) = match direct_geometry {
+                Some(geometry) => (None, geometry),
+                None => {
                     let mut movable_sites = patch.retained_vertices.clone();
                     for &face in &patch.transition_halo {
                         if candidate.is_triangle_live(face) {
                             movable_sites.extend(candidate.triangles()[face]);
                         }
                     }
-                    match relocate_coarsening_block(candidate, &movable_sites, relocation_budget) {
+                    match relocate_coarsening_block(
+                        candidate,
+                        &movable_sites,
+                        &changed_region,
+                        relocation_budget,
+                    ) {
                         BlockRelocationOutcome::Certified {
                             mesh,
                             geometry,
@@ -782,7 +872,7 @@ pub fn run_certified_coarsening_epochs(
     let initial_vertices = mesh.vertex_count();
     let mut pool = candidates;
     sort_and_deduplicate_patches(&mut pool);
-    let mut pending = pool.clone();
+    let mut pending = (0..pool.len()).collect::<Vec<_>>();
     let mut remaining_budget = limits.search_state_budget;
     let mut report = CertifiedEpochReport {
         initial_vertices,
@@ -798,7 +888,8 @@ pub fn run_certified_coarsening_epochs(
         let epoch = report.epoch_commits.len() + 1;
         let mut committed = 0;
         let mut dirty_sites = BTreeSet::new();
-        for patch in std::mem::take(&mut pending) {
+        for patch_index in std::mem::take(&mut pending) {
+            let patch = pool[patch_index].clone();
             if !mesh.is_vertex_live(patch.vertex) {
                 continue;
             }
@@ -902,17 +993,18 @@ pub fn run_certified_coarsening_epochs(
         }
         pending = pool
             .iter()
-            .filter(|patch| mesh.is_vertex_live(patch.vertex))
-            .filter_map(|patch| refreshed_patch(mesh, patch.clone()))
-            .filter(|patch| {
-                dirty_sites.contains(&patch.vertex)
+            .enumerate()
+            .filter(|(_, patch)| mesh.is_vertex_live(patch.vertex))
+            .filter_map(|(index, patch)| {
+                let patch = refreshed_patch(mesh, patch.clone())?;
+                (dirty_sites.contains(&patch.vertex)
                     || patch
                         .retained_vertices
                         .iter()
-                        .any(|site| dirty_sites.contains(site))
+                        .any(|site| dirty_sites.contains(site)))
+                .then_some(index)
             })
             .collect();
-        sort_and_deduplicate_patches(&mut pending);
     }
 
     report.final_vertices = mesh.vertex_count();
@@ -963,7 +1055,16 @@ fn sort_and_deduplicate_patches(patches: &mut Vec<CoarseningPatch>) {
 }
 
 fn refreshed_patch(mesh: &MeshState, mut patch: CoarseningPatch) -> Option<CoarseningPatch> {
-    let fan = mesh.triangle_fan(patch.vertex).ok()?;
+    let seed_face = if mesh.is_triangle_live(patch.seed_face)
+        && mesh.triangles()[patch.seed_face].contains(&patch.vertex)
+    {
+        patch.seed_face
+    } else {
+        mesh.active_triangle_slots()
+            .find(|&face| mesh.triangles()[face].contains(&patch.vertex))?
+    };
+    let fan = mesh.triangle_fan_from(patch.vertex, seed_face).ok()?;
+    patch.seed_face = *fan.iter().min()?;
     let boundary_cycle = retirement_ring(mesh, patch.vertex, &fan)?;
     patch.boundary_cycle = boundary_cycle.clone();
     patch.retained_vertices = boundary_cycle;
@@ -1195,42 +1296,38 @@ fn signed_margin(allowed: usize, required: usize) -> isize {
 }
 
 fn retirement_ring(mesh: &MeshState, vertex: usize, fan: &[usize]) -> Option<Vec<usize>> {
-    let mut neighbours = BTreeMap::<usize, Vec<usize>>::new();
-    for &face in fan {
-        let edge = mesh.triangles()[face]
-            .into_iter()
-            .filter(|&corner| corner != vertex)
-            .collect::<Vec<_>>();
-        if edge.len() != 2 {
-            return None;
-        }
-        neighbours.entry(edge[0]).or_default().push(edge[1]);
-        neighbours.entry(edge[1]).or_default().push(edge[0]);
-    }
-    if neighbours.len() != fan.len() || neighbours.values().any(|row| row.len() != 2) {
+    if fan.len() < 3 {
         return None;
     }
-    let start = *neighbours.keys().next()?;
     let mut ring = Vec::with_capacity(fan.len());
-    let mut previous = usize::MAX;
-    let mut current = start;
-    for _ in 0..fan.len() {
-        ring.push(current);
-        let next = neighbours[&current]
-            .iter()
-            .copied()
-            .filter(|&candidate| candidate != previous)
-            .min()?;
-        previous = current;
-        current = next;
+    for (index, &face) in fan.iter().enumerate() {
+        let next = fan[(index + 1) % fan.len()];
+        let mut shared = None;
+        for site in mesh.triangles()[face] {
+            if site != vertex
+                && mesh.triangles()[next].contains(&site)
+                && shared.replace(site).is_some()
+            {
+                return None;
+            }
+        }
+        let shared = shared?;
+        if ring.contains(&shared) {
+            return None;
+        }
+        ring.push(shared);
     }
-    (current == start).then_some(ring)
+    let start = ring.iter().enumerate().min_by_key(|(_, site)| *site)?.0;
+    ring.rotate_left(start);
+    let mut reverse = ring.iter().copied().rev().collect::<Vec<_>>();
+    let reverse_start = reverse.iter().enumerate().min_by_key(|(_, site)| *site)?.0;
+    reverse.rotate_left(reverse_start);
+    Some(ring.min(reverse))
 }
 
 fn outside_faces(mesh: &MeshState, vertex: usize, fan: &[usize]) -> Vec<usize> {
-    let fan = fan.iter().copied().collect::<BTreeSet<_>>();
-    let mut outside = BTreeSet::new();
-    for &face in &fan {
+    let mut outside = Vec::with_capacity(fan.len());
+    for &face in fan {
         let Some(corner) = mesh.triangles()[face]
             .iter()
             .position(|&candidate| candidate == vertex)
@@ -1239,10 +1336,12 @@ fn outside_faces(mesh: &MeshState, vertex: usize, fan: &[usize]) -> Vec<usize> {
         };
         let neighbour = mesh.neighbours()[face][corner];
         if mesh.is_triangle_live(neighbour) && !fan.contains(&neighbour) {
-            outside.insert(neighbour);
+            outside.push(neighbour);
         }
     }
-    outside.into_iter().collect()
+    outside.sort_unstable();
+    outside.dedup();
+    outside
 }
 
 fn removable_hierarchy_sites(grid: &MotherGrid) -> Vec<usize> {

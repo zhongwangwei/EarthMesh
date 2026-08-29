@@ -7,3 +7,4 @@ edition = "2021"
 earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
+rayon = "1"

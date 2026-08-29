@@ -1,7 +1,6 @@
 use earthmesh_mesh::{
     normalize_cartesian_to_radius, orientation_on_sphere, CartesianPoint, MeshState, Sign,
 };
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VertexAddress {
@@ -95,36 +94,38 @@ impl MotherGrid {
         }
         let base = icosahedron_vertices();
         let faces = icosahedron_faces();
-        let mut ids = BTreeMap::<VertexAddress, usize>::new();
-        let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); 2];
-        let mut addresses = vec![None, None];
-        let mut triangles = vec![[1usize; 3]; 2];
-        let mut triangle_addresses = vec![None, None];
+        let (vertex_count, _, triangle_count) =
+            analytic_counts(n).ok_or_else(|| "mother subdivision is too large".to_string())?;
+        let edge_lookup = edge_lookup(&faces);
+        let mut vertex_ids = [None; 12];
+        let mut edge_ids = vec![None; 30usize.saturating_mul(n + 1)];
+        let mut vertices = Vec::with_capacity(vertex_count + 2);
+        vertices.resize(2, CartesianPoint::new(0.0, 0.0, 0.0));
+        let mut addresses = Vec::with_capacity(vertex_count + 2);
+        addresses.resize(2, None);
+        let mut triangles = Vec::with_capacity(triangle_count + 2);
+        triangles.resize(2, [1usize; 3]);
+        let mut triangle_addresses = Vec::with_capacity(triangle_count + 2);
+        triangle_addresses.resize(2, None);
 
         for (face_id, &[a, b, c]) in faces.iter().enumerate() {
-            let mut grid = BTreeMap::<(usize, usize), usize>::new();
+            let row_width = n + 1;
+            let mut grid = vec![0usize; row_width * row_width];
             for i in 0..=n {
                 for j in 0..=n - i {
                     let k = n - i - j;
-                    let address = address(face_id as u8, [a, b, c], i, j, k, n);
-                    let id = *ids.entry(address.clone()).or_insert_with(|| {
-                        let p = normalize_cartesian_to_radius(
-                            weighted(
-                                base[a as usize],
-                                k,
-                                base[b as usize],
-                                i,
-                                base[c as usize],
-                                j,
-                            ),
-                            1.0,
-                        )
-                        .unwrap();
-                        vertices.push(p);
-                        addresses.push(Some(address));
-                        vertices.len() - 1
-                    });
-                    grid.insert((i, j), id);
+                    grid[grid_index(i, j, row_width)] = get_or_insert_vertex(
+                        face_id as u8,
+                        [a, b, c],
+                        [k, i, j],
+                        n,
+                        &base,
+                        &edge_lookup,
+                        &mut vertex_ids,
+                        &mut edge_ids,
+                        &mut vertices,
+                        &mut addresses,
+                    );
                 }
             }
             for i in 0..n {
@@ -132,7 +133,11 @@ impl MotherGrid {
                     push_oriented(
                         &mut triangles,
                         &vertices,
-                        [grid[&(i, j)], grid[&(i + 1, j)], grid[&(i, j + 1)]],
+                        [
+                            grid[grid_index(i, j, row_width)],
+                            grid[grid_index(i + 1, j, row_width)],
+                            grid[grid_index(i, j + 1, row_width)],
+                        ],
                     )?;
                     triangle_addresses.push(Some(TriangleAddress {
                         base_face: face_id as u8,
@@ -145,7 +150,11 @@ impl MotherGrid {
                         push_oriented(
                             &mut triangles,
                             &vertices,
-                            [grid[&(i + 1, j)], grid[&(i + 1, j + 1)], grid[&(i, j + 1)]],
+                            [
+                                grid[grid_index(i + 1, j, row_width)],
+                                grid[grid_index(i + 1, j + 1, row_width)],
+                                grid[grid_index(i, j + 1, row_width)],
+                            ],
                         )?;
                         triangle_addresses.push(Some(TriangleAddress {
                             base_face: face_id as u8,
@@ -174,6 +183,124 @@ impl MotherGrid {
     }
 }
 
+fn grid_index(i: usize, j: usize, row_width: usize) -> usize {
+    i * row_width + j
+}
+
+fn edge_lookup(faces: &[[u8; 3]; 20]) -> [[Option<usize>; 12]; 12] {
+    let mut lookup = [[None; 12]; 12];
+    let mut next = 0usize;
+    for &[a, b, c] in faces {
+        for (mut x, mut y) in [(a, b), (b, c), (c, a)] {
+            if x > y {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let x = x as usize;
+            let y = y as usize;
+            if lookup[x][y].is_none() {
+                lookup[x][y] = Some(next);
+                lookup[y][x] = Some(next);
+                next += 1;
+            }
+        }
+    }
+    debug_assert_eq!(next, 30);
+    lookup
+}
+
+#[allow(clippy::too_many_arguments)]
+fn get_or_insert_vertex(
+    face: u8,
+    corners: [u8; 3],
+    weights: [usize; 3],
+    n: usize,
+    base: &[CartesianPoint; 12],
+    edge_lookup: &[[Option<usize>; 12]; 12],
+    vertex_ids: &mut [Option<usize>; 12],
+    edge_ids: &mut [Option<usize>],
+    vertices: &mut Vec<CartesianPoint>,
+    addresses: &mut Vec<Option<VertexAddress>>,
+) -> usize {
+    if let Some(pos) = weights.iter().position(|&w| w == n) {
+        return *vertex_ids[corners[pos] as usize].get_or_insert_with(|| {
+            push_vertex(
+                VertexAddress::IcosahedronVertex(corners[pos]),
+                corners,
+                weights,
+                base,
+                vertices,
+                addresses,
+            )
+        });
+    }
+
+    if let Some(zero) = weights.iter().position(|&w| w == 0) {
+        let mut ends = [
+            (corners[(zero + 1) % 3], weights[(zero + 1) % 3]),
+            (corners[(zero + 2) % 3], weights[(zero + 2) % 3]),
+        ];
+        ends.sort_by_key(|x| x.0);
+        let edge = edge_lookup[ends[0].0 as usize][ends[1].0 as usize]
+            .expect("icosahedron edge must be indexed");
+        let slot = edge * (n + 1) + ends[1].1;
+        return *edge_ids[slot].get_or_insert_with(|| {
+            push_vertex(
+                VertexAddress::IcosahedronEdge {
+                    a: ends[0].0,
+                    b: ends[1].0,
+                    step: ends[1].1,
+                    n,
+                },
+                corners,
+                weights,
+                base,
+                vertices,
+                addresses,
+            )
+        });
+    }
+
+    push_vertex(
+        VertexAddress::IcosahedronFace {
+            face,
+            i: weights[1],
+            j: weights[2],
+            k: weights[0],
+            n,
+        },
+        corners,
+        weights,
+        base,
+        vertices,
+        addresses,
+    )
+}
+
+fn push_vertex(
+    address: VertexAddress,
+    corners: [u8; 3],
+    weights: [usize; 3],
+    base: &[CartesianPoint; 12],
+    vertices: &mut Vec<CartesianPoint>,
+    addresses: &mut Vec<Option<VertexAddress>>,
+) -> usize {
+    let p = normalize_cartesian_to_radius(
+        weighted(
+            base[corners[0] as usize],
+            weights[0],
+            base[corners[1] as usize],
+            weights[1],
+            base[corners[2] as usize],
+            weights[2],
+        ),
+        1.0,
+    )
+    .unwrap();
+    vertices.push(p);
+    addresses.push(Some(address));
+    vertices.len() - 1
+}
+
 fn weighted(
     a: CartesianPoint,
     aw: usize,
@@ -190,6 +317,7 @@ fn weighted(
     )
 }
 
+#[cfg(test)]
 fn address(face: u8, corners: [u8; 3], i: usize, j: usize, k: usize, n: usize) -> VertexAddress {
     let weights = [(corners[0], k), (corners[1], i), (corners[2], j)];
     if let Some(&(v, _)) = weights.iter().find(|(_, w)| *w == n) {
@@ -265,4 +393,99 @@ fn icosahedron_faces() -> [[u8; 3]; 20] {
         [8, 6, 7],
         [9, 8, 1],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn reference_generate(n: usize) -> MotherGrid {
+        let base = icosahedron_vertices();
+        let faces = icosahedron_faces();
+        let mut ids = BTreeMap::<VertexAddress, usize>::new();
+        let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); 2];
+        let mut addresses = vec![None, None];
+        let mut triangles = vec![[1usize; 3]; 2];
+        let mut triangle_addresses = vec![None, None];
+
+        for (face_id, &[a, b, c]) in faces.iter().enumerate() {
+            let mut grid = BTreeMap::<(usize, usize), usize>::new();
+            for i in 0..=n {
+                for j in 0..=n - i {
+                    let k = n - i - j;
+                    let address = address(face_id as u8, [a, b, c], i, j, k, n);
+                    let id = *ids.entry(address.clone()).or_insert_with(|| {
+                        let p = normalize_cartesian_to_radius(
+                            weighted(
+                                base[a as usize],
+                                k,
+                                base[b as usize],
+                                i,
+                                base[c as usize],
+                                j,
+                            ),
+                            1.0,
+                        )
+                        .unwrap();
+                        vertices.push(p);
+                        addresses.push(Some(address));
+                        vertices.len() - 1
+                    });
+                    grid.insert((i, j), id);
+                }
+            }
+            for i in 0..n {
+                for j in 0..n - i {
+                    push_oriented(
+                        &mut triangles,
+                        &vertices,
+                        [grid[&(i, j)], grid[&(i + 1, j)], grid[&(i, j + 1)]],
+                    )
+                    .unwrap();
+                    triangle_addresses.push(Some(TriangleAddress {
+                        base_face: face_id as u8,
+                        i,
+                        j,
+                        n,
+                        orientation: TriangleOrientation::Up,
+                    }));
+                    if i + j < n - 1 {
+                        push_oriented(
+                            &mut triangles,
+                            &vertices,
+                            [grid[&(i + 1, j)], grid[&(i + 1, j + 1)], grid[&(i, j + 1)]],
+                        )
+                        .unwrap();
+                        triangle_addresses.push(Some(TriangleAddress {
+                            base_face: face_id as u8,
+                            i,
+                            j,
+                            n,
+                            orientation: TriangleOrientation::Down,
+                        }));
+                    }
+                }
+            }
+        }
+
+        MotherGrid {
+            subdivision: n,
+            mesh: MeshState::from_parts(vertices, triangles).unwrap(),
+            addresses,
+            triangle_addresses,
+        }
+    }
+
+    #[test]
+    fn generate_matches_legacy_btree_ordering() {
+        for n in [1, 2, 3, 4] {
+            let fast = MotherGrid::generate(n).unwrap();
+            let reference = reference_generate(n);
+            assert_eq!(fast.addresses, reference.addresses);
+            assert_eq!(fast.triangle_addresses, reference.triangle_addresses);
+            assert_eq!(fast.mesh.vertices(), reference.mesh.vertices());
+            assert_eq!(fast.mesh.triangles(), reference.mesh.triangles());
+        }
+    }
 }

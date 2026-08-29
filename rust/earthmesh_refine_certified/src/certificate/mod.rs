@@ -3,7 +3,7 @@ pub mod interval;
 use crate::{mother_grid::MotherGrid, outcome::FinalCertificationEvidence};
 use earthmesh_mesh::{in_circle_on_sphere, magnitude, CartesianPoint, MeshState, Sign};
 use interval::{next_down, next_up, Interval};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Certificate {
@@ -99,27 +99,57 @@ impl Certificate {
         Ok(report)
     }
 
-    pub(crate) fn geometry_penalty(&self, mesh: &MeshState) -> Option<f64> {
+    pub(crate) fn geometry_region_passes(&self, mesh: &MeshState, faces: &BTreeSet<usize>) -> bool {
+        self.geometry_penalty_for_region(
+            mesh,
+            faces,
+            self.min_angle_degrees,
+            self.max_angle_degrees,
+        ) == Some(0.0)
+    }
+
+    pub(crate) fn geometry_penalty_in(
+        &self,
+        mesh: &MeshState,
+        faces: &BTreeSet<usize>,
+    ) -> Option<f64> {
+        self.geometry_penalty_for_region(
+            mesh,
+            faces,
+            self.min_angle_degrees + 0.2,
+            self.max_angle_degrees - 0.2,
+        )
+    }
+
+    fn geometry_penalty_for_region(
+        &self,
+        mesh: &MeshState,
+        faces: &BTreeSet<usize>,
+        minimum_angle: f64,
+        maximum_angle: f64,
+    ) -> Option<f64> {
         let mut penalty = 0.0;
-        let mut degrees = vec![0usize; mesh.vertices().len()];
-        let search_minimum = self.min_angle_degrees + 0.2;
-        let search_maximum = self.max_angle_degrees - 0.2;
-        for triangle in mesh.active_triangle_slots() {
+        let mut seeds = Vec::with_capacity(faces.len().saturating_mul(3));
+        for &triangle in faces {
+            if !mesh.is_triangle_live(triangle) {
+                continue;
+            }
             let corners = mesh.triangles()[triangle];
             for vertex in corners {
-                degrees[vertex] += 1;
+                seeds.push((vertex, triangle));
             }
             for angle in spherical_triangle_angles(corners.map(|vertex| mesh.vertices()[vertex]))? {
-                let violation = (search_minimum - angle)
+                let violation = (minimum_angle - angle)
                     .max(0.0)
-                    .max((angle - search_maximum).max(0.0));
+                    .max((angle - maximum_angle).max(0.0));
                 penalty += violation * violation;
             }
         }
-        for site in mesh.active_vertex_slots() {
-            let violation = 5usize
-                .saturating_sub(degrees[site])
-                .max(degrees[site].saturating_sub(7));
+        seeds.sort_unstable_by_key(|&(site, _)| site);
+        seeds.dedup_by_key(|(site, _)| *site);
+        for (site, seed) in seeds {
+            let degree = mesh.triangle_fan_from(site, seed).ok()?.len();
+            let violation = 5usize.saturating_sub(degree).max(degree.saturating_sub(7));
             penalty += 10_000.0 * (violation * violation) as f64;
         }
         Some(penalty)
@@ -500,29 +530,41 @@ fn topology_error_count(topology: &Topology) -> usize {
 }
 
 fn topology(mesh: &MeshState) -> Topology {
-    let mut edges = BTreeSet::new();
-    let mut degrees = BTreeMap::<usize, usize>::new();
+    let mut degrees = vec![0usize; mesh.vertices().len()];
+    let mut faces = 0usize;
+    let mut edge_count = 0usize;
+    let mut open_edges = 0usize;
     for triangle in mesh.active_triangle_slots() {
+        faces += 1;
         let [a, b, c] = mesh.triangles()[triangle];
-        for (u, v) in [(a, b), (b, c), (c, a)] {
-            edges.insert(if u < v { (u, v) } else { (v, u) });
-            *degrees.entry(u).or_default() += 1;
+        for (corner, u) in [a, b, c].into_iter().enumerate() {
+            degrees[u] += 1;
+            let other = mesh.neighbours()[triangle][corner];
+            if other == 0 {
+                open_edges += 1;
+                edge_count += 1;
+            } else if triangle < other {
+                edge_count += 1;
+            }
         }
     }
     let bad_degrees = degrees
         .iter()
-        .filter_map(|(&v, &d)| (!(5..=7).contains(&d)).then_some((v, d)))
+        .enumerate()
+        .filter_map(|(v, &d)| (d != 0 && !(5..=7).contains(&d)).then_some((v, d)))
         .collect();
     let vertices = mesh.vertex_count();
-    let faces = mesh.triangle_count();
-    let edge_count = edges.len();
     Topology {
         vertices,
         edges: edge_count,
         faces,
         euler: vertices as isize - edge_count as isize + faces as isize,
-        charge: degrees.values().map(|&d| 6isize - d as isize).sum(),
-        open_edges: mesh.open_edge_count(),
+        charge: degrees
+            .iter()
+            .filter(|&&d| d != 0)
+            .map(|&d| 6isize - d as isize)
+            .sum(),
+        open_edges,
         bad_degrees,
     }
 }
@@ -548,13 +590,12 @@ fn fast_angle_filter(mesh: &MeshState) -> Result<AngleSummary, CertificateError>
 }
 
 fn delaunay_violations(mesh: &MeshState) -> Result<usize, CertificateError> {
-    let mut seen = BTreeSet::new();
     let mut violations = 0;
     for triangle in mesh.active_triangle_slots() {
         let tri = mesh.triangles()[triangle];
         for corner in 0..3 {
             let other = mesh.neighbours()[triangle][corner];
-            if other == 0 || !seen.insert((triangle.min(other), triangle.max(other))) {
+            if other == 0 || triangle > other {
                 continue;
             }
             let edge = [tri[(corner + 1) % 3], tri[(corner + 2) % 3]];
@@ -586,10 +627,10 @@ struct DualReport {
 }
 
 fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
-    let mut seeds = BTreeMap::<usize, usize>::new();
+    let mut seeds = vec![None; mesh.vertices().len()];
     for triangle in mesh.active_triangle_slots() {
         for site in mesh.triangles()[triangle] {
-            seeds.entry(site).or_insert(triangle);
+            seeds[site].get_or_insert(triangle);
         }
     }
 
@@ -597,8 +638,7 @@ fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
     let mut reciprocal_errors = 0;
     let mut cells = 0;
     for site in mesh.active_vertex_slots() {
-        let seed = *seeds
-            .get(&site)
+        let seed = seeds[site]
             .ok_or_else(|| CertificateError::Dual(format!("site {site} is in no triangle")))?;
         let cell = mesh
             .voronoi_cell_from(site, seed)
@@ -610,13 +650,10 @@ fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
         {
             invalid_cells += 1;
         }
-        for &triangle in &cell.triangles {
+        for (&triangle, &center) in cell.triangles.iter().zip(&cell.corners) {
             if !mesh.triangles()[triangle].contains(&site) {
                 reciprocal_errors += 1;
             }
-            let center = mesh
-                .circumcentre(triangle)
-                .map_err(|e| CertificateError::Dual(e.to_string()))?;
             let corners = mesh.triangles()[triangle].map(|v| mesh.vertices()[v]);
             let ds = corners.map(|p| chord(center, p));
             let scale = ds[0].abs().max(ds[1].abs()).max(ds[2].abs()).max(1.0);
@@ -746,6 +783,26 @@ mod tests {
             let grid = MotherGrid::generate(n).unwrap();
             Certificate::internal().verify_mother_grid(&grid).unwrap();
         }
+    }
+
+    #[test]
+    fn linearized_certificate_paths_keep_mother_counts() {
+        let n = 20;
+        let grid = MotherGrid::generate(n).unwrap();
+        let report = Certificate::final_delivery()
+            .verify_mother_grid(&grid)
+            .unwrap();
+
+        assert_eq!(
+            (report.vertices, report.edges, report.faces),
+            (10 * n * n + 2, 30 * n * n, 20 * n * n)
+        );
+        assert_eq!(report.euler, 2);
+        assert_eq!(report.charge, 12);
+        assert_eq!(report.open_edges, 0);
+        assert_eq!(report.delaunay_violations, 0);
+        assert_eq!(report.voronoi_cells, report.vertices);
+        assert_eq!(report.topology_errors + report.degree_outside_window, 0);
     }
 
     #[test]

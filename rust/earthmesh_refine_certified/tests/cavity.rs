@@ -26,9 +26,9 @@ fn mother_with_redundant_site() -> (MeshState, CoarseningPatch) {
     let insertion = mesh
         .insert_site_transactionally(point, |candidate, _| candidate.validate().is_ok())
         .unwrap();
-    let mut retained_vertices = mesh
-        .triangle_fan(insertion.site)
-        .unwrap()
+    let fan = mesh.triangle_fan(insertion.site).unwrap();
+    let seed_face = *fan.iter().min().unwrap();
+    let mut retained_vertices = fan
         .into_iter()
         .flat_map(|face| mesh.triangles()[face])
         .filter(|&site| site != insertion.site)
@@ -37,6 +37,7 @@ fn mother_with_redundant_site() -> (MeshState, CoarseningPatch) {
     retained_vertices.dedup();
     let patch = CoarseningPatch {
         vertex: insertion.site,
+        seed_face,
         address: VertexAddress::IcosahedronFace {
             face: 0,
             i: 1,
@@ -73,6 +74,11 @@ fn hierarchy_site_candidates_are_stable_complete_and_requirement_ranked() {
             && !patch.parent_faces.is_empty()
             && !patch.transition_halo.is_empty()
             && patch.requirement_margin == 0
+            && grid.mesh.triangle_fan(patch.vertex).unwrap()
+                == grid
+                    .mesh
+                    .triangle_fan_from(patch.vertex, patch.seed_face)
+                    .unwrap()
     }));
 
     let protected = vec![1; grid.mesh.vertices().len()];

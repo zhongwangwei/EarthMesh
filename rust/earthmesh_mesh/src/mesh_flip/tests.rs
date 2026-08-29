@@ -186,10 +186,15 @@ fn legalizing_after_a_move_restores_the_criterion() {
     );
 
     let seed: BTreeSet<usize> = state.triangle_fan(site).expect("fan").into_iter().collect();
-    let flips = state.legalize_around(&seed).expect("legalize");
+    let (flips, touched) = state
+        .legalize_within_with_touched(&seed, None)
+        .expect("legalize");
     assert!(flips > 0);
     assert_eq!(delaunay_violations(&state), 0, "after {flips} flips");
     assert_eq!(state.open_edge_count(), 0);
+    state
+        .validate_region(&touched)
+        .expect("changed rows remain a triangulation");
     state.validate().expect("still a triangulation");
 
     // Euler, which is what says the topology survived and not only the counts.

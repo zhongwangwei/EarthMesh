@@ -1,7 +1,7 @@
 use crate::fingerprint::mesh_fingerprint;
 use crate::remap::{voronoi_rings, ConservativeRemap};
 use earthmesh_mesh::MeshState;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::BinaryHeap;
 
 mod sealed {
     pub trait Sealed {}
@@ -454,18 +454,22 @@ fn final_report_from_required_levels(
     }
     let physical_residuals = witnesses.len();
 
-    let site_to_target = target_sites
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(cell, site)| (site, cell))
-        .collect::<BTreeMap<_, _>>();
+    let mut site_to_target = vec![usize::MAX; target_mesh.vertices().len()];
+    for (cell, &site) in target_sites.iter().enumerate() {
+        site_to_target[site] = cell;
+    }
     let mut balance_residuals = 0;
     for (left_site, right_site) in target_site_edges(target_mesh) {
-        let Some(&left) = site_to_target.get(&left_site) else {
+        let Some(&left) = site_to_target
+            .get(left_site)
+            .filter(|&&cell| cell != usize::MAX)
+        else {
             continue;
         };
-        let Some(&right) = site_to_target.get(&right_site) else {
+        let Some(&right) = site_to_target
+            .get(right_site)
+            .filter(|&&cell| cell != usize::MAX)
+        else {
             continue;
         };
         let dl = target_levels.levels()[left];
@@ -496,12 +500,15 @@ fn final_report_from_required_levels(
     }
 }
 
-pub fn target_site_edges(mesh: &MeshState) -> BTreeSet<(usize, usize)> {
-    let mut edges = BTreeSet::new();
+pub fn target_site_edges(mesh: &MeshState) -> Vec<(usize, usize)> {
+    let mut edges = Vec::with_capacity(mesh.triangle_count().saturating_mul(3).div_ceil(2));
     for face in mesh.active_triangle_slots() {
         let [a, b, c] = mesh.triangles()[face];
-        for (u, v) in [(a, b), (b, c), (c, a)] {
-            edges.insert(if u < v { (u, v) } else { (v, u) });
+        for (corner, u, v) in [(2, a, b), (0, b, c), (1, c, a)] {
+            let neighbour = mesh.neighbours()[face][corner];
+            if neighbour == 0 || face < neighbour {
+                edges.push(if u < v { (u, v) } else { (v, u) });
+            }
         }
     }
     edges
@@ -581,6 +588,22 @@ pub fn one_ring_adjacency(triangles: &[[usize; 3]], vertex_count: usize) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mother_grid::{analytic_counts, MotherGrid};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn target_site_edges_are_unique_and_complete() {
+        let grid = MotherGrid::generate(2).unwrap();
+        let edges = target_site_edges(&grid.mesh);
+        assert_eq!(edges.len(), analytic_counts(2).unwrap().1);
+        assert_eq!(
+            edges.iter().copied().collect::<BTreeSet<_>>().len(),
+            edges.len()
+        );
+        assert!(edges.iter().all(|&(left, right)| {
+            left < right && grid.mesh.is_vertex_live(left) && grid.mesh.is_vertex_live(right)
+        }));
+    }
 
     #[test]
     fn merge_is_max_and_order_invariant() {
