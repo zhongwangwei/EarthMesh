@@ -35,7 +35,7 @@ impl Default for CertifiedRunOptions {
             mode: CertifiedMode::SafeMotherOnly,
             delivery: CertifiedDelivery::Coupled,
             maximum_level: 8,
-            maximum_cells: 5_000_000,
+            maximum_cells: 10_000_000,
             gradation_rings_per_level: 3,
             search_budget: 100_000,
         }

@@ -417,7 +417,7 @@ fn default_certified_maximum_level() -> u8 {
 }
 
 fn default_certified_maximum_cells() -> usize {
-    5_000_000
+    10_000_000
 }
 
 fn default_certified_gradation_rings_per_level() -> u8 {
