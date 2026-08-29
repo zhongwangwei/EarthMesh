@@ -1,7 +1,13 @@
+mod component_transaction;
 mod core_condensation;
 mod elastic_block;
 mod hierarchy_component;
 mod transition_topology;
+pub use component_transaction::{
+    solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
+    ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionStage,
+    ComponentTransactionState,
+};
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,

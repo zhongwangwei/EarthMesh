@@ -60,6 +60,8 @@ fn elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {
         topology: TransitionTopologyCandidate {
             component_id: 29,
             topology_id: 0,
+            core_parents: Vec::new(),
+            custom_transition_triangles: BTreeMap::new(),
             source_triangles: guard
                 .iter()
                 .map(|&face| grid.mesh.triangles()[face])

@@ -15,7 +15,7 @@ pub use api::{
 };
 pub use certificate::{
     BalanceCertificate, Certificate, CertificateError, CertificateReport, FinalCertificateReport,
-    GeometryCertificateReport, PhysicalCertificate,
+    GeometryCertificateReport, GeometryRegionCertificateReport, PhysicalCertificate,
 };
 pub use config::{CertifiedConfig, DeliveryMode};
 pub use mother_grid::{MotherGrid, TriangleAddress, TriangleOrientation, VertexAddress};

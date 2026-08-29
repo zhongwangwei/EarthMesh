@@ -134,6 +134,37 @@ fn whole_sphere_component(coarse_n: usize) -> HierarchyComponent {
     }
 }
 
+fn flattened_custom_triangles(trial: &TransitionTopologyTrial) -> Vec<[usize; 3]> {
+    trial
+        .candidate
+        .custom_transition_triangles
+        .values()
+        .flat_map(|triangles| triangles.iter().copied())
+        .collect()
+}
+
+fn custom_parent_keys(trial: &TransitionTopologyTrial) -> Vec<TriangleAddress> {
+    trial
+        .candidate
+        .custom_transition_triangles
+        .keys()
+        .copied()
+        .collect()
+}
+
+fn assert_candidate_delta(
+    trial: &TransitionTopologyTrial,
+    core: Vec<TriangleAddress>,
+    custom: Vec<TriangleAddress>,
+) {
+    assert_eq!(trial.candidate.core_parents, core);
+    assert_eq!(custom_parent_keys(trial), custom);
+    assert_eq!(
+        trial.candidate.source_triangles,
+        flattened_custom_triangles(trial)
+    );
+}
+
 fn output_source_slots(trial: &TransitionTopologyTrial) -> BTreeSet<usize> {
     trial
         .mesh
@@ -232,7 +263,7 @@ fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
     let (fine, core, transition) = level_three_fixture();
     let source_vertices = fine.mesh.vertex_count();
     let source_faces = fine.mesh.triangle_count();
-    let component = component(core, transition, false);
+    let component = component(core, transition.clone(), false);
 
     let TransitionTopologyOutcome::Closed(trial) = solve_transition_topology(
         &fine,
@@ -247,6 +278,7 @@ fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
 
     assert_hard_topology_gates(&trial.mesh.mesh);
     assert_source_slot_forecast(&trial, &fine);
+    assert_candidate_delta(&trial, vec![core], transition.clone());
     assert!(trial
         .mesh
         .triangle_addresses
@@ -294,7 +326,7 @@ fn zero_topology_budget_is_exhaustion_not_infeasibility() {
 #[test]
 fn exposed_core_requires_and_can_use_one_wider_halo() {
     let (fine, core, transition) = level_three_fixture();
-    let component = component(core, transition, true);
+    let component = component(core, transition.clone(), true);
 
     assert!(matches!(
         solve_transition_topology(
@@ -322,6 +354,7 @@ fn exposed_core_requires_and_can_use_one_wider_halo() {
         panic!("one halo expansion must expose the same closable mixed fixture");
     };
     assert_hard_topology_gates(&trial.mesh.mesh);
+    assert_candidate_delta(&trial, vec![core], transition.clone());
     assert_eq!(trial.report.halo_expansions, 1);
     assert_eq!(trial.report.core_parent_count, 1);
     assert_eq!(trial.report.transition_parent_count, 3);
@@ -372,6 +405,7 @@ fn pure_whole_sphere_core_closes_at_zero_topology_budget_as_exact_coarse_grid() 
     assert_eq!(trial.report.topology_states, 0);
     assert!(trial.boundary.fine_outer_cycles.is_empty());
     assert!(trial.boundary.coarse_inner_cycles.is_empty());
+    assert_candidate_delta(&trial, component.parents.clone(), Vec::new());
 }
 
 #[test]
@@ -405,6 +439,7 @@ fn multi_ring_transition_only_retriangulates_core_adjacent_parents_and_closes() 
     assert_eq!(trial.report.core_parent_count, 1);
     assert_eq!(trial.report.transition_parent_count, transition.len());
     assert_eq!(trial.boundary.halo_parents, transition);
+    assert_candidate_delta(&trial, vec![core], first_ring.clone());
     assert_eq!(trial.candidate.source_triangles.len(), first_ring.len() * 3);
     assert_eq!(
         trial
@@ -461,7 +496,7 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
         id: 10,
         parents,
         boundary_edges: Vec::new(),
-        core_parents: core,
+        core_parents: core.clone(),
         transition_parents: transition,
     };
 
@@ -478,6 +513,12 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
     assert_eq!(trial.report.core_parent_count, 1_024);
     assert_eq!(trial.report.transition_parent_count, 96);
     assert_eq!(trial.report.topology_states, 1);
+    assert_eq!(trial.candidate.core_parents, core);
+    assert_eq!(custom_parent_keys(&trial).len(), 96);
+    assert_eq!(
+        trial.candidate.source_triangles,
+        flattened_custom_triangles(&trial)
+    );
 }
 
 #[test]
