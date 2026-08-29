@@ -751,8 +751,8 @@ pub(crate) fn set_certified_options(
             "reverse_coarsening" => earthmesh_project::CertifiedMode::ReverseCoarsening,
             other => {
                 return Err(format!(
-                    "unknown certified mode {other}: expected safe_mother_only or reverse_coarsening"
-                ))
+                "unknown certified mode {other}: expected safe_mother_only or reverse_coarsening"
+            ))
             }
         },
         delivery: match delivery.as_str() {
