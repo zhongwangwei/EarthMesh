@@ -84,6 +84,15 @@ pub fn rebuild_from_leaf_set(
     source: &MotherGrid,
     leaf_set: &HierarchyLeafSet,
 ) -> Result<HierarchyLeafMesh, String> {
+    rebuild_from_leaf_set_with_custom_triangles(source, leaf_set, &BTreeSet::new(), &[])
+}
+
+pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
+    source: &MotherGrid,
+    leaf_set: &HierarchyLeafSet,
+    custom_parents: &BTreeSet<TriangleAddress>,
+    custom_triangles: &[[usize; 3]],
+) -> Result<HierarchyLeafMesh, String> {
     let source_n = source.subdivision;
     if source_n == 0 {
         return Err("source mother subdivision must be positive".into());
@@ -92,7 +101,19 @@ pub fn rebuild_from_leaf_set(
     let source_faces = source.mesh.triangles().len();
     let mut covered = vec![false; source_faces];
     let mut leaf_triangles = Vec::<[usize; 3]>::new();
-    let mut leaf_addresses = Vec::<TriangleAddress>::new();
+    let mut leaf_addresses = Vec::<Option<TriangleAddress>>::new();
+
+    for &parent in custom_parents {
+        let children = parent
+            .children_2_to_1()
+            .ok_or_else(|| format!("invalid custom transition parent {parent:?}"))?;
+        for child in children {
+            let slot = source_face_slot(source, child)?;
+            if std::mem::replace(&mut covered[slot], true) {
+                return Err(format!("source face {slot} is covered more than once"));
+            }
+        }
+    }
 
     for &leaf in &leaf_set.leaves {
         if leaf.n == source_n {
@@ -101,7 +122,7 @@ pub fn rebuild_from_leaf_set(
                 return Err(format!("source face {slot} is covered more than once"));
             }
             leaf_triangles.push(source.mesh.triangles()[slot]);
-            leaf_addresses.push(leaf);
+            leaf_addresses.push(Some(leaf));
         } else if leaf.n.checked_mul(2) == Some(source_n) {
             let children = leaf
                 .children_2_to_1()
@@ -150,12 +171,17 @@ pub fn rebuild_from_leaf_set(
                 ));
             }
             leaf_triangles.push(corners);
-            leaf_addresses.push(leaf);
+            leaf_addresses.push(Some(leaf));
         } else {
             return Err(format!(
                 "leaf {leaf:?} is neither source subdivision {source_n} nor its 2-to-1 parent"
             ));
         }
+    }
+
+    for &triangle in custom_triangles {
+        leaf_triangles.push(triangle);
+        leaf_addresses.push(None);
     }
 
     for face in source.mesh.active_triangle_slots() {
@@ -192,7 +218,7 @@ pub fn rebuild_from_leaf_set(
     for (triangle, address) in leaf_triangles.into_iter().zip(leaf_addresses) {
         let tri = triangle.map(|old| old_to_new[old].expect("used source site was compacted"));
         push_oriented(&mut triangles, &vertices, tri)?;
-        triangle_addresses.push(Some(address));
+        triangle_addresses.push(address);
     }
 
     let mesh = MeshState::from_parts(vertices, triangles).map_err(|errors| {
@@ -262,7 +288,10 @@ fn site_count(site: usize, sites: &[usize; 6], counts: &[u8; 6], used: usize) ->
     (0..used).find_map(|index| (sites[index] == site).then_some(counts[index]))
 }
 
-fn source_face_slot(source: &MotherGrid, address: TriangleAddress) -> Result<usize, String> {
+pub(super) fn source_face_slot(
+    source: &MotherGrid,
+    address: TriangleAddress,
+) -> Result<usize, String> {
     if address.n != source.subdivision {
         return Err(format!(
             "source face address subdivision {} does not match source subdivision {}",

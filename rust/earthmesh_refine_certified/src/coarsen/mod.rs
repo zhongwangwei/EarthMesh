@@ -1,5 +1,6 @@
 mod core_condensation;
 mod hierarchy_component;
+mod transition_topology;
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
@@ -7,6 +8,11 @@ pub use core_condensation::{
 pub use hierarchy_component::{
     plan_hierarchy_components, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
     ParentRequirement,
+};
+pub use transition_topology::{
+    solve_transition_topology, TransitionBoundary, TransitionTopologyCandidate,
+    TransitionTopologyLimits, TransitionTopologyOutcome, TransitionTopologyReport,
+    TransitionTopologyTrial,
 };
 
 use crate::{
