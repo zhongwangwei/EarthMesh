@@ -370,15 +370,49 @@ fn promote_core_boundary(
     if peel.is_empty() || peel.len() == core.len() {
         return None;
     }
-    let (promoted, expansion_cost) = preferred
+    let (promoted, expansion_cost) = match preferred
         .filter(|(parent, cost)| peel.contains(parent) && *cost <= remaining_halo_expansions)
-        .map(|(parent, cost)| (BTreeSet::from([parent]), cost))
-        .unwrap_or((peel, 1));
+    {
+        Some((parent, cost)) => (
+            preferred_boundary_segment(source, &peel, transition, parent)?,
+            cost,
+        ),
+        None => (peel, 1),
+    };
     if expansion_cost > remaining_halo_expansions {
         return None;
     }
     promote_to_transition(core, transition, promoted);
     Some(expansion_cost)
+}
+
+fn preferred_boundary_segment(
+    source: &MotherGrid,
+    peel: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+    preferred: TriangleAddress,
+) -> Option<BTreeSet<TriangleAddress>> {
+    let anchors = parent_patch(source, preferred)
+        .ok()?
+        .neighbours
+        .into_iter()
+        .filter(|parent| transition.contains(parent))
+        .collect::<BTreeSet<_>>();
+    let mut segment = BTreeSet::from([preferred]);
+    if anchors.is_empty() {
+        return Some(segment);
+    }
+    for &parent in peel {
+        if parent_patch(source, parent)
+            .ok()?
+            .neighbours
+            .iter()
+            .any(|neighbour| anchors.contains(neighbour))
+        {
+            segment.insert(parent);
+        }
+    }
+    Some(segment)
 }
 
 fn core_boundary(
@@ -1228,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn hinted_halo_promotion_moves_only_the_failed_boundary_parent() {
+    fn hinted_halo_promotion_moves_the_connected_failed_boundary_segment() {
         let source = MotherGrid::generate(8).unwrap();
         let mut core = source
             .triangle_addresses
@@ -1242,12 +1276,12 @@ mod tests {
         let peel = core_boundary(&source, &core);
         assert!(peel.len() > 1);
         let preferred = *peel.first().unwrap();
-        let untouched = *peel
-            .range((
-                std::ops::Bound::Excluded(preferred),
-                std::ops::Bound::Unbounded,
-            ))
-            .next()
+        let expected = preferred_boundary_segment(&source, &peel, &transition, preferred).unwrap();
+        assert!(expected.len() > 1);
+        let untouched = core
+            .iter()
+            .copied()
+            .find(|parent| !expected.contains(parent))
             .unwrap();
         let initial_core_len = core.len();
 
@@ -1255,8 +1289,8 @@ mod tests {
             promote_core_boundary(&source, &mut core, &mut transition, Some((preferred, 1)), 1,),
             Some(1)
         );
-        assert_eq!(core.len(), initial_core_len - 1);
-        assert!(transition.contains(&preferred));
+        assert_eq!(core.len(), initial_core_len - expected.len());
+        assert!(expected.iter().all(|parent| transition.contains(parent)));
         assert!(core.contains(&untouched));
     }
 }
