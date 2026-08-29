@@ -2,6 +2,7 @@ mod component_transaction;
 mod core_condensation;
 mod elastic_block;
 mod hierarchy_component;
+mod scheduler;
 mod transition_topology;
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
@@ -17,8 +18,13 @@ pub use elastic_block::{
     ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
 };
 pub use hierarchy_component::{
-    plan_hierarchy_components, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
+    plan_hierarchy_components, plan_hierarchy_components_from_parent_requirements,
+    ExplicitParentRequirement, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
     ParentRequirement,
+};
+pub use scheduler::{
+    run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
+    ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
 };
 pub use transition_topology::{
     solve_transition_topology, TransitionBoundary, TransitionTopologyCandidate,

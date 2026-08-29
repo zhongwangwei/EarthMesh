@@ -45,6 +45,7 @@ pub struct ComponentTransactionState {
     mesh: HierarchyLeafMesh,
     source_fingerprint: u64,
     source_subdivision: usize,
+    claimed_parent_subdivision: Option<usize>,
     claimed_parents: BTreeSet<TriangleAddress>,
 }
 
@@ -66,6 +67,7 @@ impl ComponentTransactionState {
             mesh,
             source_fingerprint: mesh_fingerprint(&source.mesh),
             source_subdivision: source.subdivision,
+            claimed_parent_subdivision: None,
             claimed_parents: BTreeSet::new(),
         })
     }
@@ -88,6 +90,63 @@ impl ComponentTransactionState {
 
     pub fn fingerprint(&self) -> u64 {
         mesh_fingerprint(&self.mesh.mesh)
+    }
+
+    pub(super) fn leaf_set(&self) -> &HierarchyLeafSet {
+        &self.leaf_set
+    }
+
+    pub(super) fn level_source_slots(
+        &self,
+        level_grid: &MotherGrid,
+    ) -> Result<Vec<Option<usize>>, String> {
+        if level_grid.subdivision > self.source_subdivision
+            || !self
+                .source_subdivision
+                .is_multiple_of(level_grid.subdivision)
+            || !(self.source_subdivision / level_grid.subdivision).is_power_of_two()
+        {
+            return Err(format!(
+                "level subdivision {} is not in source hierarchy {}",
+                level_grid.subdivision, self.source_subdivision
+            ));
+        }
+        let mut slots = vec![None; level_grid.mesh.vertices().len()];
+        for face in self.mesh.mesh.active_triangle_slots() {
+            let Some(address) = self.mesh.triangle_addresses[face] else {
+                continue;
+            };
+            if address.n != level_grid.subdivision {
+                continue;
+            }
+            let level_face = address
+                .dense_index(level_grid.subdivision)?
+                .checked_add(2)
+                .ok_or_else(|| format!("level face slot overflow for {address:?}"))?;
+            let level_triangle = level_grid.mesh.triangles()[level_face];
+            let live_triangle = self.mesh.mesh.triangles()[face];
+            for (level_site, compact_site) in level_triangle.into_iter().zip(live_triangle) {
+                let source_site = self.mesh.source_vertex_slots[compact_site].ok_or_else(|| {
+                    format!("live hierarchy site {compact_site} has no source slot")
+                })?;
+                match slots[level_site] {
+                    Some(existing) if existing != source_site => {
+                        return Err(format!(
+                            "level site {level_site} maps to source sites {existing} and {source_site}"
+                        ));
+                    }
+                    _ => slots[level_site] = Some(source_site),
+                }
+            }
+        }
+        Ok(slots)
+    }
+
+    fn prepare_parent_level(&mut self, parent_subdivision: usize) {
+        if self.claimed_parent_subdivision != Some(parent_subdivision) {
+            self.claimed_parent_subdivision = Some(parent_subdivision);
+            self.claimed_parents.clear();
+        }
     }
 }
 
@@ -118,6 +177,7 @@ pub struct ComponentRollbackReport {
     pub topology_states: usize,
     pub elastic_iterations: usize,
     pub interval_boxes: usize,
+    pub halo_expansions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -131,10 +191,12 @@ pub struct ComponentCommitReport {
     pub post_faces: usize,
     pub removed_vertices: usize,
     pub removed_faces: usize,
+    pub core_vertices_removed: usize,
     pub core_search_states: usize,
     pub topology_states: usize,
     pub elastic_iterations: usize,
     pub interval_boxes: usize,
+    pub halo_expansions: usize,
     pub local_geometry: GeometryRegionCertificateReport,
     pub global_geometry: GeometryCertificateReport,
     pub final_certificate: FinalCertificateReport,
@@ -164,6 +226,38 @@ pub fn solve_component_transaction(
     max_adjacent_level_delta: usize,
     limits: ComponentTransactionLimits,
 ) -> ComponentTransactionOutcome {
+    let level_source_slots = source
+        .mesh
+        .vertices()
+        .iter()
+        .enumerate()
+        .map(|(site, _)| source.mesh.is_vertex_live(site).then_some(site))
+        .collect::<Vec<_>>();
+    solve_component_transaction_at_level(
+        source,
+        source_levels,
+        state,
+        source,
+        &level_source_slots,
+        component,
+        coarse_level,
+        max_adjacent_level_delta,
+        limits,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn solve_component_transaction_at_level(
+    source: &MotherGrid,
+    source_levels: &SourceLevelField,
+    state: &mut ComponentTransactionState,
+    level_grid: &MotherGrid,
+    level_source_slots: &[Option<usize>],
+    component: &HierarchyComponent,
+    coarse_level: usize,
+    max_adjacent_level_delta: usize,
+    limits: ComponentTransactionLimits,
+) -> ComponentTransactionOutcome {
     let snapshot = state.clone();
     let before_fingerprint = snapshot.fingerprint();
     let pre_vertices = snapshot.mesh.mesh.vertex_count();
@@ -184,11 +278,24 @@ pub fn solve_component_transaction(
                 topology_states: counters.topology_states,
                 elastic_iterations: counters.elastic_iterations,
                 interval_boxes: counters.interval_boxes,
+                halo_expansions: counters.halo_expansions,
             })
         }};
     }
 
+    let Some(parent_subdivision) = component.parents.first().map(|parent| parent.n) else {
+        return fail!(
+            InvalidInput,
+            ComponentTransactionStage::Preflight,
+            "component has no parents".to_string()
+        );
+    };
+    state.prepare_parent_level(parent_subdivision);
+
     if let Err(reason) = validate_preflight(source, source_levels, state, component) {
+        return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
+    }
+    if let Err(reason) = validate_level_mapping(source, level_grid, level_source_slots, component) {
         return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
     }
     if let Err(reason) =
@@ -198,7 +305,7 @@ pub fn solve_component_transaction(
     }
 
     let transition = match solve_transition_topology(
-        source,
+        level_grid,
         component,
         TransitionTopologyLimits {
             topology_states: limits.topology_states,
@@ -207,12 +314,20 @@ pub fn solve_component_transaction(
     ) {
         TransitionTopologyOutcome::Closed(trial) => {
             counters.topology_states = trial.report.topology_states;
-            trial
+            counters.halo_expansions = trial.report.halo_expansions;
+            match remap_transition_trial(trial, level_source_slots) {
+                Ok(trial) => trial,
+                Err(reason) => {
+                    return fail!(InvalidInput, ComponentTransactionStage::Topology, reason)
+                }
+            }
         }
         TransitionTopologyOutcome::RequiresWiderHalo {
-            states_examined, ..
+            states_examined,
+            halo_expansions,
         } => {
             counters.topology_states = states_examined;
+            counters.halo_expansions = halo_expansions;
             return fail!(
                 RequiresWiderHalo,
                 ComponentTransactionStage::Topology,
@@ -220,9 +335,11 @@ pub fn solve_component_transaction(
             );
         }
         TransitionTopologyOutcome::SearchBudgetExhausted {
-            states_examined, ..
+            states_examined,
+            halo_expansions,
         } => {
             counters.topology_states = states_examined;
+            counters.halo_expansions = halo_expansions;
             return fail!(
                 SearchBudgetExhausted,
                 ComponentTransactionStage::Topology,
@@ -231,18 +348,20 @@ pub fn solve_component_transaction(
         }
         TransitionTopologyOutcome::ProvenInfeasible {
             states_examined,
+            halo_expansions,
             reason,
-            ..
         } => {
             counters.topology_states = states_examined;
+            counters.halo_expansions = halo_expansions;
             return fail!(NoTopology, ComponentTransactionStage::Topology, reason);
         }
         TransitionTopologyOutcome::InvalidBoundary {
             states_examined,
+            halo_expansions,
             reason,
-            ..
         } => {
             counters.topology_states = states_examined;
+            counters.halo_expansions = halo_expansions;
             return fail!(InvalidInput, ComponentTransactionStage::Topology, reason);
         }
     };
@@ -436,6 +555,21 @@ pub fn solve_component_transaction(
     state
         .claimed_parents
         .extend(component.parents.iter().copied());
+    let post_sources = state
+        .mesh
+        .source_vertex_slots
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let core_sources = source_sites_for_parents(source, candidate.core_parents.iter().copied());
+    let core_vertices_removed = snapshot
+        .mesh
+        .source_vertex_slots
+        .iter()
+        .flatten()
+        .filter(|source| !post_sources.contains(source) && core_sources.contains(source))
+        .count();
 
     ComponentTransactionOutcome::Certified(Box::new(ComponentCommitReport {
         component_id: component.id,
@@ -447,10 +581,12 @@ pub fn solve_component_transaction(
         post_faces,
         removed_vertices: pre_vertices - post_vertices,
         removed_faces: pre_faces - post_faces,
+        core_vertices_removed,
         core_search_states: 0,
         topology_states: counters.topology_states,
         elastic_iterations: counters.elastic_iterations,
         interval_boxes: counters.interval_boxes,
+        halo_expansions: counters.halo_expansions,
         local_geometry,
         global_geometry,
         final_certificate,
@@ -465,6 +601,110 @@ struct Counters {
     topology_states: usize,
     elastic_iterations: usize,
     interval_boxes: usize,
+    halo_expansions: usize,
+}
+
+fn validate_level_mapping(
+    source: &MotherGrid,
+    level_grid: &MotherGrid,
+    level_source_slots: &[Option<usize>],
+    component: &HierarchyComponent,
+) -> Result<(), String> {
+    if level_source_slots.len() != level_grid.mesh.vertices().len() {
+        return Err("level source-slot map does not match level grid vertices".into());
+    }
+    let expected_parent_n = level_grid.subdivision / 2;
+    for parent in &component.parents {
+        if parent.n != expected_parent_n {
+            return Err(format!(
+                "component parent {parent:?} is not at level-grid parent subdivision {expected_parent_n}"
+            ));
+        }
+        for child in parent
+            .children_2_to_1()
+            .ok_or_else(|| format!("invalid component parent {parent:?}"))?
+        {
+            let face = source_face_slot(level_grid, child)?;
+            for level_site in level_grid.mesh.triangles()[face] {
+                let source_site = mapped_source_site(level_source_slots, level_site)?;
+                if !source.mesh.is_vertex_live(source_site) {
+                    return Err(format!(
+                        "level site {level_site} maps to inactive source site {source_site}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remap_transition_trial(
+    mut trial: Box<super::TransitionTopologyTrial>,
+    level_source_slots: &[Option<usize>],
+) -> Result<Box<super::TransitionTopologyTrial>, String> {
+    for source in &mut trial.mesh.source_vertex_slots {
+        if let Some(level_site) = *source {
+            *source = Some(mapped_source_site(level_source_slots, level_site)?);
+        }
+    }
+    for triangles in trial.candidate.custom_transition_triangles.values_mut() {
+        remap_triangles(triangles, level_source_slots)?;
+    }
+    remap_triangles(&mut trial.candidate.source_triangles, level_source_slots)?;
+    remap_sites(
+        &mut trial.candidate.source_active_vertices,
+        level_source_slots,
+    )?;
+    let mut degree_forecast = BTreeMap::new();
+    for (level_site, degree) in std::mem::take(&mut trial.candidate.source_degree_forecast) {
+        let source_site = mapped_source_site(level_source_slots, level_site)?;
+        if degree_forecast.insert(source_site, degree).is_some() {
+            return Err(format!(
+                "multiple level sites map to transition source site {source_site}"
+            ));
+        }
+    }
+    trial.candidate.source_degree_forecast = degree_forecast;
+    for cycle in trial
+        .boundary
+        .fine_outer_cycles
+        .iter_mut()
+        .chain(&mut trial.boundary.coarse_inner_cycles)
+    {
+        remap_sites(cycle, level_source_slots)?;
+    }
+    remap_sites(&mut trial.boundary.seam, level_source_slots)?;
+    remap_sites(&mut trial.boundary.pentagon, level_source_slots)?;
+    Ok(trial)
+}
+
+fn remap_triangles(
+    triangles: &mut [[usize; 3]],
+    level_source_slots: &[Option<usize>],
+) -> Result<(), String> {
+    for triangle in triangles {
+        for site in triangle {
+            *site = mapped_source_site(level_source_slots, *site)?;
+        }
+    }
+    Ok(())
+}
+
+fn remap_sites(sites: &mut [usize], level_source_slots: &[Option<usize>]) -> Result<(), String> {
+    for site in sites {
+        *site = mapped_source_site(level_source_slots, *site)?;
+    }
+    Ok(())
+}
+
+fn mapped_source_site(
+    level_source_slots: &[Option<usize>],
+    level_site: usize,
+) -> Result<usize, String> {
+    level_source_slots
+        .get(level_site)
+        .and_then(|source| *source)
+        .ok_or_else(|| format!("level site {level_site} has no live source mapping"))
 }
 
 fn validate_preflight(
@@ -498,22 +738,10 @@ fn validate_physical_eligibility(
     component: &HierarchyComponent,
     coarse_level: usize,
 ) -> Result<(), String> {
-    let levels_by_site = source_levels
-        .active_sites()
-        .iter()
-        .copied()
-        .zip(source_levels.levels().iter().copied())
-        .collect::<BTreeMap<_, _>>();
     for parent in &component.parents {
-        let children = parent
-            .children_2_to_1()
-            .ok_or_else(|| format!("invalid component parent {parent:?}"))?;
-        for child in children {
-            let face = source_face_slot(source, child)?;
+        visit_source_descendant_faces(source, *parent, &mut |face| {
             for site in source.mesh.triangles()[face] {
-                let required = levels_by_site
-                    .get(&site)
-                    .copied()
+                let required = source_level_at_site(source_levels, site)
                     .ok_or_else(|| format!("source site {site} has no physical requirement"))?;
                 if required > coarse_level {
                     return Err(format!(
@@ -521,7 +749,48 @@ fn validate_physical_eligibility(
                     ));
                 }
             }
-        }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn source_level_at_site(source_levels: &SourceLevelField, site: usize) -> Option<usize> {
+    let active = source_levels.active_sites();
+    let first = *active.first()?;
+    let offset = site.checked_sub(first)?;
+    if active.get(offset) == Some(&site) {
+        return source_levels.levels().get(offset).copied();
+    }
+    active
+        .binary_search(&site)
+        .ok()
+        .and_then(|index| source_levels.levels().get(index).copied())
+}
+
+fn visit_source_descendant_faces(
+    source: &MotherGrid,
+    address: TriangleAddress,
+    visit: &mut impl FnMut(usize) -> Result<(), String>,
+) -> Result<(), String> {
+    if address.n == source.subdivision {
+        return visit(source_face_slot(source, address)?);
+    }
+    if address.n == 0
+        || address.n > source.subdivision
+        || !source.subdivision.is_multiple_of(address.n)
+        || !(source.subdivision / address.n).is_power_of_two()
+    {
+        return Err(format!(
+            "hierarchy address {address:?} is not an ancestor of source subdivision {}",
+            source.subdivision
+        ));
+    }
+    for child in address
+        .children_2_to_1()
+        .ok_or_else(|| format!("invalid hierarchy address {address:?}"))?
+    {
+        visit_source_descendant_faces(source, child, visit)?;
     }
     Ok(())
 }
@@ -682,19 +951,26 @@ fn candidate_source_sites(
     source: &MotherGrid,
     candidate: &TransitionTopologyCandidate,
 ) -> BTreeSet<usize> {
+    source_sites_for_parents(
+        source,
+        candidate
+            .core_parents
+            .iter()
+            .copied()
+            .chain(candidate.custom_transition_triangles.keys().copied()),
+    )
+}
+
+fn source_sites_for_parents(
+    source: &MotherGrid,
+    parents: impl IntoIterator<Item = TriangleAddress>,
+) -> BTreeSet<usize> {
     let mut sources = BTreeSet::new();
-    for parent in candidate
-        .core_parents
-        .iter()
-        .chain(candidate.custom_transition_triangles.keys())
-    {
-        if let Some(children) = parent.children_2_to_1() {
-            for child in children {
-                if let Ok(face) = source_face_slot(source, child) {
-                    sources.extend(source.mesh.triangles()[face]);
-                }
-            }
-        }
+    for parent in parents {
+        let _ = visit_source_descendant_faces(source, parent, &mut |face| {
+            sources.extend(source.mesh.triangles()[face]);
+            Ok(())
+        });
     }
     sources
 }

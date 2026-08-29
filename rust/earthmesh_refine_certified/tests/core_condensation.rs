@@ -224,3 +224,25 @@ fn seam_vertex_parent_materializes_with_corners_mapped_to_fine_sites() {
         Some(VertexAddress::IcosahedronVertex(_))
     )));
 }
+
+#[test]
+fn repeated_core_condensation_rebuilds_from_the_original_source_grid() {
+    let fine = MotherGrid::generate(8).unwrap();
+    let mut leaf_set = HierarchyLeafSet::from_mother_grid(&fine).unwrap();
+
+    for target_n in [4, 2, 1] {
+        let parents = MotherGrid::generate(target_n)
+            .unwrap()
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        leaf_set.condense_core(&parents).unwrap();
+
+        let rebuilt = rebuild_from_leaf_set(&fine, &leaf_set).unwrap();
+        let expected = MotherGrid::generate(target_n).unwrap();
+        assert_eq!(rebuilt.mesh, expected.mesh);
+        assert_eq!(rebuilt.triangle_addresses, expected.triangle_addresses);
+    }
+}
