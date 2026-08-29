@@ -62,6 +62,59 @@ fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
 }
 
 #[test]
+fn regional_oceanmesh_missing_landtype_errors_before_gridfile() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_regional_missing_landtype_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let namelist = root.join("mkgrd_missing_landtype.nml");
+    let base_dir = format!("{}/", root.display());
+    let missing_landtype = root.join("missing_landtype.nc");
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd
+  NL%EXPNME='case_regional_missing_landtype'
+  NL%base_dir='{base_dir}'
+  NL%NXP=1
+  NL%mesh_type='oceanmesh'
+  NL%mode_grid='tri'
+  NL%mode_file='none'
+  NL%mode_file_description='none'
+  NL%landtype_file='{}'
+  NL%refine=.false.
+  NL%niter=0
+  NL%mask_domain_global=.false.
+  NL%mask_domain_type='bbox'
+  NL%mask_domain_fprefix='inline:bbox:w=-180,e=180,s=-90,n=90'
+  NL%mask_patch_on=.false.
+  NL%output_format='FVCOM'
+/
+",
+            missing_landtype.display()
+        ),
+    )
+    .expect("write namelist");
+
+    let err = earthmesh_cli::mkgrd_gridinit_driver::run_mkgrd_regional_clip_base_namelist(
+        &namelist, &root, 100,
+    )
+    .expect_err("configured missing landtype must not silently disable ocean carve");
+
+    assert!(
+        err.to_string().contains("missing_landtype.nc"),
+        "unexpected error: {err}"
+    );
+    assert!(!root
+        .join("case_regional_missing_landtype/gridfile/gridfile_NXP0001_01_tri.nc4")
+        .exists());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn earthmesh_cli_binary_runs_gridinit_namelist() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_binary_gridinit_{}",

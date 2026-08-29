@@ -47,8 +47,7 @@ pub fn run_mkgrd_regional_clip_base_namelist(
     let carve_landtype = matches!(mesh_type.as_str(), "landmesh" | "oceanmesh")
         && !landtype.is_empty()
         && landtype != "none"
-        && landtype != "/tmp"
-        && Path::new(&landtype).is_file();
+        && landtype != "/tmp";
     if region.is_none() && !carve_landtype {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -56,6 +55,10 @@ pub fn run_mkgrd_regional_clip_base_namelist(
              mask_domain_fprefix) or a land/ocean landcover file (landtype_file)",
         ));
     }
+
+    let landtype_gpd = carve_landtype
+        .then(|| landtype_gridnum_perdegree(Path::new(&landtype)))
+        .transpose()?;
 
     let mut gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
     let nxp = usize::try_from(config.nxp)
@@ -65,7 +68,7 @@ pub fn run_mkgrd_regional_clip_base_namelist(
     if let Some(close_points) =
         clean_regional_ocean_close_points(region.as_ref(), &mesh_type, mode_grid, carve_landtype)
     {
-        let gpd = landtype_gridnum_perdegree(Path::new(&landtype))?;
+        let gpd = landtype_gpd.expect("carve landtype preflight should provide grid resolution");
         let plan = write_clean_regional_ocean_gridfile(
             &gridinit.gridfile.output,
             close_points,
@@ -117,7 +120,7 @@ pub fn run_mkgrd_regional_clip_base_namelist(
     if carve_landtype {
         // Sample resolution must equal the landcover file's own grid, NOT
         // NL%gridnum_perdegree (which need not match it).
-        let gpd = landtype_gridnum_perdegree(Path::new(&landtype))?;
+        let gpd = landtype_gpd.expect("carve landtype preflight should provide grid resolution");
         if gpd > 0 {
             let masked = file_dir
                 .join("result")
