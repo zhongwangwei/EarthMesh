@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashSet};
 use earthmesh_mesh::{orientation_on_sphere, Sign};
 use earthmesh_refine_certified::{
     coarsen::{
-        solve_transition_topology, HierarchyComponent, TransitionTopologyLimits,
+        solve_transition_topology, ElasticPatch, HierarchyComponent, TransitionTopologyLimits,
         TransitionTopologyOutcome, TransitionTopologyTrial,
     },
     MotherGrid, TriangleAddress, TriangleOrientation, VertexAddress,
@@ -415,6 +415,19 @@ fn multi_ring_transition_only_retriangulates_core_adjacent_parents_and_closes() 
             .count(),
         2 + trial.candidate.source_triangles.len()
     );
+    let elastic = ElasticPatch::from_transition(&trial).unwrap();
+    let fixed_sources = trial
+        .boundary
+        .fine_outer_cycles
+        .iter()
+        .chain(&trial.boundary.coarse_inner_cycles)
+        .flat_map(|cycle| cycle.iter().copied())
+        .collect::<BTreeSet<_>>();
+    assert!(!elastic.movable_compact_vertices.is_empty());
+    assert!(elastic.movable_compact_vertices.iter().all(|&compact| {
+        trial.mesh.source_vertex_slots[compact]
+            .is_some_and(|source| !fixed_sources.contains(&source))
+    }));
 }
 
 #[test]
