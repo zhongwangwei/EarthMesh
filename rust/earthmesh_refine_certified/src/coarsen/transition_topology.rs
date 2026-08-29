@@ -24,6 +24,22 @@ impl TransitionTopologyLimits {
     ) -> TransitionTopologyOutcome {
         solve_transition_topology_from_cursor(source, component, self, topology_states_cursor)
     }
+
+    pub(super) fn solve_from_cursor_with_promotion(
+        self,
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        topology_states_cursor: usize,
+        preferred_core_promotion: Option<(TriangleAddress, usize)>,
+    ) -> TransitionTopologyOutcome {
+        solve_transition_topology_from_cursor_with_promotion(
+            source,
+            component,
+            self,
+            topology_states_cursor,
+            preferred_core_promotion,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -53,6 +69,7 @@ pub struct TransitionTopologyReport {
     pub transition_parent_count: usize,
     pub halo_expansions: usize,
     pub topology_states: usize,
+    pub layout_topology_states: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +124,22 @@ pub fn solve_transition_topology_from_cursor(
     component: &HierarchyComponent,
     limits: TransitionTopologyLimits,
     topology_states_cursor: usize,
+) -> TransitionTopologyOutcome {
+    solve_transition_topology_from_cursor_with_promotion(
+        source,
+        component,
+        limits,
+        topology_states_cursor,
+        None,
+    )
+}
+
+fn solve_transition_topology_from_cursor_with_promotion(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    limits: TransitionTopologyLimits,
+    topology_states_cursor: usize,
+    mut preferred_core_promotion: Option<(TriangleAddress, usize)>,
 ) -> TransitionTopologyOutcome {
     let mut core = set(component.core_parents.iter().copied());
     let mut transition = set(component.transition_parents.iter().copied());
@@ -188,9 +221,11 @@ pub fn solve_transition_topology_from_cursor(
             local_limit,
         ) {
             TransitionTopologyOutcome::Closed(mut trial) => {
+                let layout_topology_states = trial.report.topology_states;
                 trial.candidate.topology_id += states_examined;
                 states_examined += trial.report.topology_states;
                 trial.report.topology_states = states_examined;
+                trial.report.layout_topology_states = layout_topology_states;
                 trial.report.halo_expansions = halo_expansions;
                 return TransitionTopologyOutcome::Closed(trial);
             }
@@ -199,21 +234,25 @@ pub fn solve_transition_topology_from_cursor(
                 ..
             } => {
                 states_examined += local;
-                if states_examined == limits.topology_states
-                    || halo_expansions == limits.maximum_halo_expansions
-                {
+                if states_examined == limits.topology_states {
                     return TransitionTopologyOutcome::SearchBudgetExhausted {
                         states_examined,
                         halo_expansions,
                     };
                 }
-                if !promote_core_boundary(source, &mut core, &mut transition) {
+                let Some(expansion_cost) = promote_core_boundary(
+                    source,
+                    &mut core,
+                    &mut transition,
+                    preferred_core_promotion.take(),
+                    limits.maximum_halo_expansions - halo_expansions,
+                ) else {
                     return TransitionTopologyOutcome::SearchBudgetExhausted {
                         states_examined,
                         halo_expansions,
                     };
-                }
-                halo_expansions += 1;
+                };
+                halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
                 return invalid(states_examined, halo_expansions, reason);
@@ -238,14 +277,19 @@ pub fn solve_transition_topology_from_cursor(
                         reason,
                     };
                 }
-                if halo_expansions == limits.maximum_halo_expansions {
+                let Some(expansion_cost) = promote_core_boundary(
+                    source,
+                    &mut core,
+                    &mut transition,
+                    preferred_core_promotion.take(),
+                    limits.maximum_halo_expansions - halo_expansions,
+                ) else {
                     return TransitionTopologyOutcome::RequiresWiderHalo {
                         states_examined,
                         halo_expansions,
                     };
-                }
-                promote_to_transition(&mut core, &mut transition, peel);
-                halo_expansions += 1;
+                };
+                halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::RequiresWiderHalo { .. } => unreachable!(),
         }
@@ -319,13 +363,22 @@ fn promote_core_boundary(
     source: &MotherGrid,
     core: &mut BTreeSet<TriangleAddress>,
     transition: &mut BTreeSet<TriangleAddress>,
-) -> bool {
+    preferred: Option<(TriangleAddress, usize)>,
+    remaining_halo_expansions: usize,
+) -> Option<usize> {
     let peel = core_boundary(source, core);
     if peel.is_empty() || peel.len() == core.len() {
-        return false;
+        return None;
     }
-    promote_to_transition(core, transition, peel);
-    true
+    let (promoted, expansion_cost) = preferred
+        .filter(|(parent, cost)| peel.contains(parent) && *cost <= remaining_halo_expansions)
+        .map(|(parent, cost)| (BTreeSet::from([parent]), cost))
+        .unwrap_or((peel, 1));
+    if expansion_cost > remaining_halo_expansions {
+        return None;
+    }
+    promote_to_transition(core, transition, promoted);
+    Some(expansion_cost)
 }
 
 fn core_boundary(
@@ -387,6 +440,7 @@ fn pure_core(
             transition_parent_count: 0,
             halo_expansions,
             topology_states: 0,
+            layout_topology_states: 0,
         },
     }))
 }
@@ -535,6 +589,7 @@ fn solve_once(
             transition_parent_count: transition.len(),
             halo_expansions,
             topology_states: states,
+            layout_topology_states: states,
         },
     }))
 }
@@ -733,6 +788,13 @@ fn parent_patch(source: &MotherGrid, parent: TriangleAddress) -> Result<ParentPa
         neighbours,
         child_triangles,
     })
+}
+
+pub(super) fn hierarchy_parent_neighbours(
+    source: &MotherGrid,
+    parent: TriangleAddress,
+) -> Result<[TriangleAddress; 3], String> {
+    Ok(parent_patch(source, parent)?.neighbours)
 }
 
 fn neighbour_parent(
@@ -1163,5 +1225,38 @@ mod tests {
                 vec![1, 2],
             ]
         );
+    }
+
+    #[test]
+    fn hinted_halo_promotion_moves_only_the_failed_boundary_parent() {
+        let source = MotherGrid::generate(8).unwrap();
+        let mut core = source
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .filter_map(|child| child.parent_2_to_1())
+            .collect::<BTreeSet<_>>();
+        let initial_transition = *core.first().unwrap();
+        core.remove(&initial_transition);
+        let mut transition = BTreeSet::from([initial_transition]);
+        let peel = core_boundary(&source, &core);
+        assert!(peel.len() > 1);
+        let preferred = *peel.first().unwrap();
+        let untouched = *peel
+            .range((
+                std::ops::Bound::Excluded(preferred),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .unwrap();
+        let initial_core_len = core.len();
+
+        assert_eq!(
+            promote_core_boundary(&source, &mut core, &mut transition, Some((preferred, 1)), 1,),
+            Some(1)
+        );
+        assert_eq!(core.len(), initial_core_len - 1);
+        assert!(transition.contains(&preferred));
+        assert!(core.contains(&untouched));
     }
 }

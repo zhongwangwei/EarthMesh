@@ -4,6 +4,7 @@
 //! only transition coordinates, then the normal geometry/final-cell/remap gates
 //! decide whether the cloned state is committed.
 
+use super::transition_topology::hierarchy_parent_neighbours;
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
     core_condensation::source_face_slot, solve_elastic_patch, ElasticBlockLimits,
@@ -26,7 +27,7 @@ use crate::{
     },
 };
 use earthmesh_mesh::{CartesianPoint, MeshState};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTransactionLimits {
@@ -313,17 +314,36 @@ pub(super) fn solve_component_transaction_at_level(
     let mut saw_candidate = false;
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
     let mut last_elastic_budget_failure: Option<String> = None;
+    let mut preferred_core_promotion = None;
+    let mut topology_state_offset = 0usize;
+    let mut halo_expansion_offset = 0usize;
+    let mut search_component = component.clone();
+    let promotion_depths = match core_promotion_depths(level_grid, component) {
+        Ok(depths) => depths,
+        Err(reason) => return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason),
+    };
 
     loop {
+        let preferred_promotion_with_cost = preferred_core_promotion.and_then(|parent| {
+            let depth = promotion_depths.get(&parent).copied()?;
+            (depth <= limits.halo_expansions)
+                .then_some((parent, depth.saturating_sub(halo_expansion_offset)))
+        });
         let transition = match (TransitionTopologyLimits {
-            topology_states: limits.topology_states,
-            maximum_halo_expansions: limits.halo_expansions,
+            topology_states: limits.topology_states.saturating_sub(topology_state_offset),
+            maximum_halo_expansions: limits.halo_expansions.saturating_sub(halo_expansion_offset),
         })
-        .solve_from_cursor(level_grid, component, topology_cursor)
-        {
+        .solve_from_cursor_with_promotion(
+            level_grid,
+            &search_component,
+            topology_cursor,
+            preferred_promotion_with_cost,
+        ) {
             TransitionTopologyOutcome::Closed(trial) => {
-                counters.topology_states = trial.report.topology_states;
-                counters.halo_expansions = trial.report.halo_expansions;
+                counters.topology_states =
+                    topology_state_offset.saturating_add(trial.report.topology_states);
+                counters.halo_expansions =
+                    halo_expansion_offset.saturating_add(trial.report.halo_expansions);
                 match remap_transition_trial(trial, level_source_slots) {
                     Ok(trial) => trial,
                     Err(reason) => {
@@ -335,8 +355,8 @@ pub(super) fn solve_component_transaction_at_level(
                 states_examined,
                 halo_expansions,
             } => {
-                counters.topology_states = states_examined;
-                counters.halo_expansions = halo_expansions;
+                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 return fail!(
                     RequiresWiderHalo,
                     ComponentTransactionStage::Topology,
@@ -347,8 +367,8 @@ pub(super) fn solve_component_transaction_at_level(
                 states_examined,
                 halo_expansions,
             } => {
-                counters.topology_states = states_examined;
-                counters.halo_expansions = halo_expansions;
+                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 let reason = last_elastic_budget_failure
                     .as_deref()
                     .map(|elastic| {
@@ -373,8 +393,8 @@ pub(super) fn solve_component_transaction_at_level(
                 halo_expansions,
                 reason,
             } => {
-                counters.topology_states = states_examined;
-                counters.halo_expansions = halo_expansions;
+                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 if saw_candidate {
                     if let Some(reason) = last_elastic_budget_failure {
                         return fail!(
@@ -400,14 +420,25 @@ pub(super) fn solve_component_transaction_at_level(
                 halo_expansions,
                 reason,
             } => {
-                counters.topology_states = states_examined;
-                counters.halo_expansions = halo_expansions;
+                counters.topology_states = topology_state_offset.saturating_add(states_examined);
+                counters.halo_expansions = halo_expansion_offset.saturating_add(halo_expansions);
                 return fail!(InvalidInput, ComponentTransactionStage::Topology, reason);
             }
         };
 
         saw_candidate = true;
-        let candidate_topology_states = transition.report.topology_states;
+        let candidate_topology_states = transition.report.layout_topology_states;
+        let layout_changed = transition.candidate.core_parents != search_component.core_parents
+            || transition.boundary.halo_parents != search_component.transition_parents;
+        let candidate_previous_cursor = if layout_changed { 0 } else { topology_cursor };
+        if layout_changed {
+            topology_state_offset = counters
+                .topology_states
+                .saturating_sub(candidate_topology_states);
+            halo_expansion_offset = counters.halo_expansions;
+            search_component.core_parents = transition.candidate.core_parents.clone();
+            search_component.transition_parents = transition.boundary.halo_parents.clone();
+        }
         let exact_core_candidate = transition.candidate.custom_transition_triangles.is_empty();
         let mut candidate_state = state.clone();
         candidate_state.prepare_parent_level(parent_subdivision);
@@ -441,6 +472,9 @@ pub(super) fn solve_component_transaction_at_level(
             Err(failure) => {
                 counters.elastic_iterations += failure.elastic_iterations;
                 counters.interval_boxes += failure.interval_boxes;
+                preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
+                    preferred_core_promotion_for_face(&candidate_state.mesh, &transition, face)
+                });
                 match failure.disposition {
                     CandidateFailureDisposition::InvalidInput => {
                         return fail!(InvalidInput, failure.stage, failure.reason)
@@ -448,7 +482,7 @@ pub(super) fn solve_component_transaction_at_level(
                     CandidateFailureDisposition::BudgetExhausted => {
                         if failure.stage != ComponentTransactionStage::Elastic
                             || exact_core_candidate
-                            || candidate_topology_states <= topology_cursor
+                            || candidate_topology_states <= candidate_previous_cursor
                         {
                             return fail!(SearchBudgetExhausted, failure.stage, failure.reason);
                         }
@@ -457,7 +491,9 @@ pub(super) fn solve_component_transaction_at_level(
                     }
                     CandidateFailureDisposition::Retry => {
                         last_retry = Some((failure.stage, failure.reason));
-                        if exact_core_candidate || candidate_topology_states <= topology_cursor {
+                        if exact_core_candidate
+                            || candidate_topology_states <= candidate_previous_cursor
+                        {
                             let (stage, reason) = last_retry.expect("just recorded retry");
                             return fail!(NotCertifiable, stage, reason);
                         }
@@ -483,6 +519,7 @@ struct CandidateAttemptFailure {
     reason: String,
     elastic_iterations: usize,
     interval_boxes: usize,
+    failed_guard_face: Option<usize>,
 }
 
 impl CandidateAttemptFailure {
@@ -493,6 +530,7 @@ impl CandidateAttemptFailure {
             reason: reason.into(),
             elastic_iterations: 0,
             interval_boxes: 0,
+            failed_guard_face: None,
         }
     }
 
@@ -503,6 +541,7 @@ impl CandidateAttemptFailure {
             reason: reason.into(),
             elastic_iterations: 0,
             interval_boxes: 0,
+            failed_guard_face: None,
         }
     }
 
@@ -513,6 +552,7 @@ impl CandidateAttemptFailure {
             reason: reason.into(),
             elastic_iterations: 0,
             interval_boxes: 0,
+            failed_guard_face: None,
         }
     }
 }
@@ -567,26 +607,35 @@ fn certify_candidate(
                 initial_energy,
                 final_energy,
                 reason,
+                failed_guard_face,
             } => {
                 let mut failure = CandidateAttemptFailure::retry(
                     ComponentTransactionStage::Elastic,
-                    format!("{reason} (energy {initial_energy:.6e} -> {final_energy:.6e})"),
+                    format!(
+                        "{reason}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
+                        guard_face_suffix(failed_guard_face)
+                    ),
                 );
                 failure.elastic_iterations = iterations;
+                failure.failed_guard_face = failed_guard_face;
                 return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
                 elastic_iterations: iterations,
                 initial_energy,
                 final_energy,
+                reason,
+                failed_guard_face,
             } => {
                 let mut failure = CandidateAttemptFailure::budget(
                     ComponentTransactionStage::Elastic,
                     format!(
-                        "elastic iteration budget exhausted (energy {initial_energy:.6e} -> {final_energy:.6e})"
+                        "elastic iteration budget exhausted: {reason}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
+                        guard_face_suffix(failed_guard_face)
                     ),
                 );
                 failure.elastic_iterations = iterations;
+                failure.failed_guard_face = failed_guard_face;
                 return Err(failure);
             }
             ElasticBlockOutcome::InvalidPatch { reason } => {
@@ -849,6 +898,79 @@ fn remap_transition_trial(
     remap_sites(&mut trial.boundary.seam, level_source_slots)?;
     remap_sites(&mut trial.boundary.pentagon, level_source_slots)?;
     Ok(trial)
+}
+
+fn guard_face_suffix(failed_guard_face: Option<usize>) -> String {
+    failed_guard_face
+        .map(|face| format!("; failed guard face {face}"))
+        .unwrap_or_default()
+}
+
+fn core_promotion_depths(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+) -> Result<BTreeMap<TriangleAddress, usize>, String> {
+    let parents = component.parents.iter().copied().collect::<BTreeSet<_>>();
+    let mut depths = BTreeMap::new();
+    let mut queue = VecDeque::new();
+    for parent in component.transition_parents.iter().copied() {
+        depths.insert(parent, 0);
+        queue.push_back(parent);
+    }
+    while let Some(parent) = queue.pop_front() {
+        let next_depth = depths[&parent] + 1;
+        for neighbour in hierarchy_parent_neighbours(source, parent)? {
+            if parents.contains(&neighbour) && !depths.contains_key(&neighbour) {
+                depths.insert(neighbour, next_depth);
+                queue.push_back(neighbour);
+            }
+        }
+    }
+    if !component.transition_parents.is_empty() && depths.len() != parents.len() {
+        return Err("component promotion depths are disconnected".into());
+    }
+    Ok(depths)
+}
+
+fn preferred_core_promotion_for_face(
+    mesh: &HierarchyLeafMesh,
+    transition: &super::TransitionTopologyTrial,
+    failed_face: usize,
+) -> Option<TriangleAddress> {
+    if !mesh.mesh.is_triangle_live(failed_face) {
+        return None;
+    }
+    let core = transition
+        .candidate
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut seen = vec![false; mesh.mesh.triangles().len()];
+    seen[failed_face] = true;
+    let mut queue = VecDeque::from([failed_face]);
+    while !queue.is_empty() {
+        let mut nearest = BTreeSet::new();
+        for _ in 0..queue.len() {
+            let face = queue.pop_front().expect("current breadth is non-empty");
+            if let Some(parent) =
+                mesh.triangle_addresses[face].filter(|parent| core.contains(parent))
+            {
+                nearest.insert(parent);
+                continue;
+            }
+            for neighbour in mesh.mesh.neighbours()[face] {
+                if neighbour != 0 && mesh.mesh.is_triangle_live(neighbour) && !seen[neighbour] {
+                    seen[neighbour] = true;
+                    queue.push_back(neighbour);
+                }
+            }
+        }
+        if let Some(parent) = nearest.into_iter().next() {
+            return Some(parent);
+        }
+    }
+    None
 }
 
 fn remap_triangles(
@@ -1167,4 +1289,53 @@ fn target_levels_for(
         })
         .collect::<Result<Vec<_>, _>>()?;
     TargetLevelField::from_active_voronoi_cells(mesh, levels)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_face_maps_to_the_nearest_core_face_across_the_transition() {
+        let grid = MotherGrid::generate(2).unwrap();
+        let core_face = grid.mesh.active_triangle_slots().next().unwrap();
+        let core_parent = grid.triangle_addresses[core_face].unwrap();
+        let failed_face = grid
+            .mesh
+            .active_triangle_slots()
+            .find(|&face| {
+                face != core_face
+                    && !grid.mesh.neighbours()[face].contains(&core_face)
+                    && grid.mesh.triangles()[face]
+                        .iter()
+                        .all(|site| !grid.mesh.triangles()[core_face].contains(site))
+            })
+            .unwrap();
+        let mesh = HierarchyLeafMesh {
+            mesh: grid.mesh.clone(),
+            triangle_addresses: grid.triangle_addresses.clone(),
+            source_vertex_slots: (0..grid.mesh.vertices().len())
+                .map(|site| grid.mesh.is_vertex_live(site).then_some(site))
+                .collect(),
+        };
+        let transition = super::super::TransitionTopologyTrial {
+            mesh: mesh.clone(),
+            boundary: super::super::TransitionBoundary::default(),
+            candidate: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 0,
+                core_parents: vec![core_parent],
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: Vec::new(),
+                source_active_vertices: Vec::new(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            report: super::super::TransitionTopologyReport::default(),
+        };
+
+        assert_eq!(
+            preferred_core_promotion_for_face(&mesh, &transition, failed_face),
+            Some(core_parent)
+        );
+    }
 }

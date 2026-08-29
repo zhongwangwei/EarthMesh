@@ -54,11 +54,14 @@ pub enum ElasticBlockOutcome {
         initial_energy: f64,
         final_energy: f64,
         reason: String,
+        failed_guard_face: Option<usize>,
     },
     SearchBudgetExhausted {
         elastic_iterations: usize,
         initial_energy: f64,
         final_energy: f64,
+        reason: String,
+        failed_guard_face: Option<usize>,
     },
     InvalidPatch {
         reason: String,
@@ -222,6 +225,8 @@ pub fn solve_elastic_patch(
             elastic_iterations: 0,
             initial_energy,
             final_energy: initial_energy,
+            reason: geometry_failure_reason(&certificate, &current.mesh),
+            failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
         };
     }
 
@@ -231,6 +236,7 @@ pub fn solve_elastic_patch(
             initial_energy,
             final_energy,
             reason: geometry_failure_reason(&certificate, mesh),
+            failed_guard_face: failed_guard_face(&certificate, mesh, &patch),
         }
     };
 
@@ -303,7 +309,21 @@ pub fn solve_elastic_patch(
         elastic_iterations: limits.elastic_iterations,
         initial_energy,
         final_energy: energy,
+        reason: geometry_failure_reason(&certificate, &current.mesh),
+        failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
     }
+}
+
+fn failed_guard_face(
+    certificate: &Certificate,
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+) -> Option<usize> {
+    patch.guard_faces.iter().copied().find(|face| {
+        certificate
+            .verify_geometry_region(mesh, &BTreeSet::from([*face]))
+            .is_err()
+    })
 }
 
 fn geometry_failure_reason(certificate: &Certificate, mesh: &MeshState) -> String {

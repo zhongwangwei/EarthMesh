@@ -167,19 +167,24 @@ fn cber_repairs_fixed_topology_with_synchronous_transition_only_motion() {
 fn cber_zero_budget_is_explicit_and_keeps_the_input_unchanged() {
     let (source, patch) = elastic_fixture();
     let before = source.clone();
-    assert!(matches!(
-        solve_elastic_patch(
-            &source,
-            patch,
-            ElasticBlockLimits {
-                elastic_iterations: 0,
-            },
-        ),
-        ElasticBlockOutcome::SearchBudgetExhausted {
+    let outcome = solve_elastic_patch(
+        &source,
+        patch.clone(),
+        ElasticBlockLimits {
             elastic_iterations: 0,
-            ..
-        }
-    ));
+        },
+    );
+    let ElasticBlockOutcome::SearchBudgetExhausted {
+        elastic_iterations: 0,
+        reason,
+        failed_guard_face,
+        ..
+    } = outcome
+    else {
+        panic!("zero-budget CBER must exhaust explicitly: {outcome:?}");
+    };
+    assert!(!reason.is_empty());
+    assert!(failed_guard_face.is_some_and(|face| patch.guard_faces.contains(&face)));
     assert_eq!(source, before);
 }
 
