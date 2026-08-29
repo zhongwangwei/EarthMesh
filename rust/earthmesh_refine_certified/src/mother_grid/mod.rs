@@ -104,6 +104,42 @@ impl TriangleAddress {
             TriangleOrientation::Down => sum.checked_add(1).is_some_and(|sum| sum < self.n),
         }
     }
+
+    pub(crate) fn dense_index(self, n: usize) -> Result<usize, String> {
+        if self.base_face >= 20 || self.n != n || n == 0 {
+            return Err(format!("invalid triangle address {self:?}"));
+        }
+        if !self.is_valid() {
+            return Err(format!("invalid triangle address {self:?}"));
+        }
+        let row_width = n
+            .checked_mul(2)
+            .and_then(|width| width.checked_sub(self.i))
+            .ok_or_else(|| "triangle dense row overflow".to_string())?;
+        let local = self
+            .i
+            .checked_mul(row_width)
+            .and_then(|local| local.checked_add(self.j.checked_mul(2)?))
+            .and_then(|local| {
+                local.checked_add(match self.orientation {
+                    TriangleOrientation::Up => 0,
+                    TriangleOrientation::Down => 1,
+                })
+            })
+            .ok_or_else(|| "triangle dense index overflow".to_string())?;
+        let per_face = n
+            .checked_mul(n)
+            .ok_or_else(|| "triangle dense base overflow".to_string())?;
+        if local >= per_face {
+            return Err(format!(
+                "triangle address {self:?} dense local index is out of range"
+            ));
+        }
+        (self.base_face as usize)
+            .checked_mul(per_face)
+            .and_then(|base| base.checked_add(local))
+            .ok_or_else(|| "triangle dense index overflow".to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -379,7 +415,7 @@ fn address(face: u8, corners: [u8; 3], i: usize, j: usize, k: usize, n: usize) -
     VertexAddress::IcosahedronFace { face, i, j, k, n }
 }
 
-fn push_oriented(
+pub(crate) fn push_oriented(
     triangles: &mut Vec<[usize; 3]>,
     vertices: &[CartesianPoint],
     mut tri: [usize; 3],

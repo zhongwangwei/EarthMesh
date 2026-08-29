@@ -1,4 +1,4 @@
-use crate::mother_grid::{MotherGrid, TriangleAddress, TriangleOrientation};
+use crate::mother_grid::{MotherGrid, TriangleAddress};
 use std::collections::VecDeque;
 
 /// Canonical shared parent edge, stored with the smaller face address first.
@@ -95,7 +95,7 @@ pub fn plan_hierarchy_components(
                 parent.n
             ));
         }
-        let dense = dense_parent_index(parent, coarse_n)?;
+        let dense = parent.dense_index(coarse_n)?;
         let aggregate = &mut parents[dense];
         if let Some(existing) = aggregate.address {
             if existing != parent {
@@ -252,48 +252,6 @@ pub fn plan_hierarchy_components(
         parent_requirements,
         components,
     })
-}
-
-fn dense_parent_index(address: TriangleAddress, n: usize) -> Result<usize, String> {
-    if address.base_face >= 20 || address.n != n || n == 0 {
-        return Err(format!("invalid parent address {address:?}"));
-    }
-    let sum = address
-        .i
-        .checked_add(address.j)
-        .ok_or_else(|| "parent address coordinate overflow".to_string())?;
-    match address.orientation {
-        TriangleOrientation::Up if sum < n => {}
-        TriangleOrientation::Down if sum.checked_add(1).is_some_and(|sum| sum < n) => {}
-        _ => return Err(format!("invalid parent address {address:?}")),
-    }
-    let row_width = n
-        .checked_mul(2)
-        .and_then(|width| width.checked_sub(address.i))
-        .ok_or_else(|| "parent dense row overflow".to_string())?;
-    let local = address
-        .i
-        .checked_mul(row_width)
-        .and_then(|local| local.checked_add(address.j.checked_mul(2)?))
-        .and_then(|local| {
-            local.checked_add(match address.orientation {
-                TriangleOrientation::Up => 0,
-                TriangleOrientation::Down => 1,
-            })
-        })
-        .ok_or_else(|| "parent dense index overflow".to_string())?;
-    let per_face = n
-        .checked_mul(n)
-        .ok_or_else(|| "parent dense base overflow".to_string())?;
-    if local >= per_face {
-        return Err(format!(
-            "parent address {address:?} dense local index is out of range"
-        ));
-    }
-    (address.base_face as usize)
-        .checked_mul(per_face)
-        .and_then(|base| base.checked_add(local))
-        .ok_or_else(|| "parent dense index overflow".to_string())
 }
 
 fn push_neighbour(
