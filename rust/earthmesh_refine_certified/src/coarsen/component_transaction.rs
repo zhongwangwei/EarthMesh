@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTransactionLimits {
     pub topology_states: usize,
+    /// Maximum CBER iterations for each hard-topology candidate.
     pub elastic_iterations: usize,
     pub interval_boxes: usize,
     pub halo_expansions: usize,
@@ -311,6 +312,7 @@ pub(super) fn solve_component_transaction_at_level(
     let mut topology_cursor = 0usize;
     let mut saw_candidate = false;
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
+    let mut last_elastic_budget_failure: Option<String> = None;
 
     loop {
         let transition = match (TransitionTopologyLimits {
@@ -347,10 +349,23 @@ pub(super) fn solve_component_transaction_at_level(
             } => {
                 counters.topology_states = states_examined;
                 counters.halo_expansions = halo_expansions;
+                let reason = last_elastic_budget_failure
+                    .as_deref()
+                    .map(|elastic| {
+                        format!("transition topology budget exhausted; earlier {elastic}")
+                    })
+                    .or_else(|| {
+                        last_retry.as_ref().map(|(stage, retry)| {
+                            format!(
+                                "transition topology budget exhausted; last candidate failed at {stage:?}: {retry}"
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| "transition topology budget exhausted".to_string());
                 return fail!(
                     SearchBudgetExhausted,
                     ComponentTransactionStage::Topology,
-                    "transition topology budget exhausted".to_string()
+                    reason
                 );
             }
             TransitionTopologyOutcome::ProvenInfeasible {
@@ -361,6 +376,13 @@ pub(super) fn solve_component_transaction_at_level(
                 counters.topology_states = states_examined;
                 counters.halo_expansions = halo_expansions;
                 if saw_candidate {
+                    if let Some(reason) = last_elastic_budget_failure {
+                        return fail!(
+                            SearchBudgetExhausted,
+                            ComponentTransactionStage::Elastic,
+                            reason
+                        );
+                    }
                     let (stage, retry_reason) = last_retry.unwrap_or((
                         ComponentTransactionStage::Topology,
                         "candidate certification failed".to_string(),
@@ -397,9 +419,7 @@ pub(super) fn solve_component_transaction_at_level(
             coarse_level,
             max_adjacent_level_delta,
             &transition,
-            limits
-                .elastic_iterations
-                .saturating_sub(counters.elastic_iterations),
+            limits.elastic_iterations,
             limits
                 .interval_boxes
                 .saturating_sub(counters.interval_boxes),
@@ -426,7 +446,14 @@ pub(super) fn solve_component_transaction_at_level(
                         return fail!(InvalidInput, failure.stage, failure.reason)
                     }
                     CandidateFailureDisposition::BudgetExhausted => {
-                        return fail!(SearchBudgetExhausted, failure.stage, failure.reason)
+                        if failure.stage != ComponentTransactionStage::Elastic
+                            || exact_core_candidate
+                            || candidate_topology_states <= topology_cursor
+                        {
+                            return fail!(SearchBudgetExhausted, failure.stage, failure.reason);
+                        }
+                        last_elastic_budget_failure = Some(failure.reason);
+                        topology_cursor = candidate_topology_states;
                     }
                     CandidateFailureDisposition::Retry => {
                         last_retry = Some((failure.stage, failure.reason));
@@ -537,21 +564,27 @@ fn certify_candidate(
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {
                 elastic_iterations: iterations,
+                initial_energy,
+                final_energy,
                 reason,
-                ..
             } => {
-                let mut failure =
-                    CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason);
+                let mut failure = CandidateAttemptFailure::retry(
+                    ComponentTransactionStage::Elastic,
+                    format!("{reason} (energy {initial_energy:.6e} -> {final_energy:.6e})"),
+                );
                 failure.elastic_iterations = iterations;
                 return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
                 elastic_iterations: iterations,
-                ..
+                initial_energy,
+                final_energy,
             } => {
                 let mut failure = CandidateAttemptFailure::budget(
                     ComponentTransactionStage::Elastic,
-                    "elastic iteration budget exhausted".to_string(),
+                    format!(
+                        "elastic iteration budget exhausted (energy {initial_energy:.6e} -> {final_energy:.6e})"
+                    ),
                 );
                 failure.elastic_iterations = iterations;
                 return Err(failure);

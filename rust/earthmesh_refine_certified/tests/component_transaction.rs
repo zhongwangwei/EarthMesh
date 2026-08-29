@@ -244,6 +244,37 @@ fn elastic_budget_exhaustion_rolls_back_a_staged_mixed_topology() {
 }
 
 #[test]
+fn elastic_budget_is_scoped_to_each_topology_candidate() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = mixed_component(&source);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+    let snapshot = state.clone();
+
+    let outcome = solve_component_transaction(
+        &source,
+        &levels,
+        &mut state,
+        &component,
+        2,
+        1,
+        ComponentTransactionLimits {
+            elastic_iterations: 1,
+            ..FULL_LIMITS
+        },
+    );
+    let ComponentTransactionOutcome::SearchBudgetExhausted(report) = outcome else {
+        panic!("incomplete CBER candidates must remain explicit: {outcome:?}")
+    };
+
+    assert_eq!(report.stage, ComponentTransactionStage::Elastic);
+    assert_eq!(report.topology_states, 45);
+    assert_eq!(report.elastic_iterations, 2);
+    assert_eq!(report.before_fingerprint, report.restored_fingerprint);
+    assert_eq!(state, snapshot);
+}
+
+#[test]
 fn mixed_component_exhausts_all_uncertifiable_topologies_before_rollback() {
     let source = MotherGrid::generate(8).unwrap();
     let levels = source_levels(&source, 2);

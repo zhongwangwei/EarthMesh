@@ -182,6 +182,11 @@ pub fn run_elastic_component_epochs(
             target_level,
         );
         let components_total = plan.components.len();
+        let mut transition_components_remaining = plan
+            .components
+            .iter()
+            .filter(|component| !component.transition_parents.is_empty())
+            .count();
         let mut committed = 0usize;
         let mut promoted = 0usize;
         let mut exhausted = 0usize;
@@ -189,9 +194,14 @@ pub fn run_elastic_component_epochs(
         for mut component in plan.components {
             component.id = next_component_id;
             next_component_id = next_component_id.saturating_add(1);
-            let topology_states = config
-                .topology_states_per_component
-                .min(remaining_topology_states);
+            let topology_states = if component.transition_parents.is_empty() {
+                0
+            } else {
+                let fair_share =
+                    remaining_topology_states.div_ceil(transition_components_remaining);
+                transition_components_remaining -= 1;
+                config.topology_states_per_component.min(fair_share)
+            };
             let limits = ComponentTransactionLimits {
                 topology_states,
                 elastic_iterations: config.elastic_iterations_per_topology,

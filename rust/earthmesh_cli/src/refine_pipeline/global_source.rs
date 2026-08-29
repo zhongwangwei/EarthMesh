@@ -1997,7 +1997,25 @@ fn run_certified_pipeline(
             ),
             incomplete @ earthmesh_refine_certified::CertifiedMeshOutcome::CompressionIncomplete {
                 ..
-            } => return Err(certified_outcome_error(incomplete)),
+            } => {
+                let error = certified_outcome_error(incomplete);
+                let component = elastic_report
+                    .as_ref()
+                    .and_then(|report| report.components.last())
+                    .map(|component| {
+                        format!(
+                            "; last_component=id:{} outcome:{} topology_states:{} elastic_iterations:{} halo_width:{} reason:{}",
+                            component.component_id,
+                            elastic_outcome_name(component.outcome),
+                            component.topology_states,
+                            component.elastic_iterations,
+                            component.transition_ring_width,
+                            component.reason.as_deref().unwrap_or("none")
+                        )
+                    })
+                    .unwrap_or_default();
+                return Err(io::Error::new(error.kind(), format!("{error}{component}")));
+            }
             other => return Err(certified_outcome_error(other)),
         };
     let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;

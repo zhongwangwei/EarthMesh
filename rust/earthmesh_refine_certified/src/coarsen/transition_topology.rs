@@ -173,8 +173,11 @@ pub fn solve_transition_topology_from_cursor(
                 halo_expansions,
             };
         }
+
+        let remaining_states = limits.topology_states - states_examined;
+        let remaining_halos = limits.maximum_halo_expansions - halo_expansions + 1;
+        let local_limit = remaining_states.div_ceil(remaining_halos);
         let local_cursor = topology_states_cursor.saturating_sub(states_examined);
-        let local_limit = limits.topology_states - states_examined;
         match solve_once(
             source,
             component.id,
@@ -195,10 +198,22 @@ pub fn solve_transition_topology_from_cursor(
                 states_examined: local,
                 ..
             } => {
-                return TransitionTopologyOutcome::SearchBudgetExhausted {
-                    states_examined: states_examined + local,
-                    halo_expansions,
-                };
+                states_examined += local;
+                if states_examined == limits.topology_states
+                    || halo_expansions == limits.maximum_halo_expansions
+                {
+                    return TransitionTopologyOutcome::SearchBudgetExhausted {
+                        states_examined,
+                        halo_expansions,
+                    };
+                }
+                if !promote_core_boundary(source, &mut core, &mut transition) {
+                    return TransitionTopologyOutcome::SearchBudgetExhausted {
+                        states_examined,
+                        halo_expansions,
+                    };
+                }
+                halo_expansions += 1;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
                 return invalid(states_examined, halo_expansions, reason);
@@ -298,6 +313,19 @@ fn promote_to_transition(
         core.remove(&parent);
         transition.insert(parent);
     }
+}
+
+fn promote_core_boundary(
+    source: &MotherGrid,
+    core: &mut BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+) -> bool {
+    let peel = core_boundary(source, core);
+    if peel.is_empty() || peel.len() == core.len() {
+        return false;
+    }
+    promote_to_transition(core, transition, peel);
+    true
 }
 
 fn core_boundary(
@@ -533,10 +561,11 @@ struct SearchHit {
 
 impl ProductSearch<'_> {
     fn run(&mut self) {
-        *self.states = self.start_index;
-        if *self.states >= self.budget {
+        if self.start_index >= self.budget {
+            *self.states = self.budget;
             return;
         }
+        *self.states = self.start_index;
 
         let Some(mut indices) = mixed_radix_indices(self.start_index, self.variants) else {
             return;

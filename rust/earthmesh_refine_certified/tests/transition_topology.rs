@@ -554,6 +554,51 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
 }
 
 #[test]
+fn topology_budget_exhaustion_advances_to_final_halo_before_failing() {
+    let (fine, center, first_ring) = level_three_fixture();
+    let mut core = vec![center];
+    core.extend(first_ring.iter().copied());
+    core.sort_unstable();
+    let core_set = core.iter().copied().collect::<BTreeSet<_>>();
+    let transition = core
+        .iter()
+        .flat_map(|parent| parent_neighbours(&fine, *parent))
+        .filter(|parent| !core_set.contains(parent))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut parents = core.clone();
+    parents.extend(transition.iter().copied());
+    parents.sort_unstable();
+    let component = HierarchyComponent {
+        id: 11,
+        parents,
+        boundary_edges: Vec::new(),
+        core_parents: core,
+        transition_parents: transition,
+    };
+    let limits = TransitionTopologyLimits {
+        topology_states: 2,
+        maximum_halo_expansions: 1,
+    };
+
+    assert!(matches!(
+        solve_transition_topology(&fine, &component, limits),
+        TransitionTopologyOutcome::SearchBudgetExhausted {
+            states_examined: 2,
+            halo_expansions: 1,
+        }
+    ));
+    assert!(matches!(
+        limits.solve_from_cursor(&fine, &component, 1),
+        TransitionTopologyOutcome::SearchBudgetExhausted {
+            states_examined: 2,
+            halo_expansions: 1,
+        }
+    ));
+}
+
+#[test]
 fn insufficient_external_halo_requires_wider_halo_before_proving_infeasible() {
     let (fine, core, _) = level_three_fixture();
     let component = component(core, Vec::new(), true);
