@@ -1,9 +1,14 @@
 mod core_condensation;
+mod elastic_block;
 mod hierarchy_component;
 mod transition_topology;
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
+};
+pub use elastic_block::{
+    solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
 };
 pub use hierarchy_component::{
     plan_hierarchy_components, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,

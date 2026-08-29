@@ -677,7 +677,7 @@ fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
     })
 }
 
-fn voronoi_cell_is_convex_and_contains_site(
+pub(crate) fn voronoi_cell_is_convex_and_contains_site(
     mesh: &MeshState,
     cell: &earthmesh_mesh::VoronoiCell,
 ) -> bool {
@@ -722,7 +722,9 @@ fn chord(a: earthmesh_mesh::CartesianPoint, b: earthmesh_mesh::CartesianPoint) -
     ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt()
 }
 
-fn spherical_triangle_angles(p: [earthmesh_mesh::CartesianPoint; 3]) -> Option<[f64; 3]> {
+pub(crate) fn spherical_triangle_angles(
+    p: [earthmesh_mesh::CartesianPoint; 3],
+) -> Option<[f64; 3]> {
     Some([
         angle_at(p[0], p[1], p[2])?,
         angle_at(p[1], p[2], p[0])?,
