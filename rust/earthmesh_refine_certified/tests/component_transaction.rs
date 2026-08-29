@@ -242,3 +242,72 @@ fn elastic_budget_exhaustion_rolls_back_a_staged_mixed_topology() {
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
 }
+
+#[test]
+fn mixed_component_exhausts_all_uncertifiable_topologies_before_rollback() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = mixed_component(&source);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+    let snapshot = state.clone();
+
+    let outcome =
+        solve_component_transaction(&source, &levels, &mut state, &component, 2, 1, FULL_LIMITS);
+    let ComponentTransactionOutcome::NotCertifiable(report) = outcome else {
+        panic!("all mixed topology candidates are CBER-uncertifiable: {outcome:?}")
+    };
+
+    assert_eq!(report.stage, ComponentTransactionStage::Elastic);
+    assert_eq!(report.topology_states, 45);
+    assert_eq!(report.elastic_iterations, 218);
+    assert_eq!(report.before_fingerprint, report.restored_fingerprint);
+    assert_eq!(state, snapshot);
+}
+
+#[test]
+fn pure_core_can_certify_with_zero_topology_budget() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = whole_sphere_component(4);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+
+    let outcome = solve_component_transaction(
+        &source,
+        &levels,
+        &mut state,
+        &component,
+        2,
+        1,
+        ComponentTransactionLimits {
+            topology_states: 0,
+            ..FULL_LIMITS
+        },
+    );
+    let ComponentTransactionOutcome::Certified(report) = outcome else {
+        panic!("pure core should not spend topology-search budget: {outcome:?}")
+    };
+
+    assert_eq!(report.topology_states, 0);
+    assert!(report.removed_vertices > 0);
+}
+
+#[test]
+fn committed_parent_claim_survives_candidate_snapshot_commit() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = whole_sphere_component(4);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+
+    assert!(matches!(
+        solve_component_transaction(&source, &levels, &mut state, &component, 2, 1, FULL_LIMITS),
+        ComponentTransactionOutcome::Certified(_)
+    ));
+    let outcome =
+        solve_component_transaction(&source, &levels, &mut state, &component, 2, 1, FULL_LIMITS);
+    let ComponentTransactionOutcome::InvalidInput(report) = outcome else {
+        panic!("committed parents must remain claimed: {outcome:?}")
+    };
+
+    assert_eq!(report.stage, ComponentTransactionStage::Preflight);
+    assert!(report.reason.contains("already claimed"));
+}

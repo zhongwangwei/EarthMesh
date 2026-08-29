@@ -1293,6 +1293,7 @@ struct CertifiedConstruction {
     components_promoted: usize,
     components_exhausted: usize,
     search_complete: bool,
+    elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
 }
 
 fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -1361,6 +1362,7 @@ fn build_certified_construction(
             components_promoted: 0,
             components_exhausted: 0,
             search_complete: true,
+            elastic_report: None,
         });
     }
 
@@ -1474,6 +1476,7 @@ fn build_certified_construction(
                 components_promoted: 0,
                 components_exhausted: 0,
                 search_complete: true,
+                elastic_report: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -1519,6 +1522,7 @@ fn build_certified_construction(
                 components_promoted: hierarchy_components_total,
                 components_exhausted: 1,
                 search_complete: false,
+                elastic_report: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -1612,77 +1616,42 @@ fn build_mixed_certified_construction(
     for (&site, level) in active_sites.iter().zip(graded) {
         graded_by_site[site] = level;
     }
-    let coarse_level = chosen_level - 1;
-    let protected_pentagons = pentagons
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    let candidates = earthmesh_refine_certified::coarsen::coarsening_patch_candidates(
-        &fine,
-        &graded_by_site,
-        coarse_level,
-    )
-    .into_iter()
-    .filter(|patch| {
-        patch.requirement_margin >= 0
-            && patch
-                .retained_vertices
-                .iter()
-                .all(|site| !protected_pentagons.contains(site))
-            && patch
-                .transition_halo
-                .iter()
-                .flat_map(|&face| fine.mesh.triangles()[face])
-                .all(|site| !protected_pentagons.contains(&site))
-    })
-    .collect::<Vec<_>>();
-    let mut mesh = fine.mesh;
-    let mut delivered_by_site = mesh
-        .vertices()
-        .iter()
-        .enumerate()
-        .map(|(site, _)| mesh.is_vertex_live(site).then_some(chosen_level))
-        .collect::<Vec<_>>();
-    let candidate_count = candidates.len();
-    let component_search_state_budget = (options.search_budget / candidate_count.max(1)).max(1);
-    let epoch = earthmesh_refine_certified::coarsen::run_certified_coarsening_epochs(
-        &mut mesh,
-        candidates,
+    let epoch = earthmesh_refine_certified::coarsen::run_elastic_component_epochs(
+        fine,
         &initial_mesh,
         &source_levels,
-        &mut delivered_by_site,
-        coarse_level,
-        earthmesh_refine_certified::coarsen::CertifiedEpochLimits {
+        &graded_by_site,
+        &earthmesh_refine_certified::coarsen::ElasticCmrcConfig {
+            max_level: chosen_level,
             max_adjacent_level_delta: 1,
-            component_search_state_budget,
-            total_search_state_budget: options.search_budget,
+            initial_transition_rings: 1,
+            maximum_transition_rings: 3,
+            topology_states_per_component: options.search_budget.min(10_000).max(1),
+            elastic_iterations_per_topology: 256,
+            interval_boxes_per_component: 100_000,
+            total_transition_states: options.search_budget,
+            allow_safe_fallback: false,
         },
     );
-    let report = match epoch {
-        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::Certified {
-            report, ..
-        } => report,
-        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::SearchBudgetExhausted {
-            report,
-        } => report,
-        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::NotCertifiable {
-            error,
-            ..
-        } => {
+    let result = match epoch {
+        earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::Completed(result) => result,
+        earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::NotCertifiable { reason } => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("CMRC mixed coarsening lost final-cell certification: {error}"),
+                format!("CMRC mixed coarsening lost final-cell certification: {reason}"),
             ));
         }
-        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::InvalidInput { reason } => {
+        earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::InvalidInput { reason } => {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
         }
     };
-    let delivered_levels = mesh
-        .active_vertex_slots()
-        .map(|site| {
-            delivered_by_site[site].expect("active mixed CMRC site retained a delivered level")
-        })
-        .collect::<Vec<_>>();
+    let mesh = result.state.mesh().mesh.clone();
+    let delivered_levels = result
+        .state
+        .target_levels()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .levels()
+        .to_vec();
     let final_cell_requirements = if mesh == initial_mesh
         && delivered_levels.iter().all(|&level| level == chosen_level)
     {
@@ -1729,30 +1698,98 @@ fn build_mixed_certified_construction(
     Ok(CertifiedConstruction {
         delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
         delivered_levels,
-        coarsening_strategy: "mixed_finite_cavity_with_certified_block_relocation",
+        coarsening_strategy: "elastic_component_epochs",
         pentagons,
         initial_subdivision,
         final_subdivision: initial_subdivision,
         initial_cells: initial_faces,
-        attempted_patches: report.candidates_attempted(),
-        accepted_patches: report.candidates_accepted(),
+        attempted_patches: result.report.components_total,
+        accepted_patches: result.report.components_committed,
         removed_vertices: initial_vertices - geometry.primal().vertex_count(),
         removed_faces: initial_faces - geometry.primal().triangle_count(),
-        search_budget_exhausted: !report.search_complete(),
-        components_total: candidate_count,
-        components_committed: report.candidates_accepted(),
-        components_promoted: report
-            .transition_promotion
-            .blocked_regions
-            .iter()
-            .map(|region| region.patch_vertices.len())
-            .sum(),
-        components_exhausted: report.candidates_exhausted(),
-        search_complete: report.search_complete(),
+        search_budget_exhausted: !result.report.search_complete,
+        components_total: result.report.components_total,
+        components_committed: result.report.components_committed,
+        components_promoted: result.report.components_promoted,
+        components_exhausted: result.report.components_exhausted,
+        search_complete: result.report.search_complete,
         geometry,
         remap,
         remap_certificate,
         final_cell_requirements: Some(final_cell_requirements),
+        elastic_report: Some(result.report.clone()),
+    })
+}
+
+fn elastic_outcome_name(
+    outcome: earthmesh_refine_certified::coarsen::ComponentOutcomeKind,
+) -> &'static str {
+    match outcome {
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::Certified => "certified",
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::NoTopology => "no_topology",
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::ElasticNoImprovement => {
+            "elastic_no_improvement"
+        }
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::SearchBudgetExhausted => {
+            "search_budget_exhausted"
+        }
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::RequiresWiderHalo => {
+            "requires_wider_halo"
+        }
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::NotCertifiable => {
+            "not_certifiable"
+        }
+        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::PromotedToFine => {
+            "promoted_to_fine"
+        }
+    }
+}
+
+fn elastic_report_json(
+    report: &earthmesh_refine_certified::coarsen::ElasticCmrcReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "aggregate": {
+            "initial_faces": report.initial_faces,
+            "final_faces": report.final_faces,
+            "initial_vertices": report.initial_vertices,
+            "final_vertices": report.final_vertices,
+            "components_total": report.components_total,
+            "components_committed": report.components_committed,
+            "components_promoted": report.components_promoted,
+            "components_exhausted": report.components_exhausted,
+            "total_topology_states": report.total_topology_states,
+            "total_elastic_iterations": report.total_elastic_iterations,
+            "total_interval_boxes": report.total_interval_boxes,
+            "core_vertices_removed": report.core_vertices_removed,
+            "search_complete": report.search_complete,
+        },
+        "requested_histogram": report.requested_histogram,
+        "delivered_histogram": report.delivered_histogram,
+        "per_level_histograms": report.levels.iter().map(|level| serde_json::json!({
+            "source_level": level.source_level,
+            "target_level": level.target_level,
+            "components_total": level.components_total,
+            "components_committed": level.components_committed,
+            "components_promoted": level.components_promoted,
+            "components_exhausted": level.components_exhausted,
+            "delivered_histogram": level.delivered_histogram,
+        })).collect::<Vec<_>>(),
+        "per_component_records": report.components.iter().map(|component| serde_json::json!({
+            "component_id": component.component_id,
+            "source_level": component.source_level,
+            "target_level": component.target_level,
+            "parent_count": component.parent_count,
+            "core_parent_count": component.core_parent_count,
+            "transition_parent_count": component.transition_parent_count,
+            "core_vertices_removed": component.core_vertices_removed,
+            "topology_states": component.topology_states,
+            "elastic_iterations": component.elastic_iterations,
+            "interval_boxes": component.interval_boxes,
+            "transition_ring_width": component.transition_ring_width,
+            "outcome": elastic_outcome_name(component.outcome),
+            "reason": component.reason,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -1878,6 +1915,7 @@ fn run_certified_pipeline(
         components_promoted,
         components_exhausted,
         search_complete,
+        elastic_report,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
@@ -2026,12 +2064,12 @@ fn run_certified_pipeline(
         CertifiedMode::SafeMotherOnly => "safe_mother_only",
         CertifiedMode::ReverseCoarsening => "reverse_coarsening",
     };
-    let physical_balance_scope =
-        if coarsening_strategy == "mixed_finite_cavity_with_certified_block_relocation" {
-            "final_voronoi_cells_exact_raster_overlap"
-        } else {
-            "final_voronoi_cells_global_raster_max_bound"
-        };
+    let physical_balance_scope = if coarsening_strategy == "elastic_component_epochs" {
+        "final_voronoi_cells_exact_raster_overlap"
+    } else {
+        "final_voronoi_cells_global_raster_max_bound"
+    };
+    let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
     let certificate_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
         "mode": mode_name,
@@ -2093,6 +2131,7 @@ fn run_certified_pipeline(
         "physical_residuals": certificate.physical_residuals,
         "balance_residuals": certificate.balance_residuals,
         "remap_closure_errors": certificate.remap_closure_errors,
+        "elastic_component_epochs": elastic_report_json,
     }))
     .map_err(io::Error::other)?;
     let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
@@ -2151,6 +2190,7 @@ fn run_certified_pipeline(
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
+            "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
         fs::write(&temporary_resources_path, resource_json)?;

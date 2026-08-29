@@ -6,10 +6,10 @@
 
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
-    core_condensation::source_face_slot, solve_elastic_patch, solve_transition_topology,
-    ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
-    HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet, TransitionTopologyCandidate,
-    TransitionTopologyLimits, TransitionTopologyOutcome,
+    core_condensation::source_face_slot, solve_elastic_patch, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, HierarchyComponent,
+    HierarchyLeafMesh, HierarchyLeafSet, TransitionTopologyCandidate, TransitionTopologyLimits,
+    TransitionTopologyOutcome,
 };
 use crate::{
     certificate::{
@@ -258,15 +258,13 @@ pub(super) fn solve_component_transaction_at_level(
     max_adjacent_level_delta: usize,
     limits: ComponentTransactionLimits,
 ) -> ComponentTransactionOutcome {
-    let snapshot = state.clone();
-    let before_fingerprint = snapshot.fingerprint();
-    let pre_vertices = snapshot.mesh.mesh.vertex_count();
-    let pre_faces = snapshot.mesh.mesh.triangle_count();
+    let before_fingerprint = state.fingerprint();
+    let pre_vertices = state.mesh.mesh.vertex_count();
+    let pre_faces = state.mesh.mesh.triangle_count();
     let mut counters = Counters::default();
 
     macro_rules! fail {
         ($variant:ident, $stage:expr, $reason:expr) => {{
-            *state = snapshot;
             ComponentTransactionOutcome::$variant(ComponentRollbackReport {
                 component_id: component.id,
                 stage: $stage,
@@ -290,7 +288,6 @@ pub(super) fn solve_component_transaction_at_level(
             "component has no parents".to_string()
         );
     };
-    state.prepare_parent_level(parent_subdivision);
 
     if let Err(reason) = validate_preflight(source, source_levels, state, component) {
         return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
@@ -304,135 +301,269 @@ pub(super) fn solve_component_transaction_at_level(
         return fail!(NotCertifiable, ComponentTransactionStage::Physical, reason);
     }
 
-    let transition = match solve_transition_topology(
-        level_grid,
-        component,
-        TransitionTopologyLimits {
+    let pre_sources = state
+        .mesh
+        .source_vertex_slots
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut topology_cursor = 0usize;
+    let mut saw_candidate = false;
+    let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
+
+    loop {
+        let transition = match (TransitionTopologyLimits {
             topology_states: limits.topology_states,
             maximum_halo_expansions: limits.halo_expansions,
-        },
-    ) {
-        TransitionTopologyOutcome::Closed(trial) => {
-            counters.topology_states = trial.report.topology_states;
-            counters.halo_expansions = trial.report.halo_expansions;
-            match remap_transition_trial(trial, level_source_slots) {
-                Ok(trial) => trial,
-                Err(reason) => {
-                    return fail!(InvalidInput, ComponentTransactionStage::Topology, reason)
+        })
+        .solve_from_cursor(level_grid, component, topology_cursor)
+        {
+            TransitionTopologyOutcome::Closed(trial) => {
+                counters.topology_states = trial.report.topology_states;
+                counters.halo_expansions = trial.report.halo_expansions;
+                match remap_transition_trial(trial, level_source_slots) {
+                    Ok(trial) => trial,
+                    Err(reason) => {
+                        return fail!(InvalidInput, ComponentTransactionStage::Topology, reason)
+                    }
+                }
+            }
+            TransitionTopologyOutcome::RequiresWiderHalo {
+                states_examined,
+                halo_expansions,
+            } => {
+                counters.topology_states = states_examined;
+                counters.halo_expansions = halo_expansions;
+                return fail!(
+                    RequiresWiderHalo,
+                    ComponentTransactionStage::Topology,
+                    "component needs a wider transition halo".to_string()
+                );
+            }
+            TransitionTopologyOutcome::SearchBudgetExhausted {
+                states_examined,
+                halo_expansions,
+            } => {
+                counters.topology_states = states_examined;
+                counters.halo_expansions = halo_expansions;
+                return fail!(
+                    SearchBudgetExhausted,
+                    ComponentTransactionStage::Topology,
+                    "transition topology budget exhausted".to_string()
+                );
+            }
+            TransitionTopologyOutcome::ProvenInfeasible {
+                states_examined,
+                halo_expansions,
+                reason,
+            } => {
+                counters.topology_states = states_examined;
+                counters.halo_expansions = halo_expansions;
+                if saw_candidate {
+                    let (stage, retry_reason) = last_retry.unwrap_or((
+                        ComponentTransactionStage::Topology,
+                        "candidate certification failed".to_string(),
+                    ));
+                    return fail!(
+                        NotCertifiable,
+                        stage,
+                        format!("all topology candidates failed certification; last failure: {retry_reason}")
+                    );
+                }
+                return fail!(NoTopology, ComponentTransactionStage::Topology, reason);
+            }
+            TransitionTopologyOutcome::InvalidBoundary {
+                states_examined,
+                halo_expansions,
+                reason,
+            } => {
+                counters.topology_states = states_examined;
+                counters.halo_expansions = halo_expansions;
+                return fail!(InvalidInput, ComponentTransactionStage::Topology, reason);
+            }
+        };
+
+        saw_candidate = true;
+        let candidate_topology_states = transition.report.topology_states;
+        let exact_core_candidate = transition.candidate.custom_transition_triangles.is_empty();
+        let mut candidate_state = state.clone();
+        candidate_state.prepare_parent_level(parent_subdivision);
+        match certify_candidate(
+            source,
+            source_levels,
+            &mut candidate_state,
+            component,
+            coarse_level,
+            max_adjacent_level_delta,
+            &transition,
+            limits
+                .elastic_iterations
+                .saturating_sub(counters.elastic_iterations),
+            limits
+                .interval_boxes
+                .saturating_sub(counters.interval_boxes),
+            before_fingerprint,
+            pre_vertices,
+            pre_faces,
+            &pre_sources,
+        ) {
+            Ok(mut report) => {
+                counters.elastic_iterations += report.elastic_iterations;
+                counters.interval_boxes += report.interval_boxes;
+                report.topology_states = counters.topology_states;
+                report.elastic_iterations = counters.elastic_iterations;
+                report.interval_boxes = counters.interval_boxes;
+                report.halo_expansions = counters.halo_expansions;
+                *state = candidate_state;
+                return ComponentTransactionOutcome::Certified(Box::new(report));
+            }
+            Err(failure) => {
+                counters.elastic_iterations += failure.elastic_iterations;
+                counters.interval_boxes += failure.interval_boxes;
+                match failure.disposition {
+                    CandidateFailureDisposition::InvalidInput => {
+                        return fail!(InvalidInput, failure.stage, failure.reason)
+                    }
+                    CandidateFailureDisposition::BudgetExhausted => {
+                        return fail!(SearchBudgetExhausted, failure.stage, failure.reason)
+                    }
+                    CandidateFailureDisposition::Retry => {
+                        last_retry = Some((failure.stage, failure.reason));
+                        if exact_core_candidate || candidate_topology_states <= topology_cursor {
+                            let (stage, reason) = last_retry.expect("just recorded retry");
+                            return fail!(NotCertifiable, stage, reason);
+                        }
+                        topology_cursor = candidate_topology_states;
+                    }
                 }
             }
         }
-        TransitionTopologyOutcome::RequiresWiderHalo {
-            states_examined,
-            halo_expansions,
-        } => {
-            counters.topology_states = states_examined;
-            counters.halo_expansions = halo_expansions;
-            return fail!(
-                RequiresWiderHalo,
-                ComponentTransactionStage::Topology,
-                "component needs a wider transition halo".to_string()
-            );
-        }
-        TransitionTopologyOutcome::SearchBudgetExhausted {
-            states_examined,
-            halo_expansions,
-        } => {
-            counters.topology_states = states_examined;
-            counters.halo_expansions = halo_expansions;
-            return fail!(
-                SearchBudgetExhausted,
-                ComponentTransactionStage::Topology,
-                "transition topology budget exhausted".to_string()
-            );
-        }
-        TransitionTopologyOutcome::ProvenInfeasible {
-            states_examined,
-            halo_expansions,
-            reason,
-        } => {
-            counters.topology_states = states_examined;
-            counters.halo_expansions = halo_expansions;
-            return fail!(NoTopology, ComponentTransactionStage::Topology, reason);
-        }
-        TransitionTopologyOutcome::InvalidBoundary {
-            states_examined,
-            halo_expansions,
-            reason,
-        } => {
-            counters.topology_states = states_examined;
-            counters.halo_expansions = halo_expansions;
-            return fail!(InvalidInput, ComponentTransactionStage::Topology, reason);
-        }
-    };
-
-    let candidate = transition.candidate.clone();
-    if let Err(reason) = install_delta(source, state, &candidate) {
-        return fail!(
-            InvalidInput,
-            ComponentTransactionStage::InstallDelta,
-            reason
-        );
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidateFailureDisposition {
+    Retry,
+    InvalidInput,
+    BudgetExhausted,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CandidateAttemptFailure {
+    disposition: CandidateFailureDisposition,
+    stage: ComponentTransactionStage,
+    reason: String,
+    elastic_iterations: usize,
+    interval_boxes: usize,
+}
+
+impl CandidateAttemptFailure {
+    fn retry(stage: ComponentTransactionStage, reason: impl Into<String>) -> Self {
+        Self {
+            disposition: CandidateFailureDisposition::Retry,
+            stage,
+            reason: reason.into(),
+            elastic_iterations: 0,
+            interval_boxes: 0,
+        }
+    }
+
+    fn invalid(stage: ComponentTransactionStage, reason: impl Into<String>) -> Self {
+        Self {
+            disposition: CandidateFailureDisposition::InvalidInput,
+            stage,
+            reason: reason.into(),
+            elastic_iterations: 0,
+            interval_boxes: 0,
+        }
+    }
+
+    fn budget(stage: ComponentTransactionStage, reason: impl Into<String>) -> Self {
+        Self {
+            disposition: CandidateFailureDisposition::BudgetExhausted,
+            stage,
+            reason: reason.into(),
+            elastic_iterations: 0,
+            interval_boxes: 0,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn certify_candidate(
+    source: &MotherGrid,
+    source_levels: &SourceLevelField,
+    state: &mut ComponentTransactionState,
+    component: &HierarchyComponent,
+    coarse_level: usize,
+    max_adjacent_level_delta: usize,
+    transition: &super::TransitionTopologyTrial,
+    remaining_elastic_iterations: usize,
+    remaining_interval_boxes: usize,
+    before_fingerprint: u64,
+    pre_vertices: usize,
+    pre_faces: usize,
+    pre_sources: &BTreeSet<usize>,
+) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
+    let candidate = transition.candidate.clone();
+    install_delta(source, state, &candidate).map_err(|reason| {
+        CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
+    })?;
     apply_source_positions(&mut state.mesh, &state.source_positions);
 
+    let mut elastic_iterations = 0usize;
     let mut elastic_report = None;
     if Certificate::internal()
         .verify_geometry(&state.mesh.mesh)
         .is_err()
     {
         if transition.candidate.custom_transition_triangles.is_empty() {
-            return fail!(
-                NotCertifiable,
+            return Err(CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
-                "exact coarse core failed internal geometry certification".to_string()
-            );
+                "exact coarse core failed internal geometry certification".to_string(),
+            ));
         }
-        let patch = match elastic_patch_for_state(&transition, &state.mesh) {
-            Ok(patch) => patch,
-            Err(reason) => {
-                return fail!(
-                    ElasticNoImprovement,
-                    ComponentTransactionStage::Elastic,
-                    reason
-                )
-            }
-        };
+        let patch = elastic_patch_for_state(transition, &state.mesh).map_err(|reason| {
+            CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
+        })?;
         let elastic = match solve_elastic_patch(
             &state.mesh,
             patch,
             ElasticBlockLimits {
-                elastic_iterations: limits.elastic_iterations,
+                elastic_iterations: remaining_elastic_iterations,
             },
         ) {
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {
-                elastic_iterations,
+                elastic_iterations: iterations,
                 reason,
                 ..
             } => {
-                counters.elastic_iterations = elastic_iterations;
-                return fail!(
-                    ElasticNoImprovement,
-                    ComponentTransactionStage::Elastic,
-                    reason
-                );
+                let mut failure =
+                    CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason);
+                failure.elastic_iterations = iterations;
+                return Err(failure);
             }
             ElasticBlockOutcome::SearchBudgetExhausted {
-                elastic_iterations, ..
+                elastic_iterations: iterations,
+                ..
             } => {
-                counters.elastic_iterations = elastic_iterations;
-                return fail!(
-                    SearchBudgetExhausted,
+                let mut failure = CandidateAttemptFailure::budget(
                     ComponentTransactionStage::Elastic,
-                    "elastic iteration budget exhausted".to_string()
+                    "elastic iteration budget exhausted".to_string(),
                 );
+                failure.elastic_iterations = iterations;
+                return Err(failure);
             }
             ElasticBlockOutcome::InvalidPatch { reason } => {
-                return fail!(InvalidInput, ComponentTransactionStage::Elastic, reason);
+                return Err(CandidateAttemptFailure::invalid(
+                    ComponentTransactionStage::Elastic,
+                    reason,
+                ));
             }
         };
-        counters.elastic_iterations = elastic.report.elastic_iterations;
+        elastic_iterations = elastic.report.elastic_iterations;
         apply_elastic(state, &elastic);
         elastic_report = Some(elastic.report.clone());
     }
@@ -445,56 +576,62 @@ pub(super) fn solve_component_transaction_at_level(
         coarse_level,
     );
     let guard_faces = affected_faces(source, &state.mesh, &candidate);
-    counters.interval_boxes = guard_faces.len().saturating_mul(3);
-    if counters.interval_boxes > limits.interval_boxes {
-        return fail!(
-            SearchBudgetExhausted,
+    let interval_boxes = guard_faces.len().saturating_mul(3);
+    if interval_boxes > remaining_interval_boxes {
+        let mut failure = CandidateAttemptFailure::budget(
             ComponentTransactionStage::LocalGeometry,
-            "local geometry interval-box budget exhausted".to_string()
+            "local geometry interval-box budget exhausted".to_string(),
         );
+        failure.interval_boxes = interval_boxes;
+        return Err(failure);
     }
-    let local_geometry =
-        match Certificate::internal().verify_geometry_region(&state.mesh.mesh, &guard_faces) {
-            Ok(report) => report,
-            Err(error) => {
-                return fail!(
-                    NotCertifiable,
-                    ComponentTransactionStage::LocalGeometry,
-                    format!("{error:?}")
-                )
-            }
-        };
-    debug_assert_eq!(counters.interval_boxes, local_geometry.interval_boxes);
+    let local_geometry = Certificate::internal()
+        .verify_geometry_region(&state.mesh.mesh, &guard_faces)
+        .map_err(|error| {
+            let mut failure = CandidateAttemptFailure::retry(
+                ComponentTransactionStage::LocalGeometry,
+                format!("{error:?}"),
+            );
+            failure.interval_boxes = interval_boxes;
+            failure
+        })?;
+    debug_assert_eq!(interval_boxes, local_geometry.interval_boxes);
 
-    let global_geometry = match Certificate::internal().verify_geometry(&state.mesh.mesh) {
-        Ok(report) => report,
-        Err(error) => {
-            return fail!(
-                NotCertifiable,
+    let global_geometry = Certificate::internal()
+        .verify_geometry(&state.mesh.mesh)
+        .map_err(|error| {
+            let mut failure = CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
-                format!("{error:?}")
-            )
-        }
-    };
-    let final_geometry = match Certificate::final_delivery().verify_geometry(&state.mesh.mesh) {
-        Ok(report) => report,
-        Err(error) => {
-            return fail!(
-                NotCertifiable,
+                format!("{error:?}"),
+            );
+            failure.interval_boxes = interval_boxes;
+            failure
+        })?;
+    let final_geometry = Certificate::final_delivery()
+        .verify_geometry(&state.mesh.mesh)
+        .map_err(|error| {
+            let mut failure = CandidateAttemptFailure::retry(
                 ComponentTransactionStage::FinalGeometry,
-                format!("{error:?}")
-            )
-        }
-    };
+                format!("{error:?}"),
+            );
+            failure.interval_boxes = interval_boxes;
+            failure
+        })?;
 
-    let target_levels = match state.target_levels() {
-        Ok(levels) => levels,
-        Err(reason) => return fail!(InvalidInput, ComponentTransactionStage::FinalCells, reason),
-    };
-    let remap = match ConservativeRemap::between_voronoi_meshes(&source.mesh, &state.mesh.mesh) {
-        Ok(remap) => remap,
-        Err(reason) => return fail!(NotCertifiable, ComponentTransactionStage::Remap, reason),
-    };
+    let target_levels = state.target_levels().map_err(|reason| {
+        let mut failure =
+            CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
+        failure.interval_boxes = interval_boxes;
+        failure
+    })?;
+    let remap = ConservativeRemap::between_voronoi_meshes(&source.mesh, &state.mesh.mesh).map_err(
+        |reason| {
+            let mut failure =
+                CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+            failure.interval_boxes = interval_boxes;
+            failure
+        },
+    )?;
     let remap_certificate =
         remap.certify_spherical_overlap(source_levels.levels().len(), target_levels.levels().len());
     let final_cells = match certify_final_cell_requirements_with_remap(
@@ -507,50 +644,56 @@ pub(super) fn solve_component_transaction_at_level(
     ) {
         Ok(report) => report,
         Err(FinalCellRequirementError::InvalidInput(reason)) => {
-            return fail!(InvalidInput, ComponentTransactionStage::FinalCells, reason);
+            let mut failure =
+                CandidateAttemptFailure::invalid(ComponentTransactionStage::FinalCells, reason);
+            failure.interval_boxes = interval_boxes;
+            return Err(failure);
         }
         Err(FinalCellRequirementError::Residuals(report)) => {
-            return fail!(
-                NotCertifiable,
+            let mut failure = CandidateAttemptFailure::retry(
                 ComponentTransactionStage::FinalCells,
                 format!(
                     "{} physical and {} balance residual(s)",
                     report.physical_residuals(),
                     report.balance_residuals()
-                )
+                ),
             );
+            failure.interval_boxes = interval_boxes;
+            return Err(failure);
         }
     };
     let final_evidence =
-        match FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate.clone())
-        {
-            Ok(evidence) => evidence,
-            Err(reason) => return fail!(NotCertifiable, ComponentTransactionStage::Remap, reason),
-        };
+        FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate.clone())
+            .map_err(|reason| {
+                let mut failure =
+                    CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+                failure.interval_boxes = interval_boxes;
+                failure
+            })?;
 
-    let final_mesh = match crate::finalize_geometry_certified_mother(
+    let final_mesh = crate::finalize_geometry_certified_mother(
         GeometryCertifiedMotherGrid::new(state.mesh.mesh.clone(), final_geometry),
         final_evidence,
-    ) {
-        Ok(mesh) => mesh,
-        Err(error) => {
-            return fail!(
-                NotCertifiable,
-                ComponentTransactionStage::FinalGeometry,
-                format!("{error:?}")
-            )
-        }
-    };
+    )
+    .map_err(|error| {
+        let mut failure = CandidateAttemptFailure::retry(
+            ComponentTransactionStage::FinalGeometry,
+            format!("{error:?}"),
+        );
+        failure.interval_boxes = interval_boxes;
+        failure
+    })?;
     let final_certificate = final_mesh.certificate().clone();
 
     let post_vertices = state.mesh.mesh.vertex_count();
     let post_faces = state.mesh.mesh.triangle_count();
     if post_vertices >= pre_vertices || post_faces >= pre_faces {
-        return fail!(
-            NotCertifiable,
+        let mut failure = CandidateAttemptFailure::retry(
             ComponentTransactionStage::Postcondition,
-            "component transaction did not reduce both vertices and faces".to_string()
+            "component transaction did not reduce both vertices and faces".to_string(),
         );
+        failure.interval_boxes = interval_boxes;
+        return Err(failure);
     }
     state
         .claimed_parents
@@ -563,15 +706,12 @@ pub(super) fn solve_component_transaction_at_level(
         .copied()
         .collect::<BTreeSet<_>>();
     let core_sources = source_sites_for_parents(source, candidate.core_parents.iter().copied());
-    let core_vertices_removed = snapshot
-        .mesh
-        .source_vertex_slots
+    let core_vertices_removed = pre_sources
         .iter()
-        .flatten()
         .filter(|source| !post_sources.contains(source) && core_sources.contains(source))
         .count();
 
-    ComponentTransactionOutcome::Certified(Box::new(ComponentCommitReport {
+    Ok(ComponentCommitReport {
         component_id: component.id,
         before_fingerprint,
         after_fingerprint: state.fingerprint(),
@@ -583,17 +723,17 @@ pub(super) fn solve_component_transaction_at_level(
         removed_faces: pre_faces - post_faces,
         core_vertices_removed,
         core_search_states: 0,
-        topology_states: counters.topology_states,
-        elastic_iterations: counters.elastic_iterations,
-        interval_boxes: counters.interval_boxes,
-        halo_expansions: counters.halo_expansions,
+        topology_states: transition.report.topology_states,
+        elastic_iterations,
+        interval_boxes,
+        halo_expansions: transition.report.halo_expansions,
         local_geometry,
         global_geometry,
         final_certificate,
         final_cells,
         remap: remap_certificate,
         elastic: elastic_report,
-    }))
+    })
 }
 
 #[derive(Clone, Copy, Default)]
