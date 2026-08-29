@@ -1,4 +1,9 @@
+mod core_condensation;
 mod hierarchy_component;
+pub use core_condensation::{
+    condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
+    HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
+};
 pub use hierarchy_component::{
     plan_hierarchy_components, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
     ParentRequirement,
@@ -1175,10 +1180,36 @@ pub fn rebuild_one_level_from_complete_mother_patches(
             mesh: grid,
         };
     }
-    let coarse = match MotherGrid::generate(grid.subdivision / 2) {
-        Ok(coarse) => coarse,
+    let coarse_n = grid.subdivision / 2;
+    let mut leaf_set = match HierarchyLeafSet::from_mother_grid(&grid) {
+        Ok(leaf_set) => leaf_set,
         Err(reason) => return HierarchyRebuildOutcome::UnsupportedCavity { reason, mesh: grid },
     };
+    let parents = leaf_set
+        .leaves
+        .iter()
+        .map(|leaf| leaf.parent_2_to_1())
+        .collect::<Option<BTreeSet<_>>>();
+    let Some(parents) = parents else {
+        return HierarchyRebuildOutcome::UnsupportedCavity {
+            reason: "complete hierarchy remap lineage is not closed".into(),
+            mesh: grid,
+        };
+    };
+    if let Err(reason) = leaf_set.condense_core(&parents.iter().copied().collect::<Vec<_>>()) {
+        return HierarchyRebuildOutcome::UnsupportedCavity { reason, mesh: grid };
+    }
+    let leaf_mesh = match rebuild_from_leaf_set(&grid, &leaf_set) {
+        Ok(mesh) => mesh,
+        Err(reason) => return HierarchyRebuildOutcome::UnsupportedCavity { reason, mesh: grid },
+    };
+    let coarse =
+        match core_condensation::uniform_leaf_mesh_to_mother_grid(coarse_n, &grid, leaf_mesh) {
+            Ok(coarse) => coarse,
+            Err(reason) => {
+                return HierarchyRebuildOutcome::UnsupportedCavity { reason, mesh: grid }
+            }
+        };
     let report = match Certificate::final_delivery().verify_mother_grid(&coarse) {
         Ok(report) => report,
         Err(error) => {
