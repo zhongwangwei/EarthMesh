@@ -16,7 +16,7 @@ certificate must establish:
 6. spherical Delaunay predicates and the Voronoi dual are valid.
 
 Until an all-`n` analytic proof is checked in, the strict API accepts only
-`n = 1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160`. For those values it propagates
+`n = 1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160, 320, 640`. For those values it propagates
 outward-rounded coordinate, tangent, dot-product, and squared-norm intervals
 and proves the 40.2--79.8 and 40--80 windows by conservative cosine bounds.
 The separately reported `f64` extrema are diagnostics, never the proof.

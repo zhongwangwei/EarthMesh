@@ -138,7 +138,7 @@ pub struct AngleGateReport {
 struct SupportedMotherAngleGate;
 
 impl SupportedMotherAngleGate {
-    const SUPPORTED: [usize; 11] = [1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160];
+    const SUPPORTED: [usize; 13] = [1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160, 320, 640];
 
     fn verify(
         n: usize,
@@ -746,6 +746,11 @@ mod tests {
             let grid = MotherGrid::generate(n).unwrap();
             Certificate::internal().verify_mother_grid(&grid).unwrap();
         }
+    }
+
+    #[test]
+    fn support_table_reaches_the_default_cell_budget_ceiling() {
+        assert_eq!(SupportedMotherAngleGate::SUPPORTED.last(), Some(&640));
     }
 
     #[test]
