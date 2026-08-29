@@ -3196,7 +3196,10 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
         error.contains("harp_dv"),
         "the message should list it: {error}"
     );
-    assert!(error.contains("certified"), "the message should list it: {error}");
+    assert!(
+        error.contains("certified"),
+        "the message should list it: {error}"
+    );
 }
 
 #[test]
@@ -3243,9 +3246,7 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
 
 #[test]
 fn certified_controls_round_trip_through_the_gui_commands() {
-    let base = circle_project("CMRC controls")
-        .to_yaml()
-        .expect("yaml");
+    let base = circle_project("CMRC controls").to_yaml().expect("yaml");
     let yaml = crate::project_edits::set_refinement_backend(base, "certified".to_string())
         .expect("CMRC backend");
     let yaml = crate::project_edits::set_certified_options(

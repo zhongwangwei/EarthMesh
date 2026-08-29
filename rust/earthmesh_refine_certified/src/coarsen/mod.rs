@@ -9,8 +9,8 @@ use crate::{
     },
 };
 use earthmesh_mesh::{
-    cross, magnitude, CartesianPoint, MeshState, RetirementPostconditionOutcome, RetirementReport,
-    RetirementSearchOutcome,
+    arc_length_unit_sphere, cross, magnitude, CartesianPoint, MeshState,
+    RetirementPostconditionOutcome, RetirementReport, RetirementSearchOutcome,
 };
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +19,8 @@ const BLOCK_RELOCATION_STEPS: usize = 64;
 const BLOCK_RELOCATION_DIRECTIONS: usize = 32;
 const BLOCK_RELOCATION_INITIAL_STEP_RADIANS: f64 = 0.04;
 const BLOCK_RELOCATION_FINAL_STEP_RADIANS: f64 = 0.0005;
+const BLOCK_RELOCATION_INITIAL_EDGE_FRACTION: f64 = 0.25;
+const BLOCK_RELOCATION_FINAL_EDGE_FRACTION: f64 = 0.01;
 
 enum BlockRelocationOutcome {
     Certified {
@@ -425,6 +427,9 @@ fn relocate_coarsening_block(
     let mut changed_region = initial_region.clone();
     changed_region.extend(incident.iter().copied());
     changed_region.extend(touched);
+    let Some((initial_step, final_step)) = relocation_step_window(&current, &incident) else {
+        return BlockRelocationOutcome::ProvenInfeasible { states_examined };
+    };
 
     for step_index in 0..BLOCK_RELOCATION_STEPS {
         if certificate.geometry_region_passes(&current, &changed_region) {
@@ -436,9 +441,8 @@ fn relocate_coarsening_block(
                 };
             }
         }
-        let fraction = step_index as f64 / BLOCK_RELOCATION_STEPS as f64;
-        let step = BLOCK_RELOCATION_INITIAL_STEP_RADIANS * (1.0 - fraction)
-            + BLOCK_RELOCATION_FINAL_STEP_RADIANS;
+        let fraction = step_index as f64 / (BLOCK_RELOCATION_STEPS - 1) as f64;
+        let step = initial_step * (1.0 - fraction) + final_step * fraction;
         let Some(current_penalty) = certificate.geometry_penalty_in(&current, &incident) else {
             return BlockRelocationOutcome::ProvenInfeasible { states_examined };
         };
@@ -524,6 +528,31 @@ fn relocate_coarsening_block(
         },
         Err(_) => BlockRelocationOutcome::ProvenInfeasible { states_examined },
     }
+}
+
+fn relocation_step_window(mesh: &MeshState, faces: &BTreeSet<usize>) -> Option<(f64, f64)> {
+    let local_edge = faces
+        .iter()
+        .copied()
+        .filter(|&face| mesh.is_triangle_live(face))
+        .flat_map(|face| {
+            let triangle = mesh.triangles()[face];
+            [
+                (triangle[0], triangle[1]),
+                (triangle[1], triangle[2]),
+                (triangle[2], triangle[0]),
+            ]
+        })
+        .filter_map(|(left, right)| {
+            let angle = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
+            (angle.is_finite() && angle > 0.0).then_some(angle)
+        })
+        .min_by(f64::total_cmp)?;
+    Some((
+        BLOCK_RELOCATION_INITIAL_STEP_RADIANS
+            .min(local_edge * BLOCK_RELOCATION_INITIAL_EDGE_FRACTION),
+        BLOCK_RELOCATION_FINAL_STEP_RADIANS.min(local_edge * BLOCK_RELOCATION_FINAL_EDGE_FRACTION),
+    ))
 }
 
 fn relocation_destination(

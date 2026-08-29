@@ -348,10 +348,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         .to_string(),
         certified_maximum_level: cfg.refinement.certified.maximum_level,
         certified_maximum_cells: cfg.refinement.certified.maximum_cells,
-        certified_gradation_rings_per_level: cfg
-            .refinement
-            .certified
-            .gradation_rings_per_level,
+        certified_gradation_rings_per_level: cfg.refinement.certified.gradation_rings_per_level,
         certified_search_budget: cfg.refinement.certified.search_budget,
         hydro_river_refine_enabled: hydro.is_some_and(|value| value.river_refinement_enabled),
         hydro_river_width_refine_enabled: hydro

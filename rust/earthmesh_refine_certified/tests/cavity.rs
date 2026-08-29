@@ -168,6 +168,57 @@ fn certified_hierarchy_cavity_relocates_its_transition_block_and_commits() {
 }
 
 #[test]
+fn certified_cavity_relocation_scales_with_fine_mother_edges() {
+    let grid = MotherGrid::generate(16).unwrap();
+    let source_mesh = grid.mesh.clone();
+    let source_levels = SourceLevelField::from_active_voronoi_cells(
+        &source_mesh,
+        vec![0; source_mesh.vertex_count()],
+    )
+    .unwrap();
+    let patch = coarsening_patch_candidates(&grid, &vec![0; grid.mesh.vertices().len()], 0)
+        .into_iter()
+        .find(|patch| {
+            patch.address
+                == VertexAddress::IcosahedronEdge {
+                    a: 0,
+                    b: 1,
+                    step: 1,
+                    n: 16,
+                }
+        })
+        .unwrap();
+    let mut mesh = grid.mesh;
+    let mut delivered = vec![Some(1); mesh.vertices().len()];
+
+    let outcome = solve_certified_coarsening_patch(
+        &mut mesh,
+        &patch,
+        &source_mesh,
+        &source_levels,
+        &mut delivered,
+        0,
+        1,
+        10_000,
+    );
+    let CertifiedCavitySolveOutcome::Feasible {
+        geometry,
+        requirements,
+        states_examined,
+        ..
+    } = outcome
+    else {
+        panic!("fine mother cavity must relocate and certify: {outcome:?}");
+    };
+
+    assert!(states_examined <= 10_000);
+    geometry.require_geometry_gates().unwrap();
+    assert_eq!(requirements.physical_residuals(), 0);
+    assert_eq!(requirements.balance_residuals(), 0);
+    assert_eq!(delivered[patch.vertex], None);
+}
+
+#[test]
 fn relocation_trials_are_charged_to_the_search_budget() {
     let grid = MotherGrid::generate(6).unwrap();
     let source_mesh = grid.mesh.clone();
