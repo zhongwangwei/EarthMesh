@@ -61,6 +61,49 @@ impl TriangleAddress {
             orientation,
         })
     }
+
+    pub fn children_2_to_1(self) -> Option<[Self; 4]> {
+        if !self.is_valid() {
+            return None;
+        }
+        let n = self.n.checked_mul(2)?;
+        let i = self.i.checked_mul(2)?;
+        let j = self.j.checked_mul(2)?;
+        let base = |i, j, orientation| Self {
+            base_face: self.base_face,
+            i,
+            j,
+            n,
+            orientation,
+        };
+        Some(match self.orientation {
+            TriangleOrientation::Up => [
+                base(i, j, TriangleOrientation::Up),
+                base(i + 1, j, TriangleOrientation::Up),
+                base(i, j + 1, TriangleOrientation::Up),
+                base(i, j, TriangleOrientation::Down),
+            ],
+            TriangleOrientation::Down => [
+                base(i + 1, j, TriangleOrientation::Down),
+                base(i, j + 1, TriangleOrientation::Down),
+                base(i + 1, j + 1, TriangleOrientation::Down),
+                base(i + 1, j + 1, TriangleOrientation::Up),
+            ],
+        })
+    }
+
+    fn is_valid(self) -> bool {
+        if self.base_face >= 20 || self.n == 0 {
+            return false;
+        }
+        let Some(sum) = self.i.checked_add(self.j) else {
+            return false;
+        };
+        match self.orientation {
+            TriangleOrientation::Up => sum < self.n,
+            TriangleOrientation::Down => sum.checked_add(1).is_some_and(|sum| sum < self.n),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -398,7 +441,7 @@ fn icosahedron_faces() -> [[u8; 3]; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn reference_generate(n: usize) -> MotherGrid {
         let base = icosahedron_vertices();
@@ -474,6 +517,160 @@ mod tests {
             mesh: MeshState::from_parts(vertices, triangles).unwrap(),
             addresses,
             triangle_addresses,
+        }
+    }
+
+    fn triangle_vertices(tri: TriangleAddress) -> [VertexAddress; 3] {
+        let [a, b, c] = icosahedron_faces()[tri.base_face as usize];
+        let n = tri.n;
+        match tri.orientation {
+            TriangleOrientation::Up => [
+                address(tri.base_face, [a, b, c], tri.i, tri.j, n - tri.i - tri.j, n),
+                address(
+                    tri.base_face,
+                    [a, b, c],
+                    tri.i + 1,
+                    tri.j,
+                    n - tri.i - tri.j - 1,
+                    n,
+                ),
+                address(
+                    tri.base_face,
+                    [a, b, c],
+                    tri.i,
+                    tri.j + 1,
+                    n - tri.i - tri.j - 1,
+                    n,
+                ),
+            ],
+            TriangleOrientation::Down => [
+                address(
+                    tri.base_face,
+                    [a, b, c],
+                    tri.i + 1,
+                    tri.j,
+                    n - tri.i - tri.j - 1,
+                    n,
+                ),
+                address(
+                    tri.base_face,
+                    [a, b, c],
+                    tri.i + 1,
+                    tri.j + 1,
+                    n - tri.i - tri.j - 2,
+                    n,
+                ),
+                address(
+                    tri.base_face,
+                    [a, b, c],
+                    tri.i,
+                    tri.j + 1,
+                    n - tri.i - tri.j - 1,
+                    n,
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn children_are_exact_parent_inverse_for_powers_of_two() {
+        for n in [1, 2, 4, 8] {
+            let parents = MotherGrid::generate(n).unwrap();
+            let children = MotherGrid::generate(n * 2).unwrap();
+            let child_addresses = children
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let mut generated = BTreeSet::new();
+
+            for parent in parents.triangle_addresses.iter().flatten().copied() {
+                let four = parent.children_2_to_1().unwrap();
+                assert_eq!(four.len(), 4);
+                for child in four {
+                    assert_eq!(child.parent_2_to_1(), Some(parent));
+                    assert!(child_addresses.contains(&child), "missing child {child:?}");
+                    assert!(generated.insert(child), "duplicate child {child:?}");
+                }
+            }
+
+            assert_eq!(generated.len(), child_addresses.len());
+            assert_eq!(generated, child_addresses);
+            assert_eq!(generated.len(), mother_cell_count(n * 2).unwrap());
+        }
+    }
+
+    #[test]
+    fn children_cover_seams_base_faces_and_icosahedron_vertices() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let child_addresses = MotherGrid::generate(8)
+            .unwrap()
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut base_faces = BTreeSet::new();
+        let mut vertices = BTreeSet::new();
+
+        for parent in grid.triangle_addresses.iter().flatten().copied() {
+            base_faces.insert(parent.base_face);
+            let adjacent_vertices = triangle_vertices(parent)
+                .into_iter()
+                .filter_map(|vertex| match vertex {
+                    VertexAddress::IcosahedronVertex(v) => Some(v),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if adjacent_vertices.is_empty() {
+                continue;
+            }
+            vertices.extend(adjacent_vertices);
+            for child in parent.children_2_to_1().unwrap() {
+                assert_eq!(child.base_face, parent.base_face);
+                assert_eq!(child.parent_2_to_1(), Some(parent));
+                assert!(child_addresses.contains(&child));
+            }
+        }
+
+        assert_eq!(base_faces, (0u8..20).collect::<BTreeSet<_>>());
+        assert_eq!(vertices, (0u8..12).collect::<BTreeSet<_>>());
+    }
+
+    #[test]
+    fn invalid_triangle_addresses_have_no_children() {
+        for bad in [
+            TriangleAddress {
+                base_face: 20,
+                i: 0,
+                j: 0,
+                n: 1,
+                orientation: TriangleOrientation::Up,
+            },
+            TriangleAddress {
+                base_face: 0,
+                i: 0,
+                j: 0,
+                n: 0,
+                orientation: TriangleOrientation::Up,
+            },
+            TriangleAddress {
+                base_face: 0,
+                i: 1,
+                j: 0,
+                n: 1,
+                orientation: TriangleOrientation::Up,
+            },
+            TriangleAddress {
+                base_face: 0,
+                i: 0,
+                j: 0,
+                n: 1,
+                orientation: TriangleOrientation::Down,
+            },
+        ] {
+            assert_eq!(bad.children_2_to_1(), None);
         }
     }
 

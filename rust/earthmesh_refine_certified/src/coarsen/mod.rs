@@ -1,3 +1,9 @@
+mod hierarchy_component;
+pub use hierarchy_component::{
+    plan_hierarchy_components, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
+    ParentRequirement,
+};
+
 use crate::{
     certificate::{Certificate, GeometryCertificateReport},
     mother_grid::{MotherGrid, TriangleAddress, VertexAddress},
