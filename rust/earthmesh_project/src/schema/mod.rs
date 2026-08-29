@@ -172,7 +172,7 @@ pub enum RefinementBackend {
     /// Re-read the criteria against the cells that exist and change the mesh
     /// locally where they are still unmet.
     ///
-    /// Where the other two turn demand into geometry once and fit a mesh to it,
+    /// Where Method-C and Red-Green turn demand into geometry once and fit a mesh to it,
     /// this measures each Voronoi cell every cycle, so a cell that has become
     /// fine enough stops asking. It refuses any transaction that would leave a
     /// thin triangle, which is what carries its worst angle past Method-C's on
@@ -182,6 +182,9 @@ pub enum RefinementBackend {
     /// It serves named circular regions. A region with a shape -- a bbox, a
     /// polygon -- is refused rather than approximated.
     HarpDv,
+    /// Certified Mother-grid Reverse Coarsening (CMRC). Builds a safe global
+    /// mother grid and only accepts changes that retain every hard certificate.
+    Certified,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,17 +343,83 @@ pub struct RefinementRecipe {
     /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
     #[serde(default)]
     pub harp_dv: HarpDvRefinementRecipe,
+    /// CMRC safe-mother, certification, and search budgets.
+    #[serde(default)]
+    pub certified: CertifiedRefinementRecipe,
     /// Default refinement backend: ask every enabled criterion again before
     /// each pass and cover what it demands with circles (emits the `&adaptive`
     /// namelist group). Absent means enabled.
     #[serde(default)]
     pub adaptive: Option<AdaptiveRefinementRecipe>,
-    /// Legacy refinement backend: compose regions into a gradient-limited
+    /// Red-Green peer backend: compose regions into a gradient-limited
     /// cell-width field and drive Method-C from quantized target levels
     /// (emits the `&hfield` namelist group). Enabling it explicitly turns the
     /// adaptive route off, because a run refines one way or the other.
     #[serde(default)]
     pub hfield: Option<HfieldRefinementRecipe>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertifiedMode {
+    #[default]
+    SafeMotherOnly,
+    ReverseCoarsening,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertifiedDeliveryMode {
+    Tri,
+    Hex,
+    #[default]
+    Coupled,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedRefinementRecipe {
+    #[serde(default)]
+    pub mode: CertifiedMode,
+    #[serde(default)]
+    pub delivery: CertifiedDeliveryMode,
+    #[serde(default = "default_certified_maximum_level")]
+    pub maximum_level: u8,
+    #[serde(default = "default_certified_maximum_cells")]
+    pub maximum_cells: usize,
+    #[serde(default = "default_certified_gradation_rings_per_level")]
+    pub gradation_rings_per_level: u8,
+    #[serde(default = "default_certified_search_budget")]
+    pub search_budget: usize,
+}
+
+impl Default for CertifiedRefinementRecipe {
+    fn default() -> Self {
+        Self {
+            mode: CertifiedMode::SafeMotherOnly,
+            delivery: CertifiedDeliveryMode::Coupled,
+            maximum_level: default_certified_maximum_level(),
+            maximum_cells: default_certified_maximum_cells(),
+            gradation_rings_per_level: default_certified_gradation_rings_per_level(),
+            search_budget: default_certified_search_budget(),
+        }
+    }
+}
+
+fn default_certified_maximum_level() -> u8 {
+    8
+}
+
+fn default_certified_maximum_cells() -> usize {
+    5_000_000
+}
+
+fn default_certified_gradation_rings_per_level() -> u8 {
+    3
+}
+
+fn default_certified_search_budget() -> usize {
+    100_000
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

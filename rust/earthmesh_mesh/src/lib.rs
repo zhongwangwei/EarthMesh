@@ -307,7 +307,10 @@ pub use mesh_insertion::{
 };
 pub use mesh_patch::{MeshPatch, PatchError};
 pub use mesh_predicates::{in_circle_on_sphere, orient3d, orientation_on_sphere, Ambiguous, Sign};
-pub use mesh_retirement::{RetirementDiagonal, RetirementError, RetirementReport};
+pub use mesh_retirement::{
+    RetirementDiagonal, RetirementError, RetirementPostconditionOutcome, RetirementReport,
+    RetirementSearchOutcome,
+};
 pub use mesh_state::{EdgeId, FaceId, MeshState, MeshStateError, VertexId, MESH_STATE_FIRST_ID};
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
 pub use primal_dual_mesh::TriangularMesh;

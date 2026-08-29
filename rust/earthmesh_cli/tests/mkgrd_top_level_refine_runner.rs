@@ -71,9 +71,9 @@ fn default_dispatcher_runs_atmos_specified_refine_without_landtype_source() {
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&final_grid)
             .expect("read refined mesh");
     assert!(
-        refined_mesh.w_points.len() > run.gridinit.gridfile.lbx_points,
+        refined_mesh.w_points.len() > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "expected refinement to add cells: initial={} final={}",
-        run.gridinit.gridfile.lbx_points,
+        run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         refined_mesh.w_points.len()
     );
 

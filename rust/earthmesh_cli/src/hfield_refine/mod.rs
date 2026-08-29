@@ -54,6 +54,21 @@ pub struct HfieldRefineOptions {
     pub target_levels_json: Option<String>,
 }
 
+impl Default for HfieldRefineOptions {
+    fn default() -> Self {
+        Self {
+            g: 0.2,
+            max_level: None,
+            base_m: None,
+            geographic_origin: None,
+            nlon: 720,
+            nlat: 360,
+            target_cells_geojson: None,
+            target_levels_json: None,
+        }
+    }
+}
+
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }

@@ -1,0 +1,9 @@
+[package]
+name = "earthmesh_refine_certified"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+earthmesh_boundary = { path = "../earthmesh_boundary" }
+earthmesh_geometry = { path = "../earthmesh_geometry" }
+earthmesh_mesh = { path = "../earthmesh_mesh" }

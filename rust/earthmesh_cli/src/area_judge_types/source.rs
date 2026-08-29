@@ -45,7 +45,7 @@ pub struct AreaJudgeDomainInitializationReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaJudgeSeaOrLandReport {
     pub seaorland: Vec<Vec<bool>>,
-    pub sum_land_grid: i32,
+    pub sum_land_grid: u64,
 }
 
 /// Binary landtype class used by `MOD_Area_judge.F90` when building `seaorland`.

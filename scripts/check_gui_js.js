@@ -105,7 +105,7 @@ check(
     html.includes('${springControls}'),
   "HARP-DV must explain and hide the inapplicable generic spring controls",
 );
-log("HARP-DV hides the inapplicable generic spring controls");
+log("HARP-DV and CMRC hide inapplicable generic spring controls");
 
 check(
   html.includes('id="thresholdRefineOn"') &&
@@ -216,6 +216,7 @@ check(
     html.includes('id="refineBackendFamily"') &&
     html.includes('id="methodCAlgorithm"') &&
     html.includes('value="lepp_delaunay"') &&
+    html.includes('value="certified"') &&
     html.includes("LEPP-Delaunay / AdaptiveHybrid") &&
     html.includes('algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm') &&
     html.includes('${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">') &&
@@ -223,7 +224,7 @@ check(
     html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
     html.includes("+ algorithmBlock") &&
     !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
-  "Method-C must visibly own Canonical and LEPP-Delaunay while Red-Green and HARP-DV remain independent backends",
+  "Method-C must visibly own Canonical and LEPP-Delaunay while CMRC, Red-Green, and HARP-DV remain peer backends",
 );
 log("algorithm hierarchy shows LEPP-Delaunay AdaptiveHybrid under Method-C");
 
@@ -232,12 +233,14 @@ check(
     html.includes('id="leppDelaunayOptions"') &&
     html.includes('id="redGreenOptions"') &&
     html.includes('id="harpDvOptions"') &&
+    html.includes('id="certifiedOptions"') &&
     html.includes("const algorithmOptionsBlock = {") &&
     html.includes("+ algorithmOptionsBlock") &&
     html.includes('id="leppMaximumPathLength"') &&
     html.includes('id="harpMaximumPatchCells"') &&
     html.includes('invoke("set_method_c_algorithm_options"') &&
-    html.includes('invoke("set_harp_dv_options"'),
+    html.includes('invoke("set_harp_dv_options"') &&
+    html.includes('invoke("set_certified_options"'),
   "the selected algorithm must be the only one whose complete production controls are rendered and saved",
 );
 log("algorithm-specific parameter panels are conditional and wired to Rust");
@@ -982,6 +985,7 @@ check(
     html.includes("DEFAULT_HFIELD_G = capabilities.default_hfield_g") &&
     html.includes("METHOD_C_DEFAULTS = capabilities.method_c_defaults") &&
     html.includes("HARP_DV_DEFAULTS = capabilities.harp_dv_defaults") &&
+    html.includes("CERTIFIED_DEFAULTS = capabilities.certified_defaults") &&
     html.includes("const algorithmDefaults = defaultAlgorithmControls();") &&
     html.includes("DEFAULT_OPENMP = capabilities.default_openmp") &&
     html.includes("DEFAULT_NITER = capabilities.default_niter"),

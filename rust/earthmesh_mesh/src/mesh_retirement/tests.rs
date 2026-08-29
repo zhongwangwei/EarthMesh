@@ -324,3 +324,46 @@ fn degree_five_postcondition_rejection_is_atomic() {
     assert_eq!(error, RetirementError::Rejected);
     assert_eq!(state, before);
 }
+
+#[test]
+fn bounded_retirement_distinguishes_budget_from_complete_infeasibility() {
+    let mut state = octahedron();
+    let before = state.clone();
+
+    let exhausted = state.retire_vertex_with_budget_transactionally(2, 1, |_, _| false);
+    assert_eq!(
+        exhausted,
+        RetirementSearchOutcome::SearchBudgetExhausted { attempted: 1 }
+    );
+    assert_eq!(state, before);
+
+    let infeasible = state.retire_vertex_with_budget_transactionally(2, 2, |_, _| false);
+    assert!(matches!(
+        infeasible,
+        RetirementSearchOutcome::ProvenInfeasible {
+            attempted: 2,
+            last_error: Some(RetirementError::Rejected),
+        }
+    ));
+    assert_eq!(state, before);
+}
+
+#[test]
+fn zero_budget_retirement_never_mutates_and_a_feasible_search_commits() {
+    let mut state = octahedron();
+    let before = state.clone();
+
+    assert_eq!(
+        state.retire_vertex_with_budget_transactionally(2, 0, |_, _| true),
+        RetirementSearchOutcome::SearchBudgetExhausted { attempted: 0 }
+    );
+    assert_eq!(state, before);
+
+    let committed =
+        state.retire_vertex_with_budget_transactionally(2, 2, |state, _| state.validate().is_ok());
+    assert!(matches!(
+        committed,
+        RetirementSearchOutcome::Committed { attempted: 1, .. }
+    ));
+    assert_eq!(state.vertex_count(), before.vertex_count() - 1);
+}

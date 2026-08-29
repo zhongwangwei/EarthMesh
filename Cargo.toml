@@ -14,6 +14,7 @@ members = [
     "rust/earthmesh_refine",
     "rust/earthmesh_refine_planner",
     "rust/earthmesh_refine_method_c",
+    "rust/earthmesh_refine_certified",
     "rust/earthmesh_cli",
     "rust/earthmesh_project",
     # Compatibility ports kept for bit-for-bit verification against the Fortran

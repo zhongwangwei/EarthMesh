@@ -11,7 +11,7 @@ pub struct EarthmeshConfig {
     pub nxp: i32,
     pub base_dir: String,
     pub mesh_type: String,
-    /// Which refinement algorithm builds the mesh: `method_c` or `red_green`.
+    /// Which refinement algorithm builds the mesh.
     ///
     /// The choice is a project-level one, and the runner only ever sees a
     /// namelist, so it has to travel in the namelist or it does not travel at
@@ -306,10 +306,10 @@ impl EarthmeshConfig {
         // matches on `mode_grid` alone and one of them will always be missed.
         if !matches!(
             self.refine_backend.trim().to_ascii_lowercase().as_str(),
-            "method_c" | "red_green" | "harp_dv"
+            "method_c" | "red_green" | "harp_dv" | "certified"
         ) {
             return Err(format!(
-                "unsupported refine_backend {}; expected method_c, red_green, or harp_dv",
+                "unsupported refine_backend {}; expected method_c, red_green, harp_dv, or certified",
                 self.refine_backend
             ));
         }

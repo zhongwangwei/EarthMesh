@@ -884,8 +884,16 @@ fn an_unknown_refine_backend_is_refused() {
 
 /// The three real names are accepted, in any case.
 #[test]
-fn the_three_backends_are_accepted_in_any_case() {
-    for name in ["method_c", "red_green", "harp_dv", "HARP_DV", "Red_Green"] {
+fn the_four_backends_are_accepted_in_any_case() {
+    for name in [
+        "method_c",
+        "red_green",
+        "harp_dv",
+        "certified",
+        "HARP_DV",
+        "Red_Green",
+        "CERTIFIED",
+    ] {
         EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
             .unwrap_or_else(|error| panic!("{name} should be a backend: {error}"));
     }

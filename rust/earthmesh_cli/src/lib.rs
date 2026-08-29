@@ -9,6 +9,7 @@ use mask_source_discovery::discover_mask_sources;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
 pub mod coordinate_types;
 use coordinate_types::{GridRegion, LonLatPoint};
+mod certified_options;
 mod fs_support;
 mod harp_dv_options;
 mod harp_trace;

@@ -13,6 +13,7 @@ earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_hfield = { path = "../earthmesh_hfield" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 earthmesh_refine_harp_dv = { path = "../earthmesh_refine_harp_dv" }
+earthmesh_refine_certified = { path = "../earthmesh_refine_certified" }
 earthmesh_refine_method_c = { path = "../earthmesh_refine_method_c" }
 earthmesh_refine_redgreen = { path = "../earthmesh_refine_redgreen" }
 earthmesh_quality = { path = "../earthmesh_quality" }

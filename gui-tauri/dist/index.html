@@ -573,6 +573,7 @@ const STATIC_BROWSER_CAPABILITIES={
   default_hfield_g:0.2,
   method_c_defaults:{max_cycles:8,target_size_tolerance:1.2,maximum_neighbor_size_ratio:1.75,maximum_vertices:5000000,maximum_insertions_per_cycle:500000,maximum_path_length:100000,stop_at_source_resolution:true,minimum_triangle_angle_deg:0},
   harp_dv_defaults:{max_cycles:60,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:0,criterion_minimum_angle_deg:0},
+  certified_defaults:{mode:"safe_mother_only",delivery:"coupled",maximum_level:8,maximum_cells:5000000,gradation_rings_per_level:3,search_budget:100000},
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
@@ -594,6 +595,7 @@ let DEFAULT_RELAX=STATIC_BROWSER_CAPABILITIES.default_relax;
 let DEFAULT_HFIELD_G=STATIC_BROWSER_CAPABILITIES.default_hfield_g;
 let METHOD_C_DEFAULTS=STATIC_BROWSER_CAPABILITIES.method_c_defaults;
 let HARP_DV_DEFAULTS=STATIC_BROWSER_CAPABILITIES.harp_dv_defaults;
+let CERTIFIED_DEFAULTS=STATIC_BROWSER_CAPABILITIES.certified_defaults;
 let METHOD_C_MIN_BASE_NXP=STATIC_BROWSER_CAPABILITIES.method_c_min_base_nxp;
 let METHOD_C_MAX_REFINEMENT_LEVEL=STATIC_BROWSER_CAPABILITIES.method_c_max_refinement_level;
 const MERIT_SURFACE_PREVIEW_STRIDE=50;
@@ -2005,6 +2007,7 @@ if(MAP_WINDOW_MODE){
     DEFAULT_HFIELD_G = capabilities.default_hfield_g;
     METHOD_C_DEFAULTS = capabilities.method_c_defaults;
     HARP_DV_DEFAULTS = capabilities.harp_dv_defaults;
+    CERTIFIED_DEFAULTS = capabilities.certified_defaults;
     METHOD_C_SPRING_NXP1_KM = capabilities.method_c_spring_nxp1_km;
     KM_PER_DEG_EQ = capabilities.km_per_degree_equator;
   }
@@ -2083,7 +2086,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     harpMinimumCandidateSeparationM: HARP_DV_DEFAULTS.minimum_candidate_separation_m,
     harpMaximumVertexDegree: HARP_DV_DEFAULTS.maximum_vertex_degree,
     harpMinimumTriangleAngleDeg: HARP_DV_DEFAULTS.minimum_triangle_angle_deg,
-    harpCriterionMinimumAngleDeg: HARP_DV_DEFAULTS.criterion_minimum_angle_deg
+    harpCriterionMinimumAngleDeg: HARP_DV_DEFAULTS.criterion_minimum_angle_deg,
+    certifiedMode: CERTIFIED_DEFAULTS.mode,
+    certifiedDelivery: CERTIFIED_DEFAULTS.delivery,
+    certifiedMaximumLevel: CERTIFIED_DEFAULTS.maximum_level,
+    certifiedMaximumCells: CERTIFIED_DEFAULTS.maximum_cells,
+    certifiedGradationRingsPerLevel: CERTIFIED_DEFAULTS.gradation_rings_per_level,
+    certifiedSearchBudget: CERTIFIED_DEFAULTS.search_budget
   });
   let specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
@@ -2308,6 +2317,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         maximumVertexDegree: specifiedRefine.harpMaximumVertexDegree,
         minimumTriangleAngleDeg: specifiedRefine.harpMinimumTriangleAngleDeg,
         criterionMinimumAngleDeg: specifiedRefine.harpCriterionMinimumAngleDeg
+      });
+    }
+    if (specifiedRefine.algorithm === "certified") {
+      yaml = await invoke("set_certified_options", {
+        yaml,
+        mode: specifiedRefine.certifiedMode,
+        delivery: specifiedRefine.certifiedDelivery,
+        maximumLevel: specifiedRefine.certifiedMaximumLevel,
+        maximumCells: specifiedRefine.certifiedMaximumCells,
+        gradationRingsPerLevel: specifiedRefine.certifiedGradationRingsPerLevel,
+        searchBudget: specifiedRefine.certifiedSearchBudget
       });
     }
     if (baseProjectYaml) {
@@ -2895,19 +2915,22 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         : "Canonical Method-C: regular nested subdivision with transition rows; preserves degree 5/6/7, but only accepts regions its lattice can represent.",
       lepp_delaunay: z
         ? "LEPP-Delaunay（AdaptiveHybrid）：沿最长边传播路径局部插点并恢复 Delaunay；支持物理目标尺寸、邻级平衡和受约束区域边界，不读取旧式 H 场。"
-        : "LEPP-Delaunay (AdaptiveHybrid): inserts locally along longest-edge propagation paths and restores Delaunay; supports physical target sizes, neighbor balance, and constrained region boundaries, but not the legacy H-field.",
+        : "LEPP-Delaunay (AdaptiveHybrid): inserts locally along longest-edge propagation paths and restores Delaunay; supports physical target sizes, neighbor balance, and constrained region boundaries, but not the gradient-limited H-field.",
       red_green: z
         ? "Red-Green：把标记三角形四分并闭合悬挂边；适合任意判据形状，最终邻接度由质量检查约束。"
         : "Red-Green: quarters marked triangles and closes hanging edges; accepts arbitrary criterion shapes, with final vertex degree enforced by quality checks.",
       harp_dv: z
         ? "HARP-DV：每轮在当前 Voronoi 单元上重新检查目标尺度，只提交满足拓扑和最小角约束的局部事务。"
-        : "HARP-DV: re-evaluates target scales on current Voronoi cells each cycle and commits only local transactions that preserve topology and minimum angle."
+        : "HARP-DV: re-evaluates target scales on current Voronoi cells each cycle and commits only local transactions that preserve topology and minimum angle.",
+      certified: z
+        ? "CMRC：从认证二十面体母网格反向粗化；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交。"
+        : "CMRC: builds a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; failed or unfinished compression retains the certified finer grid."
     }[algorithm];
     const algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm;
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       <div class="grid2">
-        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="harp_dv" ${algorithmFamily==="harp_dv"?"selected":""}>HARP-DV</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族，不是第四个独立后端。":"LEPP-Delaunay belongs to Method-C; it is not a fourth independent backend.")}
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="harp_dv" ${algorithmFamily==="harp_dv"?"selected":""}>HARP-DV</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC、Red-Green 和 HARP-DV 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC, Red-Green, and HARP-DV are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
@@ -2956,11 +2979,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"执行约束":"Execution invariants",`<input class="input" value="${z?"确定性单线程；闭合球面":"deterministic single-thread; closed surface"}" disabled>`,z?"当前实现只有这一种有效模式，因此不伪造无效开关":"the implementation has only this valid mode, so no fake switches are exposed")}
       </div>
     </div>`;
+    const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
+      <div class="grid2">
+        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格":"Safe mother only"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option></select>`)}
+        ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
+        ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
+        ${field(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="certifiedMaximumCells" min="1" step="1" value="${specifiedRefine.certifiedMaximumCells}">`)}
+        ${field(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
+        ${field(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
+        ${field(z?"硬门":"Hard gate",`<input class="input" value="40°–80° · Euler 2 · charge 12 · primal/dual/physical/balance/remap" disabled>`,z?"任一失败都不写正式 gridfile":"no formal gridfile is written if any certificate fails")}
+      </div>
+    </div>`;
     const algorithmOptionsBlock = {
       method_c: canonicalMethodCOptions,
       lepp_delaunay: leppOptions,
       red_green: redGreenOptions,
-      harp_dv: harpOptions
+      harp_dv: harpOptions,
+      certified: certifiedOptions
     }[algorithm];
     // Only the canonical nested algorithm serves the h-field. The others refuse a run
     // that configures one, so offering it beside them builds a project that
@@ -2984,12 +3020,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
-    const springControls = algorithm === "harp_dv"
-      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"HARP-DV 使用带 Delaunay 合法化和质量验收的事务式点位调整；固定拓扑的通用弹簧不适用于该后端。":"HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance; the fixed-topology generic spring does not apply to this backend."}</div>`
+    const springControls = algorithm === "harp_dv" || algorithm === "certified"
+      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${algorithm === "certified" ? (z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate.") : (z?"HARP-DV 使用带 Delaunay 合法化和质量验收的事务式点位调整；固定拓扑的通用弹簧不适用于该后端。":"HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance; the fixed-topology generic spring does not apply to this backend.")}</div>`
       : `${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
         ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
     const expertRefine = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${algorithm === "harp_dv" ? (z ? "HARP-DV 后处理" : "HARP-DV post-processing") : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)")}</span>
+      <span class="expert-tag">⚙ ${algorithm === "certified" ? "CMRC" : (algorithm === "harp_dv" ? (z ? "HARP-DV 后处理" : "HARP-DV post-processing") : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)"))}</span>
       <div class="grid2" style="margin-top:10px">
         ${springControls}
         ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"通用输出清理：仅保留最大连通水体":"common output cleanup: keep only the largest connected water body")}
@@ -3157,11 +3193,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ["harpMinimumCandidateSeparationM","harpMinimumCandidateSeparationM",false],
         ["harpMaximumVertexDegree","harpMaximumVertexDegree",true],
         ["harpMinimumTriangleAngleDeg","harpMinimumTriangleAngleDeg",false],
-        ["harpCriterionMinimumAngleDeg","harpCriterionMinimumAngleDeg",false]
+        ["harpCriterionMinimumAngleDeg","harpCriterionMinimumAngleDeg",false],
+        ["certifiedMaximumLevel","certifiedMaximumLevel",true],
+        ["certifiedMaximumCells","certifiedMaximumCells",true],
+        ["certifiedGradationRingsPerLevel","certifiedGradationRingsPerLevel",true],
+        ["certifiedSearchBudget","certifiedSearchBudget",true]
       ].forEach(([id,key,integer]) => bindAlgorithmNumber(id,key,integer));
       const leppSourceStop = document.getElementById("leppStopAtSourceResolution");
       if (leppSourceStop) leppSourceStop.onchange = () => {
         specifiedRefine.leppStopAtSourceResolution = leppSourceStop.value === "on";
+        clearRunArtifacts();
+      };
+      const certifiedMode = document.getElementById("certifiedMode");
+      if (certifiedMode) certifiedMode.onchange = () => {
+        specifiedRefine.certifiedMode = certifiedMode.value;
+        clearRunArtifacts();
+      };
+      const certifiedDelivery = document.getElementById("certifiedDelivery");
+      if (certifiedDelivery) certifiedDelivery.onchange = () => {
+        specifiedRefine.certifiedDelivery = certifiedDelivery.value;
         clearRunArtifacts();
       };
     }
@@ -3496,6 +3546,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         harpMaximumVertexDegree: sum.harp_dv_maximum_vertex_degree ?? algorithmDefaults.harpMaximumVertexDegree,
         harpMinimumTriangleAngleDeg: sum.harp_dv_minimum_triangle_angle_deg ?? algorithmDefaults.harpMinimumTriangleAngleDeg,
         harpCriterionMinimumAngleDeg: sum.harp_dv_criterion_minimum_angle_deg ?? algorithmDefaults.harpCriterionMinimumAngleDeg,
+        certifiedMode: sum.certified_mode ?? algorithmDefaults.certifiedMode,
+        certifiedDelivery: sum.certified_delivery ?? algorithmDefaults.certifiedDelivery,
+        certifiedMaximumLevel: sum.certified_maximum_level ?? algorithmDefaults.certifiedMaximumLevel,
+        certifiedMaximumCells: sum.certified_maximum_cells ?? algorithmDefaults.certifiedMaximumCells,
+        certifiedGradationRingsPerLevel: sum.certified_gradation_rings_per_level ?? algorithmDefaults.certifiedGradationRingsPerLevel,
+        certifiedSearchBudget: sum.certified_search_budget ?? algorithmDefaults.certifiedSearchBudget,
         route: sum.hfield_enabled ? "hfield" : (sum.adaptive_enabled ? "adaptive" : "discrete"),
         adaptiveMaxLevel: sum.adaptive_max_level ?? 0,
         adaptiveCoastline: sum.adaptive_coastline !== false,

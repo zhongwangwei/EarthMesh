@@ -69,6 +69,9 @@ pub enum SphericalPolygonError {
         first_edge: usize,
         second_edge: usize,
     },
+    NonConvex {
+        vertex: usize,
+    },
     DegenerateArea,
     AmbiguousTriangulation {
         vertex: usize,
@@ -101,6 +104,10 @@ impl std::fmt::Display for SphericalPolygonError {
             } => write!(
                 f,
                 "spherical polygon edges {first_edge} and {second_edge} intersect"
+            ),
+            Self::NonConvex { vertex } => write!(
+                f,
+                "spherical polygon changes great-circle half-space at vertex {vertex}"
             ),
             Self::DegenerateArea => write!(f, "spherical polygon has no resolved surface area"),
             Self::AmbiguousTriangulation { vertex } => write!(
@@ -375,6 +382,156 @@ pub fn try_spherical_polygon_excess(
         SphericalAreaBranch::Oriented => area.oriented_left_sr,
         SphericalAreaBranch::SignedMinor => area.signed_minor_sr,
     })
+}
+
+fn normalize3(vector: [f64; 3]) -> Option<[f64; 3]> {
+    let norm = norm3(vector);
+    (norm > 64.0 * f64::EPSILON).then(|| [vector[0] / norm, vector[1] / norm, vector[2] / norm])
+}
+
+fn convex_clip_planes(
+    vertices: &[[f64; 3]],
+) -> Result<Vec<([f64; 3], f64)>, SphericalPolygonError> {
+    let center = normalize3(vertices.iter().fold([0.0; 3], |sum, point| {
+        [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
+    }))
+    .ok_or(SphericalPolygonError::DegenerateArea)?;
+    let mut planes = Vec::with_capacity(vertices.len());
+    for index in 0..vertices.len() {
+        let normal = cross3(vertices[index], vertices[(index + 1) % vertices.len()]);
+        let center_side = dot3(normal, center);
+        if center_side.abs() <= 64.0 * f64::EPSILON {
+            return Err(SphericalPolygonError::NonConvex { vertex: index });
+        }
+        let sign = center_side.signum();
+        if vertices
+            .iter()
+            .any(|&point| sign * dot3(normal, point) < -1.0e-12)
+        {
+            return Err(SphericalPolygonError::NonConvex { vertex: index });
+        }
+        planes.push((normal, sign));
+    }
+    Ok(planes)
+}
+
+fn great_circle_boundary_intersection(
+    start: [f64; 3],
+    end: [f64; 3],
+    normal: [f64; 3],
+    sign: f64,
+) -> Option<[f64; 3]> {
+    const BOUNDARY_TOLERANCE: f64 = 1.0e-14;
+    let side = |point| sign * dot3(normal, point);
+    let start_side = side(start);
+    let end_side = side(end);
+    if start_side.abs() <= BOUNDARY_TOLERANCE {
+        return Some(start);
+    }
+    if end_side.abs() <= BOUNDARY_TOLERANCE {
+        return Some(end);
+    }
+    if start_side.signum() == end_side.signum() {
+        return None;
+    }
+    let (mut inside_point, mut outside_point) = if start_side > 0.0 {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    for _ in 0..64 {
+        let midpoint = normalize3([
+            inside_point[0] + outside_point[0],
+            inside_point[1] + outside_point[1],
+            inside_point[2] + outside_point[2],
+        ])?;
+        if side(midpoint) >= 0.0 {
+            inside_point = midpoint;
+        } else {
+            outside_point = midpoint;
+        }
+    }
+    normalize3([
+        inside_point[0] + outside_point[0],
+        inside_point[1] + outside_point[1],
+        inside_point[2] + outside_point[2],
+    ])
+}
+
+fn deduplicate_spherical_vertices(vertices: &mut Vec<[f64; 3]>) {
+    vertices.dedup_by(|left, right| dot3(*left, *right) >= 1.0 - 1.0e-13);
+    if vertices.len() > 1
+        && dot3(vertices[0], *vertices.last().expect("non-empty vertices")) >= 1.0 - 1.0e-13
+    {
+        vertices.pop();
+    }
+}
+
+/// Exact great-circle half-space clipping for compact convex spherical cells.
+pub fn spherical_convex_intersection(
+    subject: &[Point],
+    clip: &[Point],
+) -> Result<Vec<Point>, SphericalPolygonError> {
+    try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
+    try_spherical_polygon_excess(clip, SphericalAreaBranch::Minor)?;
+    let mut output = checked_spherical_polygon_units(subject, |point| (point.x, point.y))?;
+    convex_clip_planes(&output)?;
+    let clip_vertices = checked_spherical_polygon_units(clip, |point| (point.x, point.y))?;
+    let planes = convex_clip_planes(&clip_vertices)?;
+    for (normal, sign) in planes {
+        let input = output;
+        output = Vec::new();
+        let Some(mut previous) = input.last().copied() else {
+            break;
+        };
+        let mut previous_inside = sign * dot3(normal, previous) >= -1.0e-14;
+        for current in input {
+            let current_inside = sign * dot3(normal, current) >= -1.0e-14;
+            if current_inside != previous_inside {
+                if let Some(intersection) =
+                    great_circle_boundary_intersection(previous, current, normal, sign)
+                {
+                    output.push(intersection);
+                }
+            }
+            if current_inside {
+                output.push(current);
+            }
+            previous = current;
+            previous_inside = current_inside;
+        }
+        deduplicate_spherical_vertices(&mut output);
+        if output.len() < 3 {
+            return Ok(Vec::new());
+        }
+    }
+    Ok(output
+        .into_iter()
+        .map(|point| {
+            Point::new(
+                point[1].atan2(point[0]).to_degrees(),
+                point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+            )
+        })
+        .collect())
+}
+
+/// Fraction of a compact convex `subject` cell covered by another convex cell.
+pub fn spherical_convex_overlap_fraction(
+    subject: &[Point],
+    clip: &[Point],
+) -> Result<f64, SphericalPolygonError> {
+    let subject_area = try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
+    let intersection = spherical_convex_intersection(subject, clip)?;
+    if intersection.len() < 3 {
+        return Ok(0.0);
+    }
+    let area = match try_spherical_polygon_excess(&intersection, SphericalAreaBranch::Minor) {
+        Ok(area) => area,
+        Err(SphericalPolygonError::DegenerateArea) => return Ok(0.0),
+        Err(error) => return Err(error),
+    };
+    Ok((area / subject_area).clamp(0.0, 1.0))
 }
 
 /// Validated spherical lon/lat polygon area in km².

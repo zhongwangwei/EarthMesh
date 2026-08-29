@@ -684,11 +684,11 @@ pub(crate) fn set_expert(
     validated_yaml(cfg)
 }
 
-/// Choose one of the four user-facing refinement algorithms.
+/// Choose one of the user-facing refinement algorithms.
 ///
 /// Canonical Method-C and LEPP-Delaunay share the Method-C project backend;
 /// LEPP-Delaunay selects its AdaptiveHybrid local-refinement implementation.
-/// Red-Green and HARP-DV are independent backends.
+/// Red-Green, HARP-DV, and CMRC are independent backends.
 ///
 /// Orthogonal to `set_adaptive_refinement` with one exception. The point+radius
 /// route's criteria half is shared -- both backends consume the circles it
@@ -720,11 +720,55 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
             cfg.refinement.method_c = Default::default();
             earthmesh_project::RefinementBackend::HarpDv
         }
+        "certified" => {
+            cfg.quality.lepp_post_quality = None;
+            cfg.refinement.method_c = Default::default();
+            earthmesh_project::RefinementBackend::Certified
+        }
         other => {
             return Err(format!(
-                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, or harp_dv"
+                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, harp_dv, or certified"
             ))
         }
+    };
+    validated_yaml(cfg)
+}
+
+#[tauri::command]
+pub(crate) fn set_certified_options(
+    yaml: String,
+    mode: String,
+    delivery: String,
+    maximum_level: u8,
+    maximum_cells: usize,
+    gradation_rings_per_level: u8,
+    search_budget: usize,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.certified = earthmesh_project::CertifiedRefinementRecipe {
+        mode: match mode.as_str() {
+            "safe_mother_only" => earthmesh_project::CertifiedMode::SafeMotherOnly,
+            "reverse_coarsening" => earthmesh_project::CertifiedMode::ReverseCoarsening,
+            other => {
+                return Err(format!(
+                    "unknown certified mode {other}: expected safe_mother_only or reverse_coarsening"
+                ))
+            }
+        },
+        delivery: match delivery.as_str() {
+            "tri" => earthmesh_project::CertifiedDeliveryMode::Tri,
+            "hex" => earthmesh_project::CertifiedDeliveryMode::Hex,
+            "coupled" => earthmesh_project::CertifiedDeliveryMode::Coupled,
+            other => {
+                return Err(format!(
+                    "unknown certified delivery {other}: expected tri, hex, or coupled"
+                ))
+            }
+        },
+        maximum_level,
+        maximum_cells,
+        gradation_rings_per_level,
+        search_budget,
     };
     validated_yaml(cfg)
 }

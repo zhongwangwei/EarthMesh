@@ -207,6 +207,107 @@ fn crosses_periodic_lon_halo(
         || bounds.maxlon_source.saturating_add(radius_cells) > nlons_source
 }
 
+struct ThresholdIntegralImage {
+    width: usize,
+    height: usize,
+    count: Vec<u64>,
+    sum: Vec<f64>,
+    sum_squares: Vec<f64>,
+}
+
+impl ThresholdIntegralImage {
+    fn new(values: &[Vec<f64>]) -> Self {
+        let width = values.len().saturating_sub(1);
+        let height = values
+            .get(1)
+            .map(|column| column.len().saturating_sub(1))
+            .unwrap_or(0);
+        let stride = height + 1;
+        let len = (width + 1).saturating_mul(stride);
+        let mut image = Self {
+            width,
+            height,
+            count: vec![0; len],
+            sum: vec![0.0; len],
+            sum_squares: vec![0.0; len],
+        };
+        for x in 1..=width {
+            for y in 1..=height {
+                let value = values.get(x).and_then(|column| column.get(y)).copied();
+                let finite = value.filter(|value| value.is_finite());
+                let index = x * stride + y;
+                let left = index - stride;
+                let below = index - 1;
+                let diagonal = left - 1;
+                image.count[index] = image.count[left] + image.count[below] - image.count[diagonal]
+                    + u64::from(finite.is_some());
+                image.sum[index] = image.sum[left] + image.sum[below] - image.sum[diagonal]
+                    + finite.unwrap_or(0.0);
+                image.sum_squares[index] = image.sum_squares[left] + image.sum_squares[below]
+                    - image.sum_squares[diagonal]
+                    + finite.map_or(0.0, |value| value * value);
+            }
+        }
+        image
+    }
+
+    fn window(&self, x1: usize, x2: usize, y1: usize, y2: usize) -> (u64, f64, f64) {
+        let x1 = x1.clamp(1, self.width);
+        let x2 = x2.clamp(x1, self.width);
+        let y1 = y1.clamp(1, self.height);
+        let y2 = y2.clamp(y1, self.height);
+        let stride = self.height + 1;
+        let corners = [
+            x2 * stride + y2,
+            (x1 - 1) * stride + y2,
+            x2 * stride + y1 - 1,
+            (x1 - 1) * stride + y1 - 1,
+        ];
+        (
+            self.count[corners[0]] + self.count[corners[3]]
+                - self.count[corners[1]]
+                - self.count[corners[2]],
+            self.sum[corners[0]] + self.sum[corners[3]]
+                - self.sum[corners[1]]
+                - self.sum[corners[2]],
+            self.sum_squares[corners[0]] + self.sum_squares[corners[3]]
+                - self.sum_squares[corners[1]]
+                - self.sum_squares[corners[2]],
+        )
+    }
+}
+
+fn stddev_window_reference(
+    values: &[Vec<f64>],
+    x1: usize,
+    x2: usize,
+    y1: usize,
+    y2: usize,
+) -> Option<f64> {
+    let mut count = 0usize;
+    let mut sum = 0.0;
+    let mut sum_squares = 0.0;
+    for x in x1..=x2 {
+        for y in y1..=y2 {
+            let Some(value) = values
+                .get(x)
+                .and_then(|column| column.get(y))
+                .copied()
+                .filter(|value| value.is_finite())
+            else {
+                continue;
+            };
+            count += 1;
+            sum += value;
+            sum_squares += value * value;
+        }
+    }
+    (count >= 2).then(|| {
+        let mean = sum / count as f64;
+        (sum_squares / count as f64 - mean * mean).max(0.0).sqrt()
+    })
+}
+
 /// Which side of the threshold asks for refinement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThresholdSide {
@@ -334,46 +435,72 @@ pub fn threshold_stddev_demand(
         return Ok(demand);
     }
 
+    let values = &field.as_ref().unwrap().values;
+    let integral = ThresholdIntegralImage::new(values);
     demand.fill_par(|lon_source, lat_source| {
-        {
-            let mut count = 0usize;
-            let mut sum = 0.0_f64;
-            let mut sum_squares = 0.0_f64;
-            for lon in lon_source.saturating_sub(radius_cells)..=(lon_source + radius_cells) {
-                for lat in lat_source.saturating_sub(radius_cells)..=(lat_source + radius_cells) {
-                    let value = if lon < halo.minlon_source
-                        || lon > halo.maxlon_source
-                        || lat < halo.maxlat_source
-                        || lat > halo.minlat_source
-                    {
-                        None
-                    } else {
-                        let lon_offset = lon - halo.minlon_source + 1;
-                        let lat_offset = lat - halo.maxlat_source + 1;
-                        (lon_offset <= width && lat_offset <= height)
-                            .then(|| field.as_ref().unwrap().values[lon_offset][lat_offset])
-                    };
-                    let Some(value) = value else {
-                        continue;
-                    };
-                    if !value.is_finite() {
-                        continue;
-                    }
-                    count += 1;
-                    sum += value;
-                    sum_squares += value * value;
-                }
-            }
-            if count < 2 {
-                return false;
-            }
-            let mean = sum / count as f64;
-            // Population variance, as the h-field's own statistic is, and
-            // clamped at zero because rounding can drive it slightly negative
-            // over a flat neighbourhood.
-            let variance = (sum_squares / count as f64 - mean * mean).max(0.0);
-            variance.sqrt() > threshold
+        let lon_lo = lon_source
+            .saturating_sub(radius_cells)
+            .max(halo.minlon_source);
+        let lon_hi = lon_source
+            .saturating_add(radius_cells)
+            .min(halo.maxlon_source);
+        let lat_lo = lat_source
+            .saturating_sub(radius_cells)
+            .max(halo.maxlat_source);
+        let lat_hi = lat_source
+            .saturating_add(radius_cells)
+            .min(halo.minlat_source);
+        let x1 = lon_lo - halo.minlon_source + 1;
+        let x2 = lon_hi - halo.minlon_source + 1;
+        let y1 = lat_lo - halo.maxlat_source + 1;
+        let y2 = lat_hi - halo.maxlat_source + 1;
+        debug_assert!(x2 <= width && y2 <= height);
+        let (count, sum, sum_squares) = integral.window(x1, x2, y1, y2);
+        if count < 2 {
+            return false;
         }
+        let count_f64 = count as f64;
+        let mean = sum / count_f64;
+        let stddev = (sum_squares / count_f64 - mean * mean).max(0.0).sqrt();
+        let comparison_scale = stddev.abs().max(threshold.abs()).max(1.0);
+        let borderline =
+            (stddev - threshold).abs() <= 256.0 * f64::EPSILON * comparison_scale * count_f64;
+        if borderline {
+            return stddev_window_reference(values, x1, x2, y1, y2)
+                .is_some_and(|reference| reference > threshold);
+        }
+        stddev > threshold
     });
     Ok(demand)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integral_stddev_matches_the_reference_window_by_window() {
+        let mut values = vec![vec![0.0; 8]; 9];
+        for (x, column) in values.iter_mut().enumerate().skip(1) {
+            for (y, value) in column.iter_mut().enumerate().skip(1) {
+                *value = ((x * 17 + y * 11 + x * y) % 23) as f64 - 7.0;
+            }
+        }
+        let integral = ThresholdIntegralImage::new(&values);
+        for x1 in 1..=8 {
+            for x2 in x1..=8 {
+                for y1 in 1..=7 {
+                    for y2 in y1..=7 {
+                        let (count, sum, sum_squares) = integral.window(x1, x2, y1, y2);
+                        let actual = (count >= 2).then(|| {
+                            let mean = sum / count as f64;
+                            (sum_squares / count as f64 - mean * mean).max(0.0).sqrt()
+                        });
+                        let expected = stddev_window_reference(&values, x1, x2, y1, y2);
+                        assert_eq!(actual, expected, "window {x1}..={x2}, {y1}..={y2}");
+                    }
+                }
+            }
+        }
+    }
 }

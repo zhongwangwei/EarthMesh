@@ -1,8 +1,9 @@
 use crate::{
-    criterion_catalog, degree_to_nxp, km_to_nxp, AdaptiveRefinementRecipe, DomainConfig,
-    GeometryIr, HarpDvRefinementRecipe, HfieldRefinementRecipe, MethodCAlgorithm,
-    MethodCRefinementRecipe, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
-    ThresholdField, ThresholdStatistic, ViolationPolicy,
+    criterion_catalog, degree_to_nxp, km_to_nxp, AdaptiveRefinementRecipe,
+    CertifiedRefinementRecipe, DomainConfig, GeometryIr, HarpDvRefinementRecipe,
+    HfieldRefinementRecipe, MethodCAlgorithm, MethodCRefinementRecipe, ProjectConfig,
+    ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField, ThresholdStatistic,
+    ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -22,6 +23,8 @@ pub struct LoweredProject {
     pub method_c: MethodCRefinementRecipe,
     /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
     pub harp_dv: HarpDvRefinementRecipe,
+    /// CMRC delivery mode and strict resource/search bounds.
+    pub certified: CertifiedRefinementRecipe,
     /// Emitted as a standalone `&adaptive` group when enabled.
     pub adaptive: Option<AdaptiveRefinementRecipe>,
     /// Emitted as a standalone `&hfield` group when enabled.
@@ -114,12 +117,34 @@ impl LoweredProject {
         } else {
             String::new()
         };
+        let certified = if self.mkgrd.refine && self.backend == crate::RefinementBackend::Certified
+        {
+            format!(
+                    "&certified\n   NL%mode = '{}'\n   NL%delivery = '{}'\n   NL%maximum_level = {}\n   NL%maximum_cells = {}\n   NL%gradation_rings_per_level = {}\n   NL%search_budget = {}\n/\n\n",
+                    match self.certified.mode {
+                        crate::CertifiedMode::SafeMotherOnly => "safe_mother_only",
+                        crate::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
+                    },
+                    match self.certified.delivery {
+                        crate::CertifiedDeliveryMode::Tri => "tri",
+                        crate::CertifiedDeliveryMode::Hex => "hex",
+                        crate::CertifiedDeliveryMode::Coupled => "coupled",
+                    },
+                    self.certified.maximum_level,
+                    self.certified.maximum_cells,
+                    self.certified.gradation_rings_per_level,
+                    self.certified.search_budget,
+                )
+        } else {
+            String::new()
+        };
         format!(
-            "{}\n{}{}{}{}{}{}\n{}",
+            "{}\n{}{}{}{}{}{}{}\n{}",
             self.mkgrd.to_mkgrd_namelist(),
             mkrefine,
             method_c,
             harp_dv,
+            certified,
             adaptive,
             hfield,
             self.quality.to_quality_namelist(),
@@ -381,9 +406,12 @@ impl ProjectConfig {
                 .spring_regional_type
                 .unwrap_or(refine.spring_regional_type);
         }
-        if self.refinement.backend == crate::RefinementBackend::HarpDv {
-            // HARP-DV smooths through accepted transactional site moves and
-            // Delaunay legalization, not the fixed-topology generic spring.
+        if matches!(
+            self.refinement.backend,
+            crate::RefinementBackend::HarpDv | crate::RefinementBackend::Certified
+        ) {
+            // These backends certify their own transactional geometry; the
+            // fixed-topology generic spring would invalidate that certificate.
             refine.spring_global_type = 0;
             refine.spring_regional_type = 0;
         }
@@ -419,6 +447,7 @@ impl ProjectConfig {
             crate::RefinementBackend::MethodC => "method_c",
             crate::RefinementBackend::RedGreen => "red_green",
             crate::RefinementBackend::HarpDv => "harp_dv",
+            crate::RefinementBackend::Certified => "certified",
         }
         .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
@@ -455,8 +484,10 @@ impl ProjectConfig {
             && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical;
         if (canonical_method_c && (hfield.is_some() || adaptive.is_some()))
             || hydro_local_refinement
-            || (backend != crate::RefinementBackend::HarpDv
-                && self.quality.on_violation == ViolationPolicy::AutoRefine)
+            || (matches!(
+                backend,
+                crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen
+            ) && self.quality.on_violation == ViolationPolicy::AutoRefine)
         {
             let increment = (3 - mkgrd.nxp.rem_euclid(3)) % 3;
             mkgrd.nxp = mkgrd
@@ -471,6 +502,7 @@ impl ProjectConfig {
             backend,
             method_c: self.refinement.method_c.clone(),
             harp_dv: self.refinement.harp_dv.clone(),
+            certified: self.refinement.certified.clone(),
             adaptive,
             hfield,
             data_layers: lowering_layers,

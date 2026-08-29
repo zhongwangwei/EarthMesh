@@ -94,6 +94,7 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         default_hfield_g: HfieldRefinementRecipe::default().g,
         method_c_defaults: Default::default(),
         harp_dv_defaults: Default::default(),
+        certified_defaults: Default::default(),
         method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
         km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
     })
@@ -334,6 +335,24 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         harp_dv_maximum_vertex_degree: cfg.refinement.harp_dv.maximum_vertex_degree,
         harp_dv_minimum_triangle_angle_deg: cfg.refinement.harp_dv.minimum_triangle_angle_deg,
         harp_dv_criterion_minimum_angle_deg: cfg.refinement.harp_dv.criterion_minimum_angle_deg,
+        certified_mode: match cfg.refinement.certified.mode {
+            earthmesh_project::CertifiedMode::SafeMotherOnly => "safe_mother_only",
+            earthmesh_project::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
+        }
+        .to_string(),
+        certified_delivery: match cfg.refinement.certified.delivery {
+            earthmesh_project::CertifiedDeliveryMode::Tri => "tri",
+            earthmesh_project::CertifiedDeliveryMode::Hex => "hex",
+            earthmesh_project::CertifiedDeliveryMode::Coupled => "coupled",
+        }
+        .to_string(),
+        certified_maximum_level: cfg.refinement.certified.maximum_level,
+        certified_maximum_cells: cfg.refinement.certified.maximum_cells,
+        certified_gradation_rings_per_level: cfg
+            .refinement
+            .certified
+            .gradation_rings_per_level,
+        certified_search_budget: cfg.refinement.certified.search_budget,
         hydro_river_refine_enabled: hydro.is_some_and(|value| value.river_refinement_enabled),
         hydro_river_width_refine_enabled: hydro
             .is_some_and(HydroCoastConfig::river_width_refinement_active),
@@ -405,6 +424,7 @@ fn refinement_backend_id(backend: earthmesh_project::RefinementBackend) -> &'sta
         earthmesh_project::RefinementBackend::MethodC => "method_c",
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
         earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
+        earthmesh_project::RefinementBackend::Certified => "certified",
     }
 }
 
@@ -419,6 +439,7 @@ fn refinement_algorithm_id(cfg: &ProjectConfig) -> &'static str {
         earthmesh_project::RefinementBackend::MethodC => "method_c",
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
         earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
+        earthmesh_project::RefinementBackend::Certified => "certified",
     }
 }
 

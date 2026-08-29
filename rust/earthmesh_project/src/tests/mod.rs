@@ -48,6 +48,7 @@ fn sample() -> ProjectConfig {
             threshold_criteria: Vec::new(),
             method_c: Default::default(),
             harp_dv: Default::default(),
+            certified: Default::default(),
             adaptive: None,
             specified_circle: None,
             specified_bbox: None,
@@ -2493,7 +2494,7 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     p.refinement.method_c.algorithm = crate::MethodCAlgorithm::LeppDelaunay;
     let error = p.validate().expect_err("LEPP does not read the h-field");
     assert!(
-        error.contains("does not consume the legacy h-field"),
+        error.contains("does not consume the gradient-limited h-field"),
         "{error}"
     );
     p.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
@@ -2501,6 +2502,7 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     for (backend, name) in [
         (crate::RefinementBackend::RedGreen, "red_green"),
         (crate::RefinementBackend::HarpDv, "harp_dv"),
+        (crate::RefinementBackend::Certified, "certified"),
     ] {
         p.refinement.backend = backend;
         let error = p.validate().expect_err("refused");
@@ -2657,4 +2659,36 @@ fn harp_dv_algorithm_lowers_every_exposed_control() {
         .validate()
         .expect_err("patch budget exceeds mesh budget")
         .contains("maximum_patch_cells"));
+}
+
+#[test]
+fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
+    let mut project = sample();
+    project.refinement.backend = crate::RefinementBackend::Certified;
+    project.refinement.certified = crate::CertifiedRefinementRecipe {
+        mode: crate::CertifiedMode::ReverseCoarsening,
+        delivery: crate::CertifiedDeliveryMode::Coupled,
+        maximum_level: 4,
+        maximum_cells: 900_000,
+        gradation_rings_per_level: 5,
+        search_budget: 12_000,
+    };
+
+    let yaml = project.to_yaml().expect("certified project yaml");
+    let reparsed = ProjectConfig::from_yaml(&yaml).expect("certified yaml round trip");
+    assert_eq!(
+        reparsed.refinement.backend,
+        crate::RefinementBackend::Certified
+    );
+
+    let namelist = reparsed.try_lower().expect("CMRC project").to_namelist();
+    assert!(namelist.contains("NL%refine_backend = 'certified'"));
+    assert!(namelist.contains("&certified"));
+    assert!(namelist.contains("NL%mode = 'reverse_coarsening'"));
+    assert!(namelist.contains("NL%delivery = 'coupled'"));
+    assert!(namelist.contains("NL%maximum_level = 4"));
+    assert!(namelist.contains("NL%maximum_cells = 900000"));
+    assert!(namelist.contains("NL%gradation_rings_per_level = 5"));
+    assert!(namelist.contains("NL%search_budget = 12000"));
+    assert!(!namelist.contains("legacy"));
 }

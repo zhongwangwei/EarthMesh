@@ -1,3 +1,6 @@
+use crate::certified_options::{
+    read_certified_options, CertifiedDelivery, CertifiedMode, CertifiedRunOptions,
+};
 use crate::final_quality_non_negative_usize;
 use crate::gridfile_mesh_from_one_based_state;
 use crate::harp_dv_options::{read_harp_dv_options, HarpDvRunOptions};
@@ -6,7 +9,9 @@ use crate::method_c_algorithm::{
 };
 use crate::method_c_delaunay_mesh_from_unstructured_gridfile;
 use crate::method_c_refinement_region_level;
-use crate::mkgrd_run_types::{LeppAdaptiveHybridRunRecord, LeppPostQualityRunRecord};
+use crate::mkgrd_run_types::{
+    CertifiedRunRecord, LeppAdaptiveHybridRunRecord, LeppPostQualityRunRecord,
+};
 use crate::native_grid_refinement_depth;
 use crate::native_grid_refinement_requested;
 use crate::native_initial_delaunay_mesh;
@@ -38,16 +43,76 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, QualityNamelist, RefineConfig};
 use earthmesh_mesh::{
     grid_cartesian_xy_to_lonlat_placeholders_one_based_state, grid_xyz2lonlat_one_based_state,
     pcvt_adjust_voronoi_grid_state, voronoi_grid_from_triangular_mesh,
-    voronoi_grid_from_triangular_mesh_cartesian, MeshState, TriangularMesh,
+    voronoi_grid_from_triangular_mesh_cartesian, MeshState, RefinementRegion, TriangularMesh,
 };
 use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
+
+fn publish_certified_artifacts(publications: &[(&Path, &Path)]) -> io::Result<()> {
+    let ready = publications.len().checked_sub(1).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "no CMRC artifacts to publish")
+    })?;
+    let publication_id = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let backup_path = |path: &Path, index: usize| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        path.with_file_name(format!(".{name}.cmrc-backup-{publication_id}-{index}"))
+    };
+    let mut backups = Vec::new();
+    for index in std::iter::once(ready).chain(0..ready) {
+        let final_path = publications[index].1;
+        if final_path.exists() {
+            let backup = backup_path(final_path, index);
+            if let Err(error) = fs::rename(final_path, &backup) {
+                restore_certified_backups(publications, ready, &backups);
+                return Err(error);
+            }
+            backups.push((index, backup));
+        }
+    }
+
+    let mut published: Vec<usize> = Vec::new();
+    for (index, &(temporary, final_path)) in publications.iter().enumerate() {
+        if let Err(error) = fs::rename(temporary, final_path) {
+            for &published_index in published.iter().rev() {
+                let _ = fs::remove_file(publications[published_index].1);
+            }
+            restore_certified_backups(publications, ready, &backups);
+            return Err(error);
+        }
+        published.push(index);
+    }
+    for (_, backup) in backups {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn restore_certified_backups(
+    publications: &[(&Path, &Path)],
+    ready: usize,
+    backups: &[(usize, PathBuf)],
+) {
+    for (index, backup) in backups.iter().filter(|(index, _)| *index != ready) {
+        let _ = fs::rename(backup, publications[*index].1);
+    }
+    if let Some((_, backup)) = backups.iter().find(|(index, _)| *index == ready) {
+        let _ = fs::rename(backup, publications[ready].1);
+    }
+}
 
 /// Execute global specified refinement directly through the Method-C
 /// Delaunay/Voronoi mesh layer.
@@ -61,6 +126,16 @@ pub fn run_refine_pipeline_namelist(
     let contents = fs::read_to_string(namelist_source)?;
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let backend = refine_backend_name(&config.refine_backend)?;
+    if backend == RefineBackend::Certified {
+        return run_certified_pipeline(
+            &contents,
+            &config,
+            read_certified_options(&contents)?,
+            workdir.as_ref(),
+            max_tris,
+        );
+    }
     let quality = QualityNamelist::from_quality_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
@@ -262,7 +337,7 @@ pub fn run_refine_pipeline_namelist(
     }
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let has_configured_calculated_regions =
-        !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
+        !matches!(calculated_region_prefix, "" | "/tmp" | "none");
     // `refine_cal` says a criterion decides where to refine. On red-green the
     // point+radius route is what reads one, so this only bites when that route
     // is off too: mask *files* are served either way, since a mask file is a
@@ -319,7 +394,6 @@ pub fn run_refine_pipeline_namelist(
     // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
     // said nothing -- a user asking for one backend and silently getting
     // another, which is the failure class guide 11.1 records.
-    let backend = refine_backend_name(&config.refine_backend)?;
     if quality.lepp_post_quality && backend != RefineBackend::MethodC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -702,6 +776,7 @@ pub fn run_refine_pipeline_namelist(
                 }
             }
         }
+        RefineBackend::Certified => unreachable!("CMRC is dispatched before source-grid setup"),
     };
 
     // Measured from backend output, not from the request: Method-C records face
@@ -1172,7 +1247,7 @@ pub fn run_refine_pipeline_namelist(
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
     Ok(RefinePipelineRunReport {
-        gridinit,
+        gridinit: Some(gridinit),
         refine,
         regions,
         max_level,
@@ -1184,6 +1259,7 @@ pub fn run_refine_pipeline_namelist(
         transition_faces,
         spring_nest_passes,
         harp_dv_run,
+        certified_run: None,
         lepp_adaptive_hybrid,
         lepp_post_quality,
         spring_nest_iterations,
@@ -1193,6 +1269,1189 @@ pub fn run_refine_pipeline_namelist(
         output: outputs.output,
         runtime_state,
     })
+}
+
+struct CertifiedConstruction {
+    geometry: Box<earthmesh_refine_certified::GeometryCertifiedMotherGrid>,
+    pentagons: [usize; 12],
+    remap: earthmesh_refine_certified::remap::ConservativeRemap,
+    remap_certificate: earthmesh_refine_certified::remap::RemapCertificate,
+    delivered_level: usize,
+    delivered_levels: Vec<usize>,
+    coarsening_strategy: &'static str,
+    initial_subdivision: usize,
+    final_subdivision: usize,
+    initial_cells: usize,
+    attempted_patches: usize,
+    accepted_patches: usize,
+    removed_vertices: usize,
+    removed_faces: usize,
+    search_budget_exhausted: bool,
+}
+
+fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
+    let scale = 1usize.checked_shl(level as u32).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC level overflows the platform subdivision range",
+        )
+    })?;
+    base_nxp.checked_mul(scale).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC mother subdivision overflows usize",
+        )
+    })
+}
+
+fn build_certified_construction(
+    base_nxp: usize,
+    chosen_level: usize,
+    options: &CertifiedRunOptions,
+    raster_requirements: &earthmesh_refine_certified::RasterLevelField,
+    max_tris: usize,
+) -> io::Result<CertifiedConstruction> {
+    let budget = options.maximum_cells.min(max_tris);
+    if options.mode == CertifiedMode::SafeMotherOnly {
+        let subdivision = certified_subdivision(base_nxp, chosen_level)?;
+        let mut config = earthmesh_refine_certified::CertifiedConfig::mother_only(subdivision);
+        config.max_cells = Some(budget);
+        config.grading_ring_width = options.gradation_rings_per_level;
+        config.delivery = match options.delivery {
+            CertifiedDelivery::Tri => earthmesh_refine_certified::DeliveryMode::Triangular,
+            CertifiedDelivery::Hex => earthmesh_refine_certified::DeliveryMode::Voronoi,
+            CertifiedDelivery::Coupled => earthmesh_refine_certified::DeliveryMode::Coupled,
+        };
+        let geometry = match earthmesh_refine_certified::generate_certified_mother_grid(&config) {
+            earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+            other => return Err(certified_outcome_error(other)),
+        };
+        let cell_count = geometry.primal().vertex_count();
+        let pentagons = certified_mother_pentagons(geometry.primal())?;
+        let remap = earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(
+            geometry.primal(),
+        );
+        let remap_certificate = remap.certify_identity(cell_count);
+        return Ok(CertifiedConstruction {
+            initial_cells: cell_count,
+            geometry,
+            pentagons,
+            remap,
+            remap_certificate,
+            delivered_level: chosen_level,
+            delivered_levels: vec![chosen_level; cell_count],
+            coarsening_strategy: "none",
+            initial_subdivision: subdivision,
+            final_subdivision: subdivision,
+            attempted_patches: 0,
+            accepted_patches: 0,
+            removed_vertices: 0,
+            removed_faces: 0,
+            search_budget_exhausted: false,
+        });
+    }
+
+    if chosen_level > 0
+        && raster_requirements
+            .levels()
+            .iter()
+            .any(|&level| level < chosen_level)
+    {
+        return build_mixed_certified_construction(
+            base_nxp,
+            chosen_level,
+            options,
+            raster_requirements,
+            budget,
+        );
+    }
+
+    let initial_level = chosen_level.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC initial level overflows usize",
+        )
+    })?;
+    if initial_level > options.maximum_level {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "CMRC MaximumLevelReached: reverse coarsening needs safe level {initial_level}, maximum {}",
+                options.maximum_level
+            ),
+        ));
+    }
+    let initial_subdivision = certified_subdivision(base_nxp, initial_level)?;
+    let required_cells =
+        earthmesh_refine_certified::mother_grid::mother_cell_count(initial_subdivision)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CMRC initial mother cell count overflows usize",
+                )
+            })?;
+    if required_cells > budget {
+        return Err(certified_outcome_error(
+            earthmesh_refine_certified::CertifiedMeshOutcome::CellBudgetInsufficient {
+                required_cells,
+                budget,
+            },
+        ));
+    }
+    let fine = earthmesh_refine_certified::MotherGrid::generate(initial_subdivision)
+        .map_err(io::Error::other)?;
+    earthmesh_refine_certified::Certificate::final_delivery()
+        .verify_mother_grid(&fine)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC initial mother certification failed: {error}"),
+            )
+        })?;
+    let initial_cells = fine.mesh.triangle_count();
+    let initial_mesh = fine.mesh.clone();
+    match earthmesh_refine_certified::coarsen::rebuild_one_level_from_complete_mother_patches(
+        fine,
+        options.search_budget,
+    ) {
+        earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::Rebuilt {
+            mesh,
+            removed_vertices,
+            removed_faces,
+            candidates,
+            remap: _,
+            remap_certificate: _,
+        } => {
+            let remap =
+                earthmesh_refine_certified::remap::ConservativeRemap::between_voronoi_meshes(
+                    &initial_mesh,
+                    mesh.primal(),
+                )
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC Voronoi remap failed: {error}"),
+                    )
+                })?;
+            let remap_certificate = remap.certify_spherical_overlap(
+                initial_mesh.vertex_count(),
+                mesh.primal().vertex_count(),
+            );
+            Ok(CertifiedConstruction {
+                pentagons: certified_mother_pentagons(mesh.primal())?,
+                delivered_levels: vec![chosen_level; mesh.primal().active_vertex_slots().count()],
+                coarsening_strategy: "complete_global_hierarchy_2_to_1",
+                geometry: mesh,
+                remap,
+                remap_certificate,
+                delivered_level: chosen_level,
+                initial_subdivision,
+                final_subdivision: certified_subdivision(base_nxp, chosen_level)?,
+                initial_cells,
+                attempted_patches: candidates.len(),
+                accepted_patches: candidates.len(),
+                removed_vertices,
+                removed_faces,
+                search_budget_exhausted: false,
+            })
+        }
+        earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
+            attempted_patches,
+            snapshot_unchanged,
+            mesh,
+        } => {
+            if !snapshot_unchanged {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CMRC exhausted hierarchy search changed its rollback snapshot",
+                ));
+            }
+            let geometry = match earthmesh_refine_certified::certify_mother_grid(mesh) {
+                earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+                other => return Err(certified_outcome_error(other)),
+            };
+            let cell_count = geometry.primal().vertex_count();
+            let remap = earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(
+                geometry.primal(),
+            );
+            let remap_certificate = remap.certify_identity(cell_count);
+            let pentagons = certified_mother_pentagons(geometry.primal())?;
+            Ok(CertifiedConstruction {
+                geometry,
+                pentagons,
+                remap,
+                remap_certificate,
+                delivered_level: initial_level,
+                delivered_levels: vec![initial_level; cell_count],
+                coarsening_strategy: "retained_fine_mother_after_budget_exhaustion",
+                initial_subdivision,
+                final_subdivision: initial_subdivision,
+                initial_cells,
+                attempted_patches,
+                accepted_patches: 0,
+                removed_vertices: 0,
+                removed_faces: 0,
+                search_budget_exhausted: true,
+            })
+        }
+        earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
+            reason,
+            ..
+        } => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("CMRC CriterionNotCertifiable: {reason}"),
+        )),
+    }
+}
+
+fn build_mixed_certified_construction(
+    base_nxp: usize,
+    chosen_level: usize,
+    options: &CertifiedRunOptions,
+    raster_requirements: &earthmesh_refine_certified::RasterLevelField,
+    budget: usize,
+) -> io::Result<CertifiedConstruction> {
+    let initial_subdivision = certified_subdivision(base_nxp, chosen_level)?;
+    let required_cells =
+        earthmesh_refine_certified::mother_grid::mother_cell_count(initial_subdivision)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "CMRC mixed mother cell count overflows usize",
+                )
+            })?;
+    if required_cells > budget {
+        return Err(certified_outcome_error(
+            earthmesh_refine_certified::CertifiedMeshOutcome::CellBudgetInsufficient {
+                required_cells,
+                budget,
+            },
+        ));
+    }
+    let fine = earthmesh_refine_certified::MotherGrid::generate(initial_subdivision)
+        .map_err(io::Error::other)?;
+    let pentagons = certified_icosahedron_vertices(&fine.addresses)?;
+    earthmesh_refine_certified::Certificate::internal()
+        .verify_mother_grid(&fine)
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC initial mixed mother certification failed: {error}"),
+            )
+        })?;
+    let initial_mesh = fine.mesh.clone();
+    let initial_vertices = initial_mesh.vertex_count();
+    let initial_faces = initial_mesh.triangle_count();
+    let initial_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
+        &initial_mesh,
+        vec![chosen_level; initial_mesh.active_vertex_slots().count()],
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let projected = earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
+        raster_requirements,
+        &initial_mesh,
+        &initial_levels,
+        1,
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC initial raster projection failed: {error}"),
+        )
+    })?;
+    let source_levels = earthmesh_refine_certified::SourceLevelField::from_active_voronoi_cells(
+        &initial_mesh,
+        projected.required_levels().to_vec(),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let active_sites = initial_mesh.active_vertex_slots().collect::<Vec<_>>();
+    let cell_by_site = active_sites
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(cell, site)| (site, cell))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut adjacency = vec![Vec::new(); active_sites.len()];
+    for (left, right) in earthmesh_refine_certified::requirement::target_site_edges(&initial_mesh) {
+        let left = cell_by_site[&left];
+        let right = cell_by_site[&right];
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+    }
+    let graded = earthmesh_refine_certified::requirement::graded_envelope(
+        &adjacency,
+        projected.required_levels(),
+        options.gradation_rings_per_level,
+    );
+    let mut graded_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
+    for (&site, level) in active_sites.iter().zip(graded) {
+        graded_by_site[site] = level;
+    }
+    let coarse_level = chosen_level - 1;
+    let protected_pentagons = pentagons
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let candidates = earthmesh_refine_certified::coarsen::coarsening_patch_candidates(
+        &fine,
+        &graded_by_site,
+        coarse_level,
+    )
+    .into_iter()
+    .filter(|patch| {
+        patch.requirement_margin >= 0
+            && patch
+                .retained_vertices
+                .iter()
+                .all(|site| !protected_pentagons.contains(site))
+            && patch
+                .transition_halo
+                .iter()
+                .flat_map(|&face| fine.mesh.triangles()[face])
+                .all(|site| !protected_pentagons.contains(&site))
+    })
+    .collect::<Vec<_>>();
+    let mut mesh = fine.mesh;
+    let mut delivered_by_site = mesh
+        .vertices()
+        .iter()
+        .enumerate()
+        .map(|(site, _)| mesh.is_vertex_live(site).then_some(chosen_level))
+        .collect::<Vec<_>>();
+    let epoch = earthmesh_refine_certified::coarsen::run_certified_coarsening_epochs(
+        &mut mesh,
+        candidates,
+        &initial_mesh,
+        &source_levels,
+        &mut delivered_by_site,
+        coarse_level,
+        earthmesh_refine_certified::coarsen::CertifiedEpochLimits {
+            max_adjacent_level_delta: 1,
+            search_state_budget: options.search_budget,
+        },
+    );
+    let (report, search_budget_exhausted) = match epoch {
+        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::Certified {
+            report, ..
+        } => (report, false),
+        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::SearchBudgetExhausted {
+            report,
+        } => (report, true),
+        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::NotCertifiable {
+            error,
+            ..
+        } => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC mixed coarsening lost final-cell certification: {error}"),
+            ));
+        }
+        earthmesh_refine_certified::coarsen::CertifiedEpochOutcome::InvalidInput { reason } => {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
+        }
+    };
+    let delivered_levels = mesh
+        .active_vertex_slots()
+        .map(|site| {
+            delivered_by_site[site].expect("active mixed CMRC site retained a delivered level")
+        })
+        .collect::<Vec<_>>();
+    let remap = earthmesh_refine_certified::remap::ConservativeRemap::between_voronoi_meshes(
+        &initial_mesh,
+        &mesh,
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC mixed Voronoi remap failed: {error}"),
+        )
+    })?;
+    let remap_certificate =
+        remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
+    let geometry = match earthmesh_refine_certified::certify_geometry(mesh) {
+        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+        other => return Err(certified_outcome_error(other)),
+    };
+    Ok(CertifiedConstruction {
+        delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
+        delivered_levels,
+        coarsening_strategy: "mixed_finite_cavity_with_certified_block_relocation",
+        pentagons,
+        initial_subdivision,
+        final_subdivision: initial_subdivision,
+        initial_cells: initial_faces,
+        attempted_patches: report.candidates_attempted(),
+        accepted_patches: report.candidates_accepted(),
+        removed_vertices: initial_vertices - geometry.primal().vertex_count(),
+        removed_faces: initial_faces - geometry.primal().triangle_count(),
+        search_budget_exhausted,
+        geometry,
+        remap,
+        remap_certificate,
+    })
+}
+
+fn run_certified_pipeline(
+    contents: &str,
+    config: &EarthmeshConfig,
+    options: CertifiedRunOptions,
+    workdir: &Path,
+    max_tris: usize,
+) -> io::Result<RefinePipelineRunReport> {
+    let started = std::time::Instant::now();
+    if !config.refine {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC requires NL%refine=.true.",
+        ));
+    }
+    if !config.mask_domain_global {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CMRC UnsupportedBoundaryConstraint: the current strict path requires a closed global sphere",
+        ));
+    }
+    let requested_view = config.mode_grid.trim();
+    if !matches!(requested_view, "tri" | "hex") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC mode_grid must be tri or hex",
+        ));
+    }
+    if matches!(
+        (options.delivery, requested_view),
+        (CertifiedDelivery::Tri, "hex") | (CertifiedDelivery::Hex, "tri")
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC delivery must match mode_grid unless delivery='coupled'",
+        ));
+    }
+    let refine = if crate::namelist_reader::namelist_has_section(contents, "mkrefine") {
+        RefineConfig::from_mkrefine_namelist_with_external_field(
+            contents,
+            config.mesh_type.trim(),
+            requested_view,
+            crate::hfield_refine::read_hfield_refine_options(contents)?.is_some(),
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+    } else {
+        RefineConfig::default()
+    };
+    let specified_level = if refine.refine_spc {
+        usize::try_from(refine.max_iter_spc).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CMRC max_iter_spc must be non-negative",
+            )
+        })?
+    } else {
+        0
+    };
+    let calculated_level = if refine.refine_cal {
+        usize::try_from(refine.max_iter_cal).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CMRC max_iter_cal must be non-negative",
+            )
+        })?
+    } else {
+        0
+    };
+    let base_nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "CMRC NXP must be positive"))?;
+    if base_nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC NXP must be positive",
+        ));
+    }
+    let (regions, requirement_nlon, requirement_nlat, required_levels) =
+        certified_requirement_levels(
+            contents,
+            config,
+            &refine,
+            base_nxp,
+            specified_level,
+            calculated_level,
+        )?;
+    let chosen_level = required_levels.iter().copied().max().unwrap_or(0);
+    if chosen_level > options.maximum_level {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "CMRC MaximumLevelReached: requested level {chosen_level}, maximum {}",
+                options.maximum_level
+            ),
+        ));
+    }
+    let raster_requirements = earthmesh_refine_certified::RasterLevelField::new(
+        requirement_nlon,
+        requirement_nlat,
+        required_levels.clone(),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let CertifiedConstruction {
+        geometry,
+        pentagons,
+        remap,
+        remap_certificate,
+        delivered_level,
+        delivered_levels,
+        coarsening_strategy,
+        initial_subdivision,
+        final_subdivision: subdivision,
+        initial_cells,
+        attempted_patches,
+        accepted_patches,
+        removed_vertices,
+        removed_faces,
+        search_budget_exhausted,
+    } = build_certified_construction(
+        base_nxp,
+        chosen_level,
+        &options,
+        &raster_requirements,
+        max_tris,
+    )?;
+    let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
+        geometry.primal(),
+        delivered_levels,
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let final_cell_requirements =
+        if coarsening_strategy == "mixed_finite_cavity_with_certified_block_relocation" {
+            earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
+                &raster_requirements,
+                geometry.primal(),
+                &delivered_levels,
+                1,
+            )
+        } else {
+            earthmesh_refine_certified::certify_final_cell_requirements_from_raster_global_bound(
+                &raster_requirements,
+                geometry.primal(),
+                &delivered_levels,
+                1,
+            )
+        }
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC final-cell certification failed: {error}"),
+            )
+        })?;
+    let evidence = earthmesh_refine_certified::FinalCertificationEvidence::from_final_cells(
+        &final_cell_requirements,
+        remap_certificate,
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC remap certification failed: {error}"),
+        )
+    })?;
+    let final_mesh =
+        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, evidence)
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("CMRC final certification failed: {error}"),
+                )
+            })?;
+    let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
+    let state = spherical_voronoi_state(&triangular)?;
+    certify_cmrc_published_dual(final_mesh.primal(), &state)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+
+    let configured_dir = PathBuf::from(config.file_dir());
+    let file_dir = if configured_dir.is_absolute() {
+        configured_dir
+    } else {
+        workdir.join(configured_dir)
+    };
+    let result_dir = file_dir.join("result");
+    fs::create_dir_all(&result_dir)?;
+    let output_path = result_dir.join(format!(
+        "gridfile_NXP{base_nxp:04}_{}.nc4",
+        config.mode_grid.trim()
+    ));
+    let temporary_path = result_dir.join(format!(
+        ".{}.cmrc-tmp-{}",
+        output_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("gridfile.nc4"),
+        std::process::id()
+    ));
+    let remap_path = result_dir.join("certified_remap.csv");
+    let temporary_remap_path = result_dir.join(format!(
+        ".certified_remap.csv.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let certificate_path = result_dir.join("certified_certificate.json");
+    let temporary_certificate_path = result_dir.join(format!(
+        ".certified_certificate.json.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let manifest_path = result_dir.join("certified_manifest.json");
+    let temporary_manifest_path = result_dir.join(format!(
+        ".certified_manifest.json.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let resources_path = result_dir.join("certified_resources.json");
+    let temporary_resources_path = result_dir.join(format!(
+        ".certified_resources.json.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let ready_marker = result_dir.join("certified_ready");
+    let temporary_ready_marker =
+        result_dir.join(format!(".certified_ready.cmrc-tmp-{}", std::process::id()));
+    let certificate = final_mesh.certificate();
+    let geometry_report = &certificate.geometry;
+    let mode_name = match options.mode {
+        CertifiedMode::SafeMotherOnly => "safe_mother_only",
+        CertifiedMode::ReverseCoarsening => "reverse_coarsening",
+    };
+    let physical_balance_scope =
+        if coarsening_strategy == "mixed_finite_cavity_with_certified_block_relocation" {
+            "final_voronoi_cells_exact_raster_overlap"
+        } else {
+            "final_voronoi_cells_global_raster_max_bound"
+        };
+    let certificate_json = serde_json::to_vec_pretty(&serde_json::json!({
+        "backend": "certified",
+        "mode": mode_name,
+        "coarsening_strategy": coarsening_strategy,
+        "physical_balance_scope": physical_balance_scope,
+        "remap_cells": "voronoi",
+        "chosen_level": chosen_level,
+        "delivered_level": delivered_level,
+        "delivered_level_min": delivered_levels.levels().iter().copied().min().unwrap_or(0),
+        "delivered_level_max": delivered_levels.levels().iter().copied().max().unwrap_or(0),
+        "requirement_samples": required_levels.len(),
+        "requirement_grid": { "nlon": requirement_nlon, "nlat": requirement_nlat },
+        "requirement_max_level": chosen_level,
+        "initial_mother_subdivision": initial_subdivision,
+        "mother_subdivision": subdivision,
+        "initial_mother_cells": initial_cells,
+        "coarsening": {
+            "attempted_patches": attempted_patches,
+            "accepted_patches": accepted_patches,
+            "removed_vertices": removed_vertices,
+            "removed_faces": removed_faces,
+            "search_budget_exhausted": search_budget_exhausted,
+        },
+        "geometry": {
+            "vertices": geometry_report.vertices,
+            "edges": geometry_report.edges,
+            "faces": geometry_report.faces,
+            "minimum_angle_deg": geometry_report.min_angle_degrees,
+            "maximum_angle_deg": geometry_report.max_angle_degrees,
+            "open_edges": geometry_report.open_edges,
+            "topology_errors": geometry_report.topology_errors,
+            "degree_outside_window": geometry_report.degree_outside_window,
+            "euler": geometry_report.euler,
+            "charge": geometry_report.charge,
+            "delaunay_violations": geometry_report.delaunay_violations,
+            "voronoi_invalid_cells": geometry_report.voronoi_invalid_cells,
+            "primal_dual_errors": geometry_report.voronoi_reciprocal_errors,
+        },
+        "physical_residuals": certificate.physical_residuals,
+        "balance_residuals": certificate.balance_residuals,
+        "remap_closure_errors": certificate.remap_closure_errors,
+    }))
+    .map_err(io::Error::other)?;
+    let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
+        "backend": "certified",
+        "mode": mode_name,
+        "delivery": match options.delivery {
+            CertifiedDelivery::Tri => "tri",
+            CertifiedDelivery::Hex => "hex",
+            CertifiedDelivery::Coupled => "coupled",
+        },
+        "gridfile": output_path.display().to_string(),
+        "remap": remap_path.display().to_string(),
+        "certificate": certificate_path.display().to_string(),
+        "resources": resources_path.display().to_string(),
+        "ready": ready_marker.display().to_string(),
+    }))
+    .map_err(io::Error::other)?;
+    let mut remap_csv = String::from("target,source,weight\n");
+    for row in remap.rows() {
+        for &(source, weight) in &row.sources {
+            use std::fmt::Write as _;
+            writeln!(&mut remap_csv, "{},{},{weight:.17}", row.target, source)
+                .map_err(io::Error::other)?;
+        }
+    }
+    let temporary_paths = [
+        &temporary_path,
+        &temporary_remap_path,
+        &temporary_certificate_path,
+        &temporary_manifest_path,
+        &temporary_resources_path,
+        &temporary_ready_marker,
+    ];
+    for path in temporary_paths {
+        let _ = fs::remove_file(path);
+    }
+    let staged = (|| -> io::Result<crate::UnstructuredMeshWriteReport> {
+        fs::write(&temporary_remap_path, remap_csv)?;
+        fs::write(&temporary_certificate_path, certificate_json)?;
+        fs::write(&temporary_manifest_path, manifest_json)?;
+        fs::write(&temporary_ready_marker, b"certified\n")?;
+        let report = crate::write_unstructured_mesh_netcdf(&temporary_path, &output_mesh)?;
+        let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
+            "certification_elapsed_ms": started.elapsed().as_millis(),
+            "requirement_raster_cells": required_levels.len(),
+            "target_voronoi_cells": geometry_report.voronoi_cells,
+            "remap_rows": remap.rows().len(),
+            "remap_entries": remap.rows().iter().map(|row| row.sources.len()).sum::<usize>(),
+            "artifact_bytes": {
+                "gridfile": fs::metadata(&temporary_path)?.len(),
+                "remap": fs::metadata(&temporary_remap_path)?.len(),
+                "certificate": fs::metadata(&temporary_certificate_path)?.len(),
+                "manifest": fs::metadata(&temporary_manifest_path)?.len(),
+            },
+            "peak_memory_bytes": serde_json::Value::Null,
+            "peak_memory_measurement": "external acceptance harness required",
+        }))
+        .map_err(io::Error::other)?;
+        fs::write(&temporary_resources_path, resource_json)?;
+        Ok(report)
+    })();
+    let temporary = match staged {
+        Ok(report) => report,
+        Err(error) => {
+            for path in temporary_paths {
+                let _ = fs::remove_file(path);
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = publish_certified_artifacts(&[
+        (&temporary_certificate_path, &certificate_path),
+        (&temporary_remap_path, &remap_path),
+        (&temporary_path, &output_path),
+        (&temporary_resources_path, &resources_path),
+        (&temporary_manifest_path, &manifest_path),
+        (&temporary_ready_marker, &ready_marker),
+    ]) {
+        for path in temporary_paths {
+            let _ = fs::remove_file(path);
+        }
+        return Err(io::Error::new(
+            error.kind(),
+            format!("CMRC atomic artifact publication failed: {error}"),
+        ));
+    }
+    let output = crate::UnstructuredMeshWriteReport {
+        output: output_path.clone(),
+        sjx_points: temporary.sjx_points,
+        lbx_points: temporary.lbx_points,
+        dimc: temporary.dimc,
+    };
+
+    let mut runtime_state =
+        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
+    runtime_state.grid = state.grid;
+    runtime_state.ijtabs = state.tabs;
+    runtime_state
+        .record_pentagon_indices_from_icosahedron(pentagons)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    runtime_state
+        .record_mesh_counts_for_step(
+            delivered_level + 1,
+            runtime_state.grid.nma,
+            runtime_state.grid.nwa,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+
+    Ok(RefinePipelineRunReport {
+        gridinit: None,
+        refine,
+        regions,
+        max_level: chosen_level,
+        realized_max_level: delivered_level,
+        finest_cell_km: 0.0,
+        coarsest_cell_km: 0.0,
+        realized_region_halvings: 0.0,
+        hfield_diagnostics: Default::default(),
+        transition_faces: 0,
+        spring_nest_passes: 0,
+        harp_dv_run: None,
+        certified_run: Some(CertifiedRunRecord {
+            mode: mode_name.to_string(),
+            chosen_level,
+            delivered_level,
+            initial_mother_subdivision: initial_subdivision,
+            mother_subdivision: subdivision,
+            initial_mother_cells: initial_cells,
+            mother_cells: geometry_report.faces,
+            attempted_patches,
+            accepted_patches,
+            removed_vertices,
+            removed_faces,
+            search_budget_exhausted,
+            minimum_angle_deg: geometry_report.min_angle_degrees,
+            maximum_angle_deg: geometry_report.max_angle_degrees,
+            physical_residuals: certificate.physical_residuals,
+            balance_residuals: certificate.balance_residuals,
+            topology_errors: geometry_report.topology_errors,
+            dual_errors: geometry_report.voronoi_invalid_cells
+                + geometry_report.voronoi_reciprocal_errors,
+            remap_closure_errors: certificate.remap_closure_errors,
+            remap: remap_path,
+            certificate: certificate_path,
+            manifest: manifest_path,
+            resources: resources_path,
+            ready_marker,
+        }),
+        lepp_adaptive_hybrid: None,
+        lepp_post_quality: None,
+        spring_nest_iterations: 0,
+        raw_output: None,
+        landtype_masked_cells: None,
+        coupled_outputs: None,
+        output,
+        runtime_state,
+    })
+}
+
+fn certify_cmrc_published_dual(
+    primal: &MeshState,
+    state: &earthmesh_mesh::VoronoiGridState,
+) -> io::Result<()> {
+    let mut site_remap = vec![0usize; primal.vertices().len()];
+    for (compact, site) in primal.active_vertex_slots().enumerate() {
+        site_remap[site] = compact + earthmesh_mesh::MESH_STATE_FIRST_ID;
+    }
+    let mut face_remap = vec![0usize; primal.triangles().len()];
+    let mut seed_by_site = vec![None; primal.vertices().len()];
+    for (compact, face) in primal.active_triangle_slots().enumerate() {
+        face_remap[face] = compact + earthmesh_mesh::MESH_STATE_FIRST_ID;
+        for site in primal.triangles()[face] {
+            seed_by_site[site].get_or_insert(face);
+        }
+    }
+    let same_direction = |left: earthmesh_mesh::CartesianPoint,
+                          right: earthmesh_mesh::CartesianPoint| {
+        let left_norm = earthmesh_mesh::magnitude(left);
+        let right_norm = earthmesh_mesh::magnitude(right);
+        left_norm > 0.0
+            && right_norm > 0.0
+            && ((left.x / left_norm - right.x / right_norm).powi(2)
+                + (left.y / left_norm - right.y / right_norm).powi(2)
+                + (left.z / left_norm - right.z / right_norm).powi(2))
+            .sqrt()
+                <= 1.0e-12
+    };
+    for site in primal.active_vertex_slots() {
+        let published_site = site_remap[site];
+        if published_site > state.grid.nwa || published_site >= state.tabs.w.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published dual is missing primal site {site}"),
+            ));
+        }
+        let published = earthmesh_mesh::CartesianPoint::new(
+            state.grid.xew[published_site],
+            state.grid.yew[published_site],
+            state.grid.zew[published_site],
+        );
+        if !same_direction(primal.vertices()[site], published) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published site {site} differs from the certified primal"),
+            ));
+        }
+        let published_faces = state.tabs.w[published_site]
+            .im
+            .iter()
+            .copied()
+            .filter(|&face| face >= 2)
+            .map(|face| face as usize)
+            .collect::<std::collections::BTreeSet<_>>();
+        if published_faces.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published Voronoi cell {site} has no incident face"),
+            ));
+        }
+        let seed = seed_by_site[site].ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC certified primal site {site} has no incident face"),
+            )
+        })?;
+        let cell = primal
+            .voronoi_cell_from(site, seed)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let certified_faces = cell
+            .triangles
+            .iter()
+            .map(|&face| face_remap[face])
+            .collect::<std::collections::BTreeSet<_>>();
+        if published_faces != certified_faces {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published Voronoi cell {site} has incident faces {published_faces:?}, certified {certified_faces:?}"),
+            ));
+        }
+    }
+    for face in primal.active_triangle_slots() {
+        let published_face = face_remap[face];
+        if published_face > state.grid.nma || published_face >= state.tabs.m.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published dual is missing primal face {face}"),
+            ));
+        }
+        let expected = primal
+            .circumcentre(face)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let published = earthmesh_mesh::CartesianPoint::new(
+            state.grid.xem[published_face],
+            state.grid.yem[published_face],
+            state.grid.zem[published_face],
+        );
+        if !same_direction(expected, published) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CMRC published dual vertex {face} differs from the certified circumcentre"
+                ),
+            ));
+        }
+        let published_sites = state.tabs.m[published_face]
+            .iw
+            .iter()
+            .copied()
+            .filter(|&site| site >= 2)
+            .map(|site| site as usize)
+            .collect::<std::collections::BTreeSet<_>>();
+        if published_sites
+            != primal.triangles()[face]
+                .map(|site| site_remap[site])
+                .into_iter()
+                .collect()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published dual vertex {face} has different primal sites"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn certified_requirement_levels(
+    contents: &str,
+    config: &EarthmeshConfig,
+    refine: &RefineConfig,
+    base_nxp: usize,
+    specified_level: usize,
+    calculated_level: usize,
+) -> io::Result<(Vec<RefinementRegion>, usize, usize, Vec<usize>)> {
+    if crate::adaptive_refine::read_adaptive_refine_options(contents)?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CMRC CriterionNotCertifiable: &adaptive demand has no final-cell certificate",
+        ));
+    }
+    if native_grid_refinement_requested(contents, config.mesh_type.trim())? {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CMRC CriterionNotCertifiable: native ngrids/nsfcgrids are not certified requirement sources",
+        ));
+    }
+
+    let configured_hfield = crate::hfield_refine::read_hfield_refine_options(contents)?;
+    let hfield = configured_hfield.clone().unwrap_or_default();
+    let hydro_level = configured_hfield
+        .as_ref()
+        .map(crate::hydro_refinement_adapter::hydro_target_max_level)
+        .transpose()?
+        .unwrap_or(0);
+    let mesh_type = config.mesh_type.trim();
+    let has_threshold_sources =
+        refine.refine_cal && crate::hfield_refine::has_threshold_hfield_sources(refine, mesh_type);
+
+    let specified_regions = if refine.refine_spc {
+        read_method_c_specified_refinement_regions(refine, specified_level, base_nxp, false)?
+    } else {
+        Vec::new()
+    };
+    let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
+    let has_configured_calculated_regions =
+        !matches!(calculated_region_prefix, "" | "/tmp" | "none");
+    let calculated_regions =
+        if refine.refine_cal && (!has_threshold_sources || has_configured_calculated_regions) {
+            read_method_c_calculated_refinement_regions(refine, calculated_level)?
+        } else {
+            Vec::new()
+        };
+    if (refine.refine_spc || refine.refine_cal || hydro_level > 0)
+        && specified_regions.is_empty()
+        && calculated_regions.is_empty()
+        && !has_threshold_sources
+        && hydro_level == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "CMRC found no certifiable specified, calculated, threshold, or hydro requirement source",
+        ));
+    }
+
+    let specified_present = !specified_regions.is_empty();
+    let calculated_present = !calculated_regions.is_empty();
+    let mut regions = specified_regions;
+    regions.extend(calculated_regions);
+    if regions.is_empty() && !has_threshold_sources && hydro_level == 0 {
+        return Ok((regions, 4, 2, vec![0; 8]));
+    }
+
+    let source_max_level = specified_level
+        .max(calculated_level)
+        .max(hydro_level)
+        .max(1);
+    let field_max_level = hfield.max_level.unwrap_or(source_max_level);
+    let quantized_max_level = u8::try_from(field_max_level).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC h-field maximum level must fit u8",
+        )
+    })?;
+    let base_m = hfield.base_m.unwrap_or_else(|| {
+        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * base_nxp as f64)
+    });
+    let mut field = crate::hfield_refine::build_composed_hfield(
+        &regions,
+        refine,
+        mesh_type,
+        Some(config),
+        base_m,
+        &hfield,
+        calculated_level.clamp(1, field_max_level),
+        None,
+    )?;
+    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
+        &mut field, &hfield, base_m, None,
+    )?;
+    let mut levels = field
+        .level_map(base_m, quantized_max_level)?
+        .into_iter()
+        .map(usize::from)
+        .collect::<Vec<_>>();
+    // A sub-raster specified region can fall between HField sample centers.
+    // The safe-mother path is global, so retaining its declared level is the
+    // conservative bound and costs no additional geometric machinery.
+    if specified_present && levels.iter().copied().max().unwrap_or(0) < specified_level {
+        levels.fill(specified_level);
+    }
+    if calculated_present && levels.iter().copied().max().unwrap_or(0) < calculated_level {
+        levels.fill(calculated_level);
+    }
+    Ok((regions, field.nlon(), field.nlat(), levels))
+}
+
+fn certified_outcome_error(outcome: earthmesh_refine_certified::CertifiedMeshOutcome) -> io::Error {
+    use earthmesh_refine_certified::CertifiedMeshOutcome;
+    let (kind, message) = match outcome {
+        CertifiedMeshOutcome::CellBudgetInsufficient {
+            required_cells,
+            budget,
+        } => (
+            io::ErrorKind::OutOfMemory,
+            format!(
+                "CMRC CellBudgetInsufficient: requires {required_cells} cells, budget is {budget}"
+            ),
+        ),
+        CertifiedMeshOutcome::MaximumLevelReached {
+            requested_level,
+            max_level,
+        } => (
+            io::ErrorKind::InvalidInput,
+            format!("CMRC MaximumLevelReached: requested {requested_level}, maximum {max_level}"),
+        ),
+        CertifiedMeshOutcome::CriterionNotCertifiable { reason } => (
+            io::ErrorKind::Unsupported,
+            format!("CMRC CriterionNotCertifiable: {reason}"),
+        ),
+        CertifiedMeshOutcome::PhysicalCriterionUnsatisfiable { reason } => (
+            io::ErrorKind::InvalidData,
+            format!("CMRC PhysicalCriterionUnsatisfiable: {reason}"),
+        ),
+        CertifiedMeshOutcome::UnsupportedBoundaryConstraint { reason } => (
+            io::ErrorKind::Unsupported,
+            format!("CMRC UnsupportedBoundaryConstraint: {reason}"),
+        ),
+        CertifiedMeshOutcome::SearchBudgetExhausted { attempted_patches } => (
+            io::ErrorKind::TimedOut,
+            format!("CMRC SearchBudgetExhausted after {attempted_patches} patches"),
+        ),
+        CertifiedMeshOutcome::InternalCertificationFailure { reason } => (
+            io::ErrorKind::InvalidData,
+            format!("CMRC InternalCertificationFailure: {reason}"),
+        ),
+        CertifiedMeshOutcome::GeometryCertified(_) | CertifiedMeshOutcome::Certified(_) => (
+            io::ErrorKind::InvalidData,
+            "CMRC returned an unexpected success outcome".to_string(),
+        ),
+    };
+    io::Error::new(kind, message)
+}
+
+fn certified_mother_pentagons(mesh: &MeshState) -> io::Result<[usize; 12]> {
+    let mut degree = vec![0usize; mesh.vertices().len()];
+    for triangle in mesh.active_triangle_slots() {
+        for vertex in mesh.triangles()[triangle] {
+            degree[vertex] += 1;
+        }
+    }
+    let sites: Vec<_> = mesh
+        .active_vertex_slots()
+        .filter(|&site| degree[site] == 5)
+        .collect();
+    sites.try_into().map_err(|sites: Vec<usize>| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "CMRC certified mother grid has {} degree-5 sites, expected 12",
+                sites.len()
+            ),
+        )
+    })
+}
+
+fn certified_icosahedron_vertices(
+    addresses: &[Option<earthmesh_refine_certified::VertexAddress>],
+) -> io::Result<[usize; 12]> {
+    let mut sites = addresses
+        .iter()
+        .enumerate()
+        .filter_map(|(site, address)| match address {
+            Some(earthmesh_refine_certified::VertexAddress::IcosahedronVertex(vertex)) => {
+                Some((*vertex, site))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    sites.sort_unstable();
+    sites
+        .into_iter()
+        .map(|(_, site)| site)
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|sites: Vec<usize>| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CMRC mother grid has {} icosahedron vertices, expected 12",
+                    sites.len()
+                ),
+            )
+        })
 }
 
 fn minor_cell_steradians(area: f64) -> Option<f64> {
@@ -1243,7 +2502,7 @@ struct RefinedGrid {
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
-    /// What HARP-DV's own run reported, or `None` from the other two backends.
+    /// What HARP-DV's own run reported, or `None` from the other peer backends.
     ///
     /// It used to reach only stderr, so a caller reading the run record could
     /// not tell a mesh that met its demands from one that stopped at a budget
@@ -2677,10 +3936,11 @@ enum RefineBackend {
     MethodC,
     RedGreen,
     HarpDv,
+    Certified,
 }
 
 fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
-    if backend == RefineBackend::HarpDv {
+    if matches!(backend, RefineBackend::HarpDv | RefineBackend::Certified) {
         0
     } else {
         requested
@@ -2699,11 +3959,12 @@ fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
         "method_c" => Ok(RefineBackend::MethodC),
         "red_green" => Ok(RefineBackend::RedGreen),
         "harp_dv" => Ok(RefineBackend::HarpDv),
+        "certified" => Ok(RefineBackend::Certified),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
                 "NL%refine_backend = '{other}' is not a refinement backend; the choices are \
-                 method_c, red_green and harp_dv"
+                 method_c, red_green, harp_dv and certified"
             ),
         )),
     }
@@ -3801,6 +5062,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_certified_publication_restores_the_previous_generation() {
+        let directory = std::env::temp_dir().join(format!(
+            "earthmesh-cmrc-publication-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).expect("create publication test directory");
+        let names = [
+            "certificate",
+            "remap",
+            "grid",
+            "resources",
+            "manifest",
+            "ready",
+        ];
+        let paths = names
+            .iter()
+            .map(|name| {
+                let temporary = directory.join(format!("new-{name}"));
+                let final_path = directory.join(name);
+                fs::write(&temporary, format!("new-{name}")).expect("stage new artifact");
+                fs::write(&final_path, format!("old-{name}")).expect("write old artifact");
+                (temporary, final_path)
+            })
+            .collect::<Vec<_>>();
+        fs::remove_file(&paths[4].0).expect("remove staged manifest to force failure");
+        let publications = paths
+            .iter()
+            .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
+            .collect::<Vec<_>>();
+
+        assert!(publish_certified_artifacts(&publications).is_err());
+        for (name, (_, final_path)) in names.iter().zip(&paths) {
+            assert_eq!(
+                fs::read_to_string(final_path).expect("restored old artifact"),
+                format!("old-{name}")
+            );
+        }
+        assert!(fs::read_dir(&directory)
+            .expect("read test directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("cmrc-backup")));
+        fs::remove_dir_all(directory).expect("clean publication test directory");
+    }
+
+    #[test]
     fn cell_area_metrics_always_use_the_minor_spherical_patch() {
         let tiny = 1.0e-3;
         assert_eq!(minor_cell_steradians(tiny), Some(tiny));
@@ -3824,6 +5137,10 @@ mod tests {
         assert_eq!(
             effective_refinement_spring_iterations(RefineBackend::MethodC, 5_000),
             5_000
+        );
+        assert_eq!(
+            effective_refinement_spring_iterations(RefineBackend::Certified, 5_000),
+            0
         );
     }
 

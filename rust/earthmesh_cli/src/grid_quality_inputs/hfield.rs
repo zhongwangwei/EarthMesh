@@ -109,7 +109,7 @@ pub fn attach_hfield_diagnostics_from_namelist(
     }
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let has_configured_calculated_regions =
-        !calculated_region_prefix.is_empty() && calculated_region_prefix != "/tmp";
+        !matches!(calculated_region_prefix, "" | "/tmp" | "none");
     if refine.refine_cal && (!has_threshold_hfield_sources || has_configured_calculated_regions) {
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,

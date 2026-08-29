@@ -33,7 +33,7 @@ where
         });
     }
 
-    let mut sum_land_grid = 0_i32;
+    let mut sum_land_grid = 0_u64;
     for lon_index in bounds.minlon_source..=bounds.maxlon_source {
         let domain_row = &is_in_domain[lon_index];
         let landtype_row = &landtypes_global[lon_index];
@@ -45,7 +45,12 @@ where
             ) == DomainMarker::Land
             {
                 seaorland_row[lat_index] = true;
-                sum_land_grid += 1;
+                sum_land_grid = sum_land_grid.checked_add(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Area_judge land source-cell count exceeds u64",
+                    )
+                })?;
             }
         }
     }

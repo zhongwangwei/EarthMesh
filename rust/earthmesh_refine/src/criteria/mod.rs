@@ -15,6 +15,55 @@
 
 use earthmesh_mesh::LonLatDegrees;
 
+/// Conservative source footprint covered by one mother-grid patch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SphericalPatch {
+    pub vertices: Vec<LonLatDegrees>,
+}
+
+/// Read-only geometry supplied when a requirement is checked on a final cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CertifiedCellView<'a> {
+    pub site: LonLatDegrees,
+    pub vertices: &'a [LonLatDegrees],
+    pub level: u8,
+}
+
+/// Conservative minimum level and the source that forced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequirementBound {
+    pub minimum_level: u8,
+    pub source_id: String,
+}
+
+/// Whether a physical criterion can participate in strict certification.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CriterionCertifiability {
+    GuaranteedFinite { maximum_level: Option<u8> },
+    RequiresSourceResolution { minimum_scale_m: f64 },
+    RequiresBoundaryConformity,
+    EmpiricalFinalCertificationOnly,
+    Unsupported { reason: String },
+}
+
+/// Final-cell result kept separate from the planning level bound.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CriterionCertificate {
+    pub criterion_id: String,
+    pub passed: bool,
+    pub witness: Option<LonLatDegrees>,
+    pub residual: f64,
+}
+
+/// Shared strict-requirement contract used by CMRC without depending on any
+/// existing backend.
+pub trait CertifiedRequirementSource {
+    fn id(&self) -> &str;
+    fn required_level_over(&self, patch: &SphericalPatch) -> RequirementBound;
+    fn certify_final_cell(&self, cell: &CertifiedCellView<'_>) -> CriterionCertificate;
+    fn certifiability(&self) -> CriterionCertifiability;
+}
+
 /// Why a criterion asks for a finer cell, which decides what satisfies it.
 ///
 /// This distinction is what makes repeated cycles terminate. A slope of twenty

@@ -797,6 +797,7 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.default_hfield_g, 0.2);
     assert_eq!(capabilities.method_c_defaults, Default::default());
     assert_eq!(capabilities.harp_dv_defaults, Default::default());
+    assert_eq!(capabilities.certified_defaults, Default::default());
     assert_eq!(
         capabilities.method_c_spring_nxp1_km,
         earthmesh_project::METHOD_C_SPRING_NXP1_KM
@@ -3148,6 +3149,11 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
             earthmesh_project::RefinementBackend::HarpDv,
             earthmesh_project::MethodCAlgorithm::Canonical,
         ),
+        (
+            "certified",
+            earthmesh_project::RefinementBackend::Certified,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
     ] {
         let yaml = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
             .unwrap_or_else(|error| panic!("{name} should be selectable: {error}"));
@@ -3169,6 +3175,7 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
         error.contains("harp_dv"),
         "the message should list it: {error}"
     );
+    assert!(error.contains("certified"), "the message should list it: {error}");
 }
 
 #[test]
@@ -3211,4 +3218,31 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
     assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
     assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
+}
+
+#[test]
+fn certified_controls_round_trip_through_the_gui_commands() {
+    let base = circle_project("CMRC controls")
+        .to_yaml()
+        .expect("yaml");
+    let yaml = crate::project_edits::set_refinement_backend(base, "certified".to_string())
+        .expect("CMRC backend");
+    let yaml = crate::project_edits::set_certified_options(
+        yaml,
+        "reverse_coarsening".to_string(),
+        "coupled".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect("CMRC options");
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.refinement_algorithm, "certified");
+    assert_eq!(summary.certified_mode, "reverse_coarsening");
+    assert_eq!(summary.certified_delivery, "coupled");
+    assert_eq!(summary.certified_maximum_level, 4);
+    assert_eq!(summary.certified_maximum_cells, 900_000);
+    assert_eq!(summary.certified_gradation_rings_per_level, 5);
+    assert_eq!(summary.certified_search_budget, 12_000);
 }

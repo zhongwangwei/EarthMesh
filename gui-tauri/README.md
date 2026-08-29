@@ -102,9 +102,10 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `set_quality` | `yaml, minAngleDeg, policy, autoRefineBatchCells` | updated **YAML** (min angle + policy + connected local repair batch) |
 | `set_refinement` | `yaml, enabled, thresholdEnabled, maxPasses` | updated **YAML** (independent threshold switch + validated pass count) |
 | `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
-| `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts the four UI algorithm ids `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, and `harp_dv` |
+| `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, `harp_dv`, and peer CMRC backend `certified` |
 | `set_method_c_algorithm_options` | `yaml` plus the eight LEPP-Delaunay controls | updated **YAML** after validating cycle, tolerance, neighbor-ratio, vertex/insertion/path limits, source-resolution stop, and minimum angle |
 | `set_harp_dv_options` | `yaml` plus the nine HARP-DV controls | updated **YAML** after validating cycle, cell-width/budget, patch, neighbor-ratio, separation, degree, and angle limits |
+| `set_certified_options` | `yaml` plus CMRC mode, delivery, level/cell, grading, and search bounds | updated **YAML** after validating strict CMRC bounds |
 | `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (opt-in canonical H-field; point+radius is the GUI default) |
 | `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?, isolatedOcean?` | updated **YAML** (expert overrides; compatibility-only values remain preserved even when not editable in the GUI) |
 | `pick_data_file` | – | native file picker → path (or `null`) |

@@ -98,11 +98,12 @@ fn run_method_c_atmos_landlike_case(
         "Method-C specified refine output file should exist: {:?}",
         run.output.output
     );
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 
     MethodCAtmosLandLikeCaseResult {
-        base_lbx_points: run.gridinit.gridfile.lbx_points,
-        added_lbx_points: run.output.lbx_points - run.gridinit.gridfile.lbx_points,
+        base_lbx_points: run.gridinit.as_ref().unwrap().gridfile.lbx_points,
+        added_lbx_points: run.output.lbx_points
+            - run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         transition_faces: run.transition_faces,
         spring_nest_iterations: run.spring_nest_iterations,
         max_level: run.max_level,
@@ -156,7 +157,7 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     assert!(run.regions.is_empty());
     assert_eq!(run.max_level, 1);
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "threshold hfield should refine the initial mesh"
     );
 }
@@ -331,9 +332,9 @@ fn default_atmos_global_specified_refine_uses_method_c_spawn_nest() {
     );
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "Method-C specified refine should add Voronoi cells: initial={} final={}",
-        run.gridinit.gridfile.lbx_points,
+        run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         run.output.lbx_points
     );
 
@@ -421,7 +422,7 @@ fn default_atmos_native_method_c_ngrids_uses_method_c_region() {
     assert_eq!(run.regions.len(), 1);
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_iterations, 5000);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -576,7 +577,7 @@ fn default_atmos_native_method_c_ngrids_does_not_require_refine_flag() {
     };
     assert_eq!(run.regions.len(), 1);
     assert_eq!(run.max_level, 1);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -1424,7 +1425,7 @@ fn default_surface_native_method_c_inherits_atmos_ngrids_before_nsfcgrids() {
     assert!(run.regions.iter().all(|region| region.level() == 1));
     assert_eq!(run.max_level, 2);
     assert_eq!(run.spring_nest_iterations, 5000);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -1559,7 +1560,7 @@ fn default_surface_native_method_c_sfcgrid_res_factor_expands_global_surface() {
     assert!(run.regions.is_empty());
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_iterations, 0);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -1591,7 +1592,7 @@ fn default_surface_native_method_c_sfcgrid_res_factor_does_not_require_refine_fl
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_passes, 0);
     assert_eq!(run.spring_nest_iterations, 0);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -1623,7 +1624,7 @@ fn default_surface_native_method_c_allows_sfcgrid_res_factor_four_like_canonical
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_passes, 0);
     assert_eq!(run.spring_nest_iterations, 0);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -1705,7 +1706,7 @@ fn default_surface_native_method_c_nsfcgrids_does_not_require_refine_flag() {
     assert_eq!(run.regions.len(), 1);
     assert_eq!(run.max_level, 1);
     assert_eq!(run.spring_nest_iterations, 2000);
-    assert!(run.output.lbx_points > run.gridinit.gridfile.lbx_points);
+    assert!(run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points);
 }
 
 #[test]
@@ -2406,7 +2407,7 @@ fn default_atmos_close_specified_refine_uses_method_c_polygon_region() {
     assert_eq!(run.regions.len(), 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "close specified refine should add local child Voronoi cells"
     );
 
@@ -2469,7 +2470,7 @@ fn default_land_calculated_refine_uses_method_c_region_source() {
     assert_eq!(run.regions.len(), 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "calculated refine should add local child Voronoi cells"
     );
 
@@ -2545,7 +2546,7 @@ fn default_land_calculated_circle_refine_filters_degrees_by_active_max_level() {
     assert_eq!(run.max_level, 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "calculated circle refine should add local child Voronoi cells"
     );
 
@@ -2622,7 +2623,7 @@ fn default_land_calculated_close_refine_promotes_zero_degree_to_max_level() {
     assert_eq!(run.max_level, 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "calculated close refine should add local child Voronoi cells"
     );
 
@@ -2755,7 +2756,7 @@ fn top_level_dispatcher_routes_refine_namelist_to_refine_pipeline_report() {
     assert_eq!(run.regions.len(), 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "top-level dispatcher should return refined Method-C output"
     );
 }
@@ -2805,7 +2806,7 @@ fn top_level_dispatcher_compatibility_atmos_mesh_name_routes_to_refine_pipeline_
     assert_eq!(run.regions.len(), 1);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "top-level dispatcher should return refined Method-C output"
     );
 }
@@ -2857,10 +2858,10 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
     assert_eq!(run.max_level, 2);
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "red-green should refine the initial mesh: {} vs {}",
         run.output.lbx_points,
-        run.gridinit.gridfile.lbx_points
+        run.gridinit.as_ref().unwrap().gridfile.lbx_points
     );
     // Not synthesised to make a log line look better: red-green reports no
     // per-cell generations, so nothing was measured off this mesh. The
@@ -2935,10 +2936,10 @@ fn harp_dv_backend_refines_a_named_circle_end_to_end() {
     );
     assert!(run.output.output.exists());
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "harp_dv should refine the initial mesh: {} vs {}",
         run.output.lbx_points,
-        run.gridinit.gridfile.lbx_points
+        run.gridinit.as_ref().unwrap().gridfile.lbx_points
     );
     // HARP-DV does fill per-cell generations -- it carries a depth per site --
     // so unlike red-green there is something measured off this mesh.
@@ -3253,10 +3254,10 @@ fn redgreen_backend_is_not_stopped_by_method_cs_adaptive_section() {
         .expect("the adaptive default must not refuse a red-green run");
 
     assert!(
-        run.output.lbx_points > run.gridinit.gridfile.lbx_points,
+        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "and the named circle must still refine: {} vs {}",
         run.output.lbx_points,
-        run.gridinit.gridfile.lbx_points
+        run.gridinit.as_ref().unwrap().gridfile.lbx_points
     );
 }
 

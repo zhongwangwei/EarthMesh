@@ -25,6 +25,7 @@ fn every_backend_round_trips_through_its_namelist_name() {
         RefinementBackend::MethodC,
         RefinementBackend::RedGreen,
         RefinementBackend::HarpDv,
+        RefinementBackend::Certified,
     ] {
         assert_eq!(
             RefinementBackend::from_engine_str(backend.engine_str()),
@@ -41,6 +42,7 @@ fn only_the_backends_that_read_criteria_say_they_do() {
     assert!(!RefinementBackend::MethodC.serves_criteria_directly());
     assert!(RefinementBackend::RedGreen.serves_criteria_directly());
     assert!(RefinementBackend::HarpDv.serves_criteria_directly());
+    assert!(RefinementBackend::Certified.serves_criteria_directly());
 }
 
 /// Which semantics can be driven down by refining, and which cannot.

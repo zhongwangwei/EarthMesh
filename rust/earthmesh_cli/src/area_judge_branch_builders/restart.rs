@@ -55,7 +55,7 @@ pub fn build_area_judge_restart_one_based(
         .map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Area_judge land source-cell count exceeds i32",
+                "Area_judge land source-cell count exceeds u64",
             )
         })?;
 

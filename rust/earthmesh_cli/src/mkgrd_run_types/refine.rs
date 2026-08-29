@@ -52,9 +52,42 @@ pub struct LeppAdaptiveHybridRunRecord {
     pub unresolved_report: PathBuf,
 }
 
+/// CMRC's fail-closed delivery evidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CertifiedRunRecord {
+    pub mode: String,
+    pub chosen_level: usize,
+    pub delivered_level: usize,
+    pub initial_mother_subdivision: usize,
+    pub mother_subdivision: usize,
+    pub initial_mother_cells: usize,
+    pub mother_cells: usize,
+    pub attempted_patches: usize,
+    pub accepted_patches: usize,
+    pub removed_vertices: usize,
+    pub removed_faces: usize,
+    pub search_budget_exhausted: bool,
+    pub minimum_angle_deg: f64,
+    pub maximum_angle_deg: f64,
+    pub physical_residuals: usize,
+    pub balance_residuals: usize,
+    pub topology_errors: usize,
+    pub dual_errors: usize,
+    pub remap_closure_errors: usize,
+    pub remap: PathBuf,
+    pub certificate: PathBuf,
+    pub manifest: PathBuf,
+    pub resources: PathBuf,
+    pub ready_marker: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinePipelineRunReport {
-    pub gridinit: MkgrdGridinitRunReport,
+    /// Source grid used by backends that refine an existing mesh.
+    ///
+    /// CMRC constructs its certified mother grid directly, so it has no
+    /// separate grid-init artifact to report.
+    pub gridinit: Option<MkgrdGridinitRunReport>,
     pub refine: RefineConfig,
     pub regions: Vec<RefinementRegion>,
     /// Refinement depth the configuration asked for, derived from
@@ -103,12 +136,14 @@ pub struct RefinePipelineRunReport {
     pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
-    /// HARP-DV's own ending, or `None` from the other two backends.
+    /// HARP-DV's own ending, or `None` from the other peer backends.
     ///
     /// On the record because a run that stopped at a budget or a scale floor
     /// exits zero with a mesh written, exactly like one that met every demand.
     /// Without this a caller cannot tell them apart.
     pub harp_dv_run: Option<crate::refine_pipeline::HarpDvRunRecord>,
+    /// CMRC's strict delivery evidence, or `None` for the other peer backends.
+    pub certified_run: Option<CertifiedRunRecord>,
     /// Method-C AdaptiveHybrid evidence, or `None` for canonical Method-C and
     /// the other refinement backends.
     pub lepp_adaptive_hybrid: Option<LeppAdaptiveHybridRunRecord>,

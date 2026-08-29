@@ -30,7 +30,7 @@ fn lonlat_to_unit(point: Point) -> Vec3 {
 /// Conservative spherical-cap broad phase. The extra longest-edge margin keeps
 /// every minor great-circle edge inside the cap, so disjoint caps can be skipped
 /// without losing a real overlay.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct SphericalCap {
     center: Vec3,
     radius: f64,
@@ -70,6 +70,17 @@ impl SphericalCap {
     pub fn overlaps(self, other: Self) -> bool {
         dot(self.center, other.center).clamp(-1.0, 1.0).acos()
             <= self.radius + other.radius + 1.0e-12
+    }
+
+    pub fn center_lon_lat_degrees(self) -> (f64, f64) {
+        (
+            self.center[1].atan2(self.center[0]).to_degrees(),
+            self.center[2].clamp(-1.0, 1.0).asin().to_degrees(),
+        )
+    }
+
+    pub fn radius_radians(self) -> f64 {
+        self.radius
     }
 }
 

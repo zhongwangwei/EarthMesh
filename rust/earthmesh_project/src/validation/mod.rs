@@ -226,7 +226,7 @@ impl ProjectConfig {
             && self.refinement.method_c.algorithm == MethodCAlgorithm::LeppDelaunay
         {
             return Err(
-                "refinement.method_c.algorithm lepp_delaunay does not consume the legacy h-field; use refinement.adaptive or named regions"
+                "refinement.method_c.algorithm lepp_delaunay does not consume the gradient-limited h-field; use refinement.adaptive or named regions"
                     .to_string(),
             );
         }
@@ -241,6 +241,10 @@ impl ProjectConfig {
                 "refinement.backend harp_dv does not serve an h-field; it re-reads a target scale \
                  against the cells that exist and serves circular regions. Use method_c, or turn \
                  refinement.hfield off"
+                    .to_string(),
+            ),
+            crate::RefinementBackend::Certified => Err(
+                "refinement.backend certified does not consume the Method-C h-field route; use threshold or named requirement sources, or turn refinement.hfield off"
                     .to_string(),
             ),
         }
@@ -532,6 +536,7 @@ impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
         self.method_c.validate()?;
         self.harp_dv.validate()?;
+        self.certified.validate()?;
         if let Some(circles) = &self.specified_circle {
             let circles = circles.as_slice();
             if circles.is_empty() {
@@ -568,6 +573,24 @@ impl RefinementRecipe {
             return Err(format!(
                 "refinement max_passes must be <= {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
             ));
+        }
+        Ok(())
+    }
+}
+
+impl crate::CertifiedRefinementRecipe {
+    fn validate(&self) -> Result<(), String> {
+        if self.maximum_level > 20 {
+            return Err("refinement.certified maximum_level must be in 0..=20".to_string());
+        }
+        if self.maximum_cells == 0 {
+            return Err("refinement.certified maximum_cells must be > 0".to_string());
+        }
+        if self.gradation_rings_per_level == 0 {
+            return Err("refinement.certified gradation_rings_per_level must be > 0".to_string());
+        }
+        if self.search_budget == 0 {
+            return Err("refinement.certified search_budget must be > 0".to_string());
         }
         Ok(())
     }

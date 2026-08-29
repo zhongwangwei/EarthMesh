@@ -204,7 +204,7 @@ pub(crate) fn print_refine_pipeline_report(
     }
     println!("refine_transition_faces={}", report.transition_faces);
     println!("refine_spring_passes={}", report.spring_nest_passes);
-    // Printed for HARP-DV only, because the other two backends have no cycles,
+    // Printed for HARP-DV only, because the other peer backends have no cycles,
     // no refusals and no stop reason to report. A line of `None` for them would
     // be noise that trains people to skip the line that matters.
     if let Some(harp) = &report.harp_dv_run {
@@ -408,6 +408,62 @@ pub(crate) fn print_refine_pipeline_report(
         println!(
             "harp_dv_unbalanced_pairs={}",
             harp.unbalanced_pairs_remaining
+        );
+    }
+    if let Some(certified) = &report.certified_run {
+        println!("certified_mode={}", certified.mode);
+        println!("certified_chosen_level={}", certified.chosen_level);
+        println!("certified_delivered_level={}", certified.delivered_level);
+        println!(
+            "certified_initial_mother_subdivision={}",
+            certified.initial_mother_subdivision
+        );
+        println!(
+            "certified_mother_subdivision={}",
+            certified.mother_subdivision
+        );
+        println!(
+            "certified_initial_mother_cells={}",
+            certified.initial_mother_cells
+        );
+        println!("certified_mother_cells={}", certified.mother_cells);
+        println!(
+            "certified_coarsening_patches={},{}",
+            certified.attempted_patches, certified.accepted_patches
+        );
+        println!(
+            "certified_coarsening_removed={},{}",
+            certified.removed_vertices, certified.removed_faces
+        );
+        println!(
+            "certified_search_budget_exhausted={}",
+            certified.search_budget_exhausted
+        );
+        println!(
+            "certified_angle_window_deg={:.6},{:.6}",
+            certified.minimum_angle_deg, certified.maximum_angle_deg
+        );
+        println!(
+            "certified_physical_residuals={}",
+            certified.physical_residuals
+        );
+        println!(
+            "certified_balance_residuals={}",
+            certified.balance_residuals
+        );
+        println!("certified_topology_errors={}", certified.topology_errors);
+        println!("certified_dual_errors={}", certified.dual_errors);
+        println!(
+            "certified_remap_closure_errors={}",
+            certified.remap_closure_errors
+        );
+        println!("certified_remap={}", certified.remap.display());
+        println!("certified_certificate={}", certified.certificate.display());
+        println!("certified_manifest={}", certified.manifest.display());
+        println!("certified_resources={}", certified.resources.display());
+        println!(
+            "certified_ready_marker={}",
+            certified.ready_marker.display()
         );
     }
     if let Some(lepp) = &report.lepp_adaptive_hybrid {

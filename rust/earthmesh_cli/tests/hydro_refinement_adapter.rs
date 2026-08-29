@@ -61,7 +61,14 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     assert_eq!(report.target.max_level, 1);
     assert_eq!(report.pipeline.max_level, 1);
     assert_eq!(
-        report.pipeline.gridinit.gridfile.lbx_points, 140,
+        report
+            .pipeline
+            .gridinit
+            .as_ref()
+            .unwrap()
+            .gridfile
+            .lbx_points,
+        140,
         "adapter must ingest the measured parent gridfile instead of rebuilding from NXP"
     );
     assert!(report.pipeline.output.output.is_file());
@@ -77,9 +84,22 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
         "coarse"
     );
     assert!(
-        report.pipeline.output.lbx_points > report.pipeline.gridinit.gridfile.lbx_points,
+        report.pipeline.output.lbx_points
+            > report
+                .pipeline
+                .gridinit
+                .as_ref()
+                .unwrap()
+                .gridfile
+                .lbx_points,
         "hydro target field must add real Method-C cells (base={}, final={})",
-        report.pipeline.gridinit.gridfile.lbx_points,
+        report
+            .pipeline
+            .gridinit
+            .as_ref()
+            .unwrap()
+            .gridfile
+            .lbx_points,
         report.pipeline.output.lbx_points
     );
     let adapter_text = fs::read_to_string(&adapter).expect("read adapter namelist");
@@ -136,7 +156,16 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     )
     .expect("persisted Method-C ownership must support a second local pass");
     assert_eq!(second.target.max_level, 2);
-    assert_eq!(second.pipeline.gridinit.gridfile.lbx_points, first_cells);
+    assert_eq!(
+        second
+            .pipeline
+            .gridinit
+            .as_ref()
+            .unwrap()
+            .gridfile
+            .lbx_points,
+        first_cells
+    );
     assert!(
         second.pipeline.output.lbx_points > first_cells,
         "second absolute target level must refine the persisted parent"

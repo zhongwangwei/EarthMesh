@@ -35,6 +35,41 @@ pub struct RetirementReport {
     pub diagonal: Option<RetirementDiagonal>,
 }
 
+/// Result of a bounded finite search over every triangulation of a retirement
+/// ring. Only `Committed` mutates the mesh.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RetirementSearchOutcome {
+    Committed {
+        report: RetirementReport,
+        attempted: usize,
+    },
+    ProvenInfeasible {
+        attempted: usize,
+        last_error: Option<RetirementError>,
+    },
+    SearchBudgetExhausted {
+        attempted: usize,
+    },
+    InvalidBoundary(RetirementError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetirementPostconditionOutcome {
+    Accepted { states_examined: usize },
+    Rejected { states_examined: usize },
+    SearchBudgetExhausted { states_examined: usize },
+}
+
+impl RetirementPostconditionOutcome {
+    fn states_examined(self) -> usize {
+        match self {
+            Self::Accepted { states_examined }
+            | Self::Rejected { states_examined }
+            | Self::SearchBudgetExhausted { states_examined } => states_examined,
+        }
+    }
+}
+
 /// Why a retirement did not commit.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RetirementError {
@@ -125,30 +160,96 @@ impl MeshState {
     pub fn retire_vertex_transactionally(
         &mut self,
         vertex: usize,
-        mut postcondition: impl FnMut(&Self, &RetirementReport) -> bool,
+        postcondition: impl FnMut(&Self, &RetirementReport) -> bool,
     ) -> Result<RetirementReport, RetirementError> {
+        match self.retire_vertex_with_budget_transactionally(vertex, usize::MAX, postcondition) {
+            RetirementSearchOutcome::Committed { report, .. } => Ok(report),
+            RetirementSearchOutcome::ProvenInfeasible { last_error, .. } => {
+                Err(last_error.unwrap_or(RetirementError::Rejected))
+            }
+            RetirementSearchOutcome::InvalidBoundary(error) => Err(error),
+            RetirementSearchOutcome::SearchBudgetExhausted { .. } => {
+                unreachable!("usize::MAX exceeds the finite degree-3..=7 triangulation space")
+            }
+        }
+    }
+
+    /// Search at most `search_budget` ring triangulations and commit the first
+    /// one that passes the mesh checks and caller postcondition.
+    pub fn retire_vertex_with_budget_transactionally(
+        &mut self,
+        vertex: usize,
+        search_budget: usize,
+        mut postcondition: impl FnMut(&Self, &RetirementReport) -> bool,
+    ) -> RetirementSearchOutcome {
+        self.retire_vertex_with_budget_impl(vertex, search_budget, true, |state, report, _| {
+            if postcondition(state, report) {
+                RetirementPostconditionOutcome::Accepted { states_examined: 0 }
+            } else {
+                RetirementPostconditionOutcome::Rejected { states_examined: 0 }
+            }
+        })
+    }
+
+    /// Search finite ring triangulations while allowing the caller's atomic
+    /// postcondition to repair Delaunay edges before accepting a candidate.
+    pub fn retire_vertex_with_budget_transactionally_repairing(
+        &mut self,
+        vertex: usize,
+        search_budget: usize,
+        postcondition: impl FnMut(&Self, &RetirementReport, usize) -> RetirementPostconditionOutcome,
+    ) -> RetirementSearchOutcome {
+        self.retire_vertex_with_budget_impl(vertex, search_budget, false, postcondition)
+    }
+
+    fn retire_vertex_with_budget_impl(
+        &mut self,
+        vertex: usize,
+        search_budget: usize,
+        require_local_delaunay: bool,
+        mut postcondition: impl FnMut(&Self, &RetirementReport, usize) -> RetirementPostconditionOutcome,
+    ) -> RetirementSearchOutcome {
         let vertex_id = self
             .vertex_id(vertex)
-            .ok_or(RetirementError::UnknownVertex { vertex })?;
+            .ok_or(RetirementError::UnknownVertex { vertex });
+        let Ok(vertex_id) = vertex_id else {
+            return RetirementSearchOutcome::InvalidBoundary(vertex_id.unwrap_err());
+        };
         let seed = self
             .active_triangle_slots()
             .find(|&triangle| self.triangles()[triangle].contains(&vertex))
-            .ok_or(RetirementError::UnsupportedDegree { vertex, degree: 0 })?;
+            .ok_or(RetirementError::UnsupportedDegree { vertex, degree: 0 });
+        let Ok(seed) = seed else {
+            return RetirementSearchOutcome::InvalidBoundary(seed.unwrap_err());
+        };
         let fan = self
             .triangle_fan_from(vertex, seed)
-            .map_err(RetirementError::Fan)?;
+            .map_err(RetirementError::Fan);
+        let Ok(fan) = fan else {
+            return RetirementSearchOutcome::InvalidBoundary(fan.unwrap_err());
+        };
         if !(3..=7).contains(&fan.len()) {
-            return Err(RetirementError::UnsupportedDegree {
+            return RetirementSearchOutcome::InvalidBoundary(RetirementError::UnsupportedDegree {
                 vertex,
                 degree: fan.len(),
             });
         }
-        let ring = polygon_ring(self, vertex, &fan)?;
+        let ring = polygon_ring(self, vertex, &fan);
+        let Ok(ring) = ring else {
+            return RetirementSearchOutcome::InvalidBoundary(ring.unwrap_err());
+        };
         let outside = outside_faces_from_fan(self, vertex, &fan);
         let candidates = triangulations(&ring);
         let mut last_error = None;
+        let mut attempted = 0;
         for replacement in candidates {
-            match try_retirement(
+            if attempted == search_budget {
+                return RetirementSearchOutcome::SearchBudgetExhausted { attempted };
+            }
+            attempted += 1;
+            let remaining = search_budget - attempted;
+            let mut decision = None;
+            let result = try_retirement(
                 self,
                 vertex,
                 vertex_id,
@@ -156,13 +257,41 @@ impl MeshState {
                 &ring,
                 &outside,
                 &replacement,
-                &mut postcondition,
-            ) {
-                Ok(report) => return Ok(report),
+                require_local_delaunay,
+                &mut |state, report| {
+                    let next = postcondition(state, report, remaining);
+                    let accepts = matches!(next, RetirementPostconditionOutcome::Accepted { .. })
+                        && next.states_examined() <= remaining;
+                    decision = Some(next);
+                    accepts
+                },
+            );
+            if let Some(decision) = decision {
+                let states_examined = decision.states_examined();
+                if states_examined > remaining {
+                    return RetirementSearchOutcome::SearchBudgetExhausted {
+                        attempted: search_budget,
+                    };
+                }
+                attempted += states_examined;
+                if matches!(
+                    decision,
+                    RetirementPostconditionOutcome::SearchBudgetExhausted { .. }
+                ) {
+                    return RetirementSearchOutcome::SearchBudgetExhausted { attempted };
+                }
+            }
+            match result {
+                Ok(report) => {
+                    return RetirementSearchOutcome::Committed { report, attempted };
+                }
                 Err(error) => last_error = Some(error),
             }
         }
-        Err(last_error.unwrap_or(RetirementError::Rejected))
+        RetirementSearchOutcome::ProvenInfeasible {
+            attempted,
+            last_error,
+        }
     }
 
     /// Retire one live interior degree-four vertex transactionally.
@@ -184,6 +313,7 @@ fn try_retirement(
     ring: &[usize],
     outside: &[usize],
     replacement: &[[usize; 3]],
+    require_local_delaunay: bool,
     postcondition: &mut impl FnMut(&MeshState, &RetirementReport) -> bool,
 ) -> Result<RetirementReport, RetirementError> {
     let mut trial = state.clone();
@@ -195,6 +325,7 @@ fn try_retirement(
         ring,
         outside,
         replacement,
+        require_local_delaunay,
     )?;
     if !postcondition(&trial, &report) {
         return Err(RetirementError::Rejected);
@@ -211,6 +342,7 @@ fn retire_on_trial(
     ring: &[usize],
     outside: &[usize],
     replacement: &[[usize; 3]],
+    require_local_delaunay: bool,
 ) -> Result<RetirementReport, RetirementError> {
     let before = orientation_on_sphere(
         state.vertices()[state.triangles()[fan[0]][0]],
@@ -272,11 +404,13 @@ fn retire_on_trial(
     region.extend(outside.iter().copied());
     state.repair_adjacency_across(&region, &authoritative);
 
-    state
-        .legalize_within(&authoritative, Some(&authoritative))
-        .map_err(|_| RetirementError::Rejected)?;
-    if let Some((triangle, corner)) = illegal_edge_in(state, &authoritative) {
-        return Err(RetirementError::IllegalLocalEdge { triangle, corner });
+    if require_local_delaunay {
+        state
+            .legalize_within(&authoritative, Some(&authoritative))
+            .map_err(|_| RetirementError::Rejected)?;
+        if let Some((triangle, corner)) = illegal_edge_in(state, &authoritative) {
+            return Err(RetirementError::IllegalLocalEdge { triangle, corner });
+        }
     }
 
     let mut affected = region;
