@@ -11,6 +11,13 @@ pub struct ParentRequirement {
     pub can_coarsen: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExplicitParentRequirement {
+    pub parent: TriangleAddress,
+    pub maximum_required_level: usize,
+    pub available: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HierarchyComponent {
     pub id: u64,
@@ -30,7 +37,6 @@ pub struct HierarchyComponentPlan {
 struct ParentAggregate {
     address: Option<TriangleAddress>,
     child_count: u8,
-    maximum_required_level: usize,
     neighbours: [usize; 3],
     degree: u8,
 }
@@ -40,7 +46,6 @@ impl Default for ParentAggregate {
         Self {
             address: None,
             child_count: 0,
-            maximum_required_level: 0,
             neighbours: [usize::MAX; 3],
             degree: 0,
         }
@@ -58,15 +63,103 @@ pub fn plan_hierarchy_components(
     coarse_level: usize,
     transition_ring_width: usize,
 ) -> Result<HierarchyComponentPlan, String> {
-    let fine_n = grid.subdivision;
     if required_levels.len() != grid.mesh.vertices().len() {
         return Err("required level slots must match mesh vertices".into());
     }
-    if fine_n < 2 {
+    let (parents, face_parents) = build_parent_graph(grid)?;
+    if parents.is_empty() {
         return Ok(HierarchyComponentPlan {
             parent_requirements: Vec::new(),
             components: Vec::new(),
         });
+    }
+    let mut maximum_required_levels = vec![0; parents.len()];
+    for face in grid.mesh.active_triangle_slots() {
+        let dense = face_parents[face];
+        let face_max = grid.mesh.triangles()[face]
+            .into_iter()
+            .map(|site| required_levels[site])
+            .max()
+            .unwrap_or(0);
+        maximum_required_levels[dense] = maximum_required_levels[dense].max(face_max);
+    }
+    plan_from_dense_parent_requirements(
+        &parents,
+        &maximum_required_levels,
+        &vec![true; parents.len()],
+        coarse_level,
+        transition_ring_width,
+    )
+}
+
+/// Plan components from explicit per-parent requirements.
+///
+/// `available=false` parents never join a component and act as boundaries even
+/// when their required level is otherwise coarse enough.
+pub fn plan_hierarchy_components_from_parent_requirements(
+    grid: &MotherGrid,
+    requirements: &[ExplicitParentRequirement],
+    coarse_level: usize,
+    transition_ring_width: usize,
+) -> Result<HierarchyComponentPlan, String> {
+    let (parents, _) = build_parent_graph(grid)?;
+    if parents.is_empty() {
+        return if requirements.is_empty() {
+            Ok(HierarchyComponentPlan {
+                parent_requirements: Vec::new(),
+                components: Vec::new(),
+            })
+        } else {
+            Err("parent requirements were provided for a grid without parent faces".into())
+        };
+    }
+    let mut maximum_required_levels = vec![0; parents.len()];
+    let mut available = vec![false; parents.len()];
+    let mut seen = vec![false; parents.len()];
+
+    for requirement in requirements {
+        let dense = requirement
+            .parent
+            .dense_index(parent_subdivision(&parents)?)?;
+        if dense >= parents.len() || parents[dense].address != Some(requirement.parent) {
+            return Err(format!(
+                "unknown parent requirement {:?}",
+                requirement.parent
+            ));
+        }
+        if seen[dense] {
+            return Err(format!(
+                "duplicate parent requirement {:?}",
+                requirement.parent
+            ));
+        }
+        seen[dense] = true;
+        maximum_required_levels[dense] = requirement.maximum_required_level;
+        available[dense] = requirement.available;
+    }
+
+    if let Some(missing) = seen.iter().position(|seen| !seen) {
+        return Err(format!(
+            "missing parent requirement {:?}",
+            parents[missing]
+                .address
+                .expect("validated parent has address")
+        ));
+    }
+
+    plan_from_dense_parent_requirements(
+        &parents,
+        &maximum_required_levels,
+        &available,
+        coarse_level,
+        transition_ring_width,
+    )
+}
+
+fn build_parent_graph(grid: &MotherGrid) -> Result<(Vec<ParentAggregate>, Vec<usize>), String> {
+    let fine_n = grid.subdivision;
+    if fine_n < 2 {
+        return Ok((Vec::new(), Vec::new()));
     }
     if !fine_n.is_multiple_of(2) {
         return Err("hierarchy component planning requires an even subdivision".into());
@@ -108,12 +201,6 @@ pub fn plan_hierarchy_components(
             .child_count
             .checked_add(1)
             .ok_or_else(|| "parent child count overflow".to_string())?;
-        let face_max = grid.mesh.triangles()[face]
-            .into_iter()
-            .map(|site| required_levels[site])
-            .max()
-            .unwrap_or(0);
-        aggregate.maximum_required_level = aggregate.maximum_required_level.max(face_max);
         face_parents[face] = dense;
     }
 
@@ -154,19 +241,36 @@ pub fn plan_hierarchy_components(
         }
     }
 
+    Ok((parents, face_parents))
+}
+
+fn plan_from_dense_parent_requirements(
+    parents: &[ParentAggregate],
+    maximum_required_levels: &[usize],
+    available: &[bool],
+    coarse_level: usize,
+    transition_ring_width: usize,
+) -> Result<HierarchyComponentPlan, String> {
+    if parents.len() != maximum_required_levels.len() || parents.len() != available.len() {
+        return Err("parent requirement slots must match parent graph".into());
+    }
+
     let eligible = parents
         .iter()
-        .map(|parent| parent.maximum_required_level <= coarse_level)
+        .enumerate()
+        .map(|(dense, _)| available[dense] && maximum_required_levels[dense] <= coarse_level)
         .collect::<Vec<_>>();
     let parent_requirements = parents
         .iter()
-        .map(|parent| ParentRequirement {
+        .enumerate()
+        .map(|(dense, parent)| ParentRequirement {
             parent: parent.address.expect("validated parent has address"),
-            maximum_required_level: parent.maximum_required_level,
-            can_coarsen: parent.maximum_required_level <= coarse_level,
+            maximum_required_level: maximum_required_levels[dense],
+            can_coarsen: eligible[dense],
         })
         .collect::<Vec<_>>();
 
+    let parent_count = parents.len();
     let mut component_by_parent = vec![usize::MAX; parent_count];
     let mut component_count = 0usize;
     let mut queue = VecDeque::new();
@@ -252,6 +356,14 @@ pub fn plan_hierarchy_components(
         parent_requirements,
         components,
     })
+}
+
+fn parent_subdivision(parents: &[ParentAggregate]) -> Result<usize, String> {
+    parents
+        .first()
+        .and_then(|parent| parent.address)
+        .map(|address| address.n)
+        .ok_or_else(|| "parent requirement planning needs at least one parent".to_string())
 }
 
 fn push_neighbour(

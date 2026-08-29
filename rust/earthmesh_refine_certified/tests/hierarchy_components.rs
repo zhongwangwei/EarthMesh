@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use earthmesh_refine_certified::{
-    coarsen::{plan_hierarchy_components, HierarchyComponent, HierarchyEdgeKey, ParentRequirement},
+    coarsen::{
+        plan_hierarchy_components, plan_hierarchy_components_from_parent_requirements,
+        ExplicitParentRequirement, HierarchyComponent, HierarchyEdgeKey, ParentRequirement,
+    },
     MotherGrid, TriangleAddress,
 };
 
@@ -43,6 +46,41 @@ fn isolated_parents(grid: &MotherGrid, count: usize) -> Vec<TriangleAddress> {
     }
     assert_eq!(picked.len(), count);
     picked
+}
+
+fn parent_neighbours(grid: &MotherGrid, parent: TriangleAddress) -> Vec<TriangleAddress> {
+    let mut neighbours = BTreeSet::new();
+    for face in grid.mesh.active_triangle_slots() {
+        if grid.triangle_addresses[face].and_then(TriangleAddress::parent_2_to_1) != Some(parent) {
+            continue;
+        }
+        for &neighbour in &grid.mesh.neighbours()[face] {
+            let Some(other) =
+                grid.triangle_addresses[neighbour].and_then(TriangleAddress::parent_2_to_1)
+            else {
+                continue;
+            };
+            if other != parent {
+                neighbours.insert(other);
+            }
+        }
+    }
+    neighbours.into_iter().collect()
+}
+
+fn explicit_requirements(
+    grid: &MotherGrid,
+    available: impl IntoIterator<Item = TriangleAddress>,
+) -> Vec<ExplicitParentRequirement> {
+    let available = available.into_iter().collect::<BTreeSet<_>>();
+    parent_addresses(grid)
+        .into_iter()
+        .map(|parent| ExplicitParentRequirement {
+            parent,
+            maximum_required_level: 0,
+            available: available.contains(&parent),
+        })
+        .collect()
 }
 
 fn seam_parent_pair(grid: &MotherGrid) -> [TriangleAddress; 2] {
@@ -217,6 +255,94 @@ fn boundary_parent_is_transition_at_width_zero() {
     // The contract defines core as distance-to-boundary > width; this parent is distance zero.
     assert!(plan.components[0].core_parents.is_empty());
     assert_eq!(plan.components[0].transition_parents, vec![parent]);
+}
+
+#[test]
+fn explicit_unavailable_parent_does_not_connect_neighbours() {
+    let grid = MotherGrid::generate(4).unwrap();
+    let blocker = parent_addresses(&grid)[0];
+    let neighbours = parent_neighbours(&grid, blocker);
+    assert!(neighbours.len() >= 2);
+    let available = [neighbours[0], neighbours[1]];
+
+    let plan = plan_hierarchy_components_from_parent_requirements(
+        &grid,
+        &explicit_requirements(&grid, available),
+        0,
+        0,
+    )
+    .unwrap();
+
+    assert_eq!(plan.components.len(), 2);
+    assert_eq!(plan.components[0].parents, vec![available[0]]);
+    assert_eq!(plan.components[1].parents, vec![available[1]]);
+    assert!(!requirement_for(&plan.parent_requirements, blocker).can_coarsen);
+}
+
+#[test]
+fn explicit_blocked_first_parent_does_not_hide_later_components() {
+    let grid = MotherGrid::generate(2).unwrap();
+    let isolated = isolated_parents(&grid, 3);
+    let available = vec![isolated[1], isolated[2]];
+    let mut requirements = explicit_requirements(&grid, available.clone());
+    requirements[0].available = false;
+    requirements[0].maximum_required_level = 99;
+
+    let plan =
+        plan_hierarchy_components_from_parent_requirements(&grid, &requirements, 0, 0).unwrap();
+
+    assert_eq!(plan.components.len(), 2);
+    assert_eq!(plan.components[0].parents, vec![available[0]]);
+    assert_eq!(plan.components[1].parents, vec![available[1]]);
+}
+
+#[test]
+fn explicit_requirement_order_does_not_change_plan() {
+    let grid = MotherGrid::generate(2).unwrap();
+    let available = isolated_parents(&grid, 2);
+    let requirements = explicit_requirements(&grid, available);
+    let mut reversed = requirements.clone();
+    reversed.reverse();
+
+    let first =
+        plan_hierarchy_components_from_parent_requirements(&grid, &requirements, 0, 1).unwrap();
+    let second =
+        plan_hierarchy_components_from_parent_requirements(&grid, &reversed, 0, 1).unwrap();
+
+    assert_eq!(first, second);
+}
+
+#[test]
+fn explicit_transition_ring_erodes_only_from_unavailable_boundary() {
+    let grid = MotherGrid::generate(4).unwrap();
+    let blocked = parent_addresses(&grid)[0];
+    let blocked_neighbours = parent_neighbours(&grid, blocked)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let available = parent_addresses(&grid)
+        .into_iter()
+        .filter(|parent| *parent != blocked)
+        .collect::<Vec<_>>();
+
+    let plan = plan_hierarchy_components_from_parent_requirements(
+        &grid,
+        &explicit_requirements(&grid, available),
+        0,
+        0,
+    )
+    .unwrap();
+
+    assert_eq!(plan.components.len(), 1);
+    assert_eq!(
+        plan.components[0]
+            .transition_parents
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        blocked_neighbours
+    );
+    assert!(!plan.components[0].core_parents.is_empty());
+    assert!(!plan.components[0].boundary_edges.is_empty());
 }
 
 #[test]

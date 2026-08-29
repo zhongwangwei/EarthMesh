@@ -2,7 +2,7 @@ use crate::mother_grid::{push_oriented, MotherGrid, TriangleAddress, VertexAddre
 use earthmesh_mesh::{CartesianPoint, MeshState};
 use std::collections::BTreeSet;
 
-/// Exact hierarchy leaves. Each leaf is either a source face or its direct parent.
+/// Exact hierarchy leaves. Each leaf is a source face or one of its ancestors.
 pub type HierarchyFaceKey = TriangleAddress;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,10 +104,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
     let mut leaf_addresses = Vec::<Option<TriangleAddress>>::new();
 
     for &parent in custom_parents {
-        let children = parent
-            .children_2_to_1()
-            .ok_or_else(|| format!("invalid custom transition parent {parent:?}"))?;
-        for child in children {
+        for child in source_descendants(parent, source_n)? {
             let slot = source_face_slot(source, child)?;
             if std::mem::replace(&mut covered[slot], true) {
                 return Err(format!("source face {slot} is covered more than once"));
@@ -123,60 +120,39 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
             }
             leaf_triangles.push(source.mesh.triangles()[slot]);
             leaf_addresses.push(Some(leaf));
-        } else if leaf.n.checked_mul(2) == Some(source_n) {
-            let children = leaf
-                .children_2_to_1()
-                .ok_or_else(|| format!("invalid hierarchy leaf {leaf:?}"))?;
-            let mut sites = [usize::MAX; 6];
-            let mut counts = [0u8; 6];
-            let mut used = 0usize;
-            let mut child_triangles = [[0usize; 3]; 4];
-            for (child_index, child) in children.into_iter().enumerate() {
-                let slot = source_face_slot(source, child)?;
-                if std::mem::replace(&mut covered[slot], true) {
-                    return Err(format!("source face {slot} is covered more than once"));
-                }
-                let triangle = source.mesh.triangles()[slot];
-                child_triangles[child_index] = triangle;
-                for site in triangle {
-                    count_site(site, &mut sites, &mut counts, &mut used).ok_or_else(|| {
-                        format!("coarse hierarchy leaf {leaf:?} uses more than 6 source sites")
-                    })?;
-                }
+            continue;
+        }
+        let mut corner_counts = std::collections::BTreeMap::<usize, usize>::new();
+        for child in source_descendants(leaf, source_n)? {
+            let slot = source_face_slot(source, child)?;
+            if std::mem::replace(&mut covered[slot], true) {
+                return Err(format!("source face {slot} is covered more than once"));
             }
-            let corner_count = counts[..used].iter().filter(|&&count| count == 1).count();
-            if corner_count != 3 {
-                return Err(format!(
-                    "coarse hierarchy leaf {leaf:?} has {corner_count} source corner sites, expected 3"
-                ));
+            for site in source.mesh.triangles()[slot] {
+                *corner_counts.entry(site).or_default() += 1;
             }
-            let corners = match leaf.orientation {
-                crate::mother_grid::TriangleOrientation::Up => [
-                    child_triangles[0][0],
-                    child_triangles[1][1],
-                    child_triangles[2][2],
-                ],
-                crate::mother_grid::TriangleOrientation::Down => [
-                    child_triangles[0][0],
-                    child_triangles[2][1],
-                    child_triangles[1][2],
-                ],
-            };
-            if corners
-                .iter()
-                .any(|&site| site_count(site, &sites, &counts, used) != Some(1))
-            {
-                return Err(format!(
-                    "coarse hierarchy leaf {leaf:?} source corner ordering is inconsistent"
-                ));
-            }
-            leaf_triangles.push(corners);
-            leaf_addresses.push(Some(leaf));
-        } else {
+        }
+        let corner_count = corner_counts.values().filter(|&&count| count == 1).count();
+        if corner_count != 3 {
             return Err(format!(
-                "leaf {leaf:?} is neither source subdivision {source_n} nor its 2-to-1 parent"
+                "hierarchy leaf {leaf:?} has {corner_count} source corner sites, expected 3"
             ));
         }
+        let corners = [
+            source_corner_site(source, leaf, 0)?,
+            source_corner_site(source, leaf, 1)?,
+            source_corner_site(source, leaf, 2)?,
+        ];
+        if corners
+            .iter()
+            .any(|site| corner_counts.get(site) != Some(&1))
+        {
+            return Err(format!(
+                "hierarchy leaf {leaf:?} source corner ordering is inconsistent"
+            ));
+        }
+        leaf_triangles.push(corners);
+        leaf_addresses.push(Some(leaf));
     }
 
     for &triangle in custom_triangles {
@@ -263,29 +239,59 @@ pub fn condense_hierarchy_core(
     })
 }
 
-fn count_site(
-    site: usize,
-    sites: &mut [usize; 6],
-    counts: &mut [u8; 6],
-    used: &mut usize,
-) -> Option<()> {
-    for index in 0..*used {
-        if sites[index] == site {
-            counts[index] += 1;
-            return Some(());
+fn source_descendants(
+    address: TriangleAddress,
+    source_n: usize,
+) -> Result<Vec<TriangleAddress>, String> {
+    if address.n == 0 || address.n > source_n || !source_n.is_multiple_of(address.n) {
+        return Err(format!(
+            "hierarchy address {address:?} does not divide source subdivision {source_n}"
+        ));
+    }
+    let mut frontier = vec![address];
+    while frontier.first().is_some_and(|address| address.n < source_n) {
+        if frontier[0].n.checked_mul(2).is_none_or(|n| n > source_n) {
+            return Err(format!(
+                "hierarchy address {address:?} is not a power-of-two ancestor of source subdivision {source_n}"
+            ));
         }
+        let mut next = Vec::with_capacity(frontier.len() * 4);
+        for leaf in frontier {
+            next.extend(
+                leaf.children_2_to_1()
+                    .ok_or_else(|| format!("invalid hierarchy address {leaf:?}"))?,
+            );
+        }
+        frontier = next;
     }
-    if *used == sites.len() {
-        return None;
-    }
-    sites[*used] = site;
-    counts[*used] = 1;
-    *used += 1;
-    Some(())
+    Ok(frontier)
 }
 
-fn site_count(site: usize, sites: &[usize; 6], counts: &[u8; 6], used: usize) -> Option<u8> {
-    (0..used).find_map(|index| (sites[index] == site).then_some(counts[index]))
+fn source_corner_site(
+    source: &MotherGrid,
+    mut leaf: TriangleAddress,
+    corner: usize,
+) -> Result<usize, String> {
+    if corner >= 3 {
+        return Err(format!("invalid hierarchy corner {corner}"));
+    }
+    while leaf.n < source.subdivision {
+        let children = leaf
+            .children_2_to_1()
+            .ok_or_else(|| format!("invalid hierarchy leaf {leaf:?}"))?;
+        let child_index = match (leaf.orientation, corner) {
+            (crate::mother_grid::TriangleOrientation::Up, 0) => 0,
+            (crate::mother_grid::TriangleOrientation::Up, 1) => 1,
+            (crate::mother_grid::TriangleOrientation::Up, 2) => 2,
+            (crate::mother_grid::TriangleOrientation::Down, 0) => 0,
+            (crate::mother_grid::TriangleOrientation::Down, 1) => 2,
+            (crate::mother_grid::TriangleOrientation::Down, 2) => 1,
+            _ => unreachable!(),
+        };
+        leaf = children[child_index];
+    }
+    let slot = source_face_slot(source, leaf)?;
+    Ok(source.mesh.triangles()[slot][corner])
 }
 
 pub(super) fn source_face_slot(
@@ -334,7 +340,7 @@ pub(super) fn uniform_leaf_mesh_to_mother_grid(
     let mut addresses = Vec::with_capacity(leaf_mesh.source_vertex_slots.len());
     for (slot, source_slot) in leaf_mesh.source_vertex_slots.iter().copied().enumerate() {
         let address = match source_slot {
-            Some(source_slot) => Some(scale_source_vertex_address_2_to_1(
+            Some(source_slot) => Some(scale_source_vertex_address(
                 source
                     .addresses
                     .get(source_slot)
@@ -360,44 +366,48 @@ pub(super) fn uniform_leaf_mesh_to_mother_grid(
     })
 }
 
-fn scale_source_vertex_address_2_to_1(
+fn scale_source_vertex_address(
     address: &VertexAddress,
     source_n: usize,
     target_n: usize,
 ) -> Result<VertexAddress, String> {
-    if source_n != target_n.saturating_mul(2) {
-        return Err("source and target subdivisions are not exact 2-to-1 levels".into());
+    if target_n == 0 || !source_n.is_multiple_of(target_n) {
+        return Err("source and target subdivisions are not exact hierarchy levels".into());
+    }
+    let factor = source_n / target_n;
+    if !factor.is_power_of_two() {
+        return Err("source and target subdivisions are not exact power-of-two levels".into());
     }
     Ok(match address {
         VertexAddress::IcosahedronVertex(vertex) => VertexAddress::IcosahedronVertex(*vertex),
         VertexAddress::IcosahedronEdge { a, b, step, n } => {
-            if *n != source_n || !step.is_multiple_of(2) {
+            if *n != source_n || !step.is_multiple_of(factor) {
                 return Err(format!(
-                    "source edge vertex {address:?} is not retained at 2-to-1"
+                    "source edge vertex {address:?} is not retained at hierarchy level {target_n}"
                 ));
             }
             VertexAddress::IcosahedronEdge {
                 a: *a,
                 b: *b,
-                step: step / 2,
+                step: step / factor,
                 n: target_n,
             }
         }
         VertexAddress::IcosahedronFace { face, i, j, k, n } => {
             if *n != source_n
-                || !i.is_multiple_of(2)
-                || !j.is_multiple_of(2)
-                || !k.is_multiple_of(2)
+                || !i.is_multiple_of(factor)
+                || !j.is_multiple_of(factor)
+                || !k.is_multiple_of(factor)
             {
                 return Err(format!(
-                    "source face vertex {address:?} is not retained at 2-to-1"
+                    "source face vertex {address:?} is not retained at hierarchy level {target_n}"
                 ));
             }
             VertexAddress::IcosahedronFace {
                 face: *face,
-                i: i / 2,
-                j: j / 2,
-                k: k / 2,
+                i: i / factor,
+                j: j / factor,
+                k: k / factor,
                 n: target_n,
             }
         }
@@ -407,6 +417,46 @@ fn scale_source_vertex_address_2_to_1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_custom_parent_covers_all_source_descendants_once() {
+        let source = MotherGrid::generate(8).unwrap();
+        let parent = MotherGrid::generate(2)
+            .unwrap()
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .next()
+            .unwrap();
+        let mut leaf_set = HierarchyLeafSet::from_mother_grid(&source).unwrap();
+        for child in source_descendants(parent, source.subdivision).unwrap() {
+            leaf_set.leaves.remove(&child);
+        }
+        let custom_parents = [parent].into_iter().collect::<BTreeSet<_>>();
+        let custom_triangles = [[
+            source_corner_site(&source, parent, 0).unwrap(),
+            source_corner_site(&source, parent, 1).unwrap(),
+            source_corner_site(&source, parent, 2).unwrap(),
+        ]];
+
+        let rebuilt = rebuild_from_leaf_set_with_custom_triangles(
+            &source,
+            &leaf_set,
+            &custom_parents,
+            &custom_triangles,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rebuilt
+                .triangle_addresses
+                .iter()
+                .filter(|a| a.is_none())
+                .count(),
+            3
+        );
+    }
 
     #[test]
     fn condensing_all_parents_rebuilds_the_uniform_coarse_mesh() {
