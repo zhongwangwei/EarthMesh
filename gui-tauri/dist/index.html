@@ -4212,7 +4212,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
         applyCoastal(JSON.parse(txt), false);
-        logLine(zh() ? "✓ 最终网格已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
+        logLine(zh() ? "✓ 最终网格预览已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh preview classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
       .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
   }
@@ -4223,7 +4223,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
     invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
-      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格已叠加到地图" : "✓ mesh overlaid on map"); loadMeshMeritCells(gridfile, kind); })
+      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格预览已叠加到地图" : "✓ mesh preview overlaid on map"); loadMeshMeritCells(gridfile, kind); })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
   }
 

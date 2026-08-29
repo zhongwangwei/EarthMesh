@@ -898,6 +898,27 @@ fn mesh_kind_rejects_invalid_values() {
 }
 
 #[test]
+fn map_preview_cell_limit_bounds_ipc_payloads() {
+    assert_eq!(mesh_outputs::map_preview_cell_limit(None), 50_000);
+    assert_eq!(mesh_outputs::map_preview_cell_limit(Some(12_345)), 12_345);
+    assert_eq!(mesh_outputs::map_preview_cell_limit(Some(100_000)), 50_000);
+}
+
+#[test]
+fn map_preview_reader_rejects_payloads_past_the_byte_limit() {
+    let path = env::temp_dir().join(format!("earthmesh_gui_preview_{}.json", process::id()));
+    fs::write(&path, b"12345").unwrap();
+    assert_eq!(
+        mesh_outputs::read_preview_geojson(&path, 5).unwrap(),
+        "12345"
+    );
+    assert!(mesh_outputs::read_preview_geojson(&path, 4)
+        .unwrap_err()
+        .contains("exceeds IPC limit"));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn explicit_missing_landtype_file_is_not_silently_replaced_by_merit_surface_data() {
     let root = env::temp_dir().join(format!(
         "earthmesh_gui_missing_landtype_{}_{}",
