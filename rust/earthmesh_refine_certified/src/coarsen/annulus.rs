@@ -553,7 +553,7 @@ fn vertex_incidence(
     (annulus, outside)
 }
 
-fn parent_by_source_face(
+pub(crate) fn parent_by_source_face(
     source: &MotherGrid,
 ) -> Result<BTreeMap<usize, TriangleAddress>, AnnulusExtractionError> {
     let mut out = BTreeMap::new();
@@ -571,7 +571,7 @@ fn parent_by_source_face(
     Ok(out)
 }
 
-fn parent_graph(
+pub(crate) fn parent_graph(
     source: &MotherGrid,
     parent_by_face: &BTreeMap<usize, TriangleAddress>,
 ) -> Result<BTreeMap<TriangleAddress, BTreeSet<TriangleAddress>>, AnnulusExtractionError> {
@@ -595,7 +595,7 @@ fn parent_graph(
     Ok(graph)
 }
 
-fn parent_layers_from_outside(
+pub(crate) fn parent_layers_from_outside(
     parents: &BTreeSet<TriangleAddress>,
     graph: &BTreeMap<TriangleAddress, BTreeSet<TriangleAddress>>,
 ) -> Result<BTreeMap<TriangleAddress, usize>, AnnulusExtractionError> {

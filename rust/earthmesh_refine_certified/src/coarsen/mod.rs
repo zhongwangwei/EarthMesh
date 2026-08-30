@@ -4,6 +4,7 @@ mod core_condensation;
 mod elastic_block;
 mod hierarchy_component;
 mod scheduler;
+mod stratified_annulus;
 mod transition_feasibility;
 mod transition_topology;
 pub use annulus::{
@@ -31,6 +32,13 @@ pub use hierarchy_component::{
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+};
+pub use stratified_annulus::{
+    build_stratified_annulus, build_stratified_annulus_from_coupled, BandComponent,
+    BandComponentKind, BandFaceLabel, DirectedHalfEdge, DirectedTrace, FixedVertexLink,
+    RingOccurrence, RingOccurrenceId, SectorComponentRecord, SectorPort, StratifiedAnnulus,
+    StratifiedAnnulusError, StratifiedAnnulusRecord, StratifiedOutcomeKind, TraceChain,
+    TracePairSharedRecord, TraceRole, VertexLinkContract, VertexRotation,
 };
 pub use transition_feasibility::{
     analyze_legacy_transition_family, n6_legacy_mixed_fixture, prove_transition_topology_trial,
