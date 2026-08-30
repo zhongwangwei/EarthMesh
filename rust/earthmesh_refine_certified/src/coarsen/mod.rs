@@ -1,3 +1,4 @@
+mod annulus;
 mod component_transaction;
 mod core_condensation;
 mod elastic_block;
@@ -5,6 +6,10 @@ mod hierarchy_component;
 mod scheduler;
 mod transition_feasibility;
 mod transition_topology;
+pub use annulus::{
+    extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
+    CycleOrientation, RingAnchorKind, RingCycle, RingVertex, RingVertexRole,
+};
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
     ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionStage,
