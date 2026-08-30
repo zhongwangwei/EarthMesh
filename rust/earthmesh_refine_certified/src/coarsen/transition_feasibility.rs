@@ -871,7 +871,7 @@ mod tests {
     use earthmesh_mesh::MeshState;
 
     fn skinny_patch() -> MeshState {
-        let vertices = vec![
+        let vertices = [
             CartesianPoint::new(0.0, 0.0, 0.0),
             CartesianPoint::new(0.0, 0.0, 0.0),
             unit(1.0, 0.0, 0.0),
