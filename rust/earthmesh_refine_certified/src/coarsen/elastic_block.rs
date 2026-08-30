@@ -4,7 +4,7 @@ use super::{relocation_step_window, HierarchyLeafMesh, TransitionTopologyCandida
 use crate::{
     certificate::{
         spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, Certificate,
-        GeometryCertificateReport,
+        GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
     },
     coarsen::TransitionTopologyTrial,
 };
@@ -79,7 +79,22 @@ struct EnergyContext {
     guard_edges: Vec<(usize, usize)>,
     guard_faces: Vec<usize>,
     guard_seeds: Vec<(usize, usize)>,
+    dual_pairs: Vec<DualPair>,
+    derivatives: BTreeMap<usize, DerivativeContext>,
     reference_dual_areas: BTreeMap<usize, f64>,
+}
+
+#[derive(Clone, Copy)]
+struct DualPair {
+    face: usize,
+    opposite: usize,
+}
+
+struct DerivativeContext {
+    guard_edges: Vec<(usize, usize)>,
+    guard_faces: Vec<usize>,
+    guard_seeds: Vec<(usize, usize)>,
+    dual_pairs: Vec<DualPair>,
 }
 
 struct DualEnergy {
@@ -431,8 +446,8 @@ fn energy_phase(
     guard_faces: &BTreeSet<usize>,
     context: &EnergyContext,
 ) -> EnergyPhase {
-    if certificate.geometry_region_passes(mesh, guard_faces)
-        && dual_energy(mesh, context).is_some_and(|dual| dual.hard_feasible)
+    if certificate.geometry_penalty_in(mesh, guard_faces) == Some(0.0)
+        && dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible)
     {
         EnergyPhase::Interior
     } else {
@@ -476,14 +491,82 @@ impl EnergyContext {
                 .ok_or_else(|| format!("reference Voronoi area is undefined at site {site}"))?;
             reference_dual_areas.insert(site, area);
         }
+        let guard_faces = patch.guard_faces.clone();
+        let guard_edges = guard_edges.into_iter().collect::<Vec<_>>();
+        let guard_seeds = guard_seeds.into_iter().collect::<Vec<_>>();
+        let dual_pairs = collect_dual_pairs(mesh, &guard_faces)?;
+        let derivatives = patch
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .map(|site| {
+                let faces = guard_faces
+                    .iter()
+                    .copied()
+                    .filter(|&face| mesh.triangles()[face].contains(&site))
+                    .collect::<Vec<_>>();
+                let affected_sites = faces
+                    .iter()
+                    .flat_map(|&face| mesh.triangles()[face])
+                    .collect::<BTreeSet<_>>();
+                let derivative = DerivativeContext {
+                    guard_edges: guard_edges
+                        .iter()
+                        .copied()
+                        .filter(|&(left, right)| left == site || right == site)
+                        .collect(),
+                    guard_faces: faces,
+                    guard_seeds: guard_seeds
+                        .iter()
+                        .copied()
+                        .filter(|(candidate, _)| affected_sites.contains(candidate))
+                        .collect(),
+                    dual_pairs: dual_pairs
+                        .iter()
+                        .copied()
+                        .filter(|pair| {
+                            pair.opposite == site || mesh.triangles()[pair.face].contains(&site)
+                        })
+                        .collect(),
+                };
+                (site, derivative)
+            })
+            .collect();
         Ok(Self {
             degrees: vertex_degrees(mesh),
-            guard_edges: guard_edges.into_iter().collect(),
-            guard_faces: patch.guard_faces.clone(),
-            guard_seeds: guard_seeds.into_iter().collect(),
+            guard_edges,
+            guard_faces,
+            guard_seeds,
+            dual_pairs,
+            derivatives,
             reference_dual_areas,
         })
     }
+}
+
+fn collect_dual_pairs(mesh: &MeshState, guard_faces: &[usize]) -> Result<Vec<DualPair>, String> {
+    let mut seen = BTreeSet::new();
+    let mut pairs = Vec::new();
+    for &face in guard_faces {
+        let triangle = mesh.triangles()[face];
+        for corner in 0..3 {
+            let other = mesh.neighbours()[face][corner];
+            if other == 0 || !mesh.is_triangle_live(other) {
+                return Err("elastic guard touches an open or inactive neighbour".into());
+            }
+            if !seen.insert((face.min(other), face.max(other))) {
+                continue;
+            }
+            let edge = [triangle[(corner + 1) % 3], triangle[(corner + 2) % 3]];
+            let opposite = mesh.triangles()[other]
+                .iter()
+                .copied()
+                .find(|site| !edge.contains(site))
+                .ok_or_else(|| "elastic guard neighbour has no opposite vertex".to_string())?;
+            pairs.push(DualPair { face, opposite });
+        }
+    }
+    Ok(pairs)
 }
 
 fn vertex_degrees(mesh: &MeshState) -> Vec<usize> {
@@ -502,10 +585,33 @@ fn elastic_energy(
     phase: EnergyPhase,
     context: &EnergyContext,
 ) -> Option<f64> {
+    elastic_energy_in(
+        mesh,
+        patch,
+        phase,
+        context,
+        &context.guard_faces,
+        &context.guard_edges,
+        &context.guard_seeds,
+        &context.dual_pairs,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn elastic_energy_in(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+    phase: EnergyPhase,
+    context: &EnergyContext,
+    guard_faces: &[usize],
+    guard_edges: &[(usize, usize)],
+    guard_seeds: &[(usize, usize)],
+    dual_pairs: &[DualPair],
+) -> Option<f64> {
     let mut energy = 0.0;
-    let minimum_angle = 40.2f64.to_radians();
-    let maximum_angle = 79.8f64.to_radians();
-    for &face in &patch.guard_faces {
+    let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+    let maximum_angle = (79.8 - GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
+    for &face in guard_faces {
         if !mesh.is_triangle_live(face) {
             return None;
         }
@@ -556,7 +662,7 @@ fn elastic_energy(
         EnergyPhase::Feasibility => 0.001,
         EnergyPhase::Interior => 0.01,
     };
-    for &(left, right) in &context.guard_edges {
+    for &(left, right) in guard_edges {
         let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
         let reference = arc_length_unit_sphere(
             patch.reference_positions[left],
@@ -567,22 +673,40 @@ fn elastic_energy(
         }
         energy += edge_weight * (length / reference).ln().powi(2);
     }
-    let dual = dual_energy(mesh, context)?;
+    let include_soft_dual = matches!(phase, EnergyPhase::Interior);
+    let dual = dual_energy_in(mesh, context, guard_seeds, dual_pairs, include_soft_dual)?;
     energy += 1_000.0 * dual.violation + 0.02 * dual.center;
-    energy += match phase {
-        EnergyPhase::Feasibility => 0.002 * dual.area,
-        EnergyPhase::Interior => 0.02 * dual.area,
-    };
+    energy += 0.02 * dual.area;
     energy.is_finite().then_some(energy)
 }
 
-fn dual_energy(mesh: &MeshState, context: &EnergyContext) -> Option<DualEnergy> {
+fn dual_energy(
+    mesh: &MeshState,
+    context: &EnergyContext,
+    include_soft: bool,
+) -> Option<DualEnergy> {
+    dual_energy_in(
+        mesh,
+        context,
+        &context.guard_seeds,
+        &context.dual_pairs,
+        include_soft,
+    )
+}
+
+fn dual_energy_in(
+    mesh: &MeshState,
+    context: &EnergyContext,
+    guard_seeds: &[(usize, usize)],
+    dual_pairs: &[DualPair],
+    include_soft: bool,
+) -> Option<DualEnergy> {
     let mut hard_feasible = true;
     let mut violation = 0.0;
     let mut center = 0.0;
     let mut area = 0.0;
 
-    for &(site, seed) in &context.guard_seeds {
+    for &(site, seed) in guard_seeds {
         let cell = mesh.voronoi_cell_from(site, seed).ok()?;
         let degree_violation = 5usize
             .saturating_sub(cell.degree())
@@ -591,56 +715,44 @@ fn dual_energy(mesh: &MeshState, context: &EnergyContext) -> Option<DualEnergy> 
             degree_violation == 0 && voronoi_cell_is_convex_and_contains_site(mesh, &cell);
         violation += (degree_violation * degree_violation) as f64;
 
-        let cell_area = cell.area_on_unit_sphere()?;
-        if !cell_area.is_finite() || cell_area <= 0.0 {
-            return None;
-        }
-        let target_area = context.reference_dual_areas[&site];
-        area += (cell_area / target_area).ln().powi(2);
+        if include_soft {
+            let cell_area = cell.area_on_unit_sphere()?;
+            if !cell_area.is_finite() || cell_area <= 0.0 {
+                return None;
+            }
+            let target_area = context.reference_dual_areas[&site];
+            area += (cell_area / target_area).ln().powi(2);
 
-        let mut centroid_sum = CartesianPoint::new(0.0, 0.0, 0.0);
-        for corner in &cell.corners {
-            centroid_sum = add_points(centroid_sum, normalized_point(*corner)?);
+            let mut centroid_sum = CartesianPoint::new(0.0, 0.0, 0.0);
+            for corner in &cell.corners {
+                centroid_sum = add_points(centroid_sum, normalized_point(*corner)?);
+            }
+            let centroid = normalized_point(centroid_sum)?;
+            let site_position = normalized_point(mesh.vertices()[site])?;
+            center += dot(site_position, centroid).clamp(-1.0, 1.0).acos().powi(2);
         }
-        let centroid = normalized_point(centroid_sum)?;
-        let site_position = normalized_point(mesh.vertices()[site])?;
-        center += dot(site_position, centroid).clamp(-1.0, 1.0).acos().powi(2);
     }
 
-    let mut face_pairs = BTreeSet::new();
-    for &face in &context.guard_faces {
+    for pair in dual_pairs {
+        let face = pair.face;
         let triangle = mesh.triangles()[face];
-        for corner in 0..3 {
-            let other = mesh.neighbours()[face][corner];
-            if other == 0 || !mesh.is_triangle_live(other) {
-                return None;
-            }
-            if !face_pairs.insert((face.min(other), face.max(other))) {
-                continue;
-            }
-            let edge = [triangle[(corner + 1) % 3], triangle[(corner + 2) % 3]];
-            let opposite = mesh.triangles()[other]
-                .iter()
-                .copied()
-                .find(|site| !edge.contains(site))?;
-            let points = triangle.map(|site| normalized_point(mesh.vertices()[site]));
-            let [Some(a), Some(b), Some(c)] = points else {
-                return None;
-            };
-            let d = normalized_point(mesh.vertices()[opposite])?;
-            match in_circle_on_sphere(a, b, c, d) {
-                Ok(Sign::Positive) | Err(_) => hard_feasible = false,
-                Ok(Sign::Negative | Sign::Zero) => {}
-            }
-            let side = dot(
-                subtract_points(a, d),
-                cross(subtract_points(b, d), subtract_points(c, d)),
-            );
-            if !side.is_finite() {
-                return None;
-            }
-            violation += (-side).max(0.0).powi(2);
+        let points = triangle.map(|site| normalized_point(mesh.vertices()[site]));
+        let [Some(a), Some(b), Some(c)] = points else {
+            return None;
+        };
+        let d = normalized_point(mesh.vertices()[pair.opposite])?;
+        match in_circle_on_sphere(a, b, c, d) {
+            Ok(Sign::Positive) | Err(_) => hard_feasible = false,
+            Ok(Sign::Negative | Sign::Zero) => {}
         }
+        let side = dot(
+            subtract_points(a, d),
+            cross(subtract_points(b, d), subtract_points(c, d)),
+        );
+        if !side.is_finite() {
+            return None;
+        }
+        violation += (-side).max(0.0).powi(2);
     }
 
     Some(DualEnergy {
@@ -663,15 +775,34 @@ fn finite_difference_gradient(
     let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
     let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
     for &site in &patch.movable_compact_vertices {
+        let local = context.derivatives.get(&site)?;
         let point = mesh.vertices()[site];
         let [first, second] = tangent_basis(point)?;
         let mut derivative = |direction: CartesianPoint| {
             let plus = exponential_map(point, scale_point(direction, epsilon))?;
             let minus = exponential_map(point, scale_point(direction, -epsilon))?;
             mesh.move_vertex(site, plus);
-            let plus_energy = elastic_energy(mesh, patch, phase, context);
+            let plus_energy = elastic_energy_in(
+                mesh,
+                patch,
+                phase,
+                context,
+                &local.guard_faces,
+                &local.guard_edges,
+                &local.guard_seeds,
+                &local.dual_pairs,
+            );
             mesh.move_vertex(site, minus);
-            let minus_energy = elastic_energy(mesh, patch, phase, context);
+            let minus_energy = elastic_energy_in(
+                mesh,
+                patch,
+                phase,
+                context,
+                &local.guard_faces,
+                &local.guard_edges,
+                &local.guard_seeds,
+                &local.dual_pairs,
+            );
             mesh.move_vertex(site, point);
             Some((plus_energy? - minus_energy?) / (2.0 * epsilon))
         };
@@ -754,4 +885,117 @@ fn add_points(left: CartesianPoint, right: CartesianPoint) -> CartesianPoint {
 
 fn subtract_points(left: CartesianPoint, right: CartesianPoint) -> CartesianPoint {
     CartesianPoint::new(left.x - right.x, left.y - right.y, left.z - right.z)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mother_grid::MotherGrid;
+
+    #[test]
+    fn local_finite_difference_matches_the_full_elastic_objective() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let [site, neighbour, _] = grid.mesh.triangles()[face];
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| grid.mesh.triangles()[face].contains(&site))
+            .collect::<Vec<_>>();
+        let fixed = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|&candidate| candidate != site)
+            .collect::<BTreeSet<_>>();
+        let reference_positions = grid.mesh.vertices().to_vec();
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 1,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: std::iter::once(site)
+                    .chain(fixed.iter().copied())
+                    .collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: reference_positions.clone(),
+            fixed_compact_vertices: fixed.into_iter().collect(),
+            movable_compact_vertices: vec![site],
+            guard_faces,
+        };
+        let mut mesh = grid.mesh;
+        mesh.move_vertex(
+            site,
+            normalized_point(add_points(
+                scale_point(reference_positions[site], 0.98),
+                scale_point(reference_positions[neighbour], 0.02),
+            ))
+            .unwrap(),
+        );
+        let context = EnergyContext::new(&mesh, &patch).unwrap();
+        let local = finite_difference_gradient(
+            &mut mesh.clone(),
+            &patch,
+            EnergyPhase::Feasibility,
+            0.01,
+            &context,
+        )
+        .unwrap();
+        let full = full_finite_difference_gradient(
+            &mut mesh,
+            &patch,
+            EnergyPhase::Feasibility,
+            0.01,
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(local.len(), full.len());
+        for ((local_site, local), (full_site, full)) in local.into_iter().zip(full) {
+            assert_eq!(local_site, full_site);
+            for (local, full) in [(local.x, full.x), (local.y, full.y), (local.z, full.z)] {
+                assert!((local - full).abs() <= 1.0e-5 * full.abs().max(1.0));
+            }
+        }
+    }
+
+    fn full_finite_difference_gradient(
+        mesh: &mut MeshState,
+        patch: &ElasticPatch,
+        phase: EnergyPhase,
+        initial_step: f64,
+        context: &EnergyContext,
+    ) -> Option<Vec<(usize, CartesianPoint)>> {
+        let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+        patch
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .map(|site| {
+                let point = mesh.vertices()[site];
+                let [first, second] = tangent_basis(point)?;
+                let mut derivative = |direction: CartesianPoint| {
+                    let plus = exponential_map(point, scale_point(direction, epsilon))?;
+                    let minus = exponential_map(point, scale_point(direction, -epsilon))?;
+                    mesh.move_vertex(site, plus);
+                    let plus_energy = elastic_energy(mesh, patch, phase, context);
+                    mesh.move_vertex(site, minus);
+                    let minus_energy = elastic_energy(mesh, patch, phase, context);
+                    mesh.move_vertex(site, point);
+                    Some((plus_energy? - minus_energy?) / (2.0 * epsilon))
+                };
+                let d_first = derivative(first)?;
+                let d_second = derivative(second)?;
+                Some((
+                    site,
+                    add_points(scale_point(first, d_first), scale_point(second, d_second)),
+                ))
+            })
+            .collect()
+    }
 }

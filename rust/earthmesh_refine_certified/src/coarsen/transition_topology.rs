@@ -695,6 +695,7 @@ fn solve_retirement_family(
             halo_expansions,
         });
     }
+    let fixed_sources = fixed_boundary_sources(&boundary);
     let eligible = retirement_vertices(&base_hit.mesh, &boundary, transition);
     let mut offset = 0usize;
     for vertex in eligible {
@@ -719,11 +720,17 @@ fn solve_retirement_family(
                 candidate,
                 report,
             ) {
-                Ok(hit) => {
+                Ok(hit)
+                    if fixed_custom_face_angles_are_repairable(
+                        source,
+                        &hit.triangles,
+                        &fixed_sources,
+                    ) =>
+                {
                     accepted = Some(hit);
                     RetirementPostconditionOutcome::Accepted { states_examined: 0 }
                 }
-                Err(_) => RetirementPostconditionOutcome::Rejected { states_examined: 0 },
+                Ok(_) | Err(_) => RetirementPostconditionOutcome::Rejected { states_examined: 0 },
             },
         ) {
             RetirementSearchOutcome::Committed { attempted, .. } => {
@@ -786,7 +793,6 @@ fn select_retirement_substrate(
     let mut states = 0;
     let mut closed = None;
     let mut substrate = None;
-    let mut penalty = None;
     let mut exhausted = false;
     ProductSearch {
         source,
@@ -801,7 +807,6 @@ fn select_retirement_substrate(
         substrate_selection: Some(SubstrateSelection {
             fixed_sources,
             substrate: &mut substrate,
-            penalty: &mut penalty,
         }),
         enumeration_exhausted: &mut exhausted,
     }
@@ -1044,7 +1049,6 @@ struct ProductSearch<'a> {
 struct SubstrateSelection<'a> {
     fixed_sources: &'a BTreeSet<usize>,
     substrate: &'a mut Option<SearchHit>,
-    penalty: &'a mut Option<f64>,
 }
 
 #[derive(Clone)]
@@ -1134,8 +1138,12 @@ impl ProductSearch<'_> {
                                 topology_id: feasible_ordinal,
                             };
                             if self.substrate_selection.is_some() {
-                                self.consider_retirement_substrate(&hit);
+                                let selected = self.consider_retirement_substrate(&hit);
                                 feasible_ordinal = feasible_ordinal.saturating_add(1);
+                                if selected {
+                                    *self.states = feasible_ordinal;
+                                    return;
+                                }
                                 if feasible_ordinal >= self.budget {
                                     *self.states = self.budget;
                                     *self.enumeration_exhausted = true;
@@ -1210,19 +1218,19 @@ impl ProductSearch<'_> {
             .collect()
     }
 
-    fn consider_retirement_substrate(&mut self, hit: &SearchHit) {
+    fn consider_retirement_substrate(&mut self, hit: &SearchHit) -> bool {
         let Some(selection) = &mut self.substrate_selection else {
-            return;
+            return false;
         };
-        let Some(penalty) =
-            fixed_custom_face_angle_penalty(self.source, hit, selection.fixed_sources)
-        else {
-            return;
-        };
-        if selection.penalty.is_none_or(|best| penalty < best) {
-            *selection.penalty = Some(penalty);
-            *selection.substrate = Some(hit.clone());
+        if !fixed_custom_face_angles_are_repairable(
+            self.source,
+            &hit.triangles,
+            selection.fixed_sources,
+        ) {
+            return false;
         }
+        *selection.substrate = Some(hit.clone());
+        true
     }
 }
 
@@ -1237,30 +1245,28 @@ fn fixed_boundary_sources(boundary: &TransitionBoundary) -> BTreeSet<usize> {
         .collect()
 }
 
-fn fixed_custom_face_angle_penalty(
+fn fixed_custom_face_angles_are_repairable(
     source: &MotherGrid,
-    hit: &SearchHit,
+    triangles: &[[usize; 3]],
     fixed_sources: &BTreeSet<usize>,
-) -> Option<f64> {
-    let mut penalty = 0.0;
-    for triangle in &hit.triangles {
+) -> bool {
+    for triangle in triangles {
         if !triangle.iter().all(|site| fixed_sources.contains(site)) {
             continue;
         }
-        for angle in spherical_triangle_angles(triangle.map(|site| source.mesh.vertices()[site]))? {
-            if !(40.2..=79.8).contains(&angle) {
-                return None;
-            }
-            penalty += if angle < 40.2 {
-                (40.2 - angle).powi(2)
-            } else if angle > 79.8 {
-                (angle - 79.8).powi(2)
-            } else {
-                0.0
-            };
+        let Some(angles) =
+            spherical_triangle_angles(triangle.map(|site| source.mesh.vertices()[site]))
+        else {
+            return false;
+        };
+        if angles
+            .into_iter()
+            .any(|angle| !(40.2..=79.8).contains(&angle))
+        {
+            return false;
         }
     }
-    Some(penalty)
+    true
 }
 
 struct DenseForecast {
@@ -2040,6 +2046,29 @@ mod tests {
         assert_eq!(retirement_block_size(5), Some(5));
         assert_eq!(retirement_block_size(6), Some(14));
         assert_eq!(retirement_block_size(7), Some(42));
+    }
+
+    #[test]
+    fn immutable_custom_face_angles_are_pruned_before_elastic_search() {
+        let source = MotherGrid::generate(6).unwrap();
+        let valid = source.mesh.triangles()[source.mesh.active_triangle_slots().next().unwrap()];
+        let invalid = [25, 26, 21];
+
+        assert!(fixed_custom_face_angles_are_repairable(
+            &source,
+            &[valid],
+            &valid.into_iter().collect()
+        ));
+        assert!(!fixed_custom_face_angles_are_repairable(
+            &source,
+            &[invalid],
+            &invalid.into_iter().collect()
+        ));
+        assert!(fixed_custom_face_angles_are_repairable(
+            &source,
+            &[invalid],
+            &[invalid[0], invalid[1]].into_iter().collect()
+        ));
     }
 
     #[test]

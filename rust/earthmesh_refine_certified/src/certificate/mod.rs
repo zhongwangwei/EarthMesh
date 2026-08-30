@@ -7,6 +7,8 @@ use earthmesh_mesh::{
 use interval::{next_down, next_up, Interval};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) const GEOMETRY_INTERIOR_MARGIN_DEGREES: f64 = 0.2;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Certificate {
     pub min_angle_degrees: f64,
@@ -175,8 +177,8 @@ impl Certificate {
         self.geometry_penalty_for_region(
             mesh,
             faces,
-            self.min_angle_degrees + 0.2,
-            self.max_angle_degrees - 0.2,
+            self.min_angle_degrees + GEOMETRY_INTERIOR_MARGIN_DEGREES,
+            self.max_angle_degrees - GEOMETRY_INTERIOR_MARGIN_DEGREES,
         )
     }
 
