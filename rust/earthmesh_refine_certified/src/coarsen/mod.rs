@@ -3,6 +3,7 @@ mod core_condensation;
 mod elastic_block;
 mod hierarchy_component;
 mod scheduler;
+mod transition_feasibility;
 mod transition_topology;
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
@@ -25,6 +26,11 @@ pub use hierarchy_component::{
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+};
+pub use transition_feasibility::{
+    analyze_legacy_transition_family, n6_legacy_mixed_fixture, prove_transition_topology_trial,
+    FeasibilityProof, FeasibleWitness, TransitionFeasibilityOutcomeKind,
+    TransitionFeasibilityProof, TransitionTopologyFeasibilityEvidence,
 };
 pub use transition_topology::{
     solve_transition_topology, TransitionBoundary, TransitionTopologyCandidate,
