@@ -367,3 +367,102 @@ fn zero_budget_retirement_never_mutates_and_a_feasible_search_commits() {
     ));
     assert_eq!(state.vertex_count(), before.vertex_count() - 1);
 }
+
+#[test]
+fn repairing_start_zero_counts_callback_states_without_rewinding_budget() {
+    let mut state = octahedron();
+    let before = state.clone();
+    let mut callbacks = 0;
+
+    let outcome = state.retire_vertex_with_budget_transactionally_repairing(2, 2, |_, _, _| {
+        callbacks += 1;
+        RetirementPostconditionOutcome::Rejected { states_examined: 1 }
+    });
+
+    assert_eq!(
+        outcome,
+        RetirementSearchOutcome::SearchBudgetExhausted { attempted: 2 }
+    );
+    assert_eq!(callbacks, 1);
+    assert_eq!(state, before);
+}
+
+#[test]
+fn repairing_cursor_skips_prior_candidates_without_replay() {
+    let mut probe = octahedron();
+    let mut first_seen = Vec::new();
+    let probe_outcome = probe.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+        2,
+        0,
+        1,
+        |_, report, _| {
+            first_seen.push(report.replacement_faces.clone());
+            RetirementPostconditionOutcome::Rejected { states_examined: 0 }
+        },
+    );
+    assert_eq!(
+        probe_outcome,
+        RetirementSearchOutcome::SearchBudgetExhausted { attempted: 1 }
+    );
+
+    let mut state = octahedron();
+    let mut seen = Vec::new();
+    let outcome = state.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+        2,
+        1,
+        2,
+        |_, report, _| {
+            seen.push(report.replacement_faces.clone());
+            RetirementPostconditionOutcome::Accepted { states_examined: 0 }
+        },
+    );
+
+    assert!(matches!(
+        outcome,
+        RetirementSearchOutcome::Committed { attempted: 2, .. }
+    ));
+    assert_eq!(seen.len(), 1);
+    assert_ne!(seen, first_seen);
+    state.validate().expect("valid after cursor retirement");
+}
+
+#[test]
+fn repairing_cursor_equal_to_budget_exhausts_without_mutating() {
+    let mut state = octahedron();
+    let before = state.clone();
+
+    let outcome = state.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+        2,
+        1,
+        1,
+        |_, _, _| panic!("cursor at budget must not examine candidates"),
+    );
+
+    assert_eq!(
+        outcome,
+        RetirementSearchOutcome::SearchBudgetExhausted { attempted: 1 }
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn repairing_cursor_past_finite_space_is_infeasible_without_mutating() {
+    let mut state = octahedron();
+    let before = state.clone();
+
+    let outcome = state.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+        2,
+        3,
+        10,
+        |_, _, _| panic!("cursor past finite space must not examine candidates"),
+    );
+
+    assert_eq!(
+        outcome,
+        RetirementSearchOutcome::ProvenInfeasible {
+            attempted: 2,
+            last_error: None,
+        }
+    );
+    assert_eq!(state, before);
+}

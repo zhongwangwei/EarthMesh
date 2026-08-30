@@ -258,6 +258,58 @@ fn assert_source_slot_forecast(trial: &TransitionTopologyTrial, source: &MotherG
     }
 }
 
+fn assert_custom_faces_have_elastic_guard_coverage(trial: &TransitionTopologyTrial) {
+    let fixed_sources = trial
+        .boundary
+        .fine_outer_cycles
+        .iter()
+        .chain(&trial.boundary.coarse_inner_cycles)
+        .flat_map(|cycle| cycle.iter().copied())
+        .chain(trial.boundary.seam.iter().copied())
+        .chain(trial.boundary.pentagon.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let source_active = trial
+        .candidate
+        .source_active_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let has_nonboundary_custom_vertex = trial.mesh.mesh.active_triangle_slots().any(|face| {
+        trial.mesh.triangle_addresses[face].is_none()
+            && trial.mesh.mesh.triangles()[face].iter().any(|&compact| {
+                trial.mesh.source_vertex_slots[compact]
+                    .is_some_and(|source| !fixed_sources.contains(&source))
+            })
+    });
+    if !has_nonboundary_custom_vertex {
+        return;
+    }
+    let patch = ElasticPatch::from_transition(trial).unwrap();
+    let movable = patch
+        .movable_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let guard = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+
+    for face in trial.mesh.mesh.active_triangle_slots() {
+        if trial.mesh.triangle_addresses[face].is_some() {
+            continue;
+        }
+        for compact in trial.mesh.mesh.triangles()[face] {
+            let source = trial.mesh.source_vertex_slots[compact].unwrap();
+            if fixed_sources.contains(&source) {
+                continue;
+            }
+            assert!(source_active.contains(&source));
+            assert!(movable.contains(&compact));
+            assert!(guard
+                .iter()
+                .any(|&guard_face| trial.mesh.mesh.triangles()[guard_face].contains(&compact)));
+        }
+    }
+}
+
 #[test]
 fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
     let (fine, core, transition) = level_three_fixture();
@@ -278,6 +330,7 @@ fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
 
     assert_hard_topology_gates(&trial.mesh.mesh);
     assert_source_slot_forecast(&trial, &fine);
+    assert_custom_faces_have_elastic_guard_coverage(&trial);
     assert_candidate_delta(&trial, vec![core], transition.clone());
     assert!(trial
         .mesh
@@ -300,6 +353,50 @@ fn level_three_to_two_mixed_transition_closes_without_hanging_nodes() {
     assert_eq!(trial.report.transition_parent_count, 3);
     assert_eq!(trial.report.halo_expansions, 0);
     assert!(trial.report.topology_states > 0);
+}
+
+#[test]
+fn topology_cursor_reports_strictly_increasing_ordinals() {
+    let fine = MotherGrid::generate(64).unwrap();
+    let coarse = MotherGrid::generate(32).unwrap();
+    let core = coarse
+        .triangle_addresses
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|parent| parent.base_face == 0)
+        .collect::<Vec<_>>();
+    let core_set = core.iter().copied().collect::<BTreeSet<_>>();
+    let transition = core
+        .iter()
+        .flat_map(|parent| parent_neighbours(&fine, *parent))
+        .filter(|parent| !core_set.contains(parent))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut parents = core.clone();
+    parents.extend(transition.iter().copied());
+    parents.sort_unstable();
+    let component = HierarchyComponent {
+        id: 12,
+        parents,
+        boundary_edges: Vec::new(),
+        core_parents: core,
+        transition_parents: transition,
+    };
+    let limits = TransitionTopologyLimits {
+        topology_states: 2,
+        maximum_halo_expansions: 0,
+    };
+
+    let TransitionTopologyOutcome::Closed(trial) = limits.solve_from_cursor(&fine, &component, 1)
+    else {
+        panic!("cursor should resume at the next stable topology ordinal");
+    };
+
+    assert_eq!(trial.candidate.topology_id, 1);
+    assert_eq!(trial.report.topology_states, 2);
+    assert_hard_topology_gates(&trial.mesh.mesh);
 }
 
 #[test]

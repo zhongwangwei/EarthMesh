@@ -306,8 +306,13 @@ fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
     assert_eq!(certified.initial_mother_subdivision, 6);
     assert_eq!(certified.mother_subdivision, 6);
     assert_eq!(certified.initial_mother_cells, 720);
+    assert!(certified.mother_cells < certified.initial_mother_cells);
+    assert!(certified.removed_vertices > 0);
+    assert!(certified.removed_faces > 0);
     assert!(certified.fulfillment.mixed_levels_delivered);
     assert!(certified.fulfillment.components_committed > 0);
+    assert_eq!(certified.topology_errors, 0);
+    assert_eq!(certified.dual_errors, 0);
     assert_eq!(certified.physical_residuals, 0);
     assert_eq!(certified.balance_residuals, 0);
     assert_eq!(certified.remap_closure_errors, 0);
@@ -325,6 +330,9 @@ fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
             .unwrap()
             > 0
     );
+    assert!(certificate["coarsening"]["removed_faces"]
+        .as_u64()
+        .is_some_and(|removed| removed > 0));
     assert_eq!(
         certificate["physical_balance_scope"],
         "final_voronoi_cells_exact_raster_overlap"

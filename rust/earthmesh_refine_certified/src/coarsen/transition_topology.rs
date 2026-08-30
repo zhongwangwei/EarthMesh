@@ -7,7 +7,9 @@
 use super::{HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet};
 use crate::certificate::spherical_triangle_angles;
 use crate::mother_grid::{MotherGrid, TriangleAddress, VertexAddress};
-use earthmesh_mesh::{orientation_on_sphere, MeshState, Sign};
+use earthmesh_mesh::{
+    orientation_on_sphere, MeshState, RetirementPostconditionOutcome, RetirementSearchOutcome, Sign,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,23 +577,75 @@ fn solve_once(
         states: &mut states,
         forecast: &forecast,
         closed: &mut closed,
+        substrate_selection: None,
         enumeration_exhausted: &mut enumeration_exhausted,
     }
     .run();
-    let Some(hit) = closed else {
-        if enumeration_exhausted {
-            return TransitionTopologyOutcome::ProvenInfeasible {
-                states_examined: states,
-                halo_expansions,
-                reason: "no transition triangulation passed hard topology gates".into(),
-            };
-        }
+    if let Some(hit) = closed {
+        return closed_trial(
+            component_id,
+            &core,
+            transition.len(),
+            halo_expansions,
+            boundary,
+            hit,
+            states,
+        );
+    }
+    if !enumeration_exhausted {
         return TransitionTopologyOutcome::SearchBudgetExhausted {
             states_examined: states,
             halo_expansions,
         };
-    };
+    }
 
+    let fixed_sources = fixed_boundary_sources(&boundary);
+    let Some(base_hit) = select_retirement_substrate(
+        source,
+        &leaf_set,
+        &custom_transition,
+        &variants,
+        &forecast,
+        &fixed_sources,
+        states,
+    ) else {
+        return TransitionTopologyOutcome::ProvenInfeasible {
+            states_examined: states,
+            halo_expansions,
+            reason: "no transition substrate has repairable fixed custom-face angles".into(),
+        };
+    };
+    match solve_retirement_family(
+        source,
+        component_id,
+        &core,
+        &transition,
+        &leaf_set,
+        boundary,
+        &base_hit,
+        states,
+        start_index.saturating_sub(states),
+        budget.saturating_sub(states),
+        halo_expansions,
+    ) {
+        Some(outcome) => outcome,
+        None => TransitionTopologyOutcome::ProvenInfeasible {
+            states_examined: states,
+            halo_expansions,
+            reason: "no transition or retirement topology passed hard topology gates".into(),
+        },
+    }
+}
+
+fn closed_trial(
+    component_id: u64,
+    core: &BTreeSet<TriangleAddress>,
+    transition_parent_count: usize,
+    halo_expansions: usize,
+    boundary: TransitionBoundary,
+    hit: SearchHit,
+    states: usize,
+) -> TransitionTopologyOutcome {
     let candidate_triangles = hit.triangles.clone();
     let active_vertices = hit
         .triangles
@@ -613,12 +667,364 @@ fn solve_once(
         report: TransitionTopologyReport {
             component_id,
             core_parent_count: core.len(),
-            transition_parent_count: transition.len(),
+            transition_parent_count,
             halo_expansions,
             topology_states: states,
             layout_topology_states: states,
         },
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_retirement_family(
+    source: &MotherGrid,
+    component_id: u64,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+    base_leaf_set: &HierarchyLeafSet,
+    boundary: TransitionBoundary,
+    base_hit: &SearchHit,
+    base_states: usize,
+    start_index: usize,
+    budget: usize,
+    halo_expansions: usize,
+) -> Option<TransitionTopologyOutcome> {
+    if start_index >= budget {
+        return Some(TransitionTopologyOutcome::SearchBudgetExhausted {
+            states_examined: base_states + budget,
+            halo_expansions,
+        });
+    }
+    let eligible = retirement_vertices(&base_hit.mesh, &boundary, transition);
+    let mut offset = 0usize;
+    for vertex in eligible {
+        let block = retirement_block_size(mesh_degree(&base_hit.mesh.mesh, vertex)?)?;
+        let local_start = start_index.saturating_sub(offset);
+        if local_start >= block {
+            offset += block;
+            continue;
+        }
+        let local_budget = (budget - offset).min(block);
+        let mut trial_mesh = base_hit.mesh.mesh.clone();
+        let mut accepted = None;
+        match trial_mesh.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+            vertex,
+            local_start,
+            local_budget,
+            |candidate, report, _| match retirement_hit(
+                source,
+                transition,
+                base_leaf_set,
+                base_hit,
+                candidate,
+                report,
+            ) {
+                Ok(hit) => {
+                    accepted = Some(hit);
+                    RetirementPostconditionOutcome::Accepted { states_examined: 0 }
+                }
+                Err(_) => RetirementPostconditionOutcome::Rejected { states_examined: 0 },
+            },
+        ) {
+            RetirementSearchOutcome::Committed { attempted, .. } => {
+                return Some(closed_trial(
+                    component_id,
+                    core,
+                    transition.len(),
+                    halo_expansions,
+                    boundary,
+                    {
+                        let mut hit =
+                            accepted.expect("accepted retirement staged a transition hit");
+                        hit.topology_id = base_states + offset + attempted - 1;
+                        hit
+                    },
+                    base_states + offset + attempted,
+                ));
+            }
+            RetirementSearchOutcome::SearchBudgetExhausted { attempted } => {
+                return Some(TransitionTopologyOutcome::SearchBudgetExhausted {
+                    states_examined: base_states + offset + attempted,
+                    halo_expansions,
+                });
+            }
+            RetirementSearchOutcome::ProvenInfeasible { attempted, .. } => {
+                offset += attempted;
+            }
+            RetirementSearchOutcome::InvalidBoundary(error) => {
+                return Some(invalid(
+                    base_states + offset,
+                    halo_expansions,
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+    if offset >= budget {
+        Some(TransitionTopologyOutcome::SearchBudgetExhausted {
+            states_examined: base_states + budget,
+            halo_expansions,
+        })
+    } else {
+        Some(TransitionTopologyOutcome::ProvenInfeasible {
+            states_examined: base_states + offset,
+            halo_expansions,
+            reason: "no transition or retirement topology passed hard topology gates".into(),
+        })
+    }
+}
+
+fn select_retirement_substrate(
+    source: &MotherGrid,
+    leaf_set: &HierarchyLeafSet,
+    transition: &BTreeSet<TriangleAddress>,
+    variants: &[Vec<Vec<[usize; 3]>>],
+    forecast: &BTreeMap<usize, isize>,
+    fixed_sources: &BTreeSet<usize>,
+    base_states: usize,
+) -> Option<SearchHit> {
+    let mut states = 0;
+    let mut closed = None;
+    let mut substrate = None;
+    let mut penalty = None;
+    let mut exhausted = false;
+    ProductSearch {
+        source,
+        leaf_set,
+        transition,
+        variants,
+        start_index: 0,
+        budget: base_states,
+        states: &mut states,
+        forecast,
+        closed: &mut closed,
+        substrate_selection: Some(SubstrateSelection {
+            fixed_sources,
+            substrate: &mut substrate,
+            penalty: &mut penalty,
+        }),
+        enumeration_exhausted: &mut exhausted,
+    }
+    .run();
+    substrate
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retirement_hit(
+    source: &MotherGrid,
+    transition: &BTreeSet<TriangleAddress>,
+    base_leaf_set: &HierarchyLeafSet,
+    base_hit: &SearchHit,
+    candidate: &MeshState,
+    report: &earthmesh_mesh::RetirementReport,
+) -> Result<SearchHit, String> {
+    let mut affected = base_hit
+        .triangles_by_parent
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for &face in &report.fan {
+        let Some(Some(address)) = base_hit.mesh.triangle_addresses.get(face).copied() else {
+            continue;
+        };
+        let parent = address
+            .parent_2_to_1()
+            .ok_or_else(|| format!("retired face {face} address has no coarse parent"))?;
+        if transition.contains(&parent) {
+            affected.insert(parent);
+        }
+    }
+    if affected.is_empty() {
+        return Err("retirement affected no transition parents".into());
+    }
+
+    let mut leaf_set = base_leaf_set.clone();
+    for parent in &affected {
+        let children = parent
+            .children_2_to_1()
+            .ok_or_else(|| format!("invalid affected parent {parent:?}"))?;
+        for child in children {
+            leaf_set.leaves.remove(&child);
+        }
+    }
+
+    let reused = report.reused_faces.iter().copied().collect::<BTreeSet<_>>();
+    let mut triangles = Vec::new();
+    for face in candidate.active_triangle_slots() {
+        let address = base_hit
+            .mesh
+            .triangle_addresses
+            .get(face)
+            .copied()
+            .flatten();
+        let include = address.is_none()
+            || address
+                .and_then(TriangleAddress::parent_2_to_1)
+                .is_some_and(|parent| affected.contains(&parent))
+            || reused.contains(&face);
+        if include {
+            triangles.push(compact_triangle_to_source(
+                &base_hit.mesh.source_vertex_slots,
+                candidate.triangles()[face],
+            )?);
+        }
+    }
+
+    let custom_parents = affected.clone();
+    let mesh = super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
+        source,
+        &leaf_set,
+        &custom_parents,
+        &triangles,
+    )?;
+    hard_gate(&mesh.mesh)?;
+
+    let mut triangles_by_parent = BTreeMap::new();
+    let first = *affected.first().expect("affected is non-empty");
+    for parent in affected {
+        // The key set carries affected-parent coverage; placing the flattened
+        // custom region under one key avoids inventing per-parent ownership.
+        triangles_by_parent.insert(
+            parent,
+            if parent == first {
+                triangles.clone()
+            } else {
+                Vec::new()
+            },
+        );
+    }
+    let active_vertices = triangles
+        .iter()
+        .flat_map(|triangle| triangle.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let forecast_vertices = active_vertices
+        .iter()
+        .copied()
+        .chain(base_hit.mesh.source_vertex_slots[report.vertex]);
+    let degree_forecast = actual_degree_forecast(&mesh, forecast_vertices);
+    Ok(SearchHit {
+        mesh,
+        triangles_by_parent,
+        triangles,
+        degree_forecast,
+        topology_id: 0,
+    })
+}
+
+fn compact_triangle_to_source(
+    source_vertex_slots: &[Option<usize>],
+    triangle: [usize; 3],
+) -> Result<[usize; 3], String> {
+    Ok([
+        source_vertex_slots
+            .get(triangle[0])
+            .and_then(|source| *source)
+            .ok_or_else(|| format!("compact vertex {} has no source slot", triangle[0]))?,
+        source_vertex_slots
+            .get(triangle[1])
+            .and_then(|source| *source)
+            .ok_or_else(|| format!("compact vertex {} has no source slot", triangle[1]))?,
+        source_vertex_slots
+            .get(triangle[2])
+            .and_then(|source| *source)
+            .ok_or_else(|| format!("compact vertex {} has no source slot", triangle[2]))?,
+    ])
+}
+
+fn mesh_degree(mesh: &MeshState, vertex: usize) -> Option<usize> {
+    mesh.is_vertex_live(vertex).then(|| {
+        mesh.active_triangle_slots()
+            .filter(|&face| mesh.triangles()[face].contains(&vertex))
+            .count()
+    })
+}
+
+fn retirement_vertices(
+    mesh: &HierarchyLeafMesh,
+    boundary: &TransitionBoundary,
+    transition: &BTreeSet<TriangleAddress>,
+) -> Vec<usize> {
+    let blocked = boundary
+        .fine_outer_cycles
+        .iter()
+        .chain(&boundary.coarse_inner_cycles)
+        .flat_map(|cycle| cycle.iter().copied())
+        .chain(boundary.seam.iter().copied())
+        .chain(boundary.pentagon.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut vertices = mesh
+        .mesh
+        .active_vertex_slots()
+        .filter_map(|vertex| {
+            let source = mesh.source_vertex_slots.get(vertex).copied().flatten()?;
+            (!blocked.contains(&source)
+                && mesh_degree(&mesh.mesh, vertex).is_some_and(|degree| (3..=7).contains(&degree))
+                && retirement_fan_is_internal(mesh, vertex, transition))
+            .then_some((source, vertex))
+        })
+        .collect::<Vec<_>>();
+    vertices.sort_unstable();
+    vertices.into_iter().map(|(_, vertex)| vertex).collect()
+}
+
+fn retirement_fan_is_internal(
+    mesh: &HierarchyLeafMesh,
+    vertex: usize,
+    transition: &BTreeSet<TriangleAddress>,
+) -> bool {
+    let Some(seed) = mesh
+        .mesh
+        .active_triangle_slots()
+        .find(|&face| mesh.mesh.triangles()[face].contains(&vertex))
+    else {
+        return false;
+    };
+    let Ok(fan) = mesh.mesh.triangle_fan_from(vertex, seed) else {
+        return false;
+    };
+    fan.iter().all(
+        |&face| match mesh.triangle_addresses.get(face).copied().flatten() {
+            None => true,
+            Some(address) => address
+                .parent_2_to_1()
+                .is_some_and(|parent| transition.contains(&parent)),
+        },
+    )
+}
+
+fn retirement_block_size(degree: usize) -> Option<usize> {
+    Some(match degree {
+        3 => 1,
+        4 => 2,
+        5 => 5,
+        6 => 14,
+        7 => 42,
+        _ => return None,
+    })
+}
+
+fn actual_degree_forecast(
+    mesh: &HierarchyLeafMesh,
+    source_vertices: impl Iterator<Item = usize>,
+) -> BTreeMap<usize, usize> {
+    let requested = source_vertices.collect::<BTreeSet<_>>();
+    let mut out = requested
+        .iter()
+        .copied()
+        .map(|source| (source, 0usize))
+        .collect::<BTreeMap<_, _>>();
+    let compact_to_source = mesh.source_vertex_slots.iter().copied().collect::<Vec<_>>();
+    for face in mesh.mesh.active_triangle_slots() {
+        for compact in mesh.mesh.triangles()[face] {
+            let Some(source) = compact_to_source.get(compact).and_then(|source| *source) else {
+                continue;
+            };
+            if let Some(degree) = out.get_mut(&source) {
+                *degree += 1;
+            }
+        }
+    }
+    out
 }
 
 struct ProductSearch<'a> {
@@ -631,9 +1037,17 @@ struct ProductSearch<'a> {
     states: &'a mut usize,
     forecast: &'a BTreeMap<usize, isize>,
     closed: &'a mut Option<SearchHit>,
+    substrate_selection: Option<SubstrateSelection<'a>>,
     enumeration_exhausted: &'a mut bool,
 }
 
+struct SubstrateSelection<'a> {
+    fixed_sources: &'a BTreeSet<usize>,
+    substrate: &'a mut Option<SearchHit>,
+    penalty: &'a mut Option<f64>,
+}
+
+#[derive(Clone)]
 struct SearchHit {
     mesh: HierarchyLeafMesh,
     triangles_by_parent: BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
@@ -692,26 +1106,52 @@ impl ProductSearch<'_> {
                         *self.states = self.budget;
                         return;
                     }
-                    if feasible_ordinal >= self.start_index {
-                        *self.states = feasible_ordinal.saturating_add(1);
-                        let chosen_by_parent = self.chosen_by_parent(&chosen);
-                        let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
-                        if let Ok(mesh) =
-                            super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
-                                self.source,
-                                self.leaf_set,
-                                self.transition,
-                                &chosen_triangles,
-                            )
-                        {
-                            if let Ok(()) = hard_gate(&mesh.mesh) {
-                                *self.closed = Some(SearchHit {
-                                    mesh,
-                                    triangles_by_parent: chosen_by_parent,
-                                    triangles: chosen_triangles,
-                                    degree_forecast: forecast.to_map(self.forecast),
-                                    topology_id: feasible_ordinal,
-                                });
+                    if self.substrate_selection.is_none() && feasible_ordinal < self.start_index {
+                        feasible_ordinal = feasible_ordinal.saturating_add(1);
+                        if !backtrack(&mut position, &mut forecast, &mut chosen, &variables) {
+                            *self.states = feasible_ordinal;
+                            *self.enumeration_exhausted = true;
+                            return;
+                        }
+                        continue;
+                    }
+                    let chosen_by_parent = self.chosen_by_parent(&chosen);
+                    let chosen_triangles = flatten_custom_triangles(&chosen_by_parent);
+                    if let Ok(mesh) =
+                        super::core_condensation::rebuild_from_leaf_set_with_custom_triangles(
+                            self.source,
+                            self.leaf_set,
+                            self.transition,
+                            &chosen_triangles,
+                        )
+                    {
+                        if let Ok(()) = hard_gate(&mesh.mesh) {
+                            let hit = SearchHit {
+                                mesh,
+                                triangles_by_parent: chosen_by_parent,
+                                triangles: chosen_triangles,
+                                degree_forecast: forecast.to_map(self.forecast),
+                                topology_id: feasible_ordinal,
+                            };
+                            if self.substrate_selection.is_some() {
+                                self.consider_retirement_substrate(&hit);
+                                feasible_ordinal = feasible_ordinal.saturating_add(1);
+                                if feasible_ordinal >= self.budget {
+                                    *self.states = self.budget;
+                                    *self.enumeration_exhausted = true;
+                                    return;
+                                }
+                                if !backtrack(&mut position, &mut forecast, &mut chosen, &variables)
+                                {
+                                    *self.states = feasible_ordinal;
+                                    *self.enumeration_exhausted = true;
+                                    return;
+                                }
+                                continue;
+                            }
+                            if feasible_ordinal >= self.start_index {
+                                *self.states = feasible_ordinal.saturating_add(1);
+                                *self.closed = Some(hit);
                                 return;
                             }
                         }
@@ -769,6 +1209,58 @@ impl ProductSearch<'_> {
             })
             .collect()
     }
+
+    fn consider_retirement_substrate(&mut self, hit: &SearchHit) {
+        let Some(selection) = &mut self.substrate_selection else {
+            return;
+        };
+        let Some(penalty) =
+            fixed_custom_face_angle_penalty(self.source, hit, selection.fixed_sources)
+        else {
+            return;
+        };
+        if selection.penalty.is_none_or(|best| penalty < best) {
+            *selection.penalty = Some(penalty);
+            *selection.substrate = Some(hit.clone());
+        }
+    }
+}
+
+fn fixed_boundary_sources(boundary: &TransitionBoundary) -> BTreeSet<usize> {
+    boundary
+        .fine_outer_cycles
+        .iter()
+        .chain(&boundary.coarse_inner_cycles)
+        .flat_map(|cycle| cycle.iter().copied())
+        .chain(boundary.seam.iter().copied())
+        .chain(boundary.pentagon.iter().copied())
+        .collect()
+}
+
+fn fixed_custom_face_angle_penalty(
+    source: &MotherGrid,
+    hit: &SearchHit,
+    fixed_sources: &BTreeSet<usize>,
+) -> Option<f64> {
+    let mut penalty = 0.0;
+    for triangle in &hit.triangles {
+        if !triangle.iter().all(|site| fixed_sources.contains(site)) {
+            continue;
+        }
+        for angle in spherical_triangle_angles(triangle.map(|site| source.mesh.vertices()[site]))? {
+            if !(40.2..=79.8).contains(&angle) {
+                return None;
+            }
+            penalty += if angle < 40.2 {
+                (40.2 - angle).powi(2)
+            } else if angle > 79.8 {
+                (angle - 79.8).powi(2)
+            } else {
+                0.0
+            };
+        }
+    }
+    Some(penalty)
 }
 
 struct DenseForecast {
@@ -1536,12 +2028,18 @@ fn hard_gate(mesh: &MeshState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coarsen::ElasticPatch;
 
     #[test]
     fn finite_polygon_enumeration_has_the_catalan_counts() {
         assert_eq!(triangulations(&[1, 2, 3]).len(), 1);
         assert_eq!(triangulations(&[1, 2, 3, 4]).len(), 2);
         assert_eq!(triangulations(&[1, 2, 3, 4, 5]).len(), 5);
+        assert_eq!(retirement_block_size(3), Some(1));
+        assert_eq!(retirement_block_size(4), Some(2));
+        assert_eq!(retirement_block_size(5), Some(5));
+        assert_eq!(retirement_block_size(6), Some(14));
+        assert_eq!(retirement_block_size(7), Some(42));
     }
 
     #[test]
@@ -1631,6 +2129,201 @@ mod tests {
             .unwrap();
         forecast.apply_delta(&bad.delta, 1);
         assert!(!forecast.can_finish_all(&variables[0].touched, &[]));
+    }
+
+    fn retirement_family_fixture() -> (
+        MotherGrid,
+        BTreeSet<TriangleAddress>,
+        HierarchyLeafSet,
+        SearchHit,
+        TransitionBoundary,
+    ) {
+        let source = MotherGrid::generate(8).unwrap();
+        let vertex = source
+            .mesh
+            .active_vertex_slots()
+            .find(|&vertex| {
+                let Some(seed) = source
+                    .mesh
+                    .active_triangle_slots()
+                    .find(|&face| source.mesh.triangles()[face].contains(&vertex))
+                else {
+                    return false;
+                };
+                source
+                    .mesh
+                    .triangle_fan_from(vertex, seed)
+                    .is_ok_and(|fan| fan.len() == 6)
+            })
+            .unwrap();
+        let seed = source
+            .mesh
+            .active_triangle_slots()
+            .find(|&face| source.mesh.triangles()[face].contains(&vertex))
+            .unwrap();
+        let transition = source
+            .mesh
+            .triangle_fan_from(vertex, seed)
+            .unwrap()
+            .into_iter()
+            .map(|face| {
+                source.triangle_addresses[face]
+                    .and_then(TriangleAddress::parent_2_to_1)
+                    .unwrap()
+            })
+            .collect::<BTreeSet<_>>();
+        let source_vertex_slots = (0..source.mesh.vertices().len())
+            .map(|slot| source.mesh.is_vertex_live(slot).then_some(slot))
+            .collect();
+        let hit = SearchHit {
+            mesh: HierarchyLeafMesh {
+                mesh: source.mesh.clone(),
+                triangle_addresses: source.triangle_addresses.clone(),
+                source_vertex_slots,
+            },
+            triangles_by_parent: BTreeMap::new(),
+            triangles: Vec::new(),
+            degree_forecast: BTreeMap::new(),
+            topology_id: 0,
+        };
+        let boundary = TransitionBoundary {
+            halo_parents: transition.iter().copied().collect(),
+            ..TransitionBoundary::default()
+        };
+        (
+            source.clone(),
+            transition,
+            HierarchyLeafSet::from_mother_grid(&source).unwrap(),
+            hit,
+            boundary,
+        )
+    }
+
+    #[test]
+    fn retirement_family_builds_fresh_trial_and_cursor_advances() {
+        let (source, transition, leaf_set, hit, boundary) = retirement_family_fixture();
+        let core = BTreeSet::new();
+        let base_states = 5;
+
+        let Some(TransitionTopologyOutcome::Closed(trial)) = solve_retirement_family(
+            &source,
+            99,
+            &core,
+            &transition,
+            &leaf_set,
+            boundary.clone(),
+            &hit,
+            base_states,
+            0,
+            42,
+            0,
+        ) else {
+            panic!("synthetic transition halo must enter retirement family");
+        };
+
+        let active = trial
+            .candidate
+            .source_active_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let retired = trial
+            .candidate
+            .source_degree_forecast
+            .iter()
+            .find_map(|(&source, &degree)| {
+                (degree == 0 && !active.contains(&source)).then_some(source)
+            })
+            .unwrap();
+        assert!(trial.candidate.topology_id >= base_states);
+        assert!(!trial.candidate.source_active_vertices.contains(&retired));
+        assert_eq!(trial.candidate.source_degree_forecast[&retired], 0);
+        assert_eq!(
+            trial
+                .mesh
+                .mesh
+                .active_triangle_slots()
+                .filter(|&face| trial.mesh.triangle_addresses[face].is_none())
+                .count(),
+            trial.candidate.source_triangles.len()
+        );
+        assert!(trial
+            .candidate
+            .custom_transition_triangles
+            .keys()
+            .all(|parent| transition.contains(parent)));
+        ElasticPatch::from_transition(&trial).unwrap();
+        hard_gate(&trial.mesh.mesh).unwrap();
+
+        assert!(matches!(
+            solve_retirement_family(
+                &source,
+                99,
+                &core,
+                &transition,
+                &leaf_set,
+                boundary.clone(),
+                &hit,
+                base_states,
+                0,
+                0,
+                0,
+            ),
+            Some(TransitionTopologyOutcome::SearchBudgetExhausted { .. })
+        ));
+
+        if let Some(TransitionTopologyOutcome::Closed(next)) = solve_retirement_family(
+            &source,
+            99,
+            &core,
+            &transition,
+            &leaf_set,
+            boundary,
+            &hit,
+            base_states,
+            trial.candidate.topology_id + 1 - base_states,
+            42,
+            0,
+        ) {
+            assert!(next.candidate.topology_id > trial.candidate.topology_id);
+        }
+    }
+
+    #[test]
+    fn exhausted_retirement_family_reports_retirement_states() {
+        let (source, transition, _, hit, boundary) = retirement_family_fixture();
+        let core = BTreeSet::new();
+        let base_states = 7;
+        let first_vertex = retirement_vertices(&hit.mesh, &boundary, &transition)[0];
+        let block =
+            retirement_block_size(mesh_degree(&hit.mesh.mesh, first_vertex).unwrap()).unwrap();
+        let bad_leaf_set = HierarchyLeafSet {
+            leaves: BTreeSet::new(),
+        };
+
+        let outcome = solve_retirement_family(
+            &source,
+            99,
+            &core,
+            &transition,
+            &bad_leaf_set,
+            boundary,
+            &hit,
+            base_states,
+            0,
+            block + 1,
+            0,
+        );
+        assert!(
+            matches!(
+                outcome,
+                Some(TransitionTopologyOutcome::ProvenInfeasible {
+                    states_examined,
+                    ..
+                }) if states_examined == base_states + block
+            ),
+            "unexpected outcome: {outcome:?}, block={block}"
+        );
     }
 
     #[test]

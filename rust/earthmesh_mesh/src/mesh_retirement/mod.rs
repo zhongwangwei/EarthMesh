@@ -182,13 +182,20 @@ impl MeshState {
         search_budget: usize,
         mut postcondition: impl FnMut(&Self, &RetirementReport) -> bool,
     ) -> RetirementSearchOutcome {
-        self.retire_vertex_with_budget_impl(vertex, search_budget, true, |state, report, _| {
-            if postcondition(state, report) {
-                RetirementPostconditionOutcome::Accepted { states_examined: 0 }
-            } else {
-                RetirementPostconditionOutcome::Rejected { states_examined: 0 }
-            }
-        })
+        self.retire_vertex_with_budget_impl(
+            vertex,
+            0,
+            search_budget,
+            true,
+            true,
+            |state, report, _| {
+                if postcondition(state, report) {
+                    RetirementPostconditionOutcome::Accepted { states_examined: 0 }
+                } else {
+                    RetirementPostconditionOutcome::Rejected { states_examined: 0 }
+                }
+            },
+        )
     }
 
     /// Search finite ring triangulations while allowing the caller's atomic
@@ -199,14 +206,35 @@ impl MeshState {
         search_budget: usize,
         postcondition: impl FnMut(&Self, &RetirementReport, usize) -> RetirementPostconditionOutcome,
     ) -> RetirementSearchOutcome {
-        self.retire_vertex_with_budget_impl(vertex, search_budget, false, postcondition)
+        self.retire_vertex_with_budget_impl(vertex, 0, search_budget, false, true, postcondition)
+    }
+
+    /// Search finite ring triangulations from absolute candidate ordinal
+    /// `start_index` up to exclusive absolute cap `search_budget`.
+    pub fn retire_vertex_from_cursor_with_budget_transactionally_repairing(
+        &mut self,
+        vertex: usize,
+        start_index: usize,
+        search_budget: usize,
+        postcondition: impl FnMut(&Self, &RetirementReport, usize) -> RetirementPostconditionOutcome,
+    ) -> RetirementSearchOutcome {
+        self.retire_vertex_with_budget_impl(
+            vertex,
+            start_index,
+            search_budget,
+            false,
+            false,
+            postcondition,
+        )
     }
 
     fn retire_vertex_with_budget_impl(
         &mut self,
         vertex: usize,
+        start_index: usize,
         search_budget: usize,
         require_local_delaunay: bool,
+        count_postcondition_states: bool,
         mut postcondition: impl FnMut(&Self, &RetirementReport, usize) -> RetirementPostconditionOutcome,
     ) -> RetirementSearchOutcome {
         let vertex_id = self
@@ -240,13 +268,34 @@ impl MeshState {
         };
         let outside = outside_faces_from_fan(self, vertex, &fan);
         let candidates = triangulations(&ring);
+        if start_index >= search_budget {
+            return RetirementSearchOutcome::SearchBudgetExhausted {
+                attempted: search_budget,
+            };
+        }
+        if start_index >= candidates.len() {
+            return RetirementSearchOutcome::ProvenInfeasible {
+                attempted: candidates.len(),
+                last_error: None,
+            };
+        }
+
         let mut last_error = None;
-        let mut attempted = 0;
-        for replacement in candidates {
-            if attempted == search_budget {
-                return RetirementSearchOutcome::SearchBudgetExhausted { attempted };
+        let mut attempted = start_index;
+        for (ordinal, replacement) in candidates.into_iter().enumerate().skip(start_index) {
+            if attempted == search_budget
+                || (!count_postcondition_states && ordinal == search_budget)
+            {
+                return RetirementSearchOutcome::SearchBudgetExhausted {
+                    attempted: search_budget,
+                };
             }
-            attempted += 1;
+            let ring_attempted = ordinal + 1;
+            attempted = if count_postcondition_states {
+                attempted + 1
+            } else {
+                ring_attempted
+            };
             let remaining = search_budget - attempted;
             let mut decision = None;
             let result = try_retirement(
@@ -261,19 +310,21 @@ impl MeshState {
                 &mut |state, report| {
                     let next = postcondition(state, report, remaining);
                     let accepts = matches!(next, RetirementPostconditionOutcome::Accepted { .. })
-                        && next.states_examined() <= remaining;
+                        && (!count_postcondition_states || next.states_examined() <= remaining);
                     decision = Some(next);
                     accepts
                 },
             );
             if let Some(decision) = decision {
                 let states_examined = decision.states_examined();
-                if states_examined > remaining {
+                if count_postcondition_states && states_examined > remaining {
                     return RetirementSearchOutcome::SearchBudgetExhausted {
                         attempted: search_budget,
                     };
                 }
-                attempted += states_examined;
+                if count_postcondition_states {
+                    attempted += states_examined;
+                }
                 if matches!(
                     decision,
                     RetirementPostconditionOutcome::SearchBudgetExhausted { .. }

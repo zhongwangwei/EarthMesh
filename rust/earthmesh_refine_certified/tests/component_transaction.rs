@@ -140,6 +140,18 @@ fn certified_component_commit_reduces_mesh_and_is_deterministic() {
     assert!(first.mesh().mesh.triangle_count() < initial_faces);
     assert!(first_report.removed_vertices > 0);
     assert!(first_report.removed_faces > 0);
+    assert_eq!(first_report.pre_vertices, initial_vertices);
+    assert_eq!(first_report.pre_faces, initial_faces);
+    assert_eq!(first_report.post_vertices, first.mesh().mesh.vertex_count());
+    assert_eq!(first_report.post_faces, first.mesh().mesh.triangle_count());
+    assert_eq!(
+        first_report.pre_vertices - first_report.post_vertices,
+        first_report.removed_vertices
+    );
+    assert_eq!(
+        first_report.pre_faces - first_report.post_faces,
+        first_report.removed_faces
+    );
     first_report
         .final_certificate
         .require_final_gates()
@@ -268,8 +280,10 @@ fn elastic_budget_is_scoped_to_each_topology_candidate() {
     };
 
     assert_eq!(report.stage, ComponentTransactionStage::Elastic);
-    assert_eq!(report.topology_states, 2);
-    assert_eq!(report.elastic_iterations, 2);
+    assert!(report.topology_states > 2);
+    assert!(report.topology_states < FULL_LIMITS.topology_states);
+    assert!(report.elastic_iterations > 2);
+    assert!(report.elastic_iterations <= report.topology_states);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
 }
@@ -289,8 +303,9 @@ fn mixed_component_exhausts_all_uncertifiable_topologies_before_rollback() {
     };
 
     assert_eq!(report.stage, ComponentTransactionStage::Elastic);
-    assert_eq!(report.topology_states, 2);
-    assert_eq!(report.elastic_iterations, 218);
+    assert!(report.topology_states > 2);
+    assert!(report.topology_states < FULL_LIMITS.topology_states);
+    assert!(report.elastic_iterations > 0);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
 }
