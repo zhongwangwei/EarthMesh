@@ -1013,7 +1013,7 @@ fn actual_degree_forecast(
         .copied()
         .map(|source| (source, 0usize))
         .collect::<BTreeMap<_, _>>();
-    let compact_to_source = mesh.source_vertex_slots.iter().copied().collect::<Vec<_>>();
+    let compact_to_source = mesh.source_vertex_slots.to_vec();
     for face in mesh.mesh.active_triangle_slots() {
         for compact in mesh.mesh.triangles()[face] {
             let Some(source) = compact_to_source.get(compact).and_then(|source| *source) else {
