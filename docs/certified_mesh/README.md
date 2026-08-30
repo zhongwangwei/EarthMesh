@@ -107,6 +107,24 @@ requirements delivered as a uniform mesh are `CompressionIncomplete` and do
 not publish an ordinary success file. Explicit `safe_mother_only` delivery may
 publish the certified mesh under `*_certified_safe_fallback.*` names instead.
 
+### v3.0.0-alpha5 known limitation
+
+The strict mixed N6 acceptance case is not yet certifiable. Its current
+per-parent transition topology family exhausts the bounded search and retains
+the uniform fine mesh; independent re-optimization of every emitted topology
+still leaves angles near 32.9 and 88.2 degrees, outside the internal
+40.2--79.8 degree window. Increasing the cell or iteration budget does not fix
+this topology limitation. Until a coupled seam/pentagon transition signature
+is implemented, reverse coarsening fails closed with `CompressionIncomplete`
+rather than publishing a mesh that violates the certificate.
+
+Reproduce with:
+
+```sh
+cargo test --release -p earthmesh_cli --test certified_hidden_cli \
+  reverse_mode_publishes_a_strict_mixed_level_mesh -- --ignored --nocapture
+```
+
 Conservative remap rows are sealed after construction. Safe-mother delivery
 uses Voronoi-cell identity rows; hierarchy delivery computes actual spherical
 Voronoi overlap with dateline, polar, and pentagon regressions.
