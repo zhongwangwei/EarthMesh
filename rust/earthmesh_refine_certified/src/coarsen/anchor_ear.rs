@@ -27,7 +27,6 @@ pub struct AnchorEarKey {
 pub enum AnchorEarRejectReason {
     AnchorBelowTarget,
     AnchorNotOverfull,
-    RemovedTrianglesNotSameSector,
     RemovedTrianglesNotMutable,
     RemovedTrianglesNotEar,
     DegenerateAddedTriangle,
@@ -90,6 +89,24 @@ pub fn derive_anchor_ear_candidates(
     sector_topology_id: usize,
     mutable_triangles: &[OwnedTopologyTriangle],
 ) -> Result<AnchorEarReport, AnchorEarApplyError> {
+    let fixed_mesh_edges =
+        fixed_outside_mesh_edges(source, &stratified.coupled.fixed_outside_face_slots);
+    derive_anchor_ear_candidates_with_fixed_edges(
+        source,
+        stratified,
+        sector_topology_id,
+        mutable_triangles,
+        &fixed_mesh_edges,
+    )
+}
+
+pub(super) fn derive_anchor_ear_candidates_with_fixed_edges(
+    source: &MotherGrid,
+    stratified: &StratifiedAnnulus,
+    sector_topology_id: usize,
+    mutable_triangles: &[OwnedTopologyTriangle],
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+) -> Result<AnchorEarReport, AnchorEarApplyError> {
     let mutable = canonical_owned_triangles(mutable_triangles);
     let expected_topology_id = sector_topology_id as u64;
     if mutable
@@ -98,8 +115,6 @@ pub fn derive_anchor_ear_candidates(
     {
         return reject(AnchorEarRejectReason::TopologyIdMismatch);
     }
-    let fixed_mesh_edges =
-        fixed_outside_mesh_edges(source, &stratified.coupled.fixed_outside_face_slots);
     let mut report = AnchorEarReport {
         sector_topology_id,
         mutable_triangle_count: mutable.len(),
@@ -130,7 +145,7 @@ pub fn derive_anchor_ear_candidates(
             contract,
             sector_topology_id,
             &mutable,
-            &fixed_mesh_edges,
+            fixed_mesh_edges,
             &mut report.rejections,
         ));
     }
@@ -163,12 +178,7 @@ pub fn apply_anchor_ear(
         .removed_triangles
         .iter()
         .copied()
-        .map(|vertices| OwnedTopologyTriangle {
-            topology_id: candidate.sector_topology_id as u64,
-            sector_id: candidate.sector_id,
-            vertices,
-        })
-        .map(canonical_owned)
+        .map(canonical_vertices)
         .collect::<BTreeSet<_>>();
     if removed.len() != 2 {
         return reject(AnchorEarRejectReason::RemovedTrianglesNotEar);
@@ -177,15 +187,17 @@ pub fn apply_anchor_ear(
         return reject(AnchorEarRejectReason::RadialEdgeNotMutable);
     }
     let mut removed_count = 0usize;
+    let mut removed_owners = BTreeSet::new();
     let mut out = Vec::with_capacity(mutable.len());
     for triangle in mutable {
-        if removed.contains(&triangle) {
+        if removed.contains(&triangle.vertices) {
             removed_count += 1;
+            removed_owners.insert(triangle.sector_id);
         } else {
             out.push(triangle);
         }
     }
-    if removed_count != 2 {
+    if removed_count != 2 || removed_owners != candidate.owner_sector_ids {
         return reject(AnchorEarRejectReason::RemovedTrianglesNotMutable);
     }
     if mesh_edges(&out).contains(&candidate.inserted_chord) {
@@ -198,8 +210,14 @@ pub fn apply_anchor_ear(
         .filter(|triangle| triangle_has_edge(triangle.vertices, candidate.removed_radial_edge))
         .collect::<Vec<_>>();
     if radial_incident.len() != 2
-        || radial_incident[0].sector_id != radial_incident[1].sector_id
-        || radial_incident[0].topology_id != radial_incident[1].topology_id
+        || radial_incident
+            .iter()
+            .any(|triangle| triangle.topology_id != candidate.sector_topology_id as u64)
+        || radial_incident
+            .iter()
+            .map(|triangle| triangle.sector_id)
+            .collect::<BTreeSet<_>>()
+            != candidate.owner_sector_ids
     {
         return reject(AnchorEarRejectReason::RadialEdgeNotMutable);
     }
@@ -351,8 +369,8 @@ fn candidate_from_radial(
     let [left, right] = owners.as_slice() else {
         return CandidateResult::NotEar;
     };
-    if left.sector_id != right.sector_id || left.topology_id != right.topology_id {
-        return CandidateResult::Reject(AnchorEarRejectReason::RemovedTrianglesNotSameSector);
+    if left.topology_id != right.topology_id {
+        return CandidateResult::Reject(AnchorEarRejectReason::TopologyIdMismatch);
     }
     let Some(left_edge) = link_edge_for(left.vertices, anchor_slot) else {
         return CandidateResult::NotEar;
@@ -383,18 +401,9 @@ fn candidate_from_radial(
         .copied()
         .map(canonical_owned)
         .filter(|triangle| !removed.contains(&triangle.vertices))
+        .map(|triangle| triangle.vertices)
         .collect::<BTreeSet<_>>();
-    let inserted_owned = inserted
-        .into_iter()
-        .map(|vertices| {
-            canonical_owned(OwnedTopologyTriangle {
-                topology_id: left.topology_id,
-                sector_id: left.sector_id,
-                vertices,
-            })
-        })
-        .collect::<BTreeSet<_>>();
-    if inserted_owned
+    if inserted
         .iter()
         .any(|triangle| existing_triangles.contains(triangle))
     {
@@ -419,17 +428,18 @@ fn candidate_from_radial(
     if !single_cycle_edges(&result_link) {
         return CandidateResult::Reject(AnchorEarRejectReason::LinkNotSingleCycle);
     }
-    let owner_sector_ids = BTreeSet::from([left.sector_id]);
+    let owner_sector_ids = BTreeSet::from([left.sector_id, right.sector_id]);
+    let sector_id = *owner_sector_ids.first().expect("ear has two owners");
     CandidateResult::Candidate(Box::new(AnchorEarCandidate {
         topology_key: AnchorEarKey {
             anchor_slot,
-            sector_id: left.sector_id,
+            sector_id,
             inserted_chord,
             removed_neighbour_slot: w,
         },
         sector_topology_id,
         anchor_slot,
-        sector_id: left.sector_id,
+        sector_id,
         removed_triangles: removed,
         inserted_triangles: inserted,
         removed_link_edges: [
@@ -461,13 +471,10 @@ fn reject<T>(reason: AnchorEarRejectReason) -> Result<T, AnchorEarApplyError> {
     Err(AnchorEarApplyError { reason })
 }
 
-fn removed_radial_edge_is_mutable(
-    edge: (usize, usize),
-    removed: &BTreeSet<OwnedTopologyTriangle>,
-) -> bool {
+fn removed_radial_edge_is_mutable(edge: (usize, usize), removed: &BTreeSet<[usize; 3]>) -> bool {
     removed
         .iter()
-        .all(|triangle| triangle_has_edge(triangle.vertices, edge))
+        .all(|&triangle| triangle_has_edge(triangle, edge))
 }
 
 fn valid_anchor_ear_contract(candidate: &AnchorEarCandidate) -> bool {
@@ -503,7 +510,7 @@ fn valid_anchor_ear_contract(candidate: &AnchorEarCandidate) -> bool {
         && actual_removed_link_edges == expected_removed_link_edges
         && candidate.removed_radial_edge == sorted_edge(anchor, removed)
         && candidate.inserted_chord == inserted_chord
-        && candidate.owner_sector_ids == BTreeSet::from([candidate.sector_id])
+        && candidate.owner_sector_ids.first().copied() == Some(candidate.sector_id)
         && candidate.degree_delta
             == [
                 (anchor, -1),
@@ -691,7 +698,13 @@ fn triangle_has_edge(triangle: [usize; 3], edge: (usize, usize)) -> bool {
 
 fn has_duplicate_triangles(triangles: &[OwnedTopologyTriangle]) -> bool {
     let mut seen = BTreeSet::new();
-    triangles
-        .iter()
-        .any(|triangle| !seen.insert(canonical_owned(*triangle)))
+    triangles.iter().any(|triangle| {
+        let triangle = canonical_owned(*triangle);
+        !seen.insert((triangle.topology_id, triangle.vertices))
+    })
+}
+
+fn canonical_vertices(mut vertices: [usize; 3]) -> [usize; 3] {
+    vertices.sort_unstable();
+    vertices
 }

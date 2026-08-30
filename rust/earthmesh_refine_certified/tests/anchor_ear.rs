@@ -31,15 +31,20 @@ fn n6_anchor_ear_candidates_include_all_four_frozen_witness_chords() {
     let family = derive_anchor_ear_candidates(&source, &stratified, 0, &baseline).unwrap();
 
     assert!(family.generated_by_generic_link_discovery);
-    assert_eq!(
-        witness_chords_by_anchor(&family.candidates),
-        BTreeMap::from([
-            (2, BTreeSet::from([(9, 72)])),
-            (29, BTreeSet::from([(28, 149)])),
-            (77, BTreeSet::from([(82, 171)])),
-            (155, BTreeSet::from([(154, 160)])),
-        ])
-    );
+    let witness_chords = witness_chords_by_anchor(&family.candidates);
+    for (anchor, chord) in [
+        (2, (9, 72)),
+        (29, (28, 149)),
+        (77, (82, 171)),
+        (155, (154, 160)),
+    ] {
+        assert!(
+            witness_chords
+                .get(&anchor)
+                .is_some_and(|chords| chords.contains(&chord)),
+            "missing frozen witness anchor {anchor} chord {chord:?}; got {witness_chords:?}"
+        );
+    }
     for (anchor, chord) in [
         (29, (28, 149)),
         (77, (82, 171)),
@@ -52,6 +57,33 @@ fn n6_anchor_ear_candidates_include_all_four_frozen_witness_chords() {
         assert_eq!(candidate.anchor_initial_link_edges.len(), 6);
         assert_eq!(candidate.anchor_result_link_edges.len(), 5);
         assert!(candidate.degree_delta.contains(&(anchor, -1)));
+    }
+}
+
+#[test]
+fn anchor_ear_candidates_allow_adjacent_cross_sector_owners() {
+    let (source, stratified, baseline) = n6_restricted_two_chain_baseline();
+    let family = derive_anchor_ear_candidates(&source, &stratified, 0, &baseline).unwrap();
+    let candidate = family
+        .candidates
+        .iter()
+        .find(|candidate| candidate.anchor_slot == 29 && candidate.owner_sector_ids.len() == 2)
+        .expect("slot29 should expose a legal cross-sector ear");
+
+    assert_eq!(candidate.inserted_chord, (27, 147));
+    assert_eq!(candidate.owner_sector_ids, BTreeSet::from([0, 9]));
+
+    let flipped = apply_anchor_ear(&baseline, candidate).unwrap();
+
+    for removed in candidate.removed_triangles {
+        assert!(!flipped
+            .iter()
+            .any(|actual| canonical_triangle(actual) == canonical_vertices(removed)));
+    }
+    for inserted in candidate.inserted_triangles {
+        assert!(flipped
+            .iter()
+            .any(|actual| canonical_triangle(actual) == canonical_vertices(inserted)));
     }
 }
 

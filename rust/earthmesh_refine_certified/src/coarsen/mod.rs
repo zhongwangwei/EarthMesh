@@ -3,6 +3,7 @@ mod annulus;
 mod component_transaction;
 mod core_condensation;
 mod elastic_block;
+mod global_exact_merge;
 mod hierarchy_component;
 mod scheduler;
 mod stratified_annulus;
@@ -29,6 +30,10 @@ pub use core_condensation::{
 pub use elastic_block::{
     solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
+};
+pub use global_exact_merge::{
+    solve_global_exact_merge, GlobalExactMergeEvidence, GlobalExactMergeLimits,
+    GlobalExactMergeOutcome, GlobalExactMergeTrial, GlobalExactSelectedEar,
 };
 pub use hierarchy_component::{
     plan_hierarchy_components, plan_hierarchy_components_from_parent_requirements,
