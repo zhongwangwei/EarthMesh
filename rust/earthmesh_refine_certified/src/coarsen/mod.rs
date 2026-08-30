@@ -1,3 +1,4 @@
+mod anchor_ear;
 mod annulus;
 mod component_transaction;
 mod core_condensation;
@@ -7,6 +8,11 @@ mod scheduler;
 mod stratified_annulus;
 mod transition_feasibility;
 mod transition_topology;
+pub use anchor_ear::{
+    apply_anchor_ear, build_anchor_ear_conflict_graph, derive_anchor_ear_candidates,
+    AnchorEarApplyError, AnchorEarCandidate, AnchorEarConflictGraph, AnchorEarKey,
+    AnchorEarRejectReason, AnchorEarReport, OwnedTopologyTriangle,
+};
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
     CycleOrientation, RingAnchorKind, RingCycle, RingVertex, RingVertexRole,
