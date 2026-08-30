@@ -5,6 +5,7 @@
 //! state space; geometry relocation belongs to the later elastic stage.
 
 use super::{HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet};
+use crate::certificate::spherical_triangle_angles;
 use crate::mother_grid::{MotherGrid, TriangleAddress, VertexAddress};
 use earthmesh_mesh::{orientation_on_sphere, MeshState, Sign};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1253,6 +1254,8 @@ fn ranked_triangulations(
         })
         .collect::<Vec<_>>();
     variants.sort_by(|left, right| {
+        let left_penalty = candidate_angle_penalty(source, left);
+        let right_penalty = candidate_angle_penalty(source, right);
         let left_reuse = left
             .iter()
             .filter(|triangle| original.contains(&canonical_triangle(**triangle)))
@@ -1261,12 +1264,32 @@ fn ranked_triangulations(
             .iter()
             .filter(|triangle| original.contains(&canonical_triangle(**triangle)))
             .count();
-        right_reuse
-            .cmp(&left_reuse)
+        left_penalty
+            .total_cmp(&right_penalty)
+            .then_with(|| right_reuse.cmp(&left_reuse))
             .then_with(|| canonical_candidate(left).cmp(&canonical_candidate(right)))
     });
     variants.dedup_by(|left, right| canonical_candidate(left) == canonical_candidate(right));
     variants
+}
+
+fn candidate_angle_penalty(source: &MotherGrid, candidate: &[[usize; 3]]) -> f64 {
+    candidate
+        .iter()
+        .flat_map(|triangle| {
+            spherical_triangle_angles(triangle.map(|site| source.mesh.vertices()[site]))
+                .unwrap_or([f64::INFINITY; 3])
+        })
+        .map(|angle| {
+            if angle < 40.2 {
+                (40.2 - angle).powi(2)
+            } else if angle > 79.8 {
+                (angle - 79.8).powi(2)
+            } else {
+                0.0
+            }
+        })
+        .sum()
 }
 
 fn canonical_triangle(mut triangle: [usize; 3]) -> [usize; 3] {
