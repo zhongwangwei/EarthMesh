@@ -1626,7 +1626,7 @@ fn build_mixed_certified_construction(
             max_adjacent_level_delta: 1,
             initial_transition_rings: 1,
             maximum_transition_rings: 3,
-            topology_states_per_component: options.search_budget.min(10_000).max(1),
+            topology_states_per_component: options.search_budget.clamp(1, 10_000),
             elastic_iterations_per_topology: 256,
             interval_boxes_per_component: 100_000,
             total_transition_states: options.search_budget,

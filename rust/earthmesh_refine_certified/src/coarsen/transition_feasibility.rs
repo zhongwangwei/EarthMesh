@@ -515,6 +515,7 @@ fn evidence_for_trial(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prove_interval_box_domain(
     mesh: &MeshState,
     fixed_vertices: usize,
