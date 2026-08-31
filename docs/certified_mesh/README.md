@@ -179,15 +179,20 @@ new-ring/block/joint continuation and improves the +2 result to
 `-1.653074281139` degrees. This is a material 2.199685934119-degree improvement,
 but the strict gate and NXP80 remain blocked. PR53 localizes the remaining
 failure: 85% of the +2 worst-100 angles lie within one graph step of one of 14
-zero-width shared-junction pinches, while only 9% contain a long
-full-polygon diagonal. The preregistered result is `WidthDominated`, so the
-next gate is construction of genuinely positive-width W3/W4 bands.
+nominal shared junctions, while only 9% contain a long full-polygon diagonal.
+PR55 subsequently corrected the width interpretation: all 14 junctions have a
+positive rotation wedge (12 ordinary one-face wedges and two anchor junctions),
+so the true-pinch fraction is 0%, not 85%.
 The PR55 planning gate then exhausts inward reclassification plus four outward
 parent-ring expansions and returns `InsufficientAnnulusWidth`: the best W3
 candidate still has zero effective bands and 24 adjacent shared vertices,
 while wider candidates place original anchors strictly inside the annulus.
 Local W4 is not evaluated because ordinary regions first require a valid global
 W3 plan. No topology or geometry solve is started from these invalid plans.
+The recovery path now uses the
+[source-face band contract](face_band_contract.md): first construct an exact
+pinch-free W2 separator directly from source triangle labels, then consider W3
+only if that finite W2 family fails or its geometry cannot meet the strict gate.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

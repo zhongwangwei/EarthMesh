@@ -1,4 +1,7 @@
-//! Planning-only search for genuinely positive-width W3/W4 transition bands.
+//! Scoped evidence for the legacy parent-layer trace family.
+//!
+//! This module only re-extracts parent-layer contours and selects their
+//! subsequences. It is not a source-face band solver.
 
 use super::annulus::{parent_by_source_face, parent_graph, parent_layers_from_outside};
 use super::{extract_coupled_annulus, CoupledAnnulus, HierarchyComponent, RingCycle};
@@ -7,6 +10,22 @@ use earthmesh_mesh::arc_length_unit_sphere;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_OUTWARD_EXPANSIONS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionBandPlanningFamily {
+    ParentLayerTraceFamily,
+}
+
+impl TransitionBandPlanningFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ParentLayerTraceFamily => "ParentLayerTraceFamily",
+        }
+    }
+}
+
+pub const TRANSITION_BAND_PLANNING_FAMILY: TransitionBandPlanningFamily =
+    TransitionBandPlanningFamily::ParentLayerTraceFamily;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionBandMode {
@@ -171,6 +190,51 @@ pub fn plan_effective_transition_bands(
     })
 }
 
+pub fn parent_layer_trace_family_candidate(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    outward_expansions: usize,
+    transition_width: usize,
+) -> Result<HierarchyComponent, EffectiveBandError> {
+    if outward_expansions > MAX_OUTWARD_EXPANSIONS {
+        return Err(EffectiveBandError::InvalidInput(format!(
+            "ParentLayerTraceFamily supports at most {MAX_OUTWARD_EXPANSIONS} outward expansions"
+        )));
+    }
+    let parent_by_face = parent_by_source_face(source)
+        .map_err(|error| EffectiveBandError::InvalidInput(format!("{error:?}")))?;
+    let graph = parent_graph(source, &parent_by_face)
+        .map_err(|error| EffectiveBandError::InvalidInput(format!("{error:?}")))?;
+    let mut expanded = component.parents.iter().copied().collect::<BTreeSet<_>>();
+    for _ in 0..outward_expansions {
+        let next = expanded
+            .iter()
+            .flat_map(|parent| graph[parent].iter().copied())
+            .filter(|parent| !expanded.contains(parent))
+            .collect::<BTreeSet<_>>();
+        if next.is_empty() {
+            return Err(EffectiveBandError::InvalidInput(
+                "ParentLayerTraceFamily has no additional outward parent ring".into(),
+            ));
+        }
+        expanded.extend(next);
+    }
+    let layers = parent_layers_from_outside(&expanded, &graph)
+        .map_err(|error| EffectiveBandError::InvalidInput(format!("{error:?}")))?;
+    let maximum_layer = layers.values().copied().max().unwrap_or(0);
+    if transition_width == 0 || transition_width >= maximum_layer {
+        return Err(EffectiveBandError::InvalidInput(format!(
+            "transition width {transition_width} must be in 1..{maximum_layer}"
+        )));
+    }
+    Ok(split_component(
+        component.id,
+        &expanded,
+        &layers,
+        transition_width,
+    ))
+}
+
 fn remap_w4_prerequisite_error(error: EffectiveBandError) -> EffectiveBandError {
     match error {
         EffectiveBandError::InvalidInput(reason) => EffectiveBandError::InvalidInput(reason),
@@ -223,8 +287,8 @@ pub fn transition_band_plan_json(plan: &TransitionBandPlan) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"mode\":\"{}\",\"traces\":[{}],\"parent_faces\":[{}],\"effective_band_count_min\":{},\"effective_band_count_p50\":{},\"adjacent_shared_vertices\":{},\"adjacent_shared_edges\":{},\"singularity_zone_count\":{},\"singularity_effective_band_count_min\":{},\"core_faces_sacrificed\":{},\"extra_transition_faces\":{}}}",
-        plan.mode.as_str(), traces, parents, plan.effective_band_count_min,
+        "{{\"planning_family\":\"{}\",\"mode\":\"{}\",\"traces\":[{}],\"parent_faces\":[{}],\"effective_band_count_min\":{},\"effective_band_count_p50\":{},\"adjacent_shared_vertices\":{},\"adjacent_shared_edges\":{},\"singularity_zone_count\":{},\"singularity_effective_band_count_min\":{},\"core_faces_sacrificed\":{},\"extra_transition_faces\":{}}}",
+        TRANSITION_BAND_PLANNING_FAMILY.as_str(), plan.mode.as_str(), traces, parents, plan.effective_band_count_min,
         plan.effective_band_count_p50, plan.adjacent_shared_vertices,
         plan.adjacent_shared_edges, plan.singularity_zone_count,
         plan.singularity_effective_band_count_min, plan.core_faces_sacrificed,
@@ -235,8 +299,8 @@ pub fn transition_band_plan_json(plan: &TransitionBandPlan) -> String {
 pub fn effective_band_error_json(error: &EffectiveBandError) -> String {
     match error {
         EffectiveBandError::InvalidInput(reason) => format!(
-            "{{\"outcome\":\"InvalidInput\",\"reason\":\"{}\"}}",
-            json_escape(reason)
+            "{{\"planning_family\":\"{}\",\"outcome\":\"InvalidInput\",\"reason\":\"{}\"}}",
+            TRANSITION_BAND_PLANNING_FAMILY.as_str(), json_escape(reason)
         ),
         EffectiveBandError::InsufficientAnnulusWidth {
             mode,
@@ -246,8 +310,8 @@ pub fn effective_band_error_json(error: &EffectiveBandError) -> String {
             outward_expansions,
             reason,
         } => format!(
-            "{{\"outcome\":\"InsufficientAnnulusWidth\",\"mode\":\"{}\",\"best_effective_band_count\":{},\"adjacent_shared_vertices\":{},\"adjacent_shared_edges\":{},\"outward_expansions\":{},\"reason\":\"{}\"}}",
-            mode.as_str(), best_effective_band_count, adjacent_shared_vertices,
+            "{{\"planning_family\":\"{}\",\"outcome\":\"InsufficientAnnulusWidth\",\"mode\":\"{}\",\"best_effective_band_count\":{},\"adjacent_shared_vertices\":{},\"adjacent_shared_edges\":{},\"outward_expansions\":{},\"reason\":\"{}\"}}",
+            TRANSITION_BAND_PLANNING_FAMILY.as_str(), mode.as_str(), best_effective_band_count, adjacent_shared_vertices,
             adjacent_shared_edges, outward_expansions, json_escape(reason),
         ),
     }

@@ -91,6 +91,7 @@ fn frozen_n6_w3_failure_json_is_byte_stable() {
     let first = effective_band_error_json(&first.unwrap_err());
     let second = effective_band_error_json(&second.unwrap_err());
     assert_eq!(first, second);
+    assert!(first.contains("\"planning_family\":\"ParentLayerTraceFamily\""));
     assert!(first.contains("\"outcome\":\"InsufficientAnnulusWidth\""));
     assert!(first.contains("UnsupportedInteriorIcosahedronVertex"));
 }

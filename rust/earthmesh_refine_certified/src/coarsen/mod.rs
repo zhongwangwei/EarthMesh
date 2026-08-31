@@ -13,6 +13,7 @@ mod full_polygon_reachability;
 mod geometry_witness;
 mod global_exact_merge;
 mod hierarchy_component;
+mod rotation_width_audit;
 mod scheduler;
 mod stratified_annulus;
 mod transition_feasibility;
@@ -31,8 +32,10 @@ pub use annulus::{
     CycleOrientation, RingAnchorKind, RingCycle, RingVertex, RingVertexRole,
 };
 pub use band_cycle_planner::{
-    effective_band_error_json, plan_effective_transition_bands, transition_band_plan_json,
-    EffectiveBandError, TransitionBandMode, TransitionBandPlan,
+    effective_band_error_json, parent_layer_trace_family_candidate,
+    plan_effective_transition_bands, transition_band_plan_json, EffectiveBandError,
+    TransitionBandMode, TransitionBandPlan, TransitionBandPlanningFamily,
+    TRANSITION_BAND_PLANNING_FAMILY,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
@@ -95,6 +98,11 @@ pub use hierarchy_component::{
     plan_hierarchy_components, plan_hierarchy_components_from_parent_requirements,
     ExplicitParentRequirement, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
     ParentRequirement,
+};
+pub use rotation_width_audit::{
+    audit_coupled_rotation_aware_width, audit_rotation_aware_width,
+    rotation_aware_width_report_json, JunctionWidthClass, RotationAwareWidthEvidence,
+    RotationAwareWidthReport,
 };
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
