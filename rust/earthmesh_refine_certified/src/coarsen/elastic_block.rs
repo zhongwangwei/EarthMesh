@@ -61,6 +61,8 @@ pub enum ElasticBlockOutcome {
         final_phase: ElasticBlockPhase,
         reason: String,
         failed_guard_face: Option<usize>,
+        global_angle_degrees: Option<(f64, f64)>,
+        guard_angle_degrees: Option<(f64, f64)>,
     },
     SearchBudgetExhausted {
         elastic_iterations: usize,
@@ -69,6 +71,8 @@ pub enum ElasticBlockOutcome {
         final_phase: ElasticBlockPhase,
         reason: String,
         failed_guard_face: Option<usize>,
+        global_angle_degrees: Option<(f64, f64)>,
+        guard_angle_degrees: Option<(f64, f64)>,
     },
     RequiresDifferentTopology {
         elastic_iterations: usize,
@@ -77,6 +81,8 @@ pub enum ElasticBlockOutcome {
         final_phase: ElasticBlockPhase,
         reason: String,
         failed_guard_face: Option<usize>,
+        global_angle_degrees: Option<(f64, f64)>,
+        guard_angle_degrees: Option<(f64, f64)>,
     },
     InvalidPatch {
         reason: String,
@@ -466,6 +472,8 @@ pub fn solve_elastic_patch(
             final_phase: phase,
             reason: geometry_failure_reason(&certificate, &current.mesh),
             failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
+            global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
+            guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
         };
     }
 
@@ -483,6 +491,8 @@ pub fn solve_elastic_patch(
                 final_phase,
                 reason,
                 failed_guard_face,
+                global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
+                guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
             }
         } else {
             ElasticBlockOutcome::ElasticNoImprovement {
@@ -492,6 +502,8 @@ pub fn solve_elastic_patch(
                 final_phase,
                 reason,
                 failed_guard_face,
+                global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
+                guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
             }
         }
     };
@@ -517,14 +529,19 @@ pub fn solve_elastic_patch(
             return no_step(&current.mesh, iteration, energy);
         }
 
+        let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
+            minimum_step * 1.0e-3
+        } else {
+            minimum_step
+        };
         let mut step = initial_step;
         let accepted = loop {
             let scale = -step / maximum_norm;
             let Some(updates) = synchronous_updates(&current.mesh, &gradient, scale) else {
-                if step <= minimum_step {
+                if step <= phase_minimum_step {
                     break None;
                 }
-                step = (step * 0.5).max(minimum_step);
+                step = (step * 0.5).max(phase_minimum_step);
                 continue;
             };
             for &(site, _, point) in &updates {
@@ -532,17 +549,21 @@ pub fn solve_elastic_patch(
             }
             let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
             if candidate_energy.is_some_and(|candidate_energy| {
-                candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
+                if matches!(phase, ElasticBlockPhase::Untangle) {
+                    candidate_energy.is_finite() && candidate_energy < phase_energy
+                } else {
+                    candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
+                }
             }) {
                 break candidate_energy;
             }
             for &(site, point, _) in &updates {
                 current.mesh.move_vertex(site, point);
             }
-            if step <= minimum_step {
+            if step <= phase_minimum_step {
                 break None;
             }
-            step = (step * 0.5).max(minimum_step);
+            step = (step * 0.5).max(phase_minimum_step);
         };
 
         let Some(candidate_energy) = accepted else {
@@ -572,7 +593,26 @@ pub fn solve_elastic_patch(
         final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
         reason: geometry_failure_reason(&certificate, &current.mesh),
         failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
+        global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
+        guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
     }
+}
+
+fn angle_range(mesh: &MeshState, faces: impl IntoIterator<Item = usize>) -> Option<(f64, f64)> {
+    let mut min_angle = f64::INFINITY;
+    let mut max_angle = f64::NEG_INFINITY;
+    for face in faces {
+        if !mesh.is_triangle_live(face) {
+            continue;
+        }
+        let angles =
+            spherical_triangle_angles(mesh.triangles()[face].map(|site| mesh.vertices()[site]))?;
+        for angle in angles {
+            min_angle = min_angle.min(angle);
+            max_angle = max_angle.max(angle);
+        }
+    }
+    min_angle.is_finite().then_some((min_angle, max_angle))
 }
 
 fn failed_guard_face(
@@ -1101,41 +1141,37 @@ fn finite_difference_gradient(
         let local = context.derivatives.get(&site)?;
         let point = mesh.vertices()[site];
         let [first, second] = tangent_basis(point)?;
+        let energy_at_current = |mesh: &MeshState| {
+            if matches!(phase, ElasticBlockPhase::Untangle) {
+                elastic_energy(mesh, patch, phase, context)
+            } else {
+                elastic_energy_in(
+                    mesh,
+                    patch,
+                    phase,
+                    context,
+                    &local.guard_faces,
+                    &local.guard_edges,
+                    &local.guard_seeds,
+                    &local.dual_pairs,
+                )
+            }
+        };
+        let base_energy = energy_at_current(mesh)?;
         let mut derivative = |direction: CartesianPoint| {
             let plus = exponential_map(point, scale_point(direction, epsilon))?;
             let minus = exponential_map(point, scale_point(direction, -epsilon))?;
             mesh.move_vertex(site, plus);
-            let plus_energy = if matches!(phase, ElasticBlockPhase::Untangle) {
-                elastic_energy(mesh, patch, phase, context)
-            } else {
-                elastic_energy_in(
-                    mesh,
-                    patch,
-                    phase,
-                    context,
-                    &local.guard_faces,
-                    &local.guard_edges,
-                    &local.guard_seeds,
-                    &local.dual_pairs,
-                )
-            };
+            let plus_energy = energy_at_current(mesh);
             mesh.move_vertex(site, minus);
-            let minus_energy = if matches!(phase, ElasticBlockPhase::Untangle) {
-                elastic_energy(mesh, patch, phase, context)
-            } else {
-                elastic_energy_in(
-                    mesh,
-                    patch,
-                    phase,
-                    context,
-                    &local.guard_faces,
-                    &local.guard_edges,
-                    &local.guard_seeds,
-                    &local.dual_pairs,
-                )
-            };
+            let minus_energy = energy_at_current(mesh);
             mesh.move_vertex(site, point);
-            Some((plus_energy? - minus_energy?) / (2.0 * epsilon))
+            match (plus_energy, minus_energy) {
+                (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
+                (Some(plus), None) => Some((plus - base_energy) / epsilon),
+                (None, Some(minus)) => Some((base_energy - minus) / epsilon),
+                (None, None) => None,
+            }
         };
         let d_first = derivative(first)?;
         let d_second = derivative(second)?;

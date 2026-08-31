@@ -12,7 +12,7 @@ use super::global_exact_merge::{
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
-    solve_elastic_patch, ElasticBlockLimits, ElasticBlockOutcome, ElasticPatch,
+    solve_elastic_patch, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch,
     FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
@@ -38,7 +38,19 @@ pub struct FullPolygonCberLimits {
     pub elastic_iterations: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct FullPolygonGeometryFailureEvidence {
+    pub elastic_iterations: usize,
+    pub initial_energy: f64,
+    pub final_energy: f64,
+    pub final_phase: ElasticBlockPhase,
+    pub reason: String,
+    pub failed_guard_face: Option<usize>,
+    pub global_angle_degrees: Option<(f64, f64)>,
+    pub guard_angle_degrees: Option<(f64, f64)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FullPolygonMergeEvidence {
     pub family_id: TopologyFamilyId,
     pub sector_family_counts: Vec<usize>,
@@ -50,6 +62,7 @@ pub struct FullPolygonMergeEvidence {
     pub topology_candidates_closed: usize,
     pub ear_degree_feasible_candidates: usize,
     pub geometry_candidates_attempted: usize,
+    pub last_geometry_failure: Option<FullPolygonGeometryFailureEvidence>,
     pub selected_topology_keys: Vec<FullPolygonTopologyKey>,
     pub selected_ears: Vec<GlobalExactSelectedEar>,
     pub best_global_evidence: GlobalExactMergeEvidence,
@@ -114,6 +127,7 @@ fn solve_full_polygon_merge_inner(
         topology_candidates_closed: 0,
         ear_degree_feasible_candidates: 0,
         geometry_candidates_attempted: 0,
+        last_geometry_failure: None,
         selected_topology_keys: Vec::new(),
         selected_ears: Vec::new(),
         best_global_evidence: GlobalExactMergeEvidence {
@@ -277,7 +291,7 @@ enum Step {
     Closed(Box<FullPolygonMergeTrial>),
     Invalid(String),
     Exhausted,
-    GeometryUnknown,
+    GeometryUnknown(FullPolygonGeometryFailureEvidence),
     NoSolution,
 }
 
@@ -381,8 +395,9 @@ impl Search<'_> {
                 self.evidence.states_examined = self.states;
                 FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
             }
-            Step::GeometryUnknown => {
+            Step::GeometryUnknown(failure) => {
                 self.evidence.states_examined = self.states;
+                self.evidence.last_geometry_failure = Some(failure);
                 FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
             }
             Step::NoSolution => {
@@ -425,7 +440,10 @@ impl Search<'_> {
             self.remove_topology(sector, choice);
             self.selected[sector] = None;
             match result {
-                Step::NoSolution | Step::GeometryUnknown => {}
+                Step::NoSolution => {}
+                Step::GeometryUnknown(failure) => {
+                    self.evidence.last_geometry_failure = Some(failure);
+                }
                 terminal => return terminal,
             }
         }
@@ -766,9 +784,13 @@ impl Search<'_> {
                         config,
                     ) {
                         FreeInterfaceStep::Certified(certified) => trial = *certified,
-                        FreeInterfaceStep::RequiresDifferentTopology
-                        | FreeInterfaceStep::GeometryUnknown => return Step::GeometryUnknown,
-                        FreeInterfaceStep::BudgetExhausted => return Step::Exhausted,
+                        FreeInterfaceStep::RequiresDifferentTopology(failure)
+                        | FreeInterfaceStep::GeometryUnknown(failure) => {
+                            return Step::GeometryUnknown(failure)
+                        }
+                        FreeInterfaceStep::BudgetExhausted(failure) => {
+                            return Step::GeometryUnknown(failure)
+                        }
                         FreeInterfaceStep::Invalid(reason) => return Step::Invalid(reason),
                     }
                 }
@@ -902,9 +924,9 @@ impl Search<'_> {
 
 enum FreeInterfaceStep {
     Certified(Box<FullPolygonMergeTrial>),
-    RequiresDifferentTopology,
-    GeometryUnknown,
-    BudgetExhausted,
+    RequiresDifferentTopology(FullPolygonGeometryFailureEvidence),
+    GeometryUnknown(FullPolygonGeometryFailureEvidence),
+    BudgetExhausted(FullPolygonGeometryFailureEvidence),
     Invalid(String),
 }
 
@@ -943,11 +965,63 @@ fn certify_free_interface_geometry(
             trial.global_trial.mesh = elastic.mesh.clone();
             FreeInterfaceStep::Certified(Box::new(trial))
         }
-        ElasticBlockOutcome::RequiresDifferentTopology { .. } => {
-            FreeInterfaceStep::RequiresDifferentTopology
-        }
-        ElasticBlockOutcome::ElasticNoImprovement { .. } => FreeInterfaceStep::GeometryUnknown,
-        ElasticBlockOutcome::SearchBudgetExhausted { .. } => FreeInterfaceStep::BudgetExhausted,
+        ElasticBlockOutcome::RequiresDifferentTopology {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        } => FreeInterfaceStep::RequiresDifferentTopology(FullPolygonGeometryFailureEvidence {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        }),
+        ElasticBlockOutcome::ElasticNoImprovement {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        } => FreeInterfaceStep::GeometryUnknown(FullPolygonGeometryFailureEvidence {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        }),
+        ElasticBlockOutcome::SearchBudgetExhausted {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        } => FreeInterfaceStep::BudgetExhausted(FullPolygonGeometryFailureEvidence {
+            elastic_iterations,
+            initial_energy,
+            final_energy,
+            final_phase,
+            reason,
+            failed_guard_face,
+            global_angle_degrees,
+            guard_angle_degrees,
+        }),
         ElasticBlockOutcome::InvalidPatch { reason } => FreeInterfaceStep::Invalid(reason),
     }
 }
@@ -1125,6 +1199,7 @@ mod tests {
             topology_candidates_closed: 0,
             ear_degree_feasible_candidates: 0,
             geometry_candidates_attempted,
+            last_geometry_failure: None,
             selected_topology_keys: Vec::new(),
             selected_ears: Vec::new(),
             best_global_evidence: GlobalExactMergeEvidence::default(),

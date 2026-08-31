@@ -1,9 +1,11 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, initial_elastic_phase, n6_legacy_mixed_fixture, solve_elastic_patch,
-    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
+    build_stratified_annulus, initial_elastic_phase, n6_legacy_mixed_fixture,
+    n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch, solve_full_polygon_merge,
+    solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits, FullPolygonMergeLimits,
+    FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
 };
+use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs};
 
 #[test]
@@ -452,6 +454,111 @@ fn all_geometry_failures_are_unknown_not_topology_no_solution() {
         panic!("geometry failure exhaustion must remain unknown, not topology no-go: {outcome:?}");
     };
     assert!(evidence.geometry_candidates_attempted > 0);
+}
+
+#[test]
+fn frozen_n6_fixture_exposes_truthful_mixed_source_levels() {
+    let (source, _component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    assert_eq!(source_levels.len(), source.mesh.vertices().len());
+    assert!(source
+        .mesh
+        .active_vertex_slots()
+        .all(|site| source_levels[site].is_some()));
+    let histogram = source
+        .mesh
+        .active_vertex_slots()
+        .map(|site| source_levels[site].unwrap())
+        .fold(BTreeMap::<usize, usize>::new(), |mut histogram, level| {
+            *histogram.entry(level).or_default() += 1;
+            histogram
+        });
+    assert!(histogram.get(&0).copied().unwrap_or_default() > 0);
+    assert!(histogram.get(&1).copied().unwrap_or_default() > 0);
+}
+
+#[test]
+fn frozen_n6_closed_topology_carries_real_final_cell_levels_but_not_remap_before_geometry() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let source_field = SourceLevelField::from_active_voronoi_cells(
+        &source.mesh,
+        source
+            .mesh
+            .active_vertex_slots()
+            .map(|site| source_levels[site].unwrap())
+            .collect(),
+    )
+    .unwrap();
+    let target_field = TargetLevelField::from_active_voronoi_cells(
+        &trial.global_trial.mesh.mesh,
+        trial
+            .global_trial
+            .mesh
+            .mesh
+            .active_vertex_slots()
+            .map(|site| {
+                let source = trial.global_trial.mesh.source_vertex_slots[site]
+                    .expect("target site must preserve source slot evidence");
+                source_levels[source].expect("target source slot must have a level")
+            })
+            .collect(),
+    )
+    .unwrap();
+    assert!(source_field.levels().contains(&0));
+    assert!(source_field.levels().contains(&1));
+    assert!(target_field.levels().contains(&0));
+    assert!(target_field.levels().contains(&1));
+    let error =
+        ConservativeRemap::between_voronoi_meshes(&source.mesh, &trial.global_trial.mesh.mesh)
+            .unwrap_err();
+    assert!(
+        error.contains("cannot be remapped") && error.contains("no circumcentre"),
+        "unexpected remap blocker: {error}"
+    );
+}
+
+#[test]
+fn frozen_n6_strict_cber_reports_bounded_geometry_blocker() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge_free_interface_cber(
+        &source,
+        &component,
+        &BTreeSet::new(),
+        FullPolygonCberLimits {
+            topology_states: 24,
+            elastic_iterations: 8,
+        },
+    );
+    let FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) = outcome else {
+        panic!(
+            "bounded strict CBER must remain honest unknown until geometry certifies: {outcome:?}"
+        );
+    };
+    let failure = evidence
+        .last_geometry_failure
+        .as_ref()
+        .expect("bounded strict CBER must preserve the last geometry failure");
+    assert_eq!(evidence.geometry_candidates_attempted, 3);
+    assert_eq!(evidence.topology_candidates_closed, 3);
+    assert_eq!(evidence.ear_degree_feasible_candidates, 3);
+    assert!(failure.elastic_iterations <= 8);
+    assert_eq!(failure.final_phase, ElasticBlockPhase::AngleFeasibility);
+    assert!(failure.initial_energy.is_finite());
+    assert!(failure.final_energy.is_finite());
+    let (global_min, global_max) = failure.global_angle_degrees.unwrap();
+    let (guard_min, guard_max) = failure.guard_angle_degrees.unwrap();
+    assert!(global_min < 40.2 || global_max > 79.8);
+    assert!(guard_min < 40.2 || guard_max > 79.8);
+    assert!(!failure.reason.is_empty());
 }
 
 #[test]

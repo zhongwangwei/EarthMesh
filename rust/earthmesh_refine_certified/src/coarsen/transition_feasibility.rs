@@ -282,6 +282,12 @@ pub fn prove_transition_topology_trial(
 }
 
 pub fn n6_legacy_mixed_fixture() -> Result<(MotherGrid, HierarchyComponent), String> {
+    let (source, component, _) = n6_legacy_mixed_fixture_with_source_levels()?;
+    Ok((source, component))
+}
+
+pub fn n6_legacy_mixed_fixture_with_source_levels(
+) -> Result<(MotherGrid, HierarchyComponent, Vec<Option<usize>>), String> {
     let source = MotherGrid::generate(6)?;
     let parents = MotherGrid::generate(3)?;
     let eligible = n6_eligible_parents();
@@ -296,6 +302,16 @@ pub fn n6_legacy_mixed_fixture() -> Result<(MotherGrid, HierarchyComponent), Str
             available: true,
         })
         .collect::<Vec<_>>();
+    let mut source_levels = vec![None; source.mesh.vertices().len()];
+    for face in source.mesh.active_triangle_slots() {
+        let parent = source.triangle_addresses[face]
+            .and_then(|address| address.parent_2_to_1())
+            .ok_or_else(|| format!("active N6 face {face} has no N3 parent"))?;
+        let level = usize::from(!eligible.contains(&parent));
+        for site in source.mesh.triangles()[face] {
+            source_levels[site] = Some(source_levels[site].unwrap_or(0).max(level));
+        }
+    }
     let mut components =
         plan_hierarchy_components_from_parent_requirements(&source, &requirements, 0, 1)?
             .components;
@@ -305,7 +321,7 @@ pub fn n6_legacy_mixed_fixture() -> Result<(MotherGrid, HierarchyComponent), Str
             components.len()
         ));
     }
-    Ok((source, components.pop().unwrap()))
+    Ok((source, components.pop().unwrap(), source_levels))
 }
 
 pub fn analyze_legacy_transition_family(
