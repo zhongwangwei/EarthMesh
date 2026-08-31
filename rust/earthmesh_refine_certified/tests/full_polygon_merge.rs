@@ -1,15 +1,17 @@
 use earthmesh_refine_certified::coarsen::{
     build_stratified_annulus, frozen_n6_geometry_evidence_json,
+    frozen_n6_geometry_evidence_json_with_solver_domain,
     frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
     n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
     solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
     solve_full_polygon_merge_free_interface_cber_with_targets,
+    solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField, ElasticTargetMode,
-    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryStartId,
-    RingAnchorKind, TransitionTopologyCandidate,
+    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryDomainId,
+    GeometryStartId, RingAnchorKind, TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -961,6 +963,73 @@ fn frozen_n6_pr48_active_trust_comparison_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR49 domain-ladder comparison probe"]
+fn frozen_n6_pr49_domain_ladder_comparison_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let starts = geometry_start_ids(
+        std::env::var("EARTHMESH_GEOMETRY_START_SET")
+            .ok()
+            .as_deref(),
+    );
+    let domains = geometry_domain_ids(
+        std::env::var("EARTHMESH_GEOMETRY_DOMAIN_SET")
+            .ok()
+            .as_deref(),
+    );
+    let start_names = starts
+        .iter()
+        .map(|start| start.as_str())
+        .collect::<Vec<_>>();
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let commit_sha = option_env!("EARTHMESH_GIT_SHA")
+        .map(str::to_string)
+        .or_else(git_head);
+    let mut arms = Vec::new();
+    for domain in domains {
+        let outcome = solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &starts,
+            domain,
+        );
+        arms.push((
+            domain.as_str(),
+            frozen_n6_geometry_evidence_json_with_solver_domain(
+                &outcome,
+                fixture_fingerprint,
+                topology_limit,
+                elastic_iterations,
+                commit_sha.as_deref(),
+                ElasticTargetMode::HierarchyEdgeAreaDegree,
+                &start_names,
+                "ActiveTangentTrust",
+                domain,
+            ),
+        ));
+    }
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr49DomainLadderComparison\",\"target_mode\":\"HierarchyEdgeAreaDegree\",\"solver_mode\":\"ActiveTangentTrust\",\"arms\":[{}]}}",
+        arms.iter()
+            .map(|(name, json)| format!("{{\"domain\":\"{}\",\"run\":{}}}", name, json))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn git_head() -> Option<String> {
     Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -986,7 +1055,7 @@ fn usize_env(name: &str, default: usize) -> usize {
 fn geometry_starts(value: Option<&str>) -> Vec<&'static str> {
     geometry_start_ids(value)
         .into_iter()
-        .map(GeometryStartId::as_str)
+        .map(|start| start.as_str())
         .collect()
 }
 
@@ -1025,6 +1094,31 @@ fn geometry_start_ids(value: Option<&str>) -> Vec<GeometryStartId> {
                 GeometryStartId::SignedNormalMinus
             }
             other => panic!("unsupported EARTHMESH_GEOMETRY_START_SET={other:?}"),
+        })
+        .collect()
+}
+
+fn geometry_domain_ids(value: Option<&str>) -> Vec<GeometryDomainId> {
+    let value = value.unwrap_or("all");
+    if matches!(value, "all" | "All" | "ALL") {
+        return vec![
+            GeometryDomainId::CurrentAnnulus,
+            GeometryDomainId::PlusOneOrdinaryRing,
+            GeometryDomainId::PlusTwoOrdinaryRings,
+        ];
+    }
+    value
+        .split(',')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| match part.trim() {
+            "CurrentAnnulus" | "current" | "current-annulus" => GeometryDomainId::CurrentAnnulus,
+            "PlusOneOrdinaryRing" | "plus-one" | "plus_one" => {
+                GeometryDomainId::PlusOneOrdinaryRing
+            }
+            "PlusTwoOrdinaryRings" | "plus-two" | "plus_two" => {
+                GeometryDomainId::PlusTwoOrdinaryRings
+            }
+            other => panic!("unsupported EARTHMESH_GEOMETRY_DOMAIN_SET={other:?}"),
         })
         .collect()
 }
@@ -1100,5 +1194,6 @@ fn geometry_failure_with_counts(
         crossing_count: Some(crossing_count),
         delaunay_violations: Some(delaunay_violations),
         invalid_voronoi_cells: Some(invalid_voronoi_cells),
+        diagnostics: None,
     }
 }

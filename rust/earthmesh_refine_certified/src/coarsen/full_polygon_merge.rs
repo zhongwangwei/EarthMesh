@@ -14,8 +14,9 @@ use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
     solve_elastic_patch_with_active_trust_start, solve_elastic_patch_with_margin_start,
     solve_elastic_patch_with_start, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase,
-    ElasticPatch, ElasticTargetMode, FullPolygonReachabilityEvidence, GeometryStartId,
-    HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
+    ElasticPatch, ElasticTargetMode, FullPolygonReachabilityEvidence, GeometryDomainId,
+    GeometryFailureDiagnostics, GeometryStartId, HierarchyComponent, RingAnchorKind,
+    StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
 use std::{
@@ -59,6 +60,7 @@ pub struct FullPolygonGeometryFailureEvidence {
     pub crossing_count: Option<usize>,
     pub delaunay_violations: Option<usize>,
     pub invalid_voronoi_cells: Option<usize>,
+    pub diagnostics: Option<GeometryFailureDiagnostics>,
 }
 
 impl FullPolygonGeometryFailureEvidence {
@@ -165,6 +167,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
             source_levels,
             starts: &[GeometryStartId::MaterializedSource],
             solver_mode: GeometrySolverMode::FiniteDifferenceElastic,
+            domain_id: GeometryDomainId::CurrentAnnulus,
         }),
     )
 }
@@ -189,6 +192,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
             source_levels,
             starts,
             solver_mode: GeometrySolverMode::MarginFiniteDifferenceLexicographic,
+            domain_id: GeometryDomainId::CurrentAnnulus,
         }),
     )
 }
@@ -213,6 +217,34 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trus
             source_levels,
             starts,
             solver_mode: GeometrySolverMode::ActiveTangentTrust,
+            domain_id: GeometryDomainId::CurrentAnnulus,
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&[Option<usize>]>,
+    starts: &[GeometryStartId],
+    domain_id: GeometryDomainId,
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(FreeInterfaceCberConfig {
+            elastic_iterations: limits.elastic_iterations,
+            physical_fixed_sources,
+            target_mode,
+            source_levels,
+            starts,
+            solver_mode: GeometrySolverMode::ActiveTangentTrust,
+            domain_id,
         }),
     )
 }
@@ -398,6 +430,7 @@ struct FreeInterfaceCberConfig<'a> {
     source_levels: Option<&'a [Option<usize>]>,
     starts: &'a [GeometryStartId],
     solver_mode: GeometrySolverMode,
+    domain_id: GeometryDomainId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -411,7 +444,7 @@ enum Step {
     Closed(Box<FullPolygonMergeTrial>),
     Invalid(String),
     Exhausted,
-    GeometryUnknown(FullPolygonGeometryFailureEvidence),
+    GeometryUnknown(Box<FullPolygonGeometryFailureEvidence>),
     NoSolution,
 }
 
@@ -517,7 +550,7 @@ impl Search<'_> {
             }
             Step::GeometryUnknown(failure) => {
                 self.evidence.states_examined = self.states;
-                self.evidence.record_geometry_failure(failure);
+                self.evidence.record_geometry_failure(*failure);
                 FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
             }
             Step::NoSolution => {
@@ -561,7 +594,7 @@ impl Search<'_> {
             self.selected[sector] = None;
             match result {
                 Step::NoSolution => {}
-                Step::GeometryUnknown(failure) => self.evidence.record_geometry_failure(failure),
+                Step::GeometryUnknown(failure) => self.evidence.record_geometry_failure(*failure),
                 terminal => return terminal,
             }
         }
@@ -905,7 +938,7 @@ impl Search<'_> {
                         FreeInterfaceStep::RequiresDifferentTopology(mut failure)
                         | FreeInterfaceStep::GeometryUnknown(mut failure) => {
                             failure.topology_keys = keys.clone();
-                            return Step::GeometryUnknown(failure);
+                            return Step::GeometryUnknown(Box::new(failure));
                         }
                         FreeInterfaceStep::Invalid(reason) => return Step::Invalid(reason),
                     }
@@ -1058,6 +1091,7 @@ fn record_start_failure(
     failed_guard_face: Option<usize>,
     global_angle_degrees: Option<(f64, f64)>,
     guard_angle_degrees: Option<(f64, f64)>,
+    diagnostics: Option<GeometryFailureDiagnostics>,
 ) {
     let failure = FullPolygonGeometryFailureEvidence {
         topology_keys: Vec::new(),
@@ -1074,6 +1108,7 @@ fn record_start_failure(
         crossing_count: None,
         delaunay_violations: None,
         invalid_voronoi_cells: None,
+        diagnostics,
     };
     if best_failure
         .as_ref()
@@ -1089,11 +1124,12 @@ fn certify_free_interface_geometry(
     mut trial: FullPolygonMergeTrial,
     config: FreeInterfaceCberConfig<'_>,
 ) -> FreeInterfaceStep {
-    let mut patch = match ElasticPatch::from_full_polygon_merge(
+    let mut patch = match ElasticPatch::from_full_polygon_merge_with_domain(
         source,
         component,
         &trial,
         config.physical_fixed_sources,
+        config.domain_id,
     ) {
         Ok(patch) => patch,
         Err(reason) => return FreeInterfaceStep::Invalid(reason),
@@ -1165,6 +1201,7 @@ fn certify_free_interface_geometry(
                 failed_guard_face,
                 global_angle_degrees,
                 guard_angle_degrees,
+                diagnostics,
             } => record_start_failure(
                 &mut best_failure,
                 true,
@@ -1177,6 +1214,7 @@ fn certify_free_interface_geometry(
                 failed_guard_face,
                 global_angle_degrees,
                 guard_angle_degrees,
+                diagnostics,
             ),
             ElasticBlockOutcome::ElasticNoImprovement {
                 elastic_iterations,
@@ -1187,6 +1225,7 @@ fn certify_free_interface_geometry(
                 failed_guard_face,
                 global_angle_degrees,
                 guard_angle_degrees,
+                diagnostics,
             }
             | ElasticBlockOutcome::SearchBudgetExhausted {
                 elastic_iterations,
@@ -1197,6 +1236,7 @@ fn certify_free_interface_geometry(
                 failed_guard_face,
                 global_angle_degrees,
                 guard_angle_degrees,
+                diagnostics,
             } => record_start_failure(
                 &mut best_failure,
                 false,
@@ -1209,6 +1249,7 @@ fn certify_free_interface_geometry(
                 failed_guard_face,
                 global_angle_degrees,
                 guard_angle_degrees,
+                diagnostics,
             ),
             ElasticBlockOutcome::InvalidPatch { reason } => {
                 return FreeInterfaceStep::Invalid(reason)
@@ -1273,6 +1314,31 @@ pub fn frozen_n6_geometry_evidence_json_with_solver_mode(
     starts: &[&str],
     solver_mode: &str,
 ) -> String {
+    frozen_n6_geometry_evidence_json_with_solver_domain(
+        outcome,
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        commit_sha,
+        target_mode,
+        starts,
+        solver_mode,
+        GeometryDomainId::CurrentAnnulus,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn frozen_n6_geometry_evidence_json_with_solver_domain(
+    outcome: &FullPolygonMergeOutcome,
+    fixture_fingerprint: u64,
+    topology_limit: usize,
+    elastic_iterations: usize,
+    commit_sha: Option<&str>,
+    target_mode: ElasticTargetMode,
+    starts: &[&str],
+    solver_mode: &str,
+    domain_id: GeometryDomainId,
+) -> String {
     let (kind, evidence, certified) = match outcome {
         FullPolygonMergeOutcome::Closed(trial) => ("Certified", &trial.evidence, true),
         FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) => {
@@ -1287,13 +1353,14 @@ pub fn frozen_n6_geometry_evidence_json_with_solver_mode(
     let mut json = String::new();
     write!(
         json,
-        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"{}\",\"solver_mode\":\"{}\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
+        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"{}\",\"solver_mode\":\"{}\",\"domain_id\":\"{}\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
         option_json(commit_sha),
         fixture_fingerprint,
         topology_limit,
         elastic_iterations,
         target_mode.as_str(),
         json_escape(solver_mode),
+        domain_id.as_str(),
         starts
             .iter()
             .map(|s| format!("\"{}\"", json_escape(s)))
@@ -1332,7 +1399,7 @@ fn phase_counts_json(evidence: &FullPolygonMergeEvidence) -> String {
 
 fn failure_json(failure: &FullPolygonGeometryFailureEvidence) -> String {
     format!(
-        "{{\"topology_key\":{},\"start_id\":\"{}\",\"elastic_iterations\":{},\"initial_energy\":{},\"final_energy\":{},\"final_phase\":\"{:?}\",\"reason\":\"{}\",\"failed_guard_face\":{},\"global_angle_degrees\":{},\"guard_angle_degrees\":{},\"signed_margin_deg\":{},\"negative_orientation_count\":{},\"crossing_count\":{},\"delaunay_violations\":{},\"invalid_voronoi_cells\":{}}}",
+        "{{\"topology_key\":{},\"start_id\":\"{}\",\"elastic_iterations\":{},\"initial_energy\":{},\"final_energy\":{},\"final_phase\":\"{:?}\",\"reason\":\"{}\",\"failed_guard_face\":{},\"global_angle_degrees\":{},\"guard_angle_degrees\":{},\"signed_margin_deg\":{},\"negative_orientation_count\":{},\"crossing_count\":{},\"delaunay_violations\":{},\"invalid_voronoi_cells\":{},\"diagnostics\":{}}}",
         topology_keys_json(&failure.topology_keys),
         failure.start_id,
         failure.elastic_iterations,
@@ -1351,6 +1418,45 @@ fn failure_json(failure: &FullPolygonGeometryFailureEvidence) -> String {
         usize_option_json(failure.crossing_count),
         usize_option_json(failure.delaunay_violations),
         usize_option_json(failure.invalid_voronoi_cells),
+        diagnostics_json(failure.diagnostics.as_ref()),
+    )
+}
+
+fn diagnostics_json(diagnostics: Option<&GeometryFailureDiagnostics>) -> String {
+    let Some(diagnostics) = diagnostics else {
+        return "null".into();
+    };
+    format!(
+        "{{\"movement_distribution\":{},\"worst_triangle_guard_distance\":{},\"active_boundary_constraint_ratio\":{}}}",
+        movement_distribution_json(&diagnostics.movement_distribution),
+        usize_option_json(diagnostics.worst_triangle_guard_distance),
+        active_boundary_constraint_ratio_json(diagnostics.active_boundary_constraint_ratio.as_ref())
+    )
+}
+
+fn movement_distribution_json(distribution: &super::MovementDistribution) -> String {
+    format!(
+        "{{\"count\":{},\"min\":{},\"p50\":{},\"p90\":{},\"max\":{},\"sum\":{}}}",
+        distribution.count,
+        finite_json_number(distribution.min),
+        finite_json_number(distribution.p50),
+        finite_json_number(distribution.p90),
+        finite_json_number(distribution.max),
+        finite_json_number(distribution.sum)
+    )
+}
+
+fn active_boundary_constraint_ratio_json(
+    ratio: Option<&super::ActiveBoundaryConstraintRatio>,
+) -> String {
+    let Some(ratio) = ratio else {
+        return "null".into();
+    };
+    format!(
+        "{{\"numerator\":{},\"denominator\":{},\"ratio\":{}}}",
+        ratio.numerator,
+        ratio.denominator,
+        finite_json_number(ratio.ratio)
     )
 }
 
