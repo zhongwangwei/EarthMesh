@@ -1699,7 +1699,7 @@ fn transition_polygon(patch: &ParentPatch, core: &BTreeSet<TriangleAddress>) -> 
     polygon
 }
 
-fn triangulations(polygon: &[usize]) -> Vec<Vec<[usize; 3]>> {
+pub(super) fn triangulations(polygon: &[usize]) -> Vec<Vec<[usize; 3]>> {
     if polygon.len() == 3 {
         return vec![vec![[polygon[0], polygon[1], polygon[2]]]];
     }

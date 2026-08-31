@@ -3,6 +3,7 @@ mod annulus;
 mod component_transaction;
 mod core_condensation;
 mod elastic_block;
+mod full_polygon;
 mod full_polygon_reachability;
 mod global_exact_merge;
 mod hierarchy_component;
@@ -31,6 +32,11 @@ pub use core_condensation::{
 pub use elastic_block::{
     solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
+};
+pub use full_polygon::{
+    enumerate_full_polygon_families, enumerate_full_polygon_family,
+    enumerate_stratified_full_polygon_families, DiagonalGeometryHint, FullPolygonFamily,
+    FullPolygonProblem, FullPolygonTopology, FullPolygonTopologyKey,
 };
 pub use full_polygon_reachability::{
     analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,
