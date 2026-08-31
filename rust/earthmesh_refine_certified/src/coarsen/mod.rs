@@ -66,9 +66,10 @@ pub use elastic_block::{
     GeometryStartId, MotherLevelMetric, MovementDistribution,
 };
 pub use face_band::{
-    build_face_band_problem, face_band_evidence_json, face_band_plan_json, solve_exact_face_bands,
-    AnchorBandPolicy, FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind,
-    FaceBandPlan, FaceBandProblem, FaceBandSolveOutcome,
+    build_face_band_problem, build_face_band_problem_with_source_face_rings,
+    face_band_evidence_json, face_band_plan_json, solve_exact_face_bands, AnchorBandPolicy,
+    FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind, FaceBandPlan,
+    FaceBandProblem, FaceBandSolveOutcome,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,

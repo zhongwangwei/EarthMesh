@@ -28,6 +28,7 @@ pub struct FaceBandProblem {
     pub fine_boundary_faces: BTreeSet<usize>,
     pub face_adjacency: BTreeMap<usize, Vec<usize>>,
     pub vertex_incident_faces: BTreeMap<usize, Vec<usize>>,
+    pub face_vertex_neighbours: BTreeMap<usize, Vec<usize>>,
     pub band_count: usize,
     pub anchor_policies: BTreeMap<usize, AnchorBandPolicy>,
     pub face_shared_edges: BTreeMap<(usize, usize), (usize, usize)>,
@@ -35,6 +36,7 @@ pub struct FaceBandProblem {
     pub fine_boundary_vertices: BTreeSet<usize>,
     pub face_addresses: BTreeMap<usize, TriangleAddress>,
     pub core_nonempty: bool,
+    pub source_face_rings: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,7 @@ pub struct FaceBandEvidence {
     pub cap_faces: usize,
     pub corridor_faces: usize,
     pub core_faces_sacrificed: usize,
+    pub source_face_rings: usize,
     pub outcome: FaceBandOutcomeKind,
 }
 
@@ -122,8 +125,20 @@ pub fn build_face_band_problem(
     component: &HierarchyComponent,
     band_count: usize,
 ) -> Result<FaceBandProblem, String> {
+    build_face_band_problem_with_source_face_rings(source, component, band_count, 0)
+}
+
+pub fn build_face_band_problem_with_source_face_rings(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    band_count: usize,
+    source_face_rings: usize,
+) -> Result<FaceBandProblem, String> {
     if band_count < 2 || band_count > u8::MAX as usize + 1 {
         return Err("face-band count must be in 2..=256".into());
+    }
+    if source_face_rings > 2 {
+        return Err("registered face-band expansion supports at most two source-face rings".into());
     }
     let parent_by_face = parent_by_source_face(source).map_err(|error| format!("{error:?}"))?;
     let transition_parents = component
@@ -136,15 +151,29 @@ pub fn build_face_band_problem(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let transition_faces = source
+    let mut transition = source
         .mesh
         .active_triangle_slots()
         .filter(|face| transition_parents.contains(&parent_by_face[face]))
-        .collect::<Vec<_>>();
-    if transition_faces.is_empty() {
+        .collect::<BTreeSet<_>>();
+    if transition.is_empty() {
         return Err("face-band problem requires transition faces".into());
     }
-    let transition = transition_faces.iter().copied().collect::<BTreeSet<_>>();
+    let mut frontier = transition.clone();
+    for _ in 0..source_face_rings {
+        let next = frontier
+            .iter()
+            .flat_map(|&face| source.mesh.neighbours()[face])
+            .filter(|&face| {
+                source.mesh.is_triangle_live(face)
+                    && !transition.contains(&face)
+                    && !core_parents.contains(&parent_by_face[&face])
+            })
+            .collect::<BTreeSet<_>>();
+        transition.extend(next.iter().copied());
+        frontier = next;
+    }
+    let transition_faces = transition.iter().copied().collect::<Vec<_>>();
     let mut coarse_boundary_faces = BTreeSet::new();
     let mut fine_boundary_faces = BTreeSet::new();
     let mut coarse_boundary_vertices = BTreeSet::new();
@@ -182,6 +211,19 @@ pub fn build_face_band_problem(
         faces.sort_unstable();
         faces.dedup();
     }
+    let mut face_vertex_neighbours = BTreeMap::<usize, Vec<usize>>::new();
+    for faces in vertex_incident_faces.values() {
+        for &face in faces {
+            face_vertex_neighbours
+                .entry(face)
+                .or_default()
+                .extend(faces.iter().copied());
+        }
+    }
+    for faces in face_vertex_neighbours.values_mut() {
+        faces.sort_unstable();
+        faces.dedup();
+    }
     let anchor_policies = vertex_incident_faces
         .keys()
         .filter_map(|&vertex| {
@@ -206,6 +248,7 @@ pub fn build_face_band_problem(
         fine_boundary_faces,
         face_adjacency,
         vertex_incident_faces,
+        face_vertex_neighbours,
         band_count,
         anchor_policies,
         face_shared_edges,
@@ -213,6 +256,7 @@ pub fn build_face_band_problem(
         fine_boundary_vertices,
         face_addresses,
         core_nonempty: !core_parents.is_empty(),
+        source_face_rings,
     })
 }
 
@@ -291,7 +335,8 @@ pub fn face_band_evidence_json(evidence: &FaceBandEvidence) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"ladder_step\":\"F0CurrentTransitionFaces\",\"band_count\":{},\"face_complex_fingerprint\":{},\"transition_faces\":{},\"coarse_boundary_faces\":{},\"fine_boundary_faces\":{},\"states_examined\":{},\"propagation_rounds\":{},\"pruned_domains\":{},\"band_face_counts\":{},\"interface_edge_counts\":{},\"interface_vertex_counts\":{},\"true_pinch_count\":{},\"one_face_wedge_count\":{},\"multi_face_wedge_count\":{},\"anchor_policies\":{{{}}},\"cap_faces\":{},\"corridor_faces\":{},\"core_faces_sacrificed\":{},\"outcome\":\"{}\"}}",
+        "{{\"ladder_step\":\"{}\",\"band_count\":{},\"face_complex_fingerprint\":{},\"transition_faces\":{},\"coarse_boundary_faces\":{},\"fine_boundary_faces\":{},\"states_examined\":{},\"propagation_rounds\":{},\"pruned_domains\":{},\"band_face_counts\":{},\"interface_edge_counts\":{},\"interface_vertex_counts\":{},\"true_pinch_count\":{},\"one_face_wedge_count\":{},\"multi_face_wedge_count\":{},\"anchor_policies\":{{{}}},\"cap_faces\":{},\"corridor_faces\":{},\"core_faces_sacrificed\":{},\"outcome\":\"{}\"}}",
+        ladder_step(evidence.source_face_rings),
         evidence.band_count,
         evidence.face_complex_fingerprint,
         evidence.transition_faces,
@@ -326,8 +371,11 @@ fn usize_json(values: &[usize]) -> String {
 }
 
 fn validate_problem(problem: &FaceBandProblem) -> Result<(), String> {
-    if problem.band_count != 2 {
-        return Err("PR56 exact face-band solver currently supports band_count=2".into());
+    if !matches!(problem.band_count, 2 | 3) {
+        return Err("exact face-band solver supports band_count=2 or 3".into());
+    }
+    if problem.source_face_rings > 2 {
+        return Err("registered face-band expansion supports at most two source-face rings".into());
     }
     let faces = problem
         .transition_faces
@@ -514,6 +562,14 @@ impl<'a> Search<'a> {
                     AnchorBandPolicy::OnSingleInterface => {}
                 }
             }
+            if self.problem.band_count == 3 {
+                let Some(pruned) = prune_local_label_constraints(self.problem, &mut self.domains)
+                else {
+                    return false;
+                };
+                changed |= pruned > 0;
+                self.pruned_domains += pruned;
+            }
             for label in 0..self.problem.band_count as u8 {
                 let possible = self
                     .problem
@@ -583,9 +639,49 @@ impl<'a> Search<'a> {
             cap_faces: 0,
             corridor_faces: 0,
             core_faces_sacrificed: 0,
+            source_face_rings: self.problem.source_face_rings,
             outcome,
         }
     }
+}
+
+fn prune_local_label_constraints(
+    problem: &FaceBandProblem,
+    domains: &mut BTreeMap<usize, BTreeSet<u8>>,
+) -> Option<usize> {
+    let snapshot = domains.clone();
+    let mut pruned = 0;
+    for &face in &problem.transition_faces {
+        let mut allowed = snapshot[&face].clone();
+        allowed.retain(|&label| {
+            problem
+                .face_adjacency
+                .get(&face)
+                .into_iter()
+                .flatten()
+                .all(|neighbour| {
+                    snapshot[neighbour]
+                        .iter()
+                        .any(|&other| label.abs_diff(other) <= 1)
+                })
+                && problem
+                    .face_vertex_neighbours
+                    .get(&face)
+                    .into_iter()
+                    .flatten()
+                    .all(|other_face| {
+                        snapshot[other_face]
+                            .iter()
+                            .any(|&other| label.abs_diff(other) <= 1)
+                    })
+        });
+        if allowed.is_empty() {
+            return None;
+        }
+        pruned += domains[&face].len() - allowed.len();
+        domains.insert(face, allowed);
+    }
+    Some(pruned)
 }
 
 fn assigned_connected_through_possible(
@@ -658,6 +754,7 @@ fn validate_complete(
             interface_edges[a.min(b) as usize].push(edge);
         }
     }
+    let mut interface_vertices = Vec::new();
     for edges in &mut interface_edges {
         edges.sort_unstable();
         edges.dedup();
@@ -672,6 +769,14 @@ fn validate_complete(
             || !vertices.is_disjoint(&problem.fine_boundary_vertices)
         {
             return None;
+        }
+        interface_vertices.push(vertices);
+    }
+    for left in 0..interface_vertices.len() {
+        for right in left + 1..interface_vertices.len() {
+            if !interface_vertices[left].is_disjoint(&interface_vertices[right]) {
+                return None;
+            }
         }
     }
     for (&anchor, policy) in &problem.anchor_policies {
@@ -826,6 +931,15 @@ fn fingerprint(problem: &FaceBandProblem) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+fn ladder_step(source_face_rings: usize) -> &'static str {
+    match source_face_rings {
+        0 => "F0CurrentTransitionFaces",
+        1 => "F1OneSourceFaceRing",
+        2 => "F2TwoSourceFaceRings",
+        _ => "Unsupported",
+    }
 }
 
 fn canonical_face_pair(a: usize, b: usize) -> (usize, usize) {

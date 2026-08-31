@@ -227,3 +227,10 @@ trust gate over 500 topology states. The best PF-W2 result is
 the retained 38.551143486745--81.453074281139-degree incumbent. PF-W2 therefore
 returns `NoImprovementEnterW3`; this bounded continuous result is not a PF-W2
 no-go proof, and the strict 40.2--79.8 internal gate remains blocked.
+PR59 follows the registered W3 ladder after the PF-W2 geometry regression. The
+current 88-face corridor and +1-ring 116-face corridor are exact no-solutions by
+constraint propagation; +2 source-face rings close in 58 branch states on 146
+faces. The three annular bands contain 36/50/60 faces and their two
+vertex-disjoint simple interfaces contain 20/26 edges. No core sacrifice or
+anchor cap is needed. This is a face-label result only; PR60 still owns W3
+full-polygon topology and geometry.

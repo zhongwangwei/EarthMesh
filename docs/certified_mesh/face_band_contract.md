@@ -146,3 +146,25 @@ geometry on 182 of them. Its best PF-W2 range is
 incumbent is not replaced. The strict `40.2–79.8°` gate remains unmet and the
 pre-registered result is `NoImprovementEnterW3`, not a PF-W2 impossibility
 proof.
+
+## Frozen N6 exact W3 result
+
+PR59 extends the same exact label solver to `b(f) in {0,1,2}` and adds
+arc-consistent propagation for adjacent-face Lipschitz and incident-vertex
+no-skip constraints. Source-face expansion is outward only; it never consumes
+the non-empty coarse core. The registered ladder closes as follows:
+
+| step | transition faces | result | branch states |
+|---|---:|---|---:|
+| F0 current corridor | 88 | `FamilyExhaustedNoSolution` | 0 |
+| F1 +1 source-face ring | 116 | `FamilyExhaustedNoSolution` | 0 |
+| F2 +2 source-face rings | 146 | `Closed` | 58 |
+
+F0 and F1 require no branching because propagation empties a domain, which is
+an exact contradiction rather than a budget result. The first closed plan has
+band face counts `36/50/60` and two simple interfaces with `20/26` edges and
+vertices. The interfaces are vertex-disjoint and avoid both fixed boundaries;
+all vertex label spans are at most one and all four original anchors remain
+inside one band. No coarse-core sacrifice, fine cap, or corridor is used.
+PR59 establishes the W3 face-label plan only; topology and geometry remain the
+PR60 gate.
