@@ -100,3 +100,30 @@ MRV order if necessary; the distance potential only orders labels. Exhaustion
 is scoped to the supplied face complex, while a state-budget hit remains
 unknown. PR56 intentionally rejects `band_count=3` until the PR59 W3-specific
 propagation and interface-disjointness gate is implemented.
+
+## Frozen N6 PF-W2 topology result
+
+PR57 converts the exact face labels into three ordered boundary cycles and
+derives polygon-sector boundaries from source edges connecting consecutive
+cycles. The two annular bands produce 8 and 20 disjoint sectors respectively;
+the old parent-layer nominal traces are not used as sector boundaries.
+
+The existing full-polygon enumeration, degree reachability, global merge,
+anchor-ear, final-link, edge-incidence, Euler/charge, and hierarchy
+materialization gates then close in 31 topology states:
+
+| metric | result |
+|---|---:|
+| sectors | 28 (8 / 20) |
+| selected sector topologies | 28 |
+| selected anchor ears | 0 |
+| final vertices / edges / faces | 341 / 1017 / 678 |
+| anchor degrees | 2, 29, 77, 155 are all 5 |
+| ordinary degree histogram | degree 5: 21; degree 6: 303; degree 7: 13 |
+| Euler / charge | 2 / 12 |
+
+Every final vertex link is one cycle, every edge has incidence two, the mesh
+remains mixed-level, and both vertex and face counts are reduced. This closes
+the PF-W2 combinatorial topology gate only. Coordinates are unchanged, so the
+best known angle range remains `38.551143486745–81.453074281139°`; PR58 must
+transfer that witness and run the strict geometry gate.

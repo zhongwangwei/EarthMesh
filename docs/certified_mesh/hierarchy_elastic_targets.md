@@ -266,3 +266,14 @@ original anchors lie inside a single band, and no cap, corridor, or coarse-core
 sacrifice is used. This is the minimum-cost PF-W2 planning witness; it is not
 yet a full-polygon topology or angle certificate. The next gate is PR57
 topology closure derived from this interface, still before CBER.
+
+## PR57 PF-W2 topology closure
+
+The PR56 interface now drives a deterministic 28-sector decomposition (8 inner
+and 20 outer sectors). Reusing the existing exact full-polygon and global merge
+gates closes in 31 states without anchor ears. The materialized mixed-level
+mesh has 341 vertices, 1017 edges, and 678 faces; all four anchors have degree
+5, ordinary degrees stay in 5--7, every edge has incidence two, every link is a
+single cycle, Euler is 2, and charge is 12. This is topology-only evidence.
+The angle range is unchanged at 38.551143486745--81.453074281139 degrees, so
+the strict 40.2--79.8 internal target remains a PR58 geometry obligation.

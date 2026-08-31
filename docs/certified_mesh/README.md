@@ -198,6 +198,12 @@ transition faces split into connected 36/52-face annular bands around one
 20-edge simple interface, with no boundary contact, true pinch, anchor cap, or
 coarse-core sacrifice. This is a planning witness only; PR57 must still close
 degree/link/Euler/charge topology before any geometry solve.
+PR57 now closes that topology gate: source-edge connectors derived from the
+PF-W2 cycles form 28 full-polygon sectors, and the exact merge closes in 31
+states with final V/E/F `341/1017/678`, anchor degree 5, ordinary degree 5--7,
+edge incidence 2, single-cycle links, Euler 2, charge 12, and mixed levels.
+No coordinates move in PR57, so the best known angle range remains
+38.551143486745--81.453074281139 degrees pending PR58 geometry continuation.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
