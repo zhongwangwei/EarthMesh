@@ -916,7 +916,7 @@ fn mother_level_voronoi_areas(
     areas
 }
 
-fn local_triangle_edges([a, b, c]: [usize; 3]) -> [(usize, usize); 3] {
+pub(super) fn local_triangle_edges([a, b, c]: [usize; 3]) -> [(usize, usize); 3] {
     [
         (a.min(b), a.max(b)),
         (b.min(c), b.max(c)),
@@ -1445,7 +1445,10 @@ fn ring_scale_start(mesh: &mut MeshState, patch: &ElasticPatch) -> Result<(), St
     Ok(())
 }
 
-fn graph_distances(edges: &[(usize, usize)], seeds: &BTreeSet<usize>) -> BTreeMap<usize, usize> {
+pub(super) fn graph_distances(
+    edges: &[(usize, usize)],
+    seeds: &BTreeSet<usize>,
+) -> BTreeMap<usize, usize> {
     let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
     for &(left, right) in edges {
         adjacency.entry(left).or_default().push(right);
@@ -1983,7 +1986,7 @@ fn active_boundary_constraint_ratio(
     })
 }
 
-fn face_graph_distance_to_any(
+pub(super) fn face_graph_distance_to_any(
     mesh: &MeshState,
     start_face: usize,
     targets: &BTreeSet<usize>,

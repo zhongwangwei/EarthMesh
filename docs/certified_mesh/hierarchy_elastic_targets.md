@@ -185,3 +185,22 @@ The best-so-far margin is monotone and the +2 output cannot be worse than its
 +1 seed. The strict window is still not met, so this is not a Frozen N6
 certificate. The next gate is the worst-angle/effective-width atlas; simply
 adding more iterations is not justified by the observed stage stalls.
+
+## PR53 blocker atlas
+
+The deterministic worst-100 atlas classifies the PR52 +2 witness as
+`WidthDominated`:
+
+| metric | +1 best | +2 warm best |
+|---|---:|---:|
+| within one graph step of a zero-width shared junction | 90% | 85% |
+| adjacent to a pentagon or shared junction | 91% | 88% |
+| near the fixed guard | 52% | 31% |
+| contains a long same-chain/full-polygon diagonal | 8% | 9% |
+
+The current W2 stratification has two logical adjacent-trace pairs. They share
+6 and 8 vertices respectively, so both minimum face-strip widths and both
+normalized minimum separations are zero. The 14 unique shared vertices are the
+zero-width pinches. This passes the preregistered 60% width-dominated gate and
+routes the next experiment to explicit W3/W4 positive-width band planning,
+rather than more +2 iterations or geometry-aware topology ordering.

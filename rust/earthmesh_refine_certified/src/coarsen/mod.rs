@@ -1,8 +1,10 @@
 mod anchor_ear;
+mod angle_atlas;
 mod annulus;
 mod component_transaction;
 mod core_condensation;
 mod domain_continuation;
+mod effective_band;
 mod elastic_block;
 mod full_polygon;
 mod full_polygon_merge;
@@ -18,6 +20,10 @@ pub use anchor_ear::{
     apply_anchor_ear, build_anchor_ear_conflict_graph, derive_anchor_ear_candidates,
     AnchorEarApplyError, AnchorEarCandidate, AnchorEarConflictGraph, AnchorEarKey,
     AnchorEarRejectReason, AnchorEarReport, OwnedTopologyTriangle,
+};
+pub use angle_atlas::{
+    build_worst_angle_atlas, classify_angle_blockers, worst_angle_atlas_json,
+    AngleBlockerClassification, AngleWitness, EdgeClass, WorstAngleAtlas,
 };
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
@@ -36,6 +42,9 @@ pub use domain_continuation::{
     continue_nested_domain, domain_continuation_evidence_json, ContinuationStageId,
     DomainContinuationMode, DomainContinuationOutcome, DomainContinuationResult,
     DomainContinuationSchedule, DomainContinuationStageReport,
+};
+pub use effective_band::{
+    build_effective_band_report, effective_band_report_json, EffectiveBandReport,
 };
 pub use elastic_block::{
     angle_margin_objective, initial_elastic_phase, solve_elastic_patch,
