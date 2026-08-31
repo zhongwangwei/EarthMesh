@@ -9,7 +9,7 @@ use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
     core_condensation::source_face_slot, solve_elastic_patch, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
-    ElasticTargetMode, HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet,
+    ElasticTargetMode, GeometryDomainId, HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet,
     TransitionTopologyCandidate, TransitionTopologyLimits, TransitionTopologyOutcome,
 };
 use crate::{
@@ -1185,6 +1185,7 @@ fn elastic_patch_for_state(
         .filter(|site| !movable_compact_vertices.contains(site))
         .collect::<BTreeSet<_>>();
     Ok(ElasticPatch {
+        domain_id: GeometryDomainId::CurrentAnnulus,
         topology: base.topology,
         reference_positions: mesh.mesh.vertices().to_vec(),
         fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),

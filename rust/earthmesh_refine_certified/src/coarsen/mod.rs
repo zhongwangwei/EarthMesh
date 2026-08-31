@@ -6,6 +6,7 @@ mod elastic_block;
 mod full_polygon;
 mod full_polygon_merge;
 mod full_polygon_reachability;
+mod geometry_witness;
 mod global_exact_merge;
 mod hierarchy_component;
 mod scheduler;
@@ -60,6 +61,10 @@ pub use full_polygon_reachability::{
     analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,
     degree_defects_from_global_evidence, DegreeDefectRecord, DegreeDomainOutcome,
     FullPolygonReachabilityEvidence, SectorDegreeSignature, VertexIncidenceDomain,
+};
+pub use geometry_witness::{
+    embed_geometry_witness, GeometryDomainWitness, GeometryEmbeddingError,
+    NestedDomainEmbeddingReport,
 };
 pub use global_exact_merge::{
     solve_global_exact_merge, GlobalExactMergeEvidence, GlobalExactMergeLimits,

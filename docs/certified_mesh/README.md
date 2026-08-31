@@ -168,7 +168,12 @@ radian tangent box for all 76 movable vertices and all 666 active faces. The
 whole local box is certified angle-infeasible with upper signed margin
 `-3.851707976720` degrees. This result is scoped to that topology/domain/trust
 box; it is not a global continuous or topology no-go. The strict gate and NXP80
-therefore remain blocked.
+therefore remain blocked. PR51 then embeds the saved +1 best into the +2 movable
+domain without a cold restart: all 76 common coordinates and the topology are
+bitwise unchanged, 32 newly released vertices retain their materialized
+coordinates, and the zero-step range remains exactly
+37.340837475907--83.652760215259 degrees. This passes the nested-domain gate but
+does not yet improve the strict margin; NXP80 remains blocked.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

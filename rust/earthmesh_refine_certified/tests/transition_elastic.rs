@@ -4,7 +4,7 @@ use earthmesh_mesh::{magnitude, CartesianPoint};
 use earthmesh_refine_certified::{
     coarsen::{
         solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits,
-        ElasticBlockOutcome, ElasticPatch, ElasticTargetField, ElasticTargetMode,
+        ElasticBlockOutcome, ElasticPatch, ElasticTargetField, ElasticTargetMode, GeometryDomainId,
         HierarchyLeafMesh, TransitionBoundary, TransitionTopologyCandidate,
         TransitionTopologyReport, TransitionTopologyTrial,
     },
@@ -58,6 +58,7 @@ fn elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {
         .filter(|site| !movable.contains(site))
         .collect::<BTreeSet<_>>();
     let patch = ElasticPatch {
+        domain_id: GeometryDomainId::CurrentAnnulus,
         topology: TransitionTopologyCandidate {
             component_id: 29,
             topology_id: 0,

@@ -1,5 +1,5 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, frozen_n6_geometry_evidence_json,
+    build_stratified_annulus, embed_geometry_witness, frozen_n6_geometry_evidence_json,
     frozen_n6_geometry_evidence_json_with_solver_domain,
     frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
@@ -12,7 +12,8 @@ use earthmesh_refine_certified::coarsen::{
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ContinuousProofOutcome,
     ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField,
     ElasticTargetMode, FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    GeometryDomainId, GeometryStartId, IntervalBox, RingAnchorKind, TransitionTopologyCandidate,
+    GeometryDomainId, GeometryDomainWitness, GeometryStartId, IntervalBox, RingAnchorKind,
+    TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -185,6 +186,7 @@ fn frozen_n6_closed_topology_enters_untangle_not_invalid_patch() {
         .filter(|site| !movable.contains(site))
         .collect::<BTreeSet<_>>();
     let patch = ElasticPatch {
+        domain_id: GeometryDomainId::CurrentAnnulus,
         topology: TransitionTopologyCandidate {
             component_id: 43,
             topology_id: 0,
@@ -1137,6 +1139,108 @@ fn frozen_n6_pr50_continuous_interval_probe() {
         boxes.map_or_else(|| "null".into(), |value| value.to_string()),
         json_f64_or_null(lower),
         json_f64_or_null(upper),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR51 +1-to-+2 embedding gate"]
+fn frozen_n6_pr51_nested_domain_embedding_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let source_domain = GeometryDomainId::PlusOneOrdinaryRing;
+    let target_domain = GeometryDomainId::PlusTwoOrdinaryRings;
+    let start = GeometryStartId::MaterializedSource;
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let outcome =
+        solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &[start],
+            source_domain,
+        );
+    let evidence = match &outcome {
+        FullPolygonMergeOutcome::Closed(trial) => &trial.evidence,
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
+        | FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
+        | FullPolygonMergeOutcome::InvalidInput { evidence, .. } => evidence,
+    };
+    let failure = evidence
+        .best_geometry_failure
+        .as_ref()
+        .expect("PR51 requires the PR49 best +1 failure evidence");
+    let numerical = failure
+        .witness
+        .as_ref()
+        .expect("PR51 requires the persisted PR49 numerical witness");
+    let domain_witness = GeometryDomainWitness::from_failure(
+        fixture_fingerprint,
+        failure.topology_keys.clone(),
+        source_domain,
+        numerical,
+        failure.global_angle_degrees.unwrap(),
+        failure.guard_angle_degrees.unwrap(),
+    )
+    .unwrap();
+    let target_patch = domain_witness
+        .expanded_patch(
+            &source,
+            source_levels.as_slice(),
+            &BTreeSet::new(),
+            target_domain,
+        )
+        .unwrap();
+    let (_embedded, report) = embed_geometry_witness(&domain_witness, &target_patch).unwrap();
+
+    assert!(report.topology_equal);
+    assert!(report.common_positions_bitwise_equal);
+    assert_eq!(report.common_vertices, 76);
+    assert_eq!(report.newly_released_vertices, 32);
+    assert_eq!(target_patch.movable_compact_vertices.len(), 108);
+    assert_eq!(
+        report.source_signed_margin_deg.to_bits(),
+        report.embedded_signed_margin_deg.to_bits()
+    );
+    assert_eq!(
+        domain_witness.global_angle_range_deg.0.to_bits(),
+        report.embedded_global_angle_range_deg.0.to_bits()
+    );
+    assert_eq!(
+        domain_witness.global_angle_range_deg.1.to_bits(),
+        report.embedded_global_angle_range_deg.1.to_bits()
+    );
+
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr51NestedDomainEmbedding\",\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"source_domain\":\"{}\",\"target_domain\":\"{}\",\"source_start\":\"{}\",\"target_start\":\"InheritedDomainWitness\",\"common_vertices\":{},\"newly_released_vertices\":{},\"target_movable_vertices\":{},\"common_positions_bitwise_equal\":{},\"topology_equal\":{},\"source_angle_min_deg\":{:.12},\"source_angle_max_deg\":{:.12},\"embedded_angle_min_deg\":{:.12},\"embedded_angle_max_deg\":{:.12},\"source_signed_margin_deg\":{:.12},\"embedded_signed_margin_deg\":{:.12},\"gate\":\"Go\"}}",
+        option_json(git_head().as_deref()),
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        source_domain.as_str(),
+        target_domain.as_str(),
+        start.as_str(),
+        report.common_vertices,
+        report.newly_released_vertices,
+        target_patch.movable_compact_vertices.len(),
+        report.common_positions_bitwise_equal,
+        report.topology_equal,
+        domain_witness.global_angle_range_deg.0,
+        domain_witness.global_angle_range_deg.1,
+        report.embedded_global_angle_range_deg.0,
+        report.embedded_global_angle_range_deg.1,
+        report.source_signed_margin_deg,
+        report.embedded_signed_margin_deg,
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();
