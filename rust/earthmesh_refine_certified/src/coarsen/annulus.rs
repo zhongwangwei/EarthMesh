@@ -273,6 +273,114 @@ pub fn extract_coupled_annulus(
     Ok(annulus)
 }
 
+pub(crate) fn expand_coupled_annulus_to_face_complex(
+    source: &MotherGrid,
+    mut coupled: CoupledAnnulus,
+    annulus_faces: &BTreeSet<usize>,
+) -> Result<CoupledAnnulus, AnnulusExtractionError> {
+    if annulus_faces.is_empty() {
+        return Err(AnnulusExtractionError::InvalidComponent(
+            "face-band complex must be non-empty".into(),
+        ));
+    }
+    let coarse_vertices = coupled
+        .coarse_interface
+        .vertices
+        .iter()
+        .map(|vertex| vertex.source_slot)
+        .collect::<BTreeSet<_>>();
+    let fine_cycle = exterior_cycle(
+        "fine_interface",
+        face_boundary_edges(source, annulus_faces),
+        &coarse_vertices,
+    )?;
+    let outside_ring = annulus_faces
+        .iter()
+        .flat_map(|&face| source.mesh.neighbours()[face])
+        .filter(|&face| source.mesh.is_triangle_live(face) && !annulus_faces.contains(&face))
+        .collect::<BTreeSet<_>>();
+    let guarded_faces = annulus_faces
+        .union(&outside_ring)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let outer_cycle = exterior_cycle(
+        "outer_guard",
+        face_boundary_edges(source, &guarded_faces),
+        &coarse_vertices,
+    )?;
+    reject_boundary_cycle_intersection(
+        source,
+        &coupled
+            .coarse_interface
+            .vertices
+            .iter()
+            .map(|vertex| vertex.source_slot)
+            .collect::<Vec<_>>(),
+        &fine_cycle,
+    )?;
+
+    let fixed_outside_faces = source
+        .mesh
+        .active_triangle_slots()
+        .filter(|face| !annulus_faces.contains(face))
+        .collect::<BTreeSet<_>>();
+    let (annulus_incidence, outside_incidence) =
+        vertex_incidence(source, annulus_faces, &fixed_outside_faces);
+    coupled.fine_interface = ring(
+        coupled.intermediate_rings.len() + 2,
+        fine_cycle,
+        RingVertexRole::FineInterface,
+        source,
+        false,
+    )?;
+    coupled.outer_guard = ring(
+        coupled.intermediate_rings.len() + 3,
+        outer_cycle,
+        RingVertexRole::FixedOuterGuard,
+        source,
+        true,
+    )?;
+    coupled.boundary_contracts =
+        boundary_contracts(source, &annulus_incidence, &outside_incidence)?;
+    coupled.annulus_face_slots = annulus_faces.iter().copied().collect();
+    coupled.fixed_outside_face_slots = fixed_outside_faces.into_iter().collect();
+    Ok(coupled)
+}
+
+fn exterior_cycle(
+    name: &'static str,
+    edges: BTreeSet<Edge>,
+    coarse_vertices: &BTreeSet<usize>,
+) -> Result<Vec<usize>, AnnulusExtractionError> {
+    let mut cycles = cycles_from_edges(name, edges)?
+        .into_iter()
+        .filter(|cycle| cycle.iter().all(|vertex| !coarse_vertices.contains(vertex)))
+        .collect::<Vec<_>>();
+    if cycles.len() != 1 {
+        return Err(AnnulusExtractionError::UnsupportedMultiCycleAnnulus {
+            boundary: name,
+            cycles: cycles.len(),
+        });
+    }
+    let mut cycle = cycles.pop().expect("one exterior cycle");
+    cycle.reverse();
+    rotate_min(&mut cycle);
+    Ok(cycle)
+}
+
+fn face_boundary_edges(source: &MotherGrid, faces: &BTreeSet<usize>) -> BTreeSet<Edge> {
+    faces
+        .iter()
+        .flat_map(|&face| {
+            let triangle = source.mesh.triangles()[face];
+            (0..3).filter_map(move |side| {
+                (!faces.contains(&source.mesh.neighbours()[face][side]))
+                    .then_some(edge(triangle[(side + 1) % 3], triangle[(side + 2) % 3]))
+            })
+        })
+        .collect()
+}
+
 fn validate_component(
     source: &MotherGrid,
     component: &HierarchyComponent,

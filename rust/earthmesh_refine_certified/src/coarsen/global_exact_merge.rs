@@ -4,7 +4,9 @@
 //! flips, final manifold/valence/Euler gates, then hierarchy materialization.
 
 use super::anchor_ear::derive_anchor_ear_candidates_with_fixed_edges;
-use super::core_condensation::rebuild_from_leaf_set_with_custom_triangles;
+use super::core_condensation::{
+    rebuild_from_leaf_set_with_custom_face_slots, rebuild_from_leaf_set_with_custom_triangles,
+};
 use super::{
     apply_anchor_ear, build_stratified_annulus, condense_hierarchy_core, HierarchyComponent,
     HierarchyLeafMesh, OwnedTopologyTriangle, RingAnchorKind, StratifiedAnnulus,
@@ -1204,6 +1206,20 @@ pub(super) fn fixed_triangles(
     Ok(out)
 }
 
+pub(super) fn fixed_triangles_for_face_complex(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    annulus_face_slots: &[usize],
+) -> Result<Vec<[usize; 3]>, String> {
+    let removed = annulus_face_slots
+        .iter()
+        .map(|&face| canonical_source_triangle(source.mesh.triangles()[face]))
+        .collect::<BTreeSet<_>>();
+    let mut fixed = fixed_triangles(source, component)?;
+    fixed.retain(|triangle| !removed.contains(&canonical_source_triangle(*triangle)));
+    Ok(fixed)
+}
+
 pub(super) fn materialize(
     source: &MotherGrid,
     component: &HierarchyComponent,
@@ -1229,6 +1245,36 @@ pub(super) fn materialize(
         .map(|triangle| triangle.vertices)
         .collect::<Vec<_>>();
     rebuild_from_leaf_set_with_custom_triangles(source, &leaf_set, &custom_parents, &custom)
+}
+
+pub(super) fn materialize_for_face_complex(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    annulus_face_slots: &[usize],
+    custom_triangles: &[OwnedTopologyTriangle],
+) -> Result<HierarchyLeafMesh, String> {
+    let trial = condense_hierarchy_core(source, &component.core_parents)?;
+    let mut leaf_set = trial.leaf_set;
+    let custom_face_slots = annulus_face_slots.iter().copied().collect::<BTreeSet<_>>();
+    for &face in &custom_face_slots {
+        let address = source.triangle_addresses[face]
+            .ok_or_else(|| format!("annulus source face {face} has no hierarchy address"))?;
+        if !leaf_set.leaves.remove(&address) {
+            return Err(format!(
+                "annulus source face {face} is absent from the hierarchy leaf set"
+            ));
+        }
+    }
+    let custom = custom_triangles
+        .iter()
+        .map(|triangle| triangle.vertices)
+        .collect::<Vec<_>>();
+    rebuild_from_leaf_set_with_custom_face_slots(source, &leaf_set, &custom_face_slots, &custom)
+}
+
+fn canonical_source_triangle(mut triangle: [usize; 3]) -> [usize; 3] {
+    triangle.sort_unstable();
+    triangle
 }
 
 pub(super) fn replace_fixed_link_contracts(

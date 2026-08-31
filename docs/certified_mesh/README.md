@@ -234,3 +234,19 @@ faces. The three annular bands contain 36/50/60 faces and their two
 vertex-disjoint simple interfaces contain 20/26 edges. No core sacrifice or
 anchor cap is needed. This is a face-label result only; PR60 still owns W3
 full-polygon topology and geometry.
+PR60 finds that the first F2 labeling cannot be materialized by the existing
+polygon-only topology family because strict-interior anchors 2 and 155 are not
+polygon vertices. It therefore applies the registered `OnSingleInterface`
+fallback to those two anchors and resolves F2 exactly. The replacement W3 plan
+closes after 722766 label states with 36/52/58 faces and 20/28-edge disjoint
+interfaces. Its 56-sector full-polygon topology closes in 70 states with final
+V/E/F `341/1017/678`; anchors 2, 29, 77, and 155 all have degree 5, ordinary
+degrees remain 5--7, Euler is 2, charge is 12, and mixed levels are retained.
+W3 geometry uses the explicit trace scales `H*2^(-k/3)` for `k=0..3` before
+the inherited +1/+2 active-trust runs. With 150 topology states, 64 elastic
+iterations, and all six starts, both domains remain in `Untangle`: +1 reaches
+only 0.016745201577--179.918785972103 degrees and +2 reaches
+0.051225122152--179.845918790626 degrees. Ordinary regions are therefore not
+strictly feasible, so the taskbook's anchor-local W4 precondition is false.
+The retained 38.551143486745--81.453074281139-degree incumbent is not replaced,
+and PR61 interval proof is not started.

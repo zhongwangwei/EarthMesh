@@ -677,6 +677,72 @@ impl ElasticPatch {
         Ok(self)
     }
 
+    pub(crate) fn with_face_band_trace_targets(
+        mut self,
+        source: &MotherGrid,
+        target: &HierarchyLeafMesh,
+        component: &HierarchyComponent,
+        plan: &FaceBandPlan,
+        source_levels: &[Option<usize>],
+    ) -> Result<Self, String> {
+        if plan.band_count != 3 {
+            return Ok(self);
+        }
+        let stratified = build_stratified_annulus_from_face_bands(source, component, plan)
+            .map_err(|error| format!("face-band trace targets rejected annulus: {error:?}"))?;
+        if stratified.traces.len() != 4 {
+            return Err(format!(
+                "W3 trace targets require four traces, got {}",
+                stratified.traces.len()
+            ));
+        }
+        let metrics = mother_level_metrics(&source.mesh, source_levels)?;
+        let coarse = metrics
+            .values()
+            .max_by(|left, right| left.median_edge_length.total_cmp(&right.median_edge_length))
+            .ok_or_else(|| "W3 trace targets have no mother-level metrics".to_string())?;
+        let source_to_compact = target
+            .source_vertex_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(compact, source)| source.map(|source| (source, compact)))
+            .collect::<BTreeMap<_, _>>();
+        for (k, trace) in stratified.traces.iter().enumerate() {
+            let scale = w3_trace_scale(coarse.median_edge_length, k);
+            let area = coarse.median_voronoi_area * (scale / coarse.median_edge_length).powi(2);
+            for occurrence in &trace.occurrences {
+                let compact = source_to_compact
+                    .get(&occurrence.source_slot)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "W3 trace source vertex {} is absent from target mesh",
+                            occurrence.source_slot
+                        )
+                    })?;
+                self.target_field
+                    .target_vertex_scales
+                    .insert(compact, scale);
+                self.target_field.target_cell_areas.insert(compact, area);
+            }
+        }
+        for &face in &self.guard_faces {
+            for edge in local_triangle_edges(target.mesh.triangles()[face]) {
+                let Some(&left) = self.target_field.target_vertex_scales.get(&edge.0) else {
+                    continue;
+                };
+                let Some(&right) = self.target_field.target_vertex_scales.get(&edge.1) else {
+                    continue;
+                };
+                self.target_field
+                    .target_edge_lengths
+                    .insert(edge, (left * right).sqrt());
+            }
+        }
+        Ok(self)
+    }
+
     pub(crate) fn expanded_nested_domain(
         &self,
         source: &MotherGrid,
@@ -812,6 +878,10 @@ impl ElasticPatch {
             target_field: self.target_field.clone(),
         })
     }
+}
+
+fn w3_trace_scale(coarse_scale: f64, trace_index: usize) -> f64 {
+    coarse_scale * 2.0f64.powf(-(trace_index as f64) / 3.0)
 }
 
 fn target_mode_uses_area(mode: ElasticTargetMode) -> bool {
@@ -3402,6 +3472,18 @@ mod tests {
         },
         mother_grid::MotherGrid,
     };
+
+    #[test]
+    fn w3_trace_scales_split_two_to_one_change_evenly() {
+        let scales = (0..=3)
+            .map(|trace| w3_trace_scale(1.0, trace))
+            .collect::<Vec<_>>();
+        let ratio = 2.0f64.powf(-1.0 / 3.0);
+        assert!((scales[3] - 0.5).abs() <= 1.0e-15);
+        assert!(scales
+            .windows(2)
+            .all(|pair| (pair[1] / pair[0] - ratio).abs() <= 1.0e-15));
+    }
 
     fn single_movable_patch() -> (MeshState, ElasticPatch, BTreeSet<usize>, EnergyContext) {
         let grid = MotherGrid::generate(4).unwrap();

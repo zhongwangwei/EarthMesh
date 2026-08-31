@@ -277,3 +277,24 @@ mesh has 341 vertices, 1017 edges, and 678 faces; all four anchors have degree
 single cycle, Euler is 2, and charge is 12. This is topology-only evidence.
 The angle range is unchanged at 38.551143486745--81.453074281139 degrees, so
 the strict 40.2--79.8 internal target remains a PR58 geometry obligation.
+
+## PR60 W3 trace targets
+
+The three-band solve overrides the four separator traces with the registered
+geometric progression
+
+```text
+h_k = H * 2^(-k/3),  k = 0,1,2,3
+```
+
+where `H` is the coarse mother-level median edge length. Trace Voronoi targets
+scale as `(h_k/H)^2`, and incident edge targets use the geometric mean of their
+endpoint scales. Non-trace vertices retain the existing hierarchy-derived
+targets. The inherited +1 and +2 coordinate domains remain separate and must
+use witnesses from the matching domain.
+
+The registered 150-state, 64-iteration, six-start run reaches seven geometry
+candidates per domain but cannot leave `Untangle`. Its best +1/+2 angle ranges
+are respectively `0.016745201577--179.918785972103` and
+`0.051225122152--179.845918790626` degrees. These runs do not improve the
+retained `38.551143486745--81.453074281139`-degree incumbent.

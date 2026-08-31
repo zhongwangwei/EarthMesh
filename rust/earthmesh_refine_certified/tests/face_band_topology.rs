@@ -1,7 +1,8 @@
 use earthmesh_refine_certified::{
     coarsen::{
-        build_face_band_problem, build_stratified_annulus_from_face_bands, n6_legacy_mixed_fixture,
-        solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, BandComponentKind,
+        build_face_band_problem, build_face_band_problem_with_source_face_rings,
+        build_stratified_annulus_from_face_bands, n6_legacy_mixed_fixture, solve_exact_face_bands,
+        solve_full_polygon_merge_from_face_bands, AnchorBandPolicy, BandComponentKind,
         FaceBandLimits, FaceBandPlan, FaceBandSolveOutcome, FullPolygonMergeLimits,
         FullPolygonMergeOutcome, HierarchyComponent,
     },
@@ -205,6 +206,96 @@ fn frozen_n6_pr57_pfw2_topology_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit Frozen N6 PR60 W3 topology gate"]
+fn frozen_n6_pr60_w3_topology_probe() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let plan = frozen_w3_plan(&source, &component);
+    assert_eq!(plan.band_face_counts, [36, 52, 58]);
+    assert_eq!(
+        plan.interface_edges
+            .iter()
+            .map(Vec::len)
+            .collect::<Vec<_>>(),
+        [20, 28]
+    );
+
+    let stratified = build_stratified_annulus_from_face_bands(&source, &component, &plan).unwrap();
+    assert_eq!(stratified.traces.len(), 4);
+    assert_eq!(stratified.bands.len(), 3);
+    assert!(stratified.shared_junctions.is_empty());
+    assert!(stratified
+        .bands
+        .iter()
+        .all(|band| matches!(band.kind, BandComponentKind::Annular { .. })));
+    assert_eq!(stratified.probe.sector_count, 56);
+    assert_eq!(
+        (0..3)
+            .map(|band| stratified
+                .probe
+                .sector_components
+                .iter()
+                .filter(|sector| sector.band_id == band)
+                .count())
+            .collect::<Vec<_>>(),
+        [8, 20, 28]
+    );
+
+    let FullPolygonMergeOutcome::Closed(trial) = solve_full_polygon_merge_from_face_bands(
+        &source,
+        &component,
+        &plan,
+        FullPolygonMergeLimits {
+            topology_states: TOPOLOGY_STATES,
+        },
+    ) else {
+        panic!("Frozen N6 W3 topology must close")
+    };
+    let global = &trial.global_trial.evidence;
+    assert_eq!(trial.evidence.states_examined, 70);
+    assert_eq!(trial.evidence.selected_topology_keys.len(), 56);
+    assert_eq!(
+        global.anchor_degrees,
+        [(2, 5), (29, 5), (77, 5), (155, 5)].into()
+    );
+    assert_eq!(
+        global.ordinary_degree_histogram,
+        [(5, 25), (6, 295), (7, 17)].into()
+    );
+    assert_eq!(
+        (global.vertices, global.edges, global.faces),
+        (341, 1017, 678)
+    );
+    assert_eq!(global.euler, 2);
+    assert_eq!(global.charge, 12);
+    let mixed_levels = trial
+        .global_trial
+        .mesh
+        .triangle_addresses
+        .iter()
+        .flatten()
+        .map(|address| address.n)
+        .collect::<BTreeSet<_>>()
+        .len()
+        >= 2;
+    assert!(mixed_levels);
+
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr60W3Topology\",\"taskbook_sha256\":\"46d5f8d1ab439ce972186ba50798806b520fe9bdac3f675806d4cd18cff38e2b\",\"face_complex_fingerprint\":{},\"band_face_counts\":[36,52,58],\"interface_edge_counts\":[20,28],\"sector_band_counts\":[8,20,28],\"topology_states\":{},\"vertices\":{},\"edges\":{},\"faces\":{},\"euler\":{},\"charge\":{},\"anchor_degrees\":{{\"2\":5,\"29\":5,\"77\":5,\"155\":5}},\"ordinary_degree_histogram\":{{\"5\":25,\"6\":295,\"7\":17}},\"mixed_levels\":true,\"outcome\":\"Closed\"}}",
+        plan.face_complex_fingerprint,
+        trial.evidence.states_examined,
+        global.vertices,
+        global.edges,
+        global.faces,
+        global.euler,
+        global.charge,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn frozen_plan(source: &MotherGrid, component: &HierarchyComponent) -> Box<FaceBandPlan> {
     let problem = build_face_band_problem(source, component, 2).unwrap();
     let FaceBandSolveOutcome::Closed(plan, _) = solve_exact_face_bands(
@@ -215,6 +306,26 @@ fn frozen_plan(source: &MotherGrid, component: &HierarchyComponent) -> Box<FaceB
     ) else {
         panic!("Frozen N6 PF-W2 face plan must close")
     };
+    plan
+}
+
+fn frozen_w3_plan(source: &MotherGrid, component: &HierarchyComponent) -> Box<FaceBandPlan> {
+    let mut problem =
+        build_face_band_problem_with_source_face_rings(source, component, 3, 2).unwrap();
+    for anchor in [2usize, 155] {
+        problem
+            .anchor_policies
+            .insert(anchor, AnchorBandPolicy::OnSingleInterface);
+    }
+    let FaceBandSolveOutcome::Closed(plan, evidence) = solve_exact_face_bands(
+        &problem,
+        FaceBandLimits {
+            maximum_states: FACE_BAND_STATES,
+        },
+    ) else {
+        panic!("Frozen N6 W3 face plan must close")
+    };
+    assert_eq!(evidence.states_examined, 722_766);
     plan
 }
 
