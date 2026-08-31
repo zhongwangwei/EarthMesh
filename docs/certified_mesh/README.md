@@ -156,8 +156,13 @@ the best start (`HierarchySpringEquilibrium`) reaches only
 active tangent trust experiment path backed by deterministic damped normal
 equations over active tangent angle rows. Its best start (`MaterializedSource`)
 improves the PR46 C margin to -12.442446998773 degrees with angle range
-27.838636866483--92.242446998773 degrees. The strict 40.2--79.8 internal window
-still fails, so this is solver evidence only, not a certificate.
+27.838636866483--92.242446998773 degrees. PR49 tests whether fixed guards are
+the blocker by expanding only ordinary movable vertices. It first locks
+`CurrentAnnulus` to the exact PR48 closure, then expands one/two ordinary rings
+and rebuilds the guard closure. The +1-ring domain improves the bounded best
+margin to -3.852760215259 degrees with angle range
+37.340837475907--83.652760215259 degrees. The strict 40.2--79.8 internal window
+still fails, so this is domain-sensitivity evidence only, not a certificate.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

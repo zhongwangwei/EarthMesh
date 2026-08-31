@@ -87,3 +87,41 @@ This improves the PR46 C baseline by 2.114006015995 degrees, but still misses
 the 40.2--79.8 internal angle window. The result remains
 `ContinuousSearchIncomplete` in `AngleFeasibility`; it is not a topology no-go
 and not a continuous infeasibility proof.
+
+
+## PR49 domain ladder evidence
+
+PR49 keeps the PR46 C target mode (`HierarchyEdgeAreaDegree`), PR48
+`ActiveTangentTrust`, topology order, start (`MaterializedSource`), and 500x64
+budget fixed while changing only the movable ordinary-vertex domain:
+`CurrentAnnulus`, `PlusOneOrdinaryRing`, and `PlusTwoOrdinaryRings`. The original
+twelve icosahedron anchors and explicit physical fixed sources remain fixed.
+Current guard vertices are not permanently fixed; each domain expansion rebuilds
+the guard/fixed closure after choosing the movable set.
+
+500x64 release comparison, two runs byte-identical. `CurrentAnnulus` reproduces
+the PR48 baseline exactly (`MaterializedSource`, best margin
+`-12.442446998773`, 27.838636866483--92.242446998773 degrees), which locks the
+legacy closure semantics while testing wider domains.
+
+| domain | outcome | attempts | phase counts | best angle range | best signed margin | last angle range | last signed margin |
+|---|---|---:|---|---:|---:|---:|---:|
+| `CurrentAnnulus` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.838636866483--92.242446998773 | -12.442446998773 | 27.464343730108--92.540658996499 | -12.740658996499 |
+| `PlusOneOrdinaryRing` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 37.340837475907--83.652760215259 | -3.852760215259 | 35.425253727729--86.277987382141 | -6.477987382141 |
+| `PlusTwoOrdinaryRings` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 33.318463982635--90.088795086042 | -10.288795086042 | 10.749538016364--150.970317722384 | -71.170317722384 |
+
+Best PR49 domain: `PlusOneOrdinaryRing`, margin `-3.852760215259`. This is a
+large bounded-search improvement over PR48 `CurrentAnnulus`, but it still misses
+the internal 40.2--79.8 angle window. The +2-ring finite 64-iteration result is
+worse than +1-ring; this does not contradict the complete-solver monotonicity
+claim for the mathematical feasible domain because the bounded local solver is
+not complete and may stall differently in a wider domain.
+
+Per-domain best/last failure JSON now carries minimal real failure diagnostics,
+not placeholder telemetry: reference-to-candidate movement distribution
+(`count`, `min`, `p50`, `p90`, `max`, `sum`), worst violating triangle face-graph
+distance to a fixed guard face when reachable, and active-constraint boundary
+face numerator/denominator/ratio. This is final/best failure evidence only; it
+is not a stored full accepted-step trajectory. The result remains
+`ContinuousSearchIncomplete` in `AngleFeasibility`; it is not a topology no-go
+and not a continuous infeasibility proof.

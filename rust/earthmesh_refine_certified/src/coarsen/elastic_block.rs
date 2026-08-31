@@ -54,6 +54,31 @@ impl GeometryStartId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GeometryDomainId {
+    CurrentAnnulus,
+    PlusOneOrdinaryRing,
+    PlusTwoOrdinaryRings,
+}
+
+impl GeometryDomainId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentAnnulus => "CurrentAnnulus",
+            Self::PlusOneOrdinaryRing => "PlusOneOrdinaryRing",
+            Self::PlusTwoOrdinaryRings => "PlusTwoOrdinaryRings",
+        }
+    }
+
+    fn expansion_rings(self) -> usize {
+        match self {
+            Self::CurrentAnnulus => 0,
+            Self::PlusOneOrdinaryRing => 1,
+            Self::PlusTwoOrdinaryRings => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleConstraintKey {
     pub face: usize,
@@ -154,6 +179,30 @@ pub struct ElasticBlockReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct MovementDistribution {
+    pub count: usize,
+    pub min: f64,
+    pub p50: f64,
+    pub p90: f64,
+    pub max: f64,
+    pub sum: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveBoundaryConstraintRatio {
+    pub numerator: usize,
+    pub denominator: usize,
+    pub ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeometryFailureDiagnostics {
+    pub movement_distribution: MovementDistribution,
+    pub worst_triangle_guard_distance: Option<usize>,
+    pub active_boundary_constraint_ratio: Option<ActiveBoundaryConstraintRatio>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ElasticBlockTrial {
     pub mesh: HierarchyLeafMesh,
     pub patch: ElasticPatch,
@@ -173,6 +222,7 @@ pub enum ElasticBlockOutcome {
         failed_guard_face: Option<usize>,
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
+        diagnostics: Option<GeometryFailureDiagnostics>,
     },
     SearchBudgetExhausted {
         elastic_iterations: usize,
@@ -183,6 +233,7 @@ pub enum ElasticBlockOutcome {
         failed_guard_face: Option<usize>,
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
+        diagnostics: Option<GeometryFailureDiagnostics>,
     },
     RequiresDifferentTopology {
         elastic_iterations: usize,
@@ -193,6 +244,7 @@ pub enum ElasticBlockOutcome {
         failed_guard_face: Option<usize>,
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
+        diagnostics: Option<GeometryFailureDiagnostics>,
     },
     InvalidPatch {
         reason: String,
@@ -331,6 +383,22 @@ impl ElasticPatch {
         trial: &FullPolygonMergeTrial,
         physical_fixed_sources: &BTreeSet<usize>,
     ) -> Result<Self, String> {
+        Self::from_full_polygon_merge_with_domain(
+            source,
+            component,
+            trial,
+            physical_fixed_sources,
+            GeometryDomainId::CurrentAnnulus,
+        )
+    }
+
+    pub fn from_full_polygon_merge_with_domain(
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        trial: &FullPolygonMergeTrial,
+        physical_fixed_sources: &BTreeSet<usize>,
+        domain_id: GeometryDomainId,
+    ) -> Result<Self, String> {
         let mesh = &trial.global_trial.mesh.mesh;
         let source_slots = &trial.global_trial.mesh.source_vertex_slots;
         if source_slots.len() != mesh.vertices().len() {
@@ -389,37 +457,43 @@ impl ElasticPatch {
                     .filter_map(|contract| contract.fixed_position.then_some(contract.source_slot)),
             )
             .collect::<BTreeSet<_>>();
-        let fixed_sources = physical_fixed_sources
+        let current_guard_sources = stratified
+            .coupled
+            .inner_guard
+            .vertices
+            .iter()
+            .chain(stratified.coupled.outer_guard.vertices.iter())
+            .map(|vertex| vertex.source_slot)
+            .collect::<BTreeSet<_>>();
+        let current_fixed_sources = physical_fixed_sources
             .iter()
             .copied()
-            .chain(
-                stratified
-                    .coupled
-                    .inner_guard
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.source_slot),
-            )
-            .chain(
-                stratified
-                    .coupled
-                    .outer_guard
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.source_slot),
-            )
+            .chain(current_guard_sources.iter().copied())
             .chain(anchor_sources.iter().copied())
             .chain(fixed_position_sources.iter().copied())
             .collect::<BTreeSet<_>>();
-        let fixed_compact_domain = source_set_to_compact(
+        let current_fixed_compact_domain = source_set_to_compact(
             &source_to_compact,
-            &fixed_sources,
+            &current_fixed_sources,
             mesh,
-            "free-interface fixed source vertex",
+            "free-interface current fixed source vertex",
         )?
         .into_iter()
         .collect::<BTreeSet<_>>();
-        let mut movable_sources = trial
+        let permanent_fixed_sources = physical_fixed_sources
+            .iter()
+            .copied()
+            .chain(anchor_sources.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let permanent_fixed_compact = source_set_to_compact(
+            &source_to_compact,
+            &permanent_fixed_sources,
+            mesh,
+            "free-interface permanent fixed source vertex",
+        )?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let current_movable_sources = trial
             .global_trial
             .custom_triangles
             .iter()
@@ -450,37 +524,46 @@ impl ElasticPatch {
                         ]
                     }),
             )
-            .filter(|source| !fixed_sources.contains(source) && !anchor_sources.contains(source))
+            .filter(|source| {
+                !current_fixed_sources.contains(source) && !anchor_sources.contains(source)
+            })
             .collect::<BTreeSet<_>>();
-        if movable_sources.is_empty() {
+        if current_movable_sources.is_empty() {
             return Err("full-polygon free-interface patch has no movable source vertex".into());
         }
 
-        let mut movable_compact_vertices = source_set_to_compact(
+        let mut current_movable_compact_vertices = source_set_to_compact(
             &source_to_compact,
-            &movable_sources,
+            &current_movable_sources,
             mesh,
             "free-interface movable source vertex",
         )?
         .into_iter()
         .collect::<BTreeSet<_>>();
         loop {
-            let guard_faces = incident_faces(mesh, &movable_compact_vertices);
+            let guard_faces = incident_faces(mesh, &current_movable_compact_vertices);
             let next_movable = guard_faces
                 .iter()
                 .flat_map(|&face| mesh.triangles()[face])
-                .filter(|site| !fixed_compact_domain.contains(site))
+                .filter(|site| !current_fixed_compact_domain.contains(site))
                 .filter(|&site| source_slots[site].is_some())
                 .collect::<BTreeSet<_>>();
-            if next_movable == movable_compact_vertices {
+            if next_movable == current_movable_compact_vertices {
                 break;
             }
-            movable_compact_vertices = next_movable;
-            movable_sources = movable_compact_vertices
-                .iter()
-                .filter_map(|&compact| source_slots[compact])
-                .collect();
+            current_movable_compact_vertices = next_movable;
         }
+        let movable_compact_vertices = expand_movable_domain(
+            mesh,
+            source_slots,
+            &current_movable_compact_vertices,
+            &permanent_fixed_compact,
+            domain_id,
+        );
+        let movable_sources = movable_compact_vertices
+            .iter()
+            .filter_map(|&compact| source_slots[compact])
+            .collect::<BTreeSet<_>>();
         if movable_compact_vertices.is_empty() {
             return Err("full-polygon free-interface movable closure is empty".into());
         }
@@ -501,7 +584,11 @@ impl ElasticPatch {
             source_triangles: trial.global_trial.custom_triangles.clone(),
             source_active_vertices: movable_sources
                 .iter()
-                .chain(fixed_sources.iter())
+                .chain(
+                    fixed_compact_vertices
+                        .iter()
+                        .filter_map(|&site| source_slots[site].as_ref()),
+                )
                 .copied()
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -832,6 +919,7 @@ fn solve_elastic_patch_impl(
             failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
             global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
             guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
+            diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
         };
     }
 
@@ -851,6 +939,7 @@ fn solve_elastic_patch_impl(
                 failed_guard_face,
                 global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
                 guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
+                diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
             }
         } else {
             ElasticBlockOutcome::ElasticNoImprovement {
@@ -862,6 +951,7 @@ fn solve_elastic_patch_impl(
                 failed_guard_face,
                 global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
                 guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
+                diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
             }
         }
     };
@@ -1007,6 +1097,7 @@ fn solve_elastic_patch_impl(
         failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
         global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
         guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
+        diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
     }
 }
 
@@ -1597,6 +1688,141 @@ fn angle_range(mesh: &MeshState, faces: impl IntoIterator<Item = usize>) -> Opti
     min_angle.is_finite().then_some((min_angle, max_angle))
 }
 
+fn geometry_failure_diagnostics(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+    _context: &EnergyContext,
+) -> Option<GeometryFailureDiagnostics> {
+    let movement_distribution = movement_distribution(mesh, patch)?;
+    let worst_triangle_guard_distance = worst_triangle_guard_distance(mesh, patch);
+    let active_boundary_constraint_ratio = active_boundary_constraint_ratio(mesh, patch);
+    Some(GeometryFailureDiagnostics {
+        movement_distribution,
+        worst_triangle_guard_distance,
+        active_boundary_constraint_ratio,
+    })
+}
+
+fn movement_distribution(mesh: &MeshState, patch: &ElasticPatch) -> Option<MovementDistribution> {
+    let mut distances = patch
+        .movable_compact_vertices
+        .iter()
+        .copied()
+        .filter_map(|site| {
+            patch
+                .reference_positions
+                .get(site)
+                .map(|&reference| arc_length_unit_sphere(reference, mesh.vertices()[site]).abs())
+        })
+        .filter(|value| value.is_finite())
+        .collect::<Vec<_>>();
+    if distances.is_empty() {
+        return None;
+    }
+    distances.sort_by(f64::total_cmp);
+    let sum = distances.iter().sum::<f64>();
+    Some(MovementDistribution {
+        count: distances.len(),
+        min: distances[0],
+        p50: percentile_sorted(&distances, 0.5),
+        p90: percentile_sorted(&distances, 0.9),
+        max: *distances.last()?,
+        sum,
+    })
+}
+
+fn percentile_sorted(values: &[f64], fraction: f64) -> f64 {
+    let index = ((values.len() - 1) as f64 * fraction).round() as usize;
+    values[index]
+}
+
+fn worst_triangle_guard_distance(mesh: &MeshState, patch: &ElasticPatch) -> Option<usize> {
+    let objective = angle_margin_objective(mesh, mesh.active_triangle_slots())?;
+    let worst_face = objective.worst_constraints.first()?.face;
+    let fixed = patch
+        .fixed_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let fixed_guard_faces = patch
+        .guard_faces
+        .iter()
+        .copied()
+        .filter(|&face| {
+            mesh.triangles()[face]
+                .iter()
+                .any(|site| fixed.contains(site))
+        })
+        .collect::<BTreeSet<_>>();
+    face_graph_distance_to_any(mesh, worst_face, &fixed_guard_faces)
+}
+
+fn active_boundary_constraint_ratio(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+) -> Option<ActiveBoundaryConstraintRatio> {
+    let active = active_angle_constraints(mesh, mesh.active_triangle_slots())?;
+    let fixed = patch
+        .fixed_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let numerator = active
+        .iter()
+        .filter(|constraint| {
+            mesh.triangles()[constraint.face]
+                .iter()
+                .any(|site| fixed.contains(site))
+        })
+        .count();
+    let denominator = active.len();
+    (denominator > 0).then_some(ActiveBoundaryConstraintRatio {
+        numerator,
+        denominator,
+        ratio: numerator as f64 / denominator as f64,
+    })
+}
+
+fn face_graph_distance_to_any(
+    mesh: &MeshState,
+    start_face: usize,
+    targets: &BTreeSet<usize>,
+) -> Option<usize> {
+    if targets.contains(&start_face) {
+        return Some(0);
+    }
+    let mut edge_to_faces = BTreeMap::<(usize, usize), Vec<usize>>::new();
+    for face in mesh.active_triangle_slots() {
+        for edge in local_triangle_edges(mesh.triangles()[face]) {
+            edge_to_faces.entry(edge).or_default().push(face);
+        }
+    }
+    let mut visited = BTreeSet::from([start_face]);
+    let mut frontier = BTreeSet::from([start_face]);
+    for distance in 1..=mesh.triangles().len() {
+        let mut next = BTreeSet::new();
+        for face in &frontier {
+            for edge in local_triangle_edges(mesh.triangles()[*face]) {
+                if let Some(neighbours) = edge_to_faces.get(&edge) {
+                    for &neighbour in neighbours {
+                        if visited.insert(neighbour) {
+                            if targets.contains(&neighbour) {
+                                return Some(distance);
+                            }
+                            next.insert(neighbour);
+                        }
+                    }
+                }
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        frontier = next;
+    }
+    None
+}
+
 fn failed_guard_face(
     certificate: &Certificate,
     mesh: &MeshState,
@@ -1652,6 +1878,42 @@ fn incident_faces(mesh: &MeshState, vertices: &BTreeSet<usize>) -> BTreeSet<usiz
                 .any(|site| vertices.contains(site))
         })
         .collect()
+}
+
+fn expand_movable_domain(
+    mesh: &MeshState,
+    source_slots: &[Option<usize>],
+    base_movable: &BTreeSet<usize>,
+    permanent_fixed: &BTreeSet<usize>,
+    domain_id: GeometryDomainId,
+) -> BTreeSet<usize> {
+    let mut movable = base_movable
+        .iter()
+        .copied()
+        .filter(|site| !permanent_fixed.contains(site))
+        .filter(|&site| source_slots.get(site).and_then(|slot| *slot).is_some())
+        .collect::<BTreeSet<_>>();
+    for _ in 0..domain_id.expansion_rings() {
+        let mut next = movable.clone();
+        for edge in mesh
+            .active_triangle_slots()
+            .flat_map(|face| local_triangle_edges(mesh.triangles()[face]))
+        {
+            for (left, right) in [(edge.0, edge.1), (edge.1, edge.0)] {
+                if movable.contains(&left)
+                    && !permanent_fixed.contains(&right)
+                    && source_slots.get(right).and_then(|slot| *slot).is_some()
+                {
+                    next.insert(right);
+                }
+            }
+        }
+        if next == movable {
+            break;
+        }
+        movable = next;
+    }
+    movable
 }
 
 fn validate_patch(mesh: &HierarchyLeafMesh, patch: &ElasticPatch) -> Result<(), String> {
@@ -3364,6 +3626,227 @@ mod tests {
         assert_ne!(first.vertices()[movable], second.vertices()[movable]);
         assert_eq!(first.vertices()[fixed_a], grid.mesh.vertices()[fixed_a]);
         assert_eq!(first.vertices()[fixed_b], grid.mesh.vertices()[fixed_b]);
+    }
+
+    fn frozen_domain_patch(
+        domain_id: GeometryDomainId,
+    ) -> (MotherGrid, FullPolygonMergeTrial, ElasticPatch) {
+        let (source, component, source_levels) =
+            n6_legacy_mixed_fixture_with_source_levels().unwrap();
+        let outcome = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 100_000,
+            },
+        );
+        let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+            panic!("frozen N6 full-polygon family must close: {outcome:?}");
+        };
+        let patch = ElasticPatch::from_full_polygon_merge_with_domain(
+            &source,
+            &component,
+            &trial,
+            &BTreeSet::new(),
+            domain_id,
+        )
+        .unwrap()
+        .with_hierarchy_targets(
+            &source,
+            &trial.global_trial.mesh,
+            &source_levels,
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+        )
+        .unwrap();
+        (source, *trial, patch)
+    }
+
+    #[test]
+    fn domain_sets_are_nested() {
+        let (_, _, current) = frozen_domain_patch(GeometryDomainId::CurrentAnnulus);
+        let (_, _, plus_one) = frozen_domain_patch(GeometryDomainId::PlusOneOrdinaryRing);
+        let (_, _, plus_two) = frozen_domain_patch(GeometryDomainId::PlusTwoOrdinaryRings);
+        let current_set = current
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let plus_one_set = plus_one
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let plus_two_set = plus_two
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert!(current_set.is_subset(&plus_one_set));
+        assert!(plus_one_set.is_subset(&plus_two_set));
+        assert!(current_set.len() < plus_one_set.len());
+        assert!(plus_one_set.len() < plus_two_set.len());
+    }
+
+    #[test]
+    fn current_annulus_matches_legacy_wrapper_and_fixture_counts() {
+        let (source, component, _) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+        let outcome = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 100_000,
+            },
+        );
+        let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+            panic!("frozen N6 full-polygon family must close: {outcome:?}");
+        };
+        let legacy =
+            ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+                .unwrap();
+        let explicit = ElasticPatch::from_full_polygon_merge_with_domain(
+            &source,
+            &component,
+            &trial,
+            &BTreeSet::new(),
+            GeometryDomainId::CurrentAnnulus,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.movable_compact_vertices,
+            explicit.movable_compact_vertices
+        );
+        assert_eq!(
+            legacy.fixed_compact_vertices,
+            explicit.fixed_compact_vertices
+        );
+        assert_eq!(legacy.guard_faces, explicit.guard_faces);
+        assert_eq!(
+            legacy.topology.source_active_vertices,
+            explicit.topology.source_active_vertices
+        );
+        assert_eq!(explicit.movable_compact_vertices.len(), 40);
+        assert_eq!(explicit.fixed_compact_vertices.len(), 40);
+        assert_eq!(explicit.guard_faces.len(), 122);
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        let guard_sources = explicit
+            .guard_faces
+            .iter()
+            .flat_map(|&face| trial.global_trial.mesh.mesh.triangles()[face])
+            .filter_map(|site| source_slots[site])
+            .collect::<BTreeSet<_>>();
+        assert_eq!(guard_sources.len(), 80);
+    }
+
+    #[test]
+    fn plus_one_releases_all_current_frontier_ordinary_sources() {
+        let (source, trial, current) = frozen_domain_patch(GeometryDomainId::CurrentAnnulus);
+        let (_, _, plus_one) = frozen_domain_patch(GeometryDomainId::PlusOneOrdinaryRing);
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        let current_movable = current
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let current_frontier = current
+            .fixed_compact_vertices
+            .iter()
+            .copied()
+            .filter(|site| source_slots[*site].is_some())
+            .filter(|site| {
+                trial
+                    .global_trial
+                    .mesh
+                    .mesh
+                    .active_triangle_slots()
+                    .flat_map(|face| {
+                        local_triangle_edges(trial.global_trial.mesh.mesh.triangles()[face])
+                    })
+                    .any(|edge| {
+                        (edge.0 == *site && current_movable.contains(&edge.1))
+                            || (edge.1 == *site && current_movable.contains(&edge.0))
+                    })
+            })
+            .filter(|site| {
+                !matches!(
+                    source.addresses[source_slots[*site].unwrap()],
+                    Some(VertexAddress::IcosahedronVertex(_))
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let plus_one_movable = plus_one
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert!(current_frontier.is_subset(&plus_one_movable));
+        assert!(!current_frontier.is_empty());
+    }
+
+    #[test]
+    fn fixed_anchors_remain_fixed_across_domain_ladder() {
+        let (source, trial, plus_two) = frozen_domain_patch(GeometryDomainId::PlusTwoOrdinaryRings);
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        let movable_sources = plus_two
+            .movable_compact_vertices
+            .iter()
+            .filter_map(|&site| source_slots[site])
+            .collect::<BTreeSet<_>>();
+        for (source_slot, address) in source.addresses.iter().enumerate() {
+            if matches!(address, Some(VertexAddress::IcosahedronVertex(_))) {
+                assert!(!movable_sources.contains(&source_slot));
+            }
+        }
+    }
+
+    #[test]
+    fn physical_fixed_sources_remain_fixed_across_domain_ladder() {
+        let (source, component, _source_levels) =
+            n6_legacy_mixed_fixture_with_source_levels().unwrap();
+        let outcome = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 100_000,
+            },
+        );
+        let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+            panic!("frozen N6 full-polygon family must close: {outcome:?}");
+        };
+        let current_patch = ElasticPatch::from_full_polygon_merge_with_domain(
+            &source,
+            &component,
+            &trial,
+            &BTreeSet::new(),
+            GeometryDomainId::CurrentAnnulus,
+        )
+        .unwrap();
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        let physical_source = current_patch
+            .movable_compact_vertices
+            .iter()
+            .filter_map(|&site| source_slots[site].map(|source_slot| (site, source_slot)))
+            .find(|&(_site, source_slot)| {
+                !matches!(
+                    source.addresses[source_slot],
+                    Some(VertexAddress::IcosahedronVertex(_))
+                )
+            })
+            .map(|(_site, source_slot)| source_slot)
+            .unwrap();
+        let patch = ElasticPatch::from_full_polygon_merge_with_domain(
+            &source,
+            &component,
+            &trial,
+            &BTreeSet::from([physical_source]),
+            GeometryDomainId::PlusTwoOrdinaryRings,
+        )
+        .unwrap();
+        let movable_sources = patch
+            .movable_compact_vertices
+            .iter()
+            .filter_map(|&site| source_slots[site])
+            .collect::<BTreeSet<_>>();
+        assert!(!movable_sources.contains(&physical_source));
     }
 
     #[test]
