@@ -3,15 +3,16 @@ use earthmesh_refine_certified::coarsen::{
     frozen_n6_geometry_evidence_json_with_solver_domain,
     frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
-    n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
-    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
+    n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels,
+    prove_continuous_tangent_domain, solve_elastic_patch, solve_full_polygon_merge,
+    solve_full_polygon_merge_free_interface_cber,
     solve_full_polygon_merge_free_interface_cber_with_targets,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
-    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField, ElasticTargetMode,
-    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryDomainId,
-    GeometryStartId, RingAnchorKind, TransitionTopologyCandidate,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ContinuousProofOutcome,
+    ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField,
+    ElasticTargetMode, FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome,
+    GeometryDomainId, GeometryStartId, IntervalBox, RingAnchorKind, TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -1030,6 +1031,119 @@ fn frozen_n6_pr49_domain_ladder_comparison_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR50 continuous interval probe"]
+fn frozen_n6_pr50_continuous_interval_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let box_budget = usize_env("EARTHMESH_INTERVAL_BOX_BUDGET", 1) as u64;
+    let trust_radius = f64_env("EARTHMESH_INTERVAL_TRUST_RADIUS", 1.0e-7);
+    let start = GeometryStartId::MaterializedSource;
+    let domain = GeometryDomainId::PlusOneOrdinaryRing;
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let outcome =
+        solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &[start],
+            domain,
+        );
+    let evidence = match &outcome {
+        FullPolygonMergeOutcome::Closed(trial) => &trial.evidence,
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
+        | FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
+        | FullPolygonMergeOutcome::InvalidInput { evidence, .. } => evidence,
+    };
+    let failure = evidence
+        .best_geometry_failure
+        .as_ref()
+        .expect("PR50 requires the best bounded numerical failure");
+    let witness = failure
+        .witness
+        .as_ref()
+        .expect("PR50 requires the actual numerical witness mesh");
+    let movable = witness.patch.movable_compact_vertices.clone();
+    let centers = movable
+        .iter()
+        .map(|&slot| witness.mesh.mesh.vertices()[slot])
+        .collect();
+    let faces = witness
+        .mesh
+        .mesh
+        .active_triangle_slots()
+        .collect::<Vec<_>>();
+    let interval = prove_continuous_tangent_domain(
+        &witness.mesh.mesh,
+        &faces,
+        &movable,
+        IntervalBox::around_zero(movable.clone(), centers, trust_radius),
+        box_budget,
+    )
+    .unwrap();
+    let (interval_outcome, boxes, lower, upper) = match interval {
+        ContinuousProofOutcome::CertifiedFeasible {
+            lower_signed_margin_deg,
+            ..
+        } => (
+            "CertifiedFeasible",
+            None,
+            Some(lower_signed_margin_deg),
+            None,
+        ),
+        ContinuousProofOutcome::CertifiedInfeasibleWithinDomain {
+            upper_signed_margin_deg,
+            boxes,
+        } => (
+            "CertifiedInfeasibleWithinDomain",
+            Some(boxes),
+            None,
+            Some(upper_signed_margin_deg),
+        ),
+        ContinuousProofOutcome::UnknownBudgetExhausted {
+            best_upper_signed_margin_deg,
+            boxes,
+        } => (
+            "UnknownBudgetExhausted",
+            Some(boxes),
+            None,
+            Some(best_upper_signed_margin_deg),
+        ),
+    };
+    let (angle_min, angle_max) = failure.global_angle_degrees.unwrap();
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr50ContinuousInterval\",\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"HierarchyEdgeAreaDegree\",\"solver_mode\":\"ActiveTangentTrust\",\"domain_id\":\"{}\",\"start_id\":\"{}\",\"numerical_angle_min_deg\":{:.12},\"numerical_angle_max_deg\":{:.12},\"numerical_best_signed_margin_deg\":{:.12},\"trust_radius_radians\":{:.12e},\"movable_vertices\":{},\"active_faces\":{},\"box_budget\":{},\"interval_outcome\":\"{}\",\"boxes\":{},\"lower_signed_margin_deg\":{},\"upper_signed_margin_deg\":{}}}",
+        option_json(git_head().as_deref()),
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        domain.as_str(),
+        start.as_str(),
+        angle_min,
+        angle_max,
+        failure.signed_margin_degrees().unwrap(),
+        trust_radius,
+        movable.len(),
+        faces.len(),
+        box_budget,
+        interval_outcome,
+        boxes.map_or_else(|| "null".into(), |value| value.to_string()),
+        json_f64_or_null(lower),
+        json_f64_or_null(upper),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn git_head() -> Option<String> {
     Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -1050,6 +1164,28 @@ fn usize_env(name: &str, default: usize) -> usize {
                 .unwrap_or_else(|_| panic!("{name} must be usize"))
         })
         .unwrap_or(default)
+}
+
+fn f64_env(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .map(|value| {
+            value
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} must be f64"))
+        })
+        .unwrap_or(default)
+}
+
+fn option_json(value: Option<&str>) -> String {
+    value.map_or_else(|| "null".into(), |value| format!("\"{value}\""))
+}
+
+fn json_f64_or_null(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map_or_else(|| "null".into(), |value| format!("{value:.12}"))
 }
 
 fn geometry_starts(value: Option<&str>) -> Vec<&'static str> {
@@ -1195,5 +1331,6 @@ fn geometry_failure_with_counts(
         delaunay_violations: Some(delaunay_violations),
         invalid_voronoi_cells: Some(invalid_voronoi_cells),
         diagnostics: None,
+        witness: None,
     }
 }

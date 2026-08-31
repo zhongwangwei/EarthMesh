@@ -88,7 +88,6 @@ the 40.2--79.8 internal angle window. The result remains
 `ContinuousSearchIncomplete` in `AngleFeasibility`; it is not a topology no-go
 and not a continuous infeasibility proof.
 
-
 ## PR49 domain ladder evidence
 
 PR49 keeps the PR46 C target mode (`HierarchyEdgeAreaDegree`), PR48
@@ -125,3 +124,27 @@ face numerator/denominator/ratio. This is final/best failure evidence only; it
 is not a stored full accepted-step trajectory. The result remains
 `ContinuousSearchIncomplete` in `AngleFeasibility`; it is not a topology no-go
 and not a continuous infeasibility proof.
+
+## PR50 scoped interval evidence
+
+PR50 persists the actual best PR49 failure mesh and constructs a nonzero
+two-coordinate tangent box around each of its 76 movable +1-ring vertices.
+Every point is mapped through the spherical exponential map. Outward interval
+bounds cover all 666 active faces, positive orientation, angle cosines, signed
+margin, and a necessary non-crossing test. Search exhaustion remains `Unknown`.
+
+The deterministic release probe used the frozen 500x64 numerical search,
+`MaterializedSource`, `HierarchyEdgeAreaDegree`, `ActiveTangentTrust`,
+`PlusOneOrdinaryRing`, a per-coordinate trust radius of `1e-7` radians, and one
+interval box. Two runs produced byte-identical JSON.
+
+| numerical angle range | numerical margin | movable vertices | trust radius | interval outcome | boxes | interval upper margin |
+|---:|---:|---:|---:|---|---:|---:|
+| 37.340837475907--83.652760215259 | -3.852760215259 | 76 | 1e-7 rad | `CertifiedInfeasibleWithinDomain` | 1 | -3.851707976720 |
+
+This proves only that the named topology, fixed/movable assignment, and the
+specified local trust box around the numerical witness contain no strict angle
+witness. It does **not** prove that the complete +1-ring coordinate domain,
+another topology, a wider trust domain, or helper-vertex topology is
+infeasible. No 40.2--79.8-degree witness was found, so the PR51 publication gate
+and NXP80 remain blocked.

@@ -163,6 +163,12 @@ and rebuilds the guard closure. The +1-ring domain improves the bounded best
 margin to -3.852760215259 degrees with angle range
 37.340837475907--83.652760215259 degrees. The strict 40.2--79.8 internal window
 still fails, so this is domain-sensitivity evidence only, not a certificate.
+PR50 then interval-checks the actual +1-ring best witness in a nonzero `1e-7`
+radian tangent box for all 76 movable vertices and all 666 active faces. The
+whole local box is certified angle-infeasible with upper signed margin
+`-3.851707976720` degrees. This result is scoped to that topology/domain/trust
+box; it is not a global continuous or topology no-go. The strict gate and NXP80
+therefore remain blocked.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

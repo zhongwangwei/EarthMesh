@@ -3,6 +3,7 @@
 //! Topology only: no CBER/geometry. This path never calls the legacy two-chain
 //! sector solver.
 
+use super::elastic_block::GeometryFailureWitness;
 use super::full_polygon::{
     enumerate_stratified_full_polygon_families, FullPolygonFamily, FullPolygonTopologyKey,
 };
@@ -61,6 +62,7 @@ pub struct FullPolygonGeometryFailureEvidence {
     pub delaunay_violations: Option<usize>,
     pub invalid_voronoi_cells: Option<usize>,
     pub diagnostics: Option<GeometryFailureDiagnostics>,
+    pub witness: Option<Box<GeometryFailureWitness>>,
 }
 
 impl FullPolygonGeometryFailureEvidence {
@@ -1092,6 +1094,7 @@ fn record_start_failure(
     global_angle_degrees: Option<(f64, f64)>,
     guard_angle_degrees: Option<(f64, f64)>,
     diagnostics: Option<GeometryFailureDiagnostics>,
+    witness: Box<GeometryFailureWitness>,
 ) {
     let failure = FullPolygonGeometryFailureEvidence {
         topology_keys: Vec::new(),
@@ -1109,6 +1112,7 @@ fn record_start_failure(
         delaunay_violations: None,
         invalid_voronoi_cells: None,
         diagnostics,
+        witness: Some(witness),
     };
     if best_failure
         .as_ref()
@@ -1202,6 +1206,7 @@ fn certify_free_interface_geometry(
                 global_angle_degrees,
                 guard_angle_degrees,
                 diagnostics,
+                witness,
             } => record_start_failure(
                 &mut best_failure,
                 true,
@@ -1215,6 +1220,7 @@ fn certify_free_interface_geometry(
                 global_angle_degrees,
                 guard_angle_degrees,
                 diagnostics,
+                witness,
             ),
             ElasticBlockOutcome::ElasticNoImprovement {
                 elastic_iterations,
@@ -1226,6 +1232,7 @@ fn certify_free_interface_geometry(
                 global_angle_degrees,
                 guard_angle_degrees,
                 diagnostics,
+                witness,
             }
             | ElasticBlockOutcome::SearchBudgetExhausted {
                 elastic_iterations,
@@ -1237,6 +1244,7 @@ fn certify_free_interface_geometry(
                 global_angle_degrees,
                 guard_angle_degrees,
                 diagnostics,
+                witness,
             } => record_start_failure(
                 &mut best_failure,
                 false,
@@ -1250,6 +1258,7 @@ fn certify_free_interface_geometry(
                 global_angle_degrees,
                 guard_angle_degrees,
                 diagnostics,
+                witness,
             ),
             ElasticBlockOutcome::InvalidPatch { reason } => {
                 return FreeInterfaceStep::Invalid(reason)
