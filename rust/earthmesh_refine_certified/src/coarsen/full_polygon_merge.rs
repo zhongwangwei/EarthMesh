@@ -16,7 +16,10 @@ use super::{
     FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fmt::Write as _,
+};
 
 type Edge = (usize, usize);
 type TopologyEdgeCounts = Vec<(Edge, usize)>;
@@ -40,6 +43,8 @@ pub struct FullPolygonCberLimits {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FullPolygonGeometryFailureEvidence {
+    pub topology_keys: Vec<FullPolygonTopologyKey>,
+    pub start_id: &'static str,
     pub elastic_iterations: usize,
     pub initial_energy: f64,
     pub final_energy: f64,
@@ -48,6 +53,17 @@ pub struct FullPolygonGeometryFailureEvidence {
     pub failed_guard_face: Option<usize>,
     pub global_angle_degrees: Option<(f64, f64)>,
     pub guard_angle_degrees: Option<(f64, f64)>,
+    pub negative_orientation_count: Option<usize>,
+    pub crossing_count: Option<usize>,
+    pub delaunay_violations: Option<usize>,
+    pub invalid_voronoi_cells: Option<usize>,
+}
+
+impl FullPolygonGeometryFailureEvidence {
+    pub fn signed_margin_degrees(&self) -> Option<f64> {
+        self.global_angle_degrees
+            .map(|(min, max)| (min - 40.2).min(79.8 - max))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,9 +79,28 @@ pub struct FullPolygonMergeEvidence {
     pub ear_degree_feasible_candidates: usize,
     pub geometry_candidates_attempted: usize,
     pub last_geometry_failure: Option<FullPolygonGeometryFailureEvidence>,
+    pub best_geometry_failure: Option<FullPolygonGeometryFailureEvidence>,
+    pub geometry_failure_phase_counts: BTreeMap<ElasticBlockPhase, usize>,
     pub selected_topology_keys: Vec<FullPolygonTopologyKey>,
     pub selected_ears: Vec<GlobalExactSelectedEar>,
     pub best_global_evidence: GlobalExactMergeEvidence,
+}
+
+impl FullPolygonMergeEvidence {
+    pub fn record_geometry_failure(&mut self, failure: FullPolygonGeometryFailureEvidence) {
+        self.last_geometry_failure = Some(failure.clone());
+        *self
+            .geometry_failure_phase_counts
+            .entry(failure.final_phase)
+            .or_default() += 1;
+        if self
+            .best_geometry_failure
+            .as_ref()
+            .is_none_or(|best| geometry_failure_is_better(&failure, best))
+        {
+            self.best_geometry_failure = Some(failure);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +163,8 @@ fn solve_full_polygon_merge_inner(
         ear_degree_feasible_candidates: 0,
         geometry_candidates_attempted: 0,
         last_geometry_failure: None,
+        best_geometry_failure: None,
+        geometry_failure_phase_counts: BTreeMap::new(),
         selected_topology_keys: Vec::new(),
         selected_ears: Vec::new(),
         best_global_evidence: GlobalExactMergeEvidence {
@@ -397,7 +434,7 @@ impl Search<'_> {
             }
             Step::GeometryUnknown(failure) => {
                 self.evidence.states_examined = self.states;
-                self.evidence.last_geometry_failure = Some(failure);
+                self.evidence.record_geometry_failure(failure);
                 FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
             }
             Step::NoSolution => {
@@ -441,9 +478,7 @@ impl Search<'_> {
             self.selected[sector] = None;
             match result {
                 Step::NoSolution => {}
-                Step::GeometryUnknown(failure) => {
-                    self.evidence.last_geometry_failure = Some(failure);
-                }
+                Step::GeometryUnknown(failure) => self.evidence.record_geometry_failure(failure),
                 terminal => return terminal,
             }
         }
@@ -784,12 +819,14 @@ impl Search<'_> {
                         config,
                     ) {
                         FreeInterfaceStep::Certified(certified) => trial = *certified,
-                        FreeInterfaceStep::RequiresDifferentTopology(failure)
-                        | FreeInterfaceStep::GeometryUnknown(failure) => {
-                            return Step::GeometryUnknown(failure)
+                        FreeInterfaceStep::RequiresDifferentTopology(mut failure)
+                        | FreeInterfaceStep::GeometryUnknown(mut failure) => {
+                            failure.topology_keys = keys.clone();
+                            return Step::GeometryUnknown(failure);
                         }
-                        FreeInterfaceStep::BudgetExhausted(failure) => {
-                            return Step::GeometryUnknown(failure)
+                        FreeInterfaceStep::BudgetExhausted(mut failure) => {
+                            failure.topology_keys = keys.clone();
+                            return Step::GeometryUnknown(failure);
                         }
                         FreeInterfaceStep::Invalid(reason) => return Step::Invalid(reason),
                     }
@@ -975,6 +1012,8 @@ fn certify_free_interface_geometry(
             global_angle_degrees,
             guard_angle_degrees,
         } => FreeInterfaceStep::RequiresDifferentTopology(FullPolygonGeometryFailureEvidence {
+            topology_keys: Vec::new(),
+            start_id: "MaterializedSource",
             elastic_iterations,
             initial_energy,
             final_energy,
@@ -983,6 +1022,10 @@ fn certify_free_interface_geometry(
             failed_guard_face,
             global_angle_degrees,
             guard_angle_degrees,
+            negative_orientation_count: None,
+            crossing_count: None,
+            delaunay_violations: None,
+            invalid_voronoi_cells: None,
         }),
         ElasticBlockOutcome::ElasticNoImprovement {
             elastic_iterations,
@@ -994,6 +1037,8 @@ fn certify_free_interface_geometry(
             global_angle_degrees,
             guard_angle_degrees,
         } => FreeInterfaceStep::GeometryUnknown(FullPolygonGeometryFailureEvidence {
+            topology_keys: Vec::new(),
+            start_id: "MaterializedSource",
             elastic_iterations,
             initial_energy,
             final_energy,
@@ -1002,6 +1047,10 @@ fn certify_free_interface_geometry(
             failed_guard_face,
             global_angle_degrees,
             guard_angle_degrees,
+            negative_orientation_count: None,
+            crossing_count: None,
+            delaunay_violations: None,
+            invalid_voronoi_cells: None,
         }),
         ElasticBlockOutcome::SearchBudgetExhausted {
             elastic_iterations,
@@ -1013,6 +1062,8 @@ fn certify_free_interface_geometry(
             global_angle_degrees,
             guard_angle_degrees,
         } => FreeInterfaceStep::BudgetExhausted(FullPolygonGeometryFailureEvidence {
+            topology_keys: Vec::new(),
+            start_id: "MaterializedSource",
             elastic_iterations,
             initial_energy,
             final_energy,
@@ -1021,9 +1072,198 @@ fn certify_free_interface_geometry(
             failed_guard_face,
             global_angle_degrees,
             guard_angle_degrees,
+            negative_orientation_count: None,
+            crossing_count: None,
+            delaunay_violations: None,
+            invalid_voronoi_cells: None,
         }),
         ElasticBlockOutcome::InvalidPatch { reason } => FreeInterfaceStep::Invalid(reason),
     }
+}
+
+pub fn frozen_n6_geometry_evidence_json(
+    outcome: &FullPolygonMergeOutcome,
+    fixture_fingerprint: u64,
+    topology_limit: usize,
+    elastic_iterations: usize,
+    commit_sha: Option<&str>,
+    starts: &[&str],
+) -> String {
+    let (kind, evidence, certified) = match outcome {
+        FullPolygonMergeOutcome::Closed(trial) => ("Certified", &trial.evidence, true),
+        FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) => {
+            ("ContinuousSearchIncomplete", evidence, false)
+        }
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence) => {
+            ("RequiresDifferentTopology", evidence, false)
+        }
+        FullPolygonMergeOutcome::InvalidInput { evidence, .. } => ("InvalidPatch", evidence, false),
+    };
+    let best = evidence.best_geometry_failure.as_ref();
+    let mut json = String::new();
+    write!(
+        json,
+        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"TrialReference\",\"solver_mode\":\"FiniteDifferenceElastic\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
+        option_json(commit_sha),
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        starts
+            .iter()
+            .map(|s| format!("\"{}\"", json_escape(s)))
+            .collect::<Vec<_>>()
+            .join(","),
+        evidence.topology_candidates_closed,
+        evidence.geometry_candidates_attempted,
+        json_number_or_null(best.and_then(|failure| failure.signed_margin_degrees())),
+        best.map(|failure| topology_keys_json(&failure.topology_keys))
+            .unwrap_or_else(|| "null".into()),
+        best.map(|failure| format!("\"{}\"", failure.start_id))
+            .unwrap_or_else(|| "null".into()),
+        phase_counts_json(evidence),
+        evidence
+            .last_geometry_failure
+            .as_ref()
+            .map(failure_json)
+            .unwrap_or_else(|| "null".into()),
+        best.map(failure_json).unwrap_or_else(|| "null".into()),
+        kind,
+        certified
+    )
+    .unwrap();
+    json
+}
+
+fn phase_counts_json(evidence: &FullPolygonMergeEvidence) -> String {
+    let body = evidence
+        .geometry_failure_phase_counts
+        .iter()
+        .map(|(phase, count)| format!("\"{:?}\":{}", phase, count))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{{body}}}")
+}
+
+fn failure_json(failure: &FullPolygonGeometryFailureEvidence) -> String {
+    format!(
+        "{{\"topology_key\":{},\"start_id\":\"{}\",\"elastic_iterations\":{},\"initial_energy\":{},\"final_energy\":{},\"final_phase\":\"{:?}\",\"reason\":\"{}\",\"failed_guard_face\":{},\"global_angle_degrees\":{},\"guard_angle_degrees\":{},\"signed_margin_deg\":{},\"negative_orientation_count\":{},\"crossing_count\":{},\"delaunay_violations\":{},\"invalid_voronoi_cells\":{}}}",
+        topology_keys_json(&failure.topology_keys),
+        failure.start_id,
+        failure.elastic_iterations,
+        finite_json_number(failure.initial_energy),
+        finite_json_number(failure.final_energy),
+        failure.final_phase,
+        json_escape(&failure.reason),
+        failure
+            .failed_guard_face
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "null".into()),
+        angle_pair_json(failure.global_angle_degrees),
+        angle_pair_json(failure.guard_angle_degrees),
+        json_number_or_null(failure.signed_margin_degrees()),
+        usize_option_json(failure.negative_orientation_count),
+        usize_option_json(failure.crossing_count),
+        usize_option_json(failure.delaunay_violations),
+        usize_option_json(failure.invalid_voronoi_cells),
+    )
+}
+
+fn topology_keys_json(keys: &[FullPolygonTopologyKey]) -> String {
+    let keys = keys
+        .iter()
+        .map(|key| {
+            let triangles = key
+                .triangles
+                .iter()
+                .map(|t| format!("[{},{},{}]", t[0], t[1], t[2]))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"sector_id\":{},\"triangles\":[{}]}}",
+                key.sector_id, triangles
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{keys}]")
+}
+
+fn angle_pair_json(value: Option<(f64, f64)>) -> String {
+    value
+        .map(|(min, max)| format!("[{},{}]", finite_json_number(min), finite_json_number(max)))
+        .unwrap_or_else(|| "null".into())
+}
+
+fn finite_json_number(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.12}")
+    } else {
+        "null".into()
+    }
+}
+
+fn json_number_or_null(value: Option<f64>) -> String {
+    value
+        .filter(|value| value.is_finite())
+        .map(finite_json_number)
+        .unwrap_or_else(|| "null".into())
+}
+
+fn usize_option_json(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".into())
+}
+
+fn option_json(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("\"{}\"", json_escape(value)))
+        .unwrap_or_else(|| "null".into())
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn geometry_failure_is_better(
+    candidate: &FullPolygonGeometryFailureEvidence,
+    current: &FullPolygonGeometryFailureEvidence,
+) -> bool {
+    if known_count_key(candidate.negative_orientation_count)
+        != known_count_key(current.negative_orientation_count)
+    {
+        return known_count_key(candidate.negative_orientation_count)
+            < known_count_key(current.negative_orientation_count);
+    }
+    if known_count_key(candidate.crossing_count) != known_count_key(current.crossing_count) {
+        return known_count_key(candidate.crossing_count) < known_count_key(current.crossing_count);
+    }
+    let candidate_margin = candidate
+        .signed_margin_degrees()
+        .unwrap_or(f64::NEG_INFINITY);
+    let current_margin = current.signed_margin_degrees().unwrap_or(f64::NEG_INFINITY);
+    if candidate_margin.total_cmp(&current_margin) != std::cmp::Ordering::Equal {
+        return candidate_margin > current_margin;
+    }
+    if known_count_key(candidate.delaunay_violations)
+        != known_count_key(current.delaunay_violations)
+    {
+        return known_count_key(candidate.delaunay_violations)
+            < known_count_key(current.delaunay_violations);
+    }
+    if known_count_key(candidate.invalid_voronoi_cells)
+        != known_count_key(current.invalid_voronoi_cells)
+    {
+        return known_count_key(candidate.invalid_voronoi_cells)
+            < known_count_key(current.invalid_voronoi_cells);
+    }
+    (&candidate.topology_keys, candidate.start_id) < (&current.topology_keys, current.start_id)
+}
+
+fn known_count_key(value: Option<usize>) -> (bool, usize) {
+    value
+        .map(|value| (false, value))
+        .unwrap_or((true, usize::MAX))
 }
 
 fn no_solution_outcome(evidence: FullPolygonMergeEvidence) -> FullPolygonMergeOutcome {
@@ -1200,6 +1440,8 @@ mod tests {
             ear_degree_feasible_candidates: 0,
             geometry_candidates_attempted,
             last_geometry_failure: None,
+            best_geometry_failure: None,
+            geometry_failure_phase_counts: BTreeMap::new(),
             selected_topology_keys: Vec::new(),
             selected_ears: Vec::new(),
             best_global_evidence: GlobalExactMergeEvidence::default(),

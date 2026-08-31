@@ -18,6 +18,7 @@ pub use certificate::{
     GeometryCertificateReport, GeometryRegionCertificateReport, PhysicalCertificate,
 };
 pub use config::{CertifiedConfig, DeliveryMode};
+pub use fingerprint::mesh_fingerprint;
 pub use mother_grid::{MotherGrid, TriangleAddress, TriangleOrientation, VertexAddress};
 pub use outcome::{
     classify_adaptivity_delivery, AdaptivityFulfillmentReport, AdaptivityIncompleteReason,

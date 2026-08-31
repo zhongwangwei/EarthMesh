@@ -40,7 +40,8 @@ pub use full_polygon::{
     FullPolygonProblem, FullPolygonTopology, FullPolygonTopologyKey,
 };
 pub use full_polygon_merge::{
-    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, FullPolygonCberLimits,
+    frozen_n6_geometry_evidence_json, solve_full_polygon_merge,
+    solve_full_polygon_merge_free_interface_cber, FullPolygonCberLimits,
     FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };
