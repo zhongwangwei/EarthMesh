@@ -36,8 +36,8 @@ pub use elastic_block::{
     solve_elastic_patch_with_start, solve_elastic_transition_block, ActiveBoundaryConstraintRatio,
     AngleConstraintKey, AngleMarginObjective, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
-    ElasticTargetMode, GeometryDomainId, GeometryFailureDiagnostics, GeometryStartId,
-    MotherLevelMetric, MovementDistribution,
+    ElasticTargetMode, GeometryDomainId, GeometryFailureDiagnostics, GeometryFailureWitness,
+    GeometryStartId, MotherLevelMetric, MovementDistribution,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
@@ -83,8 +83,9 @@ pub use stratified_annulus::{
 };
 pub use transition_feasibility::{
     analyze_legacy_transition_family, n6_legacy_mixed_fixture,
-    n6_legacy_mixed_fixture_with_source_levels, prove_transition_topology_trial, FeasibilityProof,
-    FeasibleWitness, TransitionFeasibilityOutcomeKind, TransitionFeasibilityProof,
+    n6_legacy_mixed_fixture_with_source_levels, prove_continuous_tangent_domain,
+    prove_transition_topology_trial, ContinuousProofOutcome, FeasibilityProof, FeasibleWitness,
+    IntervalBox, TangentInterval, TransitionFeasibilityOutcomeKind, TransitionFeasibilityProof,
     TransitionTopologyFeasibilityEvidence,
 };
 pub use transition_topology::{

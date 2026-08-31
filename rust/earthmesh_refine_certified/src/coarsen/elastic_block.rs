@@ -203,6 +203,12 @@ pub struct GeometryFailureDiagnostics {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct GeometryFailureWitness {
+    pub mesh: HierarchyLeafMesh,
+    pub patch: ElasticPatch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ElasticBlockTrial {
     pub mesh: HierarchyLeafMesh,
     pub patch: ElasticPatch,
@@ -223,6 +229,7 @@ pub enum ElasticBlockOutcome {
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
         diagnostics: Option<GeometryFailureDiagnostics>,
+        witness: Box<GeometryFailureWitness>,
     },
     SearchBudgetExhausted {
         elastic_iterations: usize,
@@ -234,6 +241,7 @@ pub enum ElasticBlockOutcome {
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
         diagnostics: Option<GeometryFailureDiagnostics>,
+        witness: Box<GeometryFailureWitness>,
     },
     RequiresDifferentTopology {
         elastic_iterations: usize,
@@ -245,6 +253,7 @@ pub enum ElasticBlockOutcome {
         global_angle_degrees: Option<(f64, f64)>,
         guard_angle_degrees: Option<(f64, f64)>,
         diagnostics: Option<GeometryFailureDiagnostics>,
+        witness: Box<GeometryFailureWitness>,
     },
     InvalidPatch {
         reason: String,
@@ -920,10 +929,12 @@ fn solve_elastic_patch_impl(
             global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
             guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
             diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
+            witness: geometry_failure_witness(&current, &patch),
         };
     }
 
-    let no_step = |mesh: &MeshState, iteration: usize, final_energy: f64| {
+    let no_step = |current: &HierarchyLeafMesh, iteration: usize, final_energy: f64| {
+        let mesh = &current.mesh;
         let final_phase = energy_phase(&certificate, mesh, &guard_faces, &context);
         let reason = geometry_failure_reason(&certificate, mesh);
         let failed_guard_face = failed_guard_face(&certificate, mesh, &patch);
@@ -940,6 +951,7 @@ fn solve_elastic_patch_impl(
                 global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
                 guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
                 diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
+                witness: geometry_failure_witness(current, &patch),
             }
         } else {
             ElasticBlockOutcome::ElasticNoImprovement {
@@ -952,6 +964,7 @@ fn solve_elastic_patch_impl(
                 global_angle_degrees: angle_range(mesh, mesh.active_triangle_slots()),
                 guard_angle_degrees: angle_range(mesh, guard_faces.iter().copied()),
                 diagnostics: geometry_failure_diagnostics(mesh, &patch, &context),
+                witness: geometry_failure_witness(current, &patch),
             }
         }
     };
@@ -961,7 +974,7 @@ fn solve_elastic_patch_impl(
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
         let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
-            return no_step(&current.mesh, iteration, energy);
+            return no_step(&current, iteration, energy);
         };
         energy = phase_energy;
 
@@ -972,7 +985,7 @@ fn solve_elastic_patch_impl(
             let Some(step_plan) =
                 active_trust_angle_step(&before, &patch, &context, &guard_faces, trust_radius)
             else {
-                return no_step(&current.mesh, iteration, energy);
+                return no_step(&current, iteration, energy);
             };
             let trust_update = apply_active_trust_step(
                 &mut current.mesh,
@@ -989,7 +1002,7 @@ fn solve_elastic_patch_impl(
             trust_radius = trust_update.next_radius;
             if !trust_update.accepted {
                 if trust_radius <= minimum_step {
-                    return no_step(&current.mesh, iteration, energy);
+                    return no_step(&current, iteration, energy);
                 }
                 continue;
             }
@@ -1003,7 +1016,7 @@ fn solve_elastic_patch_impl(
             } else {
                 finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
             }) else {
-                return no_step(&current.mesh, iteration, energy);
+                return no_step(&current, iteration, energy);
             };
             let maximum_norm = gradient
                 .iter()
@@ -1011,7 +1024,7 @@ fn solve_elastic_patch_impl(
                 .max_by(f64::total_cmp)
                 .unwrap_or(0.0);
             if !maximum_norm.is_finite() || maximum_norm <= 1.0e-14 {
-                return no_step(&current.mesh, iteration, energy);
+                return no_step(&current, iteration, energy);
             }
 
             let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
@@ -1068,7 +1081,7 @@ fn solve_elastic_patch_impl(
             };
 
             let Some(candidate_energy) = accepted else {
-                return no_step(&current.mesh, iteration, energy);
+                return no_step(&current, iteration, energy);
             };
             energy = candidate_energy;
         }
@@ -1098,7 +1111,18 @@ fn solve_elastic_patch_impl(
         global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
         guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
         diagnostics: geometry_failure_diagnostics(&current.mesh, &patch, &context),
+        witness: geometry_failure_witness(&current, &patch),
     }
+}
+
+fn geometry_failure_witness(
+    mesh: &HierarchyLeafMesh,
+    patch: &ElasticPatch,
+) -> Box<GeometryFailureWitness> {
+    Box::new(GeometryFailureWitness {
+        mesh: mesh.clone(),
+        patch: patch.clone(),
+    })
 }
 
 fn apply_geometry_start(

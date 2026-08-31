@@ -19,4 +19,11 @@ Allowed result meanings:
   infeasibility, and only for the named topology/domain/trust bounds.
 - `InvalidPatch`: fixture or patch construction is invalid.
 
+PR50 continuous boxes use two tangent coordinates per movable vertex and the
+spherical exponential map. `CertifiedFeasible` requires a positive lower angle
+margin plus positive orientation and non-crossing bounds for the whole box.
+`CertifiedInfeasibleWithinDomain` requires every explored box to have a
+negative upper angle-margin bound. Any unsplit remainder or exhausted box
+budget is `UnknownBudgetExhausted`, never infeasible.
+
 NXP80 production runs remain gated behind Frozen N6, then N12, N24, and N40.
