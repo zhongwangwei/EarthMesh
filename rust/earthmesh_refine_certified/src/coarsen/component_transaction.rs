@@ -8,9 +8,9 @@ use super::transition_topology::hierarchy_parent_neighbours;
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
     core_condensation::source_face_slot, solve_elastic_patch, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, HierarchyComponent,
-    HierarchyLeafMesh, HierarchyLeafSet, TransitionTopologyCandidate, TransitionTopologyLimits,
-    TransitionTopologyOutcome,
+    ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
+    ElasticTargetMode, HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet,
+    TransitionTopologyCandidate, TransitionTopologyLimits, TransitionTopologyOutcome,
 };
 use crate::{
     certificate::{
@@ -1190,6 +1190,8 @@ fn elastic_patch_for_state(
         fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
         movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
         guard_faces: guard_faces.into_iter().collect(),
+        target_mode: ElasticTargetMode::TrialReference,
+        target_field: ElasticTargetField::default(),
     })
 }
 

@@ -13,7 +13,8 @@ use super::global_exact_merge::{
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
     solve_elastic_patch, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch,
-    FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
+    ElasticTargetMode, FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind,
+    StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
 use std::{
@@ -134,6 +135,24 @@ pub fn solve_full_polygon_merge_free_interface_cber(
     physical_fixed_sources: &BTreeSet<usize>,
     limits: FullPolygonCberLimits,
 ) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_free_interface_cber_with_targets(
+        source,
+        component,
+        physical_fixed_sources,
+        limits,
+        ElasticTargetMode::TrialReference,
+        None,
+    )
+}
+
+pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&[Option<usize>]>,
+) -> FullPolygonMergeOutcome {
     solve_full_polygon_merge_inner(
         source,
         component,
@@ -141,6 +160,8 @@ pub fn solve_full_polygon_merge_free_interface_cber(
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
+            target_mode,
+            source_levels,
         }),
     )
 }
@@ -322,6 +343,8 @@ struct Search<'a> {
 struct FreeInterfaceCberConfig<'a> {
     elastic_iterations: usize,
     physical_fixed_sources: &'a BTreeSet<usize>,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&'a [Option<usize>]>,
 }
 
 enum Step {
@@ -973,7 +996,7 @@ fn certify_free_interface_geometry(
     mut trial: FullPolygonMergeTrial,
     config: FreeInterfaceCberConfig<'_>,
 ) -> FreeInterfaceStep {
-    let patch = match ElasticPatch::from_full_polygon_merge(
+    let mut patch = match ElasticPatch::from_full_polygon_merge(
         source,
         component,
         &trial,
@@ -982,6 +1005,22 @@ fn certify_free_interface_geometry(
         Ok(patch) => patch,
         Err(reason) => return FreeInterfaceStep::Invalid(reason),
     };
+    if config.target_mode != ElasticTargetMode::TrialReference {
+        let Some(source_levels) = config.source_levels else {
+            return FreeInterfaceStep::Invalid(
+                "hierarchy elastic targets require source levels".into(),
+            );
+        };
+        patch = match patch.with_hierarchy_targets(
+            source,
+            &trial.global_trial.mesh,
+            source_levels,
+            config.target_mode,
+        ) {
+            Ok(patch) => patch,
+            Err(reason) => return FreeInterfaceStep::Invalid(reason),
+        };
+    }
     let input_triangles = trial.global_trial.mesh.mesh.triangles().to_vec();
     let input_neighbours = trial.global_trial.mesh.mesh.neighbours().to_vec();
     match solve_elastic_patch(
@@ -1089,6 +1128,26 @@ pub fn frozen_n6_geometry_evidence_json(
     commit_sha: Option<&str>,
     starts: &[&str],
 ) -> String {
+    frozen_n6_geometry_evidence_json_with_target_mode(
+        outcome,
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        commit_sha,
+        ElasticTargetMode::TrialReference,
+        starts,
+    )
+}
+
+pub fn frozen_n6_geometry_evidence_json_with_target_mode(
+    outcome: &FullPolygonMergeOutcome,
+    fixture_fingerprint: u64,
+    topology_limit: usize,
+    elastic_iterations: usize,
+    commit_sha: Option<&str>,
+    target_mode: ElasticTargetMode,
+    starts: &[&str],
+) -> String {
     let (kind, evidence, certified) = match outcome {
         FullPolygonMergeOutcome::Closed(trial) => ("Certified", &trial.evidence, true),
         FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) => {
@@ -1103,11 +1162,12 @@ pub fn frozen_n6_geometry_evidence_json(
     let mut json = String::new();
     write!(
         json,
-        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"TrialReference\",\"solver_mode\":\"FiniteDifferenceElastic\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
+        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"{}\",\"solver_mode\":\"FiniteDifferenceElastic\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
         option_json(commit_sha),
         fixture_fingerprint,
         topology_limit,
         elastic_iterations,
+        target_mode.as_str(),
         starts
             .iter()
             .map(|s| format!("\"{}\"", json_escape(s)))

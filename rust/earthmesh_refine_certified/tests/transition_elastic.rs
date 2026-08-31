@@ -4,8 +4,9 @@ use earthmesh_mesh::{magnitude, CartesianPoint};
 use earthmesh_refine_certified::{
     coarsen::{
         solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits,
-        ElasticBlockOutcome, ElasticPatch, HierarchyLeafMesh, TransitionBoundary,
-        TransitionTopologyCandidate, TransitionTopologyReport, TransitionTopologyTrial,
+        ElasticBlockOutcome, ElasticPatch, ElasticTargetField, ElasticTargetMode,
+        HierarchyLeafMesh, TransitionBoundary, TransitionTopologyCandidate,
+        TransitionTopologyReport, TransitionTopologyTrial,
     },
     Certificate, MotherGrid, VertexAddress,
 };
@@ -73,6 +74,8 @@ fn elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {
         fixed_compact_vertices: fixed.iter().copied().collect(),
         movable_compact_vertices: movable.iter().copied().collect(),
         guard_faces: guard.iter().copied().collect(),
+        target_mode: ElasticTargetMode::TrialReference,
+        target_field: ElasticTargetField::default(),
     };
 
     let targets = movable

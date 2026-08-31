@@ -24,6 +24,46 @@ pub struct ElasticBlockLimits {
     pub elastic_iterations: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElasticTargetMode {
+    TrialReference,
+    HierarchyEdge,
+    HierarchyEdgeAreaDegree,
+}
+
+impl ElasticTargetMode {
+    fn uses_hierarchy_edges(self) -> bool {
+        !matches!(self, Self::TrialReference)
+    }
+
+    fn uses_hierarchy_area_degree(self) -> bool {
+        matches!(self, Self::HierarchyEdgeAreaDegree)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TrialReference => "TrialReference",
+            Self::HierarchyEdge => "HierarchyEdge",
+            Self::HierarchyEdgeAreaDegree => "HierarchyEdgeAreaDegree",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotherLevelMetric {
+    pub level: usize,
+    pub median_edge_length: f64,
+    pub median_voronoi_area: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ElasticTargetField {
+    pub target_edge_lengths: BTreeMap<(usize, usize), f64>,
+    pub target_cell_areas: BTreeMap<usize, f64>,
+    pub target_vertex_scales: BTreeMap<usize, f64>,
+    pub target_angles: BTreeMap<usize, f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElasticPatch {
     pub topology: TransitionTopologyCandidate,
@@ -31,6 +71,8 @@ pub struct ElasticPatch {
     pub fixed_compact_vertices: Vec<usize>,
     pub movable_compact_vertices: Vec<usize>,
     pub guard_faces: Vec<usize>,
+    pub target_mode: ElasticTargetMode,
+    pub target_field: ElasticTargetField,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,6 +253,8 @@ impl ElasticPatch {
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
             movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
             guard_faces: guard_faces.into_iter().collect(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
         })
     }
     pub fn from_full_polygon_merge(
@@ -402,7 +446,189 @@ impl ElasticPatch {
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
             movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
             guard_faces: guard_faces.into_iter().collect(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
         })
+    }
+
+    pub fn with_hierarchy_targets(
+        mut self,
+        source: &MotherGrid,
+        target: &HierarchyLeafMesh,
+        source_levels: &[Option<usize>],
+        target_mode: ElasticTargetMode,
+    ) -> Result<Self, String> {
+        self.target_mode = target_mode;
+        self.target_field = if target_mode.uses_hierarchy_edges() {
+            hierarchy_target_field(source, target, source_levels, &self)?
+        } else {
+            ElasticTargetField::default()
+        };
+        Ok(self)
+    }
+}
+
+fn target_mode_uses_area(mode: ElasticTargetMode) -> bool {
+    mode.uses_hierarchy_area_degree()
+}
+
+fn hierarchy_target_field(
+    source: &MotherGrid,
+    target: &HierarchyLeafMesh,
+    source_levels: &[Option<usize>],
+    patch: &ElasticPatch,
+) -> Result<ElasticTargetField, String> {
+    if source_levels.len() != source.mesh.vertices().len() {
+        return Err("source level slots do not match source mesh vertices".into());
+    }
+    if target.source_vertex_slots.len() != target.mesh.vertices().len() {
+        return Err("target source-slot map does not match target mesh vertices".into());
+    }
+    let metrics = mother_level_metrics(&source.mesh, source_levels)?;
+    let mut field = ElasticTargetField::default();
+    let degrees = vertex_degrees(&target.mesh);
+    for face in &patch.guard_faces {
+        let triangle = target.mesh.triangles()[*face];
+        for site in triangle {
+            let level = target_source_level(target, source_levels, site)?;
+            let metric = metrics
+                .get(&level)
+                .ok_or_else(|| format!("missing mother level metric for level {level}"))?;
+            field
+                .target_vertex_scales
+                .insert(site, metric.median_edge_length);
+            field
+                .target_cell_areas
+                .insert(site, metric.median_voronoi_area);
+            if degrees[site] != 0 {
+                field
+                    .target_angles
+                    .insert(site, std::f64::consts::TAU / degrees[site] as f64);
+            }
+        }
+        for edge in local_triangle_edges(triangle) {
+            let left = target_source_level(target, source_levels, edge.0)?;
+            let right = target_source_level(target, source_levels, edge.1)?;
+            let left = metrics[&left].median_edge_length;
+            let right = metrics[&right].median_edge_length;
+            field
+                .target_edge_lengths
+                .insert(edge, (left * right).sqrt());
+        }
+    }
+    Ok(field)
+}
+
+fn target_source_level(
+    target: &HierarchyLeafMesh,
+    source_levels: &[Option<usize>],
+    site: usize,
+) -> Result<usize, String> {
+    let source = target
+        .source_vertex_slots
+        .get(site)
+        .and_then(|source| *source)
+        .ok_or_else(|| format!("target site {site} has no source slot for hierarchy targets"))?;
+    source_levels
+        .get(source)
+        .and_then(|level| *level)
+        .ok_or_else(|| format!("source site {source} has no hierarchy level"))
+}
+
+fn mother_level_metrics(
+    mesh: &MeshState,
+    source_levels: &[Option<usize>],
+) -> Result<BTreeMap<usize, MotherLevelMetric>, String> {
+    let mut edge_lengths = BTreeMap::<usize, Vec<f64>>::new();
+    let mut areas = mother_level_voronoi_areas(mesh, source_levels);
+    let mut edges = BTreeSet::new();
+    for face in mesh.active_triangle_slots() {
+        let triangle = mesh.triangles()[face];
+        for edge in local_triangle_edges(triangle) {
+            edges.insert(edge);
+        }
+    }
+    for (left, right) in edges {
+        let Some(left_level) = source_levels.get(left).and_then(|level| *level) else {
+            continue;
+        };
+        let Some(right_level) = source_levels.get(right).and_then(|level| *level) else {
+            continue;
+        };
+        if left_level == right_level {
+            let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
+            if length.is_finite() && length > 0.0 {
+                edge_lengths.entry(left_level).or_default().push(length);
+            }
+        }
+    }
+    edge_lengths
+        .into_iter()
+        .map(|(level, mut lengths)| {
+            let mut level_areas = areas.remove(&level).unwrap_or_default();
+            let median_edge_length = median(&mut lengths)
+                .ok_or_else(|| format!("level {level} has no finite source edges"))?;
+            let median_voronoi_area = median(&mut level_areas)
+                .ok_or_else(|| format!("level {level} has no finite source Voronoi areas"))?;
+            Ok((
+                level,
+                MotherLevelMetric {
+                    level,
+                    median_edge_length,
+                    median_voronoi_area,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn mother_level_voronoi_areas(
+    mesh: &MeshState,
+    source_levels: &[Option<usize>],
+) -> BTreeMap<usize, Vec<f64>> {
+    let mut areas = BTreeMap::<usize, Vec<f64>>::new();
+    let mut area_seeds = BTreeMap::<usize, usize>::new();
+    for face in mesh.active_triangle_slots() {
+        for site in mesh.triangles()[face] {
+            if source_levels.get(site).and_then(|level| *level).is_some() {
+                area_seeds.entry(site).or_insert(face);
+            }
+        }
+    }
+    for (site, seed) in area_seeds {
+        let Some(level) = source_levels.get(site).and_then(|level| *level) else {
+            continue;
+        };
+        if let Ok(cell) = mesh.voronoi_cell_from(site, seed) {
+            if let Some(area) = cell
+                .area_on_unit_sphere()
+                .filter(|area| area.is_finite() && *area > 0.0)
+            {
+                areas.entry(level).or_default().push(area);
+            }
+        }
+    }
+    areas
+}
+
+fn local_triangle_edges([a, b, c]: [usize; 3]) -> [(usize, usize); 3] {
+    [
+        (a.min(b), a.max(b)),
+        (b.min(c), b.max(c)),
+        (c.min(a), c.max(a)),
+    ]
+}
+
+fn median(values: &mut [f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    } else {
+        Some(values[mid])
     }
 }
 
@@ -813,6 +1039,15 @@ impl EnergyContext {
                     .and_then(|cell| cell.area_on_unit_sphere())
                     .filter(|area| area.is_finite() && *area > 0.0)
             });
+            let area = patch
+                .target_field
+                .target_cell_areas
+                .get(&site)
+                .copied()
+                .filter(|area| {
+                    target_mode_uses_area(patch.target_mode) && area.is_finite() && *area > 0.0
+                })
+                .or(area);
             reference_dual_areas.insert(site, area);
         }
         let guard_faces = patch.guard_faces.clone();
@@ -958,14 +1193,23 @@ fn elastic_energy_in(
         let angles = spherical_triangle_angles(points)?.map(f64::to_radians);
         for corner in 0..3 {
             let angle = angles[corner];
-            let target = std::f64::consts::TAU / context.degrees[triangle[corner]] as f64;
+            let site = triangle[corner];
+            let target = patch
+                .target_field
+                .target_angles
+                .get(&site)
+                .copied()
+                .unwrap_or(std::f64::consts::TAU / context.degrees[site] as f64);
             let below = (minimum_angle - angle).max(0.0);
             let above = (angle - maximum_angle).max(0.0);
             energy += 100.0 * (below * below + above * above);
             match phase {
-                ElasticBlockPhase::Untangle
-                | ElasticBlockPhase::AngleFeasibility
-                | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
+                ElasticBlockPhase::Untangle | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
+                ElasticBlockPhase::AngleFeasibility => {
+                    if patch.target_mode.uses_hierarchy_area_degree() {
+                        energy += 0.001 * (angle - target).powi(2);
+                    }
+                }
                 ElasticBlockPhase::Interior => {
                     let lower = angle - minimum_angle;
                     let upper = maximum_angle - angle;
@@ -989,10 +1233,18 @@ fn elastic_energy_in(
     };
     for &(left, right) in guard_edges {
         let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
-        let reference = arc_length_unit_sphere(
-            patch.reference_positions[left],
-            patch.reference_positions[right],
-        );
+        let edge = (left.min(right), left.max(right));
+        let reference = patch
+            .target_field
+            .target_edge_lengths
+            .get(&edge)
+            .copied()
+            .unwrap_or_else(|| {
+                arc_length_unit_sphere(
+                    patch.reference_positions[left],
+                    patch.reference_positions[right],
+                )
+            });
         if length <= 0.0 || reference <= 0.0 || !length.is_finite() || !reference.is_finite() {
             return None;
         }
@@ -1294,6 +1546,8 @@ mod tests {
             fixed_compact_vertices: fixed.into_iter().collect(),
             movable_compact_vertices: vec![site],
             guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
         };
         let mut mesh = grid.mesh;
         mesh.move_vertex(
@@ -1332,6 +1586,67 @@ mod tests {
     }
 
     #[test]
+    fn median_averages_even_sample_middle_values() {
+        let mut odd = [3.0, 1.0, 2.0];
+        assert_eq!(median(&mut odd), Some(2.0));
+        let mut even = [4.0, 1.0, 2.0, 10.0];
+        assert_eq!(median(&mut even), Some(3.0));
+    }
+
+    #[test]
+    fn mother_level_area_samples_each_active_vertex_once() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let source_levels = grid
+            .mesh
+            .vertices()
+            .iter()
+            .enumerate()
+            .map(|(site, _)| grid.mesh.is_vertex_live(site).then_some(0))
+            .collect::<Vec<_>>();
+        let samples = mother_level_voronoi_areas(&grid.mesh, &source_levels);
+        let mut unique_areas = samples[&0].clone();
+        assert_eq!(unique_areas.len(), grid.mesh.active_vertex_slots().count());
+        assert!((unique_areas.iter().sum::<f64>() - 4.0 * std::f64::consts::PI).abs() < 1.0e-10);
+        let expected_unique = median(&mut unique_areas).unwrap();
+        let metrics = mother_level_metrics(&grid.mesh, &source_levels).unwrap();
+        assert!((metrics[&0].median_voronoi_area - expected_unique).abs() < 1.0e-15);
+    }
+
+    #[test]
+    fn hierarchy_area_targets_override_invalid_reference_dual_areas() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let triangle = grid.mesh.triangles()[face];
+        let site = triangle[0];
+        let target_area = 0.123;
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 46,
+                topology_id: 0,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: vec![triangle],
+                source_active_vertices: triangle.to_vec(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: vec![
+                CartesianPoint::new(0.0, 0.0, 0.0);
+                grid.mesh.vertices().len()
+            ],
+            fixed_compact_vertices: vec![triangle[1], triangle[2]],
+            movable_compact_vertices: vec![site],
+            guard_faces: vec![face],
+            target_mode: ElasticTargetMode::HierarchyEdgeAreaDegree,
+            target_field: ElasticTargetField {
+                target_cell_areas: BTreeMap::from([(site, target_area)]),
+                ..Default::default()
+            },
+        };
+        let context = EnergyContext::new(&grid.mesh, &patch).unwrap();
+        assert_eq!(context.reference_dual_areas[&site], Some(target_area));
+    }
+
+    #[test]
     fn angle_phase_energy_does_not_require_defined_dual() {
         let grid = MotherGrid::generate(4).unwrap();
         let face = grid.mesh.active_triangle_slots().next().unwrap();
@@ -1350,6 +1665,8 @@ mod tests {
             fixed_compact_vertices: vec![triangle[1], triangle[2]],
             movable_compact_vertices: vec![triangle[0]],
             guard_faces: vec![face],
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
         };
         let context = EnergyContext {
             degrees: vertex_degrees(&grid.mesh),
@@ -1490,6 +1807,8 @@ mod tests {
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
             movable_compact_vertices: vec![site],
             guard_faces,
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
         };
         let mut source = HierarchyLeafMesh {
             mesh: grid.mesh,
