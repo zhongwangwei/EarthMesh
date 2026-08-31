@@ -1,6 +1,9 @@
 //! Deterministic coordinate-only repair of a closed transition topology.
 
-use super::{relocation_step_window, HierarchyLeafMesh, TransitionTopologyCandidate};
+use super::{
+    full_polygon::minor_arc_crossing_strength, relocation_step_window, HierarchyLeafMesh,
+    TransitionTopologyCandidate,
+};
 use crate::{
     certificate::{
         spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, Certificate,
@@ -53,6 +56,7 @@ pub enum ElasticBlockOutcome {
         elastic_iterations: usize,
         initial_energy: f64,
         final_energy: f64,
+        final_phase: ElasticBlockPhase,
         reason: String,
         failed_guard_face: Option<usize>,
     },
@@ -60,6 +64,7 @@ pub enum ElasticBlockOutcome {
         elastic_iterations: usize,
         initial_energy: f64,
         final_energy: f64,
+        final_phase: ElasticBlockPhase,
         reason: String,
         failed_guard_face: Option<usize>,
     },
@@ -68,8 +73,9 @@ pub enum ElasticBlockOutcome {
     },
 }
 
-#[derive(Clone, Copy)]
-enum EnergyPhase {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElasticBlockPhase {
+    Untangle,
     Feasibility,
     Interior,
 }
@@ -81,7 +87,7 @@ struct EnergyContext {
     guard_seeds: Vec<(usize, usize)>,
     dual_pairs: Vec<DualPair>,
     derivatives: BTreeMap<usize, DerivativeContext>,
-    reference_dual_areas: BTreeMap<usize, f64>,
+    reference_dual_areas: BTreeMap<usize, Option<f64>>,
 }
 
 #[derive(Clone, Copy)]
@@ -203,6 +209,21 @@ pub fn solve_elastic_transition_block(
     solve_elastic_patch(&transition.mesh, patch, limits)
 }
 
+pub fn initial_elastic_phase(
+    source: &HierarchyLeafMesh,
+    patch: &ElasticPatch,
+) -> Result<ElasticBlockPhase, String> {
+    validate_patch(source, patch)?;
+    let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+    let context = EnergyContext::new(&source.mesh, patch)?;
+    Ok(energy_phase(
+        &Certificate::internal(),
+        &source.mesh,
+        &guard_faces,
+        &context,
+    ))
+}
+
 pub fn solve_elastic_patch(
     source: &HierarchyLeafMesh,
     patch: ElasticPatch,
@@ -240,6 +261,7 @@ pub fn solve_elastic_patch(
             elastic_iterations: 0,
             initial_energy,
             final_energy: initial_energy,
+            final_phase: phase,
             reason: geometry_failure_reason(&certificate, &current.mesh),
             failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
         };
@@ -250,6 +272,7 @@ pub fn solve_elastic_patch(
             elastic_iterations: iteration,
             initial_energy,
             final_energy,
+            final_phase: energy_phase(&certificate, mesh, &guard_faces, &context),
             reason: geometry_failure_reason(&certificate, mesh),
             failed_guard_face: failed_guard_face(&certificate, mesh, &patch),
         }
@@ -258,6 +281,10 @@ pub fn solve_elastic_patch(
     let mut energy = initial_energy;
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
+        let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
+            return no_step(&current.mesh, iteration, energy);
+        };
+        energy = phase_energy;
         let Some(gradient) =
             finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
         else {
@@ -287,7 +314,7 @@ pub fn solve_elastic_patch(
             }
             let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
             if candidate_energy.is_some_and(|candidate_energy| {
-                candidate_energy < energy - 1.0e-12 * energy.abs().max(1.0)
+                candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
             }) {
                 break candidate_energy;
             }
@@ -324,6 +351,7 @@ pub fn solve_elastic_patch(
         elastic_iterations: limits.elastic_iterations,
         initial_energy,
         final_energy: energy,
+        final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
         reason: geometry_failure_reason(&certificate, &current.mesh),
         failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
     }
@@ -445,13 +473,18 @@ fn energy_phase(
     mesh: &MeshState,
     guard_faces: &BTreeSet<usize>,
     context: &EnergyContext,
-) -> EnergyPhase {
+) -> ElasticBlockPhase {
+    if !all_faces_positive(mesh, guard_faces)
+        || edge_crossing_penalty(mesh, &context.guard_edges) > 1.0e-18
+    {
+        return ElasticBlockPhase::Untangle;
+    }
     if certificate.geometry_penalty_in(mesh, guard_faces) == Some(0.0)
         && dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible)
     {
-        EnergyPhase::Interior
+        ElasticBlockPhase::Interior
     } else {
-        EnergyPhase::Feasibility
+        ElasticBlockPhase::Feasibility
     }
 }
 
@@ -474,21 +507,16 @@ impl EnergyContext {
         }
         let reference =
             MeshState::from_parts(patch.reference_positions.clone(), mesh.triangles().to_vec())
-                .map_err(|errors| {
-                    errors
-                        .into_iter()
-                        .map(|error| error.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })?;
+                .ok();
         let mut reference_dual_areas = BTreeMap::new();
         for (&site, &seed) in &guard_seeds {
-            let area = reference
-                .voronoi_cell_from(site, seed)
-                .ok()
-                .and_then(|cell| cell.area_on_unit_sphere())
-                .filter(|area| area.is_finite() && *area > 0.0)
-                .ok_or_else(|| format!("reference Voronoi area is undefined at site {site}"))?;
+            let area = reference.as_ref().and_then(|reference| {
+                reference
+                    .voronoi_cell_from(site, seed)
+                    .ok()
+                    .and_then(|cell| cell.area_on_unit_sphere())
+                    .filter(|area| area.is_finite() && *area > 0.0)
+            });
             reference_dual_areas.insert(site, area);
         }
         let guard_faces = patch.guard_faces.clone();
@@ -582,7 +610,7 @@ fn vertex_degrees(mesh: &MeshState) -> Vec<usize> {
 fn elastic_energy(
     mesh: &MeshState,
     patch: &ElasticPatch,
-    phase: EnergyPhase,
+    phase: ElasticBlockPhase,
     context: &EnergyContext,
 ) -> Option<f64> {
     elastic_energy_in(
@@ -601,7 +629,7 @@ fn elastic_energy(
 fn elastic_energy_in(
     mesh: &MeshState,
     patch: &ElasticPatch,
-    phase: EnergyPhase,
+    phase: ElasticBlockPhase,
     context: &EnergyContext,
     guard_faces: &[usize],
     guard_edges: &[(usize, usize)],
@@ -616,17 +644,21 @@ fn elastic_energy_in(
             return None;
         }
         let triangle = mesh.triangles()[face];
-        if orientation_on_sphere(
-            mesh.vertices()[triangle[0]],
-            mesh.vertices()[triangle[1]],
-            mesh.vertices()[triangle[2]],
-        )
-        .ok()?
-            != Sign::Positive
-        {
+        let points = triangle.map(|site| mesh.vertices()[site]);
+        let [Some(a), Some(b), Some(c)] = points.map(normalized_point) else {
+            return None;
+        };
+        let determinant = dot(a, cross(b, c));
+        if !determinant.is_finite() {
             return None;
         }
-        let points = triangle.map(|site| mesh.vertices()[site]);
+        if matches!(phase, ElasticBlockPhase::Untangle) {
+            energy += 1_000_000.0 * (1.0e-10 - determinant).max(0.0).powi(2);
+            continue;
+        }
+        if determinant <= 0.0 {
+            return None;
+        }
         let angles = spherical_triangle_angles(points)?.map(f64::to_radians);
         for corner in 0..3 {
             let angle = angles[corner];
@@ -635,8 +667,8 @@ fn elastic_energy_in(
             let above = (angle - maximum_angle).max(0.0);
             energy += 100.0 * (below * below + above * above);
             match phase {
-                EnergyPhase::Feasibility => {}
-                EnergyPhase::Interior => {
+                ElasticBlockPhase::Untangle | ElasticBlockPhase::Feasibility => {}
+                ElasticBlockPhase::Interior => {
                     let lower = angle - minimum_angle;
                     let upper = maximum_angle - angle;
                     if lower <= 0.0 || upper <= 0.0 {
@@ -646,21 +678,14 @@ fn elastic_energy_in(
                 }
             }
         }
-        let [Some(a), Some(b), Some(c)] = points.map(normalized_point) else {
-            return None;
-        };
-        let determinant = dot(a, cross(b, c));
-        if determinant <= 0.0 || !determinant.is_finite() {
-            return None;
-        }
-        if matches!(phase, EnergyPhase::Interior) {
+        if matches!(phase, ElasticBlockPhase::Interior) {
             energy -= 0.0001 * determinant.ln();
         }
     }
 
     let edge_weight = match phase {
-        EnergyPhase::Feasibility => 0.001,
-        EnergyPhase::Interior => 0.01,
+        ElasticBlockPhase::Untangle | ElasticBlockPhase::Feasibility => 0.001,
+        ElasticBlockPhase::Interior => 0.01,
     };
     for &(left, right) in guard_edges {
         let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
@@ -673,11 +698,45 @@ fn elastic_energy_in(
         }
         energy += edge_weight * (length / reference).ln().powi(2);
     }
-    let include_soft_dual = matches!(phase, EnergyPhase::Interior);
+    if matches!(phase, ElasticBlockPhase::Untangle) {
+        energy += 10_000.0 * edge_crossing_penalty(mesh, guard_edges);
+        return energy.is_finite().then_some(energy);
+    }
+
+    let include_soft_dual = matches!(phase, ElasticBlockPhase::Interior);
     let dual = dual_energy_in(mesh, context, guard_seeds, dual_pairs, include_soft_dual)?;
     energy += 1_000.0 * dual.violation + 0.02 * dual.center;
     energy += 0.02 * dual.area;
     energy.is_finite().then_some(energy)
+}
+
+fn all_faces_positive(mesh: &MeshState, faces: &BTreeSet<usize>) -> bool {
+    faces.iter().copied().all(|face| {
+        mesh.is_triangle_live(face)
+            && orientation_on_sphere(
+                mesh.vertices()[mesh.triangles()[face][0]],
+                mesh.vertices()[mesh.triangles()[face][1]],
+                mesh.vertices()[mesh.triangles()[face][2]],
+            ) == Ok(Sign::Positive)
+    })
+}
+
+fn edge_crossing_penalty(mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
+    let mut penalty = 0.0;
+    for (i, &(a, b)) in edges.iter().enumerate() {
+        for &(c, d) in &edges[i + 1..] {
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            penalty += minor_arc_crossing_strength(
+                mesh.vertices()[a],
+                mesh.vertices()[b],
+                mesh.vertices()[c],
+                mesh.vertices()[d],
+            );
+        }
+    }
+    penalty
 }
 
 fn dual_energy(
@@ -720,8 +779,9 @@ fn dual_energy_in(
             if !cell_area.is_finite() || cell_area <= 0.0 {
                 return None;
             }
-            let target_area = context.reference_dual_areas[&site];
-            area += (cell_area / target_area).ln().powi(2);
+            if let Some(target_area) = context.reference_dual_areas[&site] {
+                area += (cell_area / target_area).ln().powi(2);
+            }
 
             let mut centroid_sum = CartesianPoint::new(0.0, 0.0, 0.0);
             for corner in &cell.corners {
@@ -766,7 +826,7 @@ fn dual_energy_in(
 fn finite_difference_gradient(
     mesh: &mut MeshState,
     patch: &ElasticPatch,
-    phase: EnergyPhase,
+    phase: ElasticBlockPhase,
     initial_step: f64,
     context: &EnergyContext,
 ) -> Option<Vec<(usize, CartesianPoint)>> {
@@ -782,27 +842,35 @@ fn finite_difference_gradient(
             let plus = exponential_map(point, scale_point(direction, epsilon))?;
             let minus = exponential_map(point, scale_point(direction, -epsilon))?;
             mesh.move_vertex(site, plus);
-            let plus_energy = elastic_energy_in(
-                mesh,
-                patch,
-                phase,
-                context,
-                &local.guard_faces,
-                &local.guard_edges,
-                &local.guard_seeds,
-                &local.dual_pairs,
-            );
+            let plus_energy = if matches!(phase, ElasticBlockPhase::Untangle) {
+                elastic_energy(mesh, patch, phase, context)
+            } else {
+                elastic_energy_in(
+                    mesh,
+                    patch,
+                    phase,
+                    context,
+                    &local.guard_faces,
+                    &local.guard_edges,
+                    &local.guard_seeds,
+                    &local.dual_pairs,
+                )
+            };
             mesh.move_vertex(site, minus);
-            let minus_energy = elastic_energy_in(
-                mesh,
-                patch,
-                phase,
-                context,
-                &local.guard_faces,
-                &local.guard_edges,
-                &local.guard_seeds,
-                &local.dual_pairs,
-            );
+            let minus_energy = if matches!(phase, ElasticBlockPhase::Untangle) {
+                elastic_energy(mesh, patch, phase, context)
+            } else {
+                elastic_energy_in(
+                    mesh,
+                    patch,
+                    phase,
+                    context,
+                    &local.guard_faces,
+                    &local.guard_edges,
+                    &local.guard_seeds,
+                    &local.dual_pairs,
+                )
+            };
             mesh.move_vertex(site, point);
             Some((plus_energy? - minus_energy?) / (2.0 * epsilon))
         };
@@ -941,7 +1009,7 @@ mod tests {
         let local = finite_difference_gradient(
             &mut mesh.clone(),
             &patch,
-            EnergyPhase::Feasibility,
+            ElasticBlockPhase::Feasibility,
             0.01,
             &context,
         )
@@ -949,7 +1017,7 @@ mod tests {
         let full = full_finite_difference_gradient(
             &mut mesh,
             &patch,
-            EnergyPhase::Feasibility,
+            ElasticBlockPhase::Feasibility,
             0.01,
             &context,
         )
@@ -964,10 +1032,161 @@ mod tests {
         }
     }
 
+    #[test]
+    fn negative_geometry_reaches_untangle_phase() {
+        let (source, patch) = inverted_elastic_fixture();
+        let context = EnergyContext::new(&source.mesh, &patch).unwrap();
+        assert_eq!(
+            initial_elastic_phase(&source, &patch).unwrap(),
+            ElasticBlockPhase::Untangle
+        );
+        assert!(
+            elastic_energy(&source.mesh, &patch, ElasticBlockPhase::Untangle, &context).is_some()
+        );
+    }
+
+    #[test]
+    fn negative_orientation_is_not_rejected_as_topology_no_go() {
+        let (source, patch) = inverted_elastic_fixture();
+        assert!(matches!(
+            solve_elastic_patch(
+                &source,
+                patch,
+                ElasticBlockLimits {
+                    elastic_iterations: 0,
+                },
+            ),
+            ElasticBlockOutcome::SearchBudgetExhausted { .. }
+        ));
+    }
+
+    #[test]
+    fn repairable_negative_fixture_leaves_untangle_phase() {
+        let (source, patch) = inverted_elastic_fixture();
+        match solve_elastic_patch(
+            &source,
+            patch,
+            ElasticBlockLimits {
+                elastic_iterations: 64,
+            },
+        ) {
+            ElasticBlockOutcome::Certified(_) => {}
+            ElasticBlockOutcome::ElasticNoImprovement { final_phase, .. }
+            | ElasticBlockOutcome::SearchBudgetExhausted { final_phase, .. } => {
+                assert_ne!(final_phase, ElasticBlockPhase::Untangle)
+            }
+            other => panic!("repairable negative fixture should enter elastic search: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cber_does_not_change_topology() {
+        let (source, patch) = inverted_elastic_fixture();
+        let triangles = source.mesh.triangles().to_vec();
+        let neighbours = source.mesh.neighbours().to_vec();
+        let outcome = solve_elastic_patch(
+            &source,
+            patch,
+            ElasticBlockLimits {
+                elastic_iterations: 1,
+            },
+        );
+        if let ElasticBlockOutcome::Certified(trial) = outcome {
+            assert_eq!(trial.mesh.mesh.triangles(), triangles);
+            assert_eq!(trial.mesh.mesh.neighbours(), neighbours);
+        }
+        assert_eq!(source.mesh.triangles(), triangles);
+        assert_eq!(source.mesh.neighbours(), neighbours);
+    }
+
+    #[test]
+    fn untangle_energy_penalizes_crossing_edges() {
+        let n = |x, y, z| normalized_point(CartesianPoint::new(x, y, z)).unwrap();
+        let mesh = MeshState::from_parts(
+            vec![
+                CartesianPoint::new(0.0, 0.0, 0.0),
+                CartesianPoint::new(0.0, 0.0, 0.0),
+                n(1.0, 0.0, 0.0),
+                n(0.0, 1.0, 0.0),
+                n(0.7, 0.7, -1.0),
+                n(0.7, 0.7, 1.0),
+            ],
+            vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 3, 5]],
+        )
+        .unwrap();
+        assert!(edge_crossing_penalty(&mesh, &[(2, 3), (4, 5)]) > 0.0);
+    }
+
+    fn inverted_elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {
+        let grid = MotherGrid::generate(8).unwrap();
+        let seed = grid.mesh.active_triangle_slots().next().unwrap();
+        let site = grid.mesh.triangles()[seed][0];
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| grid.mesh.triangles()[face].contains(&site))
+            .collect::<Vec<_>>();
+        let fixed_compact_vertices = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|&candidate| candidate != site)
+            .collect::<BTreeSet<_>>();
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 43,
+                topology_id: 0,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: std::iter::once(site)
+                    .chain(fixed_compact_vertices.iter().copied())
+                    .collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
+            movable_compact_vertices: vec![site],
+            guard_faces,
+        };
+        let mut source = HierarchyLeafMesh {
+            mesh: grid.mesh,
+            triangle_addresses: grid.triangle_addresses,
+            source_vertex_slots: (0..patch.reference_positions.len())
+                .map(|site| (site >= 2).then_some(site))
+                .collect(),
+        };
+        let face = patch.guard_faces[0];
+        let triangle = source.mesh.triangles()[face];
+        let [u, v] = triangle
+            .into_iter()
+            .filter(|&candidate| candidate != site)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let flipped = normalized_point(add_points(
+            scale_point(
+                cross(source.mesh.vertices()[u], source.mesh.vertices()[v]),
+                -1.0,
+            ),
+            scale_point(
+                add_points(source.mesh.vertices()[u], source.mesh.vertices()[v]),
+                0.05,
+            ),
+        ))
+        .unwrap();
+        source.mesh.move_vertex(site, flipped);
+        let guard_faces = patch.guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        assert!(!all_faces_positive(&source.mesh, &guard_faces));
+        (source, patch)
+    }
+
     fn full_finite_difference_gradient(
         mesh: &mut MeshState,
         patch: &ElasticPatch,
-        phase: EnergyPhase,
+        phase: ElasticBlockPhase,
         initial_step: f64,
         context: &EnergyContext,
     ) -> Option<Vec<(usize, CartesianPoint)>> {

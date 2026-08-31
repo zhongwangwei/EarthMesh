@@ -608,6 +608,7 @@ fn certify_candidate(
                 final_energy,
                 reason,
                 failed_guard_face,
+                ..
             } => {
                 let mut failure = CandidateAttemptFailure::retry(
                     ComponentTransactionStage::Elastic,
@@ -626,6 +627,7 @@ fn certify_candidate(
                 final_energy,
                 reason,
                 failed_guard_face,
+                ..
             } => {
                 let mut failure = CandidateAttemptFailure::budget(
                     ComponentTransactionStage::Elastic,
