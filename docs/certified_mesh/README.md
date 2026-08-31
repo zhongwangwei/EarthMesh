@@ -193,6 +193,11 @@ The recovery path now uses the
 [source-face band contract](face_band_contract.md): first construct an exact
 pinch-free W2 separator directly from source triangle labels, then consider W3
 only if that finite W2 family fails or its geometry cannot meet the strict gate.
+PR56 closes that exact PF-W2 search at the unexpanded `F0` face complex: 88
+transition faces split into connected 36/52-face annular bands around one
+20-edge simple interface, with no boundary contact, true pinch, anchor cap, or
+coarse-core sacrifice. This is a planning witness only; PR57 must still close
+degree/link/Euler/charge topology before any geometry solve.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
