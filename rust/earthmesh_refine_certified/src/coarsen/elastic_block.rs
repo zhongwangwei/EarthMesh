@@ -1,9 +1,10 @@
 //! Deterministic coordinate-only repair of a closed transition topology.
 
 use super::{
-    build_stratified_annulus, full_polygon::minor_arc_crossing_strength, relocation_step_window,
+    build_stratified_annulus, build_stratified_annulus_from_face_bands,
+    full_polygon::minor_arc_crossing_strength, relocation_step_window, FaceBandPlan,
     FullPolygonMergeTrial, HierarchyComponent, HierarchyLeafMesh, RingAnchorKind,
-    TransitionTopologyCandidate,
+    StratifiedAnnulus, TransitionTopologyCandidate,
 };
 use crate::{
     certificate::{
@@ -412,6 +413,49 @@ impl ElasticPatch {
         physical_fixed_sources: &BTreeSet<usize>,
         domain_id: GeometryDomainId,
     ) -> Result<Self, String> {
+        let stratified = build_stratified_annulus(source, component).map_err(|error| {
+            format!("stratified annulus rejected free-interface patch: {error:?}")
+        })?;
+        Self::from_full_polygon_merge_with_stratified(
+            source,
+            component,
+            trial,
+            physical_fixed_sources,
+            domain_id,
+            stratified,
+        )
+    }
+
+    pub fn from_face_band_full_polygon_merge_with_domain(
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        plan: &FaceBandPlan,
+        trial: &FullPolygonMergeTrial,
+        physical_fixed_sources: &BTreeSet<usize>,
+        domain_id: GeometryDomainId,
+    ) -> Result<Self, String> {
+        let stratified = build_stratified_annulus_from_face_bands(source, component, plan)
+            .map_err(|error| {
+                format!("face-band annulus rejected free-interface patch: {error:?}")
+            })?;
+        Self::from_full_polygon_merge_with_stratified(
+            source,
+            component,
+            trial,
+            physical_fixed_sources,
+            domain_id,
+            stratified,
+        )
+    }
+
+    fn from_full_polygon_merge_with_stratified(
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        trial: &FullPolygonMergeTrial,
+        physical_fixed_sources: &BTreeSet<usize>,
+        domain_id: GeometryDomainId,
+        stratified: StratifiedAnnulus,
+    ) -> Result<Self, String> {
         let mesh = &trial.global_trial.mesh.mesh;
         let source_slots = &trial.global_trial.mesh.source_vertex_slots;
         if source_slots.len() != mesh.vertices().len() {
@@ -423,9 +467,6 @@ impl ElasticPatch {
             .enumerate()
             .filter_map(|(compact, source)| source.map(|source| (source, compact)))
             .collect::<BTreeMap<_, _>>();
-        let stratified = build_stratified_annulus(source, component).map_err(|error| {
-            format!("stratified annulus rejected free-interface patch: {error:?}")
-        })?;
         let anchor_sources = source
             .addresses
             .iter()
