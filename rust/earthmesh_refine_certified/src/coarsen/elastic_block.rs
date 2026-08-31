@@ -733,6 +733,44 @@ impl ElasticPatch {
         }
         Ok(patch)
     }
+
+    pub(crate) fn restricted_to_movable(
+        &self,
+        target: &HierarchyLeafMesh,
+        movable: &BTreeSet<usize>,
+    ) -> Result<Self, String> {
+        if movable.is_empty()
+            || !movable
+                .iter()
+                .all(|site| self.movable_compact_vertices.contains(site))
+        {
+            return Err("restricted geometry block is empty or outside the target domain".into());
+        }
+        let guard_faces = incident_faces(&target.mesh, movable);
+        let fixed_compact_vertices = guard_faces
+            .iter()
+            .flat_map(|&face| target.mesh.triangles()[face])
+            .filter(|site| !movable.contains(site))
+            .collect::<BTreeSet<_>>();
+        let mut topology = self.topology.clone();
+        topology.source_active_vertices = movable
+            .iter()
+            .chain(&fixed_compact_vertices)
+            .filter_map(|&compact| target.source_vertex_slots[compact])
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(Self {
+            domain_id: self.domain_id,
+            topology,
+            reference_positions: self.reference_positions.clone(),
+            fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
+            movable_compact_vertices: movable.iter().copied().collect(),
+            guard_faces: guard_faces.into_iter().collect(),
+            target_mode: self.target_mode,
+            target_field: self.target_field.clone(),
+        })
+    }
 }
 
 fn target_mode_uses_area(mode: ElasticTargetMode) -> bool {
@@ -936,6 +974,7 @@ pub fn solve_elastic_patch(
         limits,
         GeometryStartId::MaterializedSource,
         ElasticSolverMode::FiniteDifferenceElastic,
+        1.0,
     )
 }
 
@@ -951,6 +990,7 @@ pub fn solve_elastic_patch_with_start(
         limits,
         start_id,
         ElasticSolverMode::FiniteDifferenceElastic,
+        1.0,
     )
 }
 
@@ -966,6 +1006,7 @@ pub fn solve_elastic_patch_with_margin_start(
         limits,
         start_id,
         ElasticSolverMode::MarginFiniteDifferenceLexicographic,
+        1.0,
     )
 }
 
@@ -981,6 +1022,24 @@ pub fn solve_elastic_patch_with_active_trust_start(
         limits,
         start_id,
         ElasticSolverMode::ActiveTangentTrust,
+        1.0,
+    )
+}
+
+pub fn solve_elastic_patch_with_active_trust_start_and_scale(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+    trust_fraction: f64,
+) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        start_id,
+        ElasticSolverMode::ActiveTangentTrust,
+        trust_fraction,
     )
 }
 
@@ -990,7 +1049,16 @@ fn solve_elastic_patch_impl(
     limits: ElasticBlockLimits,
     start_id: GeometryStartId,
     solver_mode: ElasticSolverMode,
+    trust_fraction: f64,
 ) -> ElasticBlockOutcome {
+    if !trust_fraction.is_finite()
+        || !(0.0..=1.0).contains(&trust_fraction)
+        || trust_fraction == 0.0
+    {
+        return ElasticBlockOutcome::InvalidPatch {
+            reason: "elastic trust fraction must be finite and in (0, 1]".into(),
+        };
+    }
     if let Err(reason) = validate_patch(source, &patch) {
         return ElasticBlockOutcome::InvalidPatch { reason };
     }
@@ -1011,6 +1079,8 @@ fn solve_elastic_patch_impl(
             reason: "transition guard has no positive finite edge length".into(),
         };
     };
+    let initial_step = initial_step * trust_fraction;
+    let minimum_step = minimum_step * trust_fraction;
     let context = match EnergyContext::new(&current.mesh, &patch) {
         Ok(context) => context,
         Err(reason) => return ElasticBlockOutcome::InvalidPatch { reason },

@@ -173,7 +173,11 @@ domain without a cold restart: all 76 common coordinates and the topology are
 bitwise unchanged, 32 newly released vertices retain their materialized
 coordinates, and the zero-step range remains exactly
 37.340837475907--83.652760215259 degrees. This passes the nested-domain gate but
-does not yet improve the strict margin; NXP80 remains blocked.
+does not yet improve the strict margin. PR52 then applies a best-preserving
+new-ring/block/joint continuation and improves the +2 result to
+38.551143486745--81.453074281139 degrees, signed margin
+`-1.653074281139` degrees. This is a material 2.199685934119-degree improvement,
+but the strict gate and NXP80 remain blocked pending blocker localization.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

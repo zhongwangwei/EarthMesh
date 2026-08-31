@@ -167,3 +167,21 @@ the 108-vertex +2 domain with bitwise-equal common coordinates:
 This establishes only exact nested initialization. It does not improve the
 angle range or certify 40.2--79.8 degrees; the next gate is monotone +2
 continuation that must retain this seed as best-so-far.
+
+## PR52 monotone +2 continuation evidence
+
+PR52 continues the exact PR51 seed through a frozen 64-iteration schedule:
+16 new-ring-only iterations, 24 deterministic alternating block iterations,
+and 24 joint iterations. Each block uses `ActiveTangentTrust`; a stage that
+regresses signed margin is discarded and the exact best coordinates are
+restored. The 76 inherited vertices are partitioned into 28 old outer-ring and
+48 interface vertices; the +2 halo contributes 32 newly released vertices.
+
+| initial range | best range | initial margin | best margin | improvement | gate |
+|---:|---:|---:|---:|---:|---|
+| 37.340837475907--83.652760215259 | 38.551143486745--81.453074281139 | -3.852760215259 | -1.653074281139 | +2.199685934119 | `MaterialImprovement` |
+
+The best-so-far margin is monotone and the +2 output cannot be worse than its
++1 seed. The strict window is still not met, so this is not a Frozen N6
+certificate. The next gate is the worst-angle/effective-width atlas; simply
+adding more iterations is not justified by the observed stage stalls.

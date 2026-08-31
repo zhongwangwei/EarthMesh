@@ -235,13 +235,13 @@ fn same_connectivity(source: &ElasticPatch, target: &ElasticPatch) -> bool {
         && source.topology.source_degree_forecast == target.topology.source_degree_forecast
 }
 
-fn point_bits_equal(left: CartesianPoint, right: CartesianPoint) -> bool {
+pub(super) fn point_bits_equal(left: CartesianPoint, right: CartesianPoint) -> bool {
     left.x.to_bits() == right.x.to_bits()
         && left.y.to_bits() == right.y.to_bits()
         && left.z.to_bits() == right.z.to_bits()
 }
 
-fn angle_range(mesh: &HierarchyLeafMesh) -> Result<(f64, f64), GeometryEmbeddingError> {
+pub(super) fn angle_range(mesh: &HierarchyLeafMesh) -> Result<(f64, f64), GeometryEmbeddingError> {
     angle_range_faces(mesh, mesh.mesh.active_triangle_slots())
 }
 
@@ -272,12 +272,12 @@ fn range_bits_equal(left: (f64, f64), right: (f64, f64)) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::{ElasticTargetField, ElasticTargetMode, TransitionTopologyCandidate};
     use super::*;
     use crate::mother_grid::VertexAddress;
 
-    fn fixture(
+    pub(crate) fn fixture(
         physical_fixed_sources: &BTreeSet<usize>,
     ) -> (
         MotherGrid,
