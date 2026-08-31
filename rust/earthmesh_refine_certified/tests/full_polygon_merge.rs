@@ -1,5 +1,6 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, embed_geometry_witness, frozen_n6_geometry_evidence_json,
+    build_stratified_annulus, continue_nested_domain, domain_continuation_evidence_json,
+    embed_geometry_witness, frozen_n6_geometry_evidence_json,
     frozen_n6_geometry_evidence_json_with_solver_domain,
     frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
@@ -10,6 +11,7 @@ use earthmesh_refine_certified::coarsen::{
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ContinuousProofOutcome,
+    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
     ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField,
     ElasticTargetMode, FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome,
     GeometryDomainId, GeometryDomainWitness, GeometryStartId, IntervalBox, RingAnchorKind,
@@ -1241,6 +1243,98 @@ fn frozen_n6_pr51_nested_domain_embedding_probe() {
         report.embedded_global_angle_range_deg.1,
         report.source_signed_margin_deg,
         report.embedded_signed_margin_deg,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR52 monotone +2 continuation gate"]
+fn frozen_n6_pr52_monotone_domain_continuation_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let source_domain = GeometryDomainId::PlusOneOrdinaryRing;
+    let target_domain = GeometryDomainId::PlusTwoOrdinaryRings;
+    let start = GeometryStartId::MaterializedSource;
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let outcome =
+        solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &[start],
+            source_domain,
+        );
+    let evidence = match &outcome {
+        FullPolygonMergeOutcome::Closed(trial) => &trial.evidence,
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
+        | FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
+        | FullPolygonMergeOutcome::InvalidInput { evidence, .. } => evidence,
+    };
+    let failure = evidence
+        .best_geometry_failure
+        .as_ref()
+        .expect("PR52 requires the PR49 best +1 failure evidence");
+    let numerical = failure
+        .witness
+        .as_ref()
+        .expect("PR52 requires the persisted PR49 numerical witness");
+    let inherited = GeometryDomainWitness::from_failure(
+        fixture_fingerprint,
+        failure.topology_keys.clone(),
+        source_domain,
+        numerical,
+        failure.global_angle_degrees.unwrap(),
+        failure.guard_angle_degrees.unwrap(),
+    )
+    .unwrap();
+    let target_patch = inherited
+        .expanded_patch(
+            &source,
+            source_levels.as_slice(),
+            &BTreeSet::new(),
+            target_domain,
+        )
+        .unwrap();
+    let schedule = DomainContinuationSchedule::frozen_n6();
+    assert_eq!(
+        schedule.halo_only_iterations + schedule.alternating_iterations + schedule.joint_iterations,
+        elastic_iterations
+    );
+    let DomainContinuationOutcome::Completed(result) = continue_nested_domain(
+        &inherited,
+        target_patch,
+        schedule,
+        DomainContinuationMode::InheritedBestMonotone,
+    ) else {
+        panic!("PR52 monotone continuation must return evidence");
+    };
+    assert!(result.best_signed_margin_deg + 1.0e-12 >= result.initial_signed_margin_deg);
+    assert_eq!(
+        result.best_witness.patch.movable_compact_vertices.len(),
+        108
+    );
+    let improvement = result.best_signed_margin_deg - result.initial_signed_margin_deg;
+    let gate = if result.best_signed_margin_deg >= 0.0 {
+        "StrictSuccess"
+    } else if improvement >= 0.25 {
+        "MaterialImprovement"
+    } else {
+        "NoMaterialImprovement"
+    };
+    let run = domain_continuation_evidence_json(&result, git_head().as_deref());
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr52MonotoneContinuationGate\",\"fixture_fingerprint\":{},\"topology_limit\":{},\"source_search_iterations\":{},\"gate\":\"{}\",\"run\":{}}}",
+        fixture_fingerprint, topology_limit, elastic_iterations, gate, run,
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();

@@ -2,6 +2,7 @@ mod anchor_ear;
 mod annulus;
 mod component_transaction;
 mod core_condensation;
+mod domain_continuation;
 mod elastic_block;
 mod full_polygon;
 mod full_polygon_merge;
@@ -31,9 +32,15 @@ pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
 };
+pub use domain_continuation::{
+    continue_nested_domain, domain_continuation_evidence_json, ContinuationStageId,
+    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationResult,
+    DomainContinuationSchedule, DomainContinuationStageReport,
+};
 pub use elastic_block::{
     angle_margin_objective, initial_elastic_phase, solve_elastic_patch,
-    solve_elastic_patch_with_active_trust_start, solve_elastic_patch_with_margin_start,
+    solve_elastic_patch_with_active_trust_start,
+    solve_elastic_patch_with_active_trust_start_and_scale, solve_elastic_patch_with_margin_start,
     solve_elastic_patch_with_start, solve_elastic_transition_block, ActiveBoundaryConstraintRatio,
     AngleConstraintKey, AngleMarginObjective, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
