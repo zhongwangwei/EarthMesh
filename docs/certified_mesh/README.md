@@ -182,6 +182,12 @@ failure: 85% of the +2 worst-100 angles lie within one graph step of one of 14
 zero-width shared-junction pinches, while only 9% contain a long
 full-polygon diagonal. The preregistered result is `WidthDominated`, so the
 next gate is construction of genuinely positive-width W3/W4 bands.
+The PR55 planning gate then exhausts inward reclassification plus four outward
+parent-ring expansions and returns `InsufficientAnnulusWidth`: the best W3
+candidate still has zero effective bands and 24 adjacent shared vertices,
+while wider candidates place original anchors strictly inside the annulus.
+Local W4 is not evaluated because ordinary regions first require a valid global
+W3 plan. No topology or geometry solve is started from these invalid plans.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and

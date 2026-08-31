@@ -204,3 +204,31 @@ normalized minimum separations are zero. The 14 unique shared vertices are the
 zero-width pinches. This passes the preregistered 60% width-dominated gate and
 routes the next experiment to explicit W3/W4 positive-width band planning,
 rather than more +2 iterations or geometry-aware topology ordering.
+
+## PR55 W3/W4 planning result
+
+The planning-only search widens the transition parent set, sacrifices inner
+core parents, retries up to four outward parent rings, re-extracts every nested
+trace family that remains valid, and checks every deterministic subsequence.
+It does not run full-polygon merge or CBER.
+
+Frozen N6 returns the required typed stop result, `InsufficientAnnulusWidth`:
+
+| mode | best effective bands | adjacent shared vertices | adjacent shared edges | result |
+|---|---:|---:|---:|---|
+| legacy W2 | 0 | 14 | 0 | diagnostic only |
+| W3 | 0 | 24 | 0 | `InsufficientAnnulusWidth` |
+| local W4 | — | — | — | not evaluated: global W3 prerequisite failed |
+
+W4 is not treated as a global four-band requirement. Its planner first gates a
+three-band ordinary-region subsequence, then measures a fourth band only in
+pentagon, seam, and pinch-centred trace slices. The Frozen N6 W3 prerequisite
+fails, so the local W4 gate is deliberately not evaluated.
+
+Widening far enough to expose more nominal traces repeatedly puts original
+icosahedron anchors 29 or 2 strictly inside the annulus, which the certified
+extractor rejects. Shallower valid annuli still have adjacent traces touching
+at source vertices. Therefore nominal extra traces cannot be reported as
+positive-width bands. This result is scoped to parent-layer extraction plus
+four outward rings; it is not a global proof against arbitrary new
+anchor-exclusion cycle surgery.

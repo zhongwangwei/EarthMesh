@@ -1,6 +1,7 @@
 mod anchor_ear;
 mod angle_atlas;
 mod annulus;
+mod band_cycle_planner;
 mod component_transaction;
 mod core_condensation;
 mod domain_continuation;
@@ -28,6 +29,10 @@ pub use angle_atlas::{
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
     CycleOrientation, RingAnchorKind, RingCycle, RingVertex, RingVertexRole,
+};
+pub use band_cycle_planner::{
+    effective_band_error_json, plan_effective_transition_bands, transition_band_plan_json,
+    EffectiveBandError, TransitionBandMode, TransitionBandPlan,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
