@@ -2595,7 +2595,7 @@ fn clamp_trust_per_vertex(delta: &mut [f64], trust_radius: f64) {
         delta.fill(0.0);
         return;
     }
-    for chunk in delta.chunks_exact_mut(2) {
+    for chunk in delta.as_chunks_mut::<2>().0 {
         let norm = (chunk[0] * chunk[0] + chunk[1] * chunk[1]).sqrt();
         if norm > trust_radius {
             let scale = trust_radius / norm;
