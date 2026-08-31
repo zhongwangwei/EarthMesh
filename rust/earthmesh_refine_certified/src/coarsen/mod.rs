@@ -41,8 +41,8 @@ pub use full_polygon::{
 };
 pub use full_polygon_merge::{
     solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, FullPolygonCberLimits,
-    FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    FullPolygonMergeTrial, TopologyFamilyId,
+    FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
+    FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };
 pub use full_polygon_reachability::{
     analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,
@@ -70,9 +70,10 @@ pub use stratified_annulus::{
     TracePairSharedRecord, TraceRole, VertexLinkContract, VertexRotation,
 };
 pub use transition_feasibility::{
-    analyze_legacy_transition_family, n6_legacy_mixed_fixture, prove_transition_topology_trial,
-    FeasibilityProof, FeasibleWitness, TransitionFeasibilityOutcomeKind,
-    TransitionFeasibilityProof, TransitionTopologyFeasibilityEvidence,
+    analyze_legacy_transition_family, n6_legacy_mixed_fixture,
+    n6_legacy_mixed_fixture_with_source_levels, prove_transition_topology_trial, FeasibilityProof,
+    FeasibleWitness, TransitionFeasibilityOutcomeKind, TransitionFeasibilityProof,
+    TransitionTopologyFeasibilityEvidence,
 };
 pub use transition_topology::{
     solve_transition_topology, TransitionBoundary, TransitionTopologyCandidate,
