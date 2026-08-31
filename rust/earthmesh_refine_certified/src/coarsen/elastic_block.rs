@@ -1,15 +1,17 @@
 //! Deterministic coordinate-only repair of a closed transition topology.
 
 use super::{
-    full_polygon::minor_arc_crossing_strength, relocation_step_window, HierarchyLeafMesh,
+    build_stratified_annulus, full_polygon::minor_arc_crossing_strength, relocation_step_window,
+    FullPolygonMergeTrial, HierarchyComponent, HierarchyLeafMesh, RingAnchorKind,
     TransitionTopologyCandidate,
 };
 use crate::{
     certificate::{
         spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, Certificate,
-        GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
+        CertificateError, GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
     },
     coarsen::TransitionTopologyTrial,
+    mother_grid::{MotherGrid, VertexAddress},
 };
 use earthmesh_mesh::{
     arc_length_unit_sphere, cross, in_circle_on_sphere, magnitude, orientation_on_sphere,
@@ -68,6 +70,14 @@ pub enum ElasticBlockOutcome {
         reason: String,
         failed_guard_face: Option<usize>,
     },
+    RequiresDifferentTopology {
+        elastic_iterations: usize,
+        initial_energy: f64,
+        final_energy: f64,
+        final_phase: ElasticBlockPhase,
+        reason: String,
+        failed_guard_face: Option<usize>,
+    },
     InvalidPatch {
         reason: String,
     },
@@ -76,7 +86,8 @@ pub enum ElasticBlockOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElasticBlockPhase {
     Untangle,
-    Feasibility,
+    AngleFeasibility,
+    DelaunayVoronoiFeasibility,
     Interior,
 }
 
@@ -196,6 +207,197 @@ impl ElasticPatch {
             guard_faces: guard_faces.into_iter().collect(),
         })
     }
+    pub fn from_full_polygon_merge(
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        trial: &FullPolygonMergeTrial,
+        physical_fixed_sources: &BTreeSet<usize>,
+    ) -> Result<Self, String> {
+        let mesh = &trial.global_trial.mesh.mesh;
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        if source_slots.len() != mesh.vertices().len() {
+            return Err("full-polygon source-slot map does not match compact vertices".into());
+        }
+        let source_to_compact = source_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(compact, source)| source.map(|source| (source, compact)))
+            .collect::<BTreeMap<_, _>>();
+        let stratified = build_stratified_annulus(source, component).map_err(|error| {
+            format!("stratified annulus rejected free-interface patch: {error:?}")
+        })?;
+        let anchor_sources = source
+            .addresses
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, address)| {
+                matches!(address, Some(VertexAddress::IcosahedronVertex(_))).then_some(slot)
+            })
+            .chain(
+                stratified
+                    .link_contracts
+                    .iter()
+                    .filter_map(|(&source, contract)| {
+                        matches!(
+                            contract.anchor_kind,
+                            RingAnchorKind::IcosahedronPentagon { .. }
+                        )
+                        .then_some(source)
+                    }),
+            )
+            .collect::<BTreeSet<_>>();
+        let fixed_position_sources = stratified
+            .coupled
+            .inner_guard
+            .vertices
+            .iter()
+            .chain(&stratified.coupled.coarse_interface.vertices)
+            .chain(
+                stratified
+                    .coupled
+                    .intermediate_rings
+                    .iter()
+                    .flat_map(|ring| ring.vertices.iter()),
+            )
+            .chain(&stratified.coupled.fine_interface.vertices)
+            .chain(&stratified.coupled.outer_guard.vertices)
+            .filter_map(|vertex| vertex.fixed_position.then_some(vertex.source_slot))
+            .chain(
+                stratified
+                    .coupled
+                    .boundary_contracts
+                    .iter()
+                    .filter_map(|contract| contract.fixed_position.then_some(contract.source_slot)),
+            )
+            .collect::<BTreeSet<_>>();
+        let fixed_sources = physical_fixed_sources
+            .iter()
+            .copied()
+            .chain(
+                stratified
+                    .coupled
+                    .inner_guard
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.source_slot),
+            )
+            .chain(
+                stratified
+                    .coupled
+                    .outer_guard
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.source_slot),
+            )
+            .chain(anchor_sources.iter().copied())
+            .chain(fixed_position_sources.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let fixed_compact_domain = source_set_to_compact(
+            &source_to_compact,
+            &fixed_sources,
+            mesh,
+            "free-interface fixed source vertex",
+        )?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let mut movable_sources = trial
+            .global_trial
+            .custom_triangles
+            .iter()
+            .flat_map(|triangle| triangle.iter().copied())
+            .chain(stratified.traces.iter().flat_map(|trace| {
+                trace
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| occurrence.source_slot)
+            }))
+            .chain(
+                stratified
+                    .shared_junctions
+                    .iter()
+                    .map(|junction| junction.source_slot),
+            )
+            .chain(
+                trial
+                    .global_trial
+                    .evidence
+                    .selected_ears
+                    .iter()
+                    .flat_map(|ear| {
+                        [
+                            ear.removed_neighbour_slot,
+                            ear.inserted_chord.0,
+                            ear.inserted_chord.1,
+                        ]
+                    }),
+            )
+            .filter(|source| !fixed_sources.contains(source) && !anchor_sources.contains(source))
+            .collect::<BTreeSet<_>>();
+        if movable_sources.is_empty() {
+            return Err("full-polygon free-interface patch has no movable source vertex".into());
+        }
+
+        let mut movable_compact_vertices = source_set_to_compact(
+            &source_to_compact,
+            &movable_sources,
+            mesh,
+            "free-interface movable source vertex",
+        )?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        loop {
+            let guard_faces = incident_faces(mesh, &movable_compact_vertices);
+            let next_movable = guard_faces
+                .iter()
+                .flat_map(|&face| mesh.triangles()[face])
+                .filter(|site| !fixed_compact_domain.contains(site))
+                .filter(|&site| source_slots[site].is_some())
+                .collect::<BTreeSet<_>>();
+            if next_movable == movable_compact_vertices {
+                break;
+            }
+            movable_compact_vertices = next_movable;
+            movable_sources = movable_compact_vertices
+                .iter()
+                .filter_map(|&compact| source_slots[compact])
+                .collect();
+        }
+        if movable_compact_vertices.is_empty() {
+            return Err("full-polygon free-interface movable closure is empty".into());
+        }
+        let guard_faces = incident_faces(mesh, &movable_compact_vertices);
+        if guard_faces.is_empty() {
+            return Err("full-polygon free-interface movable vertices have no guard faces".into());
+        }
+        let fixed_compact_vertices = guard_faces
+            .iter()
+            .flat_map(|&face| mesh.triangles()[face])
+            .filter(|site| !movable_compact_vertices.contains(site))
+            .collect::<BTreeSet<_>>();
+        let topology = TransitionTopologyCandidate {
+            component_id: component.id,
+            topology_id: trial.evidence.states_examined,
+            core_parents: component.core_parents.clone(),
+            custom_transition_triangles: BTreeMap::new(),
+            source_triangles: trial.global_trial.custom_triangles.clone(),
+            source_active_vertices: movable_sources
+                .iter()
+                .chain(fixed_sources.iter())
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            source_degree_forecast: trial.global_trial.evidence.vertex_degrees.clone(),
+        };
+        Ok(Self {
+            topology,
+            reference_positions: mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
+            movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
+            guard_faces: guard_faces.into_iter().collect(),
+        })
+    }
 }
 
 pub fn solve_elastic_transition_block(
@@ -268,13 +470,29 @@ pub fn solve_elastic_patch(
     }
 
     let no_step = |mesh: &MeshState, iteration: usize, final_energy: f64| {
-        ElasticBlockOutcome::ElasticNoImprovement {
-            elastic_iterations: iteration,
-            initial_energy,
-            final_energy,
-            final_phase: energy_phase(&certificate, mesh, &guard_faces, &context),
-            reason: geometry_failure_reason(&certificate, mesh),
-            failed_guard_face: failed_guard_face(&certificate, mesh, &patch),
+        let final_phase = energy_phase(&certificate, mesh, &guard_faces, &context);
+        let reason = geometry_failure_reason(&certificate, mesh);
+        let failed_guard_face = failed_guard_face(&certificate, mesh, &patch);
+        if matches!(final_phase, ElasticBlockPhase::DelaunayVoronoiFeasibility)
+            || geometry_failure_requires_different_topology(&certificate, mesh)
+        {
+            ElasticBlockOutcome::RequiresDifferentTopology {
+                elastic_iterations: iteration,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+            }
+        } else {
+            ElasticBlockOutcome::ElasticNoImprovement {
+                elastic_iterations: iteration,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+            }
         }
     };
 
@@ -374,6 +592,44 @@ fn geometry_failure_reason(certificate: &Certificate, mesh: &MeshState) -> Strin
         Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
         Err(error) => format!("{error:?}"),
     }
+}
+
+fn geometry_failure_requires_different_topology(
+    certificate: &Certificate,
+    mesh: &MeshState,
+) -> bool {
+    matches!(
+        certificate.verify_geometry(mesh),
+        Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
+    )
+}
+
+fn source_set_to_compact(
+    source_to_compact: &BTreeMap<usize, usize>,
+    sources: &BTreeSet<usize>,
+    mesh: &MeshState,
+    label: &str,
+) -> Result<Vec<usize>, String> {
+    sources
+        .iter()
+        .map(|source| {
+            source_to_compact
+                .get(source)
+                .copied()
+                .filter(|&compact| mesh.is_vertex_live(compact))
+                .ok_or_else(|| format!("{label} {source} is absent from the compact mesh"))
+        })
+        .collect()
+}
+
+fn incident_faces(mesh: &MeshState, vertices: &BTreeSet<usize>) -> BTreeSet<usize> {
+    mesh.active_triangle_slots()
+        .filter(|&face| {
+            mesh.triangles()[face]
+                .iter()
+                .any(|site| vertices.contains(site))
+        })
+        .collect()
 }
 
 fn validate_patch(mesh: &HierarchyLeafMesh, patch: &ElasticPatch) -> Result<(), String> {
@@ -479,13 +735,13 @@ fn energy_phase(
     {
         return ElasticBlockPhase::Untangle;
     }
-    if certificate.geometry_penalty_in(mesh, guard_faces) == Some(0.0)
-        && dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible)
-    {
-        ElasticBlockPhase::Interior
-    } else {
-        ElasticBlockPhase::Feasibility
+    if certificate.geometry_penalty_in(mesh, guard_faces) != Some(0.0) {
+        return ElasticBlockPhase::AngleFeasibility;
     }
+    if !dual_energy(mesh, context, false).is_some_and(|dual| dual.hard_feasible) {
+        return ElasticBlockPhase::DelaunayVoronoiFeasibility;
+    }
+    ElasticBlockPhase::Interior
 }
 
 impl EnergyContext {
@@ -667,7 +923,9 @@ fn elastic_energy_in(
             let above = (angle - maximum_angle).max(0.0);
             energy += 100.0 * (below * below + above * above);
             match phase {
-                ElasticBlockPhase::Untangle | ElasticBlockPhase::Feasibility => {}
+                ElasticBlockPhase::Untangle
+                | ElasticBlockPhase::AngleFeasibility
+                | ElasticBlockPhase::DelaunayVoronoiFeasibility => {}
                 ElasticBlockPhase::Interior => {
                     let lower = angle - minimum_angle;
                     let upper = maximum_angle - angle;
@@ -684,7 +942,9 @@ fn elastic_energy_in(
     }
 
     let edge_weight = match phase {
-        ElasticBlockPhase::Untangle | ElasticBlockPhase::Feasibility => 0.001,
+        ElasticBlockPhase::Untangle
+        | ElasticBlockPhase::AngleFeasibility
+        | ElasticBlockPhase::DelaunayVoronoiFeasibility => 0.001,
         ElasticBlockPhase::Interior => 0.01,
     };
     for &(left, right) in guard_edges {
@@ -700,6 +960,9 @@ fn elastic_energy_in(
     }
     if matches!(phase, ElasticBlockPhase::Untangle) {
         energy += 10_000.0 * edge_crossing_penalty(mesh, guard_edges);
+        return energy.is_finite().then_some(energy);
+    }
+    if matches!(phase, ElasticBlockPhase::AngleFeasibility) {
         return energy.is_finite().then_some(energy);
     }
 
@@ -1009,7 +1272,7 @@ mod tests {
         let local = finite_difference_gradient(
             &mut mesh.clone(),
             &patch,
-            ElasticBlockPhase::Feasibility,
+            ElasticBlockPhase::AngleFeasibility,
             0.01,
             &context,
         )
@@ -1017,7 +1280,7 @@ mod tests {
         let full = full_finite_difference_gradient(
             &mut mesh,
             &patch,
-            ElasticBlockPhase::Feasibility,
+            ElasticBlockPhase::AngleFeasibility,
             0.01,
             &context,
         )
@@ -1030,6 +1293,47 @@ mod tests {
                 assert!((local - full).abs() <= 1.0e-5 * full.abs().max(1.0));
             }
         }
+    }
+
+    #[test]
+    fn angle_phase_energy_does_not_require_defined_dual() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let triangle = grid.mesh.triangles()[face];
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 44,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: vec![triangle],
+                source_active_vertices: triangle.to_vec(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: vec![triangle[1], triangle[2]],
+            movable_compact_vertices: vec![triangle[0]],
+            guard_faces: vec![face],
+        };
+        let context = EnergyContext {
+            degrees: vertex_degrees(&grid.mesh),
+            guard_edges: vec![(triangle[0], triangle[1]), (triangle[1], triangle[2])],
+            guard_faces: vec![face],
+            guard_seeds: vec![(usize::MAX, usize::MAX)],
+            dual_pairs: vec![DualPair {
+                face: usize::MAX,
+                opposite: usize::MAX,
+            }],
+            derivatives: BTreeMap::new(),
+            reference_dual_areas: BTreeMap::new(),
+        };
+        assert!(elastic_energy(
+            &grid.mesh,
+            &patch,
+            ElasticBlockPhase::AngleFeasibility,
+            &context,
+        )
+        .is_some());
     }
 
     #[test]

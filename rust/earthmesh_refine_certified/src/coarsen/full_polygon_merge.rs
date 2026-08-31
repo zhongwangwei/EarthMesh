@@ -12,6 +12,7 @@ use super::global_exact_merge::{
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
+    solve_elastic_patch, ElasticBlockLimits, ElasticBlockOutcome, ElasticPatch,
     FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
@@ -31,6 +32,12 @@ pub struct FullPolygonMergeLimits {
     pub topology_states: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullPolygonCberLimits {
+    pub topology_states: usize,
+    pub elastic_iterations: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FullPolygonMergeEvidence {
     pub family_id: TopologyFamilyId,
@@ -42,6 +49,7 @@ pub struct FullPolygonMergeEvidence {
     pub ear_states_examined: usize,
     pub topology_candidates_closed: usize,
     pub ear_degree_feasible_candidates: usize,
+    pub geometry_candidates_attempted: usize,
     pub selected_topology_keys: Vec<FullPolygonTopologyKey>,
     pub selected_ears: Vec<GlobalExactSelectedEar>,
     pub best_global_evidence: GlobalExactMergeEvidence,
@@ -69,6 +77,32 @@ pub fn solve_full_polygon_merge(
     component: &HierarchyComponent,
     limits: FullPolygonMergeLimits,
 ) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(source, component, limits.topology_states, None)
+}
+
+pub fn solve_full_polygon_merge_free_interface_cber(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(FreeInterfaceCberConfig {
+            elastic_iterations: limits.elastic_iterations,
+            physical_fixed_sources,
+        }),
+    )
+}
+
+fn solve_full_polygon_merge_inner(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    topology_states: usize,
+    free_interface_cber: Option<FreeInterfaceCberConfig<'_>>,
+) -> FullPolygonMergeOutcome {
     let mut evidence = FullPolygonMergeEvidence {
         family_id: TopologyFamilyId::FullPolygonAnchorEar,
         sector_family_counts: Vec::new(),
@@ -79,6 +113,7 @@ pub fn solve_full_polygon_merge(
         ear_states_examined: 0,
         topology_candidates_closed: 0,
         ear_degree_feasible_candidates: 0,
+        geometry_candidates_attempted: 0,
         selected_topology_keys: Vec::new(),
         selected_ears: Vec::new(),
         best_global_evidence: GlobalExactMergeEvidence {
@@ -184,7 +219,7 @@ pub fn solve_full_polygon_merge(
         families,
         topology_edges,
         topology_anchor_neighbours: Vec::new(),
-        limit: limits.topology_states,
+        limit: topology_states,
         states: 0,
         evidence,
         selected: Vec::new(),
@@ -199,6 +234,7 @@ pub fn solve_full_polygon_merge(
         vertex_owners: BTreeMap::new(),
         edge_providers: BTreeMap::new(),
         seen: HashSet::new(),
+        free_interface_cber,
     }
     .init()
     .run()
@@ -228,12 +264,20 @@ struct Search<'a> {
     vertex_owners: BTreeMap<usize, BTreeSet<usize>>,
     edge_providers: BTreeMap<(usize, usize), Vec<(usize, usize)>>,
     seen: HashSet<Vec<Option<usize>>>,
+    free_interface_cber: Option<FreeInterfaceCberConfig<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct FreeInterfaceCberConfig<'a> {
+    elastic_iterations: usize,
+    physical_fixed_sources: &'a BTreeSet<usize>,
 }
 
 enum Step {
     Closed(Box<FullPolygonMergeTrial>),
     Invalid(String),
     Exhausted,
+    GeometryUnknown,
     NoSolution,
 }
 
@@ -337,9 +381,13 @@ impl Search<'_> {
                 self.evidence.states_examined = self.states;
                 FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
             }
+            Step::GeometryUnknown => {
+                self.evidence.states_examined = self.states;
+                FullPolygonMergeOutcome::SearchBudgetExhausted(self.evidence)
+            }
             Step::NoSolution => {
                 self.evidence.states_examined = self.states;
-                FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(self.evidence)
+                no_solution_outcome(self.evidence)
             }
         }
     }
@@ -377,7 +425,7 @@ impl Search<'_> {
             self.remove_topology(sector, choice);
             self.selected[sector] = None;
             match result {
-                Step::NoSolution => {}
+                Step::NoSolution | Step::GeometryUnknown => {}
                 terminal => return terminal,
             }
         }
@@ -688,24 +736,43 @@ impl Search<'_> {
             EarSolve::Solved { triangles, ears } => {
                 global.selected_ears = ears.clone();
                 global.ear_states_examined += ear_states;
+                self.evidence.ear_states_examined += ear_states;
+                self.evidence.selected_topology_keys = keys.clone();
+                self.evidence.selected_ears = ears.clone();
+                self.evidence.best_global_evidence = global.clone();
+                if self.free_interface_cber.is_some() {
+                    self.evidence.geometry_candidates_attempted += 1;
+                }
                 let mesh = match materialize(self.source, self.component, &triangles) {
                     Ok(mesh) => mesh,
                     Err(reason) => return Step::Invalid(reason),
                 };
                 let mut evidence = self.evidence.clone();
                 evidence.states_examined = self.states;
-                evidence.ear_states_examined = global.ear_states_examined;
-                evidence.selected_topology_keys = keys;
-                evidence.selected_ears = ears;
                 evidence.best_global_evidence = global.clone();
-                Step::Closed(Box::new(FullPolygonMergeTrial {
+                let mut trial = FullPolygonMergeTrial {
                     global_trial: GlobalExactMergeTrial {
                         mesh,
                         custom_triangles: triangles.into_iter().map(|t| t.vertices).collect(),
                         evidence: global,
                     },
                     evidence,
-                }))
+                };
+                if let Some(config) = self.free_interface_cber {
+                    match certify_free_interface_geometry(
+                        self.source,
+                        self.component,
+                        trial,
+                        config,
+                    ) {
+                        FreeInterfaceStep::Certified(certified) => trial = *certified,
+                        FreeInterfaceStep::RequiresDifferentTopology
+                        | FreeInterfaceStep::GeometryUnknown => return Step::GeometryUnknown,
+                        FreeInterfaceStep::BudgetExhausted => return Step::Exhausted,
+                        FreeInterfaceStep::Invalid(reason) => return Step::Invalid(reason),
+                    }
+                }
+                Step::Closed(Box::new(trial))
             }
             EarSolve::NoSolution => {
                 global.ear_states_examined += ear_states;
@@ -830,6 +897,66 @@ impl Search<'_> {
                 }
             }
         }
+    }
+}
+
+enum FreeInterfaceStep {
+    Certified(Box<FullPolygonMergeTrial>),
+    RequiresDifferentTopology,
+    GeometryUnknown,
+    BudgetExhausted,
+    Invalid(String),
+}
+
+fn certify_free_interface_geometry(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    mut trial: FullPolygonMergeTrial,
+    config: FreeInterfaceCberConfig<'_>,
+) -> FreeInterfaceStep {
+    let patch = match ElasticPatch::from_full_polygon_merge(
+        source,
+        component,
+        &trial,
+        config.physical_fixed_sources,
+    ) {
+        Ok(patch) => patch,
+        Err(reason) => return FreeInterfaceStep::Invalid(reason),
+    };
+    let input_triangles = trial.global_trial.mesh.mesh.triangles().to_vec();
+    let input_neighbours = trial.global_trial.mesh.mesh.neighbours().to_vec();
+    match solve_elastic_patch(
+        &trial.global_trial.mesh,
+        patch,
+        ElasticBlockLimits {
+            elastic_iterations: config.elastic_iterations,
+        },
+    ) {
+        ElasticBlockOutcome::Certified(elastic) => {
+            if elastic.mesh.mesh.triangles() != input_triangles
+                || elastic.mesh.mesh.neighbours() != input_neighbours
+            {
+                return FreeInterfaceStep::Invalid(
+                    "free-interface CBER changed topology without exact-search ownership".into(),
+                );
+            }
+            trial.global_trial.mesh = elastic.mesh.clone();
+            FreeInterfaceStep::Certified(Box::new(trial))
+        }
+        ElasticBlockOutcome::RequiresDifferentTopology { .. } => {
+            FreeInterfaceStep::RequiresDifferentTopology
+        }
+        ElasticBlockOutcome::ElasticNoImprovement { .. } => FreeInterfaceStep::GeometryUnknown,
+        ElasticBlockOutcome::SearchBudgetExhausted { .. } => FreeInterfaceStep::BudgetExhausted,
+        ElasticBlockOutcome::InvalidPatch { reason } => FreeInterfaceStep::Invalid(reason),
+    }
+}
+
+fn no_solution_outcome(evidence: FullPolygonMergeEvidence) -> FullPolygonMergeOutcome {
+    if evidence.geometry_candidates_attempted > 0 {
+        FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
+    } else {
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
     }
 }
 
@@ -983,6 +1110,33 @@ mod tests {
         assert!(is_single_cycle(&cycle));
         assert!(!is_single_cycle(&path));
         assert!(!is_single_cycle(&disconnected));
+    }
+
+    #[test]
+    fn geometry_attempts_make_complete_family_no_solution_unknown() {
+        let evidence = |geometry_candidates_attempted| FullPolygonMergeEvidence {
+            family_id: TopologyFamilyId::FullPolygonAnchorEar,
+            sector_family_counts: Vec::new(),
+            retained_topology_counts: Vec::new(),
+            reachability: None,
+            states_examined: 7,
+            states_by_depth: Vec::new(),
+            ear_states_examined: 0,
+            topology_candidates_closed: 0,
+            ear_degree_feasible_candidates: 0,
+            geometry_candidates_attempted,
+            selected_topology_keys: Vec::new(),
+            selected_ears: Vec::new(),
+            best_global_evidence: GlobalExactMergeEvidence::default(),
+        };
+        assert!(matches!(
+            no_solution_outcome(evidence(0)),
+            FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(_)
+        ));
+        assert!(matches!(
+            no_solution_outcome(evidence(1)),
+            FullPolygonMergeOutcome::SearchBudgetExhausted(_)
+        ));
     }
 
     #[test]
