@@ -3,6 +3,7 @@ mod annulus;
 mod component_transaction;
 mod core_condensation;
 mod elastic_block;
+mod full_polygon_reachability;
 mod global_exact_merge;
 mod hierarchy_component;
 mod scheduler;
@@ -30,6 +31,11 @@ pub use core_condensation::{
 pub use elastic_block::{
     solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
+};
+pub use full_polygon_reachability::{
+    analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,
+    degree_defects_from_global_evidence, DegreeDefectRecord, DegreeDomainOutcome,
+    FullPolygonReachabilityEvidence, SectorDegreeSignature, VertexIncidenceDomain,
 };
 pub use global_exact_merge::{
     solve_global_exact_merge, GlobalExactMergeEvidence, GlobalExactMergeLimits,

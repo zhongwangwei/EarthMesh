@@ -12,7 +12,7 @@ use super::{
 use crate::mother_grid::{MotherGrid, TriangleAddress};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MAX_EARS_PER_ANCHOR: usize = 2;
+pub(super) const MAX_EARS_PER_ANCHOR: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalExactMergeLimits {
@@ -25,6 +25,8 @@ pub struct GlobalExactMergeEvidence {
     pub sector_variant_counts: Vec<usize>,
     pub selected_ears: Vec<GlobalExactSelectedEar>,
     pub ear_states_examined: usize,
+    pub vertex_sector_contributions: BTreeMap<usize, Vec<(u64, usize)>>,
+    pub vertex_ear_deltas: BTreeMap<usize, isize>,
     pub vertex_degrees: BTreeMap<usize, usize>,
     pub anchor_degrees: BTreeMap<usize, usize>,
     pub ordinary_degree_histogram: BTreeMap<usize, usize>,
@@ -730,6 +732,7 @@ struct EarSearchContext<'a> {
     stratified: &'a StratifiedAnnulus,
     fixed_mesh_edges: &'a BTreeSet<(usize, usize)>,
     fixed_final_triangles: &'a [[usize; 3]],
+    vertex_sector_contributions: BTreeMap<usize, Vec<(u64, usize)>>,
 }
 
 type EarSearchKey = (Vec<OwnedTopologyTriangle>, Vec<(usize, usize)>);
@@ -743,11 +746,13 @@ fn solve_ears(
     evidence: &mut GlobalExactMergeEvidence,
     states: &mut usize,
 ) -> EarSolve {
+    let vertex_sector_contributions = vertex_sector_contributions(&triangles);
     let context = EarSearchContext {
         source,
         stratified,
         fixed_mesh_edges,
         fixed_final_triangles,
+        vertex_sector_contributions,
     };
     solve_ears_inner(
         &context,
@@ -795,14 +800,22 @@ fn solve_ears_inner(
     if overfull.is_empty() {
         let mut final_source_triangles = context.fixed_final_triangles.to_vec();
         final_source_triangles.extend(triangles.iter().map(|triangle| triangle.vertices));
-        return if final_gate(
+        let mut candidate_evidence = evidence.clone();
+        candidate_evidence.selected_ears = ears.clone();
+        candidate_evidence.vertex_sector_contributions =
+            context.vertex_sector_contributions.clone();
+        candidate_evidence.vertex_ear_deltas = vertex_ear_deltas(&ears);
+        let closed = final_gate(
             context.source,
             context.stratified,
             &final_source_triangles,
-            evidence,
+            &mut candidate_evidence,
         )
-        .is_ok()
-        {
+        .is_ok();
+        if closed || evidence_is_better(&candidate_evidence, evidence) {
+            *evidence = candidate_evidence;
+        }
+        return if closed {
             EarSolve::Solved { triangles, ears }
         } else {
             EarSolve::NoSolution
@@ -886,6 +899,74 @@ fn overfull_anchors(
             (degree > usize::from(contract.target_degree_max)).then_some(slot)
         })
         .collect()
+}
+
+fn vertex_sector_contributions(
+    triangles: &[OwnedTopologyTriangle],
+) -> BTreeMap<usize, Vec<(u64, usize)>> {
+    let mut counts = BTreeMap::<(usize, u64), usize>::new();
+    for triangle in triangles {
+        for vertex in triangle.vertices {
+            *counts.entry((vertex, triangle.sector_id)).or_default() += 1;
+        }
+    }
+    let mut out = BTreeMap::<usize, Vec<(u64, usize)>>::new();
+    for ((vertex, sector), count) in counts {
+        out.entry(vertex).or_default().push((sector, count));
+    }
+    out
+}
+
+fn vertex_ear_deltas(ears: &[GlobalExactSelectedEar]) -> BTreeMap<usize, isize> {
+    let mut out = BTreeMap::new();
+    for ear in ears {
+        *out.entry(ear.anchor_slot).or_default() -= 1;
+        *out.entry(ear.removed_neighbour_slot).or_default() -= 1;
+        *out.entry(ear.inserted_chord.0).or_default() += 1;
+        *out.entry(ear.inserted_chord.1).or_default() += 1;
+    }
+    out
+}
+
+fn evidence_is_better(
+    candidate: &GlobalExactMergeEvidence,
+    current: &GlobalExactMergeEvidence,
+) -> bool {
+    match (evidence_score(candidate), evidence_score(current)) {
+        (Some(candidate), Some(current)) => candidate < current,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn evidence_score(evidence: &GlobalExactMergeEvidence) -> Option<(usize, usize, usize, usize)> {
+    (!evidence.vertex_degrees.is_empty()).then(|| {
+        let anchors = evidence
+            .anchor_degrees
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let ordinary_violations = evidence
+            .vertex_degrees
+            .iter()
+            .filter(|(vertex, _)| !anchors.contains(vertex))
+            .map(|(_, &degree)| 5usize.saturating_sub(degree) + degree.saturating_sub(7))
+            .collect::<Vec<_>>();
+        let anchor_violation = evidence
+            .anchor_degrees
+            .values()
+            .map(|&degree| degree.abs_diff(5))
+            .sum();
+        (
+            ordinary_violations.iter().sum(),
+            ordinary_violations
+                .into_iter()
+                .filter(|&violation| violation != 0)
+                .count(),
+            anchor_violation,
+            evidence.euler.abs_diff(2) + evidence.charge.abs_diff(12),
+        )
+    })
 }
 
 fn anchor_link_edges(
@@ -1092,7 +1173,7 @@ fn triangle_edges_allowed(vertices: [usize; 3], ctx: &TriangulationContext<'_>) 
     })
 }
 
-fn fixed_triangles(
+pub(super) fn fixed_triangles(
     source: &MotherGrid,
     component: &HierarchyComponent,
 ) -> Result<Vec<[usize; 3]>, String> {
@@ -1355,7 +1436,7 @@ fn triangle_edges([a, b, c]: [usize; 3]) -> [(usize, usize); 3] {
     [sorted(a, b), sorted(b, c), sorted(c, a)]
 }
 
-fn mesh_edges(triangles: &[[usize; 3]]) -> BTreeSet<(usize, usize)> {
+pub(super) fn mesh_edges(triangles: &[[usize; 3]]) -> BTreeSet<(usize, usize)> {
     edge_counts(triangles).into_keys().collect()
 }
 
@@ -1514,9 +1595,31 @@ mod tests {
     }
 
     #[test]
+    fn closest_evidence_prefers_the_smaller_ordinary_degree_defect() {
+        let current = GlobalExactMergeEvidence {
+            vertex_degrees: BTreeMap::from([(2, 5), (10, 3), (11, 8)]),
+            anchor_degrees: BTreeMap::from([(2, 5)]),
+            euler: 2,
+            charge: 12,
+            ..GlobalExactMergeEvidence::default()
+        };
+        let candidate = GlobalExactMergeEvidence {
+            vertex_degrees: BTreeMap::from([(2, 5), (10, 4), (11, 7)]),
+            anchor_degrees: BTreeMap::from([(2, 5)]),
+            euler: 2,
+            charge: 12,
+            ..GlobalExactMergeEvidence::default()
+        };
+
+        assert!(evidence_is_better(&candidate, &current));
+        assert!(!evidence_is_better(&current, &candidate));
+    }
+
+    #[test]
     #[ignore = "manual exact PR37B proof; about one minute in release mode"]
-    fn n6_anchor_ear_family_is_exhaustively_infeasible() {
+    fn pr38_defect_atlas_is_stable() {
         let (source, component) = n6_legacy_mixed_fixture().unwrap();
+        let stratified = build_stratified_annulus(&source, &component).unwrap();
         let outcome = solve_global_exact_merge(
             &source,
             &component,
@@ -1534,6 +1637,41 @@ mod tests {
             BTreeMap::from([(2, 5), (29, 5), (77, 5), (155, 5)])
         );
         assert_eq!((evidence.euler, evidence.charge), (2, 12));
+        assert!(!evidence.vertex_sector_contributions.is_empty());
+        assert!(!evidence.vertex_ear_deltas.is_empty());
+        let defects =
+            crate::coarsen::degree_defects_from_global_evidence(&stratified, &evidence).unwrap();
+        assert_eq!(
+            defects
+                .iter()
+                .map(|defect| defect.source_slot)
+                .collect::<Vec<_>>(),
+            vec![24, 25, 75, 81, 151, 169, 327, 337]
+        );
+        assert_eq!(
+            defects
+                .iter()
+                .map(|defect| defect.final_degree)
+                .collect::<Vec<_>>(),
+            vec![10, 3, 8, 3, 10, 8, 3, 3]
+        );
+        assert_eq!(
+            defects
+                .iter()
+                .map(|defect| defect.selected_sector_contributions.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                vec![(0, 3), (2, 3), (6, 2)],
+                vec![(0, 1), (6, 2)],
+                vec![(1, 3), (2, 1), (7, 2)],
+                vec![(1, 1), (7, 2)],
+                vec![(3, 3), (4, 2), (12, 2)],
+                vec![(3, 1), (5, 2), (13, 2)],
+                vec![(4, 1), (12, 2)],
+                vec![(5, 1), (13, 2)],
+            ]
+        );
+        assert!(defects.iter().all(|defect| !defect.is_anchor));
         assert!(evidence
             .ordinary_degree_histogram
             .keys()
