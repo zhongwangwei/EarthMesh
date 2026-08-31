@@ -40,8 +40,9 @@ pub use full_polygon::{
     FullPolygonProblem, FullPolygonTopology, FullPolygonTopologyKey,
 };
 pub use full_polygon_merge::{
-    solve_full_polygon_merge, FullPolygonMergeEvidence, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
+    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, FullPolygonCberLimits,
+    FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
+    FullPolygonMergeTrial, TopologyFamilyId,
 };
 pub use full_polygon_reachability::{
     analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,

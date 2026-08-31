@@ -1,7 +1,8 @@
 use earthmesh_refine_certified::coarsen::{
-    initial_elastic_phase, n6_legacy_mixed_fixture, solve_elastic_patch, solve_full_polygon_merge,
-    ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, TransitionTopologyCandidate,
+    build_stratified_annulus, initial_elastic_phase, n6_legacy_mixed_fixture, solve_elastic_patch,
+    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
 };
 use std::{collections::BTreeMap, collections::BTreeSet, fs};
 
@@ -207,6 +208,250 @@ fn frozen_n6_closed_topology_enters_untangle_not_invalid_patch() {
         ),
         ElasticBlockOutcome::SearchBudgetExhausted { .. }
     ));
+}
+
+#[test]
+fn free_interface_patch_keeps_remote_guards_fixed_and_moves_interfaces() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let patch =
+        ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+            .unwrap();
+    let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+    let fixed_sources = patch
+        .fixed_compact_vertices
+        .iter()
+        .filter_map(|&compact| source_slots[compact])
+        .collect::<BTreeSet<_>>();
+    let movable_sources = patch
+        .movable_compact_vertices
+        .iter()
+        .filter_map(|&compact| source_slots[compact])
+        .collect::<BTreeSet<_>>();
+    let remote_guards = stratified
+        .coupled
+        .inner_guard
+        .vertices
+        .iter()
+        .chain(&stratified.coupled.outer_guard.vertices)
+        .map(|vertex| vertex.source_slot)
+        .collect::<BTreeSet<_>>();
+    let original_anchors = stratified
+        .link_contracts
+        .iter()
+        .filter_map(|(&source, contract)| {
+            matches!(
+                contract.anchor_kind,
+                RingAnchorKind::IcosahedronPentagon { .. }
+            )
+            .then_some(source)
+        })
+        .collect::<BTreeSet<_>>();
+    let fixed_position_sources = stratified
+        .coupled
+        .inner_guard
+        .vertices
+        .iter()
+        .chain(&stratified.coupled.coarse_interface.vertices)
+        .chain(
+            stratified
+                .coupled
+                .intermediate_rings
+                .iter()
+                .flat_map(|ring| ring.vertices.iter()),
+        )
+        .chain(&stratified.coupled.fine_interface.vertices)
+        .chain(&stratified.coupled.outer_guard.vertices)
+        .filter_map(|vertex| vertex.fixed_position.then_some(vertex.source_slot))
+        .chain(
+            stratified
+                .coupled
+                .boundary_contracts
+                .iter()
+                .filter_map(|contract| contract.fixed_position.then_some(contract.source_slot)),
+        )
+        .collect::<BTreeSet<_>>();
+    let interface_sources = stratified
+        .traces
+        .iter()
+        .flat_map(|trace| {
+            trace
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.source_slot)
+        })
+        .filter(|source| {
+            !remote_guards.contains(source)
+                && !original_anchors.contains(source)
+                && !fixed_position_sources.contains(source)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let guard_source_vertices = patch
+        .guard_faces
+        .iter()
+        .flat_map(|&face| trial.global_trial.mesh.mesh.triangles()[face])
+        .filter_map(|compact| source_slots[compact])
+        .collect::<BTreeSet<_>>();
+    assert!(remote_guards
+        .intersection(&guard_source_vertices)
+        .all(|source| fixed_sources.contains(source)));
+    assert!(original_anchors
+        .iter()
+        .all(|source| !movable_sources.contains(source)));
+    assert!(fixed_position_sources
+        .iter()
+        .all(|source| !movable_sources.contains(source)));
+    assert!(fixed_position_sources
+        .intersection(&guard_source_vertices)
+        .all(|source| fixed_sources.contains(source)));
+    assert!(interface_sources
+        .difference(&remote_guards)
+        .filter(|source| !original_anchors.contains(source))
+        .all(|source| movable_sources.contains(source)));
+    assert!(fixed_sources.is_disjoint(&movable_sources));
+    assert!(patch.guard_faces.iter().all(|&face| {
+        trial.global_trial.mesh.mesh.triangles()[face]
+            .into_iter()
+            .all(|compact| {
+                patch.fixed_compact_vertices.contains(&compact)
+                    || patch.movable_compact_vertices.contains(&compact)
+            })
+    }));
+}
+
+#[test]
+fn free_interface_physical_fixed_sources_are_not_movable() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let base_patch =
+        ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+            .unwrap();
+    let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+    let physical = base_patch
+        .movable_compact_vertices
+        .iter()
+        .find_map(|&compact| source_slots[compact])
+        .expect("base free-interface patch has movable source vertices");
+    let physical_fixed_sources = BTreeSet::from([physical]);
+    let patch =
+        ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &physical_fixed_sources)
+            .unwrap();
+    let fixed_sources = patch
+        .fixed_compact_vertices
+        .iter()
+        .filter_map(|&compact| source_slots[compact])
+        .collect::<BTreeSet<_>>();
+    let movable_sources = patch
+        .movable_compact_vertices
+        .iter()
+        .filter_map(|&compact| source_slots[compact])
+        .collect::<BTreeSet<_>>();
+    assert!(!movable_sources.contains(&physical));
+    if patch.guard_faces.iter().any(|&face| {
+        trial.global_trial.mesh.mesh.triangles()[face]
+            .into_iter()
+            .any(|compact| source_slots[compact] == Some(physical))
+    }) {
+        assert!(fixed_sources.contains(&physical));
+    }
+}
+
+#[test]
+fn free_interface_cber_does_not_change_topology() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let patch =
+        ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+            .unwrap();
+    let input_mesh = trial.global_trial.mesh.clone();
+    let triangles = input_mesh.mesh.triangles().to_vec();
+    let neighbours = input_mesh.mesh.neighbours().to_vec();
+    match solve_elastic_patch(
+        &input_mesh,
+        patch,
+        ElasticBlockLimits {
+            elastic_iterations: 1,
+        },
+    ) {
+        ElasticBlockOutcome::Certified(elastic) => {
+            assert_eq!(elastic.mesh.mesh.triangles(), triangles);
+            assert_eq!(elastic.mesh.mesh.neighbours(), neighbours);
+        }
+        ElasticBlockOutcome::ElasticNoImprovement { .. }
+        | ElasticBlockOutcome::RequiresDifferentTopology { .. }
+        | ElasticBlockOutcome::SearchBudgetExhausted { .. } => {}
+        other => panic!("free-interface patch must be valid: {other:?}"),
+    }
+    assert_eq!(input_mesh.mesh.triangles(), triangles);
+    assert_eq!(input_mesh.mesh.neighbours(), neighbours);
+}
+
+#[test]
+fn free_interface_geometry_failure_continues_exact_search() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge_free_interface_cber(
+        &source,
+        &component,
+        &BTreeSet::new(),
+        FullPolygonCberLimits {
+            topology_states: 64,
+            elastic_iterations: 1,
+        },
+    );
+    let FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) = outcome else {
+        panic!("bounded geometry failures should remain unknown, not no-go: {outcome:?}");
+    };
+    assert_ne!(evidence.geometry_candidates_attempted, 0);
+    assert!(evidence.geometry_candidates_attempted > 1);
+    assert!(evidence.topology_candidates_closed >= evidence.geometry_candidates_attempted);
+    assert!(evidence.ear_degree_feasible_candidates >= evidence.geometry_candidates_attempted);
+}
+
+#[test]
+fn all_geometry_failures_are_unknown_not_topology_no_solution() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge_free_interface_cber(
+        &source,
+        &component,
+        &BTreeSet::new(),
+        FullPolygonCberLimits {
+            topology_states: 24,
+            elastic_iterations: 1,
+        },
+    );
+    let FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) = outcome else {
+        panic!("geometry failure exhaustion must remain unknown, not topology no-go: {outcome:?}");
+    };
+    assert!(evidence.geometry_candidates_attempted > 0);
 }
 
 #[test]

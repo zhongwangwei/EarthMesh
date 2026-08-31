@@ -609,6 +609,14 @@ fn certify_candidate(
                 reason,
                 failed_guard_face,
                 ..
+            }
+            | ElasticBlockOutcome::RequiresDifferentTopology {
+                elastic_iterations: iterations,
+                initial_energy,
+                final_energy,
+                reason,
+                failed_guard_face,
+                ..
             } => {
                 let mut failure = CandidateAttemptFailure::retry(
                     ComponentTransactionStage::Elastic,
