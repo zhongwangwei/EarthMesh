@@ -107,23 +107,47 @@ requirements delivered as a uniform mesh are `CompressionIncomplete` and do
 not publish an ordinary success file. Explicit `safe_mother_only` delivery may
 publish the certified mesh under `*_certified_safe_fallback.*` names instead.
 
-### v3.0.0-alpha5 known limitation
+### v3.0.0-alpha5 Frozen N6 status after PR44
 
-The strict mixed N6 acceptance case is not yet certifiable. Its current
-per-parent transition topology family exhausts the bounded search and retains
-the uniform fine mesh; independent re-optimization of every emitted topology
-still leaves angles near 32.9 and 88.2 degrees, outside the internal
-40.2--79.8 degree window. Increasing the cell or iteration budget does not fix
-this topology limitation. Until a coupled seam/pentagon transition signature
-is implemented, reverse coarsening fails closed with `CompressionIncomplete`
-rather than publishing a mesh that violates the certificate.
+The Frozen N6 strict mixed fixture now has a closed full-polygon topology: the
+anchor degrees, ordinary degree window, vertex links, Euler characteristic, and
+charge checks pass. Continuous spherical geometry is still unknown, not solved.
+The current bounded CBER geometry search uses `TrialReference` targets,
+`FiniteDifferenceElastic`, `CurrentAnnulus`, and the single deterministic start
+`MaterializedSource`.
 
-Reproduce with:
+The current geometry gate remains the internal 40.2--79.8 degree window; the
+publication gate remains 40--80 degrees. PR45 records both the last bounded
+failure and the best bounded failure by signed angle margin. A finite geometry
+failure is `ContinuousSearchIncomplete`; it is not a topology no-go and not a
+continuous infeasibility proof. NXP80 remains blocked until Frozen N6 strict
+geometry is certified.
+
+The frozen 500x64 baseline is reproducible. It attempted 16 geometry candidates,
+all ending in `AngleFeasibility`. The best recorded global angle range is
+27.198463901923--94.632376343608 degrees with signed margin
+-14.832376343608 degrees; the last candidate remains
+24.041664860656--95.723625877804 degrees with signed margin
+-16.158335139344 degrees. orientation, crossing, Delaunay, and Voronoi counts are recorded as `null` for
+these failures because PR45 does not add true per-state instrumentation.
+
+Reproduce the frozen baseline with:
 
 ```sh
-cargo test --release -p earthmesh_cli --test certified_hidden_cli \
-  reverse_mode_publishes_a_strict_mixed_level_mesh -- --ignored --nocapture
+EARTHMESH_FULL_POLYGON_STATES=500 \
+EARTHMESH_CBER_ITERATIONS=64 \
+EARTHMESH_GEOMETRY_START_SET=MaterializedSource \
+EARTHMESH_GEOMETRY_JSON=/tmp/n6-500x64.json \
+cargo test --release \
+  -p earthmesh_refine_certified \
+  --test full_polygon_merge \
+  frozen_n6_parameterized_geometry_probe \
+  -- --ignored --exact --nocapture
 ```
+
+See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
+[hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
+[continuous_feasibility_contract.md](continuous_feasibility_contract.md).
 
 Conservative remap rows are sealed after construction. Safe-mother delivery
 uses Voronoi-cell identity rows; hierarchy delivery computes actual spherical

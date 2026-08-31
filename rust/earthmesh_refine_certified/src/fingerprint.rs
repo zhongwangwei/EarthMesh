@@ -1,6 +1,6 @@
 use earthmesh_mesh::MeshState;
 
-pub(crate) fn mesh_fingerprint(mesh: &MeshState) -> u64 {
+pub fn mesh_fingerprint(mesh: &MeshState) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     let mut feed = |value: u64| {
         for byte in value.to_le_bytes() {

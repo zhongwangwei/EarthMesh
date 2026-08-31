@@ -1,12 +1,12 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, initial_elastic_phase, n6_legacy_mixed_fixture,
-    n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch, solve_full_polygon_merge,
-    solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits, ElasticBlockOutcome,
-    ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
+    build_stratified_annulus, frozen_n6_geometry_evidence_json, initial_elastic_phase,
+    n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
+    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
-use std::{collections::BTreeMap, collections::BTreeSet, fs};
+use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
 
 #[test]
 fn zero_budget_is_unknown_exhaustion() {
@@ -457,6 +457,30 @@ fn all_geometry_failures_are_unknown_not_topology_no_solution() {
 }
 
 #[test]
+fn best_failure_tracks_best_signed_margin_independently_of_last() {
+    let better = geometry_failure("better", 41.0, 79.0);
+    let worse = geometry_failure("worse", 24.0, 96.0);
+    assert!(better.signed_margin_degrees().unwrap() > worse.signed_margin_degrees().unwrap());
+
+    let mut evidence = empty_merge_evidence();
+    evidence.record_geometry_failure(better);
+    evidence.record_geometry_failure(worse);
+    assert_eq!(evidence.last_geometry_failure.unwrap().reason, "worse");
+    assert_eq!(evidence.best_geometry_failure.unwrap().reason, "better");
+}
+
+#[test]
+fn best_failure_tie_break_is_order_independent() {
+    let a = geometry_failure_with_counts("a", 38.0, 80.0, Some([0, 0, 2, 0]), vec![1]);
+    let b = geometry_failure_with_counts("b", 39.0, 79.0, Some([0, 0, 1, 0]), vec![2]);
+    let c = geometry_failure_with_counts("c", 42.0, 78.0, Some([1, 0, 0, 0]), vec![0]);
+    let forward = best_failure_reason([a.clone(), b.clone(), c.clone()]);
+    let reverse = best_failure_reason([c, b, a]);
+    assert_eq!(forward, "b");
+    assert_eq!(reverse, "b");
+}
+
+#[test]
 fn frozen_n6_fixture_exposes_truthful_mixed_source_levels() {
     let (source, _component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
     assert_eq!(source_levels.len(), source.mesh.vertices().len());
@@ -559,6 +583,13 @@ fn frozen_n6_strict_cber_reports_bounded_geometry_blocker() {
     assert!(global_min < 40.2 || global_max > 79.8);
     assert!(guard_min < 40.2 || guard_max > 79.8);
     assert!(!failure.reason.is_empty());
+    assert_eq!(
+        evidence
+            .geometry_failure_phase_counts
+            .values()
+            .sum::<usize>(),
+        evidence.geometry_candidates_attempted
+    );
 }
 
 #[test]
@@ -614,5 +645,150 @@ fn n6_full_polygon_topology_probe() {
             "limit={limit} outcome=invalid reason={reason:?} topology_states={} ear_states={}",
             evidence.states_examined, evidence.ear_states_examined
         ),
+    }
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 geometry probe"]
+fn frozen_n6_parameterized_geometry_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let starts = geometry_starts(
+        std::env::var("EARTHMESH_GEOMETRY_START_SET")
+            .ok()
+            .as_deref(),
+    );
+    assert_eq!(starts, vec!["MaterializedSource"]);
+
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge_free_interface_cber(
+        &source,
+        &component,
+        &BTreeSet::new(),
+        FullPolygonCberLimits {
+            topology_states: topology_limit,
+            elastic_iterations,
+        },
+    );
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let commit_sha = option_env!("EARTHMESH_GIT_SHA")
+        .map(str::to_string)
+        .or_else(git_head);
+    let json = frozen_n6_geometry_evidence_json(
+        &outcome,
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        commit_sha.as_deref(),
+        &starts,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+fn git_head() -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn usize_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .as_deref()
+        .map(|value| {
+            value
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} must be usize"))
+        })
+        .unwrap_or(default)
+}
+
+fn geometry_starts(value: Option<&str>) -> Vec<&'static str> {
+    match value.unwrap_or("MaterializedSource") {
+        "MaterializedSource" | "materialized_source" | "materialized-source" => {
+            vec!["MaterializedSource"]
+        }
+        other => panic!("unsupported EARTHMESH_GEOMETRY_START_SET={other:?}; PR45 freezes MaterializedSource only"),
+    }
+}
+
+fn empty_merge_evidence() -> earthmesh_refine_certified::coarsen::FullPolygonMergeEvidence {
+    earthmesh_refine_certified::coarsen::FullPolygonMergeEvidence {
+        family_id: earthmesh_refine_certified::coarsen::TopologyFamilyId::FullPolygonAnchorEar,
+        sector_family_counts: Vec::new(),
+        retained_topology_counts: Vec::new(),
+        reachability: None,
+        states_examined: 0,
+        states_by_depth: Vec::new(),
+        ear_states_examined: 0,
+        topology_candidates_closed: 0,
+        ear_degree_feasible_candidates: 0,
+        geometry_candidates_attempted: 0,
+        last_geometry_failure: None,
+        best_geometry_failure: None,
+        geometry_failure_phase_counts: BTreeMap::new(),
+        selected_topology_keys: Vec::new(),
+        selected_ears: Vec::new(),
+        best_global_evidence: Default::default(),
+    }
+}
+
+fn best_failure_reason<const N: usize>(
+    failures: [earthmesh_refine_certified::coarsen::FullPolygonGeometryFailureEvidence; N],
+) -> String {
+    let mut evidence = empty_merge_evidence();
+    for failure in failures {
+        evidence.record_geometry_failure(failure);
+    }
+    evidence.best_geometry_failure.unwrap().reason
+}
+
+fn geometry_failure(
+    reason: &str,
+    min_angle: f64,
+    max_angle: f64,
+) -> earthmesh_refine_certified::coarsen::FullPolygonGeometryFailureEvidence {
+    geometry_failure_with_counts(reason, min_angle, max_angle, Some([0, 0, 0, 0]), vec![0])
+}
+
+fn geometry_failure_with_counts(
+    reason: &str,
+    min_angle: f64,
+    max_angle: f64,
+    counts: Option<[usize; 4]>,
+    sectors: Vec<u64>,
+) -> earthmesh_refine_certified::coarsen::FullPolygonGeometryFailureEvidence {
+    let [negative_orientation_count, crossing_count, delaunay_violations, invalid_voronoi_cells] =
+        counts.unwrap_or([0, 0, 0, 0]);
+    earthmesh_refine_certified::coarsen::FullPolygonGeometryFailureEvidence {
+        topology_keys: sectors
+            .into_iter()
+            .map(
+                |sector_id| earthmesh_refine_certified::coarsen::FullPolygonTopologyKey {
+                    sector_id,
+                    triangles: vec![[1, 2, 3]],
+                },
+            )
+            .collect(),
+        start_id: "MaterializedSource",
+        elastic_iterations: 1,
+        initial_energy: 2.0,
+        final_energy: 1.0,
+        final_phase: ElasticBlockPhase::AngleFeasibility,
+        reason: reason.into(),
+        failed_guard_face: None,
+        global_angle_degrees: Some((min_angle, max_angle)),
+        guard_angle_degrees: Some((min_angle, max_angle)),
+        negative_orientation_count: Some(negative_orientation_count),
+        crossing_count: Some(crossing_count),
+        delaunay_violations: Some(delaunay_violations),
+        invalid_voronoi_cells: Some(invalid_voronoi_cells),
     }
 }

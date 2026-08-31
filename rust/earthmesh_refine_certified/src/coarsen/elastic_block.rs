@@ -89,7 +89,7 @@ pub enum ElasticBlockOutcome {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ElasticBlockPhase {
     Untangle,
     AngleFeasibility,
