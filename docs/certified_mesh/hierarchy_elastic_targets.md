@@ -254,3 +254,15 @@ zero-width causal label but does not make the current topology angle-feasible.
 The next gate is the exact source-face PF-W2 construction defined in
 [face_band_contract.md](face_band_contract.md); no topology merge or CBER was
 run in this audit.
+
+## PR56 exact PF-W2 face-band result
+
+The first finite ladder step, `F0CurrentTransitionFaces`, closes without
+expanding the face complex. The exact deterministic search labels all 88
+transition faces in 45 states: band counts are 36 and 52, and their boundary is
+one 20-edge/20-vertex simple internal cycle. The interface shares no vertex
+with either fixed boundary, both bands are connected annular strips, all four
+original anchors lie inside a single band, and no cap, corridor, or coarse-core
+sacrifice is used. This is the minimum-cost PF-W2 planning witness; it is not
+yet a full-polygon topology or angle certificate. The next gate is PR57
+topology closure derived from this interface, still before CBER.

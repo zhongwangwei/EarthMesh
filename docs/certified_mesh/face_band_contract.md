@@ -73,3 +73,30 @@ is `0%`. The 85% remains valid only as proximity to nominal shared junctions.
 This correction does not certify the current topology or its angle range. The
 next construction gate is exact pinch-free W2 face labeling, with an internal
 separator that does not touch either fixed boundary.
+
+## Frozen N6 exact PF-W2 result
+
+The exact PR56 search closes at the first ladder step, `F0`, so no face-ring
+expansion, coarse-core sacrifice, or anchor cap is attempted:
+
+| metric | result |
+|---|---:|
+| transition faces | 88 |
+| coarse / fine boundary faces | 16 / 26 |
+| exact states | 45 |
+| band face counts | 36 / 52 |
+| internal interface | one 20-edge, 20-vertex simple cycle |
+| true pinches | 0 |
+| cap / corridor faces | 0 / 0 |
+| core faces sacrificed | 0 |
+
+The interface is disjoint from both fixed boundary vertex sets. Original
+anchors 2, 29, 77, and 155 each satisfy `InteriorOfSingleBand`. Both bands are
+dual-connected annular strips with Euler characteristic zero and exactly two
+boundary cycles.
+
+The solver enumerates the full supplied binary label family in deterministic
+MRV order if necessary; the distance potential only orders labels. Exhaustion
+is scoped to the supplied face complex, while a state-budget hit remains
+unknown. PR56 intentionally rejects `band_count=3` until the PR59 W3-specific
+propagation and interface-disjointness gate is implemented.

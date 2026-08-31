@@ -7,6 +7,7 @@ mod core_condensation;
 mod domain_continuation;
 mod effective_band;
 mod elastic_block;
+mod face_band;
 mod full_polygon;
 mod full_polygon_merge;
 mod full_polygon_reachability;
@@ -63,6 +64,11 @@ pub use elastic_block::{
     ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
     ElasticTargetMode, GeometryDomainId, GeometryFailureDiagnostics, GeometryFailureWitness,
     GeometryStartId, MotherLevelMetric, MovementDistribution,
+};
+pub use face_band::{
+    build_face_band_problem, face_band_evidence_json, face_band_plan_json, solve_exact_face_bands,
+    AnchorBandPolicy, FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind,
+    FaceBandPlan, FaceBandProblem, FaceBandSolveOutcome,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
