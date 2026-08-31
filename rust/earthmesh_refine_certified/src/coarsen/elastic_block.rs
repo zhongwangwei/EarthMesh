@@ -34,6 +34,7 @@ pub enum ElasticTargetMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GeometryStartId {
     MaterializedSource,
+    InheritedDomainWitness { source_domain: GeometryDomainId },
     HierarchySpringEquilibrium,
     RingScaleInterpolation,
     DegreeAngleEquilibrium,
@@ -45,6 +46,7 @@ impl GeometryStartId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MaterializedSource => "MaterializedSource",
+            Self::InheritedDomainWitness { .. } => "InheritedDomainWitness",
             Self::HierarchySpringEquilibrium => "HierarchySpringEquilibrium",
             Self::RingScaleInterpolation => "RingScaleInterpolation",
             Self::DegreeAngleEquilibrium => "DegreeAngleEquilibrium",
@@ -70,7 +72,7 @@ impl GeometryDomainId {
         }
     }
 
-    fn expansion_rings(self) -> usize {
+    pub(crate) fn expansion_rings(self) -> usize {
         match self {
             Self::CurrentAnnulus => 0,
             Self::PlusOneOrdinaryRing => 1,
@@ -159,6 +161,7 @@ pub struct ElasticTargetField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ElasticPatch {
+    pub domain_id: GeometryDomainId,
     pub topology: TransitionTopologyCandidate,
     pub reference_positions: Vec<CartesianPoint>,
     pub fixed_compact_vertices: Vec<usize>,
@@ -377,6 +380,7 @@ impl ElasticPatch {
             .collect::<BTreeSet<_>>();
 
         Ok(Self {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: trial.candidate.clone(),
             reference_positions: mesh.vertices().to_vec(),
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
@@ -605,6 +609,7 @@ impl ElasticPatch {
             source_degree_forecast: trial.global_trial.evidence.vertex_degrees.clone(),
         };
         Ok(Self {
+            domain_id,
             topology,
             reference_positions: mesh.vertices().to_vec(),
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
@@ -629,6 +634,104 @@ impl ElasticPatch {
             ElasticTargetField::default()
         };
         Ok(self)
+    }
+
+    pub(crate) fn expanded_nested_domain(
+        &self,
+        source: &MotherGrid,
+        target: &HierarchyLeafMesh,
+        source_levels: &[Option<usize>],
+        physical_fixed_sources: &BTreeSet<usize>,
+        source_domain: GeometryDomainId,
+        target_domain: GeometryDomainId,
+    ) -> Result<Self, String> {
+        let source_rings = source_domain.expansion_rings();
+        let target_rings = target_domain.expansion_rings();
+        if self.domain_id != source_domain {
+            return Err(format!(
+                "nested geometry patch domain {} does not match source {}",
+                self.domain_id.as_str(),
+                source_domain.as_str()
+            ));
+        }
+        if target_rings <= source_rings {
+            return Err(format!(
+                "nested geometry target {} must strictly contain source {}",
+                target_domain.as_str(),
+                source_domain.as_str()
+            ));
+        }
+        if target.source_vertex_slots.len() != target.mesh.vertices().len()
+            || self.reference_positions.len() != target.mesh.vertices().len()
+        {
+            return Err("nested geometry source-slot/reference map does not match mesh".into());
+        }
+        if target
+            .source_vertex_slots
+            .iter()
+            .flatten()
+            .any(|&slot| slot >= source.addresses.len())
+        {
+            return Err("nested geometry source slot is outside the mother grid".into());
+        }
+
+        let permanent_fixed = target
+            .source_vertex_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(compact, source_slot)| {
+                source_slot
+                    .filter(|&slot| {
+                        physical_fixed_sources.contains(&slot)
+                            || matches!(
+                                source.addresses.get(slot),
+                                Some(Some(VertexAddress::IcosahedronVertex(_)))
+                            )
+                    })
+                    .map(|_| compact)
+            })
+            .collect::<BTreeSet<_>>();
+        let base_movable = self
+            .movable_compact_vertices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let movable_compact_vertices = expand_movable_domain_by_rings(
+            &target.mesh,
+            &target.source_vertex_slots,
+            &base_movable,
+            &permanent_fixed,
+            target_rings - source_rings,
+        );
+        let guard_faces = incident_faces(&target.mesh, &movable_compact_vertices);
+        let fixed_compact_vertices = guard_faces
+            .iter()
+            .flat_map(|&face| target.mesh.triangles()[face])
+            .filter(|site| !movable_compact_vertices.contains(site))
+            .collect::<BTreeSet<_>>();
+        let mut topology = self.topology.clone();
+        topology.source_active_vertices = movable_compact_vertices
+            .iter()
+            .chain(&fixed_compact_vertices)
+            .filter_map(|&compact| target.source_vertex_slots[compact])
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut patch = Self {
+            domain_id: target_domain,
+            topology,
+            reference_positions: self.reference_positions.clone(),
+            fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
+            movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
+            guard_faces: guard_faces.into_iter().collect(),
+            target_mode: self.target_mode,
+            target_field: ElasticTargetField::default(),
+        };
+        if patch.target_mode.uses_hierarchy_edges() {
+            patch.target_field = hierarchy_target_field(source, target, source_levels, &patch)?;
+        }
+        Ok(patch)
     }
 }
 
@@ -1132,6 +1235,9 @@ fn apply_geometry_start(
 ) -> Result<(), String> {
     match start_id {
         GeometryStartId::MaterializedSource => Ok(()),
+        GeometryStartId::InheritedDomainWitness { .. } => Err(
+            "inherited domain witness must be embedded before starting the elastic solver".into(),
+        ),
         GeometryStartId::HierarchySpringEquilibrium => hierarchy_spring_start(mesh, patch),
         GeometryStartId::RingScaleInterpolation => ring_scale_start(mesh, patch),
         GeometryStartId::DegreeAngleEquilibrium => degree_angle_start(mesh, patch),
@@ -1911,13 +2017,29 @@ fn expand_movable_domain(
     permanent_fixed: &BTreeSet<usize>,
     domain_id: GeometryDomainId,
 ) -> BTreeSet<usize> {
+    expand_movable_domain_by_rings(
+        mesh,
+        source_slots,
+        base_movable,
+        permanent_fixed,
+        domain_id.expansion_rings(),
+    )
+}
+
+fn expand_movable_domain_by_rings(
+    mesh: &MeshState,
+    source_slots: &[Option<usize>],
+    base_movable: &BTreeSet<usize>,
+    permanent_fixed: &BTreeSet<usize>,
+    expansion_rings: usize,
+) -> BTreeSet<usize> {
     let mut movable = base_movable
         .iter()
         .copied()
         .filter(|site| !permanent_fixed.contains(site))
         .filter(|&site| source_slots.get(site).and_then(|slot| *slot).is_some())
         .collect::<BTreeSet<_>>();
-    for _ in 0..domain_id.expansion_rings() {
+    for _ in 0..expansion_rings {
         let mut next = movable.clone();
         for edge in mesh
             .active_triangle_slots()
@@ -3182,6 +3304,7 @@ mod tests {
             .filter(|&candidate| candidate != site)
             .collect::<BTreeSet<_>>();
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 48,
                 topology_id: 1,
@@ -3419,6 +3542,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let reference_positions = grid.mesh.vertices().to_vec();
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 1,
                 topology_id: 1,
@@ -3511,6 +3635,7 @@ mod tests {
         let site = triangle[0];
         let target_area = 0.123;
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 46,
                 topology_id: 0,
@@ -3619,6 +3744,7 @@ mod tests {
         let guard_faces = vec![face];
         let mut target_scales = BTreeMap::from([(fixed_a, 2.0), (fixed_b, 0.5), (movable, 1.0)]);
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 47,
                 topology_id: 0,
@@ -3932,6 +4058,7 @@ mod tests {
         let face = grid.mesh.active_triangle_slots().next().unwrap();
         let triangle = grid.mesh.triangles()[face];
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 44,
                 topology_id: 1,
@@ -4069,6 +4196,7 @@ mod tests {
             .filter(|&candidate| candidate != site)
             .collect::<BTreeSet<_>>();
         let patch = ElasticPatch {
+            domain_id: GeometryDomainId::CurrentAnnulus,
             topology: TransitionTopologyCandidate {
                 component_id: 43,
                 topology_id: 0,

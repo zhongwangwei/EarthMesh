@@ -148,3 +148,22 @@ witness. It does **not** prove that the complete +1-ring coordinate domain,
 another topology, a wider trust domain, or helper-vertex topology is
 infeasible. No 40.2--79.8-degree witness was found, so the PR51 publication gate
 and NXP80 remain blocked.
+
+## PR51 nested-domain embedding evidence
+
+PR51 removes the cold-start ambiguity from the PR49 +2-ring result. It persists
+the +1 best mesh by source slot, expands only the movable classification and
+guard to `PlusTwoOrdinaryRings`, and initializes the 32 newly released ordinary
+vertices at their unchanged materialized coordinates. Connectivity, anchors,
+and physical fixed sources are unchanged.
+
+The frozen 500x64 gate reproduced the 76-vertex +1 witness and embedded it into
+the 108-vertex +2 domain with bitwise-equal common coordinates:
+
+| source range | embedded range | source margin | embedded margin | common | newly released | gate |
+|---:|---:|---:|---:|---:|---:|---|
+| 37.340837475907--83.652760215259 | 37.340837475907--83.652760215259 | -3.852760215259 | -3.852760215259 | 76 | 32 | `Go` |
+
+This establishes only exact nested initialization. It does not improve the
+angle range or certify 40.2--79.8 degrees; the next gate is monotone +2
+continuation that must retain this seed as best-so-far.
