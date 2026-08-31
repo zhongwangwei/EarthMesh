@@ -1,12 +1,14 @@
 use earthmesh_refine_certified::coarsen::{
     build_stratified_annulus, frozen_n6_geometry_evidence_json,
+    frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
     n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
     solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
-    solve_full_polygon_merge_free_interface_cber_with_targets, ElasticBlockLimits,
+    solve_full_polygon_merge_free_interface_cber_with_targets,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField, ElasticTargetMode,
-    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind,
-    TransitionTopologyCandidate,
+    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryStartId,
+    RingAnchorKind, TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -845,6 +847,62 @@ fn frozen_n6_hierarchy_target_comparison_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR47 geometry-start comparison probe"]
+fn frozen_n6_pr47_geometry_start_comparison_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let starts = geometry_start_ids(
+        std::env::var("EARTHMESH_GEOMETRY_START_SET")
+            .ok()
+            .as_deref(),
+    );
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let commit_sha = option_env!("EARTHMESH_GIT_SHA")
+        .map(str::to_string)
+        .or_else(git_head);
+    let mut arms = Vec::new();
+    for start in starts {
+        let outcome = solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &[start],
+        );
+        arms.push((
+            start.as_str(),
+            frozen_n6_geometry_evidence_json_with_solver_mode(
+                &outcome,
+                fixture_fingerprint,
+                topology_limit,
+                elastic_iterations,
+                commit_sha.as_deref(),
+                ElasticTargetMode::HierarchyEdgeAreaDegree,
+                &[start.as_str()],
+                "MarginFiniteDifferenceLexicographic",
+            ),
+        ));
+    }
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr47GeometryStartComparison\",\"target_mode\":\"HierarchyEdgeAreaDegree\",\"arms\":[{}]}}",
+        arms.iter()
+            .map(|(name, json)| format!("{{\"start\":\"{}\",\"run\":{}}}", name, json))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn git_head() -> Option<String> {
     Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -868,12 +926,49 @@ fn usize_env(name: &str, default: usize) -> usize {
 }
 
 fn geometry_starts(value: Option<&str>) -> Vec<&'static str> {
-    match value.unwrap_or("MaterializedSource") {
-        "MaterializedSource" | "materialized_source" | "materialized-source" => {
-            vec!["MaterializedSource"]
-        }
-        other => panic!("unsupported EARTHMESH_GEOMETRY_START_SET={other:?}; PR45 freezes MaterializedSource only"),
+    geometry_start_ids(value)
+        .into_iter()
+        .map(GeometryStartId::as_str)
+        .collect()
+}
+
+fn geometry_start_ids(value: Option<&str>) -> Vec<GeometryStartId> {
+    let value = value.unwrap_or("MaterializedSource");
+    if matches!(value, "all" | "All" | "ALL") {
+        return vec![
+            GeometryStartId::MaterializedSource,
+            GeometryStartId::HierarchySpringEquilibrium,
+            GeometryStartId::RingScaleInterpolation,
+            GeometryStartId::DegreeAngleEquilibrium,
+            GeometryStartId::SignedNormalPlus,
+            GeometryStartId::SignedNormalMinus,
+        ];
     }
+    value
+        .split(',')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| match part.trim() {
+            "MaterializedSource" | "materialized_source" | "materialized-source" => {
+                GeometryStartId::MaterializedSource
+            }
+            "HierarchySpringEquilibrium" | "hierarchy_spring" | "hierarchy-spring" => {
+                GeometryStartId::HierarchySpringEquilibrium
+            }
+            "RingScaleInterpolation" | "ring_scale" | "ring-scale" => {
+                GeometryStartId::RingScaleInterpolation
+            }
+            "DegreeAngleEquilibrium" | "degree_angle" | "degree-angle" => {
+                GeometryStartId::DegreeAngleEquilibrium
+            }
+            "SignedNormalPlus" | "signed_normal_plus" | "signed-normal-plus" => {
+                GeometryStartId::SignedNormalPlus
+            }
+            "SignedNormalMinus" | "signed_normal_minus" | "signed-normal-minus" => {
+                GeometryStartId::SignedNormalMinus
+            }
+            other => panic!("unsupported EARTHMESH_GEOMETRY_START_SET={other:?}"),
+        })
+        .collect()
 }
 
 fn empty_merge_evidence() -> earthmesh_refine_certified::coarsen::FullPolygonMergeEvidence {

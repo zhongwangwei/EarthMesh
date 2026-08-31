@@ -31,9 +31,11 @@ pub use core_condensation::{
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
 };
 pub use elastic_block::{
-    initial_elastic_phase, solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits,
+    angle_margin_objective, initial_elastic_phase, solve_elastic_patch,
+    solve_elastic_patch_with_margin_start, solve_elastic_patch_with_start,
+    solve_elastic_transition_block, AngleConstraintKey, AngleMarginObjective, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
-    ElasticTargetField, ElasticTargetMode, MotherLevelMetric,
+    ElasticTargetField, ElasticTargetMode, GeometryStartId, MotherLevelMetric,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
@@ -41,9 +43,11 @@ pub use full_polygon::{
     FullPolygonProblem, FullPolygonTopology, FullPolygonTopologyKey,
 };
 pub use full_polygon_merge::{
-    frozen_n6_geometry_evidence_json, frozen_n6_geometry_evidence_json_with_target_mode,
-    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
-    solve_full_polygon_merge_free_interface_cber_with_targets, FullPolygonCberLimits,
+    frozen_n6_geometry_evidence_json, frozen_n6_geometry_evidence_json_with_solver_mode,
+    frozen_n6_geometry_evidence_json_with_target_mode, solve_full_polygon_merge,
+    solve_full_polygon_merge_free_interface_cber,
+    solve_full_polygon_merge_free_interface_cber_with_targets,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, FullPolygonCberLimits,
     FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };
