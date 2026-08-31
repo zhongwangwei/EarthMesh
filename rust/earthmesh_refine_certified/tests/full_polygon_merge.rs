@@ -1,6 +1,7 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, continue_nested_domain, domain_continuation_evidence_json,
-    embed_geometry_witness, frozen_n6_geometry_evidence_json,
+    build_effective_band_report, build_stratified_annulus, build_worst_angle_atlas,
+    classify_angle_blockers, continue_nested_domain, domain_continuation_evidence_json,
+    effective_band_report_json, embed_geometry_witness, frozen_n6_geometry_evidence_json,
     frozen_n6_geometry_evidence_json_with_solver_domain,
     frozen_n6_geometry_evidence_json_with_solver_mode,
     frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
@@ -10,12 +11,12 @@ use earthmesh_refine_certified::coarsen::{
     solve_full_polygon_merge_free_interface_cber_with_targets,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
-    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ContinuousProofOutcome,
-    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
-    ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField,
-    ElasticTargetMode, FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    GeometryDomainId, GeometryDomainWitness, GeometryStartId, IntervalBox, RingAnchorKind,
-    TransitionTopologyCandidate,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, worst_angle_atlas_json,
+    ContinuousProofOutcome, DomainContinuationMode, DomainContinuationOutcome,
+    DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase,
+    ElasticPatch, ElasticTargetField, ElasticTargetMode, FullPolygonCberLimits,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryDomainId, GeometryDomainWitness,
+    GeometryStartId, IntervalBox, RingAnchorKind, TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -1335,6 +1336,119 @@ fn frozen_n6_pr52_monotone_domain_continuation_probe() {
     let json = format!(
         "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr52MonotoneContinuationGate\",\"fixture_fingerprint\":{},\"topology_limit\":{},\"source_search_iterations\":{},\"gate\":\"{}\",\"run\":{}}}",
         fixture_fingerprint, topology_limit, elastic_iterations, gate, run,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR53 angle and effective-width atlas"]
+fn frozen_n6_pr53_angle_atlas_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let outcome =
+        solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(source_levels.as_slice()),
+            &[GeometryStartId::MaterializedSource],
+            GeometryDomainId::PlusOneOrdinaryRing,
+        );
+    let evidence = match &outcome {
+        FullPolygonMergeOutcome::Closed(trial) => &trial.evidence,
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
+        | FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
+        | FullPolygonMergeOutcome::InvalidInput { evidence, .. } => evidence,
+    };
+    let failure = evidence
+        .best_geometry_failure
+        .as_ref()
+        .expect("PR53 requires the PR49 best +1 failure evidence");
+    let plus_one = failure
+        .witness
+        .as_ref()
+        .expect("PR53 requires the persisted PR49 numerical witness");
+    let inherited = GeometryDomainWitness::from_failure(
+        fixture_fingerprint,
+        failure.topology_keys.clone(),
+        GeometryDomainId::PlusOneOrdinaryRing,
+        plus_one,
+        failure.global_angle_degrees.unwrap(),
+        failure.guard_angle_degrees.unwrap(),
+    )
+    .unwrap();
+    let target_patch = inherited
+        .expanded_patch(
+            &source,
+            source_levels.as_slice(),
+            &BTreeSet::new(),
+            GeometryDomainId::PlusTwoOrdinaryRings,
+        )
+        .unwrap();
+    let DomainContinuationOutcome::Completed(continuation) = continue_nested_domain(
+        &inherited,
+        target_patch,
+        DomainContinuationSchedule::frozen_n6(),
+        DomainContinuationMode::InheritedBestMonotone,
+    ) else {
+        panic!("PR53 requires the PR52 +2 best witness");
+    };
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let plus_one_atlas = build_worst_angle_atlas(
+        &source,
+        &plus_one.mesh,
+        &plus_one.patch,
+        &stratified,
+        &failure.topology_keys,
+        &evidence.selected_ears,
+        100,
+    )
+    .unwrap();
+    let plus_two_atlas = build_worst_angle_atlas(
+        &source,
+        &continuation.best_witness.mesh,
+        &continuation.best_witness.patch,
+        &stratified,
+        &failure.topology_keys,
+        &evidence.selected_ears,
+        100,
+    )
+    .unwrap();
+    let plus_one_bands = build_effective_band_report(&source, &stratified, &plus_one_atlas);
+    let plus_two_bands = build_effective_band_report(&source, &stratified, &plus_two_atlas);
+    let classification = classify_angle_blockers(
+        &plus_two_atlas,
+        plus_two_bands.worst_angle_near_pinch_fraction,
+    );
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr53AngleAtlas\",\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"classification\":\"{}\",\"plus_one\":{{\"angle_min_deg\":{:.12},\"angle_max_deg\":{:.12},\"signed_margin_deg\":{:.12},\"atlas\":{},\"effective_bands\":{}}},\"plus_two_warm_best\":{{\"angle_min_deg\":{:.12},\"angle_max_deg\":{:.12},\"signed_margin_deg\":{:.12},\"atlas\":{},\"effective_bands\":{}}},\"per_parent\":\"NotReproducedUnderSameContract\"}}",
+        git_head()
+            .map(|sha| format!("\"{sha}\""))
+            .unwrap_or_else(|| "null".into()),
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        classification.as_str(),
+        failure.global_angle_degrees.unwrap().0,
+        failure.global_angle_degrees.unwrap().1,
+        failure.signed_margin_degrees().unwrap(),
+        worst_angle_atlas_json(&plus_one_atlas),
+        effective_band_report_json(&plus_one_bands),
+        continuation.best_angle_range_deg.0,
+        continuation.best_angle_range_deg.1,
+        continuation.best_signed_margin_deg,
+        worst_angle_atlas_json(&plus_two_atlas),
+        effective_band_report_json(&plus_two_bands),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();

@@ -177,7 +177,11 @@ does not yet improve the strict margin. PR52 then applies a best-preserving
 new-ring/block/joint continuation and improves the +2 result to
 38.551143486745--81.453074281139 degrees, signed margin
 `-1.653074281139` degrees. This is a material 2.199685934119-degree improvement,
-but the strict gate and NXP80 remain blocked pending blocker localization.
+but the strict gate and NXP80 remain blocked. PR53 localizes the remaining
+failure: 85% of the +2 worst-100 angles lie within one graph step of one of 14
+zero-width shared-junction pinches, while only 9% contain a long
+full-polygon diagonal. The preregistered result is `WidthDominated`, so the
+next gate is construction of genuinely positive-width W3/W4 bands.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
