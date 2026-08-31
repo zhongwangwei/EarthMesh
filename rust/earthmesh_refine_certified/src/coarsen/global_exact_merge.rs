@@ -718,7 +718,7 @@ impl ExactSearch<'_> {
     }
 }
 
-enum EarSolve {
+pub(super) enum EarSolve {
     Solved {
         triangles: Vec<OwnedTopologyTriangle>,
         ears: Vec<GlobalExactSelectedEar>,
@@ -737,7 +737,7 @@ struct EarSearchContext<'a> {
 
 type EarSearchKey = (Vec<OwnedTopologyTriangle>, Vec<(usize, usize)>);
 
-fn solve_ears(
+pub(super) fn solve_ears(
     source: &MotherGrid,
     stratified: &StratifiedAnnulus,
     fixed_mesh_edges: &BTreeSet<(usize, usize)>,
@@ -1204,7 +1204,7 @@ pub(super) fn fixed_triangles(
     Ok(out)
 }
 
-fn materialize(
+pub(super) fn materialize(
     source: &MotherGrid,
     component: &HierarchyComponent,
     custom_triangles: &[OwnedTopologyTriangle],
@@ -1231,7 +1231,7 @@ fn materialize(
     rebuild_from_leaf_set_with_custom_triangles(source, &leaf_set, &custom_parents, &custom)
 }
 
-fn replace_fixed_link_contracts(
+pub(super) fn replace_fixed_link_contracts(
     stratified: &mut StratifiedAnnulus,
     fixed_triangles: &[[usize; 3]],
 ) {
@@ -1245,7 +1245,7 @@ fn replace_fixed_link_contracts(
     }
 }
 
-fn final_gate(
+pub(super) fn final_gate(
     source: &MotherGrid,
     stratified: &StratifiedAnnulus,
     triangles: &[[usize; 3]],
