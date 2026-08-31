@@ -12,10 +12,10 @@ use super::global_exact_merge::{
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
-    solve_elastic_patch_with_margin_start, solve_elastic_patch_with_start, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetMode,
-    FullPolygonReachabilityEvidence, GeometryStartId, HierarchyComponent, RingAnchorKind,
-    StratifiedAnnulus,
+    solve_elastic_patch_with_active_trust_start, solve_elastic_patch_with_margin_start,
+    solve_elastic_patch_with_start, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase,
+    ElasticPatch, ElasticTargetMode, FullPolygonReachabilityEvidence, GeometryStartId,
+    HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
 use std::{
@@ -164,7 +164,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
             target_mode,
             source_levels,
             starts: &[GeometryStartId::MaterializedSource],
-            use_margin_objective: false,
+            solver_mode: GeometrySolverMode::FiniteDifferenceElastic,
         }),
     )
 }
@@ -188,7 +188,31 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
             target_mode,
             source_levels,
             starts,
-            use_margin_objective: true,
+            solver_mode: GeometrySolverMode::MarginFiniteDifferenceLexicographic,
+        }),
+    )
+}
+
+pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&[Option<usize>]>,
+    starts: &[GeometryStartId],
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(FreeInterfaceCberConfig {
+            elastic_iterations: limits.elastic_iterations,
+            physical_fixed_sources,
+            target_mode,
+            source_levels,
+            starts,
+            solver_mode: GeometrySolverMode::ActiveTangentTrust,
         }),
     )
 }
@@ -373,7 +397,14 @@ struct FreeInterfaceCberConfig<'a> {
     target_mode: ElasticTargetMode,
     source_levels: Option<&'a [Option<usize>]>,
     starts: &'a [GeometryStartId],
-    use_margin_objective: bool,
+    solver_mode: GeometrySolverMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GeometrySolverMode {
+    FiniteDifferenceElastic,
+    MarginFiniteDifferenceLexicographic,
+    ActiveTangentTrust,
 }
 
 enum Step {
@@ -1090,20 +1121,27 @@ fn certify_free_interface_geometry(
         let limits = ElasticBlockLimits {
             elastic_iterations: config.elastic_iterations,
         };
-        let outcome = if config.use_margin_objective {
-            solve_elastic_patch_with_margin_start(
+        let outcome = match config.solver_mode {
+            GeometrySolverMode::FiniteDifferenceElastic => solve_elastic_patch_with_start(
                 &trial.global_trial.mesh,
                 patch.clone(),
                 limits,
                 start_id,
-            )
-        } else {
-            solve_elastic_patch_with_start(
+            ),
+            GeometrySolverMode::MarginFiniteDifferenceLexicographic => {
+                solve_elastic_patch_with_margin_start(
+                    &trial.global_trial.mesh,
+                    patch.clone(),
+                    limits,
+                    start_id,
+                )
+            }
+            GeometrySolverMode::ActiveTangentTrust => solve_elastic_patch_with_active_trust_start(
                 &trial.global_trial.mesh,
                 patch.clone(),
                 limits,
                 start_id,
-            )
+            ),
         };
         match outcome {
             ElasticBlockOutcome::Certified(elastic) => {

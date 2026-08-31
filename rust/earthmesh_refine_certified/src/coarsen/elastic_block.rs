@@ -68,6 +68,37 @@ pub struct AngleMarginObjective {
     pub worst_constraints: Vec<AngleConstraintKey>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElasticSolverMode {
+    FiniteDifferenceElastic,
+    MarginFiniteDifferenceLexicographic,
+    ActiveTangentTrust,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalGradientStatus {
+    UndefinedNearDegenerate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LocalAngleGradient {
+    angle_deg: f64,
+    derivative: [CartesianPoint; 3],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveTrustStep {
+    updates: Vec<(usize, CartesianPoint, CartesianPoint)>,
+    predicted_margin_delta: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrustUpdate {
+    accepted: bool,
+    ratio: f64,
+    next_radius: f64,
+}
+
 impl ElasticTargetMode {
     fn uses_hierarchy_edges(self) -> bool {
         !matches!(self, Self::TrialReference)
@@ -705,7 +736,7 @@ pub fn solve_elastic_patch(
         patch,
         limits,
         GeometryStartId::MaterializedSource,
-        false,
+        ElasticSolverMode::FiniteDifferenceElastic,
     )
 }
 
@@ -715,7 +746,13 @@ pub fn solve_elastic_patch_with_start(
     limits: ElasticBlockLimits,
     start_id: GeometryStartId,
 ) -> ElasticBlockOutcome {
-    solve_elastic_patch_impl(source, patch, limits, start_id, false)
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        start_id,
+        ElasticSolverMode::FiniteDifferenceElastic,
+    )
 }
 
 pub fn solve_elastic_patch_with_margin_start(
@@ -724,7 +761,28 @@ pub fn solve_elastic_patch_with_margin_start(
     limits: ElasticBlockLimits,
     start_id: GeometryStartId,
 ) -> ElasticBlockOutcome {
-    solve_elastic_patch_impl(source, patch, limits, start_id, true)
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        start_id,
+        ElasticSolverMode::MarginFiniteDifferenceLexicographic,
+    )
+}
+
+pub fn solve_elastic_patch_with_active_trust_start(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        start_id,
+        ElasticSolverMode::ActiveTangentTrust,
+    )
 }
 
 fn solve_elastic_patch_impl(
@@ -732,7 +790,7 @@ fn solve_elastic_patch_impl(
     patch: ElasticPatch,
     limits: ElasticBlockLimits,
     start_id: GeometryStartId,
-    use_margin_objective: bool,
+    solver_mode: ElasticSolverMode,
 ) -> ElasticBlockOutcome {
     if let Err(reason) = validate_patch(source, &patch) {
         return ElasticBlockOutcome::InvalidPatch { reason };
@@ -809,87 +867,121 @@ fn solve_elastic_patch_impl(
     };
 
     let mut energy = initial_energy;
+    let mut trust_radius = initial_step;
     for iteration in 1..=limits.elastic_iterations {
         let phase = energy_phase(&certificate, &current.mesh, &guard_faces, &context);
         let Some(phase_energy) = elastic_energy(&current.mesh, &patch, phase, &context) else {
             return no_step(&current.mesh, iteration, energy);
         };
         energy = phase_energy;
-        let Some(gradient) =
-            (if use_margin_objective && matches!(phase, ElasticBlockPhase::AngleFeasibility) {
+
+        if solver_mode == ElasticSolverMode::ActiveTangentTrust
+            && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+        {
+            let before = current.mesh.clone();
+            let Some(step_plan) =
+                active_trust_angle_step(&before, &patch, &context, &guard_faces, trust_radius)
+            else {
+                return no_step(&current.mesh, iteration, energy);
+            };
+            let trust_update = apply_active_trust_step(
+                &mut current.mesh,
+                ActiveTrustStepContext {
+                    before: &before,
+                    step_plan: &step_plan,
+                    patch: &patch,
+                    energy_context: &context,
+                    guard_faces: &guard_faces,
+                    trust_radius,
+                    maximum_radius: initial_step,
+                },
+            );
+            trust_radius = trust_update.next_radius;
+            if !trust_update.accepted {
+                if trust_radius <= minimum_step {
+                    return no_step(&current.mesh, iteration, energy);
+                }
+                continue;
+            }
+            energy = elastic_energy(&current.mesh, &patch, phase, &context).unwrap_or(phase_energy);
+        } else {
+            let Some(gradient) = (if solver_mode
+                == ElasticSolverMode::MarginFiniteDifferenceLexicographic
+                && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+            {
                 finite_difference_angle_margin_gradient(&mut current.mesh, &patch, initial_step)
             } else {
                 finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
-            })
-        else {
-            return no_step(&current.mesh, iteration, energy);
-        };
-        let maximum_norm = gradient
-            .iter()
-            .map(|(_, vector)| magnitude(*vector))
-            .max_by(f64::total_cmp)
-            .unwrap_or(0.0);
-        if !maximum_norm.is_finite() || maximum_norm <= 1.0e-14 {
-            return no_step(&current.mesh, iteration, energy);
-        }
+            }) else {
+                return no_step(&current.mesh, iteration, energy);
+            };
+            let maximum_norm = gradient
+                .iter()
+                .map(|(_, vector)| magnitude(*vector))
+                .max_by(f64::total_cmp)
+                .unwrap_or(0.0);
+            if !maximum_norm.is_finite() || maximum_norm <= 1.0e-14 {
+                return no_step(&current.mesh, iteration, energy);
+            }
 
-        let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
-            minimum_step * 1.0e-3
-        } else {
-            minimum_step
-        };
-        let mut step = initial_step;
-        let accepted = loop {
-            let scale = -step / maximum_norm;
-            let Some(updates) = synchronous_updates(&current.mesh, &gradient, scale) else {
+            let phase_minimum_step = if matches!(phase, ElasticBlockPhase::Untangle) {
+                minimum_step * 1.0e-3
+            } else {
+                minimum_step
+            };
+            let mut step = initial_step;
+            let accepted = loop {
+                let scale = -step / maximum_norm;
+                let Some(updates) = synchronous_updates(&current.mesh, &gradient, scale) else {
+                    if step <= phase_minimum_step {
+                        break None;
+                    }
+                    step = (step * 0.5).max(phase_minimum_step);
+                    continue;
+                };
+                for &(site, _, point) in &updates {
+                    current.mesh.move_vertex(site, point);
+                }
+                let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
+                if let Some(candidate_energy) = candidate_energy {
+                    let movement_norm = updates
+                        .iter()
+                        .map(|&(_, before, after)| arc_length_unit_sphere(before, after).abs())
+                        .sum::<f64>();
+                    let accepted = if matches!(phase, ElasticBlockPhase::Untangle) {
+                        candidate_energy.is_finite() && candidate_energy < phase_energy
+                    } else if solver_mode == ElasticSolverMode::MarginFiniteDifferenceLexicographic
+                        && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+                    {
+                        angle_phase_step_is_better(
+                            mesh_before_updates(&current.mesh, &updates),
+                            &current.mesh,
+                            &patch,
+                            &context,
+                            &guard_faces,
+                            movement_norm,
+                        )
+                    } else {
+                        candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
+                    };
+                    if accepted {
+                        break Some(candidate_energy);
+                    }
+                }
+                for &(site, point, _) in &updates {
+                    current.mesh.move_vertex(site, point);
+                }
                 if step <= phase_minimum_step {
                     break None;
                 }
                 step = (step * 0.5).max(phase_minimum_step);
-                continue;
             };
-            for &(site, _, point) in &updates {
-                current.mesh.move_vertex(site, point);
-            }
-            let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
-            if let Some(candidate_energy) = candidate_energy {
-                let movement_norm = updates
-                    .iter()
-                    .map(|&(_, before, after)| arc_length_unit_sphere(before, after).abs())
-                    .sum::<f64>();
-                let accepted = if matches!(phase, ElasticBlockPhase::Untangle) {
-                    candidate_energy.is_finite() && candidate_energy < phase_energy
-                } else if use_margin_objective
-                    && matches!(phase, ElasticBlockPhase::AngleFeasibility)
-                {
-                    angle_phase_step_is_better(
-                        mesh_before_updates(&current.mesh, &updates),
-                        &current.mesh,
-                        &patch,
-                        &context,
-                        &guard_faces,
-                        movement_norm,
-                    )
-                } else {
-                    candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
-                };
-                if accepted {
-                    break Some(candidate_energy);
-                }
-            }
-            for &(site, point, _) in &updates {
-                current.mesh.move_vertex(site, point);
-            }
-            if step <= phase_minimum_step {
-                break None;
-            }
-            step = (step * 0.5).max(phase_minimum_step);
-        };
 
-        let Some(candidate_energy) = accepted else {
-            return no_step(&current.mesh, iteration, energy);
-        };
-        energy = candidate_energy;
+            let Some(candidate_energy) = accepted else {
+                return no_step(&current.mesh, iteration, energy);
+            };
+            energy = candidate_energy;
+        }
 
         if certificate.geometry_region_passes(&current.mesh, &guard_faces) {
             if let Ok(geometry) = certificate.verify_geometry(&current.mesh) {
@@ -1446,7 +1538,20 @@ pub fn angle_margin_objective(
     mesh: &MeshState,
     faces: impl IntoIterator<Item = usize>,
 ) -> Option<AngleMarginObjective> {
-    let mut worst_constraints = Vec::new();
+    let mut worst_constraints = angle_constraints(mesh, faces)?;
+    let signed_margin_deg = worst_constraints[0].signed_margin_deg;
+    worst_constraints.truncate(8);
+    Some(AngleMarginObjective {
+        signed_margin_deg,
+        worst_constraints,
+    })
+}
+
+fn angle_constraints(
+    mesh: &MeshState,
+    faces: impl IntoIterator<Item = usize>,
+) -> Option<Vec<AngleConstraintKey>> {
+    let mut constraints = Vec::new();
     for face in faces {
         if !mesh.is_triangle_live(face) {
             continue;
@@ -1455,7 +1560,7 @@ pub fn angle_margin_objective(
             spherical_triangle_angles(mesh.triangles()[face].map(|site| mesh.vertices()[site]))?;
         for (corner, angle_deg) in angles.into_iter().enumerate() {
             let signed_margin_deg = (angle_deg - 40.2).min(79.8 - angle_deg);
-            worst_constraints.push(AngleConstraintKey {
+            constraints.push(AngleConstraintKey {
                 face,
                 corner,
                 angle_deg,
@@ -1463,21 +1568,16 @@ pub fn angle_margin_objective(
             });
         }
     }
-    if worst_constraints.is_empty() {
+    if constraints.is_empty() {
         return None;
     }
-    worst_constraints.sort_by(|a, b| {
+    constraints.sort_by(|a, b| {
         a.signed_margin_deg
             .total_cmp(&b.signed_margin_deg)
             .then_with(|| a.face.cmp(&b.face))
             .then_with(|| a.corner.cmp(&b.corner))
     });
-    let signed_margin_deg = worst_constraints[0].signed_margin_deg;
-    worst_constraints.truncate(8);
-    Some(AngleMarginObjective {
-        signed_margin_deg,
-        worst_constraints,
-    })
+    Some(constraints)
 }
 
 fn angle_range(mesh: &MeshState, faces: impl IntoIterator<Item = usize>) -> Option<(f64, f64)> {
@@ -2044,6 +2144,568 @@ fn angle_margin_loss(mesh: &MeshState) -> Option<f64> {
     Some(-objective.signed_margin_deg + 0.001 * worst_violation)
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Dual9 {
+    value: f64,
+    derivative: [f64; 9],
+}
+
+impl Dual9 {
+    fn variable(value: f64, index: usize) -> Self {
+        let mut derivative = [0.0; 9];
+        derivative[index] = 1.0;
+        Self { value, derivative }
+    }
+
+    fn add(self, other: Self) -> Self {
+        let mut derivative = [0.0; 9];
+        for (i, item) in derivative.iter_mut().enumerate() {
+            *item = self.derivative[i] + other.derivative[i];
+        }
+        Self {
+            value: self.value + other.value,
+            derivative,
+        }
+    }
+
+    fn sub(self, other: Self) -> Self {
+        self.add(other.scale(-1.0))
+    }
+
+    fn mul(self, other: Self) -> Self {
+        let mut derivative = [0.0; 9];
+        for (i, item) in derivative.iter_mut().enumerate() {
+            *item = self.derivative[i] * other.value + other.derivative[i] * self.value;
+        }
+        Self {
+            value: self.value * other.value,
+            derivative,
+        }
+    }
+
+    fn scale(self, scale: f64) -> Self {
+        let mut derivative = [0.0; 9];
+        for (i, item) in derivative.iter_mut().enumerate() {
+            *item = self.derivative[i] * scale;
+        }
+        Self {
+            value: self.value * scale,
+            derivative,
+        }
+    }
+
+    fn div(self, other: Self) -> Option<Self> {
+        if other.value.abs() <= 1.0e-14 || !other.value.is_finite() {
+            return None;
+        }
+        let denom = other.value * other.value;
+        let mut derivative = [0.0; 9];
+        for (i, item) in derivative.iter_mut().enumerate() {
+            *item = (self.derivative[i] * other.value - self.value * other.derivative[i]) / denom;
+        }
+        Some(Self {
+            value: self.value / other.value,
+            derivative,
+        })
+    }
+
+    fn sqrt(self) -> Option<Self> {
+        if self.value <= 1.0e-28 || !self.value.is_finite() {
+            return None;
+        }
+        let value = self.value.sqrt();
+        let mut derivative = [0.0; 9];
+        for (i, item) in derivative.iter_mut().enumerate() {
+            *item = self.derivative[i] / (2.0 * value);
+        }
+        Some(Self { value, derivative })
+    }
+
+    fn acos_degrees(self) -> Result<Self, LocalGradientStatus> {
+        if !self.value.is_finite() || self.value.abs() >= 1.0 - 1.0e-10 {
+            return Err(LocalGradientStatus::UndefinedNearDegenerate);
+        }
+        let value = self.value.acos().to_degrees();
+        let scale = -180.0 / std::f64::consts::PI / (1.0 - self.value * self.value).sqrt();
+        Ok(Self {
+            value,
+            derivative: self.derivative.map(|d| d * scale),
+        })
+    }
+}
+
+fn dual_dot(left: [Dual9; 3], right: [Dual9; 3]) -> Dual9 {
+    left[0]
+        .mul(right[0])
+        .add(left[1].mul(right[1]))
+        .add(left[2].mul(right[2]))
+}
+
+fn dual_scale(point: [Dual9; 3], scale: Dual9) -> [Dual9; 3] {
+    [
+        point[0].mul(scale),
+        point[1].mul(scale),
+        point[2].mul(scale),
+    ]
+}
+
+fn dual_sub(left: [Dual9; 3], right: [Dual9; 3]) -> [Dual9; 3] {
+    [
+        left[0].sub(right[0]),
+        left[1].sub(right[1]),
+        left[2].sub(right[2]),
+    ]
+}
+
+fn dual_normalized(point: [Dual9; 3]) -> Result<[Dual9; 3], LocalGradientStatus> {
+    let norm = dual_dot(point, point)
+        .sqrt()
+        .ok_or(LocalGradientStatus::UndefinedNearDegenerate)?;
+    Ok([
+        point[0]
+            .div(norm)
+            .ok_or(LocalGradientStatus::UndefinedNearDegenerate)?,
+        point[1]
+            .div(norm)
+            .ok_or(LocalGradientStatus::UndefinedNearDegenerate)?,
+        point[2]
+            .div(norm)
+            .ok_or(LocalGradientStatus::UndefinedNearDegenerate)?,
+    ])
+}
+
+fn dual_vertex(point: CartesianPoint, offset: usize) -> [Dual9; 3] {
+    [
+        Dual9::variable(point.x, offset),
+        Dual9::variable(point.y, offset + 1),
+        Dual9::variable(point.z, offset + 2),
+    ]
+}
+
+fn local_angle_gradient(
+    mesh: &MeshState,
+    face: usize,
+    corner: usize,
+) -> Result<LocalAngleGradient, LocalGradientStatus> {
+    if !mesh.is_triangle_live(face) || corner >= 3 {
+        return Err(LocalGradientStatus::UndefinedNearDegenerate);
+    }
+    let triangle = mesh.triangles()[face];
+    let a = dual_normalized(dual_vertex(mesh.vertices()[triangle[corner]], 0))?;
+    let b = dual_normalized(dual_vertex(mesh.vertices()[triangle[(corner + 1) % 3]], 3))?;
+    let c = dual_normalized(dual_vertex(mesh.vertices()[triangle[(corner + 2) % 3]], 6))?;
+    let ab = dual_dot(a, b);
+    let ac = dual_dot(a, c);
+    let left = dual_normalized(dual_sub(b, dual_scale(a, ab)))?;
+    let right = dual_normalized(dual_sub(c, dual_scale(a, ac)))?;
+    let angle = dual_dot(left, right).acos_degrees()?;
+    let mut derivative = [CartesianPoint::new(0.0, 0.0, 0.0); 3];
+    for vertex in 0..3 {
+        let raw = CartesianPoint::new(
+            angle.derivative[vertex * 3],
+            angle.derivative[vertex * 3 + 1],
+            angle.derivative[vertex * 3 + 2],
+        );
+        let position = normalized_point(mesh.vertices()[triangle[(corner + vertex) % 3]])
+            .ok_or(LocalGradientStatus::UndefinedNearDegenerate)?;
+        derivative[vertex] = subtract_points(raw, scale_point(position, dot(position, raw)));
+    }
+    Ok(LocalAngleGradient {
+        angle_deg: angle.value,
+        derivative,
+    })
+}
+
+fn constraint_margin_gradient(
+    mesh: &MeshState,
+    constraint: &AngleConstraintKey,
+) -> Result<[(usize, CartesianPoint); 3], LocalGradientStatus> {
+    let gradient = local_angle_gradient(mesh, constraint.face, constraint.corner)?;
+    let sign = if gradient.angle_deg <= 60.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let triangle = mesh.triangles()[constraint.face];
+    Ok([
+        (
+            triangle[constraint.corner],
+            scale_point(gradient.derivative[0], sign),
+        ),
+        (
+            triangle[(constraint.corner + 1) % 3],
+            scale_point(gradient.derivative[1], sign),
+        ),
+        (
+            triangle[(constraint.corner + 2) % 3],
+            scale_point(gradient.derivative[2], sign),
+        ),
+    ])
+}
+
+fn active_angle_constraints(
+    mesh: &MeshState,
+    faces: impl IntoIterator<Item = usize>,
+) -> Option<Vec<AngleConstraintKey>> {
+    select_active_constraints(angle_constraints(mesh, faces)?)
+}
+
+fn select_active_constraints(
+    mut constraints: Vec<AngleConstraintKey>,
+) -> Option<Vec<AngleConstraintKey>> {
+    if constraints.is_empty() {
+        return None;
+    }
+    constraints.sort_by(|a, b| {
+        a.signed_margin_deg
+            .total_cmp(&b.signed_margin_deg)
+            .then_with(|| a.face.cmp(&b.face))
+            .then_with(|| a.corner.cmp(&b.corner))
+    });
+    let nearest_nonviolating_limit = 64.min(constraints.len());
+    let mut selected = Vec::new();
+    let mut nearest_nonviolating = Vec::new();
+    for constraint in constraints {
+        if constraint.signed_margin_deg < 0.0 {
+            selected.push(constraint);
+        } else if nearest_nonviolating.len() < nearest_nonviolating_limit {
+            nearest_nonviolating.push(constraint);
+        }
+    }
+    selected.extend(nearest_nonviolating);
+    selected.sort_by(|a, b| {
+        a.signed_margin_deg
+            .total_cmp(&b.signed_margin_deg)
+            .then_with(|| a.face.cmp(&b.face))
+            .then_with(|| a.corner.cmp(&b.corner))
+    });
+    Some(selected)
+}
+
+#[derive(Clone, Debug)]
+struct ActiveTrustRow {
+    residual: f64,
+    weight: f64,
+    coefficients: Vec<(usize, f64)>,
+    constraint: AngleConstraintKey,
+}
+
+fn active_trust_angle_step(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+    _context: &EnergyContext,
+    _guard_faces: &BTreeSet<usize>,
+    trust_radius: f64,
+) -> Option<ActiveTrustStep> {
+    let active = active_angle_constraints(mesh, mesh.active_triangle_slots())?;
+    let variables = active_trust_variables(mesh, patch)?;
+    let rows = active_trust_rows(mesh, &active, &variables)?;
+    let lambda = 1.0e-3;
+    let mut delta = solve_damped_normal_equations(&rows, variables.len() * 2, lambda)?;
+    clamp_trust_per_vertex(&mut delta, trust_radius);
+    let mut updates = Vec::new();
+    let mut delta_by_site = BTreeMap::<usize, CartesianPoint>::new();
+    for (index, variable) in variables.iter().enumerate() {
+        let first = delta[index * 2];
+        let second = delta[index * 2 + 1];
+        if first == 0.0 && second == 0.0 {
+            continue;
+        }
+        let tangent = add_points(
+            scale_point(variable.basis[0], first),
+            scale_point(variable.basis[1], second),
+        );
+        let after = exponential_map(variable.point, tangent)?;
+        delta_by_site.insert(variable.site, tangent);
+        updates.push((variable.site, variable.point, after));
+    }
+    if updates.is_empty() {
+        return None;
+    }
+    let current_margin = active
+        .iter()
+        .map(|constraint| constraint.signed_margin_deg)
+        .min_by(f64::total_cmp)?;
+    let mut predicted_margin = f64::INFINITY;
+    for row in &rows {
+        let linear_delta = row
+            .coefficients
+            .iter()
+            .map(|&(column, value)| value * delta[column])
+            .sum::<f64>();
+        predicted_margin = predicted_margin.min(row.constraint.signed_margin_deg + linear_delta);
+    }
+    // Keep deterministic row assembly tied to the same sites used for updates.
+    let _updated_sites = delta_by_site.len();
+    Some(ActiveTrustStep {
+        updates,
+        predicted_margin_delta: predicted_margin - current_margin,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct ActiveTrustVariable {
+    site: usize,
+    point: CartesianPoint,
+    basis: [CartesianPoint; 2],
+}
+
+fn active_trust_variables(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+) -> Option<Vec<ActiveTrustVariable>> {
+    patch
+        .movable_compact_vertices
+        .iter()
+        .copied()
+        .map(|site| {
+            Some(ActiveTrustVariable {
+                site,
+                point: mesh.vertices()[site],
+                basis: tangent_basis(mesh.vertices()[site])?,
+            })
+        })
+        .collect()
+}
+
+fn active_trust_rows(
+    mesh: &MeshState,
+    active: &[AngleConstraintKey],
+    variables: &[ActiveTrustVariable],
+) -> Option<Vec<ActiveTrustRow>> {
+    let variable_slots = variables
+        .iter()
+        .enumerate()
+        .map(|(index, variable)| (variable.site, index))
+        .collect::<BTreeMap<_, _>>();
+    let mut rows = Vec::new();
+    for constraint in active {
+        let mut coefficients = Vec::new();
+        for (site, gradient) in constraint_margin_gradient(mesh, constraint).ok()? {
+            let Some(&variable_index) = variable_slots.get(&site) else {
+                continue;
+            };
+            let variable = &variables[variable_index];
+            coefficients.push((variable_index * 2, dot(gradient, variable.basis[0])));
+            coefficients.push((variable_index * 2 + 1, dot(gradient, variable.basis[1])));
+        }
+        if coefficients.iter().any(|&(_, value)| value.abs() > 1.0e-14) {
+            let violation = (-constraint.signed_margin_deg).max(0.0);
+            rows.push(ActiveTrustRow {
+                residual: constraint.signed_margin_deg.min(0.0),
+                weight: 1.0 + violation.min(100.0),
+                coefficients,
+                constraint: constraint.clone(),
+            });
+        }
+    }
+    (!rows.is_empty()).then_some(rows)
+}
+
+fn solve_damped_normal_equations(
+    rows: &[ActiveTrustRow],
+    columns: usize,
+    lambda: f64,
+) -> Option<Vec<f64>> {
+    if columns == 0 || rows.is_empty() || lambda <= 0.0 || !lambda.is_finite() {
+        return None;
+    }
+    let mut rhs = vec![0.0; columns];
+    for row in rows {
+        if !row.residual.is_finite() || !row.weight.is_finite() || row.weight <= 0.0 {
+            return None;
+        }
+        for &(column, value) in &row.coefficients {
+            rhs[column] -= row.weight * value * row.residual;
+        }
+    }
+    conjugate_gradient_normal(rows, &rhs, lambda, columns)
+}
+
+fn conjugate_gradient_normal(
+    rows: &[ActiveTrustRow],
+    rhs: &[f64],
+    lambda: f64,
+    columns: usize,
+) -> Option<Vec<f64>> {
+    let mut x = vec![0.0; columns];
+    let mut r = rhs.to_vec();
+    let mut p = r.clone();
+    let mut rs_old = dot_slice(&r, &r);
+    if !rs_old.is_finite() {
+        return None;
+    }
+    if rs_old.sqrt() <= 1.0e-14 {
+        return Some(x);
+    }
+    for _ in 0..(columns * 4).max(16) {
+        let ap = apply_damped_normal(rows, &p, lambda, columns);
+        let denom = dot_slice(&p, &ap);
+        if denom <= 1.0e-30 || !denom.is_finite() {
+            return None;
+        }
+        let alpha = rs_old / denom;
+        for i in 0..columns {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * ap[i];
+        }
+        let rs_new = dot_slice(&r, &r);
+        if !rs_new.is_finite() {
+            return None;
+        }
+        if rs_new.sqrt() <= 1.0e-10 * rhs.len().max(1) as f64 {
+            break;
+        }
+        let beta = rs_new / rs_old;
+        for i in 0..columns {
+            p[i] = r[i] + beta * p[i];
+        }
+        rs_old = rs_new;
+    }
+    Some(x)
+}
+
+fn apply_damped_normal(
+    rows: &[ActiveTrustRow],
+    x: &[f64],
+    lambda: f64,
+    columns: usize,
+) -> Vec<f64> {
+    let mut result = x.iter().map(|value| lambda * value).collect::<Vec<_>>();
+    result.resize(columns, 0.0);
+    for row in rows {
+        let ax = row
+            .coefficients
+            .iter()
+            .map(|&(column, value)| value * x[column])
+            .sum::<f64>();
+        for &(column, value) in &row.coefficients {
+            result[column] += row.weight * value * ax;
+        }
+    }
+    result
+}
+
+fn dot_slice(left: &[f64], right: &[f64]) -> f64 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn clamp_trust_per_vertex(delta: &mut [f64], trust_radius: f64) {
+    if !trust_radius.is_finite() || trust_radius <= 0.0 {
+        delta.fill(0.0);
+        return;
+    }
+    for chunk in delta.as_chunks_mut::<2>().0 {
+        let norm = (chunk[0] * chunk[0] + chunk[1] * chunk[1]).sqrt();
+        if norm > trust_radius {
+            let scale = trust_radius / norm;
+            chunk[0] *= scale;
+            chunk[1] *= scale;
+        }
+    }
+}
+
+struct ActiveTrustStepContext<'a> {
+    before: &'a MeshState,
+    step_plan: &'a ActiveTrustStep,
+    patch: &'a ElasticPatch,
+    energy_context: &'a EnergyContext,
+    guard_faces: &'a BTreeSet<usize>,
+    trust_radius: f64,
+    maximum_radius: f64,
+}
+
+fn apply_active_trust_step(
+    mesh: &mut MeshState,
+    context: ActiveTrustStepContext<'_>,
+) -> TrustUpdate {
+    for &(site, _, point) in &context.step_plan.updates {
+        mesh.move_vertex(site, point);
+    }
+    let movement_norm = context
+        .step_plan
+        .updates
+        .iter()
+        .map(|&(_, before, after)| arc_length_unit_sphere(before, after).abs())
+        .sum::<f64>();
+    let accepted = angle_phase_step_is_better(
+        context.before.clone(),
+        mesh,
+        context.patch,
+        context.energy_context,
+        context.guard_faces,
+        movement_norm,
+    );
+    let ratio = predicted_vs_actual_margin_ratio(
+        context.before,
+        mesh,
+        context.step_plan.predicted_margin_delta,
+    )
+    .unwrap_or(f64::NEG_INFINITY);
+    let trust_update = update_trust_radius(
+        context.trust_radius,
+        accepted,
+        ratio,
+        context.maximum_radius,
+    );
+    if !trust_update.accepted {
+        *mesh = context.before.clone();
+    }
+    trust_update
+}
+
+fn predicted_vs_actual_margin_ratio_from_margins(
+    before_margin: f64,
+    after_margin: f64,
+    predicted_margin_delta: f64,
+) -> Option<f64> {
+    if predicted_margin_delta <= 1.0e-14 || !predicted_margin_delta.is_finite() {
+        return None;
+    }
+    Some((after_margin - before_margin) / predicted_margin_delta)
+}
+
+fn predicted_vs_actual_margin_ratio(
+    before: &MeshState,
+    after: &MeshState,
+    predicted_margin_delta: f64,
+) -> Option<f64> {
+    let before_margin =
+        angle_margin_objective(before, before.active_triangle_slots())?.signed_margin_deg;
+    let after_margin =
+        angle_margin_objective(after, after.active_triangle_slots())?.signed_margin_deg;
+    predicted_vs_actual_margin_ratio_from_margins(
+        before_margin,
+        after_margin,
+        predicted_margin_delta,
+    )
+}
+
+fn update_trust_radius(
+    current_radius: f64,
+    accepted_by_key: bool,
+    ratio: f64,
+    maximum_radius: f64,
+) -> TrustUpdate {
+    if !accepted_by_key || !ratio.is_finite() || ratio < 0.1 {
+        return TrustUpdate {
+            accepted: false,
+            ratio,
+            next_radius: current_radius * 0.5,
+        };
+    }
+    let next_radius = if ratio > 0.75 {
+        (current_radius * 1.5).min(maximum_radius)
+    } else {
+        current_radius
+    };
+    TrustUpdate {
+        accepted: true,
+        ratio,
+        next_radius,
+    }
+}
+
 fn finite_difference_angle_margin_gradient(
     mesh: &mut MeshState,
     patch: &ElasticPatch,
@@ -2218,6 +2880,241 @@ mod tests {
         },
         mother_grid::MotherGrid,
     };
+
+    fn single_movable_patch() -> (MeshState, ElasticPatch, BTreeSet<usize>, EnergyContext) {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let site = grid.mesh.triangles()[face][0];
+        let guard_faces = grid
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| grid.mesh.triangles()[face].contains(&site))
+            .collect::<Vec<_>>();
+        let fixed = guard_faces
+            .iter()
+            .flat_map(|&face| grid.mesh.triangles()[face])
+            .filter(|&candidate| candidate != site)
+            .collect::<BTreeSet<_>>();
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 48,
+                topology_id: 1,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: guard_faces
+                    .iter()
+                    .map(|&face| grid.mesh.triangles()[face])
+                    .collect(),
+                source_active_vertices: std::iter::once(site)
+                    .chain(fixed.iter().copied())
+                    .collect(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed.into_iter().collect(),
+            movable_compact_vertices: vec![site],
+            guard_faces: guard_faces.clone(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        };
+        let guard_set = guard_faces.iter().copied().collect::<BTreeSet<_>>();
+        let context = EnergyContext::new(&grid.mesh, &patch).unwrap();
+        (grid.mesh, patch, guard_set, context)
+    }
+
+    #[test]
+    fn dual9_matches_finite_difference() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let corner = 0;
+        let triangle = grid.mesh.triangles()[face];
+        let gradient = local_angle_gradient(&grid.mesh, face, corner).unwrap();
+        let site = triangle[corner];
+        let direction = tangent_basis(grid.mesh.vertices()[site]).unwrap()[0];
+        let epsilon = 1.0e-6;
+        let mut plus = grid.mesh.clone();
+        plus.move_vertex(
+            site,
+            exponential_map(grid.mesh.vertices()[site], scale_point(direction, epsilon)).unwrap(),
+        );
+        let mut minus = grid.mesh.clone();
+        minus.move_vertex(
+            site,
+            exponential_map(grid.mesh.vertices()[site], scale_point(direction, -epsilon)).unwrap(),
+        );
+        let plus_angle = corner_angle_degrees(&plus, triangle, corner).unwrap();
+        let minus_angle = corner_angle_degrees(&minus, triangle, corner).unwrap();
+        let finite_difference = (plus_angle - minus_angle) / (2.0 * epsilon);
+        let dual = dot(gradient.derivative[0], direction);
+        assert!((dual - finite_difference).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn tangent_projection_is_orthogonal_to_position() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let gradient = local_angle_gradient(&grid.mesh, face, 0).unwrap();
+        let triangle = grid.mesh.triangles()[face];
+        for (offset, derivative) in gradient.derivative.iter().enumerate() {
+            let position = normalized_point(grid.mesh.vertices()[triangle[offset]]).unwrap();
+            assert!(dot(position, *derivative).abs() < 1.0e-10);
+        }
+    }
+
+    #[test]
+    fn exp_update_stays_on_unit_sphere() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let site = grid.mesh.active_triangle_slots().next().unwrap();
+        let point = grid.mesh.vertices()[grid.mesh.triangles()[site][0]];
+        let step = scale_point(tangent_basis(point).unwrap()[0], 0.123);
+        let updated = exponential_map(point, step).unwrap();
+        assert!((magnitude(updated) - magnitude(point)).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn near_degenerate_gradient_is_typed_undefined() {
+        let mut grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let triangle = grid.mesh.triangles()[face];
+        grid.mesh
+            .move_vertex(triangle[1], grid.mesh.vertices()[triangle[0]]);
+        assert_eq!(
+            local_angle_gradient(&grid.mesh, face, 0),
+            Err(LocalGradientStatus::UndefinedNearDegenerate)
+        );
+    }
+
+    #[test]
+    fn predicted_vs_actual_margin_ratio_uses_actual_over_predicted_margin() {
+        let ratio = predicted_vs_actual_margin_ratio_from_margins(-8.0, -6.0, 4.0);
+        assert_eq!(ratio, Some(0.5));
+    }
+
+    #[test]
+    fn active_set_keeps_all_violations_and_nearest_64_nonviolations() {
+        let mut constraints = Vec::new();
+        for face in 0..70 {
+            constraints.push(AngleConstraintKey {
+                face,
+                corner: 0,
+                angle_deg: 35.0,
+                signed_margin_deg: -((face + 1) as f64),
+            });
+        }
+        for face in 1000..1100 {
+            constraints.push(AngleConstraintKey {
+                face,
+                corner: 1,
+                angle_deg: 40.2 + (face - 999) as f64 * 0.001,
+                signed_margin_deg: (face - 999) as f64 * 0.001,
+            });
+        }
+        let active = select_active_constraints(constraints).unwrap();
+        assert_eq!(
+            active.iter().filter(|c| c.signed_margin_deg < 0.0).count(),
+            70
+        );
+        let nonviolating = active
+            .iter()
+            .filter(|c| c.signed_margin_deg >= 0.0)
+            .map(|c| c.face)
+            .collect::<Vec<_>>();
+        assert_eq!(nonviolating.len(), 64);
+        assert_eq!(nonviolating[0], 1000);
+        assert_eq!(nonviolating[63], 1063);
+    }
+
+    #[test]
+    fn active_trust_solver_solves_damped_normal_equations() {
+        let rows = vec![
+            ActiveTrustRow {
+                residual: -1.0,
+                weight: 1.0,
+                coefficients: vec![(0, 1.0), (1, 1.0)],
+                constraint: AngleConstraintKey {
+                    face: 0,
+                    corner: 0,
+                    angle_deg: 39.2,
+                    signed_margin_deg: -1.0,
+                },
+            },
+            ActiveTrustRow {
+                residual: -2.0,
+                weight: 1.0,
+                coefficients: vec![(0, 1.0), (1, -1.0)],
+                constraint: AngleConstraintKey {
+                    face: 1,
+                    corner: 0,
+                    angle_deg: 38.2,
+                    signed_margin_deg: -2.0,
+                },
+            },
+        ];
+        let solved = solve_damped_normal_equations(&rows, 2, 0.0_f64.max(1.0e-6)).unwrap();
+        // With negligible damping, equations x+y=1 and x-y=2 give x=1.5, y=-0.5.
+        assert!((solved[0] - 1.5).abs() < 1.0e-5);
+        assert!((solved[1] + 0.5).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn active_trust_rejected_step_rolls_back_mesh() {
+        let (mesh, patch, guard_faces, context) = single_movable_patch();
+        let site = patch.movable_compact_vertices[0];
+        let before_vertices = mesh.vertices().to_vec();
+        let bad_point = mesh.vertices()[patch.fixed_compact_vertices[0]];
+        let step = ActiveTrustStep {
+            updates: vec![(site, mesh.vertices()[site], bad_point)],
+            predicted_margin_delta: 1.0,
+        };
+        let mut candidate = mesh.clone();
+        let update = apply_active_trust_step(
+            &mut candidate,
+            ActiveTrustStepContext {
+                before: &mesh,
+                step_plan: &step,
+                patch: &patch,
+                energy_context: &context,
+                guard_faces: &guard_faces,
+                trust_radius: 0.1,
+                maximum_radius: 1.0,
+            },
+        );
+        assert!(!update.accepted);
+        assert_eq!(candidate.vertices(), before_vertices.as_slice());
+    }
+
+    #[test]
+    fn orientation_regression_rejects_step() {
+        let before = AngleAcceptanceKey {
+            negative_orientation_count: 0,
+            crossing_count: 0,
+            signed_margin_deg: -10.0,
+            sum_worst_k_violation: 10.0,
+            delaunay_violations: 0,
+            invalid_voronoi_cells: 0,
+            movement_norm: 0.0,
+        };
+        let after = AngleAcceptanceKey {
+            negative_orientation_count: 1,
+            signed_margin_deg: 0.0,
+            ..before.clone()
+        };
+        assert!(!after.is_better_than(&before));
+    }
+
+    #[test]
+    fn trust_radius_shrinks_on_bad_model() {
+        let update = update_trust_radius(0.1, true, 0.05, 1.0);
+        assert!(!update.accepted);
+        assert!(update.next_radius < 0.1);
+    }
+
+    #[test]
+    fn trust_radius_expands_on_good_model() {
+        let update = update_trust_radius(0.1, true, 0.9, 1.0);
+        assert!(update.accepted);
+        assert!(update.next_radius > 0.1);
+    }
 
     #[test]
     fn local_finite_difference_matches_the_full_elastic_objective() {

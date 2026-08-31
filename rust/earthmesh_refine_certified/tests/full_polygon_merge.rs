@@ -5,6 +5,7 @@ use earthmesh_refine_certified::coarsen::{
     n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
     solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
     solve_full_polygon_merge_free_interface_cber_with_targets,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField, ElasticTargetMode,
     FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, GeometryStartId,
@@ -892,6 +893,63 @@ fn frozen_n6_pr47_geometry_start_comparison_probe() {
     }
     let json = format!(
         "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr47GeometryStartComparison\",\"target_mode\":\"HierarchyEdgeAreaDegree\",\"arms\":[{}]}}",
+        arms.iter()
+            .map(|(name, json)| format!("{{\"start\":\"{}\",\"run\":{}}}", name, json))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR48 active-trust comparison probe"]
+fn frozen_n6_pr48_active_trust_comparison_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let starts = geometry_start_ids(
+        std::env::var("EARTHMESH_GEOMETRY_START_SET")
+            .ok()
+            .as_deref(),
+    );
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let commit_sha = option_env!("EARTHMESH_GIT_SHA")
+        .map(str::to_string)
+        .or_else(git_head);
+    let mut arms = Vec::new();
+    for start in starts {
+        let outcome =
+            solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts(
+                &source,
+                &component,
+                &BTreeSet::new(),
+                FullPolygonCberLimits {
+                    topology_states: topology_limit,
+                    elastic_iterations,
+                },
+                ElasticTargetMode::HierarchyEdgeAreaDegree,
+                Some(source_levels.as_slice()),
+                &[start],
+            );
+        arms.push((
+            start.as_str(),
+            frozen_n6_geometry_evidence_json_with_solver_mode(
+                &outcome,
+                fixture_fingerprint,
+                topology_limit,
+                elastic_iterations,
+                commit_sha.as_deref(),
+                ElasticTargetMode::HierarchyEdgeAreaDegree,
+                &[start.as_str()],
+                "ActiveTangentTrust",
+            ),
+        ));
+    }
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr48ActiveTrustComparison\",\"target_mode\":\"HierarchyEdgeAreaDegree\",\"arms\":[{}]}}",
         arms.iter()
             .map(|(name, json)| format!("{{\"start\":\"{}\",\"run\":{}}}", name, json))
             .collect::<Vec<_>>()
