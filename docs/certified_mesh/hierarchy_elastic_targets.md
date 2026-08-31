@@ -58,3 +58,32 @@ Best PR47 start: `HierarchySpringEquilibrium`, margin `-16.074725710625`.
 This is worse than the PR46 C baseline margin `-14.556453014768`, so PR47 does
 not switch the default. The result remains a continuous-search incomplete
 failure, not a topology no-go.
+
+
+## PR48 active tangent trust evidence
+
+PR48 adds an explicit experiment path for an active-constraint spherical tangent
+trust solver. It keeps the PR46 C target mode (`HierarchyEdgeAreaDegree`), the
+PR47 deterministic start set, the same topology order, and the same 500x64
+budget. The active solve assembles explicit tangent rows `(residual r, projected
+Jacobian J, weight W)`, solves deterministic damped normal equations
+`(J^T W J + lambda I) delta = -J^T W r`, clamps each movable vertex by its trust
+radius, then applies `Exp_x(delta)`. The ordinary PR46/PR47 serializers are
+unchanged; this probe reports `solver_mode = ActiveTangentTrust`.
+
+500x64 release comparison, two runs byte-identical:
+
+| start | outcome | attempts | phase counts | best angle range | best signed margin | last angle range | last signed margin |
+|---|---|---:|---|---:|---:|---:|---:|
+| `MaterializedSource` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.838636866483--92.242446998773 | -12.442446998773 | 27.464343730108--92.540658996499 | -12.740658996499 |
+| `HierarchySpringEquilibrium` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.799440175167--92.352813339354 | -12.552813339354 | 27.274794316152--115.534844306902 | -35.734844306902 |
+| `RingScaleInterpolation` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.214145946639--92.645476907821 | -12.985854053361 | 27.214145946639--92.645476907821 | -12.985854053361 |
+| `DegreeAngleEquilibrium` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.359215515607--92.263380411133 | -12.840784484393 | 26.897879190503--93.030404757847 | -13.302120809497 |
+| `SignedNormalPlus` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.395788550308--92.578326257591 | -12.804211449692 | 23.547674393253--99.343006914190 | -19.543006914190 |
+| `SignedNormalMinus` | `ContinuousSearchIncomplete` | 16 | `AngleFeasibility: 16` | 27.484757584112--92.178664517782 | -12.715242415888 | 27.294692354321--91.833619206947 | -12.905307645679 |
+
+Best PR48 start: `MaterializedSource`, margin `-12.442446998773`.
+This improves the PR46 C baseline by 2.114006015995 degrees, but still misses
+the 40.2--79.8 internal angle window. The result remains
+`ContinuousSearchIncomplete` in `AngleFeasibility`; it is not a topology no-go
+and not a continuous infeasibility proof.

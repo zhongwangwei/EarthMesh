@@ -152,7 +152,12 @@ PR46 adds hierarchy-derived target arms. In the frozen 500x64 comparison,
 `ContinuousSearchIncomplete`. PR47 adds deterministic margin-start experiments;
 the best start (`HierarchySpringEquilibrium`) reaches only
 24.436419106635--95.874725710625 degrees with margin
--16.074725710625, so the PR46 C default is not replaced.
+-16.074725710625, so the PR46 C default is not replaced. PR48 adds an explicit
+active tangent trust experiment path backed by deterministic damped normal
+equations over active tangent angle rows. Its best start (`MaterializedSource`)
+improves the PR46 C margin to -12.442446998773 degrees with angle range
+27.838636866483--92.242446998773 degrees. The strict 40.2--79.8 internal window
+still fails, so this is solver evidence only, not a certificate.
 
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
