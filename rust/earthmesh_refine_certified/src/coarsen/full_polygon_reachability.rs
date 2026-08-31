@@ -258,12 +258,14 @@ pub fn degree_defects_from_global_evidence(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SectorPolygon {
-    id: u64,
-    vertices: Vec<usize>,
+pub(super) struct SectorPolygon {
+    pub id: u64,
+    pub vertices: Vec<usize>,
 }
 
-fn effective_sector_polygons(stratified: &StratifiedAnnulus) -> Result<Vec<SectorPolygon>, String> {
+pub(super) fn effective_sector_polygons(
+    stratified: &StratifiedAnnulus,
+) -> Result<Vec<SectorPolygon>, String> {
     let coarse_cycle = stratified
         .coupled
         .coarse_interface

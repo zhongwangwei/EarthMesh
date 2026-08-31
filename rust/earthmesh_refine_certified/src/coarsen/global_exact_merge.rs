@@ -991,7 +991,7 @@ fn anchor_link_edges(
     out
 }
 
-fn sector_variants(
+pub(super) fn sector_variants(
     stratified: &StratifiedAnnulus,
 ) -> Result<Vec<Vec<Vec<OwnedTopologyTriangle>>>, String> {
     let coarse_cycle = stratified
