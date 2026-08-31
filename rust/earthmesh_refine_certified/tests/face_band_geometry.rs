@@ -1,12 +1,13 @@
 use earthmesh_refine_certified::coarsen::{
-    build_face_band_problem, continue_nested_domain,
-    frozen_n6_geometry_evidence_json_with_solver_domain,
+    build_face_band_problem, build_face_band_problem_with_source_face_rings,
+    continue_nested_domain, frozen_n6_geometry_evidence_json_with_solver_domain,
     n6_legacy_mixed_fixture_with_source_levels, solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
-    solve_full_polygon_merge_from_face_bands_with_geometry_witness, DomainContinuationMode,
-    DomainContinuationOutcome, DomainContinuationSchedule, ElasticTargetMode, FaceBandLimits,
-    FaceBandSolveOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
-    GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness, GeometryStartId,
+    solve_full_polygon_merge_from_face_bands_with_geometry_witness, AnchorBandPolicy,
+    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
+    ElasticTargetMode, FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits,
+    FullPolygonMergeEvidence, FullPolygonMergeOutcome, GeometryDomainId, GeometryDomainWitness,
+    GeometryFailureWitness, GeometryStartId,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -15,6 +16,7 @@ const LEGACY_MARGIN_DEG: f64 = -1.653_074_281_139_495_8;
 const MATERIAL_IMPROVEMENT_DEG: f64 = 0.25;
 const DEFAULT_TOPOLOGY_STATES: usize = 500;
 const DEFAULT_ELASTIC_ITERATIONS: usize = 64;
+const DEFAULT_W3_TOPOLOGY_STATES: usize = 150;
 const STARTS: [GeometryStartId; 6] = [
     GeometryStartId::MaterializedSource,
     GeometryStartId::HierarchySpringEquilibrium,
@@ -132,11 +134,110 @@ fn frozen_n6_pr58_pfw2_geometry_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR60 W3 geometry gate"]
+fn frozen_n6_pr60_w3_geometry_probe() {
+    let topology_states = usize_env("EARTHMESH_FULL_POLYGON_STATES", DEFAULT_W3_TOPOLOGY_STATES);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", DEFAULT_ELASTIC_ITERATIONS);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (plus_one, plus_two, incumbent_range) =
+        pr49_and_pr52_witnesses(&source, &component, &source_levels);
+    let mut problem =
+        build_face_band_problem_with_source_face_rings(&source, &component, 3, 2).unwrap();
+    for anchor in [2usize, 155] {
+        problem
+            .anchor_policies
+            .insert(anchor, AnchorBandPolicy::OnSingleInterface);
+    }
+    let FaceBandSolveOutcome::Closed(plan, _) = solve_exact_face_bands(
+        &problem,
+        FaceBandLimits {
+            maximum_states: 1_000_000,
+        },
+    ) else {
+        panic!("Frozen N6 W3 face-band plan must close")
+    };
+
+    let solve = |domain_id, witness: &GeometryFailureWitness| {
+        solve_full_polygon_merge_from_face_bands_with_geometry_witness(
+            &source,
+            &component,
+            &plan,
+            witness,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states,
+                elastic_iterations,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(&source_levels),
+            &STARTS,
+            domain_id,
+        )
+    };
+    let plus_one_outcome = solve(GeometryDomainId::PlusOneOrdinaryRing, &plus_one);
+    let plus_two_outcome = solve(GeometryDomainId::PlusTwoOrdinaryRings, &plus_two);
+    for outcome in [&plus_one_outcome, &plus_two_outcome] {
+        assert!(!matches!(
+            outcome,
+            FullPolygonMergeOutcome::InvalidInput { .. }
+        ));
+        assert!(outcome_evidence(outcome).geometry_candidates_attempted > 0);
+    }
+    let start_names = STARTS.map(GeometryStartId::as_str);
+    let plus_one_run = frozen_n6_geometry_evidence_json_with_solver_domain(
+        &plus_one_outcome,
+        earthmesh_refine_certified::mesh_fingerprint(&source.mesh),
+        topology_states,
+        elastic_iterations,
+        None,
+        ElasticTargetMode::HierarchyEdgeAreaDegree,
+        &start_names,
+        "ActiveTangentTrust",
+        GeometryDomainId::PlusOneOrdinaryRing,
+    );
+    let plus_two_run = frozen_n6_geometry_evidence_json_with_solver_domain(
+        &plus_two_outcome,
+        earthmesh_refine_certified::mesh_fingerprint(&source.mesh),
+        topology_states,
+        elastic_iterations,
+        None,
+        ElasticTargetMode::HierarchyEdgeAreaDegree,
+        &start_names,
+        "ActiveTangentTrust",
+        GeometryDomainId::PlusTwoOrdinaryRings,
+    );
+    let gate = if matches!(plus_one_outcome, FullPolygonMergeOutcome::Closed(_))
+        || matches!(plus_two_outcome, FullPolygonMergeOutcome::Closed(_))
+    {
+        "Certified"
+    } else {
+        "W3GeometryNotCertified"
+    };
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr60W3Geometry\",\"taskbook_sha256\":\"{TASKBOOK_SHA256}\",\"target_trace_scales\":\"H*2^(-k/3), k=0..3\",\"incumbent_angle_degrees\":[{:.12},{:.12}],\"gate\":\"{gate}\",\"plus_one\":{plus_one_run},\"plus_two\":{plus_two_run}}}",
+        incumbent_range.0, incumbent_range.1,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn pr52_incumbent(
     source: &earthmesh_refine_certified::MotherGrid,
     component: &earthmesh_refine_certified::coarsen::HierarchyComponent,
     source_levels: &[Option<usize>],
 ) -> (GeometryFailureWitness, (f64, f64)) {
+    let (_, plus_two, range) = pr49_and_pr52_witnesses(source, component, source_levels);
+    (plus_two, range)
+}
+
+fn pr49_and_pr52_witnesses(
+    source: &earthmesh_refine_certified::MotherGrid,
+    component: &earthmesh_refine_certified::coarsen::HierarchyComponent,
+    source_levels: &[Option<usize>],
+) -> (GeometryFailureWitness, GeometryFailureWitness, (f64, f64)) {
     let outcome =
         solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
             source,
@@ -159,6 +260,7 @@ fn pr52_incumbent(
         .witness
         .as_deref()
         .expect("PR52 reconstruction requires coordinates");
+    let plus_one = witness.clone();
     let inherited = GeometryDomainWitness::from_failure(
         earthmesh_refine_certified::mesh_fingerprint(&source.mesh),
         failure.topology_keys.clone(),
@@ -185,6 +287,7 @@ fn pr52_incumbent(
         panic!("PR52 continuation must complete")
     };
     (
+        plus_one,
         continuation.best_witness.as_ref().clone(),
         continuation.best_angle_range_deg,
     )

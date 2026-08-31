@@ -6,11 +6,14 @@
 
 use super::face_band::FaceBandPlan;
 use super::{
-    annulus::{parent_by_source_face, parent_graph, parent_layers_from_outside},
+    annulus::{
+        expand_coupled_annulus_to_face_complex, parent_by_source_face, parent_graph,
+        parent_layers_from_outside,
+    },
     extract_coupled_annulus, BoundaryIncidenceContract, CoupledAnnulus, HierarchyComponent,
     RingAnchorKind, RingCycle,
 };
-use crate::mother_grid::MotherGrid;
+use crate::mother_grid::{MotherGrid, VertexAddress};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -278,7 +281,7 @@ pub fn build_stratified_annulus_from_face_bands(
     component: &HierarchyComponent,
     plan: &FaceBandPlan,
 ) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
-    let coupled = extract_coupled_annulus(source, component)?;
+    let mut coupled = extract_coupled_annulus(source, component)?;
     if plan.band_count < 2 || plan.interface_edges.len() + 1 != plan.band_count {
         return Err(StratifiedAnnulusError::InvalidComponent(
             "face-band plan has inconsistent band/interface counts".into(),
@@ -289,7 +292,8 @@ pub fn build_stratified_annulus_from_face_bands(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    if plan.labels.keys().copied().collect::<BTreeSet<_>>() != annulus_faces
+    let plan_faces = plan.labels.keys().copied().collect::<BTreeSet<_>>();
+    if !annulus_faces.is_subset(&plan_faces)
         || plan
             .labels
             .values()
@@ -314,6 +318,9 @@ pub fn build_stratified_annulus_from_face_bands(
         return Err(StratifiedAnnulusError::InvalidComponent(
             "face-band plan evidence does not match its labels".into(),
         ));
+    }
+    if plan_faces != annulus_faces {
+        coupled = expand_coupled_annulus_to_face_complex(source, coupled, &plan_faces)?;
     }
 
     let mut traces = vec![directed_trace(
@@ -372,7 +379,8 @@ pub fn build_stratified_annulus_from_face_bands(
             "face-band plan contains a non-annular band".into(),
         ));
     }
-    let link_contracts = vertex_link_contracts(source, &coupled, &contracts)?;
+    let mut link_contracts = vertex_link_contracts(source, &coupled, &contracts)?;
+    add_internal_interface_anchor_contracts(source, &traces, &mut link_contracts);
     let sectors = face_band_sector_components(source, &traces)?;
     let mut probe = probe(
         &coupled,
@@ -392,6 +400,36 @@ pub fn build_stratified_annulus_from_face_bands(
         link_contracts,
         probe,
     })
+}
+
+fn add_internal_interface_anchor_contracts(
+    source: &MotherGrid,
+    traces: &[DirectedTrace],
+    contracts: &mut BTreeMap<usize, VertexLinkContract>,
+) {
+    for source_slot in traces
+        .iter()
+        .filter(|trace| trace.role == TraceRole::Intermediate)
+        .flat_map(|trace| {
+            trace
+                .occurrences
+                .iter()
+                .map(|occurrence| occurrence.source_slot)
+        })
+    {
+        let Some(VertexAddress::IcosahedronVertex(base_vertex)) = source.addresses[source_slot]
+        else {
+            continue;
+        };
+        contracts.entry(source_slot).or_insert(VertexLinkContract {
+            source_slot,
+            fixed_link_edges: BTreeSet::new(),
+            fixed_link_nodes: BTreeSet::new(),
+            target_degree_min: 5,
+            target_degree_max: 5,
+            anchor_kind: RingAnchorKind::IcosahedronPentagon { base_vertex },
+        });
+    }
 }
 
 fn expected_interface_edges(

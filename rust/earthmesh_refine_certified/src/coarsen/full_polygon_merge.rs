@@ -8,8 +8,9 @@ use super::full_polygon::{
     enumerate_stratified_full_polygon_families, FullPolygonFamily, FullPolygonTopologyKey,
 };
 use super::global_exact_merge::{
-    fixed_triangles, materialize, mesh_edges, replace_fixed_link_contracts, solve_ears, EarSolve,
-    GlobalExactMergeEvidence, GlobalExactMergeTrial, GlobalExactSelectedEar, MAX_EARS_PER_ANCHOR,
+    fixed_triangles_for_face_complex, materialize_for_face_complex, mesh_edges,
+    replace_fixed_link_contracts, solve_ears, EarSolve, GlobalExactMergeEvidence,
+    GlobalExactMergeTrial, GlobalExactSelectedEar, MAX_EARS_PER_ANCHOR,
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
@@ -362,7 +363,11 @@ fn solve_full_polygon_merge_inner(
             evidence,
         );
     }
-    let fixed = match fixed_triangles(source, component) {
+    let fixed = match fixed_triangles_for_face_complex(
+        source,
+        component,
+        &stratified.coupled.annulus_face_slots,
+    ) {
         Ok(v) => v,
         Err(err) => return invalid(err, evidence),
     };
@@ -982,7 +987,12 @@ impl Search<'_> {
                 if self.free_interface_cber.is_some() {
                     self.evidence.geometry_candidates_attempted += 1;
                 }
-                let mesh = match materialize(self.source, self.component, &triangles) {
+                let mesh = match materialize_for_face_complex(
+                    self.source,
+                    self.component,
+                    &self.stratified.coupled.annulus_face_slots,
+                    &triangles,
+                ) {
                     Ok(mesh) => mesh,
                     Err(reason) => return Step::Invalid(reason),
                 };
@@ -1264,7 +1274,7 @@ fn certify_free_interface_geometry(
         .is_some_and(|witness| witness.patch.domain_id != config.domain_id)
     {
         return FreeInterfaceStep::Invalid(
-            "inherited witness and PF-W2 target domains do not match".into(),
+            "inherited witness and face-band target domains do not match".into(),
         );
     }
     let patch_result = match config.face_band_plan {
@@ -1303,6 +1313,18 @@ fn certify_free_interface_geometry(
             Ok(patch) => patch,
             Err(reason) => return FreeInterfaceStep::Invalid(reason),
         };
+        if let Some(plan) = config.face_band_plan {
+            patch = match patch.with_face_band_trace_targets(
+                source,
+                &trial.global_trial.mesh,
+                component,
+                plan,
+                source_levels,
+            ) {
+                Ok(patch) => patch,
+                Err(reason) => return FreeInterfaceStep::Invalid(reason),
+            };
+        }
     }
     let mut initial_mesh = trial.global_trial.mesh.clone();
     if let Some(witness) = config.inherited_witness {

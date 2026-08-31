@@ -168,3 +168,29 @@ all vertex label spans are at most one and all four original anchors remain
 inside one band. No coarse-core sacrifice, fine cap, or corridor is used.
 PR59 establishes the W3 face-label plan only; topology and geometry remain the
 PR60 gate.
+
+## PR60 W3 anchor-policy escalation and topology closure
+
+The first F2 plan leaves anchors 2 and 155 strictly inside the fine-side band.
+The current full-polygon family triangulates trace-bounded polygons and cannot
+retain a strict-interior source vertex, so materializing that plan would remove
+both anchors. This is the registered failure condition for escalating from
+`InteriorOfSingleBand` to `OnSingleInterface`; it is not an angle relaxation.
+
+Re-solving F2 with anchors 2 and 155 on exactly one internal interface closes
+in 722766 states. The resulting bands contain `36/52/58` faces, the interfaces
+contain `20/28` edges, and the 56 topology sectors split `8/20/28` by band. The
+global exact merge closes in 70 states with V/E/F `341/1017/678`. All four
+affected original anchors have degree 5, ordinary degrees are `{5:25, 6:295,
+7:17}`, every edge has incidence two, every vertex link is one cycle, Euler is
+2, charge is 12, and the materialized mesh remains mixed-level.
+
+The bounded PR60 geometry gate examines 150 topology states and seven geometry
+candidates in each of the +1 and +2 coordinate domains, with 64 iterations and
+all six deterministic starts. The best +1 result is
+`0.016745201577--179.918785972103` degrees; the best +2 result is
+`0.051225122152--179.845918790626` degrees. Both stop in `Untangle`, so this W3
+family does not certify `40.2--79.8` degrees. Because failure is global rather
+than confined to otherwise-feasible anchor neighbourhoods, local W4 is not
+entered. This is a bounded solver result, not a proof that every continuous W3
+embedding is impossible.

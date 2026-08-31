@@ -3,7 +3,9 @@
 //! PR39 deliberately stops before materialising concrete triangulations: each
 //! sector is reduced to exact incidence signatures plus member counts.
 
-use super::global_exact_merge::{fixed_triangles, mesh_edges, MAX_EARS_PER_ANCHOR};
+use super::global_exact_merge::{
+    fixed_triangles_for_face_complex, mesh_edges, MAX_EARS_PER_ANCHOR,
+};
 use super::{
     build_stratified_annulus, GlobalExactMergeEvidence, HierarchyComponent, RingAnchorKind,
     StratifiedAnnulus, TraceRole,
@@ -80,7 +82,11 @@ pub fn analyze_stratified_full_polygon_degree_reachability(
     component: &HierarchyComponent,
     stratified: &StratifiedAnnulus,
 ) -> Result<FullPolygonReachabilityEvidence, String> {
-    let fixed = fixed_triangles(source, component)?;
+    let fixed = fixed_triangles_for_face_complex(
+        source,
+        component,
+        &stratified.coupled.annulus_face_slots,
+    )?;
     let fixed_degrees = triangle_incidence_counts(&fixed);
     let fixed_edges = mesh_edges(&fixed);
     let sectors = effective_sector_polygons(stratified)?;

@@ -96,6 +96,26 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
     custom_parents: &BTreeSet<TriangleAddress>,
     custom_triangles: &[[usize; 3]],
 ) -> Result<HierarchyLeafMesh, String> {
+    let mut custom_face_slots = BTreeSet::new();
+    for &parent in custom_parents {
+        for child in source_descendants(parent, source.subdivision)? {
+            custom_face_slots.insert(source_face_slot(source, child)?);
+        }
+    }
+    rebuild_from_leaf_set_with_custom_face_slots(
+        source,
+        leaf_set,
+        &custom_face_slots,
+        custom_triangles,
+    )
+}
+
+pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
+    source: &MotherGrid,
+    leaf_set: &HierarchyLeafSet,
+    custom_face_slots: &BTreeSet<usize>,
+    custom_triangles: &[[usize; 3]],
+) -> Result<HierarchyLeafMesh, String> {
     let source_n = source.subdivision;
     if source_n == 0 {
         return Err("source mother subdivision must be positive".into());
@@ -106,12 +126,12 @@ pub(super) fn rebuild_from_leaf_set_with_custom_triangles(
     let mut leaf_triangles = Vec::<[usize; 3]>::new();
     let mut leaf_addresses = Vec::<Option<TriangleAddress>>::new();
 
-    for &parent in custom_parents {
-        for child in source_descendants(parent, source_n)? {
-            let slot = source_face_slot(source, child)?;
-            if std::mem::replace(&mut covered[slot], true) {
-                return Err(format!("source face {slot} is covered more than once"));
-            }
+    for &slot in custom_face_slots {
+        if !source.mesh.is_triangle_live(slot) {
+            return Err(format!("custom source face {slot} is not active"));
+        }
+        if std::mem::replace(&mut covered[slot], true) {
+            return Err(format!("source face {slot} is covered more than once"));
         }
     }
 
