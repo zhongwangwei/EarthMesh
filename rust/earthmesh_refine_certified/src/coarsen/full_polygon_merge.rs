@@ -20,6 +20,7 @@ use super::{
     HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
+use earthmesh_mesh::CartesianPoint;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fmt::Write as _,
@@ -143,6 +144,38 @@ pub fn solve_full_polygon_merge_from_face_bands(
     solve_full_polygon_merge_inner(source, component, limits.topology_states, Some(plan), None)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn solve_full_polygon_merge_from_face_bands_with_geometry_witness(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+    inherited_witness: &GeometryFailureWitness,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&[Option<usize>]>,
+    starts: &[GeometryStartId],
+    domain_id: GeometryDomainId,
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(plan),
+        Some(FreeInterfaceCberConfig {
+            elastic_iterations: limits.elastic_iterations,
+            physical_fixed_sources,
+            target_mode,
+            source_levels,
+            starts,
+            solver_mode: GeometrySolverMode::ActiveTangentTrust,
+            domain_id,
+            face_band_plan: Some(plan),
+            inherited_witness: Some(inherited_witness),
+        }),
+    )
+}
+
 pub fn solve_full_polygon_merge_free_interface_cber(
     source: &MotherGrid,
     component: &HierarchyComponent,
@@ -180,6 +213,8 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
             starts: &[GeometryStartId::MaterializedSource],
             solver_mode: GeometrySolverMode::FiniteDifferenceElastic,
             domain_id: GeometryDomainId::CurrentAnnulus,
+            face_band_plan: None,
+            inherited_witness: None,
         }),
     )
 }
@@ -206,6 +241,8 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
             starts,
             solver_mode: GeometrySolverMode::MarginFiniteDifferenceLexicographic,
             domain_id: GeometryDomainId::CurrentAnnulus,
+            face_band_plan: None,
+            inherited_witness: None,
         }),
     )
 }
@@ -232,6 +269,8 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trus
             starts,
             solver_mode: GeometrySolverMode::ActiveTangentTrust,
             domain_id: GeometryDomainId::CurrentAnnulus,
+            face_band_plan: None,
+            inherited_witness: None,
         }),
     )
 }
@@ -260,6 +299,8 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_st
             starts,
             solver_mode: GeometrySolverMode::ActiveTangentTrust,
             domain_id,
+            face_band_plan: None,
+            inherited_witness: None,
         }),
     )
 }
@@ -326,11 +367,19 @@ fn solve_full_polygon_merge_inner(
         Err(err) => return invalid(err, evidence),
     };
     replace_fixed_link_contracts(&mut stratified, &fixed);
-    let mut families = match enumerate_stratified_full_polygon_families(source, &stratified, &fixed)
-    {
-        Ok(v) => v,
-        Err(err) => return invalid(err, evidence),
+    let ordering_source = match free_interface_cber.and_then(|config| config.inherited_witness) {
+        Some(witness) => match mother_with_witness_positions(source, witness) {
+            Ok(value) => Some(value),
+            Err(reason) => return invalid(reason, evidence),
+        },
+        None => None,
     };
+    let family_source = ordering_source.as_ref().unwrap_or(source);
+    let mut families =
+        match enumerate_stratified_full_polygon_families(family_source, &stratified, &fixed) {
+            Ok(v) => v,
+            Err(err) => return invalid(err, evidence),
+        };
     evidence.sector_family_counts = families.iter().map(|f| f.topology_count).collect();
     evidence.best_global_evidence.sector_variant_counts = evidence.sector_family_counts.clone();
     if families.is_empty() || families.iter().any(|f| f.topologies.is_empty()) {
@@ -450,6 +499,8 @@ struct FreeInterfaceCberConfig<'a> {
     starts: &'a [GeometryStartId],
     solver_mode: GeometrySolverMode,
     domain_id: GeometryDomainId,
+    face_band_plan: Option<&'a FaceBandPlan>,
+    inherited_witness: Option<&'a GeometryFailureWitness>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1139,19 +1190,101 @@ fn record_start_failure(
     }
 }
 
+fn mother_with_witness_positions(
+    source: &MotherGrid,
+    witness: &GeometryFailureWitness,
+) -> Result<MotherGrid, String> {
+    let positions = witness_source_positions(witness)?;
+    let mut transferred = source.clone();
+    for (source_slot, point) in positions {
+        if source_slot >= source.addresses.len() {
+            return Err(format!(
+                "inherited witness has invalid source slot {source_slot}"
+            ));
+        }
+        if transferred.mesh.is_vertex_live(source_slot) {
+            transferred.mesh.move_vertex(source_slot, point);
+        }
+    }
+    Ok(transferred)
+}
+
+fn witness_source_positions(
+    witness: &GeometryFailureWitness,
+) -> Result<BTreeMap<usize, CartesianPoint>, String> {
+    if witness.mesh.source_vertex_slots.len() != witness.mesh.mesh.vertices().len() {
+        return Err("inherited witness source-slot map does not match its mesh".into());
+    }
+    let mut positions = BTreeMap::new();
+    for (compact, source_slot) in witness.mesh.source_vertex_slots.iter().copied().enumerate() {
+        let Some(source_slot) = source_slot else {
+            continue;
+        };
+        if positions
+            .insert(source_slot, witness.mesh.mesh.vertices()[compact])
+            .is_some()
+        {
+            return Err(format!(
+                "inherited witness has duplicate source slot {source_slot}"
+            ));
+        }
+    }
+    Ok(positions)
+}
+
+fn transfer_witness_positions(
+    target: &mut super::HierarchyLeafMesh,
+    witness: &GeometryFailureWitness,
+) -> Result<(usize, usize), String> {
+    if target.source_vertex_slots.len() != target.mesh.vertices().len() {
+        return Err("topology-transfer target source-slot map does not match its mesh".into());
+    }
+    let positions = witness_source_positions(witness)?;
+    let mut common = 0;
+    let mut fallback = 0;
+    for (compact, source_slot) in target.source_vertex_slots.iter().copied().enumerate() {
+        if let Some(point) = source_slot.and_then(|slot| positions.get(&slot).copied()) {
+            target.mesh.move_vertex(compact, point);
+            common += 1;
+        } else {
+            fallback += 1;
+        }
+    }
+    Ok((common, fallback))
+}
+
 fn certify_free_interface_geometry(
     source: &MotherGrid,
     component: &HierarchyComponent,
     mut trial: FullPolygonMergeTrial,
     config: FreeInterfaceCberConfig<'_>,
 ) -> FreeInterfaceStep {
-    let mut patch = match ElasticPatch::from_full_polygon_merge_with_domain(
-        source,
-        component,
-        &trial,
-        config.physical_fixed_sources,
-        config.domain_id,
-    ) {
+    if config
+        .inherited_witness
+        .is_some_and(|witness| witness.patch.domain_id != config.domain_id)
+    {
+        return FreeInterfaceStep::Invalid(
+            "inherited witness and PF-W2 target domains do not match".into(),
+        );
+    }
+    let patch_result = match config.face_band_plan {
+        Some(plan) => ElasticPatch::from_face_band_full_polygon_merge_with_domain(
+            source,
+            component,
+            plan,
+            &trial,
+            config.physical_fixed_sources,
+            config.domain_id,
+        ),
+        None => ElasticPatch::from_full_polygon_merge_with_domain(
+            source,
+            component,
+            &trial,
+            config.physical_fixed_sources,
+            config.domain_id,
+        ),
+    };
+    let mut patch = match patch_result {
         Ok(patch) => patch,
         Err(reason) => return FreeInterfaceStep::Invalid(reason),
     };
@@ -1171,6 +1304,12 @@ fn certify_free_interface_geometry(
             Err(reason) => return FreeInterfaceStep::Invalid(reason),
         };
     }
+    let mut initial_mesh = trial.global_trial.mesh.clone();
+    if let Some(witness) = config.inherited_witness {
+        if let Err(reason) = transfer_witness_positions(&mut initial_mesh, witness) {
+            return FreeInterfaceStep::Invalid(reason);
+        }
+    }
     let input_triangles = trial.global_trial.mesh.mesh.triangles().to_vec();
     let input_neighbours = trial.global_trial.mesh.mesh.neighbours().to_vec();
     let mut best_failure = None::<(bool, FullPolygonGeometryFailureEvidence)>;
@@ -1179,22 +1318,19 @@ fn certify_free_interface_geometry(
             elastic_iterations: config.elastic_iterations,
         };
         let outcome = match config.solver_mode {
-            GeometrySolverMode::FiniteDifferenceElastic => solve_elastic_patch_with_start(
-                &trial.global_trial.mesh,
-                patch.clone(),
-                limits,
-                start_id,
-            ),
+            GeometrySolverMode::FiniteDifferenceElastic => {
+                solve_elastic_patch_with_start(&initial_mesh, patch.clone(), limits, start_id)
+            }
             GeometrySolverMode::MarginFiniteDifferenceLexicographic => {
                 solve_elastic_patch_with_margin_start(
-                    &trial.global_trial.mesh,
+                    &initial_mesh,
                     patch.clone(),
                     limits,
                     start_id,
                 )
             }
             GeometrySolverMode::ActiveTangentTrust => solve_elastic_patch_with_active_trust_start(
-                &trial.global_trial.mesh,
+                &initial_mesh,
                 patch.clone(),
                 limits,
                 start_id,
@@ -1713,6 +1849,7 @@ fn sorted(a: usize, b: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coarsen::{HierarchyLeafMesh, TransitionTopologyCandidate};
 
     #[test]
     fn partial_degree_upper_bound_prunes() {
@@ -1785,5 +1922,58 @@ mod tests {
             vec![(1, 0)]
         );
         assert!(compatible_edge_providers((30, 40), &providers, &selected, &compatible).is_empty());
+    }
+
+    #[test]
+    fn pf_w2_geometry_keeps_incumbent() {
+        let source = MotherGrid::generate(1).unwrap();
+        let mut inherited = HierarchyLeafMesh {
+            mesh: source.mesh.clone(),
+            triangle_addresses: source.triangle_addresses.clone(),
+            source_vertex_slots: (0..source.mesh.vertices().len()).map(Some).collect(),
+        };
+        let inherited_point = source.mesh.vertices()[3];
+        inherited.mesh.move_vertex(2, inherited_point);
+        let witness = GeometryFailureWitness {
+            patch: empty_patch(&inherited),
+            mesh: inherited,
+        };
+        let mut target = witness.mesh.clone();
+        target.source_vertex_slots[2] = Some(2);
+        target.source_vertex_slots[3] = None;
+        let fallback = target.mesh.vertices()[3];
+
+        let (common, fallback_count) = transfer_witness_positions(&mut target, &witness).unwrap();
+        assert_eq!(
+            (common, fallback_count),
+            (target.mesh.vertices().len() - 1, 1)
+        );
+        assert_eq!(target.mesh.vertices()[2], inherited_point);
+        assert_eq!(target.mesh.vertices()[3], fallback);
+
+        let mut duplicate = witness;
+        duplicate.mesh.source_vertex_slots[3] = Some(2);
+        assert!(witness_source_positions(&duplicate).is_err());
+    }
+
+    fn empty_patch(mesh: &HierarchyLeafMesh) -> ElasticPatch {
+        ElasticPatch {
+            domain_id: GeometryDomainId::PlusTwoOrdinaryRings,
+            topology: TransitionTopologyCandidate {
+                component_id: 0,
+                topology_id: 0,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: Vec::new(),
+                source_active_vertices: Vec::new(),
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: mesh.mesh.vertices().to_vec(),
+            fixed_compact_vertices: Vec::new(),
+            movable_compact_vertices: Vec::new(),
+            guard_faces: Vec::new(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: Default::default(),
+        }
     }
 }

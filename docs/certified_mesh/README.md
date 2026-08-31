@@ -220,3 +220,10 @@ with the platform harness rather than inventing a portable value.
 See the [CMRC-EBC mathematical contract](cmrc_ebc_mathematical_contract.md),
 [proof-obligations.md](proof-obligations.md), [baseline.md](baseline.md), and
 [the real IGBP NXP80 safe-mother acceptance](igbp-nxp80-safe-mother.md).
+PR58 transfers the PR52 +2 witness onto exact PF-W2 candidates (333 inherited
+source vertices, 10 safe fallbacks) and runs the deterministic six-start active
+trust gate over 500 topology states. The best PF-W2 result is
+37.462020125507--83.823954752680 degrees (margin -4.023954752680), worse than
+the retained 38.551143486745--81.453074281139-degree incumbent. PF-W2 therefore
+returns `NoImprovementEnterW3`; this bounded continuous result is not a PF-W2
+no-go proof, and the strict 40.2--79.8 internal gate remains blocked.

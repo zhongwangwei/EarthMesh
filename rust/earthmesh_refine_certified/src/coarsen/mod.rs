@@ -84,7 +84,8 @@ pub use full_polygon_merge::{
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts,
-    solve_full_polygon_merge_from_face_bands, FullPolygonCberLimits,
+    solve_full_polygon_merge_from_face_bands,
+    solve_full_polygon_merge_from_face_bands_with_geometry_witness, FullPolygonCberLimits,
     FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };

@@ -127,3 +127,22 @@ remains mixed-level, and both vertex and face counts are reduced. This closes
 the PF-W2 combinatorial topology gate only. Coordinates are unchanged, so the
 best known angle range remains `38.551143486745–81.453074281139°`; PR58 must
 transfer that witness and run the strict geometry gate.
+
+## Frozen N6 PF-W2 geometry continuation
+
+PR58 transfers the PR52 `PlusTwoOrdinaryRings` witness by source-vertex identity
+onto every exact PF-W2 topology candidate. In the frozen run, 333 vertices
+inherit their incumbent coordinates and 10 vertices retain safe materialized
+coordinates. Original anchors and the rebuilt PF-W2 guard closure remain fixed.
+Topology ordering uses the inherited coordinates, but exact-family membership
+is unchanged.
+
+The deterministic 500-topology-state, 64-iteration active-tangent-trust run
+uses all six registered starts. It closes 447 topology candidates and starts
+geometry on 182 of them. Its best PF-W2 range is
+`37.462020125507–83.823954752680°` (signed margin `-4.023954752680°`) from
+`HierarchySpringEquilibrium`. This is worse than the retained PR52 incumbent
+`38.551143486745–81.453074281139°` (margin `-1.653074281139°`), so the
+incumbent is not replaced. The strict `40.2–79.8°` gate remains unmet and the
+pre-registered result is `NoImprovementEnterW3`, not a PF-W2 impossibility
+proof.
