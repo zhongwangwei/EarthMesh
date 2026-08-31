@@ -31,6 +31,43 @@ pub enum ElasticTargetMode {
     HierarchyEdgeAreaDegree,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GeometryStartId {
+    MaterializedSource,
+    HierarchySpringEquilibrium,
+    RingScaleInterpolation,
+    DegreeAngleEquilibrium,
+    SignedNormalPlus,
+    SignedNormalMinus,
+}
+
+impl GeometryStartId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MaterializedSource => "MaterializedSource",
+            Self::HierarchySpringEquilibrium => "HierarchySpringEquilibrium",
+            Self::RingScaleInterpolation => "RingScaleInterpolation",
+            Self::DegreeAngleEquilibrium => "DegreeAngleEquilibrium",
+            Self::SignedNormalPlus => "SignedNormalPlus",
+            Self::SignedNormalMinus => "SignedNormalMinus",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AngleConstraintKey {
+    pub face: usize,
+    pub corner: usize,
+    pub angle_deg: f64,
+    pub signed_margin_deg: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AngleMarginObjective {
+    pub signed_margin_deg: f64,
+    pub worst_constraints: Vec<AngleConstraintKey>,
+}
+
 impl ElasticTargetMode {
     fn uses_hierarchy_edges(self) -> bool {
         !matches!(self, Self::TrialReference)
@@ -663,11 +700,48 @@ pub fn solve_elastic_patch(
     patch: ElasticPatch,
     limits: ElasticBlockLimits,
 ) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        GeometryStartId::MaterializedSource,
+        false,
+    )
+}
+
+pub fn solve_elastic_patch_with_start(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(source, patch, limits, start_id, false)
+}
+
+pub fn solve_elastic_patch_with_margin_start(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(source, patch, limits, start_id, true)
+}
+
+fn solve_elastic_patch_impl(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+    use_margin_objective: bool,
+) -> ElasticBlockOutcome {
     if let Err(reason) = validate_patch(source, &patch) {
         return ElasticBlockOutcome::InvalidPatch { reason };
     }
     let certificate = Certificate::internal();
     let mut current = source.clone();
+    if let Err(reason) = apply_geometry_start(&mut current.mesh, &patch, start_id) {
+        return ElasticBlockOutcome::InvalidPatch { reason };
+    }
     let input_positions = source.mesh.vertices().to_vec();
     if let Ok(geometry) = certificate.verify_geometry(&current.mesh) {
         return certified(current, patch, geometry, 0, 0.0, 0.0, &input_positions);
@@ -742,7 +816,11 @@ pub fn solve_elastic_patch(
         };
         energy = phase_energy;
         let Some(gradient) =
-            finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
+            (if use_margin_objective && matches!(phase, ElasticBlockPhase::AngleFeasibility) {
+                finite_difference_angle_margin_gradient(&mut current.mesh, &patch, initial_step)
+            } else {
+                finite_difference_gradient(&mut current.mesh, &patch, phase, initial_step, &context)
+            })
         else {
             return no_step(&current.mesh, iteration, energy);
         };
@@ -774,14 +852,30 @@ pub fn solve_elastic_patch(
                 current.mesh.move_vertex(site, point);
             }
             let candidate_energy = elastic_energy(&current.mesh, &patch, phase, &context);
-            if candidate_energy.is_some_and(|candidate_energy| {
-                if matches!(phase, ElasticBlockPhase::Untangle) {
+            if let Some(candidate_energy) = candidate_energy {
+                let movement_norm = updates
+                    .iter()
+                    .map(|&(_, before, after)| arc_length_unit_sphere(before, after).abs())
+                    .sum::<f64>();
+                let accepted = if matches!(phase, ElasticBlockPhase::Untangle) {
                     candidate_energy.is_finite() && candidate_energy < phase_energy
+                } else if use_margin_objective
+                    && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+                {
+                    angle_phase_step_is_better(
+                        mesh_before_updates(&current.mesh, &updates),
+                        &current.mesh,
+                        &patch,
+                        &context,
+                        &guard_faces,
+                        movement_norm,
+                    )
                 } else {
                     candidate_energy < phase_energy - 1.0e-12 * phase_energy.abs().max(1.0)
+                };
+                if accepted {
+                    break Some(candidate_energy);
                 }
-            }) {
-                break candidate_energy;
             }
             for &(site, point, _) in &updates {
                 current.mesh.move_vertex(site, point);
@@ -822,6 +916,568 @@ pub fn solve_elastic_patch(
         global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
         guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
     }
+}
+
+fn apply_geometry_start(
+    mesh: &mut MeshState,
+    patch: &ElasticPatch,
+    start_id: GeometryStartId,
+) -> Result<(), String> {
+    match start_id {
+        GeometryStartId::MaterializedSource => Ok(()),
+        GeometryStartId::HierarchySpringEquilibrium => hierarchy_spring_start(mesh, patch),
+        GeometryStartId::RingScaleInterpolation => ring_scale_start(mesh, patch),
+        GeometryStartId::DegreeAngleEquilibrium => degree_angle_start(mesh, patch),
+        GeometryStartId::SignedNormalPlus => signed_normal_start(mesh, patch, 1.0),
+        GeometryStartId::SignedNormalMinus => signed_normal_start(mesh, patch, -1.0),
+    }
+}
+
+fn hierarchy_spring_start(mesh: &mut MeshState, patch: &ElasticPatch) -> Result<(), String> {
+    for _ in 0..8 {
+        let mut updates = Vec::new();
+        for &site in &patch.movable_compact_vertices {
+            let Some([first, second]) = tangent_basis(mesh.vertices()[site]) else {
+                continue;
+            };
+            let mut force = CartesianPoint::new(0.0, 0.0, 0.0);
+            for &(left, right) in patch.target_field.target_edge_lengths.keys() {
+                let other = if left == site {
+                    right
+                } else if right == site {
+                    left
+                } else {
+                    continue;
+                };
+                let current = arc_length_unit_sphere(mesh.vertices()[site], mesh.vertices()[other]);
+                let target = patch.target_field.target_edge_lengths[&(left, right)];
+                if current <= 0.0 || target <= 0.0 || !current.is_finite() || !target.is_finite() {
+                    continue;
+                }
+                let direction = tangent_log(mesh.vertices()[site], mesh.vertices()[other])?;
+                force = add_points(force, scale_point(direction, 1.0 - target / current));
+            }
+            let tangent = add_points(
+                scale_point(first, dot(force, first)),
+                scale_point(second, dot(force, second)),
+            );
+            updates.push((
+                site,
+                exponential_map(mesh.vertices()[site], scale_point(tangent, 0.08)),
+            ));
+        }
+        for (site, point) in updates {
+            if let Some(point) = point {
+                mesh.move_vertex(site, point);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ring_scale_start(mesh: &mut MeshState, patch: &ElasticPatch) -> Result<(), String> {
+    let fixed = patch
+        .fixed_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let guard_edges = guard_edges_for_faces(mesh, &patch.guard_faces);
+    let fixed_scales = fixed
+        .iter()
+        .filter_map(|site| {
+            patch
+                .target_field
+                .target_vertex_scales
+                .get(site)
+                .copied()
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .map(|scale| (*site, scale))
+        })
+        .collect::<Vec<_>>();
+    if fixed_scales.len() < 2 {
+        return Ok(());
+    }
+    let fine_scale = fixed_scales
+        .iter()
+        .map(|(_, scale)| *scale)
+        .min_by(f64::total_cmp)
+        .unwrap();
+    let coarse_scale = fixed_scales
+        .iter()
+        .map(|(_, scale)| *scale)
+        .max_by(f64::total_cmp)
+        .unwrap();
+    if fine_scale == coarse_scale {
+        return Ok(());
+    }
+    let fine_fixed = fixed_scales
+        .iter()
+        .filter_map(|&(site, scale)| (scale == fine_scale).then_some(site))
+        .collect::<BTreeSet<_>>();
+    let coarse_fixed = fixed_scales
+        .iter()
+        .filter_map(|&(site, scale)| (scale == coarse_scale).then_some(site))
+        .collect::<BTreeSet<_>>();
+    let fine_dist = graph_distances(&guard_edges, &fine_fixed);
+    let coarse_dist = graph_distances(&guard_edges, &coarse_fixed);
+    let mut updates = Vec::new();
+    for &site in &patch.movable_compact_vertices {
+        let Some(&to_coarse) = coarse_dist.get(&site) else {
+            continue;
+        };
+        let Some(&to_fine) = fine_dist.get(&site) else {
+            continue;
+        };
+        let denominator = to_coarse + to_fine;
+        if denominator == 0 {
+            continue;
+        }
+        let s = to_coarse as f64 / denominator as f64;
+        let target_scale = ((1.0 - s) * coarse_scale.ln() + s * fine_scale.ln()).exp();
+        let coarse_endpoint = nearest_fixed_endpoint(site, &coarse_fixed, mesh)
+            .ok_or("missing coarse ring endpoint")?;
+        let fine_endpoint =
+            nearest_fixed_endpoint(site, &fine_fixed, mesh).ok_or("missing fine ring endpoint")?;
+        let interpolated = spherical_lerp(
+            mesh.vertices()[coarse_endpoint],
+            mesh.vertices()[fine_endpoint],
+            s,
+        )
+        .ok_or("invalid ring interpolation endpoint")?;
+        let current_scale = patch
+            .target_field
+            .target_vertex_scales
+            .get(&site)
+            .copied()
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+            .unwrap_or(target_scale);
+        let blend = (target_scale / current_scale).ln().abs().clamp(0.05, 0.35);
+        let next = spherical_lerp(mesh.vertices()[site], interpolated, blend)
+            .ok_or("invalid ring interpolation update")?;
+        updates.push((site, next));
+    }
+    for (site, point) in updates {
+        mesh.move_vertex(site, point);
+    }
+    Ok(())
+}
+
+fn graph_distances(edges: &[(usize, usize)], seeds: &BTreeSet<usize>) -> BTreeMap<usize, usize> {
+    let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
+    for &(left, right) in edges {
+        adjacency.entry(left).or_default().push(right);
+        adjacency.entry(right).or_default().push(left);
+    }
+    let mut distances = BTreeMap::new();
+    let mut frontier = seeds.iter().copied().collect::<Vec<_>>();
+    for seed in &frontier {
+        distances.insert(*seed, 0usize);
+    }
+    let mut index = 0;
+    while index < frontier.len() {
+        let site = frontier[index];
+        index += 1;
+        let distance = distances[&site];
+        if let Some(neighbours) = adjacency.get(&site) {
+            for &next in neighbours {
+                if let std::collections::btree_map::Entry::Vacant(entry) = distances.entry(next) {
+                    entry.insert(distance + 1);
+                    frontier.push(next);
+                }
+            }
+        }
+    }
+    distances
+}
+
+fn nearest_fixed_endpoint(
+    site: usize,
+    candidates: &BTreeSet<usize>,
+    mesh: &MeshState,
+) -> Option<usize> {
+    candidates.iter().copied().min_by(|&left, &right| {
+        arc_length_unit_sphere(mesh.vertices()[site], mesh.vertices()[left])
+            .total_cmp(&arc_length_unit_sphere(
+                mesh.vertices()[site],
+                mesh.vertices()[right],
+            ))
+            .then_with(|| left.cmp(&right))
+    })
+}
+
+fn spherical_lerp(left: CartesianPoint, right: CartesianPoint, t: f64) -> Option<CartesianPoint> {
+    let left = normalized_point(left)?;
+    let right = normalized_point(right)?;
+    let omega = dot(left, right).clamp(-1.0, 1.0).acos();
+    if omega.abs() < 1.0e-14 {
+        return Some(left);
+    }
+    let sin_omega = omega.sin();
+    if sin_omega.abs() < 1.0e-14 {
+        return normalized_point(add_points(
+            scale_point(left, 1.0 - t),
+            scale_point(right, t),
+        ));
+    }
+    normalized_point(add_points(
+        scale_point(left, ((1.0 - t) * omega).sin() / sin_omega),
+        scale_point(right, (t * omega).sin() / sin_omega),
+    ))
+}
+
+fn degree_angle_start(mesh: &mut MeshState, patch: &ElasticPatch) -> Result<(), String> {
+    for _ in 0..4 {
+        let Some(gradient) = finite_difference_degree_angle_gradient(mesh, patch, 0.02) else {
+            break;
+        };
+        let maximum_norm = gradient
+            .iter()
+            .map(|(_, vector)| magnitude(*vector))
+            .max_by(f64::total_cmp)
+            .unwrap_or(0.0);
+        if maximum_norm <= 1.0e-14 || !maximum_norm.is_finite() {
+            break;
+        }
+        let Some(updates) = synchronous_updates(mesh, &gradient, -0.02 / maximum_norm) else {
+            break;
+        };
+        for (site, _, point) in updates {
+            mesh.move_vertex(site, point);
+        }
+    }
+    Ok(())
+}
+
+fn finite_difference_degree_angle_gradient(
+    mesh: &mut MeshState,
+    patch: &ElasticPatch,
+    initial_step: f64,
+) -> Option<Vec<(usize, CartesianPoint)>> {
+    let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
+    for &site in &patch.movable_compact_vertices {
+        let point = mesh.vertices()[site];
+        let [first, second] = tangent_basis(point)?;
+        let base_loss = degree_angle_loss(mesh, patch)?;
+        let mut derivative = |direction: CartesianPoint| {
+            let plus = exponential_map(point, scale_point(direction, epsilon))?;
+            let minus = exponential_map(point, scale_point(direction, -epsilon))?;
+            mesh.move_vertex(site, plus);
+            let plus_loss = degree_angle_loss(mesh, patch);
+            mesh.move_vertex(site, minus);
+            let minus_loss = degree_angle_loss(mesh, patch);
+            mesh.move_vertex(site, point);
+            match (plus_loss, minus_loss) {
+                (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
+                (Some(plus), None) => Some((plus - base_loss) / epsilon),
+                (None, Some(minus)) => Some((base_loss - minus) / epsilon),
+                (None, None) => None,
+            }
+        };
+        let d_first = derivative(first)?;
+        let d_second = derivative(second)?;
+        gradient.push((
+            site,
+            add_points(scale_point(first, d_first), scale_point(second, d_second)),
+        ));
+    }
+    Some(gradient)
+}
+
+fn degree_angle_loss(mesh: &MeshState, patch: &ElasticPatch) -> Option<f64> {
+    let degrees = vertex_degrees(mesh);
+    let mut loss = 0.0;
+    let mut count = 0usize;
+    for &face in &patch.guard_faces {
+        let triangle = mesh.triangles()[face];
+        let determinant = dot(
+            mesh.vertices()[triangle[0]],
+            cross(mesh.vertices()[triangle[1]], mesh.vertices()[triangle[2]]),
+        );
+        if determinant.is_finite() {
+            loss += 1000.0 * (-determinant).max(0.0).powi(2);
+        }
+        for corner in 0..3 {
+            let site = triangle[corner];
+            let angle = corner_angle_degrees(mesh, triangle, corner)?;
+            let target = patch
+                .target_field
+                .target_angles
+                .get(&site)
+                .copied()
+                .unwrap_or_else(|| std::f64::consts::TAU / degrees[site] as f64)
+                .to_degrees();
+            loss += (angle - target).powi(2);
+            count += 1;
+        }
+    }
+    (count > 0 && loss.is_finite()).then_some(loss)
+}
+
+fn corner_angle_degrees(mesh: &MeshState, triangle: [usize; 3], corner: usize) -> Option<f64> {
+    let center = normalized_point(mesh.vertices()[triangle[corner]])?;
+    let left = normalized_point(mesh.vertices()[triangle[(corner + 1) % 3]])?;
+    let right = normalized_point(mesh.vertices()[triangle[(corner + 2) % 3]])?;
+    let left_tangent = normalized_point(subtract_points(
+        left,
+        scale_point(center, dot(center, left)),
+    ))?;
+    let right_tangent = normalized_point(subtract_points(
+        right,
+        scale_point(center, dot(center, right)),
+    ))?;
+    Some(
+        dot(left_tangent, right_tangent)
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees(),
+    )
+}
+
+fn signed_normal_start(
+    mesh: &mut MeshState,
+    patch: &ElasticPatch,
+    sign: f64,
+) -> Result<(), String> {
+    let mut updates = Vec::new();
+    for &site in &patch.movable_compact_vertices {
+        let mut normal = CartesianPoint::new(0.0, 0.0, 0.0);
+        for &face in &patch.guard_faces {
+            let triangle = mesh.triangles()[face];
+            if !triangle.contains(&site) {
+                continue;
+            }
+            let [a, b, c] = triangle.map(|v| mesh.vertices()[v]);
+            normal = add_points(normal, cross(subtract_points(b, a), subtract_points(c, a)));
+        }
+        let radial = normalized_point(mesh.vertices()[site]).ok_or("invalid start vertex")?;
+        let tangent = subtract_points(normal, scale_point(radial, dot(radial, normal)));
+        updates.push((
+            site,
+            exponential_map(mesh.vertices()[site], scale_point(tangent, 0.02 * sign)),
+        ));
+    }
+    for (site, point) in updates {
+        if let Some(point) = point {
+            mesh.move_vertex(site, point);
+        }
+    }
+    Ok(())
+}
+
+fn tangent_log(from: CartesianPoint, to: CartesianPoint) -> Result<CartesianPoint, String> {
+    let from = normalized_point(from).ok_or("invalid tangent-log source")?;
+    let to = normalized_point(to).ok_or("invalid tangent-log target")?;
+    let cosine = dot(from, to).clamp(-1.0, 1.0);
+    let angle = cosine.acos();
+    if angle == 0.0 {
+        return Ok(CartesianPoint::new(0.0, 0.0, 0.0));
+    }
+    let tangent = subtract_points(to, scale_point(from, cosine));
+    let unit = normalized_point(tangent).ok_or("invalid tangent-log direction")?;
+    Ok(scale_point(unit, angle))
+}
+
+fn guard_edges_for_faces(mesh: &MeshState, guard_faces: &[usize]) -> Vec<(usize, usize)> {
+    let mut edges = BTreeSet::new();
+    for &face in guard_faces {
+        for edge in local_triangle_edges(mesh.triangles()[face]) {
+            edges.insert(edge);
+        }
+    }
+    edges.into_iter().collect()
+}
+
+fn mesh_before_updates(
+    mesh: &MeshState,
+    updates: &[(usize, CartesianPoint, CartesianPoint)],
+) -> MeshState {
+    let mut before = mesh.clone();
+    for &(site, point, _) in updates {
+        before.move_vertex(site, point);
+    }
+    before
+}
+
+fn angle_phase_step_is_better(
+    before: MeshState,
+    after: &MeshState,
+    patch: &ElasticPatch,
+    context: &EnergyContext,
+    guard_faces: &BTreeSet<usize>,
+    movement_norm: f64,
+) -> bool {
+    let guard_edges = &context.guard_edges;
+    let before_key = angle_acceptance_key(&before, patch, context, guard_faces, guard_edges, 0.0);
+    let after_key = angle_acceptance_key(
+        after,
+        patch,
+        context,
+        guard_faces,
+        guard_edges,
+        movement_norm,
+    );
+    match (before_key, after_key) {
+        (Some(before), Some(after)) => after.is_better_than(&before),
+        _ => false,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AngleAcceptanceKey {
+    negative_orientation_count: usize,
+    crossing_count: usize,
+    signed_margin_deg: f64,
+    sum_worst_k_violation: f64,
+    delaunay_violations: usize,
+    invalid_voronoi_cells: usize,
+    movement_norm: f64,
+}
+
+impl AngleAcceptanceKey {
+    fn is_better_than(&self, other: &Self) -> bool {
+        if self.negative_orientation_count != other.negative_orientation_count {
+            return self.negative_orientation_count < other.negative_orientation_count;
+        }
+        if self.crossing_count != other.crossing_count {
+            return self.crossing_count < other.crossing_count;
+        }
+        if self.signed_margin_deg + 1.0e-12 < other.signed_margin_deg {
+            return false;
+        }
+        if self.signed_margin_deg > other.signed_margin_deg + 1.0e-12 {
+            return true;
+        }
+        if self
+            .sum_worst_k_violation
+            .total_cmp(&other.sum_worst_k_violation)
+            != std::cmp::Ordering::Equal
+        {
+            return self.sum_worst_k_violation < other.sum_worst_k_violation;
+        }
+        if self.delaunay_violations != other.delaunay_violations {
+            return self.delaunay_violations < other.delaunay_violations;
+        }
+        if self.invalid_voronoi_cells != other.invalid_voronoi_cells {
+            return self.invalid_voronoi_cells < other.invalid_voronoi_cells;
+        }
+        self.movement_norm < other.movement_norm
+    }
+}
+
+fn angle_acceptance_key(
+    mesh: &MeshState,
+    _patch: &ElasticPatch,
+    context: &EnergyContext,
+    _guard_faces: &BTreeSet<usize>,
+    guard_edges: &[(usize, usize)],
+    movement_norm: f64,
+) -> Option<AngleAcceptanceKey> {
+    let objective = angle_margin_objective(mesh, mesh.active_triangle_slots())?;
+    let negative_orientation_count = mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            let [a, b, c] = mesh.triangles()[face].map(|site| mesh.vertices()[site]);
+            dot(a, cross(b, c)) <= 0.0
+        })
+        .count();
+    let mut crossing_count = 0;
+    for (i, &(a, b)) in guard_edges.iter().enumerate() {
+        for &(c, d) in &guard_edges[i + 1..] {
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            if minor_arc_crossing_strength(
+                mesh.vertices()[a],
+                mesh.vertices()[b],
+                mesh.vertices()[c],
+                mesh.vertices()[d],
+            ) > 1.0e-14
+            {
+                crossing_count += 1;
+            }
+        }
+    }
+    let sum_worst_k_violation = objective
+        .worst_constraints
+        .iter()
+        .map(|constraint| (-constraint.signed_margin_deg).max(0.0))
+        .sum();
+    Some(AngleAcceptanceKey {
+        negative_orientation_count,
+        crossing_count,
+        signed_margin_deg: objective.signed_margin_deg,
+        sum_worst_k_violation,
+        delaunay_violations: delaunay_violation_count(mesh, &context.dual_pairs),
+        invalid_voronoi_cells: invalid_voronoi_count(mesh, &context.guard_seeds),
+        movement_norm,
+    })
+}
+
+fn delaunay_violation_count(mesh: &MeshState, dual_pairs: &[DualPair]) -> usize {
+    dual_pairs
+        .iter()
+        .filter(|pair| {
+            let triangle = mesh.triangles()[pair.face];
+            let points = triangle.map(|site| normalized_point(mesh.vertices()[site]));
+            let [Some(a), Some(b), Some(c)] = points else {
+                return true;
+            };
+            let Some(d) = normalized_point(mesh.vertices()[pair.opposite]) else {
+                return true;
+            };
+            matches!(in_circle_on_sphere(a, b, c, d), Ok(Sign::Positive) | Err(_))
+        })
+        .count()
+}
+
+fn invalid_voronoi_count(mesh: &MeshState, guard_seeds: &[(usize, usize)]) -> usize {
+    guard_seeds
+        .iter()
+        .filter(|&&(site, seed)| {
+            mesh.voronoi_cell_from(site, seed)
+                .ok()
+                .is_none_or(|cell| !voronoi_cell_is_convex_and_contains_site(mesh, &cell))
+        })
+        .count()
+}
+
+pub fn angle_margin_objective(
+    mesh: &MeshState,
+    faces: impl IntoIterator<Item = usize>,
+) -> Option<AngleMarginObjective> {
+    let mut worst_constraints = Vec::new();
+    for face in faces {
+        if !mesh.is_triangle_live(face) {
+            continue;
+        }
+        let angles =
+            spherical_triangle_angles(mesh.triangles()[face].map(|site| mesh.vertices()[site]))?;
+        for (corner, angle_deg) in angles.into_iter().enumerate() {
+            let signed_margin_deg = (angle_deg - 40.2).min(79.8 - angle_deg);
+            worst_constraints.push(AngleConstraintKey {
+                face,
+                corner,
+                angle_deg,
+                signed_margin_deg,
+            });
+        }
+    }
+    if worst_constraints.is_empty() {
+        return None;
+    }
+    worst_constraints.sort_by(|a, b| {
+        a.signed_margin_deg
+            .total_cmp(&b.signed_margin_deg)
+            .then_with(|| a.face.cmp(&b.face))
+            .then_with(|| a.corner.cmp(&b.corner))
+    });
+    let signed_margin_deg = worst_constraints[0].signed_margin_deg;
+    worst_constraints.truncate(8);
+    Some(AngleMarginObjective {
+        signed_margin_deg,
+        worst_constraints,
+    })
 }
 
 fn angle_range(mesh: &MeshState, faces: impl IntoIterator<Item = usize>) -> Option<(f64, f64)> {
@@ -1378,6 +2034,52 @@ fn dual_energy_in(
     })
 }
 
+fn angle_margin_loss(mesh: &MeshState) -> Option<f64> {
+    let objective = angle_margin_objective(mesh, mesh.active_triangle_slots())?;
+    let worst_violation = objective
+        .worst_constraints
+        .iter()
+        .map(|constraint| (-constraint.signed_margin_deg).max(0.0))
+        .sum::<f64>();
+    Some(-objective.signed_margin_deg + 0.001 * worst_violation)
+}
+
+fn finite_difference_angle_margin_gradient(
+    mesh: &mut MeshState,
+    patch: &ElasticPatch,
+    initial_step: f64,
+) -> Option<Vec<(usize, CartesianPoint)>> {
+    let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
+    for &site in &patch.movable_compact_vertices {
+        let point = mesh.vertices()[site];
+        let [first, second] = tangent_basis(point)?;
+        let base_loss = angle_margin_loss(mesh)?;
+        let mut derivative = |direction: CartesianPoint| {
+            let plus = exponential_map(point, scale_point(direction, epsilon))?;
+            let minus = exponential_map(point, scale_point(direction, -epsilon))?;
+            mesh.move_vertex(site, plus);
+            let plus_loss = angle_margin_loss(mesh);
+            mesh.move_vertex(site, minus);
+            let minus_loss = angle_margin_loss(mesh);
+            mesh.move_vertex(site, point);
+            match (plus_loss, minus_loss) {
+                (Some(plus), Some(minus)) => Some((plus - minus) / (2.0 * epsilon)),
+                (Some(plus), None) => Some((plus - base_loss) / epsilon),
+                (None, Some(minus)) => Some((base_loss - minus) / epsilon),
+                (None, None) => None,
+            }
+        };
+        let d_first = derivative(first)?;
+        let d_second = derivative(second)?;
+        gradient.push((
+            site,
+            add_points(scale_point(first, d_first), scale_point(second, d_second)),
+        ));
+    }
+    Some(gradient)
+}
+
 fn finite_difference_gradient(
     mesh: &mut MeshState,
     patch: &ElasticPatch,
@@ -1509,7 +2211,13 @@ fn subtract_points(left: CartesianPoint, right: CartesianPoint) -> CartesianPoin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mother_grid::MotherGrid;
+    use crate::{
+        coarsen::{
+            n6_legacy_mixed_fixture_with_source_levels, solve_full_polygon_merge,
+            FullPolygonMergeLimits, FullPolygonMergeOutcome,
+        },
+        mother_grid::MotherGrid,
+    };
 
     #[test]
     fn local_finite_difference_matches_the_full_elastic_objective() {
@@ -1644,6 +2352,174 @@ mod tests {
         };
         let context = EnergyContext::new(&grid.mesh, &patch).unwrap();
         assert_eq!(context.reference_dual_areas[&site], Some(target_area));
+    }
+
+    #[test]
+    fn angle_margin_objective_sorts_worst_constraints_stably() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let faces = grid
+            .mesh
+            .active_triangle_slots()
+            .take(4)
+            .collect::<Vec<_>>();
+        let objective = angle_margin_objective(&grid.mesh, faces.iter().copied()).unwrap();
+        assert_eq!(
+            objective.signed_margin_deg,
+            objective.worst_constraints[0].signed_margin_deg
+        );
+        for window in objective.worst_constraints.windows(2) {
+            let left = &window[0];
+            let right = &window[1];
+            assert!(
+                left.signed_margin_deg < right.signed_margin_deg
+                    || (left.signed_margin_deg == right.signed_margin_deg
+                        && (left.face, left.corner) <= (right.face, right.corner))
+            );
+        }
+    }
+
+    #[test]
+    fn angle_acceptance_rejects_signed_margin_regression() {
+        let before = AngleAcceptanceKey {
+            negative_orientation_count: 0,
+            crossing_count: 0,
+            signed_margin_deg: -1.0,
+            sum_worst_k_violation: 1.0,
+            delaunay_violations: 0,
+            invalid_voronoi_cells: 0,
+            movement_norm: 0.0,
+        };
+        let lower_energy_but_worse_margin = AngleAcceptanceKey {
+            signed_margin_deg: -2.0,
+            sum_worst_k_violation: 0.0,
+            movement_norm: 0.0,
+            ..before.clone()
+        };
+        assert!(!lower_energy_but_worse_margin.is_better_than(&before));
+    }
+
+    #[test]
+    fn angle_acceptance_uses_truthful_dual_counts_after_margin_terms() {
+        let before = AngleAcceptanceKey {
+            negative_orientation_count: 0,
+            crossing_count: 0,
+            signed_margin_deg: -1.0,
+            sum_worst_k_violation: 1.0,
+            delaunay_violations: 0,
+            invalid_voronoi_cells: 0,
+            movement_norm: 0.0,
+        };
+        let worse_delaunay = AngleAcceptanceKey {
+            delaunay_violations: 1,
+            ..before.clone()
+        };
+        assert!(!worse_delaunay.is_better_than(&before));
+        let worse_voronoi = AngleAcceptanceKey {
+            invalid_voronoi_cells: 1,
+            ..before.clone()
+        };
+        assert!(!worse_voronoi.is_better_than(&before));
+        let better_margin_worse_later_counts = AngleAcceptanceKey {
+            signed_margin_deg: -0.9,
+            delaunay_violations: 10,
+            invalid_voronoi_cells: 10,
+            ..before.clone()
+        };
+        assert!(better_margin_worse_later_counts.is_better_than(&before));
+    }
+
+    #[test]
+    fn ring_scale_interpolation_responds_to_scale_and_distance() {
+        let grid = MotherGrid::generate(4).unwrap();
+        let face = grid.mesh.active_triangle_slots().next().unwrap();
+        let [movable, fixed_a, fixed_b] = grid.mesh.triangles()[face];
+        let guard_faces = vec![face];
+        let mut target_scales = BTreeMap::from([(fixed_a, 2.0), (fixed_b, 0.5), (movable, 1.0)]);
+        let patch = ElasticPatch {
+            topology: TransitionTopologyCandidate {
+                component_id: 47,
+                topology_id: 0,
+                core_parents: Vec::new(),
+                custom_transition_triangles: BTreeMap::new(),
+                source_triangles: vec![grid.mesh.triangles()[face]],
+                source_active_vertices: vec![movable, fixed_a, fixed_b],
+                source_degree_forecast: BTreeMap::new(),
+            },
+            reference_positions: grid.mesh.vertices().to_vec(),
+            fixed_compact_vertices: vec![fixed_a, fixed_b],
+            movable_compact_vertices: vec![movable],
+            guard_faces,
+            target_mode: ElasticTargetMode::HierarchyEdgeAreaDegree,
+            target_field: ElasticTargetField {
+                target_vertex_scales: target_scales.clone(),
+                ..Default::default()
+            },
+        };
+        let mut first = grid.mesh.clone();
+        ring_scale_start(&mut first, &patch).unwrap();
+        target_scales.insert(fixed_a, 8.0);
+        target_scales.insert(fixed_b, 0.25);
+        let mut swapped = patch.clone();
+        swapped.target_field.target_vertex_scales = target_scales;
+        let mut second = grid.mesh.clone();
+        ring_scale_start(&mut second, &swapped).unwrap();
+        assert_ne!(first.vertices()[movable], grid.mesh.vertices()[movable]);
+        assert_ne!(first.vertices()[movable], second.vertices()[movable]);
+        assert_eq!(first.vertices()[fixed_a], grid.mesh.vertices()[fixed_a]);
+        assert_eq!(first.vertices()[fixed_b], grid.mesh.vertices()[fixed_b]);
+    }
+
+    #[test]
+    fn frozen_geometry_starts_move_movable_vertices_and_keep_fixed_vertices() {
+        let (source, component, source_levels) =
+            n6_legacy_mixed_fixture_with_source_levels().unwrap();
+        let outcome = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 100_000,
+            },
+        );
+        let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+            panic!("frozen N6 full-polygon family must close: {outcome:?}");
+        };
+        let patch =
+            ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+                .unwrap()
+                .with_hierarchy_targets(
+                    &source,
+                    &trial.global_trial.mesh,
+                    &source_levels,
+                    ElasticTargetMode::HierarchyEdgeAreaDegree,
+                )
+                .unwrap();
+        for start in [
+            GeometryStartId::HierarchySpringEquilibrium,
+            GeometryStartId::RingScaleInterpolation,
+            GeometryStartId::DegreeAngleEquilibrium,
+            GeometryStartId::SignedNormalPlus,
+            GeometryStartId::SignedNormalMinus,
+        ] {
+            let mut left = trial.global_trial.mesh.mesh.clone();
+            let mut right = trial.global_trial.mesh.mesh.clone();
+            apply_geometry_start(&mut left, &patch, start).unwrap();
+            apply_geometry_start(&mut right, &patch, start).unwrap();
+            assert_eq!(left.vertices(), right.vertices());
+            assert!(
+                patch
+                    .movable_compact_vertices
+                    .iter()
+                    .any(|&site| left.vertices()[site]
+                        != trial.global_trial.mesh.mesh.vertices()[site]),
+                "{start:?} must move at least one movable vertex"
+            );
+            for &site in &patch.fixed_compact_vertices {
+                assert_eq!(
+                    left.vertices()[site],
+                    trial.global_trial.mesh.mesh.vertices()[site]
+                );
+            }
+        }
     }
 
     #[test]

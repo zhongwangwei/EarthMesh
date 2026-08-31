@@ -12,8 +12,9 @@ use super::global_exact_merge::{
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
-    solve_elastic_patch, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch,
-    ElasticTargetMode, FullPolygonReachabilityEvidence, HierarchyComponent, RingAnchorKind,
+    solve_elastic_patch_with_margin_start, solve_elastic_patch_with_start, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetMode,
+    FullPolygonReachabilityEvidence, GeometryStartId, HierarchyComponent, RingAnchorKind,
     StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
@@ -162,6 +163,32 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
             physical_fixed_sources,
             target_mode,
             source_levels,
+            starts: &[GeometryStartId::MaterializedSource],
+            use_margin_objective: false,
+        }),
+    )
+}
+
+pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    physical_fixed_sources: &BTreeSet<usize>,
+    limits: FullPolygonCberLimits,
+    target_mode: ElasticTargetMode,
+    source_levels: Option<&[Option<usize>]>,
+    starts: &[GeometryStartId],
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(FreeInterfaceCberConfig {
+            elastic_iterations: limits.elastic_iterations,
+            physical_fixed_sources,
+            target_mode,
+            source_levels,
+            starts,
+            use_margin_objective: true,
         }),
     )
 }
@@ -345,6 +372,8 @@ struct FreeInterfaceCberConfig<'a> {
     physical_fixed_sources: &'a BTreeSet<usize>,
     target_mode: ElasticTargetMode,
     source_levels: Option<&'a [Option<usize>]>,
+    starts: &'a [GeometryStartId],
+    use_margin_objective: bool,
 }
 
 enum Step {
@@ -847,10 +876,6 @@ impl Search<'_> {
                             failure.topology_keys = keys.clone();
                             return Step::GeometryUnknown(failure);
                         }
-                        FreeInterfaceStep::BudgetExhausted(mut failure) => {
-                            failure.topology_keys = keys.clone();
-                            return Step::GeometryUnknown(failure);
-                        }
                         FreeInterfaceStep::Invalid(reason) => return Step::Invalid(reason),
                     }
                 }
@@ -986,8 +1011,45 @@ enum FreeInterfaceStep {
     Certified(Box<FullPolygonMergeTrial>),
     RequiresDifferentTopology(FullPolygonGeometryFailureEvidence),
     GeometryUnknown(FullPolygonGeometryFailureEvidence),
-    BudgetExhausted(FullPolygonGeometryFailureEvidence),
     Invalid(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_start_failure(
+    best_failure: &mut Option<(bool, FullPolygonGeometryFailureEvidence)>,
+    requires_different_topology: bool,
+    start_id: GeometryStartId,
+    elastic_iterations: usize,
+    initial_energy: f64,
+    final_energy: f64,
+    final_phase: ElasticBlockPhase,
+    reason: String,
+    failed_guard_face: Option<usize>,
+    global_angle_degrees: Option<(f64, f64)>,
+    guard_angle_degrees: Option<(f64, f64)>,
+) {
+    let failure = FullPolygonGeometryFailureEvidence {
+        topology_keys: Vec::new(),
+        start_id: start_id.as_str(),
+        elastic_iterations,
+        initial_energy,
+        final_energy,
+        final_phase,
+        reason,
+        failed_guard_face,
+        global_angle_degrees,
+        guard_angle_degrees,
+        negative_orientation_count: None,
+        crossing_count: None,
+        delaunay_violations: None,
+        invalid_voronoi_cells: None,
+    };
+    if best_failure
+        .as_ref()
+        .is_none_or(|(_, best)| geometry_failure_is_better(&failure, best))
+    {
+        *best_failure = Some((requires_different_topology, failure));
+    }
 }
 
 fn certify_free_interface_geometry(
@@ -1023,100 +1085,102 @@ fn certify_free_interface_geometry(
     }
     let input_triangles = trial.global_trial.mesh.mesh.triangles().to_vec();
     let input_neighbours = trial.global_trial.mesh.mesh.neighbours().to_vec();
-    match solve_elastic_patch(
-        &trial.global_trial.mesh,
-        patch,
-        ElasticBlockLimits {
+    let mut best_failure = None::<(bool, FullPolygonGeometryFailureEvidence)>;
+    for &start_id in config.starts {
+        let limits = ElasticBlockLimits {
             elastic_iterations: config.elastic_iterations,
-        },
-    ) {
-        ElasticBlockOutcome::Certified(elastic) => {
-            if elastic.mesh.mesh.triangles() != input_triangles
-                || elastic.mesh.mesh.neighbours() != input_neighbours
-            {
-                return FreeInterfaceStep::Invalid(
-                    "free-interface CBER changed topology without exact-search ownership".into(),
-                );
+        };
+        let outcome = if config.use_margin_objective {
+            solve_elastic_patch_with_margin_start(
+                &trial.global_trial.mesh,
+                patch.clone(),
+                limits,
+                start_id,
+            )
+        } else {
+            solve_elastic_patch_with_start(
+                &trial.global_trial.mesh,
+                patch.clone(),
+                limits,
+                start_id,
+            )
+        };
+        match outcome {
+            ElasticBlockOutcome::Certified(elastic) => {
+                if elastic.mesh.mesh.triangles() != input_triangles
+                    || elastic.mesh.mesh.neighbours() != input_neighbours
+                {
+                    return FreeInterfaceStep::Invalid(
+                        "free-interface CBER changed topology without exact-search ownership"
+                            .into(),
+                    );
+                }
+                trial.global_trial.mesh = elastic.mesh.clone();
+                return FreeInterfaceStep::Certified(Box::new(trial));
             }
-            trial.global_trial.mesh = elastic.mesh.clone();
-            FreeInterfaceStep::Certified(Box::new(trial))
+            ElasticBlockOutcome::RequiresDifferentTopology {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+            } => record_start_failure(
+                &mut best_failure,
+                true,
+                start_id,
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+            ),
+            ElasticBlockOutcome::ElasticNoImprovement {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+            }
+            | ElasticBlockOutcome::SearchBudgetExhausted {
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+            } => record_start_failure(
+                &mut best_failure,
+                false,
+                start_id,
+                elastic_iterations,
+                initial_energy,
+                final_energy,
+                final_phase,
+                reason,
+                failed_guard_face,
+                global_angle_degrees,
+                guard_angle_degrees,
+            ),
+            ElasticBlockOutcome::InvalidPatch { reason } => {
+                return FreeInterfaceStep::Invalid(reason)
+            }
         }
-        ElasticBlockOutcome::RequiresDifferentTopology {
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-        } => FreeInterfaceStep::RequiresDifferentTopology(FullPolygonGeometryFailureEvidence {
-            topology_keys: Vec::new(),
-            start_id: "MaterializedSource",
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-            negative_orientation_count: None,
-            crossing_count: None,
-            delaunay_violations: None,
-            invalid_voronoi_cells: None,
-        }),
-        ElasticBlockOutcome::ElasticNoImprovement {
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-        } => FreeInterfaceStep::GeometryUnknown(FullPolygonGeometryFailureEvidence {
-            topology_keys: Vec::new(),
-            start_id: "MaterializedSource",
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-            negative_orientation_count: None,
-            crossing_count: None,
-            delaunay_violations: None,
-            invalid_voronoi_cells: None,
-        }),
-        ElasticBlockOutcome::SearchBudgetExhausted {
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-        } => FreeInterfaceStep::BudgetExhausted(FullPolygonGeometryFailureEvidence {
-            topology_keys: Vec::new(),
-            start_id: "MaterializedSource",
-            elastic_iterations,
-            initial_energy,
-            final_energy,
-            final_phase,
-            reason,
-            failed_guard_face,
-            global_angle_degrees,
-            guard_angle_degrees,
-            negative_orientation_count: None,
-            crossing_count: None,
-            delaunay_violations: None,
-            invalid_voronoi_cells: None,
-        }),
-        ElasticBlockOutcome::InvalidPatch { reason } => FreeInterfaceStep::Invalid(reason),
+    }
+    match best_failure {
+        Some((true, failure)) => FreeInterfaceStep::RequiresDifferentTopology(failure),
+        Some((false, failure)) => FreeInterfaceStep::GeometryUnknown(failure),
+        None => FreeInterfaceStep::Invalid("free-interface CBER has no geometry starts".into()),
     }
 }
 
@@ -1148,6 +1212,29 @@ pub fn frozen_n6_geometry_evidence_json_with_target_mode(
     target_mode: ElasticTargetMode,
     starts: &[&str],
 ) -> String {
+    frozen_n6_geometry_evidence_json_with_solver_mode(
+        outcome,
+        fixture_fingerprint,
+        topology_limit,
+        elastic_iterations,
+        commit_sha,
+        target_mode,
+        starts,
+        "FiniteDifferenceElastic",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn frozen_n6_geometry_evidence_json_with_solver_mode(
+    outcome: &FullPolygonMergeOutcome,
+    fixture_fingerprint: u64,
+    topology_limit: usize,
+    elastic_iterations: usize,
+    commit_sha: Option<&str>,
+    target_mode: ElasticTargetMode,
+    starts: &[&str],
+    solver_mode: &str,
+) -> String {
     let (kind, evidence, certified) = match outcome {
         FullPolygonMergeOutcome::Closed(trial) => ("Certified", &trial.evidence, true),
         FullPolygonMergeOutcome::SearchBudgetExhausted(evidence) => {
@@ -1162,12 +1249,13 @@ pub fn frozen_n6_geometry_evidence_json_with_target_mode(
     let mut json = String::new();
     write!(
         json,
-        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"{}\",\"solver_mode\":\"FiniteDifferenceElastic\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
+        "{{\"schema_version\":1,\"commit_sha\":{},\"fixture_fingerprint\":{},\"topology_limit\":{},\"elastic_iteration_limit\":{},\"target_mode\":\"{}\",\"solver_mode\":\"{}\",\"domain_id\":\"CurrentAnnulus\",\"starts\":[{}],\"topology_candidates_closed\":{},\"geometry_candidates_attempted\":{},\"best_signed_margin_deg\":{},\"best_topology_key\":{},\"best_start_id\":{},\"phase_counts\":{},\"last_failure\":{},\"best_failure\":{},\"outcome\":\"{}\",\"certified\":{}}}",
         option_json(commit_sha),
         fixture_fingerprint,
         topology_limit,
         elastic_iterations,
         target_mode.as_str(),
+        json_escape(solver_mode),
         starts
             .iter()
             .map(|s| format!("\"{}\"", json_escape(s)))
