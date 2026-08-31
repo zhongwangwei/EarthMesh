@@ -272,7 +272,7 @@ pub fn build_stratified_annulus_from_coupled(
     })
 }
 
-fn directed_traces(coupled: &CoupledAnnulus) -> Vec<DirectedTrace> {
+pub(super) fn directed_traces(coupled: &CoupledAnnulus) -> Vec<DirectedTrace> {
     let mut rings = Vec::with_capacity(coupled.intermediate_rings.len() + 2);
     rings.push((&coupled.coarse_interface, TraceRole::CoarseInterface));
     rings.extend(
@@ -421,7 +421,7 @@ fn reversed_trace(mut trace: DirectedTrace) -> DirectedTrace {
     trace
 }
 
-fn band_face_labels(
+pub(super) fn band_face_labels(
     source: &MotherGrid,
     component: &HierarchyComponent,
     coupled: &CoupledAnnulus,
@@ -672,7 +672,7 @@ fn occurrence_by_slot(trace: &DirectedTrace) -> BTreeMap<usize, RingOccurrenceId
         .collect()
 }
 
-fn vertex_rotation(
+pub(super) fn vertex_rotation(
     source: &MotherGrid,
     source_slot: usize,
 ) -> Result<VertexRotation, StratifiedAnnulusError> {

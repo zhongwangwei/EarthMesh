@@ -200,10 +200,9 @@ The deterministic worst-100 atlas classifies the PR52 +2 witness as
 
 The current W2 stratification has two logical adjacent-trace pairs. They share
 6 and 8 vertices respectively, so both minimum face-strip widths and both
-normalized minimum separations are zero. The 14 unique shared vertices are the
-zero-width pinches. This passes the preregistered 60% width-dominated gate and
-routes the next experiment to explicit W3/W4 positive-width band planning,
-rather than more +2 iterations or geometry-aware topology ordering.
+normalized minimum separations were conservatively reported as zero. PR55
+later showed that none of these 14 shared vertices is a rotation-aware
+`TruePinch`; see the correction below.
 
 ## PR55 W3/W4 planning result
 
@@ -232,3 +231,26 @@ at source vertices. Therefore nominal extra traces cannot be reported as
 positive-width bands. This result is scoped to parent-layer extraction plus
 four outward rings; it is not a global proof against arbitrary new
 anchor-exclusion cycle surgery.
+
+## PR55 rotation-aware width correction
+
+The source-vertex rotation audit distinguishes an actual zero-face wedge from
+a shared primal vertex with intervening band faces:
+
+| trace family | shared occurrences | unique vertices | true pinches | one-face wedges | anchor junctions |
+|---|---:|---:|---:|---:|---:|
+| legacy W2 | 14 | 14 | 0 | 12 | 2 |
+| PR54 W3 candidate | 24 | 20 | 0 | 20 | 4 |
+
+Every ordinary occurrence has two separated one-face wedges in its full
+rotation; classification uses the minimum contiguous wedge width. Four PR54
+occurrences repeat vertices touched by two adjacent trace pairs, which is why
+24 adjacent-pair occurrences correspond to 20 unique vertices.
+
+Consequently the PR53 `85%` value means “near a nominal shared junction,” not
+“near a proven zero-width pinch.” With no `TruePinch` in the legacy W2 audit,
+the corrected worst-100 true-pinch fraction is `0%`. This invalidates the old
+zero-width causal label but does not make the current topology angle-feasible.
+The next gate is the exact source-face PF-W2 construction defined in
+[face_band_contract.md](face_band_contract.md); no topology merge or CBER was
+run in this audit.
