@@ -33,6 +33,7 @@ pub use core_condensation::{
 pub use elastic_block::{
     initial_elastic_phase, solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits,
     ElasticBlockOutcome, ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
+    ElasticTargetField, ElasticTargetMode, MotherLevelMetric,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
@@ -40,8 +41,9 @@ pub use full_polygon::{
     FullPolygonProblem, FullPolygonTopology, FullPolygonTopologyKey,
 };
 pub use full_polygon_merge::{
-    frozen_n6_geometry_evidence_json, solve_full_polygon_merge,
-    solve_full_polygon_merge_free_interface_cber, FullPolygonCberLimits,
+    frozen_n6_geometry_evidence_json, frozen_n6_geometry_evidence_json_with_target_mode,
+    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
+    solve_full_polygon_merge_free_interface_cber_with_targets, FullPolygonCberLimits,
     FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };

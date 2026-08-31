@@ -1,9 +1,12 @@
 use earthmesh_refine_certified::coarsen::{
-    build_stratified_annulus, frozen_n6_geometry_evidence_json, initial_elastic_phase,
+    build_stratified_annulus, frozen_n6_geometry_evidence_json,
+    frozen_n6_geometry_evidence_json_with_target_mode, initial_elastic_phase,
     n6_legacy_mixed_fixture, n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch,
-    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, FullPolygonCberLimits,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind, TransitionTopologyCandidate,
+    solve_full_polygon_merge, solve_full_polygon_merge_free_interface_cber,
+    solve_full_polygon_merge_free_interface_cber_with_targets, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetField, ElasticTargetMode,
+    FullPolygonCberLimits, FullPolygonMergeLimits, FullPolygonMergeOutcome, RingAnchorKind,
+    TransitionTopologyCandidate,
 };
 use earthmesh_refine_certified::{remap::ConservativeRemap, SourceLevelField, TargetLevelField};
 use std::{collections::BTreeMap, collections::BTreeSet, fs, process::Command};
@@ -195,6 +198,8 @@ fn frozen_n6_closed_topology_enters_untangle_not_invalid_patch() {
         fixed_compact_vertices: fixed.into_iter().collect(),
         movable_compact_vertices: movable.into_iter().collect(),
         guard_faces: guard.into_iter().collect(),
+        target_mode: ElasticTargetMode::TrialReference,
+        target_field: ElasticTargetField::default(),
     };
     assert_eq!(
         initial_elastic_phase(&trial.global_trial.mesh, &patch).unwrap(),
@@ -330,6 +335,98 @@ fn free_interface_patch_keeps_remote_guards_fixed_and_moves_interfaces() {
                     || patch.movable_compact_vertices.contains(&compact)
             })
     }));
+}
+
+#[test]
+fn hierarchy_targets_are_independent_of_trial_reference_positions() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let base = ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+        .unwrap();
+    let mut perturbed = base.clone();
+    let first = perturbed.movable_compact_vertices[0];
+    perturbed.reference_positions[first] = source.mesh.vertices()[0];
+    let base_targets = base
+        .with_hierarchy_targets(
+            &source,
+            &trial.global_trial.mesh,
+            &source_levels,
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+        )
+        .unwrap()
+        .target_field;
+    let perturbed_targets = perturbed
+        .with_hierarchy_targets(
+            &source,
+            &trial.global_trial.mesh,
+            &source_levels,
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+        )
+        .unwrap()
+        .target_field;
+    assert_eq!(base_targets, perturbed_targets);
+}
+
+#[test]
+fn hierarchy_target_field_uses_geometric_cross_level_edges() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let patch =
+        ElasticPatch::from_full_polygon_merge(&source, &component, &trial, &BTreeSet::new())
+            .unwrap()
+            .with_hierarchy_targets(
+                &source,
+                &trial.global_trial.mesh,
+                &source_levels,
+                ElasticTargetMode::HierarchyEdgeAreaDegree,
+            )
+            .unwrap();
+    assert_eq!(
+        patch.target_mode,
+        ElasticTargetMode::HierarchyEdgeAreaDegree
+    );
+    assert!(!patch.target_field.target_edge_lengths.is_empty());
+    assert!(!patch.target_field.target_cell_areas.is_empty());
+    assert!(!patch.target_field.target_angles.is_empty());
+
+    let mut saw_cross_level = false;
+    for (&(left, right), &target) in &patch.target_field.target_edge_lengths {
+        let Some(left_source) = trial.global_trial.mesh.source_vertex_slots[left] else {
+            continue;
+        };
+        let Some(right_source) = trial.global_trial.mesh.source_vertex_slots[right] else {
+            continue;
+        };
+        if source_levels[left_source] != source_levels[right_source] {
+            let left_scale = patch.target_field.target_vertex_scales[&left];
+            let right_scale = patch.target_field.target_vertex_scales[&right];
+            assert!((target - (left_scale * right_scale).sqrt()).abs() < 1.0e-14);
+            saw_cross_level = true;
+            break;
+        }
+    }
+    assert!(
+        saw_cross_level,
+        "Frozen N6 guard must contain a cross-level edge"
+    );
 }
 
 #[test]
@@ -681,6 +778,66 @@ fn frozen_n6_parameterized_geometry_probe() {
         elastic_iterations,
         commit_sha.as_deref(),
         &starts,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR46 target comparison probe"]
+fn frozen_n6_hierarchy_target_comparison_probe() {
+    let topology_limit = usize_env("EARTHMESH_FULL_POLYGON_STATES", 500);
+    let elastic_iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 64);
+    let starts = geometry_starts(
+        std::env::var("EARTHMESH_GEOMETRY_START_SET")
+            .ok()
+            .as_deref(),
+    );
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let fixture_fingerprint = earthmesh_refine_certified::mesh_fingerprint(&source.mesh);
+    let commit_sha = option_env!("EARTHMESH_GIT_SHA")
+        .map(str::to_string)
+        .or_else(git_head);
+    let mut arms = Vec::new();
+    for target_mode in [
+        ElasticTargetMode::TrialReference,
+        ElasticTargetMode::HierarchyEdge,
+        ElasticTargetMode::HierarchyEdgeAreaDegree,
+    ] {
+        let source_levels = (!matches!(target_mode, ElasticTargetMode::TrialReference))
+            .then_some(source_levels.as_slice());
+        let outcome = solve_full_polygon_merge_free_interface_cber_with_targets(
+            &source,
+            &component,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states: topology_limit,
+                elastic_iterations,
+            },
+            target_mode,
+            source_levels,
+        );
+        arms.push((
+            target_mode.as_str(),
+            frozen_n6_geometry_evidence_json_with_target_mode(
+                &outcome,
+                fixture_fingerprint,
+                topology_limit,
+                elastic_iterations,
+                commit_sha.as_deref(),
+                target_mode,
+                &starts,
+            ),
+        ));
+    }
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr46TargetComparison\",\"arms\":[{}]}}",
+        arms.iter()
+            .map(|(name, json)| format!("{{\"arm\":\"{}\",\"run\":{}}}", name, json))
+            .collect::<Vec<_>>()
+            .join(",")
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();

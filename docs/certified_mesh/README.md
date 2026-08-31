@@ -145,6 +145,12 @@ cargo test --release \
   -- --ignored --exact --nocapture
 ```
 
+PR46 adds hierarchy-derived target arms. In the frozen 500x64 comparison,
+`HierarchyEdgeAreaDegree` improves the best signed margin to
+-14.556453014768 degrees with best angle range
+27.175763981707--94.356453014768 degrees, but the outcome remains
+`ContinuousSearchIncomplete`.
+
 See [frozen_n6_geometry_baseline.md](frozen_n6_geometry_baseline.md),
 [hierarchy_elastic_targets.md](hierarchy_elastic_targets.md), and
 [continuous_feasibility_contract.md](continuous_feasibility_contract.md).
