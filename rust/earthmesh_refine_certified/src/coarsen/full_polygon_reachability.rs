@@ -270,6 +270,11 @@ pub(super) struct SectorPolygon {
 pub(super) fn effective_sector_polygons(
     stratified: &StratifiedAnnulus,
 ) -> Result<Vec<SectorPolygon>, String> {
+    let connector_bounded = stratified.shared_junctions.is_empty()
+        && stratified
+            .bands
+            .iter()
+            .all(|band| matches!(band.kind, super::BandComponentKind::Annular { .. }));
     let coarse_cycle = stratified
         .coupled
         .coarse_interface
@@ -288,23 +293,27 @@ pub(super) fn effective_sector_polygons(
             } else {
                 sector.lower_chain.clone()
             };
-            if lower.first() != sector.upper_chain.first()
-                || lower.last() != sector.upper_chain.last()
-                || lower.len() < 2
-                || sector.upper_chain.len() < 2
-            {
+            if lower.len() < 2 || sector.upper_chain.is_empty() {
                 return Err(format!("sector {id} chains do not form a disk"));
             }
             let mut vertices = lower;
-            vertices.extend(
-                sector
-                    .upper_chain
-                    .iter()
-                    .rev()
-                    .skip(1)
-                    .take(sector.upper_chain.len().saturating_sub(2))
-                    .copied(),
-            );
+            let shared_endpoints = vertices.first() == sector.upper_chain.first()
+                && vertices.last() == sector.upper_chain.last();
+            if shared_endpoints {
+                vertices.extend(
+                    sector
+                        .upper_chain
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .take(sector.upper_chain.len().saturating_sub(2))
+                        .copied(),
+                );
+            } else if connector_bounded {
+                vertices.extend(sector.upper_chain.iter().rev().copied());
+            } else {
+                return Err(format!("sector {id} chains do not share endpoints"));
+            }
             Ok(SectorPolygon {
                 id: id as u64,
                 vertices,

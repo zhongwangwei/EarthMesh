@@ -83,7 +83,8 @@ pub use full_polygon_merge::{
     solve_full_polygon_merge_free_interface_cber_with_targets,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
-    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts, FullPolygonCberLimits,
+    solve_full_polygon_merge_free_interface_cber_with_targets_and_starts,
+    solve_full_polygon_merge_from_face_bands, FullPolygonCberLimits,
     FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };
@@ -115,11 +116,12 @@ pub use scheduler::{
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
 };
 pub use stratified_annulus::{
-    build_stratified_annulus, build_stratified_annulus_from_coupled, BandComponent,
-    BandComponentKind, BandFaceLabel, DirectedHalfEdge, DirectedTrace, FixedVertexLink,
-    RingOccurrence, RingOccurrenceId, SectorComponentRecord, SectorPort, StratifiedAnnulus,
-    StratifiedAnnulusError, StratifiedAnnulusRecord, StratifiedOutcomeKind, TraceChain,
-    TracePairSharedRecord, TraceRole, VertexLinkContract, VertexRotation,
+    build_stratified_annulus, build_stratified_annulus_from_coupled,
+    build_stratified_annulus_from_face_bands, BandComponent, BandComponentKind, BandFaceLabel,
+    DirectedHalfEdge, DirectedTrace, FixedVertexLink, RingOccurrence, RingOccurrenceId,
+    SectorComponentRecord, SectorPort, StratifiedAnnulus, StratifiedAnnulusError,
+    StratifiedAnnulusRecord, StratifiedOutcomeKind, TraceChain, TracePairSharedRecord, TraceRole,
+    VertexLinkContract, VertexRotation,
 };
 pub use transition_feasibility::{
     analyze_legacy_transition_family, n6_legacy_mixed_fixture,

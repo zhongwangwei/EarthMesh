@@ -4,6 +4,7 @@
 //! bands, records trace occurrences/shared junction ports, and builds fixed
 //! outside vertex-link contracts for later exact topology search.
 
+use super::face_band::FaceBandPlan;
 use super::{
     annulus::{parent_by_source_face, parent_graph, parent_layers_from_outside},
     extract_coupled_annulus, BoundaryIncidenceContract, CoupledAnnulus, HierarchyComponent,
@@ -270,6 +271,366 @@ pub fn build_stratified_annulus_from_coupled(
         link_contracts,
         probe,
     })
+}
+
+pub fn build_stratified_annulus_from_face_bands(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
+    let coupled = extract_coupled_annulus(source, component)?;
+    if plan.band_count < 2 || plan.interface_edges.len() + 1 != plan.band_count {
+        return Err(StratifiedAnnulusError::InvalidComponent(
+            "face-band plan has inconsistent band/interface counts".into(),
+        ));
+    }
+    let annulus_faces = coupled
+        .annulus_face_slots
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if plan.labels.keys().copied().collect::<BTreeSet<_>>() != annulus_faces
+        || plan
+            .labels
+            .values()
+            .any(|&label| usize::from(label) >= plan.band_count)
+    {
+        return Err(StratifiedAnnulusError::InvalidComponent(
+            "face-band labels do not cover the coupled annulus exactly".into(),
+        ));
+    }
+    let mut face_counts = vec![0usize; plan.band_count];
+    for &label in plan.labels.values() {
+        face_counts[usize::from(label)] += 1;
+    }
+    let supplied_interfaces = plan
+        .interface_edges
+        .iter()
+        .map(|edges| edges.iter().copied().collect::<BTreeSet<_>>())
+        .collect::<Vec<_>>();
+    if face_counts != plan.band_face_counts
+        || expected_interface_edges(source, plan) != supplied_interfaces
+    {
+        return Err(StratifiedAnnulusError::InvalidComponent(
+            "face-band plan evidence does not match its labels".into(),
+        ));
+    }
+
+    let mut traces = vec![directed_trace(
+        0,
+        TraceRole::CoarseInterface,
+        &coupled.coarse_interface,
+    )];
+    for (interface, edges) in plan.interface_edges.iter().enumerate() {
+        traces.push(directed_interface_trace(interface + 1, edges)?);
+    }
+    traces.push(directed_trace(
+        plan.band_count,
+        TraceRole::FineInterface,
+        &coupled.fine_interface,
+    ));
+    reject_triple_trace_vertices(&traces)?;
+    reject_adjacent_shared_edges(source, &traces)?;
+
+    let mut band_face_labels = plan
+        .labels
+        .iter()
+        .map(|(&face_slot, &band_id)| BandFaceLabel {
+            face_slot,
+            band_id: usize::from(band_id),
+        })
+        .collect::<Vec<_>>();
+    band_face_labels.sort_by_key(|label| (label.band_id, label.face_slot));
+    let face_to_band = band_face_labels
+        .iter()
+        .map(|label| (label.face_slot, label.band_id))
+        .collect::<BTreeMap<_, _>>();
+    let traces = orient_traces_by_band_side(source, traces, &face_to_band)?;
+    let face_components = connected_band_face_components(source, &band_face_labels);
+    let component_band_ids = face_components
+        .iter()
+        .map(|component| component.band_id)
+        .collect::<Vec<_>>();
+    if component_band_ids != (0..plan.band_count).collect::<Vec<_>>() {
+        return Err(StratifiedAnnulusError::InvalidComponent(format!(
+            "face-band plan components are {component_band_ids:?}, expected one per band"
+        )));
+    }
+    let contracts = boundary_contract_by_slot(&coupled.boundary_contracts);
+    let shared_junctions = shared_junctions(source, &traces, &face_components, &contracts)?;
+    if !shared_junctions.is_empty() {
+        return Err(StratifiedAnnulusError::InvalidComponent(
+            "pinch-free face-band interfaces unexpectedly share junctions".into(),
+        ));
+    }
+    let bands = band_components(source, &traces, face_components, &shared_junctions)?;
+    if bands
+        .iter()
+        .any(|band| !matches!(band.kind, BandComponentKind::Annular { .. }))
+    {
+        return Err(StratifiedAnnulusError::InvalidComponent(
+            "face-band plan contains a non-annular band".into(),
+        ));
+    }
+    let link_contracts = vertex_link_contracts(source, &coupled, &contracts)?;
+    let sectors = face_band_sector_components(source, &traces)?;
+    let mut probe = probe(
+        &coupled,
+        &traces,
+        &bands,
+        &shared_junctions,
+        &link_contracts,
+    );
+    probe.sector_count = sectors.len();
+    probe.sector_components = sectors;
+    Ok(StratifiedAnnulus {
+        coupled,
+        traces,
+        band_face_labels,
+        bands,
+        shared_junctions,
+        link_contracts,
+        probe,
+    })
+}
+
+fn expected_interface_edges(
+    source: &MotherGrid,
+    plan: &FaceBandPlan,
+) -> Vec<BTreeSet<(usize, usize)>> {
+    let mut interfaces = vec![BTreeSet::new(); plan.band_count.saturating_sub(1)];
+    for (&face, &label) in &plan.labels {
+        let triangle = source.mesh.triangles()[face];
+        for side in 0..3 {
+            let neighbour = source.mesh.neighbours()[face][side];
+            let Some(&other) = plan.labels.get(&neighbour) else {
+                continue;
+            };
+            if label.abs_diff(other) == 1 {
+                interfaces[usize::from(label.min(other))].insert(sorted_edge(
+                    triangle[(side + 1) % 3],
+                    triangle[(side + 2) % 3],
+                ));
+            }
+        }
+    }
+    interfaces
+}
+
+fn directed_interface_trace(
+    trace_id: usize,
+    edges: &[(usize, usize)],
+) -> Result<DirectedTrace, StratifiedAnnulusError> {
+    let slots = ordered_edge_cycle(edges).ok_or_else(|| {
+        StratifiedAnnulusError::InvalidComponent(format!(
+            "face-band interface {trace_id} is not one simple cycle"
+        ))
+    })?;
+    let directed_edges = slots
+        .iter()
+        .copied()
+        .zip(slots.iter().copied().cycle().skip(1))
+        .take(slots.len())
+        .map(|(from, to)| DirectedHalfEdge { from, to })
+        .collect();
+    let occurrences = slots
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, source_slot)| RingOccurrence {
+            occurrence_id: RingOccurrenceId { trace_id, ordinal },
+            source_slot,
+            role: TraceRole::Intermediate,
+        })
+        .collect();
+    Ok(DirectedTrace {
+        trace_id,
+        role: TraceRole::Intermediate,
+        directed_edges,
+        occurrences,
+    })
+}
+
+fn ordered_edge_cycle(edges: &[(usize, usize)]) -> Option<Vec<usize>> {
+    let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
+    for &(a, b) in edges {
+        if a == b {
+            return None;
+        }
+        adjacency.entry(a).or_default().push(b);
+        adjacency.entry(b).or_default().push(a);
+    }
+    if adjacency.len() < 3 || adjacency.values().any(|neighbours| neighbours.len() != 2) {
+        return None;
+    }
+    for neighbours in adjacency.values_mut() {
+        neighbours.sort_unstable();
+        neighbours.dedup();
+        if neighbours.len() != 2 {
+            return None;
+        }
+    }
+    let start = *adjacency.keys().next()?;
+    let mut cycle = vec![start];
+    let mut previous = usize::MAX;
+    let mut current = start;
+    loop {
+        let next = adjacency[&current]
+            .iter()
+            .copied()
+            .find(|candidate| *candidate != previous)?;
+        if next == start {
+            break;
+        }
+        if cycle.contains(&next) {
+            return None;
+        }
+        cycle.push(next);
+        previous = current;
+        current = next;
+    }
+    (cycle.len() == adjacency.len()).then_some(cycle)
+}
+
+fn face_band_sector_components(
+    source: &MotherGrid,
+    traces: &[DirectedTrace],
+) -> Result<Vec<SectorComponentRecord>, StratifiedAnnulusError> {
+    let source_edges = source
+        .mesh
+        .active_triangle_slots()
+        .flat_map(|face| {
+            let triangle = source.mesh.triangles()[face];
+            [
+                sorted_edge(triangle[0], triangle[1]),
+                sorted_edge(triangle[1], triangle[2]),
+                sorted_edge(triangle[2], triangle[0]),
+            ]
+        })
+        .collect::<BTreeSet<_>>();
+    let mut sectors = Vec::new();
+    for band_id in 0..traces.len().saturating_sub(1) {
+        let lower = traces[band_id]
+            .occurrences
+            .iter()
+            .map(|occurrence| occurrence.source_slot)
+            .collect::<Vec<_>>();
+        let upper = traces[band_id + 1]
+            .occurrences
+            .iter()
+            .map(|occurrence| occurrence.source_slot)
+            .collect::<Vec<_>>();
+        let (upper, connectors) = monotone_connectors(&lower, &upper, &source_edges)
+            .ok_or(StratifiedAnnulusError::UnsupportedNonDiskBandComponent { band_id })?;
+        for index in 0..lower.len() {
+            let next = (index + 1) % lower.len();
+            let upper_start = connectors[index];
+            let upper_end = if next == 0 {
+                connectors[0] + upper.len()
+            } else {
+                connectors[next]
+            };
+            let upper_chain = (upper_start..=upper_end)
+                .map(|position| upper[position % upper.len()])
+                .collect::<Vec<_>>();
+            if upper_chain.first() == upper_chain.last() && upper_chain.len() > 1 {
+                return Err(StratifiedAnnulusError::UnsupportedNonDiskBandComponent { band_id });
+            }
+            sectors.push(SectorComponentRecord {
+                band_id,
+                start_junction: lower[index],
+                end_junction: lower[next],
+                lower_chain: vec![lower[index], lower[next]],
+                upper_chain,
+            });
+        }
+    }
+    Ok(sectors)
+}
+
+fn monotone_connectors(
+    lower: &[usize],
+    upper: &[usize],
+    source_edges: &BTreeSet<(usize, usize)>,
+) -> Option<(Vec<usize>, Vec<usize>)> {
+    if lower.len() < 3 || upper.len() < 3 {
+        return None;
+    }
+    let mut solutions = Vec::new();
+    for reverse in [false, true] {
+        let oriented = if reverse {
+            upper.iter().copied().rev().collect::<Vec<_>>()
+        } else {
+            upper.to_vec()
+        };
+        let candidates = lower
+            .iter()
+            .map(|&a| {
+                oriented
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, &b)| {
+                        source_edges
+                            .contains(&sorted_edge(a, b))
+                            .then_some(position)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        if candidates.iter().any(Vec::is_empty) {
+            continue;
+        }
+        for &start in &candidates[0] {
+            let mut selected = vec![start];
+            for positions in candidates.iter().skip(1) {
+                let previous = *selected.last().expect("seeded connectors");
+                let next = positions
+                    .iter()
+                    .map(|&position| {
+                        if position < start {
+                            position + oriented.len()
+                        } else {
+                            position
+                        }
+                    })
+                    .filter(|&position| position >= previous && position < start + oriented.len())
+                    .min();
+                let Some(next) = next else {
+                    selected.clear();
+                    break;
+                };
+                selected.push(next);
+            }
+            if selected.len() != lower.len() || selected.last().copied().unwrap_or(start) == start {
+                continue;
+            }
+            let maximum_polygon_size = (0..lower.len())
+                .map(|index| {
+                    let next = (index + 1) % lower.len();
+                    let end = if next == 0 {
+                        selected[0] + oriented.len()
+                    } else {
+                        selected[next]
+                    };
+                    3 + end - selected[index]
+                })
+                .max()
+                .unwrap_or(usize::MAX);
+            solutions.push((
+                maximum_polygon_size,
+                reverse,
+                start,
+                selected,
+                oriented.clone(),
+            ));
+        }
+    }
+    solutions.sort_by(|left, right| {
+        (&left.0, &left.1, &left.2, &left.3).cmp(&(&right.0, &right.1, &right.2, &right.3))
+    });
+    solutions
+        .into_iter()
+        .next()
+        .map(|(_, _, _, selected, oriented)| (oriented, selected))
 }
 
 pub(super) fn directed_traces(coupled: &CoupledAnnulus) -> Vec<DirectedTrace> {
