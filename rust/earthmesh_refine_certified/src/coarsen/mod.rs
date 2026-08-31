@@ -31,8 +31,8 @@ pub use core_condensation::{
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
 };
 pub use elastic_block::{
-    solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits, ElasticBlockOutcome,
-    ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
+    initial_elastic_phase, solve_elastic_patch, solve_elastic_transition_block, ElasticBlockLimits,
+    ElasticBlockOutcome, ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,

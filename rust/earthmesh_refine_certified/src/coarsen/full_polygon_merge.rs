@@ -117,7 +117,8 @@ pub fn solve_full_polygon_merge(
         Err(err) => return invalid(err, evidence),
     };
     replace_fixed_link_contracts(&mut stratified, &fixed);
-    let mut families = match enumerate_stratified_full_polygon_families(&stratified, &fixed) {
+    let mut families = match enumerate_stratified_full_polygon_families(source, &stratified, &fixed)
+    {
         Ok(v) => v,
         Err(err) => return invalid(err, evidence),
     };

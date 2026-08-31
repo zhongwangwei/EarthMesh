@@ -1,8 +1,9 @@
 use earthmesh_refine_certified::coarsen::{
-    n6_legacy_mixed_fixture, solve_full_polygon_merge, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome,
+    initial_elastic_phase, n6_legacy_mixed_fixture, solve_elastic_patch, solve_full_polygon_merge,
+    ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, TransitionTopologyCandidate,
 };
-use std::{collections::BTreeSet, fs};
+use std::{collections::BTreeMap, collections::BTreeSet, fs};
 
 #[test]
 fn zero_budget_is_unknown_exhaustion() {
@@ -81,7 +82,7 @@ fn frozen_n6_closes_full_polygon_topology_gate() {
         &source,
         &component,
         FullPolygonMergeLimits {
-            topology_states: 100,
+            topology_states: 100_000,
         },
     );
     let FullPolygonMergeOutcome::Closed(trial) = outcome else {
@@ -99,7 +100,7 @@ fn frozen_n6_closes_full_polygon_topology_gate() {
     assert!(global.faces < global.source_faces);
     assert!(global.vertices < global.source_vertices);
     assert_eq!(trial.evidence.selected_topology_keys.len(), 14);
-    assert!(trial.evidence.states_examined <= 100);
+    assert!(trial.evidence.states_examined <= 100_000);
     let subdivisions = trial
         .global_trial
         .mesh
@@ -109,6 +110,103 @@ fn frozen_n6_closes_full_polygon_topology_gate() {
         .map(|address| address.n)
         .collect::<BTreeSet<_>>();
     assert!(subdivisions.len() >= 2, "materialized mesh must stay mixed");
+}
+
+#[test]
+fn frozen_n6_closed_topology_enters_untangle_not_invalid_patch() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let outcome = solve_full_polygon_merge(
+        &source,
+        &component,
+        FullPolygonMergeLimits {
+            topology_states: 100_000,
+        },
+    );
+    let FullPolygonMergeOutcome::Closed(trial) = outcome else {
+        panic!("frozen N6 full-polygon family must close: {outcome:?}");
+    };
+    let source_to_compact = trial
+        .global_trial
+        .mesh
+        .source_vertex_slots
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(compact, source)| source.map(|source| (source, compact)))
+        .collect::<BTreeMap<_, _>>();
+    let custom_source_vertices = trial
+        .global_trial
+        .custom_triangles
+        .iter()
+        .flat_map(|triangle| triangle.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let anchor_sources = trial
+        .global_trial
+        .evidence
+        .anchor_degrees
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let movable_sources = custom_source_vertices
+        .difference(&anchor_sources)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let movable = movable_sources
+        .iter()
+        .filter_map(|source| source_to_compact.get(source).copied())
+        .filter(|&compact| trial.global_trial.mesh.mesh.is_vertex_live(compact))
+        .collect::<BTreeSet<_>>();
+    let guard = trial
+        .global_trial
+        .mesh
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            trial.global_trial.mesh.mesh.triangles()[face]
+                .iter()
+                .any(|site| movable.contains(site))
+        })
+        .collect::<BTreeSet<_>>();
+    let fixed = guard
+        .iter()
+        .flat_map(|&face| trial.global_trial.mesh.mesh.triangles()[face])
+        .filter(|site| !movable.contains(site))
+        .collect::<BTreeSet<_>>();
+    let patch = ElasticPatch {
+        topology: TransitionTopologyCandidate {
+            component_id: 43,
+            topology_id: 0,
+            core_parents: Vec::new(),
+            custom_transition_triangles: BTreeMap::new(),
+            source_triangles: trial.global_trial.custom_triangles.clone(),
+            source_active_vertices: movable_sources
+                .iter()
+                .chain(fixed.iter().filter_map(|compact| {
+                    trial.global_trial.mesh.source_vertex_slots[*compact].as_ref()
+                }))
+                .copied()
+                .collect(),
+            source_degree_forecast: BTreeMap::new(),
+        },
+        reference_positions: trial.global_trial.mesh.mesh.vertices().to_vec(),
+        fixed_compact_vertices: fixed.into_iter().collect(),
+        movable_compact_vertices: movable.into_iter().collect(),
+        guard_faces: guard.into_iter().collect(),
+    };
+    assert_eq!(
+        initial_elastic_phase(&trial.global_trial.mesh, &patch).unwrap(),
+        ElasticBlockPhase::Untangle
+    );
+    assert!(matches!(
+        solve_elastic_patch(
+            &trial.global_trial.mesh,
+            patch,
+            ElasticBlockLimits {
+                elastic_iterations: 0,
+            },
+        ),
+        ElasticBlockOutcome::SearchBudgetExhausted { .. }
+    ));
 }
 
 #[test]

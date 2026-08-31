@@ -101,6 +101,30 @@ fn n6_full_polygon_sector_counts_match_taskbook() {
 }
 
 #[test]
+fn n6_full_polygon_source_geometry_hints_are_populated() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let families = enumerate_full_polygon_families(&source, &component).unwrap();
+    let hinted = families
+        .iter()
+        .flat_map(|family| &family.topologies)
+        .filter(|topology| !topology.diagonals.is_empty())
+        .count();
+    assert!(hinted > 0);
+    assert!(families
+        .iter()
+        .flat_map(|family| &family.topologies)
+        .all(|topology| topology.geometry_hints.len() == topology.diagonals.len()));
+    assert!(families
+        .iter()
+        .flat_map(|family| family.topologies.windows(2))
+        .all(|pair| pair[0].geometry_key <= pair[1].geometry_key));
+    assert!(families
+        .iter()
+        .flat_map(|family| &family.topologies)
+        .any(|topology| topology.geometry_key.needs_untangle()));
+}
+
+#[test]
 fn pr39_incidence_domains_match_full_polygon_enumerator() {
     let (source, component) = n6_legacy_mixed_fixture().unwrap();
     let families = enumerate_full_polygon_families(&source, &component).unwrap();
