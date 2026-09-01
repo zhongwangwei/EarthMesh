@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR66
+## Frozen N6 evidence through PR67
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -47,6 +47,22 @@ optimization. W4 is therefore disabled.
   returns the certified safe mother fallback at
   `54.361673298250--72.000000000000` degrees. No strict mixed collar candidate
   exists under the current support decomposition.
+- PR67: the safe fallback passes internal and final angle windows, anchor and
+  ordinary degree gates, link/edge/Euler/charge, Delaunay/Voronoi, physical,
+  balance, and remap with zero residuals. Its final counts are `V=362`,
+  `E=1080`, `F=720`, but it retains zero coarse parents and has compression
+  ratio `1.0`. The Frozen N6 strict mixed gate therefore fails only on
+  `mixed_levels_delivered`; PR68 and PR69 are not started.
+
+## Current stop condition
+
+CLDP now guarantees a finite certified safe result for the Frozen N6 fixture,
+but not a non-trivial mixed result. The current violation provenance is too
+conservative: restoring any registered component removes every compressed leaf.
+Future work must first split the source support into exact, non-overlapping
+custom-face coverage or introduce a collar topology that retains at least one
+coarse parent. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen
+N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
