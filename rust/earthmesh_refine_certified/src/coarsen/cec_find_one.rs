@@ -123,6 +123,7 @@ pub struct EssentialCycleFindOneEvidence {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanEvaluation {
+    AuditOnly,
     Accepted(Box<FullPolygonMergeTrial>),
     RejectedExact {
         evidence: FullPolygonMergeEvidence,
@@ -1020,6 +1021,7 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 evaluation
             });
         match evaluation {
+            PlanEvaluation::AuditOnly => None,
             PlanEvaluation::Accepted(trial) => {
                 self.evidence.downstream_states_examined += trial.evidence.states_examined;
                 Some(Found { cycle, plan, trial })

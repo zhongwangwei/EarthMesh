@@ -2,14 +2,15 @@
 
 use super::{
     audit_face_band_boundaries, audit_legacy_downstream_preflight, build_essential_cycle_problem,
-    build_face_band_problem, face_band_evidence_json, n12_interior_control_fixture,
-    n12_lifted_n6_fixture, prove_essential_cycle_family, solve_exact_face_bands,
-    solve_full_polygon_merge_from_face_bands, BandBoundaryAudit, BandBoundaryAuditSummary,
-    CertifiedResearchFixture, DownstreamEvaluationCache, DownstreamPreflightOutcome,
-    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, EssentialCycleKey,
-    ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence, FaceBandLimits, FaceBandPlan,
-    FaceBandPlanEvaluator, FaceBandSolveOutcome, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    FullPolygonPlanEvaluator, PlanEvaluation, RetainedCoreCorridorFamily,
+    build_face_band_problem, build_plan_band_domains, face_band_evidence_json,
+    n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, BandBoundaryAudit,
+    BandBoundaryAuditSummary, CertifiedResearchFixture, DownstreamEvaluationCache,
+    DownstreamPreflightOutcome, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
+    EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
+    FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
+    PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -613,6 +614,134 @@ pub fn n12_lifted_band_failure_audit_json(
         all_rejections_histogrammed,
         summary.conclusion().as_str(),
     ))
+}
+
+pub fn n12_lifted_plan_band_domain_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = PlanBandDomainAuditingEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        cycles_observed: 0,
+        plans_built: 0,
+        bands_built: 0,
+        annular_bands: 0,
+        contracted_band0: 0,
+        first_boundary_sizes: None,
+        errors: BTreeMap::new(),
+    };
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let expected_bands = evidence.essential_cycles.saturating_mul(2);
+    let gate_passed = evaluator.cycles_observed == evidence.essential_cycles
+        && evaluator.plans_built == evidence.essential_cycles
+        && evaluator.bands_built == expected_bands
+        && evaluator.annular_bands == expected_bands
+        && evaluator.contracted_band0 == evidence.essential_cycles
+        && evaluator.errors.is_empty();
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(error, count)| format!("{}:{count}", json_string(error)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let boundary_sizes = evaluator.first_boundary_sizes.map_or_else(
+        || "null".into(),
+        |(band0_topology, band0_source, internal, fine)| {
+            format!(
+                "{{\"band0_topology\":{band0_topology},\"band0_source\":{band0_source},\"internal\":{internal},\"fine\":{fine}}}"
+            )
+        },
+    );
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"cb911eef1de3593df10d042bf72ce3707080d2b521ceb074d36b8b05cfe4b63e\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+PlanBandDomainAuditOnly\",\"limits\":{{\"cycle_unique_states\":{},\"downstream_topology_states\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_observed\":{},\"plans_built\":{},\"bands_built\":{},\"annular_bands\":{},\"contracted_band0\":{},\"first_boundary_edge_counts\":{},\"errors\":{{{}}},\"gate_passed\":{},\"cec_outcome\":\"{}\",\"coupled_annulus_used\":false,\"sectors_built\":false,\"full_polygon_run\":false,\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_observed,
+        evaluator.plans_built,
+        evaluator.bands_built,
+        evaluator.annular_bands,
+        evaluator.contracted_band0,
+        boundary_sizes,
+        errors,
+        gate_passed,
+        evidence.outcome.as_str(),
+    ))
+}
+
+struct PlanBandDomainAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    cycles_observed: u64,
+    plans_built: u64,
+    bands_built: u64,
+    annular_bands: u64,
+    contracted_band0: u64,
+    first_boundary_sizes: Option<(usize, usize, usize, usize)>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl FaceBandPlanEvaluator for PlanBandDomainAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, _: &EssentialCycleKey, plan: &FaceBandPlan) {
+        self.cycles_observed += 1;
+        match build_plan_band_domains(self.source, self.component, plan) {
+            Ok(bands) => {
+                self.plans_built += 1;
+                self.bands_built += bands.len() as u64;
+                self.annular_bands += bands
+                    .iter()
+                    .filter(|band| band.topology_kind == PlanBandTopologyKind::Annulus)
+                    .count() as u64;
+                if let Some(band0) = bands.first() {
+                    if matches!(
+                        band0.lower_boundary,
+                        TopologyBoundary::ContractedCoarseCycle { .. }
+                    ) {
+                        self.contracted_band0 += 1;
+                    }
+                }
+                if self.first_boundary_sizes.is_none() && bands.len() == 2 {
+                    self.first_boundary_sizes = Some((
+                        bands[0].lower_boundary.topology_vertices().len(),
+                        bands[0].lower_boundary.source_edges().len(),
+                        bands[0].upper_boundary.source_edges().len(),
+                        bands[1].upper_boundary.source_edges().len(),
+                    ));
+                }
+            }
+            Err(error) => *self.errors.entry(format!("{error:?}")).or_default() += 1,
+        }
+    }
+
+    fn evaluate(&mut self, _: &FaceBandPlan) -> PlanEvaluation {
+        PlanEvaluation::AuditOnly
+    }
 }
 
 struct BandAuditingEvaluator<'a> {
