@@ -101,6 +101,7 @@ enum ElasticSolverMode {
     FiniteDifferenceElastic,
     MarginFiniteDifferenceLexicographic,
     ActiveTangentTrust,
+    MaxMinTangentTrust,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +119,26 @@ struct LocalAngleGradient {
 struct ActiveTrustStep {
     updates: Vec<(usize, CartesianPoint, CartesianPoint)>,
     predicted_margin_delta: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxMinTrustOutcomeKind {
+    Step,
+    FirstOrderStationary,
+    ContinuousIncomplete,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaxMinKktEvidence {
+    pub outcome: MaxMinTrustOutcomeKind,
+    pub active_constraints: usize,
+    pub orientation_guards: usize,
+    pub projection_sweeps: usize,
+    pub current_slack_deg: f64,
+    pub achieved_slack_deg: f64,
+    pub linearized_upper_bound_deg: f64,
+    pub regularized_objective: f64,
+    pub projected_stationarity_norm: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1154,6 +1175,22 @@ pub fn solve_elastic_patch_with_active_trust_start_and_scale(
     )
 }
 
+pub fn solve_elastic_patch_with_max_min_trust_start(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    start_id: GeometryStartId,
+) -> ElasticBlockOutcome {
+    solve_elastic_patch_impl(
+        source,
+        patch,
+        limits,
+        start_id,
+        ElasticSolverMode::MaxMinTangentTrust,
+        1.0,
+    )
+}
+
 fn solve_elastic_patch_impl(
     source: &HierarchyLeafMesh,
     patch: ElasticPatch,
@@ -1262,13 +1299,20 @@ fn solve_elastic_patch_impl(
         };
         energy = phase_energy;
 
-        if solver_mode == ElasticSolverMode::ActiveTangentTrust
-            && matches!(phase, ElasticBlockPhase::AngleFeasibility)
+        if matches!(
+            solver_mode,
+            ElasticSolverMode::ActiveTangentTrust | ElasticSolverMode::MaxMinTangentTrust
+        ) && matches!(phase, ElasticBlockPhase::AngleFeasibility)
         {
             let before = current.mesh.clone();
-            let Some(step_plan) =
-                active_trust_angle_step(&before, &patch, &context, &guard_faces, trust_radius)
-            else {
+            let Some(step_plan) = active_trust_angle_step(
+                &before,
+                &patch,
+                &context,
+                &guard_faces,
+                trust_radius,
+                solver_mode,
+            ) else {
                 return no_step(&current, iteration, energy);
             };
             let trust_update = apply_active_trust_step(
@@ -2976,10 +3020,20 @@ fn select_active_constraints(
 
 #[derive(Clone, Debug)]
 struct ActiveTrustRow {
-    residual: f64,
-    weight: f64,
     coefficients: Vec<(usize, f64)>,
     constraint: AngleConstraintKey,
+}
+
+#[derive(Clone, Debug)]
+struct OrientationGuardRow {
+    current: f64,
+    minimum: f64,
+    coefficients: Vec<(usize, f64)>,
+}
+
+struct LinearizedMaxMinSolution {
+    delta: Vec<f64>,
+    evidence: MaxMinKktEvidence,
 }
 
 fn active_trust_angle_step(
@@ -2988,12 +3042,26 @@ fn active_trust_angle_step(
     _context: &EnergyContext,
     _guard_faces: &BTreeSet<usize>,
     trust_radius: f64,
+    solver_mode: ElasticSolverMode,
 ) -> Option<ActiveTrustStep> {
     let active = active_angle_constraints(mesh, mesh.active_triangle_slots())?;
     let variables = active_trust_variables(mesh, patch)?;
-    let rows = active_trust_rows(mesh, &active, &variables)?;
-    let lambda = 1.0e-3;
-    let mut delta = solve_damped_normal_equations(&rows, variables.len() * 2, lambda)?;
+    let rows = active_trust_rows(
+        mesh,
+        &active,
+        &variables,
+        solver_mode == ElasticSolverMode::MaxMinTangentTrust,
+    )?;
+    let guards = orientation_guard_rows(mesh, &variables)?;
+    let mut delta = match solver_mode {
+        ElasticSolverMode::ActiveTangentTrust => {
+            solve_damped_normal_equations(&rows, variables.len() * 2, 1.0e-3)?
+        }
+        ElasticSolverMode::MaxMinTangentTrust => {
+            solve_linearized_max_min(&rows, &guards, variables.len() * 2, trust_radius)?.delta
+        }
+        _ => return None,
+    };
     clamp_trust_per_vertex(&mut delta, trust_radius);
     let mut updates = Vec::new();
     let mut delta_by_site = BTreeMap::<usize, CartesianPoint>::new();
@@ -3014,25 +3082,29 @@ fn active_trust_angle_step(
     if updates.is_empty() {
         return None;
     }
+    // Keep deterministic row assembly tied to the same sites used for updates.
+    let _updated_sites = delta_by_site.len();
     let current_margin = active
         .iter()
         .map(|constraint| constraint.signed_margin_deg)
         .min_by(f64::total_cmp)?;
-    let mut predicted_margin = f64::INFINITY;
-    for row in &rows {
-        let linear_delta = row
-            .coefficients
-            .iter()
-            .map(|&(column, value)| value * delta[column])
-            .sum::<f64>();
-        predicted_margin = predicted_margin.min(row.constraint.signed_margin_deg + linear_delta);
-    }
-    // Keep deterministic row assembly tied to the same sites used for updates.
-    let _updated_sites = delta_by_site.len();
     Some(ActiveTrustStep {
         updates,
-        predicted_margin_delta: predicted_margin - current_margin,
+        predicted_margin_delta: linearized_slack(&rows, &delta) - current_margin,
     })
+}
+
+pub fn max_min_trust_step_evidence(
+    mesh: &MeshState,
+    patch: &ElasticPatch,
+    trust_radius: f64,
+) -> Option<MaxMinKktEvidence> {
+    let active = active_angle_constraints(mesh, mesh.active_triangle_slots())?;
+    let variables = active_trust_variables(mesh, patch)?;
+    let rows = active_trust_rows(mesh, &active, &variables, true)?;
+    let guards = orientation_guard_rows(mesh, &variables)?;
+    solve_linearized_max_min(&rows, &guards, variables.len() * 2, trust_radius)
+        .map(|solution| solution.evidence)
 }
 
 #[derive(Clone, Debug)]
@@ -3064,6 +3136,7 @@ fn active_trust_rows(
     mesh: &MeshState,
     active: &[AngleConstraintKey],
     variables: &[ActiveTrustVariable],
+    retain_fixed_constraints: bool,
 ) -> Option<Vec<ActiveTrustRow>> {
     let variable_slots = variables
         .iter()
@@ -3081,17 +3154,59 @@ fn active_trust_rows(
             coefficients.push((variable_index * 2, dot(gradient, variable.basis[0])));
             coefficients.push((variable_index * 2 + 1, dot(gradient, variable.basis[1])));
         }
-        if coefficients.iter().any(|&(_, value)| value.abs() > 1.0e-14) {
-            let violation = (-constraint.signed_margin_deg).max(0.0);
+        if retain_fixed_constraints || coefficients.iter().any(|&(_, value)| value.abs() > 1.0e-14)
+        {
             rows.push(ActiveTrustRow {
-                residual: constraint.signed_margin_deg.min(0.0),
-                weight: 1.0 + violation.min(100.0),
                 coefficients,
                 constraint: constraint.clone(),
             });
         }
     }
     (!rows.is_empty()).then_some(rows)
+}
+
+fn orientation_guard_rows(
+    mesh: &MeshState,
+    variables: &[ActiveTrustVariable],
+) -> Option<Vec<OrientationGuardRow>> {
+    const MINIMUM_ORIENTATION: f64 = 1.0e-12;
+    const GUARDED_ORIENTATION: f64 = 1.0e-4;
+    let variable_slots = variables
+        .iter()
+        .enumerate()
+        .map(|(index, variable)| (variable.site, index))
+        .collect::<BTreeMap<_, _>>();
+    let mut guards = Vec::new();
+    for face in mesh.active_triangle_slots() {
+        let [a, b, c] = mesh.triangles()[face];
+        let [Some(pa), Some(pb), Some(pc)] =
+            [a, b, c].map(|site| normalized_point(mesh.vertices()[site]))
+        else {
+            return None;
+        };
+        let current = dot(pa, cross(pb, pc));
+        if current > GUARDED_ORIENTATION {
+            continue;
+        }
+        let derivatives = [(a, cross(pb, pc)), (b, cross(pc, pa)), (c, cross(pa, pb))];
+        let mut coefficients = Vec::new();
+        for (site, derivative) in derivatives {
+            let Some(&variable) = variable_slots.get(&site) else {
+                continue;
+            };
+            coefficients.push((variable * 2, dot(derivative, variables[variable].basis[0])));
+            coefficients.push((
+                variable * 2 + 1,
+                dot(derivative, variables[variable].basis[1]),
+            ));
+        }
+        guards.push(OrientationGuardRow {
+            current,
+            minimum: MINIMUM_ORIENTATION,
+            coefficients,
+        });
+    }
+    Some(guards)
 }
 
 fn solve_damped_normal_equations(
@@ -3104,11 +3219,10 @@ fn solve_damped_normal_equations(
     }
     let mut rhs = vec![0.0; columns];
     for row in rows {
-        if !row.residual.is_finite() || !row.weight.is_finite() || row.weight <= 0.0 {
-            return None;
-        }
+        let residual = row.constraint.signed_margin_deg.min(0.0);
+        let weight = 1.0 + (-row.constraint.signed_margin_deg).clamp(0.0, 100.0);
         for &(column, value) in &row.coefficients {
-            rhs[column] -= row.weight * value * row.residual;
+            rhs[column] -= weight * value * residual;
         }
     }
     conjugate_gradient_normal(rows, &rhs, lambda, columns)
@@ -3121,61 +3235,300 @@ fn conjugate_gradient_normal(
     columns: usize,
 ) -> Option<Vec<f64>> {
     let mut x = vec![0.0; columns];
-    let mut r = rhs.to_vec();
-    let mut p = r.clone();
-    let mut rs_old = dot_slice(&r, &r);
-    if !rs_old.is_finite() {
+    let mut residual = rhs.to_vec();
+    let mut direction = residual.clone();
+    let mut norm_squared = dot_slice(&residual, &residual);
+    if !norm_squared.is_finite() {
         return None;
     }
-    if rs_old.sqrt() <= 1.0e-14 {
+    if norm_squared.sqrt() <= 1.0e-14 {
         return Some(x);
     }
     for _ in 0..(columns * 4).max(16) {
-        let ap = apply_damped_normal(rows, &p, lambda, columns);
-        let denom = dot_slice(&p, &ap);
-        if denom <= 1.0e-30 || !denom.is_finite() {
+        let applied = apply_damped_normal(rows, &direction, lambda, columns);
+        let denominator = dot_slice(&direction, &applied);
+        if denominator <= 1.0e-30 || !denominator.is_finite() {
             return None;
         }
-        let alpha = rs_old / denom;
-        for i in 0..columns {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+        let alpha = norm_squared / denominator;
+        for column in 0..columns {
+            x[column] += alpha * direction[column];
+            residual[column] -= alpha * applied[column];
         }
-        let rs_new = dot_slice(&r, &r);
-        if !rs_new.is_finite() {
+        let next_norm_squared = dot_slice(&residual, &residual);
+        if !next_norm_squared.is_finite() {
             return None;
         }
-        if rs_new.sqrt() <= 1.0e-10 * rhs.len().max(1) as f64 {
+        if next_norm_squared.sqrt() <= 1.0e-10 * rhs.len().max(1) as f64 {
             break;
         }
-        let beta = rs_new / rs_old;
-        for i in 0..columns {
-            p[i] = r[i] + beta * p[i];
+        let beta = next_norm_squared / norm_squared;
+        for column in 0..columns {
+            direction[column] = residual[column] + beta * direction[column];
         }
-        rs_old = rs_new;
+        norm_squared = next_norm_squared;
     }
     Some(x)
 }
 
 fn apply_damped_normal(
     rows: &[ActiveTrustRow],
-    x: &[f64],
+    vector: &[f64],
     lambda: f64,
     columns: usize,
 ) -> Vec<f64> {
-    let mut result = x.iter().map(|value| lambda * value).collect::<Vec<_>>();
+    let mut result = vector
+        .iter()
+        .map(|value| lambda * value)
+        .collect::<Vec<_>>();
     result.resize(columns, 0.0);
     for row in rows {
-        let ax = row
-            .coefficients
-            .iter()
-            .map(|&(column, value)| value * x[column])
-            .sum::<f64>();
+        let weight = 1.0 + (-row.constraint.signed_margin_deg).clamp(0.0, 100.0);
+        let product = dot_sparse(&row.coefficients, vector);
         for &(column, value) in &row.coefficients {
-            result[column] += row.weight * value * ax;
+            result[column] += weight * value * product;
         }
     }
     result
+}
+
+fn solve_linearized_max_min(
+    rows: &[ActiveTrustRow],
+    guards: &[OrientationGuardRow],
+    columns: usize,
+    trust_radius: f64,
+) -> Option<LinearizedMaxMinSolution> {
+    const BISECTION_STEPS: usize = 32;
+    const MAX_PROJECTION_SWEEPS: usize = 96;
+    const REGULARIZATION: f64 = 1.0e-3;
+    const FEASIBILITY_TOLERANCE: f64 = 1.0e-9;
+    if columns == 0 || rows.is_empty() || !trust_radius.is_finite() || trust_radius <= 0.0 {
+        return None;
+    }
+    let current_slack = rows
+        .iter()
+        .map(|row| row.constraint.signed_margin_deg)
+        .min_by(f64::total_cmp)?;
+    let linearized_upper_bound = rows
+        .iter()
+        .map(|row| {
+            row.constraint.signed_margin_deg
+                + row
+                    .coefficients
+                    .chunks(2)
+                    .map(|pair| {
+                        let first = pair[0].1;
+                        let second = pair.get(1).map_or(0.0, |value| value.1);
+                        trust_radius * first.hypot(second)
+                    })
+                    .sum::<f64>()
+        })
+        .min_by(f64::total_cmp)?;
+    if !linearized_upper_bound.is_finite() {
+        return None;
+    }
+
+    let mut lower = current_slack;
+    let mut upper = linearized_upper_bound.max(lower);
+    let mut best = vec![0.0; columns];
+    let mut total_sweeps = 0;
+    for _ in 0..BISECTION_STEPS {
+        let target = 0.5 * (lower + upper);
+        let Some((candidate, sweeps)) = project_to_linearized_slack(
+            rows,
+            guards,
+            target,
+            &best,
+            trust_radius,
+            MAX_PROJECTION_SWEEPS,
+            FEASIBILITY_TOLERANCE,
+        ) else {
+            upper = target;
+            continue;
+        };
+        total_sweeps += sweeps;
+        let candidate_slack = linearized_slack(rows, &candidate);
+        let candidate_objective =
+            candidate_slack - 0.5 * REGULARIZATION * dot_slice(&candidate, &candidate);
+        let best_objective =
+            linearized_slack(rows, &best) - 0.5 * REGULARIZATION * dot_slice(&best, &best);
+        if candidate_objective >= best_objective {
+            best = candidate;
+        }
+        lower = target.min(candidate_slack);
+    }
+
+    let achieved_slack = linearized_slack(rows, &best);
+    let projected_stationarity_norm =
+        projected_stationarity_norm(rows, guards, &best, trust_radius, REGULARIZATION);
+    let active_constraints = rows
+        .iter()
+        .filter(|row| {
+            row.constraint.signed_margin_deg + dot_sparse(&row.coefficients, &best)
+                <= achieved_slack + 1.0e-7
+        })
+        .count();
+    let outcome = if achieved_slack > current_slack + 1.0e-10 {
+        MaxMinTrustOutcomeKind::Step
+    } else if projected_stationarity_norm <= 1.0e-8 {
+        MaxMinTrustOutcomeKind::FirstOrderStationary
+    } else {
+        MaxMinTrustOutcomeKind::ContinuousIncomplete
+    };
+    Some(LinearizedMaxMinSolution {
+        evidence: MaxMinKktEvidence {
+            outcome,
+            active_constraints,
+            orientation_guards: guards.len(),
+            projection_sweeps: total_sweeps,
+            current_slack_deg: current_slack,
+            achieved_slack_deg: achieved_slack,
+            linearized_upper_bound_deg: linearized_upper_bound,
+            regularized_objective: achieved_slack - 0.5 * REGULARIZATION * dot_slice(&best, &best),
+            projected_stationarity_norm,
+        },
+        delta: best,
+    })
+}
+
+fn project_to_linearized_slack(
+    rows: &[ActiveTrustRow],
+    guards: &[OrientationGuardRow],
+    target: f64,
+    seed: &[f64],
+    trust_radius: f64,
+    maximum_sweeps: usize,
+    tolerance: f64,
+) -> Option<(Vec<f64>, usize)> {
+    let mut delta = seed.to_vec();
+    for sweep in 1..=maximum_sweeps {
+        for row in rows {
+            project_halfspace(
+                &mut delta,
+                &row.coefficients,
+                target - row.constraint.signed_margin_deg,
+            )?;
+            clamp_trust_per_vertex(&mut delta, trust_radius);
+        }
+        for guard in guards {
+            project_halfspace(
+                &mut delta,
+                &guard.coefficients,
+                guard.minimum - guard.current,
+            )?;
+            clamp_trust_per_vertex(&mut delta, trust_radius);
+        }
+        if maximum_linearized_violation(rows, guards, target, &delta) <= tolerance {
+            return Some((delta, sweep));
+        }
+    }
+    None
+}
+
+fn project_halfspace(delta: &mut [f64], coefficients: &[(usize, f64)], minimum: f64) -> Option<()> {
+    let current = dot_sparse(coefficients, delta);
+    if current >= minimum {
+        return Some(());
+    }
+    let norm_squared = coefficients
+        .iter()
+        .map(|(_, value)| value * value)
+        .sum::<f64>();
+    if norm_squared <= 1.0e-30 || !norm_squared.is_finite() {
+        return None;
+    }
+    let scale = (minimum - current) / norm_squared;
+    for &(column, value) in coefficients {
+        delta[column] += scale * value;
+    }
+    delta.iter().all(|value| value.is_finite()).then_some(())
+}
+
+fn maximum_linearized_violation(
+    rows: &[ActiveTrustRow],
+    guards: &[OrientationGuardRow],
+    target: f64,
+    delta: &[f64],
+) -> f64 {
+    let angle = rows
+        .iter()
+        .map(|row| {
+            (target - row.constraint.signed_margin_deg - dot_sparse(&row.coefficients, delta))
+                .max(0.0)
+        })
+        .max_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    let orientation = guards
+        .iter()
+        .map(|guard| {
+            (guard.minimum - guard.current - dot_sparse(&guard.coefficients, delta)).max(0.0)
+        })
+        .max_by(f64::total_cmp)
+        .unwrap_or(0.0);
+    angle.max(orientation)
+}
+
+fn linearized_slack(rows: &[ActiveTrustRow], delta: &[f64]) -> f64 {
+    rows.iter()
+        .map(|row| row.constraint.signed_margin_deg + dot_sparse(&row.coefficients, delta))
+        .min_by(f64::total_cmp)
+        .unwrap_or(f64::NEG_INFINITY)
+}
+
+fn projected_stationarity_norm(
+    rows: &[ActiveTrustRow],
+    guards: &[OrientationGuardRow],
+    delta: &[f64],
+    trust_radius: f64,
+    regularization: f64,
+) -> f64 {
+    let slack = linearized_slack(rows, delta);
+    let active = rows
+        .iter()
+        .filter(|row| {
+            row.constraint.signed_margin_deg + dot_sparse(&row.coefficients, delta)
+                <= slack + 1.0e-7
+        })
+        .collect::<Vec<_>>();
+    if active.is_empty() {
+        return f64::INFINITY;
+    }
+    let mut gradient = delta
+        .iter()
+        .map(|value| -regularization * value)
+        .collect::<Vec<_>>();
+    let weight = 1.0 / active.len() as f64;
+    for row in active {
+        for &(column, value) in &row.coefficients {
+            gradient[column] += weight * value;
+        }
+    }
+    let mut projected = delta
+        .iter()
+        .zip(&gradient)
+        .map(|(value, gradient)| value + gradient)
+        .collect::<Vec<_>>();
+    clamp_trust_per_vertex(&mut projected, trust_radius);
+    for guard in guards {
+        let _ = project_halfspace(
+            &mut projected,
+            &guard.coefficients,
+            guard.minimum - guard.current,
+        );
+    }
+    projected
+        .iter()
+        .zip(delta)
+        .map(|(left, right)| (left - right) * (left - right))
+        .sum::<f64>()
+        .sqrt()
+}
+
+fn dot_sparse(coefficients: &[(usize, f64)], vector: &[f64]) -> f64 {
+    coefficients
+        .iter()
+        .map(|&(column, value)| value * vector[column])
+        .sum()
 }
 
 fn dot_slice(left: &[f64], right: &[f64]) -> f64 {
@@ -3630,11 +3983,9 @@ mod tests {
     }
 
     #[test]
-    fn active_trust_solver_solves_damped_normal_equations() {
+    fn max_min_step_improves_worst_margin() {
         let rows = vec![
             ActiveTrustRow {
-                residual: -1.0,
-                weight: 1.0,
                 coefficients: vec![(0, 1.0), (1, 1.0)],
                 constraint: AngleConstraintKey {
                     face: 0,
@@ -3644,8 +3995,6 @@ mod tests {
                 },
             },
             ActiveTrustRow {
-                residual: -2.0,
-                weight: 1.0,
                 coefficients: vec![(0, 1.0), (1, -1.0)],
                 constraint: AngleConstraintKey {
                     face: 1,
@@ -3655,10 +4004,59 @@ mod tests {
                 },
             },
         ];
-        let solved = solve_damped_normal_equations(&rows, 2, 0.0_f64.max(1.0e-6)).unwrap();
-        // With negligible damping, equations x+y=1 and x-y=2 give x=1.5, y=-0.5.
-        assert!((solved[0] - 1.5).abs() < 1.0e-5);
-        assert!((solved[1] + 0.5).abs() < 1.0e-5);
+        let solved = solve_linearized_max_min(&rows, &[], 2, 2.0).unwrap();
+        assert!(solved.evidence.achieved_slack_deg > -1.0);
+        assert_eq!(solved.evidence.outcome, MaxMinTrustOutcomeKind::Step);
+    }
+
+    #[test]
+    fn least_squares_can_worsen_worst_margin_fixture() {
+        let least_squares_delta: f64 = (1.0 - 90.0) / 10_001.0;
+        let before = -1.0_f64.min(-0.9);
+        let after = (-1.0 + least_squares_delta).min(-0.9 - 100.0 * least_squares_delta);
+        assert!(after < before);
+    }
+
+    #[test]
+    fn orientation_guard_rejects_bad_step() {
+        let rows = vec![ActiveTrustRow {
+            coefficients: vec![(0, 1.0), (1, 0.0)],
+            constraint: AngleConstraintKey {
+                face: 0,
+                corner: 0,
+                angle_deg: 39.2,
+                signed_margin_deg: -1.0,
+            },
+        }];
+        let guards = vec![OrientationGuardRow {
+            current: 0.1,
+            minimum: 0.01,
+            coefficients: vec![(0, -1.0)],
+        }];
+        let solved = solve_linearized_max_min(&rows, &guards, 2, 1.0).unwrap();
+        assert!(solved.delta[0] <= 0.09 + 1.0e-9);
+        assert!(
+            guards[0].current + dot_sparse(&guards[0].coefficients, &solved.delta) >= 0.01 - 1.0e-9
+        );
+    }
+
+    #[test]
+    fn kkt_stationary_is_not_global_nogo() {
+        let rows = vec![ActiveTrustRow {
+            coefficients: vec![(0, 0.0), (1, 0.0)],
+            constraint: AngleConstraintKey {
+                face: 0,
+                corner: 0,
+                angle_deg: 39.2,
+                signed_margin_deg: -1.0,
+            },
+        }];
+        let solved = solve_linearized_max_min(&rows, &[], 2, 1.0).unwrap();
+        assert_eq!(
+            solved.evidence.outcome,
+            MaxMinTrustOutcomeKind::FirstOrderStationary
+        );
+        assert!(solved.evidence.achieved_slack_deg < 0.0);
     }
 
     #[test]

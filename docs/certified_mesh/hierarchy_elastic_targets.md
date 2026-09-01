@@ -298,3 +298,18 @@ candidates per domain but cannot leave `Untangle`. Its best +1/+2 angle ranges
 are respectively `0.016745201577--179.918785972103` and
 `0.051225122152--179.845918790626` degrees. These runs do not improve the
 retained `38.551143486745--81.453074281139`-degree incumbent.
+
+## PR62 W2 linearized max-min trust solve
+
+PR62 preserves the PR52 `PlusTwoOrdinaryRings` incumbent as the immutable
+starting point and adds a separate `MaxMinTangentTrust` path. Its linearized
+subproblem carries an explicit worst-margin slack, per-vertex tangent trust
+balls, near-degenerate orientation halfspaces, deterministic active rows, and
+projected stationarity evidence. The legacy active least-squares path remains
+available solely to reconstruct the frozen incumbent.
+
+On Frozen N6, 128 max-min iterations improve the range from
+`38.551143486745--81.453074281139` to
+`39.278499430048--80.721500570507` degrees. The internal signed margin improves
+from `-1.653074281139` to `-0.921500570507` degrees, satisfying the PR62
+material-improvement gate without claiming strict feasibility.
