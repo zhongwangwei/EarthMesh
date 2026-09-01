@@ -137,8 +137,10 @@ pub use promotion::{
     RestoredSourcePatch,
 };
 pub use retained_core::{
-    plan_retained_core_subsets, retained_core_search_plan_json, RetainedCoreCandidate,
-    RetainedCoreSearchPlan,
+    plan_retained_core_subsets, retained_core_search_plan_json,
+    retained_core_topology_evidence_json, solve_retained_core_topology, RetainedCoreCandidate,
+    RetainedCoreSearchPlan, RetainedCoreTopologyEvidence, RetainedCoreTopologyLimits,
+    RetainedCoreTopologyOutcome, RetainedCoreTopologyOutcomeKind,
 };
 pub use rotation_width_audit::{
     audit_coupled_rotation_aware_width, audit_rotation_aware_width,
