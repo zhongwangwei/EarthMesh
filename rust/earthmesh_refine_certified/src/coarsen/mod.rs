@@ -22,6 +22,7 @@ mod promotion;
 mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
+mod sector_recovery;
 mod stratified_annulus;
 mod transition_feasibility;
 mod transition_topology;
@@ -151,6 +152,10 @@ pub use rotation_width_audit::{
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+};
+pub use sector_recovery::{
+    build_sector_recovery_atlas, build_strict_recovery_atoms, ExactSectorCoverage, RecoveryAtom,
+    SectorRecoveryAtlas, SectorRecoveryError,
 };
 pub use stratified_annulus::{
     build_stratified_annulus, build_stratified_annulus_from_coupled,

@@ -16,13 +16,15 @@ use earthmesh_refine_certified::coarsen::{
     FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
     GeometryStartId, GlobalExactSelectedEar, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome,
+    PromotionLevel, PromotionOutcome, RecoveryAtom,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
 const TASKBOOK_SHA256: &str = "46d5f8d1ab439ce972186ba50798806b520fe9bdac3f675806d4cd18cff38e2b";
 const CLDP_TASKBOOK_SHA256: &str =
     "546a7b60ed8ad94e04f337bfb0c870ef9a2a40ea65545ebe2c256be967a8d722";
+const SEACR_TASKBOOK_SHA256: &str =
+    "5f9e16b4fb8f51935a0aebf9ce313c87ab4dc4a9761aaa53c51c98ab6d8cd6e0";
 const LEGACY_MARGIN_DEG: f64 = -1.653_074_281_139_495_8;
 const MATERIAL_IMPROVEMENT_DEG: f64 = 0.25;
 const DEFAULT_TOPOLOGY_STATES: usize = 500;
@@ -406,12 +408,110 @@ fn frozen_n6_pr63_violation_support_probe() {
     );
     assert!(atlas.custom_triangle_provenance.iter().all(|item| {
         item.precision
-            == earthmesh_refine_certified::coarsen::ProvenancePrecision::ConservativeSector
+            == earthmesh_refine_certified::coarsen::ProvenancePrecision::ConservativeSectorUpperBound
             && !item.covered_source_faces.is_empty()
             && !item.source_parents.is_empty()
     }));
     let json = format!(
         "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr63ViolationSupport\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"gate\":\"AllActiveAnglesHaveFiniteSourceSupport\",\"atlas\":{}}}",
+        violation_support_atlas_json(&atlas),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR73 exact-sector recovery gate"]
+fn frozen_n6_pr73_exact_sector_recovery_atlas_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+    assert_eq!(atlas.sector_recovery_atlas.sectors.len(), 14);
+    assert_eq!(
+        atlas
+            .sector_recovery_atlas
+            .source_face_owner
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        stratified
+            .coupled
+            .annulus_face_slots
+            .iter()
+            .copied()
+            .collect()
+    );
+    let strict_faces = atlas
+        .evidence_sets
+        .strict_violations
+        .iter()
+        .map(|angle| angle.face)
+        .collect::<BTreeSet<_>>();
+    let atom_faces = atlas
+        .recovery_atoms
+        .iter()
+        .flat_map(|atom| match atom {
+            RecoveryAtom::HierarchyLeaf { mixed_face, .. } => BTreeSet::from([*mixed_face]),
+            RecoveryAtom::Sector { mixed_faces, .. } => mixed_faces.clone(),
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(strict_faces.is_subset(&atom_faces));
+    let actual_custom_faces = mesh
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| mesh.triangle_addresses[face].is_none())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_custom_faces.len(),
+        atlas.sector_recovery_atlas.custom_face_owner.len()
+    );
+    let violating_custom_faces = strict_faces
+        .iter()
+        .filter(|&&face| mesh.triangle_addresses[face].is_none())
+        .count();
+    let violating_hierarchy_faces = strict_faces.len() - violating_custom_faces;
+    assert!(atlas.sector_recovery_atlas.sectors.values().all(|sector| {
+        sector.boundary_cycles.len() == 1
+            && sector
+                .source_area_interval
+                .sub_out(sector.custom_area_interval)
+                .contains(0.0)
+    }));
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr73ExactSectorRecoveryAtlas\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"ExactSectorPartitionUnambiguous\",\"mesh_unchanged\":true,\"strict_violation_angles\":{},\"strict_violation_faces\":{},\"violating_custom_faces\":{violating_custom_faces},\"violating_hierarchy_faces\":{violating_hierarchy_faces},\"exact_sectors\":{},\"annulus_source_faces\":{},\"custom_transition_faces\":{},\"recovery_atoms\":{},\"recovery_atom_mixed_faces\":{},\"atlas\":{}}}",
+        atlas.evidence_sets.strict_violations.len(),
+        strict_faces.len(),
+        atlas.sector_recovery_atlas.sectors.len(),
+        atlas.sector_recovery_atlas.source_face_owner.len(),
+        actual_custom_faces.len(),
+        atlas.recovery_atoms.len(),
+        atom_faces.len(),
         violation_support_atlas_json(&atlas),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {

@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR72
+## Frozen N6 evidence through PR73
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -70,16 +70,22 @@ optimization. W4 is therefore disabled.
   multi-hole, or whole-sphere topology by boundary count and Euler
   characteristic. A constructed annular ring retains its coarse parent with
   two boundary cycles and Euler characteristic zero.
+- PR73: the 14 incumbent full-polygon sectors exactly partition all 88 source
+  annulus faces and own all 64 custom transition triangles. The 109 strict
+  violation angles occupy 89 mixed faces: 45 custom and 44 hierarchy faces.
+  Every face maps uniquely to one exact sector or hierarchy leaf, producing 58
+  deterministic recovery atoms without changing the incumbent mesh. The 64
+  non-violating optimization guards create no recovery atoms.
 
 ## Current stop condition
 
 CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
 not a non-trivial mixed result. The retained-core search has no closed
 single-release topology and no closed pair-release topology; four pair cases
-remain search-budget unknown rather than proven impossible. PR73 is therefore
-not enabled because no retained subset reached geometry or improved the strict
-margin. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen N6
-returns `CertifiedAdaptive`.
+remain search-budget unknown rather than proven impossible. PR73 establishes a
+separate incumbent-preserving local family, so PR74 may now cluster its exact
+atoms using actual mixed-mesh adjacency. Larger N12/N24/N40 and NXP80 runs
+remain gated off until Frozen N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
