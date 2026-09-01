@@ -5,7 +5,7 @@ use earthmesh_refine_certified::coarsen::{
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, restore_source_patch,
     search_local_topology_neighbourhood, solve_elastic_patch_with_max_min_trust_start,
-    solve_exact_face_bands,
+    solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
     AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
@@ -14,7 +14,7 @@ use earthmesh_refine_certified::coarsen::{
     FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
     GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
     LocalTopologyEvidence, LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind,
-    PromotionLevel,
+    PromotionBudget, PromotionFailureReason, PromotionLevel, PromotionOutcome,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -517,6 +517,112 @@ fn frozen_n6_pr65_source_face_promotion_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR66 expanding-collar gate"]
+fn frozen_n6_pr66_expanding_collar_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let improved = GeometryFailureWitness {
+        mesh: mesh.clone(),
+        patch: patch.clone(),
+    };
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        &improved.mesh,
+        &improved.patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert_eq!(atlas.components.len(), 1);
+    let budget = PromotionBudget {
+        local_topology_states: 128,
+        local_geometry_iterations: usize_env("EARTHMESH_LOCAL_GEOMETRY_ITERATIONS", 32),
+        maximum_patch_rings: 2,
+        maximum_helper_vertices: 512,
+    };
+    let result = solve_expanding_collar(
+        &source,
+        &component,
+        &improved,
+        &atlas,
+        &atlas.components[0],
+        budget,
+    );
+    assert!(result
+        .trials
+        .windows(2)
+        .all(|pair| pair[0].level < pair[1].level));
+    let (gate, adaptive, final_range, final_vertices, final_faces) = match &result.outcome {
+        PromotionOutcome::Certified(trial) => {
+            assert!(trial.adaptive);
+            assert!(!trial.promotion_patch.protected_exterior_faces.is_empty());
+            (
+                "StrictLocalPromotion",
+                true,
+                Some((
+                    trial.geometry.min_angle_degrees,
+                    trial.geometry.max_angle_degrees,
+                )),
+                trial.geometry.vertices,
+                trial.geometry.faces,
+            )
+        }
+        PromotionOutcome::SafeMotherFallback(trial) => {
+            assert!(!trial.adaptive);
+            (
+                "CertifiedSafeFallback",
+                false,
+                Some((
+                    trial.geometry.min_angle_degrees,
+                    trial.geometry.max_angle_degrees,
+                )),
+                trial.geometry.vertices,
+                trial.geometry.faces,
+            )
+        }
+        PromotionOutcome::SearchBudgetExhausted { .. } => {
+            ("PromotionBudgetExhausted", false, None, 0, 0)
+        }
+        PromotionOutcome::NeedsLargerPatch { .. } => {
+            panic!("the expanding solver must consume its finite promotion ladder")
+        }
+        PromotionOutcome::InvalidInput(reason) => panic!("PR66 rejected its input: {reason}"),
+    };
+    let trials = result
+        .trials
+        .iter()
+        .map(promotion_trial_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let final_range = final_range
+        .map(|range| format!("[{:.12},{:.12}]", range.0, range.1))
+        .unwrap_or_else(|| "null".into());
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr66ExpandingCollar\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"budget\":{{\"local_topology_states\":{},\"local_geometry_iterations\":{},\"maximum_patch_rings\":{},\"maximum_helper_vertices\":{}}},\"gate\":\"{gate}\",\"adaptive\":{adaptive},\"final_angle_degrees\":{final_range},\"final_vertices\":{final_vertices},\"final_faces\":{final_faces},\"trials\":[{trials}]}}",
+        budget.local_topology_states,
+        budget.local_geometry_iterations,
+        budget.maximum_patch_rings,
+        budget.maximum_helper_vertices,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn elastic_outcome_geometry(
     outcome: &ElasticBlockOutcome,
 ) -> (
@@ -602,6 +708,36 @@ fn restored_patch_json(
         patch.source_mesh_fingerprint,
         patch.patch_fingerprint,
         restored.restored_fingerprint,
+    )
+}
+
+fn promotion_trial_json(
+    trial: &earthmesh_refine_certified::coarsen::PromotionTrialEvidence,
+) -> String {
+    let range = trial
+        .angle_range_deg
+        .map(|range| format!("[{:.12},{:.12}]", range.0, range.1))
+        .unwrap_or_else(|| "null".into());
+    let lambda = trial
+        .homotopy_lambda
+        .map(|lambda| format!("{lambda:.2}"))
+        .unwrap_or_else(|| "null".into());
+    let reason = match trial.reason.as_ref() {
+        None => "None",
+        Some(PromotionFailureReason::PatchBoundaryMismatch(_)) => "PatchBoundaryMismatch",
+        Some(PromotionFailureReason::HelperVertexBudget { .. }) => "HelperVertexBudget",
+        Some(PromotionFailureReason::OrientationGuard) => "OrientationGuard",
+        Some(PromotionFailureReason::GeometryNotCertified) => "GeometryNotCertified",
+        Some(PromotionFailureReason::NoCompressedExterior) => "NoCompressedExterior",
+    };
+    format!(
+        "{{\"level\":\"{:?}\",\"promoted_source_faces\":{},\"collar_source_faces\":{},\"helper_source_vertices\":{},\"homotopy_lambda\":{lambda},\"angle_degrees\":{range},\"strict\":{},\"protected_exterior_preserved\":{},\"reason\":\"{reason}\"}}",
+        trial.level,
+        trial.promoted_source_faces,
+        trial.collar_source_faces,
+        trial.helper_source_vertices,
+        trial.strict,
+        trial.protected_exterior_preserved,
     )
 }
 

@@ -62,11 +62,17 @@ pub fn build_promotion_patch(
     component: &ViolationComponent,
     level: PromotionLevel,
 ) -> Result<PromotionPatch, String> {
-    if !matches!(
-        level,
-        PromotionLevel::P1RestoreSourceFaces | PromotionLevel::P2RestoreOneParentRing
-    ) {
-        return Err("PR65 constructs only P1 or P2 promotion patches".into());
+    build_promotion_patch_for_transition(source, component, level, &BTreeSet::new())
+}
+
+pub fn build_promotion_patch_for_transition(
+    source: &MotherGrid,
+    component: &ViolationComponent,
+    level: PromotionLevel,
+    transition_parents: &BTreeSet<TriangleAddress>,
+) -> Result<PromotionPatch, String> {
+    if level == PromotionLevel::P0LocalTopologyOnly {
+        return Err("P0 does not restore source faces".into());
     }
     validate_source_faces(source, &component.source_faces)?;
     let interior_faces = fill_holes(
@@ -74,10 +80,30 @@ pub fn build_promotion_patch(
         connect_faces(source, component.source_faces.clone())?,
     );
     let mut source_faces = interior_faces.clone();
-    if level == PromotionLevel::P2RestoreOneParentRing {
-        source_faces = expand_one_parent_ring(source, &source_faces, &component.parent_faces)?;
-        source_faces = fill_holes(source, source_faces);
+    match level {
+        PromotionLevel::P0LocalTopologyOnly | PromotionLevel::P1RestoreSourceFaces => {}
+        PromotionLevel::P2RestoreOneParentRing => {
+            source_faces = expand_one_parent_ring(source, &source_faces, &component.parent_faces)?;
+        }
+        PromotionLevel::P3RestoreTwoParentRings => {
+            source_faces = expand_one_parent_ring(source, &source_faces, &component.parent_faces)?;
+            source_faces = expand_one_parent_ring(source, &source_faces, &BTreeSet::new())?;
+        }
+        PromotionLevel::P4RestoreWholeTransitionComponent => {
+            if transition_parents.is_empty() {
+                return Err("P4 requires the current transition-component parents".into());
+            }
+            source_faces = expand_one_parent_ring(source, &source_faces, &component.parent_faces)?;
+            source_faces = expand_one_parent_ring(source, &source_faces, &BTreeSet::new())?;
+            source_faces.extend(source.mesh.active_triangle_slots().filter(|&face| {
+                source_parent(source, face).is_ok_and(|parent| transition_parents.contains(&parent))
+            }));
+        }
+        PromotionLevel::P5SafeMotherFallback => {
+            source_faces = source.mesh.active_triangle_slots().collect();
+        }
     }
+    source_faces = fill_holes(source, connect_faces(source, source_faces)?);
     let collar_faces = source_faces
         .difference(&interior_faces)
         .copied()
@@ -488,6 +514,26 @@ mod tests {
         assert!(p1.source_faces.is_subset(&p2.source_faces));
         assert!(p1.level < p2.level);
         assert_eq!(p1.level.next(), Some(p2.level));
+    }
+
+    #[test]
+    fn full_promotion_ladder_only_expands() {
+        let source = MotherGrid::generate(4).unwrap();
+        let component = component(&source, BTreeSet::from([2]));
+        let transition = component.parent_faces.clone();
+        let levels = [
+            PromotionLevel::P1RestoreSourceFaces,
+            PromotionLevel::P2RestoreOneParentRing,
+            PromotionLevel::P3RestoreTwoParentRings,
+            PromotionLevel::P4RestoreWholeTransitionComponent,
+            PromotionLevel::P5SafeMotherFallback,
+        ];
+        let patches = levels.map(|level| {
+            build_promotion_patch_for_transition(&source, &component, level, &transition).unwrap()
+        });
+        assert!(patches
+            .windows(2)
+            .all(|pair| pair[0].source_faces.is_subset(&pair[1].source_faces)));
     }
 
     #[test]

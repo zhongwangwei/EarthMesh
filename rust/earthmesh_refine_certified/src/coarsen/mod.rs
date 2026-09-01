@@ -2,6 +2,7 @@ mod anchor_ear;
 mod angle_atlas;
 mod annulus;
 mod band_cycle_planner;
+mod collar;
 mod component_transaction;
 mod core_condensation;
 mod domain_continuation;
@@ -41,6 +42,10 @@ pub use band_cycle_planner::{
     plan_effective_transition_bands, transition_band_plan_json, EffectiveBandError,
     TransitionBandMode, TransitionBandPlan, TransitionBandPlanningFamily,
     TRANSITION_BAND_PLANNING_FAMILY,
+};
+pub use collar::{
+    solve_expanding_collar, ExpandingCollarResult, PromotionBudget, PromotionFailureReason,
+    PromotionOutcome, PromotionTrial, PromotionTrialEvidence,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
@@ -121,8 +126,9 @@ pub use local_topology::{
     LocalTopologySearchOutcome,
 };
 pub use promotion::{
-    build_promotion_patch, restore_source_patch, validate_promotion_patch, PromotionLevel,
-    PromotionPatch, RestoredSourceFace, RestoredSourcePatch,
+    build_promotion_patch, build_promotion_patch_for_transition, restore_source_patch,
+    validate_promotion_patch, PromotionLevel, PromotionPatch, RestoredSourceFace,
+    RestoredSourcePatch,
 };
 pub use rotation_width_audit::{
     audit_coupled_rotation_aware_width, audit_rotation_aware_width,

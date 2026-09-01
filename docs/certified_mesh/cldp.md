@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR65
+## Frozen N6 evidence through PR66
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -40,6 +40,13 @@ optimization. W4 is therefore disabled.
   into 295 interior and 101 one-parent-ring collar faces. Both patches preserve
   exact triangle vertices, orientation, hierarchy address, and coordinates,
   with complete source-face coverage and stable fingerprints.
+- PR66: the finite P1/P2/P3/P4 ladder promotes `295/396/468/468` source
+  faces. Conservative custom-triangle provenance makes every materialized
+  candidate the complete 362-vertex, 720-face N6 mother grid, so each is
+  rejected as `NoCompressedExterior` rather than mislabeled adaptive. P5 then
+  returns the certified safe mother fallback at
+  `54.361673298250--72.000000000000` degrees. No strict mixed collar candidate
+  exists under the current support decomposition.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
