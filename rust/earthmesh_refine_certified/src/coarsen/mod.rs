@@ -60,10 +60,12 @@ pub use boundary_parent_peel::{
     BoundaryParentPeelOutcome, BoundaryParentPeelTrial,
 };
 pub use cec_find_one::{
-    essential_cycle_find_one_evidence_json, find_one_essential_cycle, EdgeDecision,
+    essential_cycle_find_one_evidence_json, find_one_essential_cycle,
+    merge_cycle_search_checkpoints, prove_essential_cycle_family, CycleProofShard,
+    CycleSearchCheckpoint, DownstreamEvaluationCache, DownstreamEvaluationCacheKey, EdgeDecision,
     EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, EssentialCycleFindOneOutcome,
-    EssentialCycleFindOneOutcomeKind, FaceBandPlanEvaluator, FullPolygonPlanEvaluator,
-    PackedTwoBitArray, PlanEvaluation,
+    EssentialCycleFindOneOutcomeKind, ExactFaceBandV2Evidence, ExactFaceBandV2Outcome,
+    FaceBandPlanEvaluator, FullPolygonPlanEvaluator, PackedTwoBitArray, PlanEvaluation,
 };
 pub use cldp_gate::{
     build_frozen_cldp_gate_evidence, build_post_pr78_combined_recovery_report,

@@ -7,6 +7,7 @@
 - [Alpha6 canonical problem identity and legacy profile](alpha6_problem_identity_profile.md)
 - [Alpha6 canonical essential-cycle contract](essential_cycle_contract.md)
 - [Alpha6 CEC rollback find-one solver](cec_find_one.md)
+- [Alpha6 CEC proof/checkpoint/cache contract](cec_proof_mode.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
