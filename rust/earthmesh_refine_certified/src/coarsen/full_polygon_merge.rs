@@ -14,11 +14,12 @@ use super::global_exact_merge::{
 };
 use super::{
     analyze_stratified_full_polygon_degree_reachability, build_stratified_annulus,
-    build_stratified_annulus_from_face_bands, solve_elastic_patch_with_active_trust_start,
-    solve_elastic_patch_with_margin_start, solve_elastic_patch_with_start, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockPhase, ElasticPatch, ElasticTargetMode, FaceBandPlan,
-    FullPolygonReachabilityEvidence, GeometryDomainId, GeometryFailureDiagnostics, GeometryStartId,
-    HierarchyComponent, RingAnchorKind, StratifiedAnnulus,
+    build_stratified_annulus_from_face_bands, build_stratified_topology_domain_v2,
+    solve_elastic_patch_with_active_trust_start, solve_elastic_patch_with_margin_start,
+    solve_elastic_patch_with_start, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase,
+    ElasticPatch, ElasticTargetMode, FaceBandPlan, FullPolygonReachabilityEvidence,
+    GeometryDomainId, GeometryFailureDiagnostics, GeometryStartId, HierarchyComponent,
+    RingAnchorKind, StratifiedAnnulus,
 };
 use crate::mother_grid::MotherGrid;
 use earthmesh_mesh::CartesianPoint;
@@ -45,6 +46,12 @@ pub struct FullPolygonMergeLimits {
 pub struct FullPolygonCberLimits {
     pub topology_states: usize,
     pub elastic_iterations: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceBandAdapterVersion {
+    LegacyV1,
+    TopologyDomainV2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,7 +140,14 @@ pub fn solve_full_polygon_merge(
     component: &HierarchyComponent,
     limits: FullPolygonMergeLimits,
 ) -> FullPolygonMergeOutcome {
-    solve_full_polygon_merge_inner(source, component, limits.topology_states, None, None)
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        None,
+        FaceBandAdapterVersion::LegacyV1,
+        None,
+    )
 }
 
 pub fn solve_full_polygon_merge_from_face_bands(
@@ -142,7 +156,30 @@ pub fn solve_full_polygon_merge_from_face_bands(
     plan: &FaceBandPlan,
     limits: FullPolygonMergeLimits,
 ) -> FullPolygonMergeOutcome {
-    solve_full_polygon_merge_inner(source, component, limits.topology_states, Some(plan), None)
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(plan),
+        FaceBandAdapterVersion::LegacyV1,
+        None,
+    )
+}
+
+pub fn solve_full_polygon_merge_from_face_bands_v2(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+    limits: FullPolygonMergeLimits,
+) -> FullPolygonMergeOutcome {
+    solve_full_polygon_merge_inner(
+        source,
+        component,
+        limits.topology_states,
+        Some(plan),
+        FaceBandAdapterVersion::TopologyDomainV2,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,6 +200,7 @@ pub fn solve_full_polygon_merge_from_face_bands_with_geometry_witness(
         component,
         limits.topology_states,
         Some(plan),
+        FaceBandAdapterVersion::LegacyV1,
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
@@ -206,6 +244,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets(
         component,
         limits.topology_states,
         None,
+        FaceBandAdapterVersion::LegacyV1,
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
@@ -234,6 +273,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_starts(
         component,
         limits.topology_states,
         None,
+        FaceBandAdapterVersion::LegacyV1,
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
@@ -262,6 +302,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trus
         component,
         limits.topology_states,
         None,
+        FaceBandAdapterVersion::LegacyV1,
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
@@ -292,6 +333,7 @@ pub fn solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_st
         component,
         limits.topology_states,
         None,
+        FaceBandAdapterVersion::LegacyV1,
         Some(FreeInterfaceCberConfig {
             elastic_iterations: limits.elastic_iterations,
             physical_fixed_sources,
@@ -311,6 +353,7 @@ fn solve_full_polygon_merge_inner(
     component: &HierarchyComponent,
     topology_states: usize,
     face_band_plan: Option<&FaceBandPlan>,
+    face_band_adapter: FaceBandAdapterVersion,
     free_interface_cber: Option<FreeInterfaceCberConfig<'_>>,
 ) -> FullPolygonMergeOutcome {
     let mut evidence = FullPolygonMergeEvidence {
@@ -338,7 +381,14 @@ fn solve_full_polygon_merge_inner(
 
     let mut stratified = match face_band_plan.map_or_else(
         || build_stratified_annulus(source, component),
-        |plan| build_stratified_annulus_from_face_bands(source, component, plan),
+        |plan| match face_band_adapter {
+            FaceBandAdapterVersion::LegacyV1 => {
+                build_stratified_annulus_from_face_bands(source, component, plan)
+            }
+            FaceBandAdapterVersion::TopologyDomainV2 => {
+                build_stratified_topology_domain_v2(source, component, plan)
+            }
+        },
     ) {
         Ok(v) => v,
         Err(err) => {

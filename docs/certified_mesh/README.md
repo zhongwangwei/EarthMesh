@@ -15,6 +15,7 @@
 - [Alpha6 validation-gate governance](alpha6_validation_gate_governance.md)
 - [Lifted-N12 downstream uniform-rejection audit](n12_downstream_reject_audit.md)
 - [Topology-domain / geometry-guard split](topology_domain_geometry_guard_split.md)
+- [Frozen N6 V1/V2 adapter oracle](frozen_n6_adapter_oracle.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
