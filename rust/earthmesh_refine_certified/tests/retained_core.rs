@@ -163,6 +163,88 @@ fn frozen_n6_pr70_single_release_topology_probe() {
 }
 
 #[test]
+#[ignore = "explicit Frozen N6 PR71 pair-release topology matrix"]
+fn frozen_n6_pr71_pair_release_topology_probe() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let candidates = frozen_plan()
+        .candidates
+        .into_iter()
+        .filter(|candidate| candidate.released_parents.len() == 2)
+        .collect::<Vec<_>>();
+    let chunk_size = candidates.len().div_ceil(4);
+    let outcomes = std::thread::scope(|scope| {
+        let handles = candidates
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let source = &source;
+                let component = &component;
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|candidate| {
+                            solve_retained_core_topology(
+                                source,
+                                component,
+                                candidate,
+                                RetainedCoreTopologyLimits {
+                                    face_band_states: 1_000_000,
+                                    topology_states: 10_000,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(outcomes.len(), 45);
+    assert!(candidates
+        .iter()
+        .zip(&outcomes)
+        .all(|(candidate, outcome)| {
+            outcome.evidence().topology_outcome != RetainedCoreTopologyOutcomeKind::InvalidInput
+                || candidate.retained_components > 1
+        }));
+    let exact_no_solution = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome.evidence().topology_outcome
+                == RetainedCoreTopologyOutcomeKind::TopologyFamilyExhaustedNoSolution
+        })
+        .count();
+    let search_incomplete = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome.evidence().topology_outcome
+                == RetainedCoreTopologyOutcomeKind::SearchBudgetExhausted
+        })
+        .count();
+    let closed = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome.evidence().topology_outcome == RetainedCoreTopologyOutcomeKind::Closed
+        })
+        .count();
+    assert_eq!((exact_no_solution, search_incomplete, closed), (41, 4, 0));
+    let matrix = outcomes
+        .iter()
+        .map(|outcome| retained_core_topology_evidence_json(outcome.evidence()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr71PairReleaseTopology\",\"taskbook_sha256\":\"{RCR_TASKBOOK_SHA256}\",\"exact_no_solution\":{exact_no_solution},\"search_incomplete\":{search_incomplete},\"topology_closed\":{closed},\"geometry_attempted\":0,\"matrix\":[{matrix}]}}"
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_RETAINED_CORE_JSON") {
+        std::fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
 #[ignore = "explicit Frozen N6 PR69 retained-core subset matrix"]
 fn frozen_n6_pr69_retained_core_subset_probe() {
     let plan = frozen_plan();
