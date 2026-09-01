@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR63
+## Frozen N6 evidence through PR64
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -28,7 +28,14 @@ optimization. W4 is therefore disabled.
 - PR63: all 173 registered active/worst angles have non-empty source-face and
   parent support; 64 custom topology triangles carry deterministic provenance.
   Their one-ring supports merge into one Frozen N6 promotion component.
+- PR64: a deterministic 128-state neighbourhood tried one to three local 2-2
+  flips. Of 128 states, 61 failed hard topology gates and 67 reached local
+  max-min geometry. None improved the preserved
+  `39.278499430048--80.721500570507` degree incumbent, so the bounded search
+  ended as `LocalTopologyBudgetExhausted` and CLDP proceeds to source-face
+  promotion.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
-does not change mesh topology or coordinates.
+does not change mesh topology or coordinates. PR64 never replaces the incumbent
+unless a candidate is strictly certified; rollback is exact.
