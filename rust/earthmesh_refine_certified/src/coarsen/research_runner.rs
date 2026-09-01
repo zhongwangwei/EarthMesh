@@ -1,13 +1,13 @@
 //! Research-only runners. They never produce a product mesh or gate decision.
 
 use super::{
-    build_essential_cycle_problem, build_face_band_problem, face_band_evidence_json,
-    n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
-    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, CertifiedResearchFixture,
-    DownstreamEvaluationCache, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
-    ExactFaceBandV2Outcome, FaceBandEvidence, FaceBandLimits, FaceBandSolveOutcome,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
-    RetainedCoreCorridorFamily,
+    audit_legacy_downstream_preflight, build_essential_cycle_problem, build_face_band_problem,
+    face_band_evidence_json, n12_interior_control_fixture, n12_lifted_n6_fixture,
+    prove_essential_cycle_family, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    CertifiedResearchFixture, DownstreamEvaluationCache, DownstreamPreflightOutcome,
+    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, ExactFaceBandV2Outcome,
+    FaceBandEvidence, FaceBandLimits, FaceBandSolveOutcome, FullPolygonMergeLimits,
+    FullPolygonMergeOutcome, FullPolygonPlanEvaluator, RetainedCoreCorridorFamily,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -114,6 +114,33 @@ pub enum ValidationGateGovernanceDecision {
     TopologySolverBlocked,
     ContinuousGeometryBlocked,
     PentagonSpecificBlocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationGovernanceDecisionV2 {
+    DownstreamAnnulusContractBlocked,
+    CycleSolverBlocked,
+    DownstreamTopologyBlocked,
+    ContinuousGeometryBlocked,
+    PentagonSpecificBlocked,
+    FixtureCapacityBlocked,
+    KeepN6ExistenceGate,
+    N6StressN12Existence,
+}
+
+impl ValidationGovernanceDecisionV2 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DownstreamAnnulusContractBlocked => "DownstreamAnnulusContractBlocked",
+            Self::CycleSolverBlocked => "CycleSolverBlocked",
+            Self::DownstreamTopologyBlocked => "DownstreamTopologyBlocked",
+            Self::ContinuousGeometryBlocked => "ContinuousGeometryBlocked",
+            Self::PentagonSpecificBlocked => "PentagonSpecificBlocked",
+            Self::FixtureCapacityBlocked => "FixtureCapacityBlocked",
+            Self::KeepN6ExistenceGate => "KeepN6ExistenceGate",
+            Self::N6StressN12Existence => "N6Stress_N12Existence",
+        }
+    }
 }
 
 impl ValidationGateGovernanceDecision {
@@ -431,6 +458,66 @@ pub fn research_cec_topology_evidence_json(report: &ResearchCecTopologyEvidence)
         report.ready_marker_written,
         report.product_gate_changed,
     )
+}
+
+pub fn n12_lifted_downstream_reject_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let preflight = audit_legacy_downstream_preflight(&fixture.source, &fixture.component);
+    let report = run_n12_cec_topology_probe(&fixture, limits)?;
+    let preflight_json = match preflight {
+        DownstreamPreflightOutcome::Ready(evidence) => format!(
+            "{{\"outcome\":\"Ready\",\"stage\":null,\"plan_independent\":{},\"geometry_guard_deferred\":{},\"reason\":null}}",
+            evidence.plan_independent, evidence.geometry_guard_deferred,
+        ),
+        DownstreamPreflightOutcome::ContractBlocked { stage, evidence } => format!(
+            "{{\"outcome\":\"ContractBlocked\",\"stage\":\"{}\",\"plan_independent\":{},\"geometry_guard_deferred\":{},\"reason\":{}}}",
+            stage.as_str(),
+            evidence.plan_independent,
+            evidence.geometry_guard_deferred,
+            evidence.reason.as_deref().map_or_else(|| "null".into(), json_string),
+        ),
+    };
+    let histogram = &report.cec.downstream_reject_histogram;
+    let by_stage = histogram
+        .by_stage
+        .iter()
+        .map(|(stage, count)| format!("\"{}\":{count}", stage.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let by_reason = histogram
+        .by_reason
+        .iter()
+        .map(|(reason, count)| format!("{}:{count}", json_string(reason)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let first_cycles = histogram
+        .first_cycle_by_reason
+        .iter()
+        .map(|(reason, cycle)| {
+            format!(
+                "{}:{{\"ordered_vertices\":{},\"key\":{}}}",
+                json_string(reason),
+                cycle.ordered_vertices.len(),
+                json_string(&format!("{cycle:?}")),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"63215a9043f5aa87092a78b2910d0c779da3c10e2c749bb4e11d5b0e5b207c5d\",\"fixture\":\"N12-Lifted-N6\",\"adapter_version\":1,\"declared_topology_family\":\"W2CanonicalEssentialCycle+FullPolygon\",\"limits\":{{\"cycle_unique_states\":{},\"downstream_topology_states\":{}}},\"preflight\":{},\"essential_cycles\":{},\"downstream_states\":{},\"downstream_invalid\":{},\"reject_histogram\":{{\"by_stage\":{{{}}},\"by_reason\":{{{}}},\"first_cycle_by_reason\":{{{}}}}},\"decision\":\"{}\",\"geometry_attempted\":false,\"product_grid_written\":false,\"ready_marker_written\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        preflight_json,
+        report.cec.essential_cycles,
+        report.downstream_states,
+        report.cec.downstream_invalid,
+        by_stage,
+        by_reason,
+        first_cycles,
+        ValidationGovernanceDecisionV2::DownstreamAnnulusContractBlocked.as_str(),
+    ))
 }
 
 pub fn run_n12_legacy_baseline(
