@@ -23,6 +23,7 @@ mod hierarchy_component;
 mod local_annular_collar;
 mod local_topology;
 mod promotion;
+mod research_fixture;
 mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
@@ -166,6 +167,13 @@ pub use promotion::{
     build_promotion_patch_for_transition_with_protected_regions, build_protected_coarse_region,
     restore_source_patch, validate_promotion_patch, PromotionLevel, PromotionPatch,
     PromotionPatchTopology, ProtectedCoarseRegion, RestoredSourceFace, RestoredSourcePatch,
+};
+pub use research_fixture::{
+    lift_component_2_to_1, n12_interior_control_fixture, n12_lifted_n6_fixture,
+    n12_research_fixture_manifests_json, n12_research_fixture_report_json,
+    research_fixture_guard_parents, research_fixture_manifest_json,
+    research_fixture_telemetry_json, CertifiedResearchFixture, CertifiedResearchFixtureManifest,
+    FixtureRepresentativenessTelemetry,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,
