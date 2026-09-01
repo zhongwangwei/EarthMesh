@@ -1660,7 +1660,7 @@ fn vertex_link_contracts(
     Ok(out)
 }
 
-fn fixed_vertex_links(
+pub(super) fn fixed_vertex_links(
     source: &MotherGrid,
     fixed_faces: &[usize],
 ) -> BTreeMap<usize, FixedVertexLink> {

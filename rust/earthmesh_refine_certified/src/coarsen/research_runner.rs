@@ -2,15 +2,16 @@
 
 use super::{
     audit_face_band_boundaries, audit_legacy_downstream_preflight, build_essential_cycle_problem,
-    build_face_band_problem, build_plan_band_domains, face_band_evidence_json,
-    n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
-    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, BandBoundaryAudit,
-    BandBoundaryAuditSummary, CertifiedResearchFixture, DownstreamEvaluationCache,
-    DownstreamPreflightOutcome, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
-    EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
-    FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
+    build_face_band_problem, build_plan_band_domains, build_stratified_transition_domain_v3,
+    face_band_evidence_json, n12_interior_control_fixture, n12_lifted_n6_fixture,
+    prove_essential_cycle_family, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    BandBoundaryAudit, BandBoundaryAuditSummary, CertifiedResearchFixture,
+    DownstreamEvaluationCache, DownstreamPreflightOutcome, EssentialCycleFindOneEvidence,
+    EssentialCycleFindOneLimits, EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion,
+    FaceBandEvidence, FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
     FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
     PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
+    TransitionCellDomain,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -693,6 +694,110 @@ pub fn n12_lifted_plan_band_domain_audit_json(
         gate_passed,
         evidence.outcome.as_str(),
     ))
+}
+
+pub fn n12_lifted_transition_cell_v3_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = V3DomainAuditingEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        cycles_observed: 0,
+        domains_built: 0,
+        annular_cells: 0,
+        disk_cells: 0,
+        first_link_contracts: None,
+        errors: BTreeMap::new(),
+    };
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let expected_cells = evidence.essential_cycles.saturating_mul(2);
+    let gate_passed = evaluator.cycles_observed == evidence.essential_cycles
+        && evaluator.domains_built == evidence.essential_cycles
+        && evaluator.annular_cells == expected_cells
+        && evaluator.disk_cells == 0
+        && evaluator.errors.is_empty();
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(error, count)| format!("{}:{count}", json_string(error)))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"cb911eef1de3593df10d042bf72ce3707080d2b521ceb074d36b8b05cfe4b63e\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3AuditOnly\",\"limits\":{{\"cycle_unique_states\":{},\"downstream_topology_states\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_observed\":{},\"domains_built\":{},\"annular_cells\":{},\"disk_cells\":{},\"first_link_contracts\":{},\"errors\":{{{}}},\"gate_passed\":{},\"coupled_annulus_used\":false,\"legacy_monotone_connectors_used\":false,\"full_polygon_run\":false,\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_observed,
+        evaluator.domains_built,
+        evaluator.annular_cells,
+        evaluator.disk_cells,
+        evaluator
+            .first_link_contracts
+            .map_or_else(|| "null".into(), |count| count.to_string()),
+        errors,
+        gate_passed,
+    ))
+}
+
+struct V3DomainAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    cycles_observed: u64,
+    domains_built: u64,
+    annular_cells: u64,
+    disk_cells: u64,
+    first_link_contracts: Option<usize>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl FaceBandPlanEvaluator for V3DomainAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, _: &EssentialCycleKey, plan: &FaceBandPlan) {
+        self.cycles_observed += 1;
+        match build_stratified_transition_domain_v3(self.source, self.component, plan) {
+            Ok(domain) => {
+                self.domains_built += 1;
+                self.first_link_contracts
+                    .get_or_insert(domain.link_contracts.len());
+                for cell in domain.cells {
+                    match cell {
+                        TransitionCellDomain::Annulus(_) => self.annular_cells += 1,
+                        TransitionCellDomain::Disk(_) => self.disk_cells += 1,
+                    }
+                }
+            }
+            Err(error) => *self.errors.entry(format!("{error:?}")).or_default() += 1,
+        }
+    }
+
+    fn evaluate(&mut self, _: &FaceBandPlan) -> PlanEvaluation {
+        PlanEvaluation::AuditOnly
+    }
 }
 
 struct PlanBandDomainAuditingEvaluator<'a> {

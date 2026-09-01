@@ -59,6 +59,13 @@ impl TopologyBoundary {
                 .collect(),
         }
     }
+
+    pub fn topology_edges(&self) -> BTreeSet<Edge> {
+        match self {
+            Self::SourceCycle(cycle) => cycle.edges.clone(),
+            Self::ContractedCoarseCycle { topology_edges, .. } => topology_edges.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
