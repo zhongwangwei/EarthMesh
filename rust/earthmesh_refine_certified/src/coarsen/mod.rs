@@ -24,6 +24,7 @@ mod local_annular_collar;
 mod local_topology;
 mod promotion;
 mod research_fixture;
+mod research_runner;
 mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
@@ -174,6 +175,10 @@ pub use research_fixture::{
     research_fixture_guard_parents, research_fixture_manifest_json,
     research_fixture_telemetry_json, CertifiedResearchFixture, CertifiedResearchFixtureManifest,
     FixtureRepresentativenessTelemetry,
+};
+pub use research_runner::{
+    n12_legacy_baseline_json, research_legacy_evidence_json, run_n12_legacy_baseline,
+    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,
