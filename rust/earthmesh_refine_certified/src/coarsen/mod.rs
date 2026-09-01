@@ -130,9 +130,10 @@ pub use essential_cycle::{
 };
 pub use face_band::{
     build_face_band_problem, build_face_band_problem_with_source_face_rings,
-    face_band_evidence_json, face_band_plan_json, solve_exact_face_bands, validate_face_band_plan,
-    AnchorBandPolicy, FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind,
-    FaceBandPlan, FaceBandProblem, FaceBandSolveOutcome,
+    enumerate_legacy_face_band_plans, face_band_evidence_json, face_band_plan_json,
+    solve_exact_face_bands, validate_face_band_plan, AnchorBandPolicy, FaceBandDomain,
+    FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind, FaceBandPlan, FaceBandProblem,
+    FaceBandSolveOutcome, LegacyFaceBandEnumeration,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
