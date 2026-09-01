@@ -121,8 +121,13 @@ pub fn audit_legacy_downstream_preflight(
 }
 
 pub(crate) fn classify_downstream_invalid(reason: &str) -> DownstreamRejectStage {
-    if reason.contains("stratified annulus rejected") {
+    if reason.contains("stratified annulus rejected")
+        || reason.contains("topology-domain V2 rejected face-band plan")
+        || reason.contains("topology-domain V2 compatibility shell failed")
+    {
         DownstreamRejectStage::DomainAdapter
+    } else if reason.contains("stratified topology-domain V2 rejected") {
+        DownstreamRejectStage::StratifiedSectorization
     } else if reason.contains("degree reachability") {
         DownstreamRejectStage::DegreeReachability
     } else if reason.contains("anchor") {
@@ -133,5 +138,26 @@ pub(crate) fn classify_downstream_invalid(reason: &str) -> DownstreamRejectStage
         DownstreamRejectStage::FullPolygonEnumeration
     } else {
         DownstreamRejectStage::GlobalLinkMerge
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_downstream_invalid, DownstreamRejectStage};
+
+    #[test]
+    fn distinguishes_adapter_from_stratified_sectorization() {
+        assert_eq!(
+            classify_downstream_invalid(
+                "stratified topology-domain V2 rejected component: InvalidComponent(\"topology-domain V2 rejected face-band plan: InterfaceMismatch\")"
+            ),
+            DownstreamRejectStage::DomainAdapter
+        );
+        assert_eq!(
+            classify_downstream_invalid(
+                "stratified topology-domain V2 rejected component: UnsupportedNonDiskBandComponent { band_id: 0 }"
+            ),
+            DownstreamRejectStage::StratifiedSectorization
+        );
     }
 }

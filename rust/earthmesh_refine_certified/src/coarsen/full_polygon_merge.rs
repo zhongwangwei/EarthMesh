@@ -392,10 +392,11 @@ fn solve_full_polygon_merge_inner(
     ) {
         Ok(v) => v,
         Err(err) => {
-            return invalid(
-                format!("stratified annulus rejected component: {err:?}"),
-                evidence,
-            )
+            let adapter = match face_band_adapter {
+                FaceBandAdapterVersion::LegacyV1 => "stratified annulus",
+                FaceBandAdapterVersion::TopologyDomainV2 => "stratified topology-domain V2",
+            };
+            return invalid(format!("{adapter} rejected component: {err:?}"), evidence);
         }
     };
     let reachability =
