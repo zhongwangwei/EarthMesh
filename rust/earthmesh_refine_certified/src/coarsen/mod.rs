@@ -13,6 +13,7 @@ mod domain_continuation;
 mod effective_band;
 mod elastic_block;
 mod embedding_audit;
+mod essential_cycle;
 mod face_band;
 mod full_polygon;
 mod full_polygon_merge;
@@ -113,11 +114,16 @@ pub use elastic_block::{
 pub use embedding_audit::{
     audit_embedding_transfer, EmbeddingAudit, EmbeddingAuditOutcome, RotationMismatch,
 };
+pub use essential_cycle::{
+    build_essential_cycle_problem, essential_cycle_from_face_band_plan,
+    essential_cycle_seam_parity, face_band_plan_from_essential_cycle,
+    validate_selected_essential_cycle, BitSet, EssentialCycleKey, EssentialCycleProblem,
+};
 pub use face_band::{
     build_face_band_problem, build_face_band_problem_with_source_face_rings,
-    face_band_evidence_json, face_band_plan_json, solve_exact_face_bands, AnchorBandPolicy,
-    FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind, FaceBandPlan,
-    FaceBandProblem, FaceBandSolveOutcome,
+    face_band_evidence_json, face_band_plan_json, solve_exact_face_bands, validate_face_band_plan,
+    AnchorBandPolicy, FaceBandDomain, FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind,
+    FaceBandPlan, FaceBandProblem, FaceBandSolveOutcome,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
