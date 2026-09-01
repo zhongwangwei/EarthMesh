@@ -152,7 +152,9 @@ fn peel_boundary_parent_for_sector_inner(
     let mut restored_sector_ids =
         custom_sectors_adjacent_to_parent(source, incumbent, atlas, parent)?;
     restored_sector_ids.insert(sector_id);
-    let replacements = split_retained_interfaces(source, incumbent, parent, retained_parents)?;
+    let released_parents = BTreeSet::from([parent]);
+    let replacements =
+        split_retained_interfaces(source, incumbent, &released_parents, retained_parents)?;
     let split_interface_parents = replacements.keys().copied().collect::<BTreeSet<_>>();
     let replacement_source_faces = split_interface_parents
         .iter()
@@ -166,7 +168,7 @@ fn peel_boundary_parent_for_sector_inner(
         incumbent,
         atlas,
         &restored_sector_ids,
-        &BTreeSet::from([parent]),
+        &released_parents,
         &replacements,
     )?;
     if materialized.released_children.len() != 4 {
@@ -417,64 +419,103 @@ fn cavity_interior_vertices(
         .collect())
 }
 
-fn split_retained_interfaces(
+pub(super) fn split_retained_interfaces(
     source: &MotherGrid,
     incumbent: &HierarchyLeafMesh,
-    parent: TriangleAddress,
+    released_parents: &BTreeSet<TriangleAddress>,
     retained_parents: &BTreeSet<TriangleAddress>,
 ) -> Result<BTreeMap<TriangleAddress, Vec<[usize; 3]>>, String> {
-    let parent_face = active_parent_face(incumbent, parent)?;
-    let parent_triangle = compact_source_triangle(incumbent, parent_face)?;
-    let parent_vertices = source_child_vertices(source, parent)?;
-    let mut replacements = BTreeMap::new();
-    for neighbour_face in incumbent.mesh.neighbours()[parent_face] {
-        let Some(neighbour) = incumbent
-            .triangle_addresses
-            .get(neighbour_face)
-            .copied()
-            .flatten()
-            .filter(|candidate| candidate != &parent && retained_parents.contains(candidate))
-        else {
-            continue;
-        };
-        let neighbour_triangle = compact_source_triangle(incumbent, neighbour_face)?;
-        let shared_endpoints = parent_triangle
-            .iter()
-            .copied()
-            .filter(|site| neighbour_triangle.contains(site))
-            .collect::<Vec<_>>();
-        if shared_endpoints.len() != 2 {
-            return Err(format!(
-                "retained interface {parent:?}/{neighbour:?} has {} coarse endpoints",
-                shared_endpoints.len()
-            ));
+    let mut split_edges = BTreeMap::<TriangleAddress, BTreeMap<Edge, usize>>::new();
+    for &parent in released_parents {
+        let parent_face = active_parent_face(incumbent, parent)?;
+        let parent_triangle = compact_source_triangle(incumbent, parent_face)?;
+        let parent_vertices = source_child_vertices(source, parent)?;
+        for neighbour_face in incumbent.mesh.neighbours()[parent_face] {
+            let Some(neighbour) = incumbent
+                .triangle_addresses
+                .get(neighbour_face)
+                .copied()
+                .flatten()
+                .filter(|candidate| {
+                    !released_parents.contains(candidate) && retained_parents.contains(candidate)
+                })
+            else {
+                continue;
+            };
+            let neighbour_triangle = compact_source_triangle(incumbent, neighbour_face)?;
+            let shared_endpoints = parent_triangle
+                .iter()
+                .copied()
+                .filter(|site| neighbour_triangle.contains(site))
+                .collect::<Vec<_>>();
+            if shared_endpoints.len() != 2 {
+                return Err(format!(
+                    "retained interface {parent:?}/{neighbour:?} has {} coarse endpoints",
+                    shared_endpoints.len()
+                ));
+            }
+            let neighbour_vertices = source_child_vertices(source, neighbour)?;
+            let midpoint = parent_vertices
+                .intersection(&neighbour_vertices)
+                .copied()
+                .filter(|site| !shared_endpoints.contains(site))
+                .collect::<Vec<_>>();
+            if midpoint.len() != 1 {
+                return Err(format!(
+                    "retained interface {parent:?}/{neighbour:?} has {} source midpoints",
+                    midpoint.len()
+                ));
+            }
+            let edge = (
+                shared_endpoints[0].min(shared_endpoints[1]),
+                shared_endpoints[0].max(shared_endpoints[1]),
+            );
+            if split_edges
+                .entry(neighbour)
+                .or_default()
+                .insert(edge, midpoint[0])
+                .is_some_and(|old| old != midpoint[0])
+            {
+                return Err(format!(
+                    "retained interface {neighbour:?} has inconsistent source midpoints"
+                ));
+            }
         }
-        let neighbour_vertices = source_child_vertices(source, neighbour)?;
-        let midpoint = parent_vertices
-            .intersection(&neighbour_vertices)
-            .copied()
-            .filter(|site| !shared_endpoints.contains(site))
-            .collect::<Vec<_>>();
-        if midpoint.len() != 1 {
-            return Err(format!(
-                "retained interface {parent:?}/{neighbour:?} has {} source midpoints",
-                midpoint.len()
-            ));
-        }
-        let opposite = neighbour_triangle
-            .iter()
-            .copied()
-            .find(|site| !shared_endpoints.contains(site))
-            .ok_or_else(|| format!("retained neighbour {neighbour:?} has no opposite corner"))?;
-        replacements.insert(
-            neighbour,
-            vec![
-                [shared_endpoints[0], midpoint[0], opposite],
-                [midpoint[0], shared_endpoints[1], opposite],
-            ],
-        );
     }
-    Ok(replacements)
+    split_edges
+        .into_iter()
+        .map(|(parent, midpoints)| {
+            let face = active_parent_face(incumbent, parent)?;
+            Ok((
+                parent,
+                triangulate_split_parent(compact_source_triangle(incumbent, face)?, &midpoints)?,
+            ))
+        })
+        .collect()
+}
+
+fn triangulate_split_parent(
+    triangle: [usize; 3],
+    midpoints: &BTreeMap<Edge, usize>,
+) -> Result<Vec<[usize; 3]>, String> {
+    let midpoint_sites = midpoints.values().copied().collect::<BTreeSet<_>>();
+    let mut polygon = Vec::with_capacity(3 + midpoints.len());
+    for side in 0..3 {
+        let left = triangle[side];
+        let right = triangle[(side + 1) % 3];
+        polygon.push(left);
+        if let Some(&midpoint) = midpoints.get(&(left.min(right), left.max(right))) {
+            polygon.push(midpoint);
+        }
+    }
+    let anchor = polygon
+        .iter()
+        .position(|site| midpoint_sites.contains(site))
+        .ok_or_else(|| "retained interface replacement has no split edge".to_string())?;
+    polygon.rotate_left(anchor);
+    Ok((1..polygon.len() - 1)
+        .map(|index| [polygon[0], polygon[index], polygon[index + 1]])
+        .collect())
 }
 
 fn active_parent_face(mesh: &HierarchyLeafMesh, parent: TriangleAddress) -> Result<usize, String> {
@@ -504,7 +545,10 @@ fn compact_source_triangle(mesh: &HierarchyLeafMesh, face: usize) -> Result<[usi
         .map_err(|_| "triangle conversion failed".into())
 }
 
-fn source_child_faces(source: &MotherGrid, parent: TriangleAddress) -> Result<Vec<usize>, String> {
+pub(super) fn source_child_faces(
+    source: &MotherGrid,
+    parent: TriangleAddress,
+) -> Result<Vec<usize>, String> {
     parent
         .children_2_to_1()
         .ok_or_else(|| format!("invalid hierarchy parent {parent:?}"))?

@@ -8,16 +8,17 @@ use earthmesh_refine_certified::coarsen::{
     restore_fine_compatible_sector, restore_source_patch, search_local_topology_neighbourhood,
     solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
-    solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
-    AnchorBandPolicy, BoundaryParentPeelOutcome, DirectSectorRestoreOutcome,
-    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
-    ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode, EmbeddingAuditOutcome,
-    FaceBandLimits, FaceBandSolveOutcome, FrozenCldpGateOutcome, FullPolygonCberLimits,
-    FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
-    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
-    LocalTopologyEvidence, LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind,
-    PromotionBudget, PromotionFailureReason, PromotionLevel, PromotionOutcome,
-    PromotionPatchTopology, RecoveryAtom,
+    solve_full_polygon_merge_from_face_bands_with_geometry_witness, solve_local_annular_collar,
+    violation_support_atlas_json, AnchorBandPolicy, BoundaryParentPeelOutcome,
+    DirectSectorRestoreOutcome, DomainContinuationMode, DomainContinuationOutcome,
+    DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode,
+    EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FrozenCldpGateOutcome,
+    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
+    FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
+    GeometryStartId, GlobalExactSelectedEar, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
+    LocalAnnularCollarOutcome, LocalTopologyEvidence, LocalTopologyLimits,
+    LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
+    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -891,6 +892,166 @@ fn frozen_n6_pr76_boundary_parent_peel_probe() {
         "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr76BoundaryParentPeel\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"BoundaryParentPeelTopologyClosed\",\"mesh_unchanged\":true,\"retained_parents\":{},\"coarse_core_ears\":{},\"candidate_sector_parent_pairs\":{candidates},\"closed_topologies\":{closed},\"topology_failures\":{topology_failures},\"invalid_candidates\":{invalid},\"not_ear\":{not_ear},\"local_geometry_iterations\":{local_iterations},\"local_geometry_attempted\":{geometry_attempted},\"strict_certified\":{certified},\"max_restored_sector_cluster\":{max_restored_sectors},\"max_split_interface_parents\":{max_split_interfaces},\"outside_topology_bitwise_equal\":{exterior_topology_equal},\"outside_coordinates_bitwise_equal\":{exterior_coordinates_equal},\"edge_incidence_at_most_two\":{edge_incidence_two},\"best_peel_angle_range\":{best_range_json}}}",
         retained_parents.len(),
         ears.len(),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR77 local-annular-collar gate"]
+fn frozen_n6_pr77_local_annular_collar_probe() {
+    let local_iterations = usize_env("EARTHMESH_LOCAL_COLLAR_ITERATIONS", 8);
+    let (source, hierarchy, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &hierarchy, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &hierarchy).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    let retained_parents = hierarchy
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter_map(|atom| match atom {
+            RecoveryAtom::Sector { sector_id, .. } => Some(*sector_id),
+            RecoveryAtom::HierarchyLeaf { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut two_parent_blockers = 0usize;
+    let mut materialized = 0usize;
+    let mut two_parent_materialized = 0usize;
+    let mut topology_trials = 0usize;
+    let mut closed_trials = 0usize;
+    let mut certified = 0usize;
+    let mut invalid = 0usize;
+    let mut min_retained_parents = usize::MAX;
+    let mut max_promoted_source_faces = 0usize;
+    let mut protected_core_preserved = true;
+    let mut fixed_outside_links = true;
+    let mut outside_coordinates_equal = true;
+    let mut edge_incidence_two = true;
+    let mut best_range = None::<(f64, f64)>;
+    for sector_id in sectors {
+        let DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+            adjacent_parents, ..
+        } = restore_fine_compatible_sector(
+            &source,
+            mesh,
+            patch,
+            &atlas.sector_recovery_atlas,
+            sector_id,
+            0,
+        )
+        else {
+            continue;
+        };
+        if adjacent_parents.len() != 2 {
+            continue;
+        }
+        two_parent_blockers += 1;
+        let component = atlas
+            .local_recovery_components
+            .iter()
+            .find(|component| {
+                component.atoms.iter().any(|atom| {
+                    matches!(atom, RecoveryAtom::Sector { sector_id: candidate, .. } if *candidate == sector_id)
+                })
+            })
+            .expect("two-parent sector must belong to a local recovery component");
+        let collar = solve_local_annular_collar(
+            &source,
+            mesh,
+            patch,
+            &atlas.sector_recovery_atlas,
+            component,
+            &retained_parents,
+            sector_id,
+            &adjacent_parents,
+            LocalAnnularCollarLimits {
+                topology_states: 3,
+                geometry_iterations: local_iterations,
+                maximum_parent_peels: 2,
+            },
+        );
+        let (best, trials) = match collar {
+            LocalAnnularCollarOutcome::Certified(trial) => {
+                certified += 1;
+                materialized += 1;
+                (Some(trial), Vec::new())
+            }
+            LocalAnnularCollarOutcome::MaterializedNotCertified { best, trials } => {
+                materialized += 1;
+                (Some(best), trials)
+            }
+            LocalAnnularCollarOutcome::TopologyFamilyExhausted { trials }
+            | LocalAnnularCollarOutcome::SearchBudgetExhausted { trials } => (None, trials),
+            LocalAnnularCollarOutcome::InvalidInput(_) => {
+                invalid += 1;
+                continue;
+            }
+        };
+        topology_trials += trials.len();
+        closed_trials += trials.iter().filter(|trial| trial.topology_closed).count();
+        let Some(best) = best else {
+            continue;
+        };
+        two_parent_materialized +=
+            usize::from(best.evidence.level == LocalAnnularCollarLevel::TwoParentPeel);
+        min_retained_parents = min_retained_parents.min(best.evidence.retained_parents.len());
+        max_promoted_source_faces =
+            max_promoted_source_faces.max(best.evidence.promoted_source_faces);
+        protected_core_preserved &= best.evidence.protected_core_preserved;
+        fixed_outside_links &= best.evidence.fixed_outside_link_contracts;
+        outside_coordinates_equal &= best.evidence.outside_coordinates_bitwise_equal;
+        edge_incidence_two &= best.evidence.edge_incidence_at_most_two;
+        if let Some(range) = best.evidence.angle_range_deg {
+            if best_range.is_none_or(|current| {
+                (range.0 - 40.2).min(79.8 - range.1) > (current.0 - 40.2).min(79.8 - current.1)
+            }) {
+                best_range = Some(range);
+            }
+        }
+    }
+    assert!(two_parent_blockers > 0);
+    assert!(materialized > 0);
+    assert!(two_parent_materialized > 0);
+    assert_eq!(invalid, 0);
+    assert!(protected_core_preserved);
+    assert!(fixed_outside_links);
+    assert!(outside_coordinates_equal);
+    assert!(edge_incidence_two);
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+    let best_range_json = best_range.map_or_else(
+        || "null".into(),
+        |range| format!("[{:.12},{:.12}]", range.0, range.1),
+    );
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr77LocalAnnularCollar\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"LocalAnnularCollarMaterialized\",\"mesh_unchanged\":true,\"two_parent_blockers\":{two_parent_blockers},\"topology_trials\":{topology_trials},\"closed_topology_trials\":{closed_trials},\"materialized_collars\":{materialized},\"two_parent_materialized\":{two_parent_materialized},\"invalid_candidates\":{invalid},\"local_geometry_iterations\":{local_iterations},\"strict_certified\":{certified},\"minimum_retained_coarse_parents\":{min_retained_parents},\"maximum_promoted_source_faces\":{max_promoted_source_faces},\"protected_core_preserved\":{protected_core_preserved},\"fixed_outside_link_contracts\":{fixed_outside_links},\"outside_coordinates_bitwise_equal\":{outside_coordinates_equal},\"edge_incidence_at_most_two\":{edge_incidence_two},\"best_collar_angle_range\":{best_range_json}}}"
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();
