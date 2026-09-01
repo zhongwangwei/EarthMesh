@@ -1,5 +1,6 @@
 mod anchor_ear;
 mod angle_atlas;
+mod annular_enumerator;
 mod annulus;
 mod band_boundary_audit;
 mod band_cycle_planner;
@@ -50,6 +51,12 @@ pub use anchor_ear::{
 pub use angle_atlas::{
     build_worst_angle_atlas, classify_angle_blockers, worst_angle_atlas_json,
     AngleBlockerClassification, AngleWitness, EdgeClass, WorstAngleAtlas,
+};
+pub use annular_enumerator::{
+    annular_small_exact_oracle_json, brute_force_flip_annulus_keys, cut_annulus_polygon,
+    enumerate_canonical_seam_annulus, AnnularEnumerationError, AnnularEnumerationEvidence,
+    AnnularTopology, AnnularTopologyKey, CutAnnulusPolygon, FullAnnularFamily, OccurrenceEdge,
+    VertexOccurrenceId,
 };
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
