@@ -1,17 +1,20 @@
 use earthmesh_refine_certified::coarsen::{
-    build_face_band_problem, build_face_band_problem_with_source_face_rings,
-    continue_nested_domain, frozen_n6_geometry_evidence_json_with_solver_domain,
+    audit_embedding_transfer, build_face_band_problem,
+    build_face_band_problem_with_source_face_rings, continue_nested_domain,
+    frozen_n6_geometry_evidence_json_with_solver_domain,
     n6_legacy_mixed_fixture_with_source_levels, solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, AnchorBandPolicy,
     DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
-    ElasticTargetMode, FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits,
-    FullPolygonMergeEvidence, FullPolygonMergeOutcome, GeometryDomainId, GeometryDomainWitness,
-    GeometryFailureWitness, GeometryStartId,
+    ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
+    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome, GeometryDomainId,
+    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
 const TASKBOOK_SHA256: &str = "46d5f8d1ab439ce972186ba50798806b520fe9bdac3f675806d4cd18cff38e2b";
+const CLDP_TASKBOOK_SHA256: &str =
+    "546a7b60ed8ad94e04f337bfb0c870ef9a2a40ea65545ebe2c256be967a8d722";
 const LEGACY_MARGIN_DEG: f64 = -1.653_074_281_139_495_8;
 const MATERIAL_IMPROVEMENT_DEG: f64 = 0.25;
 const DEFAULT_TOPOLOGY_STATES: usize = 500;
@@ -222,6 +225,120 @@ fn frozen_n6_pr60_w3_geometry_probe() {
         fs::write(path, &json).unwrap();
     }
     eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR61 W3 embedding audit"]
+fn frozen_n6_pr61_w3_embedding_audit_probe() {
+    let topology_states = usize_env("EARTHMESH_FULL_POLYGON_STATES", DEFAULT_W3_TOPOLOGY_STATES);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (plus_one, plus_two, _) = pr49_and_pr52_witnesses(&source, &component, &source_levels);
+    let mut problem =
+        build_face_band_problem_with_source_face_rings(&source, &component, 3, 2).unwrap();
+    for anchor in [2usize, 155] {
+        problem
+            .anchor_policies
+            .insert(anchor, AnchorBandPolicy::OnSingleInterface);
+    }
+    let FaceBandSolveOutcome::Closed(plan, _) = solve_exact_face_bands(
+        &problem,
+        FaceBandLimits {
+            maximum_states: 1_000_000,
+        },
+    ) else {
+        panic!("Frozen N6 W3 face-band plan must close")
+    };
+
+    let solve = |domain_id, witness: &GeometryFailureWitness| {
+        solve_full_polygon_merge_from_face_bands_with_geometry_witness(
+            &source,
+            &component,
+            &plan,
+            witness,
+            &BTreeSet::new(),
+            FullPolygonCberLimits {
+                topology_states,
+                elastic_iterations: 0,
+            },
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+            Some(&source_levels),
+            &STARTS,
+            domain_id,
+        )
+    };
+    let plus_one_outcome = solve(GeometryDomainId::PlusOneOrdinaryRing, &plus_one);
+    let plus_two_outcome = solve(GeometryDomainId::PlusTwoOrdinaryRings, &plus_two);
+    let plus_one_audit = embedding_audit(&plus_one, &plus_one_outcome);
+    let plus_two_audit = embedding_audit(&plus_two, &plus_two_outcome);
+    for audit in [&plus_one_audit, &plus_two_audit] {
+        assert_eq!(
+            audit.outcome(),
+            EmbeddingAuditOutcome::TopologyClosedNoUsableEmbedding
+        );
+        assert!(
+            audit.non_positive_triangles > 0
+                || audit.crossing_pairs > 0
+                || audit.near_degenerate_triangles > 0
+                || !audit.rotation_mismatch_vertices.is_empty(),
+            "W3 failure must be attributed to its transferred embedding"
+        );
+    }
+
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr61W3EmbeddingAudit\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"outcome\":\"TopologyClosedNoUsableEmbedding\",\"w4_started\":false,\"plus_one\":{},\"plus_two\":{}}}",
+        embedding_audit_json(&plus_one_audit),
+        embedding_audit_json(&plus_two_audit),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+fn embedding_audit(
+    reference: &GeometryFailureWitness,
+    outcome: &FullPolygonMergeOutcome,
+) -> earthmesh_refine_certified::coarsen::EmbeddingAudit {
+    let failure = outcome_evidence(outcome)
+        .best_geometry_failure
+        .as_ref()
+        .expect("W3 embedding audit requires a geometry candidate");
+    let candidate = failure
+        .witness
+        .as_deref()
+        .expect("W3 embedding audit requires candidate coordinates");
+    let topology_key = failure
+        .topology_keys
+        .first()
+        .cloned()
+        .expect("W3 geometry candidate must identify its topology");
+    audit_embedding_transfer(
+        topology_key,
+        &reference.mesh,
+        &candidate.mesh,
+        &candidate.patch.fixed_compact_vertices,
+    )
+    .unwrap()
+}
+
+fn embedding_audit_json(audit: &earthmesh_refine_certified::coarsen::EmbeddingAudit) -> String {
+    format!(
+        "{{\"common_source_vertices\":{},\"added_source_vertices\":{:?},\"removed_source_vertices\":{:?},\"common_edges\":{},\"added_edges\":{},\"removed_edges\":{},\"common_triangles\":{},\"added_triangles\":{},\"removed_triangles\":{},\"non_positive_triangles\":{},\"crossing_pairs\":{},\"near_degenerate_triangles\":{},\"fixed_only_degenerate_triangles\":{},\"rotation_mismatch_vertices\":{}}}",
+        audit.common_source_vertices,
+        audit.added_source_vertices,
+        audit.removed_source_vertices,
+        audit.common_edges,
+        audit.added_edges,
+        audit.removed_edges,
+        audit.common_triangles,
+        audit.added_triangles,
+        audit.removed_triangles,
+        audit.non_positive_triangles,
+        audit.crossing_pairs,
+        audit.near_degenerate_triangles,
+        audit.fixed_only_degenerate_triangles,
+        audit.rotation_mismatch_vertices.len(),
+    )
 }
 
 fn pr52_incumbent(
