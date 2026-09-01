@@ -17,6 +17,7 @@
 - [Topology-domain / geometry-guard split](topology_domain_geometry_guard_split.md)
 - [Frozen N6 V1/V2 adapter oracle](frozen_n6_adapter_oracle.md)
 - [Lifted-N12 Adapter V2 fixed-prefix replay](n12_lifted_v2_replay.md)
+- [Lifted-N12 general band-boundary audit](n12_band_failure_audit.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.

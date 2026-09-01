@@ -1,14 +1,15 @@
 //! Research-only runners. They never produce a product mesh or gate decision.
 
 use super::{
-    audit_legacy_downstream_preflight, build_essential_cycle_problem, build_face_band_problem,
-    face_band_evidence_json, n12_interior_control_fixture, n12_lifted_n6_fixture,
-    prove_essential_cycle_family, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    audit_face_band_boundaries, audit_legacy_downstream_preflight, build_essential_cycle_problem,
+    build_face_band_problem, face_band_evidence_json, n12_interior_control_fixture,
+    n12_lifted_n6_fixture, prove_essential_cycle_family, solve_exact_face_bands,
+    solve_full_polygon_merge_from_face_bands, BandBoundaryAudit, BandBoundaryAuditSummary,
     CertifiedResearchFixture, DownstreamEvaluationCache, DownstreamPreflightOutcome,
-    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, ExactFaceBandV2Outcome,
-    FaceBandAdapterVersion, FaceBandEvidence, FaceBandLimits, FaceBandSolveOutcome,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
-    RetainedCoreCorridorFamily,
+    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, EssentialCycleKey,
+    ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence, FaceBandLimits, FaceBandPlan,
+    FaceBandPlanEvaluator, FaceBandSolveOutcome, FullPolygonMergeLimits, FullPolygonMergeOutcome,
+    FullPolygonPlanEvaluator, PlanEvaluation, RetainedCoreCorridorFamily,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -529,6 +530,150 @@ pub fn n12_lifted_v2_replay_json(limits: ResearchCecTopologyLimits) -> Result<St
     ))
 }
 
+pub fn n12_lifted_band_failure_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let inner = FullPolygonPlanEvaluator::topology_domain_v2_uncached(
+        &fixture.source,
+        &fixture.component,
+        FullPolygonMergeLimits {
+            topology_states: limits.downstream_topology_states,
+        },
+    );
+    let mut evaluator = BandAuditingEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        inner,
+        summary: BandBoundaryAuditSummary::default(),
+        first_error: None,
+    };
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    if let Some(error) = evaluator.first_error {
+        return Err(error);
+    }
+    let summary = evaluator.summary;
+    let all_rejections_histogrammed = summary.cycles_audited == evidence.essential_cycles;
+    let histogram = summary
+        .by_band_and_failure
+        .iter()
+        .map(|(&(band, failure), count)| format!("\"band{band}.{}\":{count}", failure.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let first_audits = summary
+        .first_audit_by_band_and_failure
+        .iter()
+        .map(|(&(band, failure), audit)| {
+            let cycle = &summary.first_cycle_by_band_and_failure[&(band, failure)];
+            format!(
+                "\"band{band}.{}\":{{\"cycle\":{},\"audit\":{}}}",
+                failure.as_str(),
+                json_string(&format!("{cycle:?}")),
+                band_boundary_audit_json(audit),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"cb911eef1de3593df10d042bf72ce3707080d2b521ceb074d36b8b05cfe4b63e\",\"fixture\":\"N12-Lifted-N6\",\"adapter_version\":2,\"declared_topology_family\":\"W2CanonicalEssentialCycle+LegacyStratifiedAuditOnly\",\"limits\":{{\"cycle_unique_states\":{},\"downstream_topology_states\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_audited\":{},\"bands_audited\":{},\"topological_annuli\":{},\"topology_contract_failures\":{},\"failure_histogram\":{{{}}},\"first_evidence\":{{{}}},\"all_rejections_histogrammed\":{},\"conclusion\":\"{}\",\"solver_changed\":false,\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        summary.cycles_audited,
+        summary.bands_audited,
+        summary.topological_annuli,
+        summary.topology_contract_failures,
+        histogram,
+        first_audits,
+        all_rejections_histogrammed,
+        summary.conclusion().as_str(),
+    ))
+}
+
+struct BandAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    inner: FullPolygonPlanEvaluator<'a>,
+    summary: BandBoundaryAuditSummary,
+    first_error: Option<String>,
+}
+
+impl FaceBandPlanEvaluator for BandAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, cycle: &EssentialCycleKey, plan: &FaceBandPlan) {
+        match audit_face_band_boundaries(self.source, self.component, plan) {
+            Ok(audits) => self.summary.record(cycle, audits),
+            Err(error) => {
+                self.first_error.get_or_insert(error);
+            }
+        };
+    }
+
+    fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation {
+        self.inner.evaluate(plan)
+    }
+
+    fn topology_state_budget(&self) -> Option<usize> {
+        self.inner.topology_state_budget()
+    }
+}
+
+fn band_boundary_audit_json(audit: &BandBoundaryAudit) -> String {
+    let degree_histogram = audit
+        .undirected_boundary_degree_histogram
+        .iter()
+        .map(|(degree, count)| format!("\"{degree}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"band_id\":{},\"face_count\":{},\"vertices\":{},\"edges\":{},\"euler\":{},\"undirected_boundary_edges\":{},\"undirected_boundary_cycle_count\":{},\"undirected_boundary_degree_histogram\":{{{}}},\"directed_outdegree_violations\":{},\"directed_indegree_violations\":{},\"lower_trace_edges\":{},\"upper_trace_edges\":{},\"lower_boundary_match\":{},\"upper_boundary_match\":{},\"lower_vertices_with_direct_upper_connector\":{},\"lower_vertices_without_direct_upper_connector\":{},\"failure\":{}}}",
+        audit.band_id,
+        audit.face_count,
+        audit.vertices,
+        audit.edges,
+        audit.euler,
+        audit.undirected_boundary_edges,
+        audit.undirected_boundary_cycle_count,
+        degree_histogram,
+        json_usize_array(&audit.directed_outdegree_violations),
+        json_usize_array(&audit.directed_indegree_violations),
+        audit.lower_trace_edges,
+        audit.upper_trace_edges,
+        audit.lower_boundary_match,
+        audit.upper_boundary_match,
+        audit.lower_vertices_with_direct_upper_connector,
+        json_usize_array(&audit.lower_vertices_without_direct_upper_connector),
+        audit
+            .failure
+            .as_ref()
+            .map_or_else(|| "null".into(), |failure| json_string(&format!("{failure:?}"))),
+    )
+}
+
 pub fn n12_lifted_downstream_reject_audit_json(
     limits: ResearchCecTopologyLimits,
 ) -> Result<String, String> {
@@ -803,6 +948,17 @@ fn json_string(value: &str) -> String {
 
 fn json_option(value: Option<impl ToString>) -> String {
     value.map_or_else(|| "null".into(), |value| value.to_string())
+}
+
+fn json_usize_array(values: &[usize]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 fn json_usize_map(values: &BTreeMap<usize, usize>) -> String {
