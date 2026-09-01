@@ -250,3 +250,10 @@ only 0.016745201577--179.918785972103 degrees and +2 reaches
 strictly feasible, so the taskbook's anchor-local W4 precondition is false.
 The retained 38.551143486745--81.453074281139-degree incumbent is not replaced,
 and PR61 interval proof is not started.
+
+The post-PR78 combined recovery and retained-core work is recorded in the
+[CLDP evidence log](cldp.md). PR85's final Frozen N6 status is
+`ContinuousSearchIncomplete`: the best mixed incumbent is
+39.278499430048--80.721500570507 degrees, while the publishable certified safe
+fallback is 54.361673298250--72.000000000000 degrees. N12 and NXP80 remain
+gated because N6 has neither a strict mixed witness nor a scoped closure.
