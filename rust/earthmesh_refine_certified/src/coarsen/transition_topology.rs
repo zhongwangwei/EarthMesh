@@ -1916,7 +1916,7 @@ fn boundary(
     })
 }
 
-fn cycles_from_edges(edges: Vec<(usize, usize)>) -> Result<Vec<Vec<usize>>, String> {
+pub(super) fn cycles_from_edges(edges: Vec<(usize, usize)>) -> Result<Vec<Vec<usize>>, String> {
     if edges.is_empty() {
         return Ok(Vec::new());
     }
