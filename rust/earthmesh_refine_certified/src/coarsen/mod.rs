@@ -212,13 +212,13 @@ pub use research_fixture::{
 };
 pub use research_runner::{
     current_n12_validation_gate_report, decide_validation_gate, n12_cec_topology_probe_json,
-    n12_legacy_baseline_json, n12_lifted_downstream_reject_audit_json,
+    n12_legacy_baseline_json, n12_lifted_downstream_reject_audit_json, n12_lifted_v2_replay_json,
     n12_validation_gate_report_json, research_cec_topology_evidence_json,
     research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
-    N12ValidationGateReport, ResearchCecTopologyEvidence, ResearchCecTopologyLimits,
-    ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome, ResearchLegacyEvidence,
-    ResearchLegacyLimits, ResearchN12OutcomeKind, ValidationGateGovernanceDecision,
-    ValidationGovernanceDecisionV2,
+    run_n12_lifted_v2_replay, N12ValidationGateReport, ResearchCecTopologyEvidence,
+    ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome,
+    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
+    ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,

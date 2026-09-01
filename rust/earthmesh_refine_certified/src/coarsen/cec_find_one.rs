@@ -3,9 +3,10 @@
 use super::downstream_contract::classify_downstream_invalid;
 use super::{
     essential_cycle_seam_parity, face_band_plan_from_essential_cycle,
-    solve_full_polygon_merge_from_face_bands, validate_selected_essential_cycle, AnchorBandPolicy,
-    DownstreamRejectHistogram, DownstreamRejectStage, EssentialCycleKey, EssentialCycleProblem,
-    EssentialCycleProblemKey, FaceBandPlan, FaceBandProblem, FullPolygonMergeEvidence,
+    solve_full_polygon_merge_from_face_bands, solve_full_polygon_merge_from_face_bands_v2,
+    validate_selected_essential_cycle, AnchorBandPolicy, DownstreamRejectHistogram,
+    DownstreamRejectStage, EssentialCycleKey, EssentialCycleProblem, EssentialCycleProblemKey,
+    FaceBandAdapterVersion, FaceBandPlan, FaceBandProblem, FullPolygonMergeEvidence,
     FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonMergeTrial, HierarchyComponent,
 };
 use crate::MotherGrid;
@@ -108,6 +109,7 @@ pub struct EssentialCycleFindOneEvidence {
     pub downstream_exact_rejects: u64,
     pub downstream_incomplete: u64,
     pub downstream_invalid: u64,
+    pub downstream_states_examined: usize,
     pub downstream_reject_histogram: DownstreamRejectHistogram,
     pub cache_hits: u64,
     pub cache_misses: u64,
@@ -146,6 +148,7 @@ pub struct FullPolygonPlanEvaluator<'a> {
     source: &'a MotherGrid,
     component: &'a HierarchyComponent,
     limits: FullPolygonMergeLimits,
+    adapter: FaceBandAdapterVersion,
     cacheable: bool,
     last_invalid_reason: Option<String>,
 }
@@ -160,6 +163,7 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
             source,
             component,
             limits,
+            adapter: FaceBandAdapterVersion::LegacyV1,
             cacheable: true,
             last_invalid_reason: None,
         }
@@ -174,6 +178,22 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
             source,
             component,
             limits,
+            adapter: FaceBandAdapterVersion::LegacyV1,
+            cacheable: false,
+            last_invalid_reason: None,
+        }
+    }
+
+    pub fn topology_domain_v2_uncached(
+        source: &'a MotherGrid,
+        component: &'a HierarchyComponent,
+        limits: FullPolygonMergeLimits,
+    ) -> Self {
+        Self {
+            source,
+            component,
+            limits,
+            adapter: FaceBandAdapterVersion::TopologyDomainV2,
             cacheable: false,
             last_invalid_reason: None,
         }
@@ -186,12 +206,23 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
 
 impl FaceBandPlanEvaluator for FullPolygonPlanEvaluator<'_> {
     fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation {
-        match solve_full_polygon_merge_from_face_bands(
-            self.source,
-            self.component,
-            plan,
-            self.limits,
-        ) {
+        let outcome = match self.adapter {
+            FaceBandAdapterVersion::LegacyV1 => solve_full_polygon_merge_from_face_bands(
+                self.source,
+                self.component,
+                plan,
+                self.limits,
+            ),
+            FaceBandAdapterVersion::TopologyDomainV2 => {
+                solve_full_polygon_merge_from_face_bands_v2(
+                    self.source,
+                    self.component,
+                    plan,
+                    self.limits,
+                )
+            }
+        };
+        match outcome {
             FullPolygonMergeOutcome::Closed(trial) => PlanEvaluation::Accepted(trial),
             FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence) => {
                 PlanEvaluation::RejectedExact { evidence }
@@ -616,6 +647,7 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 downstream_exact_rejects: 0,
                 downstream_incomplete: 0,
                 downstream_invalid: 0,
+                downstream_states_examined: 0,
                 downstream_reject_histogram: DownstreamRejectHistogram::default(),
                 cache_hits: 0,
                 cache_misses: 0,
@@ -985,8 +1017,12 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 evaluation
             });
         match evaluation {
-            PlanEvaluation::Accepted(trial) => Some(Found { cycle, plan, trial }),
-            PlanEvaluation::RejectedExact { .. } => {
+            PlanEvaluation::Accepted(trial) => {
+                self.evidence.downstream_states_examined += trial.evidence.states_examined;
+                Some(Found { cycle, plan, trial })
+            }
+            PlanEvaluation::RejectedExact { evidence } => {
+                self.evidence.downstream_states_examined += evidence.states_examined;
                 self.evidence.downstream_exact_rejects += 1;
                 self.evidence.downstream_reject_histogram.record(
                     DownstreamRejectStage::GlobalLinkMerge,
@@ -995,7 +1031,8 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 );
                 None
             }
-            PlanEvaluation::RejectedSearchIncomplete { .. } => {
+            PlanEvaluation::RejectedSearchIncomplete { evidence } => {
+                self.evidence.downstream_states_examined += evidence.states_examined;
                 self.evidence.downstream_incomplete += 1;
                 self.evidence.downstream_reject_histogram.record(
                     DownstreamRejectStage::SearchIncomplete,
@@ -1005,7 +1042,8 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 self.downstream_unknown = true;
                 None
             }
-            PlanEvaluation::RejectedInvalid { reason, .. } => {
+            PlanEvaluation::RejectedInvalid { reason, evidence } => {
+                self.evidence.downstream_states_examined += evidence.states_examined;
                 self.evidence.downstream_invalid += 1;
                 self.evidence.downstream_reject_histogram.record(
                     classify_downstream_invalid(&reason),
