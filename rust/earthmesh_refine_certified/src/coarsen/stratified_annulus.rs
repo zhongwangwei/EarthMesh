@@ -10,8 +10,9 @@ use super::{
         expand_coupled_annulus_to_face_complex, parent_by_source_face, parent_graph,
         parent_layers_from_outside,
     },
-    extract_coupled_annulus, BoundaryIncidenceContract, CoupledAnnulus, HierarchyComponent,
-    RingAnchorKind, RingCycle,
+    build_transition_topology_domain_from_face_bands, extract_coupled_annulus,
+    topology_domain::coupled_annulus_from_topology_domain,
+    BoundaryIncidenceContract, CoupledAnnulus, HierarchyComponent, RingAnchorKind, RingCycle,
 };
 use crate::mother_grid::{MotherGrid, VertexAddress};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -276,12 +277,48 @@ pub fn build_stratified_annulus_from_coupled(
     })
 }
 
+pub fn build_stratified_topology_domain_v2(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
+    let domain = build_transition_topology_domain_from_face_bands(source, component, plan)
+        .map_err(|error| {
+            StratifiedAnnulusError::InvalidComponent(format!(
+                "topology-domain V2 rejected face-band plan: {error:?}"
+            ))
+        })?;
+    let coupled = coupled_annulus_from_topology_domain(source, &domain).map_err(|error| {
+        StratifiedAnnulusError::InvalidComponent(format!(
+            "topology-domain V2 compatibility shell failed: {error:?}"
+        ))
+    })?;
+    build_stratified_annulus_from_face_bands_with_coupled(source, component, plan, coupled)
+}
+
+pub fn build_stratified_annulus_from_face_bands_v1(
+    source: &MotherGrid,
+    component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
+    let coupled = extract_coupled_annulus(source, component)?;
+    build_stratified_annulus_from_face_bands_with_coupled(source, component, plan, coupled)
+}
+
 pub fn build_stratified_annulus_from_face_bands(
     source: &MotherGrid,
     component: &HierarchyComponent,
     plan: &FaceBandPlan,
 ) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
-    let mut coupled = extract_coupled_annulus(source, component)?;
+    build_stratified_annulus_from_face_bands_v1(source, component, plan)
+}
+
+fn build_stratified_annulus_from_face_bands_with_coupled(
+    source: &MotherGrid,
+    _component: &HierarchyComponent,
+    plan: &FaceBandPlan,
+    mut coupled: CoupledAnnulus,
+) -> Result<StratifiedAnnulus, StratifiedAnnulusError> {
     if plan.band_count < 2 || plan.interface_edges.len() + 1 != plan.band_count {
         return Err(StratifiedAnnulusError::InvalidComponent(
             "face-band plan has inconsistent band/interface counts".into(),

@@ -347,6 +347,28 @@ pub(crate) fn expand_coupled_annulus_to_face_complex(
     Ok(coupled)
 }
 
+pub(super) fn boundary_contracts_for_face_complex(
+    source: &MotherGrid,
+    annulus_faces: &BTreeSet<usize>,
+) -> Result<(Vec<usize>, Vec<BoundaryIncidenceContract>), AnnulusExtractionError> {
+    if annulus_faces.is_empty() {
+        return Err(AnnulusExtractionError::MissingRing(
+            "topology annulus mutable domain",
+        ));
+    }
+    let fixed_outside_faces = source
+        .mesh
+        .active_triangle_slots()
+        .filter(|face| !annulus_faces.contains(face))
+        .collect::<BTreeSet<_>>();
+    let (annulus_incidence, outside_incidence) =
+        vertex_incidence(source, annulus_faces, &fixed_outside_faces);
+    Ok((
+        fixed_outside_faces.iter().copied().collect(),
+        boundary_contracts(source, &annulus_incidence, &outside_incidence)?,
+    ))
+}
+
 fn exterior_cycle(
     name: &'static str,
     edges: BTreeSet<Edge>,
@@ -487,7 +509,7 @@ fn boundary_contracts(
     Ok(contracts)
 }
 
-fn ring(
+pub(super) fn ring(
     id: usize,
     vertices: Vec<usize>,
     role: RingVertexRole,
@@ -799,7 +821,7 @@ fn fine_boundary_edges(
     Ok(edges)
 }
 
-fn coarse_edges_between(
+pub(super) fn coarse_edges_between(
     source: &MotherGrid,
     left_parents: &BTreeSet<TriangleAddress>,
     right_parents: &BTreeSet<TriangleAddress>,

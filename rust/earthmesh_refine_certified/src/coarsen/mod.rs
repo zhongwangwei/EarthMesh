@@ -35,6 +35,7 @@ mod rotation_width_audit;
 mod scheduler;
 mod sector_recovery;
 mod stratified_annulus;
+mod topology_domain;
 mod transition_feasibility;
 mod transition_topology;
 mod violation_support;
@@ -246,11 +247,17 @@ pub use sector_recovery::{
 };
 pub use stratified_annulus::{
     build_stratified_annulus, build_stratified_annulus_from_coupled,
-    build_stratified_annulus_from_face_bands, BandComponent, BandComponentKind, BandFaceLabel,
+    build_stratified_annulus_from_face_bands, build_stratified_annulus_from_face_bands_v1,
+    build_stratified_topology_domain_v2, BandComponent, BandComponentKind, BandFaceLabel,
     DirectedHalfEdge, DirectedTrace, FixedVertexLink, RingOccurrence, RingOccurrenceId,
     SectorComponentRecord, SectorPort, StratifiedAnnulus, StratifiedAnnulusError,
     StratifiedAnnulusRecord, StratifiedOutcomeKind, TraceChain, TracePairSharedRecord, TraceRole,
     VertexLinkContract, VertexRotation,
+};
+pub use topology_domain::{
+    build_geometry_guard_region, build_transition_topology_domain_from_face_bands, BoundaryCycle,
+    BoundaryGraph, GeometryGuardError, GeometryGuardRegion, GeometryGuardRegionKey,
+    TopologyDomainError, TransitionTopologyDomain, TransitionTopologyDomainKey,
 };
 pub use transition_feasibility::{
     analyze_legacy_transition_family, n6_legacy_mixed_fixture,
