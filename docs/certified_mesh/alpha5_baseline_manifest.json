@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "branch": "v3.0.0-alpha5",
+  "commit": "ca7e5449ce7cf5305af8af2205c4fd20848eeb10",
+  "status": "frozen_safe_baseline",
+  "frozen_n6": {
+    "best_mixed_angle_degrees": {
+      "minimum": 39.278499430048,
+      "maximum": 80.721500570507
+    },
+    "safe_fallback_angle_degrees": {
+      "minimum": 54.361673298250,
+      "maximum": 72.0
+    },
+    "retained_core_family_attempts": 924,
+    "exact_no_solution": 265,
+    "search_incomplete": 659,
+    "topology_closed": 0,
+    "product_outcome": "CertifiedSafeFallback",
+    "mixed_existence": "ContinuousSearchIncomplete"
+  },
+  "experimental_algorithms_allowed": false
+}
