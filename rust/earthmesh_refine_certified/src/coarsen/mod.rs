@@ -3,6 +3,7 @@ mod angle_atlas;
 mod annulus;
 mod band_cycle_planner;
 mod boundary_parent_peel;
+mod cec_find_one;
 mod cldp_gate;
 mod collar;
 mod combined_recovery;
@@ -57,6 +58,12 @@ pub use band_cycle_planner::{
 pub use boundary_parent_peel::{
     coarse_core_ears, peel_boundary_parent_for_sector, BoundaryParentEar,
     BoundaryParentPeelOutcome, BoundaryParentPeelTrial,
+};
+pub use cec_find_one::{
+    essential_cycle_find_one_evidence_json, find_one_essential_cycle, EdgeDecision,
+    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, EssentialCycleFindOneOutcome,
+    EssentialCycleFindOneOutcomeKind, FaceBandPlanEvaluator, FullPolygonPlanEvaluator,
+    PackedTwoBitArray, PlanEvaluation,
 };
 pub use cldp_gate::{
     build_frozen_cldp_gate_evidence, build_post_pr78_combined_recovery_report,
