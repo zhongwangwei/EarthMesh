@@ -1,10 +1,11 @@
 use earthmesh_refine_certified::coarsen::{
     audit_embedding_transfer, build_face_band_problem,
-    build_face_band_problem_with_source_face_rings, build_stratified_annulus,
-    build_violation_support_atlas, continue_nested_domain,
+    build_face_band_problem_with_source_face_rings, build_promotion_patch,
+    build_stratified_annulus, build_violation_support_atlas, continue_nested_domain,
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
-    n6_legacy_mixed_fixture_with_source_levels, search_local_topology_neighbourhood,
-    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands,
+    n6_legacy_mixed_fixture_with_source_levels, restore_source_patch,
+    search_local_topology_neighbourhood, solve_elastic_patch_with_max_min_trust_start,
+    solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
     AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
@@ -13,6 +14,7 @@ use earthmesh_refine_certified::coarsen::{
     FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
     GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
     LocalTopologyEvidence, LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind,
+    PromotionLevel,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -462,6 +464,59 @@ fn frozen_n6_pr64_local_topology_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR65 source-face promotion gate"]
+fn frozen_n6_pr65_source_face_promotion_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert_eq!(atlas.components.len(), 1);
+    let violation = &atlas.components[0];
+    let p1 =
+        build_promotion_patch(&source, violation, PromotionLevel::P1RestoreSourceFaces).unwrap();
+    let p2 =
+        build_promotion_patch(&source, violation, PromotionLevel::P2RestoreOneParentRing).unwrap();
+    assert!(p1.source_faces.is_subset(&p2.source_faces));
+    let p1 = restore_source_patch(&source, p1).unwrap();
+    let p2 = restore_source_patch(&source, p2).unwrap();
+    for restored in [&p1, &p2] {
+        assert!(restored.faces.iter().all(|face| {
+            face.triangle == source.mesh.triangles()[face.source_face]
+                && Some(face.hierarchy_address) == source.triangle_addresses[face.source_face]
+                && face.coordinates == face.triangle.map(|site| source.mesh.vertices()[site])
+        }));
+    }
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr65SourceFacePromotion\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"gate\":\"P1P2ExactSafeRestore\",\"violation_source_faces\":{},\"p1\":{},\"p2\":{}}}",
+        violation.source_faces.len(),
+        restored_patch_json(&p1),
+        restored_patch_json(&p2),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn elastic_outcome_geometry(
     outcome: &ElasticBlockOutcome,
 ) -> (
@@ -528,6 +583,25 @@ fn local_topology_evidence_json(evidence: &LocalTopologyEvidence) -> String {
         evidence.best_angle_range_deg.1,
         evidence.best_signed_margin_deg,
         evidence.incumbent_preserved,
+    )
+}
+
+fn restored_patch_json(
+    restored: &earthmesh_refine_certified::coarsen::RestoredSourcePatch,
+) -> String {
+    let patch = &restored.patch;
+    format!(
+        "{{\"level\":\"{:?}\",\"source_faces\":{},\"interior_faces\":{},\"collar_faces\":{},\"hierarchy_parents\":{},\"boundary_cycles\":{},\"protected_exterior_faces\":{},\"source_mesh_fingerprint\":{},\"patch_fingerprint\":{},\"restored_fingerprint\":{}}}",
+        patch.level,
+        patch.source_faces.len(),
+        patch.interior_faces.len(),
+        patch.collar_faces.len(),
+        patch.hierarchy_parents.len(),
+        patch.boundary_cycles.len(),
+        patch.protected_exterior_faces.len(),
+        patch.source_mesh_fingerprint,
+        patch.patch_fingerprint,
+        restored.restored_fingerprint,
     )
 }
 

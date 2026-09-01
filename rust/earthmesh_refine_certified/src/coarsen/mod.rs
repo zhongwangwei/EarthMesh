@@ -16,6 +16,7 @@ mod geometry_witness;
 mod global_exact_merge;
 mod hierarchy_component;
 mod local_topology;
+mod promotion;
 mod rotation_width_audit;
 mod scheduler;
 mod stratified_annulus;
@@ -118,6 +119,10 @@ pub use hierarchy_component::{
 pub use local_topology::{
     search_local_topology_neighbourhood, LocalEdgeFlip, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome,
+};
+pub use promotion::{
+    build_promotion_patch, restore_source_patch, validate_promotion_patch, PromotionLevel,
+    PromotionPatch, RestoredSourceFace, RestoredSourcePatch,
 };
 pub use rotation_width_audit::{
     audit_coupled_rotation_aware_width, audit_rotation_aware_width,

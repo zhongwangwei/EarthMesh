@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR64
+## Frozen N6 evidence through PR65
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -34,6 +34,12 @@ optimization. W4 is therefore disabled.
   `39.278499430048--80.721500570507` degree incumbent, so the bounded search
   ended as `LocalTopologyBudgetExhausted` and CLDP proceeds to source-face
   promotion.
+- PR65: the 285 violation-support faces require ten deterministic connector or
+  hole-fill faces to form a valid P1 source union. P1 restores 295 exact mother
+  faces behind one simple boundary; P2 restores 396 exact mother faces, split
+  into 295 interior and 101 one-parent-ring collar faces. Both patches preserve
+  exact triangle vertices, orientation, hierarchy address, and coordinates,
+  with complete source-face coverage and stable fingerprints.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
