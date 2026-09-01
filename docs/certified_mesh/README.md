@@ -10,6 +10,7 @@
 - [Alpha6 CEC proof/checkpoint/cache contract](cec_proof_mode.md)
 - [Alpha6 legacy/CEC finite-family oracle](cec_legacy_oracle.md)
 - [Alpha6 Frozen N6 CEC reclassification](frozen_n6_cec_closure.md)
+- [Alpha6 N12 CEC topology probe](n12_cec_topology_probe.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.

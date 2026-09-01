@@ -1,12 +1,16 @@
 //! Research-only runners. They never produce a product mesh or gate decision.
 
 use super::{
-    build_face_band_problem, face_band_evidence_json, n12_interior_control_fixture,
-    n12_lifted_n6_fixture, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
-    CertifiedResearchFixture, FaceBandEvidence, FaceBandLimits, FaceBandSolveOutcome,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome,
+    build_essential_cycle_problem, build_face_band_problem, face_band_evidence_json,
+    n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, CertifiedResearchFixture,
+    DownstreamEvaluationCache, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
+    ExactFaceBandV2Outcome, FaceBandEvidence, FaceBandLimits, FaceBandSolveOutcome,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
+    RetainedCoreCorridorFamily,
 };
 use crate::certificate::Certificate;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResearchN12OutcomeKind {
@@ -57,6 +61,235 @@ pub struct ResearchLegacyEvidence {
     pub product_grid_written: bool,
     pub ready_marker_written: bool,
     pub product_gate_changed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchCecTopologyLimits {
+    pub cycle_unique_states: u64,
+    pub downstream_topology_states: usize,
+}
+
+impl Default for ResearchCecTopologyLimits {
+    fn default() -> Self {
+        Self {
+            cycle_unique_states: 16_384,
+            downstream_topology_states: 4_096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResearchCecTopologyOutcomeKind {
+    ResearchTopologyClosed,
+    ResearchExactNoSolution,
+    ResearchCycleSearchIncomplete,
+    ResearchDownstreamSearchIncomplete,
+}
+
+impl ResearchCecTopologyOutcomeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ResearchTopologyClosed => "ResearchTopologyClosed",
+            Self::ResearchExactNoSolution => "ResearchExactNoSolution",
+            Self::ResearchCycleSearchIncomplete => "ResearchCycleSearchIncomplete",
+            Self::ResearchDownstreamSearchIncomplete => "ResearchDownstreamSearchIncomplete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResearchCecTopologyEvidence {
+    pub fixture_name: String,
+    pub limits: ResearchCecTopologyLimits,
+    pub transition_faces: usize,
+    pub cec: EssentialCycleFindOneEvidence,
+    pub checkpoint_shards: usize,
+    pub downstream_states: usize,
+    pub topology_candidates_closed: usize,
+    pub vertices: Option<usize>,
+    pub edges: Option<usize>,
+    pub faces: Option<usize>,
+    pub euler: Option<isize>,
+    pub charge: Option<isize>,
+    pub anchor_degrees: BTreeMap<usize, usize>,
+    pub ordinary_degree_histogram: BTreeMap<usize, usize>,
+    pub degree_link_euler_charge_passed: bool,
+    pub last_downstream_invalid_reason: Option<String>,
+    pub reason: String,
+    pub outcome: ResearchCecTopologyOutcomeKind,
+    pub geometry_attempted: bool,
+    pub product_grid_written: bool,
+    pub ready_marker_written: bool,
+    pub product_gate_changed: bool,
+}
+
+pub fn run_n12_cec_topology_probe(
+    fixture: &CertifiedResearchFixture,
+    limits: ResearchCecTopologyLimits,
+) -> Result<ResearchCecTopologyEvidence, String> {
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = FullPolygonPlanEvaluator::uncached(
+        &fixture.source,
+        &fixture.component,
+        FullPolygonMergeLimits {
+            topology_states: limits.downstream_topology_states,
+        },
+    );
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let last_downstream_invalid_reason = evaluator.last_invalid_reason().map(str::to_owned);
+    let transition_faces = face_problem.transition_faces.len();
+    let incomplete = |cec, checkpoint_shards, reason, outcome| ResearchCecTopologyEvidence {
+        fixture_name: fixture.manifest.name.clone(),
+        limits,
+        transition_faces,
+        cec,
+        checkpoint_shards,
+        downstream_states: 0,
+        topology_candidates_closed: 0,
+        vertices: None,
+        edges: None,
+        faces: None,
+        euler: None,
+        charge: None,
+        anchor_degrees: BTreeMap::new(),
+        ordinary_degree_histogram: BTreeMap::new(),
+        degree_link_euler_charge_passed: false,
+        last_downstream_invalid_reason: last_downstream_invalid_reason.clone(),
+        reason,
+        outcome,
+        geometry_attempted: false,
+        product_grid_written: false,
+        ready_marker_written: false,
+        product_gate_changed: false,
+    };
+    match outcome {
+        ExactFaceBandV2Outcome::Closed {
+            trial, evidence, ..
+        } => {
+            let downstream = &trial.evidence;
+            let global = &trial.global_trial.evidence;
+            Ok(ResearchCecTopologyEvidence {
+                fixture_name: fixture.manifest.name.clone(),
+                limits,
+                transition_faces,
+                cec: evidence,
+                checkpoint_shards: 0,
+                downstream_states: downstream.states_examined,
+                topology_candidates_closed: downstream.topology_candidates_closed,
+                vertices: Some(global.vertices),
+                edges: Some(global.edges),
+                faces: Some(global.faces),
+                euler: Some(global.euler),
+                charge: Some(global.charge),
+                anchor_degrees: global.anchor_degrees.clone(),
+                ordinary_degree_histogram: global.ordinary_degree_histogram.clone(),
+                degree_link_euler_charge_passed: true,
+                last_downstream_invalid_reason: None,
+                reason: "CEC and full-polygon degree/link/Euler/charge contracts closed".into(),
+                outcome: ResearchCecTopologyOutcomeKind::ResearchTopologyClosed,
+                geometry_attempted: false,
+                product_grid_written: false,
+                ready_marker_written: false,
+                product_gate_changed: false,
+            })
+        }
+        ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. } => Ok(incomplete(
+            evidence,
+            0,
+            "canonical essential-cycle family and exact downstream contract are exhausted".into(),
+            ResearchCecTopologyOutcomeKind::ResearchExactNoSolution,
+        )),
+        ExactFaceBandV2Outcome::CycleSearchIncomplete {
+            checkpoint,
+            evidence,
+        } => Ok(incomplete(
+            evidence,
+            checkpoint.shards.len(),
+            "canonical essential-cycle unique-state budget exhausted with a resumable frontier"
+                .into(),
+            ResearchCecTopologyOutcomeKind::ResearchCycleSearchIncomplete,
+        )),
+        ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => Ok(incomplete(
+            evidence,
+            0,
+            "cycle family exhausted but at least one full-polygon evaluation remained incomplete"
+                .into(),
+            ResearchCecTopologyOutcomeKind::ResearchDownstreamSearchIncomplete,
+        )),
+        ExactFaceBandV2Outcome::InvalidInput { reason } => Err(reason),
+    }
+}
+
+pub fn n12_cec_topology_probe_json(limits: ResearchCecTopologyLimits) -> Result<String, String> {
+    let reports = [
+        run_n12_cec_topology_probe(&n12_lifted_n6_fixture()?, limits)?,
+        run_n12_cec_topology_probe(&n12_interior_control_fixture()?, limits)?,
+    ];
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"b327b6afdf199abfaf1a77f4e403ef296e4f5bd2483d855b360c08152a10ae53\",\"runner\":\"CanonicalEssentialCycle\",\"research_only\":true,\"reports\":[{}]}}",
+        reports
+            .iter()
+            .map(research_cec_topology_evidence_json)
+            .collect::<Vec<_>>()
+            .join(",")
+    ))
+}
+
+pub fn research_cec_topology_evidence_json(report: &ResearchCecTopologyEvidence) -> String {
+    format!(
+        "{{\"fixture\":{},\"limits\":{{\"cycle_unique_states\":{},\"downstream_topology_states\":{}}},\"transition_faces\":{},\"candidate_vertices\":{},\"candidate_edges\":{},\"unique_states\":{},\"raw_decisions\":{},\"propagation_events\":{},\"closed_cycles\":{},\"essential_cycles\":{},\"downstream_exact_rejects\":{},\"downstream_incomplete\":{},\"downstream_invalid\":{},\"checkpoint_shards\":{},\"downstream_states\":{},\"topology_candidates_closed\":{},\"vertices\":{},\"edges\":{},\"faces\":{},\"euler\":{},\"charge\":{},\"anchor_degrees\":{},\"ordinary_degree_histogram\":{},\"degree_link_euler_charge_passed\":{},\"last_downstream_invalid_reason\":{},\"geometry_attempted\":{},\"reason\":{},\"outcome\":\"{}\",\"product_grid_written\":{},\"ready_marker_written\":{},\"product_gate_changed\":{}}}",
+        json_string(&report.fixture_name),
+        report.limits.cycle_unique_states,
+        report.limits.downstream_topology_states,
+        report.transition_faces,
+        report.cec.candidate_vertices,
+        report.cec.candidate_edges,
+        report.cec.unique_states,
+        report.cec.raw_decisions,
+        report.cec.propagation_events,
+        report.cec.closed_cycles,
+        report.cec.essential_cycles,
+        report.cec.downstream_exact_rejects,
+        report.cec.downstream_incomplete,
+        report.cec.downstream_invalid,
+        report.checkpoint_shards,
+        report.downstream_states,
+        report.topology_candidates_closed,
+        json_option(report.vertices),
+        json_option(report.edges),
+        json_option(report.faces),
+        json_option(report.euler),
+        json_option(report.charge),
+        json_usize_map(&report.anchor_degrees),
+        json_usize_map(&report.ordinary_degree_histogram),
+        report.degree_link_euler_charge_passed,
+        report
+            .last_downstream_invalid_reason
+            .as_deref()
+            .map_or_else(|| "null".into(), json_string),
+        report.geometry_attempted,
+        json_string(&report.reason),
+        report.outcome.as_str(),
+        report.product_grid_written,
+        report.ready_marker_written,
+        report.product_gate_changed,
+    )
 }
 
 pub fn run_n12_legacy_baseline(
@@ -262,4 +495,19 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn json_option(value: Option<impl ToString>) -> String {
+    value.map_or_else(|| "null".into(), |value| value.to_string())
+}
+
+fn json_usize_map(values: &BTreeMap<usize, usize>) -> String {
+    format!(
+        "{{{}}}",
+        values
+            .iter()
+            .map(|(key, value)| format!("\"{key}\":{value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
