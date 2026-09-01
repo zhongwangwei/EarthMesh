@@ -383,15 +383,33 @@ fn frozen_n6_pr63_violation_support_probe() {
         &selected_ears,
     )
     .unwrap();
-    assert!(!atlas.active_angles.is_empty());
+    assert!(!atlas.evidence_sets.optimization_active.is_empty());
     assert!(atlas
-        .active_angles
+        .evidence_sets
+        .optimization_active
         .iter()
         .all(|angle| !angle.source_support_faces.is_empty() && !angle.parent_support.is_empty()));
     assert!(atlas
-        .custom_triangle_provenance
+        .evidence_sets
+        .strict_violations
         .iter()
-        .all(|item| { !item.covered_source_faces.is_empty() && !item.source_parents.is_empty() }));
+        .all(|angle| angle.signed_margin_deg < 0.0));
+    assert!(atlas
+        .evidence_sets
+        .near_boundary_guards
+        .iter()
+        .all(|angle| angle.signed_margin_deg >= 0.0));
+    assert_eq!(atlas.support_inflation.guard_angles, 64);
+    assert_eq!(
+        atlas.support_inflation.promotion_seed_angles,
+        atlas.support_inflation.actual_violation_angles
+    );
+    assert!(atlas.custom_triangle_provenance.iter().all(|item| {
+        item.precision
+            == earthmesh_refine_certified::coarsen::ProvenancePrecision::ConservativeSector
+            && !item.covered_source_faces.is_empty()
+            && !item.source_parents.is_empty()
+    }));
     let json = format!(
         "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr63ViolationSupport\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"gate\":\"AllActiveAnglesHaveFiniteSourceSupport\",\"atlas\":{}}}",
         violation_support_atlas_json(&atlas),

@@ -8,10 +8,19 @@ use super::{
 use crate::{mother_grid::TriangleAddress, MotherGrid};
 use std::collections::{BTreeMap, BTreeSet};
 
+const MAX_NEAR_BOUNDARY_GUARDS: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AngleBoundKind {
     Lower,
     Upper,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvenancePrecision {
+    ExactSourceFace,
+    ExactHierarchyLeaf,
+    ConservativeSector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +28,7 @@ pub struct CustomTriangleProvenance {
     pub triangle: [usize; 3],
     pub sector_id: u64,
     pub face_band: Option<u8>,
+    pub precision: ProvenancePrecision,
     pub covered_source_faces: BTreeSet<usize>,
     pub source_parents: BTreeSet<TriangleAddress>,
 }
@@ -48,13 +58,34 @@ pub struct ViolationComponent {
     pub active_constraint_vertices: BTreeSet<usize>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AngleEvidenceSets {
+    pub strict_violations: Vec<ViolatingAngle>,
+    pub near_boundary_guards: Vec<ViolatingAngle>,
+    pub optimization_active: Vec<ViolatingAngle>,
+    pub promotion_violation_seeds: Vec<ViolatingAngle>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SupportInflationReport {
+    pub actual_violation_angles: usize,
+    pub guard_angles: usize,
+    pub promotion_seed_angles: usize,
+    pub strict_violation_mesh_faces: usize,
+    pub legacy_component_count: usize,
+    pub strict_only_component_count: usize,
+    pub old_source_support_faces: usize,
+    pub strict_seed_source_faces: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViolationSupportAtlas {
     pub total_angles: usize,
-    pub active_angles: Vec<ViolatingAngle>,
+    pub evidence_sets: AngleEvidenceSets,
     pub custom_triangle_provenance: Vec<CustomTriangleProvenance>,
     pub components: Vec<ViolationComponent>,
     pub patch_expansion_graph: BTreeMap<usize, BTreeSet<usize>>,
+    pub support_inflation: SupportInflationReport,
 }
 
 pub fn build_violation_support_atlas(
@@ -65,6 +96,29 @@ pub fn build_violation_support_atlas(
     topology_keys: &[FullPolygonTopologyKey],
     selected_ears: &[GlobalExactSelectedEar],
 ) -> Result<ViolationSupportAtlas, String> {
+    build_violation_support_atlas_with_promotion_seed_margin(
+        source,
+        mesh,
+        patch,
+        stratified,
+        topology_keys,
+        selected_ears,
+        0.0,
+    )
+}
+
+pub fn build_violation_support_atlas_with_promotion_seed_margin(
+    source: &MotherGrid,
+    mesh: &HierarchyLeafMesh,
+    patch: &ElasticPatch,
+    stratified: &StratifiedAnnulus,
+    topology_keys: &[FullPolygonTopologyKey],
+    selected_ears: &[GlobalExactSelectedEar],
+    promotion_seed_margin_deg: f64,
+) -> Result<ViolationSupportAtlas, String> {
+    if !promotion_seed_margin_deg.is_finite() || promotion_seed_margin_deg > 0.0 {
+        return Err("promotion seed margin must be finite and non-positive".into());
+    }
     let worst = build_worst_angle_atlas(
         source,
         mesh,
@@ -92,15 +146,7 @@ pub fn build_violation_support_atlas(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    let mut nonviolating = 0;
-    let mut active_angles = Vec::new();
-    for angle in &worst.worst_angles {
-        if angle.signed_margin_deg >= 0.0 {
-            if nonviolating == 64 {
-                continue;
-            }
-            nonviolating += 1;
-        }
+    let supported_angle = |angle: &super::AngleWitness| -> Result<ViolatingAngle, String> {
         let triangle = mesh.mesh.triangles()[angle.face];
         let source_triangle = triangle.map(|site| mesh.source_vertex_slots[site]);
         let mut support = angle
@@ -122,7 +168,7 @@ pub fn build_violation_support_atlas(
         }
         let parent_support = source_parents(source, &support)?;
         let face_band = angle.band_id.and_then(|band| u8::try_from(band).ok());
-        active_angles.push(ViolatingAngle {
+        Ok(ViolatingAngle {
             face: angle.face,
             corner_site: triangle[angle.corner],
             angle_deg: angle.angle_deg,
@@ -144,17 +190,70 @@ pub fn build_violation_support_atlas(
                 .into_iter()
                 .filter(|site| fixed.contains(site))
                 .collect(),
-        });
-    }
+        })
+    };
+    let strict_violations = worst
+        .worst_angles
+        .iter()
+        .filter(|angle| angle.signed_margin_deg < 0.0)
+        .map(supported_angle)
+        .collect::<Result<Vec<_>, _>>()?;
+    let near_boundary_guards = worst
+        .worst_angles
+        .iter()
+        .filter(|angle| angle.signed_margin_deg >= 0.0)
+        .take(MAX_NEAR_BOUNDARY_GUARDS)
+        .map(supported_angle)
+        .collect::<Result<Vec<_>, _>>()?;
+    let promotion_violation_seeds = strict_violations
+        .iter()
+        .filter(|angle| {
+            angle.signed_margin_deg < 0.0 && angle.signed_margin_deg <= promotion_seed_margin_deg
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let optimization_active = strict_violations
+        .iter()
+        .chain(&near_boundary_guards)
+        .cloned()
+        .collect::<Vec<_>>();
     let graph = source_face_graph(source);
-    let components = merge_violation_components(source, &active_angles, &graph);
+    let legacy_components = merge_violation_components(source, &optimization_active, &graph);
+    let components = merge_violation_components(source, &promotion_violation_seeds, &graph);
+    let support_inflation = SupportInflationReport {
+        actual_violation_angles: strict_violations.len(),
+        guard_angles: near_boundary_guards.len(),
+        promotion_seed_angles: promotion_violation_seeds.len(),
+        strict_violation_mesh_faces: strict_violations
+            .iter()
+            .map(|angle| angle.face)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        legacy_component_count: legacy_components.len(),
+        strict_only_component_count: components.len(),
+        old_source_support_faces: union_source_support(&optimization_active).len(),
+        strict_seed_source_faces: union_source_support(&promotion_violation_seeds).len(),
+    };
     Ok(ViolationSupportAtlas {
         total_angles: worst.total_angles,
-        active_angles,
+        evidence_sets: AngleEvidenceSets {
+            strict_violations,
+            near_boundary_guards,
+            optimization_active,
+            promotion_violation_seeds,
+        },
         custom_triangle_provenance: provenance,
         components,
         patch_expansion_graph: graph,
+        support_inflation,
     })
+}
+
+fn union_source_support(angles: &[ViolatingAngle]) -> BTreeSet<usize> {
+    angles
+        .iter()
+        .flat_map(|angle| angle.source_support_faces.iter().copied())
+        .collect()
 }
 
 fn custom_triangle_provenance(
@@ -213,6 +312,7 @@ fn custom_triangle_provenance(
                 triangle,
                 sector_id: key.sector_id,
                 face_band: band,
+                precision: ProvenancePrecision::ConservativeSector,
                 covered_source_faces: sector_faces.clone(),
                 source_parents: parents.clone(),
             });
@@ -377,8 +477,30 @@ fn supports_overlap(
 }
 
 pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
-    let angles = atlas
-        .active_angles
+    let strict = atlas
+        .evidence_sets
+        .strict_violations
+        .iter()
+        .map(violating_angle_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let guards = atlas
+        .evidence_sets
+        .near_boundary_guards
+        .iter()
+        .map(violating_angle_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let active = atlas
+        .evidence_sets
+        .optimization_active
+        .iter()
+        .map(violating_angle_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let promotion_seeds = atlas
+        .evidence_sets
+        .promotion_violation_seeds
         .iter()
         .map(violating_angle_json)
         .collect::<Vec<_>>()
@@ -402,9 +524,13 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"total_angles\":{},\"active_angles\":[{}],\"custom_triangle_provenance\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
+        "{{\"total_angles\":{},\"evidence_sets\":{{\"strict_violations\":[{}],\"near_boundary_guards\":[{}],\"optimization_active\":[{}],\"promotion_violation_seeds\":[{}]}},\"support_inflation\":{},\"custom_triangle_provenance\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
         atlas.total_angles,
-        angles,
+        strict,
+        guards,
+        active,
+        promotion_seeds,
+        support_inflation_json(&atlas.support_inflation),
         provenance,
         components,
         graph,
@@ -430,14 +556,30 @@ fn violating_angle_json(angle: &ViolatingAngle) -> String {
 
 fn provenance_json(item: &CustomTriangleProvenance) -> String {
     format!(
-        "{{\"triangle\":[{},{},{}],\"sector_id\":{},\"face_band\":{},\"covered_source_faces\":{},\"source_parents\":{}}}",
+        "{{\"triangle\":[{},{},{}],\"sector_id\":{},\"face_band\":{},\"precision\":\"{:?}\",\"diagnostic_only\":{},\"covered_source_faces\":{},\"source_parents\":{}}}",
         item.triangle[0],
         item.triangle[1],
         item.triangle[2],
         item.sector_id,
         item.face_band.map_or_else(|| "null".into(), |value| value.to_string()),
+        item.precision,
+        item.precision == ProvenancePrecision::ConservativeSector,
         usize_set_json(&item.covered_source_faces),
         address_set_json(&item.source_parents),
+    )
+}
+
+fn support_inflation_json(report: &SupportInflationReport) -> String {
+    format!(
+        "{{\"actual_violation_angles\":{},\"guard_angles\":{},\"promotion_seed_angles\":{},\"strict_violation_mesh_faces\":{},\"legacy_component_count\":{},\"strict_only_component_count\":{},\"old_source_support_faces\":{},\"strict_seed_source_faces\":{}}}",
+        report.actual_violation_angles,
+        report.guard_angles,
+        report.promotion_seed_angles,
+        report.strict_violation_mesh_faces,
+        report.legacy_component_count,
+        report.strict_only_component_count,
+        report.old_source_support_faces,
+        report.strict_seed_source_faces,
     )
 }
 
@@ -559,6 +701,15 @@ mod tests {
     }
 
     #[test]
+    fn conservative_sector_support_is_not_exact() {
+        let (source, _, _, stratified, keys) = fixture();
+        let provenance = custom_triangle_provenance(&source, &stratified, &keys).unwrap();
+        assert!(provenance
+            .iter()
+            .all(|item| item.precision == ProvenancePrecision::ConservativeSector));
+    }
+
+    #[test]
     fn violation_support_is_deterministic() {
         let (source, mesh, patch, stratified, keys) = fixture();
         let first =
@@ -573,11 +724,50 @@ mod tests {
     }
 
     #[test]
+    fn nonviolating_guard_angles_never_seed_promotion() {
+        let (source, mesh, patch, stratified, keys) = fixture();
+        let atlas =
+            build_violation_support_atlas(&source, &mesh, &patch, &stratified, &keys, &[]).unwrap();
+        let guards = atlas
+            .evidence_sets
+            .near_boundary_guards
+            .iter()
+            .map(|angle| (angle.face, angle.corner_site))
+            .collect::<BTreeSet<_>>();
+        assert!(atlas
+            .evidence_sets
+            .promotion_violation_seeds
+            .iter()
+            .all(|angle| !guards.contains(&(angle.face, angle.corner_site))));
+        assert!(atlas
+            .evidence_sets
+            .promotion_violation_seeds
+            .iter()
+            .all(|angle| angle.signed_margin_deg < 0.0));
+    }
+
+    #[test]
+    fn strict_seed_count_excludes_64_guards() {
+        let (source, mesh, patch, stratified, keys) = fixture();
+        let atlas =
+            build_violation_support_atlas(&source, &mesh, &patch, &stratified, &keys, &[]).unwrap();
+        assert_eq!(atlas.support_inflation.guard_angles, 64);
+        assert_eq!(
+            atlas.support_inflation.promotion_seed_angles,
+            atlas.support_inflation.actual_violation_angles
+        );
+        assert_eq!(
+            atlas.evidence_sets.optimization_active.len(),
+            atlas.support_inflation.actual_violation_angles + 64
+        );
+    }
+
+    #[test]
     fn support_components_merge_on_overlap() {
         let (source, mesh, patch, stratified, keys) = fixture();
         let atlas =
             build_violation_support_atlas(&source, &mesh, &patch, &stratified, &keys, &[]).unwrap();
-        let angle = atlas.active_angles[0].clone();
+        let angle = atlas.evidence_sets.optimization_active[0].clone();
         let components = merge_violation_components(
             &source,
             &[angle.clone(), angle],
