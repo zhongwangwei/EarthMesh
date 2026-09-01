@@ -1,7 +1,7 @@
 use earthmesh_refine_certified::coarsen::{
-    audit_embedding_transfer, audit_local_repair_action, build_face_band_problem,
-    build_face_band_problem_with_source_face_rings, build_frozen_cldp_gate_evidence,
-    build_local_action_conflict_graph, build_promotion_patch,
+    accept_monotone_working_candidate, audit_embedding_transfer, audit_local_repair_action,
+    build_face_band_problem, build_face_band_problem_with_source_face_rings,
+    build_frozen_cldp_gate_evidence, build_local_action_conflict_graph, build_promotion_patch,
     build_singleton_local_repair_registry, build_stratified_annulus, build_violation_support_atlas,
     coarse_core_ears, continue_nested_domain, enumerate_compatible_action_sets,
     evaluate_frozen_cldp_gate, frozen_n6_geometry_evidence_json_with_solver_domain,
@@ -17,13 +17,13 @@ use earthmesh_refine_certified::coarsen::{
     DomainContinuationOutcome, DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticPatch, ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
     FrozenCldpGateOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
-    FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness,
-    GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar, HierarchyLeafMesh,
-    LocalActionEffect, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
+    FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDefectVector, GeometryDomainId,
+    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
+    HierarchyLeafMesh, LocalActionEffect, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
     LocalAnnularCollarOutcome, LocalRepairAction, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
     PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom, SingletonFailureReason,
-    ViolationSupportAtlas,
+    ViolationSupportAtlas, WorkingMesh, WorkingMeshCandidate, WorkingMeshHardGates,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -1596,6 +1596,61 @@ fn frozen_n6_pr82_combined_global_max_min_geometry_probe() {
                 .total_cmp(&right.signed_margin_deg.unwrap_or(f64::NEG_INFINITY))
         })
         .unwrap();
+    let defect_for = |range: (f64, f64), promoted_source_faces, retained_parents| {
+        let margin = (range.0 - 40.2).min(79.8 - range.1);
+        GeometryDefectVector {
+            non_positive_triangles: 0,
+            crossings: 0,
+            angle_violations: usize::from(margin < 0.0),
+            negative_signed_margin_mdeg: (-margin * 1000.0).max(0.0).ceil() as i64,
+            delaunay_violations: 0,
+            invalid_voronoi_cells: 0,
+            promoted_source_faces,
+            negative_retained_coarse_parents: -(retained_parents as isize),
+        }
+    };
+    let incumbent_range = results[0].incumbent_angle_range_deg.unwrap();
+    let incumbent_defect = defect_for(incumbent_range, 0, fixture.retained_parents.len());
+    let mut sequential = WorkingMesh::new(
+        fixture.mesh.clone(),
+        incumbent_defect.clone(),
+        graph.actions.iter().map(|action| action.fingerprint),
+    );
+    let mut oracle = incumbent_defect;
+    for result in &results {
+        let trial = result.best_candidate.as_deref().unwrap();
+        let defect = defect_for(
+            trial.angle_range_deg.unwrap(),
+            trial.plan.restored_source_faces.len(),
+            trial.retained_parents.len(),
+        );
+        oracle = oracle.min(defect.clone());
+        accept_monotone_working_candidate(
+            &mut sequential,
+            WorkingMeshCandidate {
+                mesh: trial.mesh.clone(),
+                defect,
+                hard_gates: WorkingMeshHardGates {
+                    topology: true,
+                    degree: true,
+                    link: true,
+                    euler: true,
+                    charge: true,
+                    physical: true,
+                },
+                new_outside_angle_violations: 0,
+            },
+            |_| Ok(graph.actions.iter().map(|action| action.fingerprint)),
+        )
+        .unwrap();
+    }
+    assert!(
+        earthmesh_refine_certified::coarsen::sequential_matches_exact_combination_oracle(
+            &sequential.defect,
+            &oracle,
+        )
+    );
+    assert!(!sequential.is_publishable());
     let best_range_json = best_candidate.angle_range_deg.map_or_else(
         || "null".to_string(),
         |range| format!("[{:.12},{:.12}]", range.0, range.1),

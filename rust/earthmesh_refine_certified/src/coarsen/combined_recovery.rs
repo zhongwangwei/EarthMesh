@@ -194,6 +194,153 @@ pub struct CombinedGeometryResult {
     pub continuous_search_incomplete: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GeometryDefectVector {
+    pub non_positive_triangles: usize,
+    pub crossings: usize,
+    pub angle_violations: usize,
+    pub negative_signed_margin_mdeg: i64,
+    pub delaunay_violations: usize,
+    pub invalid_voronoi_cells: usize,
+    pub promoted_source_faces: usize,
+    pub negative_retained_coarse_parents: isize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkingMeshHardGates {
+    pub topology: bool,
+    pub degree: bool,
+    pub link: bool,
+    pub euler: bool,
+    pub charge: bool,
+    pub physical: bool,
+}
+
+impl WorkingMeshHardGates {
+    fn all_pass(self) -> bool {
+        self.topology && self.degree && self.link && self.euler && self.charge && self.physical
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkingMeshCandidate {
+    pub mesh: HierarchyLeafMesh,
+    pub defect: GeometryDefectVector,
+    pub hard_gates: WorkingMeshHardGates,
+    pub new_outside_angle_violations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkingMesh {
+    mesh: HierarchyLeafMesh,
+    pub defect: GeometryDefectVector,
+    visited_fingerprints: BTreeSet<u64>,
+    pub action_registry_fingerprints: BTreeSet<u64>,
+    pub registry_epoch: usize,
+    pub accepted_steps: usize,
+}
+
+impl WorkingMesh {
+    pub fn new(
+        mesh: HierarchyLeafMesh,
+        defect: GeometryDefectVector,
+        action_registry_fingerprints: impl IntoIterator<Item = u64>,
+    ) -> Self {
+        let visited_fingerprints = BTreeSet::from([mesh_fingerprint(&mesh.mesh)]);
+        Self {
+            mesh,
+            defect,
+            visited_fingerprints,
+            action_registry_fingerprints: action_registry_fingerprints.into_iter().collect(),
+            registry_epoch: 0,
+            accepted_steps: 0,
+        }
+    }
+
+    pub fn mesh(&self) -> &HierarchyLeafMesh {
+        &self.mesh
+    }
+
+    pub fn is_publishable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkingMeshRejectReason {
+    HardInvariantFailure,
+    OrientationOrCrossingRegression,
+    DefectNotStrictlyLower,
+    OutsideAngleViolation,
+    VisitedFingerprint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkingMeshStep {
+    Accepted {
+        fingerprint: u64,
+        previous_defect: GeometryDefectVector,
+        defect: GeometryDefectVector,
+        registry_epoch: usize,
+    },
+    Rejected(WorkingMeshRejectReason),
+}
+
+pub fn accept_monotone_working_candidate<F, I>(
+    state: &mut WorkingMesh,
+    candidate: WorkingMeshCandidate,
+    recompute_action_registry_fingerprints: F,
+) -> Result<WorkingMeshStep, String>
+where
+    F: FnOnce(&HierarchyLeafMesh) -> Result<I, String>,
+    I: IntoIterator<Item = u64>,
+{
+    let reason = if !candidate.hard_gates.all_pass() {
+        Some(WorkingMeshRejectReason::HardInvariantFailure)
+    } else if candidate.defect.non_positive_triangles > state.defect.non_positive_triangles
+        || candidate.defect.crossings > state.defect.crossings
+    {
+        Some(WorkingMeshRejectReason::OrientationOrCrossingRegression)
+    } else if candidate.defect >= state.defect {
+        Some(WorkingMeshRejectReason::DefectNotStrictlyLower)
+    } else if candidate.new_outside_angle_violations > 0 {
+        Some(WorkingMeshRejectReason::OutsideAngleViolation)
+    } else {
+        let fingerprint = mesh_fingerprint(&candidate.mesh.mesh);
+        state
+            .visited_fingerprints
+            .contains(&fingerprint)
+            .then_some(WorkingMeshRejectReason::VisitedFingerprint)
+    };
+    if let Some(reason) = reason {
+        return Ok(WorkingMeshStep::Rejected(reason));
+    }
+
+    let fingerprint = mesh_fingerprint(&candidate.mesh.mesh);
+    let registry = recompute_action_registry_fingerprints(&candidate.mesh)?
+        .into_iter()
+        .collect();
+    let previous_defect = std::mem::replace(&mut state.defect, candidate.defect.clone());
+    state.mesh = candidate.mesh;
+    state.visited_fingerprints.insert(fingerprint);
+    state.action_registry_fingerprints = registry;
+    state.registry_epoch += 1;
+    state.accepted_steps += 1;
+    Ok(WorkingMeshStep::Accepted {
+        fingerprint,
+        previous_defect,
+        defect: candidate.defect,
+        registry_epoch: state.registry_epoch,
+    })
+}
+
+pub fn sequential_matches_exact_combination_oracle(
+    sequential: &GeometryDefectVector,
+    exact: &GeometryDefectVector,
+) -> bool {
+    sequential == exact
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompatibleActionSetPlan {
     pub total_bitmasks: usize,
@@ -1518,6 +1665,46 @@ mod tests {
     use super::*;
     use crate::TriangleOrientation;
 
+    fn defect(angle_violations: usize) -> GeometryDefectVector {
+        GeometryDefectVector {
+            non_positive_triangles: 0,
+            crossings: 0,
+            angle_violations,
+            negative_signed_margin_mdeg: 922,
+            delaunay_violations: 0,
+            invalid_voronoi_cells: 0,
+            promoted_source_faces: 0,
+            negative_retained_coarse_parents: -7,
+        }
+    }
+
+    fn working_mesh() -> HierarchyLeafMesh {
+        let source = MotherGrid::generate(1).unwrap();
+        let leaves = super::super::HierarchyLeafSet::from_mother_grid(&source).unwrap();
+        super::super::rebuild_from_leaf_set(&source, &leaves).unwrap()
+    }
+
+    fn moved_mesh(mut mesh: HierarchyLeafMesh) -> HierarchyLeafMesh {
+        let site = mesh.mesh.active_vertex_slots().next().unwrap();
+        let point = mesh.mesh.vertices()[site];
+        mesh.mesh.move_vertex(
+            site,
+            CartesianPoint::new(point.x + 1.0e-9, point.y, point.z),
+        );
+        mesh
+    }
+
+    fn passing_gates() -> WorkingMeshHardGates {
+        WorkingMeshHardGates {
+            topology: true,
+            degree: true,
+            link: true,
+            euler: true,
+            charge: true,
+            physical: true,
+        }
+    }
+
     fn action(id: u64, covered: usize) -> LocalRepairAction {
         LocalRepairAction {
             id,
@@ -1617,5 +1804,82 @@ mod tests {
             plan.classifications[3],
             ActionSetClassification::HardConflict
         );
+    }
+
+    #[test]
+    fn defect_vector_strictly_decreases() {
+        let mesh = working_mesh();
+        let candidate_mesh = moved_mesh(mesh.clone());
+        let mut state = WorkingMesh::new(mesh, defect(2), [10]);
+        let step = accept_monotone_working_candidate(
+            &mut state,
+            WorkingMeshCandidate {
+                mesh: candidate_mesh,
+                defect: defect(1),
+                hard_gates: passing_gates(),
+                new_outside_angle_violations: 0,
+            },
+            |_| Ok([20, 30]),
+        )
+        .unwrap();
+        assert!(matches!(step, WorkingMeshStep::Accepted { .. }));
+        assert_eq!(state.defect, defect(1));
+        assert_eq!(state.action_registry_fingerprints, BTreeSet::from([20, 30]));
+        assert_eq!(state.registry_epoch, 1);
+        assert_eq!(state.accepted_steps, 1);
+    }
+
+    #[test]
+    fn visited_fingerprint_prevents_cycles() {
+        let mesh = working_mesh();
+        let mut state = WorkingMesh::new(mesh.clone(), defect(2), [10]);
+        let step = accept_monotone_working_candidate(
+            &mut state,
+            WorkingMeshCandidate {
+                mesh,
+                defect: defect(1),
+                hard_gates: passing_gates(),
+                new_outside_angle_violations: 0,
+            },
+            |_| Ok([20]),
+        )
+        .unwrap();
+        assert_eq!(
+            step,
+            WorkingMeshStep::Rejected(WorkingMeshRejectReason::VisitedFingerprint)
+        );
+        assert_eq!(state.registry_epoch, 0);
+    }
+
+    #[test]
+    fn intermediate_working_mesh_is_never_published() {
+        let mesh = working_mesh();
+        let candidate_mesh = moved_mesh(mesh.clone());
+        let mut state = WorkingMesh::new(mesh, defect(2), [10]);
+        assert!(!state.is_publishable());
+        accept_monotone_working_candidate(
+            &mut state,
+            WorkingMeshCandidate {
+                mesh: candidate_mesh,
+                defect: defect(1),
+                hard_gates: passing_gates(),
+                new_outside_angle_violations: 0,
+            },
+            |_| Ok([20]),
+        )
+        .unwrap();
+        assert!(!state.is_publishable());
+    }
+
+    #[test]
+    fn sequential_n6_result_matches_exact_combination_oracle() {
+        assert!(sequential_matches_exact_combination_oracle(
+            &defect(1),
+            &defect(1)
+        ));
+        assert!(!sequential_matches_exact_combination_oracle(
+            &defect(2),
+            &defect(1)
+        ));
     }
 }

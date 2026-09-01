@@ -63,13 +63,16 @@ pub use collar::{
     PromotionOutcome, PromotionTrial, PromotionTrialEvidence,
 };
 pub use combined_recovery::{
-    audit_local_repair_action, build_local_action_conflict_graph, build_local_repair_action,
+    accept_monotone_working_candidate, audit_local_repair_action,
+    build_local_action_conflict_graph, build_local_repair_action,
     build_singleton_local_repair_registry, enumerate_compatible_action_sets,
-    materialize_combined_repair_plan, solve_combined_global_max_min, ActionSetClassification,
-    CombinedCavity, CombinedGeometryAttempt, CombinedGeometryResult, CombinedGeometryStartId,
+    materialize_combined_repair_plan, sequential_matches_exact_combination_oracle,
+    solve_combined_global_max_min, ActionSetClassification, CombinedCavity,
+    CombinedGeometryAttempt, CombinedGeometryResult, CombinedGeometryStartId,
     CombinedGeometryTrial, CombinedRepairMaterialization, CombinedRepairPlan,
-    CompatibleActionSetPlan, LocalActionConflictGraph, LocalActionEffect, LocalRepairAction,
-    LocalRepairCandidate, LocalRepairKind, SingletonFailureReason,
+    CompatibleActionSetPlan, GeometryDefectVector, LocalActionConflictGraph, LocalActionEffect,
+    LocalRepairAction, LocalRepairCandidate, LocalRepairKind, SingletonFailureReason, WorkingMesh,
+    WorkingMeshCandidate, WorkingMeshHardGates, WorkingMeshRejectReason, WorkingMeshStep,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
