@@ -1,6 +1,7 @@
 mod anchor_ear;
 mod angle_atlas;
 mod annular_enumerator;
+mod annular_reachability;
 mod annulus;
 mod band_boundary_audit;
 mod band_cycle_planner;
@@ -57,6 +58,13 @@ pub use annular_enumerator::{
     enumerate_canonical_seam_annulus, AnnularEnumerationError, AnnularEnumerationEvidence,
     AnnularTopology, AnnularTopologyKey, CutAnnulusPolygon, FullAnnularFamily, OccurrenceEdge,
     VertexOccurrenceId,
+};
+pub use annular_reachability::{
+    analyze_annular_signature_domains, analyze_stratified_annular_degree_reachability,
+    annular_topology_signature, enumerate_annular_degree_signatures, AnnularCellSignatureDomain,
+    AnnularReachabilityError, AnnularReachabilityEvidence, AnnularReachabilityLimits,
+    AnnularReachabilityOutcome, AnnularSignatureSearchStatus, AnnularTopologySignature,
+    LinkPathSignature,
 };
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
