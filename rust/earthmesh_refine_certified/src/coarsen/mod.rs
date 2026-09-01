@@ -166,8 +166,13 @@ pub use promotion::{
     PromotionPatchTopology, ProtectedCoarseRegion, RestoredSourceFace, RestoredSourcePatch,
 };
 pub use retained_core::{
-    plan_retained_core_subsets, retained_core_search_plan_json,
-    retained_core_topology_evidence_json, solve_retained_core_topology, RetainedCoreCandidate,
+    plan_retained_core_subsets, remaining_connected_retained_core_candidates,
+    retained_core_ladder_report_json, retained_core_ladder_required,
+    retained_core_search_plan_json, retained_core_topology_evidence_json,
+    solve_complete_retained_core_ladder, solve_retained_core_topology,
+    solve_retained_core_topology_family, RetainedCoreCandidate, RetainedCoreCorridorFamily,
+    RetainedCoreFamilyAttempt, RetainedCoreFamilyStatus, RetainedCoreGeometryEvidence,
+    RetainedCoreGeometryStatus, RetainedCoreLadderLimits, RetainedCoreLadderReport,
     RetainedCoreSearchPlan, RetainedCoreTopologyEvidence, RetainedCoreTopologyLimits,
     RetainedCoreTopologyOutcome, RetainedCoreTopologyOutcomeKind,
 };

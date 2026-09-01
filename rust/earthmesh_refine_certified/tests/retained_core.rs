@@ -1,8 +1,10 @@
 use earthmesh_refine_certified::{
     coarsen::{
         condense_hierarchy_core, n6_legacy_mixed_fixture, plan_retained_core_subsets,
+        remaining_connected_retained_core_candidates, retained_core_ladder_required,
         retained_core_search_plan_json, retained_core_topology_evidence_json,
-        solve_retained_core_topology, RetainedCoreTopologyLimits, RetainedCoreTopologyOutcomeKind,
+        solve_retained_core_topology, RetainedCoreCorridorFamily, RetainedCoreTopologyLimits,
+        RetainedCoreTopologyOutcomeKind,
     },
     mesh_fingerprint,
 };
@@ -69,6 +71,50 @@ fn pair_release_candidates_are_complete() {
 }
 
 #[test]
+fn remaining_connected_subsets_are_complete() {
+    let plan = frozen_plan();
+    let mut by_cardinality = std::collections::BTreeMap::new();
+    for candidate in remaining_connected_retained_core_candidates(&plan) {
+        *by_cardinality
+            .entry(candidate.retained_parents.len())
+            .or_insert(0usize) += 1;
+    }
+    assert_eq!(
+        by_cardinality,
+        std::collections::BTreeMap::from([
+            (1, 10),
+            (2, 11),
+            (3, 14),
+            (4, 20),
+            (5, 30),
+            (6, 35),
+            (7, 34),
+        ])
+    );
+    assert_eq!(by_cardinality.values().sum::<usize>(), 154);
+}
+
+#[test]
+fn pr79_trigger_depends_on_strict_success_not_candidate_existence() {
+    assert!(!frozen_plan().candidates.is_empty());
+    assert!(retained_core_ladder_required(false));
+    assert!(!retained_core_ladder_required(true));
+}
+
+#[test]
+fn retain_one_candidate_is_tested() {
+    let plan = frozen_plan();
+    assert_eq!(
+        remaining_connected_retained_core_candidates(&plan)
+            .into_iter()
+            .filter(|candidate| candidate.retained_parents.len() == 1)
+            .count(),
+        10
+    );
+    assert_eq!(RetainedCoreCorridorFamily::ALL.len(), 6);
+}
+
+#[test]
 fn connected_subset_order_is_stable() {
     let first = frozen_plan();
     let second = frozen_plan();
@@ -113,8 +159,8 @@ fn candidate_rebuild_never_calls_sector_promotion_provenance() {
         &component,
         &candidate,
         RetainedCoreTopologyLimits {
-            face_band_states: 1_000_000,
-            topology_states: 10_000,
+            face_band_states: 1,
+            topology_states: 1,
         },
     );
     assert_ne!(
