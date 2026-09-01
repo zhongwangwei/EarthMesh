@@ -1,5 +1,8 @@
 # CMRC certified mesh contract
 
+- [Alpha5 frozen baseline manifest](alpha5_baseline_manifest.json)
+- [Alpha6 research line](alpha6_research_line.md)
+
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
 
