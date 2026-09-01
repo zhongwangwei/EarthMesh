@@ -688,6 +688,7 @@ mod tests {
             custom_triangle_provenance: Vec::new(),
             sector_recovery_atlas: SectorRecoveryAtlas::default(),
             recovery_atoms: Vec::new(),
+            local_recovery_components: Vec::new(),
             components: vec![violation.clone()],
             patch_expansion_graph: BTreeMap::new(),
             support_inflation: Default::default(),

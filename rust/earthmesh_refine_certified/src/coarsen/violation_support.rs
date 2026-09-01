@@ -2,9 +2,10 @@
 
 use super::full_polygon_reachability::effective_sector_polygons;
 use super::{
-    build_sector_recovery_atlas, build_strict_recovery_atoms, build_worst_angle_atlas,
-    ElasticPatch, FullPolygonTopologyKey, GlobalExactSelectedEar, HierarchyLeafMesh, RecoveryAtom,
-    SectorRecoveryAtlas, StratifiedAnnulus,
+    build_local_recovery_components, build_sector_recovery_atlas, build_strict_recovery_atoms,
+    build_worst_angle_atlas, ElasticPatch, FullPolygonTopologyKey, GlobalExactSelectedEar,
+    HierarchyLeafMesh, LocalRecoveryComponent, RecoveryAtom, SectorRecoveryAtlas,
+    StratifiedAnnulus,
 };
 use crate::{mother_grid::TriangleAddress, MotherGrid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,6 +87,7 @@ pub struct ViolationSupportAtlas {
     pub custom_triangle_provenance: Vec<CustomTriangleProvenance>,
     pub sector_recovery_atlas: SectorRecoveryAtlas,
     pub recovery_atoms: Vec<RecoveryAtom>,
+    pub local_recovery_components: Vec<LocalRecoveryComponent>,
     pub components: Vec<ViolationComponent>,
     pub patch_expansion_graph: BTreeMap<usize, BTreeSet<usize>>,
     pub support_inflation: SupportInflationReport,
@@ -252,12 +254,22 @@ pub fn build_violation_support_atlas_with_promotion_seed_margin(
         &sector_recovery_atlas,
     )
     .map_err(|error| format!("strict recovery ownership failed: {error:?}"))?;
+    let retained_parents = patch.topology.core_parents.iter().copied().collect();
+    let local_recovery_components = build_local_recovery_components(
+        source,
+        mesh,
+        &evidence_sets.strict_violations,
+        &recovery_atoms,
+        &retained_parents,
+    )
+    .map_err(|error| format!("local recovery clustering failed: {error:?}"))?;
     Ok(ViolationSupportAtlas {
         total_angles: worst.total_angles,
         evidence_sets,
         custom_triangle_provenance: provenance,
         sector_recovery_atlas,
         recovery_atoms,
+        local_recovery_components,
         components,
         patch_expansion_graph: graph,
         support_inflation,
@@ -559,6 +571,18 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         .map(recovery_atom_json)
         .collect::<Vec<_>>()
         .join(",");
+    let local_recovery_components = atlas
+        .local_recovery_components
+        .iter()
+        .map(local_recovery_component_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    let violating_sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter(|atom| matches!(atom, RecoveryAtom::Sector { .. }))
+        .count();
+    let violating_hierarchy_leaves = atlas.recovery_atoms.len() - violating_sectors;
     let graph = atlas
         .patch_expansion_graph
         .iter()
@@ -566,7 +590,7 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"total_angles\":{},\"evidence_sets\":{{\"strict_violations\":[{}],\"near_boundary_guards\":[{}],\"optimization_active\":[{}],\"promotion_violation_seeds\":[{}]}},\"support_inflation\":{},\"custom_triangle_provenance\":[{}],\"exact_sectors\":[{}],\"recovery_atoms\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
+        "{{\"total_angles\":{},\"evidence_sets\":{{\"strict_violations\":[{}],\"near_boundary_guards\":[{}],\"optimization_active\":[{}],\"promotion_violation_seeds\":[{}]}},\"support_inflation\":{},\"custom_triangle_provenance\":[{}],\"exact_sectors\":[{}],\"recovery_atoms\":[{}],\"recovery_summary\":{{\"violating_sectors\":{},\"violating_hierarchy_leaves\":{},\"local_component_count\":{}}},\"local_recovery_components\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
         atlas.total_angles,
         strict,
         guards,
@@ -576,6 +600,10 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         provenance,
         exact_sectors,
         recovery_atoms,
+        violating_sectors,
+        violating_hierarchy_leaves,
+        atlas.local_recovery_components.len(),
+        local_recovery_components,
         components,
         graph,
     )
@@ -608,6 +636,39 @@ fn recovery_atom_json(atom: &RecoveryAtom) -> String {
             usize_set_json(source_faces),
         ),
     }
+}
+
+fn local_recovery_component_json(component: &LocalRecoveryComponent) -> String {
+    let topology = match &component.topology {
+        super::PromotionPatchTopology::WholeSphere => "WholeSphere",
+        super::PromotionPatchTopology::Disk => "Disk",
+        super::PromotionPatchTopology::Annulus { .. } => "Annulus",
+        super::PromotionPatchTopology::MultiHole { .. } => "MultiHole",
+    };
+    let protected_regions = component
+        .protected_coarse_regions
+        .iter()
+        .map(|region| {
+            format!(
+                "{{\"id\":{},\"retained_parents\":{},\"source_faces\":{}}}",
+                region.id,
+                region.retained_parents.len(),
+                region.descendant_source_faces.len(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"id\":{},\"atoms\":{},\"mixed_faces\":{},\"source_faces\":{},\"boundary_cycles\":{},\"topology\":\"{}\",\"surrounds_coarse_core\":{},\"protected_coarse_regions\":[{}]}}",
+        component.id,
+        component.atoms.len(),
+        usize_set_json(&component.mixed_faces),
+        usize_set_json(&component.source_faces),
+        component.boundary_cycles.len(),
+        topology,
+        !component.protected_coarse_regions.is_empty(),
+        protected_regions,
+    )
 }
 
 fn violating_angle_json(angle: &ViolatingAngle) -> String {

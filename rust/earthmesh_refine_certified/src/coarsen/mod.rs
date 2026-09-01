@@ -154,8 +154,9 @@ pub use scheduler::{
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
 };
 pub use sector_recovery::{
-    build_sector_recovery_atlas, build_strict_recovery_atoms, ExactSectorCoverage, RecoveryAtom,
-    SectorRecoveryAtlas, SectorRecoveryError,
+    build_local_recovery_components, build_sector_recovery_atlas, build_strict_recovery_atoms,
+    ExactSectorCoverage, LocalRecoveryComponent, RecoveryAtom, SectorRecoveryAtlas,
+    SectorRecoveryError,
 };
 pub use stratified_annulus::{
     build_stratified_annulus, build_stratified_annulus_from_coupled,

@@ -1,9 +1,12 @@
 //! Exact sector provenance used by local annular recovery.
 
 use super::full_polygon_reachability::effective_sector_polygons;
+use super::promotion::build_local_recovery_patch;
 use super::transition_topology::cycles_from_edges;
 use super::{
-    BandComponentKind, FullPolygonTopologyKey, HierarchyLeafMesh, StratifiedAnnulus, ViolatingAngle,
+    build_protected_coarse_region, BandComponentKind, FullPolygonTopologyKey, HierarchyLeafMesh,
+    PromotionPatchTopology, ProtectedCoarseRegion, StratifiedAnnulus, ViolatingAngle,
+    ViolationComponent,
 };
 use crate::certificate::interval::Interval;
 use crate::{MotherGrid, TriangleAddress};
@@ -50,6 +53,17 @@ pub enum RecoveryAtom {
         mixed_faces: BTreeSet<usize>,
         source_faces: BTreeSet<usize>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalRecoveryComponent {
+    pub id: u64,
+    pub atoms: Vec<RecoveryAtom>,
+    pub mixed_faces: BTreeSet<usize>,
+    pub source_faces: BTreeSet<usize>,
+    pub boundary_cycles: Vec<Vec<usize>>,
+    pub protected_coarse_regions: Vec<ProtectedCoarseRegion>,
+    pub topology: PromotionPatchTopology,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +273,242 @@ pub fn build_strict_recovery_atoms(
         source_faces: atlas.sectors[&sector_id].source_faces.clone(),
     }));
     Ok(atoms)
+}
+
+pub fn build_local_recovery_components(
+    source: &MotherGrid,
+    mesh: &HierarchyLeafMesh,
+    strict_angles: &[ViolatingAngle],
+    atoms: &[RecoveryAtom],
+    retained_parents: &BTreeSet<TriangleAddress>,
+) -> Result<Vec<LocalRecoveryComponent>, SectorRecoveryError> {
+    if atoms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let evidence = atoms
+        .iter()
+        .map(|atom| atom_evidence(source, mesh, strict_angles, atom))
+        .collect::<Result<Vec<_>, _>>()?;
+    let strict_faces = strict_angles
+        .iter()
+        .filter(|angle| angle.signed_margin_deg < 0.0)
+        .map(|angle| angle.face)
+        .collect::<BTreeSet<_>>();
+    let owned_faces = evidence
+        .iter()
+        .flat_map(|item| item.mixed_faces.iter().copied())
+        .collect::<BTreeSet<_>>();
+    if !strict_faces.is_subset(&owned_faces) {
+        return Err(invalid(
+            "strict mixed faces are not covered by local recovery atoms".into(),
+        ));
+    }
+
+    // ponytail: the Frozen N6 atom set is bounded (<100); replace this stable
+    // O(n²) union pass only if production telemetry shows clustering dominates.
+    let mut groups = (0..atoms.len()).collect::<Vec<_>>();
+    for left in 0..evidence.len() {
+        for right in left + 1..evidence.len() {
+            if atom_evidence_touches(&evidence[left], &evidence[right]) {
+                let old = groups[right];
+                let new = groups[left];
+                for group in &mut groups {
+                    if *group == old {
+                        *group = new;
+                    }
+                }
+            }
+        }
+    }
+    let mut grouped = BTreeMap::<usize, Vec<usize>>::new();
+    for (atom, group) in groups.into_iter().enumerate() {
+        grouped.entry(group).or_default().push(atom);
+    }
+
+    grouped
+        .into_values()
+        .enumerate()
+        .map(|(id, indices)| {
+            let component_atoms = indices
+                .iter()
+                .map(|&index| atoms[index].clone())
+                .collect::<Vec<_>>();
+            let mixed_faces = indices
+                .iter()
+                .flat_map(|&index| evidence[index].mixed_faces.iter().copied())
+                .collect::<BTreeSet<_>>();
+            let source_seed_faces = indices
+                .iter()
+                .flat_map(|&index| evidence[index].source_faces.iter().copied())
+                .collect::<BTreeSet<_>>();
+            let angles = strict_angles
+                .iter()
+                .filter(|angle| angle.signed_margin_deg < 0.0 && mixed_faces.contains(&angle.face))
+                .cloned()
+                .collect::<Vec<_>>();
+            let active_constraint_vertices = angles
+                .iter()
+                .flat_map(|angle| {
+                    angle
+                        .movable_vertices
+                        .iter()
+                        .chain(&angle.fixed_vertices)
+                        .copied()
+                })
+                .collect();
+            let component = ViolationComponent {
+                id: id as u64,
+                angles,
+                source_faces: source_seed_faces.clone(),
+                parent_faces: BTreeSet::new(),
+                support_vertices: source_seed_faces
+                    .iter()
+                    .flat_map(|&face| source.mesh.triangles()[face])
+                    .collect(),
+                active_constraint_vertices,
+            };
+            let remaining_parents = retained_parents
+                .iter()
+                .copied()
+                .filter(|&parent| {
+                    source_descendant_faces(source, parent).is_disjoint(&source_seed_faces)
+                })
+                .collect::<BTreeSet<_>>();
+            let protected_regions = build_protected_regions(source, &remaining_parents)?;
+            let patch = build_local_recovery_patch(
+                source,
+                &component,
+                retained_parents,
+                &protected_regions,
+            )
+            .map_err(invalid)?;
+            Ok(LocalRecoveryComponent {
+                id: id as u64,
+                atoms: component_atoms,
+                mixed_faces,
+                source_faces: patch.source_faces,
+                boundary_cycles: patch.boundary_cycles,
+                protected_coarse_regions: patch.protected_coarse_regions,
+                topology: patch.topology,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct AtomEvidence {
+    mixed_faces: BTreeSet<usize>,
+    source_faces: BTreeSet<usize>,
+    mixed_edges: BTreeSet<Edge>,
+    source_boundary_edges: BTreeSet<Edge>,
+    active_vertices: BTreeSet<usize>,
+}
+
+fn atom_evidence(
+    source: &MotherGrid,
+    mesh: &HierarchyLeafMesh,
+    strict_angles: &[ViolatingAngle],
+    atom: &RecoveryAtom,
+) -> Result<AtomEvidence, SectorRecoveryError> {
+    let (mixed_faces, source_faces) = match atom {
+        RecoveryAtom::HierarchyLeaf {
+            mixed_face,
+            source_faces,
+            ..
+        } => (BTreeSet::from([*mixed_face]), source_faces.clone()),
+        RecoveryAtom::Sector {
+            mixed_faces,
+            source_faces,
+            ..
+        } => (mixed_faces.clone(), source_faces.clone()),
+    };
+    if mixed_faces.is_empty() || source_faces.is_empty() {
+        return Err(invalid("local recovery atom is empty".into()));
+    }
+    let mixed_edges = mixed_faces
+        .iter()
+        .map(|&face| {
+            mesh.mesh
+                .triangles()
+                .get(face)
+                .copied()
+                .ok_or_else(|| invalid(format!("mixed face {face} is absent")))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flat_map(triangle_edges)
+        .collect();
+    let source_boundary_edges = source_boundary(source, &source_faces)?
+        .edge_counts
+        .into_keys()
+        .collect();
+    let active_vertices = strict_angles
+        .iter()
+        .filter(|angle| angle.signed_margin_deg < 0.0 && mixed_faces.contains(&angle.face))
+        .flat_map(|angle| angle.movable_vertices.iter().copied())
+        .collect();
+    Ok(AtomEvidence {
+        mixed_faces,
+        source_faces,
+        mixed_edges,
+        source_boundary_edges,
+        active_vertices,
+    })
+}
+
+fn atom_evidence_touches(left: &AtomEvidence, right: &AtomEvidence) -> bool {
+    !left.mixed_edges.is_disjoint(&right.mixed_edges)
+        || !left.active_vertices.is_disjoint(&right.active_vertices)
+        || !left
+            .source_boundary_edges
+            .is_disjoint(&right.source_boundary_edges)
+}
+
+fn build_protected_regions(
+    source: &MotherGrid,
+    retained_parents: &BTreeSet<TriangleAddress>,
+) -> Result<Vec<ProtectedCoarseRegion>, SectorRecoveryError> {
+    let parents = retained_parents.iter().copied().collect::<Vec<_>>();
+    let descendants = parents
+        .iter()
+        .copied()
+        .map(|parent| source_descendant_faces(source, parent))
+        .collect::<Vec<_>>();
+    if descendants.iter().any(BTreeSet::is_empty) {
+        return Err(invalid(
+            "retained coarse parent has no source descendants".into(),
+        ));
+    }
+    let mut groups = (0..parents.len()).collect::<Vec<_>>();
+    for left in 0..parents.len() {
+        for right in left + 1..parents.len() {
+            let adjacent = descendants[left].iter().any(|&face| {
+                source.mesh.neighbours()[face]
+                    .into_iter()
+                    .any(|neighbour| descendants[right].contains(&neighbour))
+            });
+            if adjacent {
+                let old = groups[right];
+                let new = groups[left];
+                for group in &mut groups {
+                    if *group == old {
+                        *group = new;
+                    }
+                }
+            }
+        }
+    }
+    let mut grouped = BTreeMap::<usize, BTreeSet<TriangleAddress>>::new();
+    for (index, group) in groups.into_iter().enumerate() {
+        grouped.entry(group).or_default().insert(parents[index]);
+    }
+    grouped
+        .into_values()
+        .enumerate()
+        .map(|(id, parents)| {
+            build_protected_coarse_region(source, id as u64, parents).map_err(invalid)
+        })
+        .collect()
 }
 
 fn verify_mixed_custom_ownership(
@@ -696,12 +946,14 @@ mod tests {
         StratifiedAnnulus,
         SectorRecoveryAtlas,
         HierarchyLeafMesh,
+        BTreeSet<TriangleAddress>,
     ) {
         static FIXTURE: OnceLock<(
             MotherGrid,
             StratifiedAnnulus,
             SectorRecoveryAtlas,
             HierarchyLeafMesh,
+            BTreeSet<TriangleAddress>,
         )> = OnceLock::new();
         FIXTURE.get_or_init(|| {
             let (source, component) = n6_legacy_mixed_fixture().unwrap();
@@ -721,7 +973,13 @@ mod tests {
                 &trial.evidence.selected_topology_keys,
             )
             .unwrap();
-            (source, stratified, atlas, trial.global_trial.mesh)
+            (
+                source,
+                stratified,
+                atlas,
+                trial.global_trial.mesh,
+                component.core_parents.iter().copied().collect(),
+            )
         })
     }
 
@@ -743,7 +1001,7 @@ mod tests {
 
     #[test]
     fn sector_source_faces_partition_annulus() {
-        let (_, stratified, atlas, _) = fixture();
+        let (_, stratified, atlas, _, _) = fixture();
         assert_eq!(atlas.sectors.len(), 14);
         assert_eq!(
             atlas
@@ -762,7 +1020,7 @@ mod tests {
 
     #[test]
     fn sector_custom_triangles_partition_transition() {
-        let (_, _, atlas, _) = fixture();
+        let (_, _, atlas, _, _) = fixture();
         assert_eq!(
             atlas.custom_face_owner.len(),
             atlas
@@ -775,7 +1033,7 @@ mod tests {
 
     #[test]
     fn sector_boundary_matches_polygon() {
-        let (_, _, atlas, _) = fixture();
+        let (_, _, atlas, _, _) = fixture();
         assert!(atlas.sectors.values().all(|sector| {
             sector.boundary_cycles.len() == 1 && !sector.boundary_edges.is_empty()
         }));
@@ -783,7 +1041,7 @@ mod tests {
 
     #[test]
     fn sector_source_and_custom_area_intervals_close() {
-        let (_, _, atlas, _) = fixture();
+        let (_, _, atlas, _, _) = fixture();
         assert!(atlas.sectors.values().all(|sector| {
             sector
                 .source_area_interval
@@ -794,7 +1052,7 @@ mod tests {
 
     #[test]
     fn every_strict_custom_face_has_one_sector_owner() {
-        let (source, _, atlas, mesh) = fixture();
+        let (source, _, atlas, mesh, _) = fixture();
         let face = mesh
             .mesh
             .active_triangle_slots()
@@ -814,7 +1072,7 @@ mod tests {
 
     #[test]
     fn every_hierarchy_face_has_one_leaf_owner() {
-        let (source, _, atlas, mesh) = fixture();
+        let (source, _, atlas, mesh, _) = fixture();
         let face = mesh
             .mesh
             .active_triangle_slots()
@@ -830,12 +1088,120 @@ mod tests {
 
     #[test]
     fn guard_angle_never_creates_recovery_atom() {
-        let (source, _, atlas, mesh) = fixture();
+        let (source, _, atlas, mesh, _) = fixture();
         let face = mesh.mesh.active_triangle_slots().next().unwrap();
         assert!(
             build_strict_recovery_atoms(source, mesh, &[angle(face, 0.1)], atlas)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn shared_vertex_only_is_separate_until_it_is_an_active_constraint() {
+        let (source, _, _, mesh, _) = fixture();
+        let hierarchy_faces = mesh
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| mesh.triangle_addresses[face].is_some())
+            .collect::<Vec<_>>();
+        let (left, right, shared) = hierarchy_faces
+            .iter()
+            .enumerate()
+            .find_map(|(index, &left)| {
+                hierarchy_faces[index + 1..].iter().find_map(|&right| {
+                    let left_vertices = mesh.mesh.triangles()[left]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    let right_vertices = mesh.mesh.triangles()[right]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>();
+                    let shared = left_vertices
+                        .intersection(&right_vertices)
+                        .copied()
+                        .collect::<Vec<_>>();
+                    (shared.len() == 1).then_some((left, right, shared[0]))
+                })
+            })
+            .expect("Frozen N6 has hierarchy faces meeting at one vertex");
+        let atoms = [left, right]
+            .into_iter()
+            .map(|mixed_face| RecoveryAtom::HierarchyLeaf {
+                address: mesh.triangle_addresses[mixed_face].unwrap(),
+                mixed_face,
+                source_faces: source_descendant_faces(
+                    source,
+                    mesh.triangle_addresses[mixed_face].unwrap(),
+                ),
+            })
+            .collect::<Vec<_>>();
+        let separate = build_local_recovery_components(
+            source,
+            mesh,
+            &[angle(left, -0.1), angle(right, -0.1)],
+            &atoms,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(separate.len(), 2);
+        assert!(separate
+            .iter()
+            .all(|component| component.topology == PromotionPatchTopology::Disk));
+
+        let mut coupled_angles = [angle(left, -0.1), angle(right, -0.1)];
+        for item in &mut coupled_angles {
+            item.movable_vertices = vec![shared];
+        }
+        assert_eq!(
+            build_local_recovery_components(
+                source,
+                mesh,
+                &coupled_angles,
+                &atoms,
+                &BTreeSet::new(),
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn complete_sector_ring_is_annular_and_preserves_the_coarse_core() {
+        let (source, _, atlas, mesh, core_parents) = fixture();
+        let angles = atlas
+            .sectors
+            .values()
+            .map(|sector| {
+                let key = *sector.custom_triangles.first().unwrap();
+                let face = mesh
+                    .mesh
+                    .active_triangle_slots()
+                    .find(|&face| {
+                        mesh.triangle_addresses[face].is_none()
+                            && canonical_triangle(
+                                mesh.mesh.triangles()[face]
+                                    .map(|site| mesh.source_vertex_slots[site].unwrap()),
+                            ) == key
+                    })
+                    .unwrap();
+                angle(face, -0.1)
+            })
+            .collect::<Vec<_>>();
+        let atoms = build_strict_recovery_atoms(source, mesh, &angles, atlas).unwrap();
+        let components =
+            build_local_recovery_components(source, mesh, &angles, &atoms, core_parents).unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].atoms.len(), 14);
+        assert_eq!(components[0].boundary_cycles.len(), 2);
+        assert!(matches!(
+            components[0].topology,
+            PromotionPatchTopology::Annulus { .. }
+        ));
+        assert_eq!(components[0].protected_coarse_regions.len(), 1);
+        assert_eq!(
+            components[0].protected_coarse_regions[0].retained_parents,
+            *core_parents
         );
     }
 }
