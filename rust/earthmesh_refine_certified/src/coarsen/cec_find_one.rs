@@ -135,6 +135,21 @@ pub enum PlanEvaluation {
         reason: String,
         evidence: FullPolygonMergeEvidence,
     },
+    RejectedV3Exact {
+        states_examined: usize,
+        stage: DownstreamRejectStage,
+        reason: String,
+    },
+    RejectedV3SearchIncomplete {
+        states_examined: usize,
+        stage: DownstreamRejectStage,
+        reason: String,
+    },
+    RejectedV3Invalid {
+        states_examined: usize,
+        stage: DownstreamRejectStage,
+        reason: String,
+    },
 }
 
 pub trait FaceBandPlanEvaluator {
@@ -1055,6 +1070,44 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                     reason,
                     &cycle,
                 );
+                self.downstream_unknown = true;
+                None
+            }
+            PlanEvaluation::RejectedV3Exact {
+                states_examined,
+                stage,
+                reason,
+            } => {
+                self.evidence.downstream_states_examined += states_examined;
+                self.evidence.downstream_exact_rejects += 1;
+                self.evidence
+                    .downstream_reject_histogram
+                    .record(stage, reason, &cycle);
+                None
+            }
+            PlanEvaluation::RejectedV3SearchIncomplete {
+                states_examined,
+                stage,
+                reason,
+            } => {
+                self.evidence.downstream_states_examined += states_examined;
+                self.evidence.downstream_incomplete += 1;
+                self.evidence
+                    .downstream_reject_histogram
+                    .record(stage, reason, &cycle);
+                self.downstream_unknown = true;
+                None
+            }
+            PlanEvaluation::RejectedV3Invalid {
+                states_examined,
+                stage,
+                reason,
+            } => {
+                self.evidence.downstream_states_examined += states_examined;
+                self.evidence.downstream_invalid += 1;
+                self.evidence
+                    .downstream_reject_histogram
+                    .record(stage, reason, &cycle);
                 self.downstream_unknown = true;
                 None
             }

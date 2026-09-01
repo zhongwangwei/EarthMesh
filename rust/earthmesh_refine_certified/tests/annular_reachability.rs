@@ -124,6 +124,7 @@ fn frozen_n6_selected_topology_survives_annular_caps_and_ac3() {
         cell_domains.push(AnnularCellSignatureDomain {
             cell_id: cell.cell_id,
             signatures: vec![annular_topology_signature(cell, &triangles).unwrap()],
+            root_bridges_considered: 0,
             states_examined: 1,
             degree_cap_prunes: 0,
             status: AnnularSignatureSearchStatus::ExhaustedNecessaryRelaxation,

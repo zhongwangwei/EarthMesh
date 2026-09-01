@@ -1,14 +1,16 @@
 //! Research-only runners. They never produce a product mesh or gate decision.
 
 use super::{
-    audit_face_band_boundaries, audit_legacy_downstream_preflight, build_essential_cycle_problem,
-    build_face_band_problem, build_plan_band_domains, build_stratified_transition_domain_v3,
-    face_band_evidence_json, n12_interior_control_fixture, n12_lifted_n6_fixture,
-    prove_essential_cycle_family, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
-    BandBoundaryAudit, BandBoundaryAuditSummary, CertifiedResearchFixture,
-    DownstreamEvaluationCache, DownstreamPreflightOutcome, EssentialCycleFindOneEvidence,
-    EssentialCycleFindOneLimits, EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion,
-    FaceBandEvidence, FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
+    analyze_stratified_annular_degree_reachability, audit_face_band_boundaries,
+    audit_legacy_downstream_preflight, build_essential_cycle_problem, build_face_band_problem,
+    build_plan_band_domains, build_stratified_transition_domain_v3, face_band_evidence_json,
+    n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, AnnularReachabilityLimits,
+    AnnularReachabilityOutcome, BandBoundaryAudit, BandBoundaryAuditSummary,
+    CertifiedResearchFixture, DownstreamEvaluationCache, DownstreamPreflightOutcome,
+    DownstreamRejectStage, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
+    EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
+    FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
     FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
     PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
     TransitionCellDomain,
@@ -763,6 +765,192 @@ pub fn n12_lifted_transition_cell_v3_audit_json(
         errors,
         gate_passed,
     ))
+}
+
+pub fn n12_lifted_v3_prefix_replay_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = V3PrefixReplayEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        signature_states: limits.downstream_topology_states,
+        domains_built: 0,
+        reached_annular_reachability: 0,
+        necessary_feasible: 0,
+        exact_rejects: 0,
+        search_incomplete: 0,
+        root_bridges_considered: 0,
+        reachability_states: 0,
+        degree_cap_prunes: 0,
+        ac3_prunes: 0,
+        concrete_enumeration_deferred: 0,
+        errors: BTreeMap::new(),
+    };
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let topology_closed = matches!(&outcome, ExactFaceBandV2Outcome::Closed { .. });
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let by_stage = evidence
+        .downstream_reject_histogram
+        .by_stage
+        .iter()
+        .map(|(stage, count)| format!("{}:{count}", json_string(stage.as_str())))
+        .collect::<Vec<_>>()
+        .join(",");
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(reason, count)| format!("{}:{count}", json_string(reason)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let meaningful_downstream = topology_closed
+        || evidence.downstream_exact_rejects > 0
+        || evidence.downstream_incomplete > 0;
+    let no_legacy_sector_reject = !evidence
+        .downstream_reject_histogram
+        .by_stage
+        .contains_key(&DownstreamRejectStage::StratifiedSectorization);
+    let gate_passed = evaluator.domains_built == evidence.essential_cycles
+        && evaluator.reached_annular_reachability > 0
+        && meaningful_downstream
+        && no_legacy_sector_reject
+        && evidence.downstream_invalid == 0
+        && evaluator.errors.is_empty();
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"cb911eef1de3593df10d042bf72ce3707080d2b521ceb074d36b8b05cfe4b63e\",\"fixture\":\"N12-Lifted-N6\",\"adapter_version\":3,\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+AnnularReachability\",\"limits\":{{\"cycle_unique_states\":{},\"annular_signature_states_per_cycle\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"domains_built\":{},\"reached_annular_reachability\":{},\"reachability_necessary_feasible\":{},\"reachability_exact_rejects\":{},\"reachability_search_incomplete\":{},\"root_bridges_considered\":{},\"reachability_states\":{},\"degree_cap_prunes\":{},\"ac3_prunes\":{},\"concrete_enumeration_deferred\":{},\"downstream_states\":{},\"downstream_exact_rejects\":{},\"downstream_incomplete\":{},\"downstream_invalid\":{},\"topology_closed\":{},\"rejects_by_stage\":{{{}}},\"errors\":{{{}}},\"remaining_resumable_shards\":{},\"shards_resumed\":false,\"legacy_sectorization_used\":false,\"gate_passed\":{},\"cec_outcome\":\"{}\",\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.domains_built,
+        evaluator.reached_annular_reachability,
+        evaluator.necessary_feasible,
+        evaluator.exact_rejects,
+        evaluator.search_incomplete,
+        evaluator.root_bridges_considered,
+        evaluator.reachability_states,
+        evaluator.degree_cap_prunes,
+        evaluator.ac3_prunes,
+        evaluator.concrete_enumeration_deferred,
+        evidence.downstream_states_examined,
+        evidence.downstream_exact_rejects,
+        evidence.downstream_incomplete,
+        evidence.downstream_invalid,
+        topology_closed,
+        by_stage,
+        errors,
+        evidence.checkpoint_shards_created,
+        gate_passed,
+        evidence.outcome.as_str(),
+    ))
+}
+
+struct V3PrefixReplayEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    signature_states: usize,
+    domains_built: u64,
+    reached_annular_reachability: u64,
+    necessary_feasible: u64,
+    exact_rejects: u64,
+    search_incomplete: u64,
+    root_bridges_considered: u64,
+    reachability_states: usize,
+    degree_cap_prunes: usize,
+    ac3_prunes: usize,
+    concrete_enumeration_deferred: u64,
+    errors: BTreeMap<String, u64>,
+}
+
+impl FaceBandPlanEvaluator for V3PrefixReplayEvaluator<'_> {
+    fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation {
+        let domain = match build_stratified_transition_domain_v3(self.source, self.component, plan)
+        {
+            Ok(domain) => domain,
+            Err(error) => {
+                let reason = format!("{error:?}");
+                *self.errors.entry(reason.clone()).or_default() += 1;
+                return PlanEvaluation::RejectedV3Invalid {
+                    states_examined: 0,
+                    stage: DownstreamRejectStage::BandDomain,
+                    reason,
+                };
+            }
+        };
+        self.domains_built += 1;
+        self.reached_annular_reachability += 1;
+        let reachability = match analyze_stratified_annular_degree_reachability(
+            &domain,
+            AnnularReachabilityLimits {
+                maximum_signature_states: self.signature_states,
+            },
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                let reason = format!("{error:?}");
+                *self.errors.entry(reason.clone()).or_default() += 1;
+                return PlanEvaluation::RejectedV3Invalid {
+                    states_examined: 0,
+                    stage: DownstreamRejectStage::AnnularReachability,
+                    reason,
+                };
+            }
+        };
+        self.root_bridges_considered += reachability.root_bridges_considered;
+        self.reachability_states += reachability.states_examined;
+        self.degree_cap_prunes += reachability.degree_cap_prunes;
+        self.ac3_prunes += reachability.ac3_prunes;
+        match reachability.outcome {
+            AnnularReachabilityOutcome::NecessaryFeasible => {
+                self.necessary_feasible += 1;
+                self.concrete_enumeration_deferred += 1;
+                PlanEvaluation::RejectedV3SearchIncomplete {
+                    states_examined: reachability.states_examined,
+                    stage: DownstreamRejectStage::AnnularConcreteEnumeration,
+                    reason: "AnnularConcreteFamilyNotMaterialized".into(),
+                }
+            }
+            AnnularReachabilityOutcome::ProvenImpossibleWithinDeclaredAnnularFamily => {
+                self.exact_rejects += 1;
+                PlanEvaluation::RejectedV3Exact {
+                    states_examined: reachability.states_examined,
+                    stage: DownstreamRejectStage::AnnularReachability,
+                    reason: "AnnularDegreeLinkSupportExhausted".into(),
+                }
+            }
+            AnnularReachabilityOutcome::SearchIncomplete => {
+                self.search_incomplete += 1;
+                PlanEvaluation::RejectedV3SearchIncomplete {
+                    states_examined: reachability.states_examined,
+                    stage: DownstreamRejectStage::AnnularReachability,
+                    reason: "AnnularSignatureSearchIncomplete".into(),
+                }
+            }
+        }
+    }
 }
 
 struct V3DomainAuditingEvaluator<'a> {

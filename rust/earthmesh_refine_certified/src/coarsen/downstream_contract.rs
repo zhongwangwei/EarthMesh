@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 pub enum DownstreamRejectStage {
     DomainAdapter,
     StratifiedSectorization,
+    BandDomain,
+    AnnularReachability,
+    AnnularConcreteEnumeration,
     DegreeReachability,
     FullPolygonEnumeration,
     GlobalLinkMerge,
@@ -21,6 +24,9 @@ impl DownstreamRejectStage {
         match self {
             Self::DomainAdapter => "DomainAdapter",
             Self::StratifiedSectorization => "StratifiedSectorization",
+            Self::BandDomain => "BandDomain",
+            Self::AnnularReachability => "AnnularReachability",
+            Self::AnnularConcreteEnumeration => "AnnularConcreteEnumeration",
             Self::DegreeReachability => "DegreeReachability",
             Self::FullPolygonEnumeration => "FullPolygonEnumeration",
             Self::GlobalLinkMerge => "GlobalLinkMerge",
