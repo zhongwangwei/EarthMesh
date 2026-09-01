@@ -1,10 +1,10 @@
 use earthmesh_refine_certified::coarsen::{
     build_face_band_problem, build_stratified_transition_domain_v3, certify_annular_topology,
-    n6_legacy_mixed_fixture, solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
-    solve_transition_cell_find_one, AnnularEnumerationEvidence, AnnularTransitionCellFamily,
-    FaceBandLimits, FaceBandSolveOutcome, FullAnnularFamily, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome, TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
-    TransitionCellMergeOutcome,
+    enumerate_balanced_annular_strips, n6_legacy_mixed_fixture, solve_exact_face_bands,
+    solve_full_polygon_merge_from_face_bands, solve_transition_cell_find_one,
+    AnnularEnumerationEvidence, AnnularTransitionCellFamily, FaceBandLimits, FaceBandSolveOutcome,
+    FullAnnularFamily, FullPolygonMergeLimits, FullPolygonMergeOutcome, TransitionCellDomain,
+    TransitionCellFamily, TransitionCellMergeLimits, TransitionCellMergeOutcome,
 };
 use std::collections::BTreeSet;
 
@@ -16,7 +16,10 @@ fn legacy_selected_topology_is_in_v3() {
         &component,
         &v3,
         &families,
-        TransitionCellMergeLimits { topology_states: 1 },
+        TransitionCellMergeLimits {
+            topology_states: 1,
+            ear_states_per_topology: usize::MAX,
+        },
     );
     let TransitionCellMergeOutcome::Closed(trial) = outcome else {
         panic!("Frozen N6 V3 inclusion must close: {outcome:?}")
@@ -63,9 +66,50 @@ fn zero_global_states_is_typed_incomplete() {
             &component,
             &v3,
             &families,
-            TransitionCellMergeLimits { topology_states: 0 },
+            TransitionCellMergeLimits {
+                topology_states: 0,
+                ear_states_per_topology: usize::MAX,
+            },
         ),
         TransitionCellMergeOutcome::SearchIncomplete(_)
+    ));
+}
+
+#[test]
+fn balanced_annular_subset_finds_frozen_n6_topology() {
+    let (source, component, v3, _, _) = frozen_n6_v3_families();
+    let families = v3
+        .cells
+        .iter()
+        .map(|cell| {
+            let TransitionCellDomain::Annulus(cell) = cell else {
+                panic!("Frozen N6 W2 cells must be annular")
+            };
+            let search = enumerate_balanced_annular_strips(
+                &cell.lower_cycle,
+                &cell.upper_cycle,
+                &cell.forbidden_global_edges,
+                64,
+            )
+            .unwrap();
+            TransitionCellFamily::Annulus(AnnularTransitionCellFamily {
+                cell_id: cell.cell_id,
+                family: search.family,
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        solve_transition_cell_find_one(
+            &source,
+            &component,
+            &v3,
+            &families,
+            TransitionCellMergeLimits {
+                topology_states: 4_096,
+                ear_states_per_topology: 256,
+            },
+        ),
+        TransitionCellMergeOutcome::Closed(_)
     ));
 }
 

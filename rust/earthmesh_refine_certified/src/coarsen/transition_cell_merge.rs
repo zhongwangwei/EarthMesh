@@ -2,7 +2,7 @@
 
 use super::global_exact_merge::{
     fixed_triangles_for_face_complex, materialize_for_face_complex, mesh_edges,
-    replace_fixed_link_contract_map, solve_ears_with_contracts, EarSolve,
+    replace_fixed_link_contract_map, solve_ears_with_contracts_limited, EarSolve,
 };
 use super::{
     AnnularTopology, AnnularTopologyKey, DiskCellDomain, FullAnnularFamily,
@@ -53,6 +53,7 @@ pub struct TransitionCellTopology {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransitionCellMergeLimits {
     pub topology_states: usize,
+    pub ear_states_per_topology: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -169,7 +170,7 @@ pub fn solve_transition_cell_find_one(
         let mut global = evidence.global.clone();
         global.states_examined = evidence.states_examined;
         let mut ear_states = 0;
-        match solve_ears_with_contracts(
+        match solve_ears_with_contracts_limited(
             source,
             &contracts,
             &fixed_edges,
@@ -177,6 +178,7 @@ pub fn solve_transition_cell_find_one(
             triangles,
             &mut global,
             &mut ear_states,
+            limits.ear_states_per_topology,
         ) {
             EarSolve::Solved { triangles, ears } => {
                 evidence.topology_candidates_closed += 1;
@@ -225,7 +227,14 @@ pub fn solve_transition_cell_find_one(
                     evidence.global = global;
                 }
             }
-            EarSolve::Invalid(reason) => return invalid(reason, evidence),
+            EarSolve::SearchIncomplete => {
+                evidence.ear_states_examined += ear_states;
+                return TransitionCellMergeOutcome::SearchIncomplete(evidence);
+            }
+            EarSolve::Invalid(reason) => {
+                evidence.ear_states_examined += ear_states;
+                return invalid(reason, evidence);
+            }
         }
         if !increment_product(&mut indices, &concrete) {
             return TransitionCellMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence);
