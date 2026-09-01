@@ -160,10 +160,10 @@ pub use full_polygon_merge::{
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_active_trust_starts,
     solve_full_polygon_merge_free_interface_cber_with_targets_and_starts,
-    solve_full_polygon_merge_from_face_bands,
-    solve_full_polygon_merge_from_face_bands_with_geometry_witness, FullPolygonCberLimits,
-    FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
+    solve_full_polygon_merge_from_face_bands, solve_full_polygon_merge_from_face_bands_v2,
+    solve_full_polygon_merge_from_face_bands_with_geometry_witness, FaceBandAdapterVersion,
+    FullPolygonCberLimits, FullPolygonGeometryFailureEvidence, FullPolygonMergeEvidence,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonMergeTrial, TopologyFamilyId,
 };
 pub use full_polygon_reachability::{
     analyze_full_polygon_degree_reachability, analyze_stratified_full_polygon_degree_reachability,
