@@ -1060,6 +1060,226 @@ fn frozen_n6_pr77_local_annular_collar_probe() {
 }
 
 #[test]
+#[ignore = "explicit Frozen N6 PR78 final local-recovery gate"]
+fn frozen_n6_pr78_final_local_recovery_gate_probe() {
+    let local_iterations = usize_env("EARTHMESH_FINAL_LOCAL_ITERATIONS", 8);
+    let (source, hierarchy, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &hierarchy, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &hierarchy).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    let retained_parents = hierarchy
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let ear_parents = coarse_core_ears(&source, &retained_parents)
+        .unwrap()
+        .into_iter()
+        .map(|ear| ear.parent)
+        .collect::<BTreeSet<_>>();
+    let sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter_map(|atom| match atom {
+            RecoveryAtom::Sector { sector_id, .. } => Some(*sector_id),
+            RecoveryAtom::HierarchyLeaf { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let sector_count = sectors.len();
+    let mut materialized = 0usize;
+    let mut strict_candidates = 0usize;
+    let mut direct_trials = 0usize;
+    let mut one_parent_trials = 0usize;
+    let mut two_parent_trials = 0usize;
+    let mut invalid = 0usize;
+    let mut best_local_range = None::<(f64, f64)>;
+    for sector_id in sectors {
+        match restore_fine_compatible_sector(
+            &source,
+            mesh,
+            patch,
+            &atlas.sector_recovery_atlas,
+            sector_id,
+            local_iterations,
+        ) {
+            DirectSectorRestoreOutcome::Certified(trial) => {
+                direct_trials += 1;
+                materialized += 1;
+                strict_candidates += 1;
+                update_best_range(&mut best_local_range, trial.angle_range_deg);
+            }
+            DirectSectorRestoreOutcome::GeometryNotCertified { trial, .. } => {
+                direct_trials += 1;
+                materialized += 1;
+                update_best_range(&mut best_local_range, trial.angle_range_deg);
+            }
+            DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+                adjacent_parents, ..
+            } if adjacent_parents.len() == 1 => {
+                let Some(parent) = adjacent_parents.intersection(&ear_parents).copied().next()
+                else {
+                    invalid += 1;
+                    continue;
+                };
+                match peel_boundary_parent_for_sector(
+                    &source,
+                    mesh,
+                    patch,
+                    &atlas.sector_recovery_atlas,
+                    &retained_parents,
+                    sector_id,
+                    parent,
+                    local_iterations,
+                ) {
+                    BoundaryParentPeelOutcome::Certified(trial) => {
+                        one_parent_trials += 1;
+                        materialized += 1;
+                        strict_candidates += 1;
+                        update_best_range(&mut best_local_range, trial.angle_range_deg);
+                    }
+                    BoundaryParentPeelOutcome::GeometryNotCertified { trial, .. } => {
+                        one_parent_trials += 1;
+                        materialized += 1;
+                        update_best_range(&mut best_local_range, trial.angle_range_deg);
+                    }
+                    _ => invalid += 1,
+                }
+            }
+            DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+                adjacent_parents, ..
+            } if adjacent_parents.len() == 2 => {
+                let component = atlas
+                    .local_recovery_components
+                    .iter()
+                    .find(|component| {
+                        component.atoms.iter().any(|atom| {
+                            matches!(atom, RecoveryAtom::Sector { sector_id: candidate, .. } if *candidate == sector_id)
+                        })
+                    })
+                    .expect("two-parent sector must belong to a local recovery component");
+                match solve_local_annular_collar(
+                    &source,
+                    mesh,
+                    patch,
+                    &atlas.sector_recovery_atlas,
+                    component,
+                    &retained_parents,
+                    sector_id,
+                    &adjacent_parents,
+                    LocalAnnularCollarLimits {
+                        topology_states: 3,
+                        geometry_iterations: local_iterations,
+                        maximum_parent_peels: 2,
+                    },
+                ) {
+                    LocalAnnularCollarOutcome::Certified(trial) => {
+                        two_parent_trials += 1;
+                        materialized += 1;
+                        strict_candidates += 1;
+                        update_best_range(&mut best_local_range, trial.evidence.angle_range_deg);
+                    }
+                    LocalAnnularCollarOutcome::MaterializedNotCertified { best, .. } => {
+                        two_parent_trials += 1;
+                        materialized += 1;
+                        update_best_range(&mut best_local_range, best.evidence.angle_range_deg);
+                    }
+                    _ => invalid += 1,
+                }
+            }
+            _ => invalid += 1,
+        }
+    }
+    assert_eq!(materialized, sector_count);
+    assert_eq!(strict_candidates, 0);
+    assert_eq!(invalid, 0);
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+
+    let budget = PromotionBudget {
+        local_topology_states: 128,
+        local_geometry_iterations: local_iterations,
+        maximum_patch_rings: 2,
+        maximum_helper_vertices: 512,
+    };
+    let (fallback_source, fallback_levels, fallback_result) = frozen_n6_cldp_result(budget);
+    let fallback = match &fallback_result.outcome {
+        PromotionOutcome::SafeMotherFallback(trial) => trial,
+        other => panic!("PR78 expected a certified safe fallback, got {other:?}"),
+    };
+    let required_levels = fallback_levels
+        .into_iter()
+        .map(|level| level.unwrap_or(0))
+        .collect::<Vec<_>>();
+    let geometry = match earthmesh_refine_certified::certify_geometry(fallback.mesh.mesh.clone()) {
+        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(geometry) => geometry,
+        other => panic!("PR78 fallback geometry rejected: {other:?}"),
+    };
+    let final_evidence = earthmesh_refine_certified::safe_mother_final_evidence(
+        &required_levels,
+        1,
+        geometry.primal(),
+    )
+    .unwrap();
+    let final_mesh =
+        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, final_evidence)
+            .unwrap();
+    let gate_evidence =
+        build_frozen_cldp_gate_evidence(&fallback_source, fallback, final_mesh.certificate())
+            .unwrap();
+    let gate = evaluate_frozen_cldp_gate(&gate_evidence);
+    assert_eq!(gate, FrozenCldpGateOutcome::CertifiedSafeFallback);
+    assert_eq!(gate_evidence.retained_coarse_parents, 0);
+    assert_eq!(gate_evidence.compression_ratio, 1.0);
+    let best_range_json = best_local_range.map_or_else(
+        || "null".into(),
+        |range| format!("[{:.12},{:.12}]", range.0, range.1),
+    );
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr78FinalLocalRecoveryGate\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"CertifiedSafeFallback\",\"certified_adaptive\":false,\"mesh_unchanged\":true,\"violating_sectors\":{sector_count},\"materialized_local_candidates\":{materialized},\"direct_trials\":{direct_trials},\"one_parent_trials\":{one_parent_trials},\"two_parent_trials\":{two_parent_trials},\"invalid_candidates\":{invalid},\"strict_local_candidates\":{strict_candidates},\"local_geometry_iterations\":{local_iterations},\"best_local_angle_range\":{best_range_json},\"internal_fallback_angle_range\":[{:.12},{:.12}],\"final_fallback_angle_range\":[{:.12},{:.12}],\"retained_coarse_parents\":{},\"compression_ratio\":{:.12},\"mixed_levels_delivered\":{},\"euler\":{},\"charge\":{},\"delaunay_violations\":{},\"voronoi_invalid_cells\":{},\"voronoi_reciprocal_errors\":{},\"physical_residuals\":{},\"balance_residuals\":{},\"remap_closure_errors\":{},\"adaptive_failures\":[\"mixed_levels_delivered\",\"retained_coarse_parents\",\"compression_ratio\"],\"pr79_required\":false,\"pr80_pr81_gated\":true}}",
+        gate_evidence.internal_angle_range_deg.0,
+        gate_evidence.internal_angle_range_deg.1,
+        gate_evidence.final_angle_range_deg.0,
+        gate_evidence.final_angle_range_deg.1,
+        gate_evidence.retained_coarse_parents,
+        gate_evidence.compression_ratio,
+        gate_evidence.mixed_levels_delivered,
+        gate_evidence.euler,
+        gate_evidence.charge,
+        gate_evidence.delaunay_violations,
+        gate_evidence.voronoi_invalid_cells,
+        gate_evidence.voronoi_reciprocal_errors,
+        gate_evidence.physical_residuals,
+        gate_evidence.balance_residuals,
+        gate_evidence.remap_closure_errors,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
 #[ignore = "explicit finite Frozen N6 PR64 local-topology gate"]
 fn frozen_n6_pr64_local_topology_probe() {
     let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
@@ -1649,6 +1869,17 @@ fn outcome_evidence(outcome: &FullPolygonMergeOutcome) -> &FullPolygonMergeEvide
         FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence)
         | FullPolygonMergeOutcome::SearchBudgetExhausted(evidence)
         | FullPolygonMergeOutcome::InvalidInput { evidence, .. } => evidence,
+    }
+}
+
+fn update_best_range(best: &mut Option<(f64, f64)>, candidate: Option<(f64, f64)>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    if best.is_none_or(|current| {
+        (candidate.0 - 40.2).min(79.8 - candidate.1) > (current.0 - 40.2).min(79.8 - current.1)
+    }) {
+        *best = Some(candidate);
     }
 }
 

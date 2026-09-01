@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR77
+## Frozen N6 evidence through PR78
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -51,8 +51,9 @@ optimization. W4 is therefore disabled.
   ordinary degree gates, link/edge/Euler/charge, Delaunay/Voronoi, physical,
   balance, and remap with zero residuals. Its final counts are `V=362`,
   `E=1080`, `F=720`, but it retains zero coarse parents and has compression
-  ratio `1.0`. The Frozen N6 strict mixed gate therefore fails only on
-  `mixed_levels_delivered`.
+  ratio `1.0`. It is classified as a certified safe fallback, not adaptive:
+  adaptive delivery lacks mixed levels, a retained coarse parent, and a
+  compression ratio below `1.0`.
 - PR68: promotion input is restricted to 109 true strict violations; the 64
   non-violating solver guards remain optimization-only. Exact support shrinks
   from 285 to 275 source faces but still forms one component.
@@ -105,21 +106,32 @@ optimization. W4 is therefore disabled.
   remain exact. Neither candidate certifies after the five fixed homotopy starts
   and eight local max-min iterations; the best collar range is
   `23.608713897481°–96.548557913701°`.
+- PR78: the complete finite local ladder materializes one candidate for every
+  violating sector: eight direct restores, four one-parent peels, and two
+  two-parent collars. None is strict after eight local iterations; the best
+  local range remains the incumbent
+  `39.278499430048°–80.721500570507°`. The certified safe mother fallback passes
+  internal/final angles at `54.361673298250°–72.000000000000°`, Euler/charge,
+  Delaunay/Voronoi, physical, balance, and remap with zero errors. It correctly
+  fails adaptive delivery on `mixed_levels_delivered`,
+  `retained_coarse_parents`, and `compression_ratio` (`1.0`).
 
 ## Current stop condition
 
 CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
-not a non-trivial mixed result. The retained-core search has no closed
+does not yet produce a non-trivial strict mixed result. The retained-core search has no closed
 single-release topology and no closed pair-release topology; four pair cases
 remain search-budget unknown rather than proven impossible. PR73 establishes a
 separate incumbent-preserving local family, PR74 classifies its three exact
 local cavities, PR75 proves direct restoration without exterior drift, and PR76
 proves that four single-parent local cavities close without exterior drift, and
 PR77 closes both remaining two-parent interfaces while retaining a protected
-coarse core. None passes strict geometry. PR78 must therefore run the final
-strict local-recovery gate and keep the existing mixed incumbent or certified
-safe fallback on failure. Larger N12/N24/N40 and NXP80 runs remain gated off
-until Frozen N6 returns `CertifiedAdaptive`.
+coarse core. PR78 exhausts this finite topology ladder, but its bounded
+continuous geometry searches certify none of the 14 local candidates, so the
+product result remains `CertifiedSafeFallback`. PR79 is not triggered because
+the local family did materialize candidates; its condition is topology-candidate
+absence, not geometry-budget exhaustion. PR80 N12/N24/N40 and PR81 NXP80 remain
+gated off until Frozen N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

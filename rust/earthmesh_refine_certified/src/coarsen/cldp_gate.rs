@@ -107,7 +107,7 @@ pub fn build_frozen_cldp_gate_evidence(
         mixed_levels_delivered: has_fine && has_compressed,
         promoted_source_faces: trial.promotion_patch.source_faces.len(),
         retained_coarse_parents,
-        compression_ratio: source.mesh.triangle_count() as f64 / faces as f64,
+        compression_ratio: faces as f64 / source.mesh.triangle_count() as f64,
         promotion_level: trial.promotion_patch.level,
     })
 }
@@ -155,9 +155,22 @@ pub fn evaluate_frozen_cldp_gate(evidence: &FrozenCldpGateEvidence) -> FrozenCld
     if !evidence.mixed_levels_delivered {
         failed.push("mixed_levels_delivered");
     }
+    if evidence.retained_coarse_parents == 0 {
+        failed.push("retained_coarse_parents");
+    }
+    if evidence.compression_ratio >= 1.0 {
+        failed.push("compression_ratio");
+    }
     if failed.is_empty() {
         FrozenCldpGateOutcome::CertifiedAdaptive
-    } else if failed == ["mixed_levels_delivered"] {
+    } else if failed
+        == [
+            "mixed_levels_delivered",
+            "retained_coarse_parents",
+            "compression_ratio",
+        ]
+        && evidence.promotion_level == PromotionLevel::P5SafeMotherFallback
+    {
         FrozenCldpGateOutcome::CertifiedSafeFallback
     } else {
         FrozenCldpGateOutcome::Failed(failed)
@@ -200,7 +213,7 @@ mod tests {
             mixed_levels_delivered: mixed,
             promoted_source_faces: 4,
             retained_coarse_parents: usize::from(mixed),
-            compression_ratio: if mixed { 1.25 } else { 1.0 },
+            compression_ratio: if mixed { 0.75 } else { 1.0 },
             promotion_level: if mixed {
                 PromotionLevel::P2RestoreOneParentRing
             } else {
@@ -222,6 +235,16 @@ mod tests {
         assert_eq!(
             evaluate_frozen_cldp_gate(&passing(false)),
             FrozenCldpGateOutcome::CertifiedSafeFallback
+        );
+    }
+
+    #[test]
+    fn mixed_output_without_compression_fails_the_adaptive_gate() {
+        let mut evidence = passing(true);
+        evidence.compression_ratio = 1.0;
+        assert_eq!(
+            evaluate_frozen_cldp_gate(&evidence),
+            FrozenCldpGateOutcome::Failed(vec!["compression_ratio"])
         );
     }
 }
