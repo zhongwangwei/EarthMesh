@@ -8,13 +8,14 @@ use earthmesh_refine_certified::coarsen::{
     materialize_combined_repair_plan, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, peel_boundary_parent_for_sector,
     restore_fine_compatible_sector, restore_source_patch, search_local_topology_neighbourhood,
-    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
+    solve_combined_global_max_min, solve_elastic_patch_with_max_min_trust_start,
+    solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, solve_local_annular_collar,
     violation_support_atlas_json, AnchorBandPolicy, BoundaryParentPeelOutcome,
-    DirectSectorRestoreOutcome, DomainContinuationMode, DomainContinuationOutcome,
-    DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticPatch,
-    ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
+    CombinedRepairMaterialization, DirectSectorRestoreOutcome, DomainContinuationMode,
+    DomainContinuationOutcome, DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticPatch, ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
     FrozenCldpGateOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
     FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness,
     GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar, HierarchyLeafMesh,
@@ -1488,8 +1489,137 @@ fn frozen_n6_pr81_atomic_combined_materializer_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit Frozen N6 PR82 combined global max-min geometry"]
+fn frozen_n6_pr82_combined_global_max_min_geometry_probe() {
+    let geometry_iterations = usize_env("EARTHMESH_COMBINED_GEOMETRY_ITERATIONS", 128);
+    let fixture = frozen_n6_post_pr78_fixture();
+    let before = earthmesh_refine_certified::mesh_fingerprint(&fixture.mesh.mesh);
+    let registry = build_singleton_local_repair_registry(
+        &fixture.source,
+        &fixture.mesh,
+        &fixture.patch,
+        &fixture.atlas,
+        &fixture.retained_parents,
+        8,
+    )
+    .unwrap();
+    let effects = registry
+        .iter()
+        .map(|candidate| {
+            audit_local_repair_action(
+                &candidate.action,
+                &fixture.atlas.evidence_sets.strict_violations,
+                &fixture.mesh,
+                &candidate.mesh,
+            )
+        })
+        .collect::<Vec<_>>();
+    let actions = registry
+        .into_iter()
+        .map(|candidate| candidate.action)
+        .collect::<Vec<_>>();
+    let graph = build_local_action_conflict_graph(&actions).unwrap();
+    let plans = enumerate_compatible_action_sets(
+        &graph,
+        &effects,
+        fixture.atlas.evidence_sets.strict_violations.len(),
+    )
+    .unwrap();
+    let materializations = plans
+        .compatible_plans
+        .iter()
+        .filter(|plan| plan.action_ids.len() >= 2)
+        .filter_map(|plan| {
+            materialize_combined_repair_plan(
+                &fixture.source,
+                &fixture.mesh,
+                &fixture.atlas.sector_recovery_atlas,
+                &fixture.retained_parents,
+                plan,
+            )
+            .ok()
+            .filter(|trial| {
+                trial.topology_closed
+                    && trial.outside_topology_bitwise_equal
+                    && trial.outside_coordinates_bitwise_equal
+                    && trial.edge_incidence_at_most_two
+                    && trial.protected_core_preserved
+                    && !trial.retained_parents.is_empty()
+                    && trial.compression_ratio < 1.0
+            })
+        })
+        .take(2)
+        .collect::<Vec<CombinedRepairMaterialization>>();
+    assert_eq!(materializations.len(), 2);
+    let mut results = Vec::new();
+    for materialization in &materializations {
+        let result = solve_combined_global_max_min(
+            &fixture.source,
+            &fixture.source_levels,
+            &fixture.mesh,
+            &fixture.patch,
+            materialization,
+            geometry_iterations,
+        )
+        .unwrap();
+        assert_eq!(result.attempts.len(), 5);
+        assert!(result.attempts.iter().all(|attempt| {
+            attempt.target_mode == ElasticTargetMode::HierarchyEdgeAreaDegree
+                && attempt.requested_iterations == geometry_iterations
+        }));
+        let incumbent_margin = result
+            .incumbent_angle_range_deg
+            .map(|range| (range.0 - 40.2).min(79.8 - range.1))
+            .unwrap();
+        let preserved_margin = result
+            .best_preserved_angle_range_deg
+            .map(|range| (range.0 - 40.2).min(79.8 - range.1))
+            .unwrap();
+        assert!(preserved_margin + 1.0e-12 >= incumbent_margin);
+        results.push(result);
+    }
+    assert_eq!(
+        before,
+        earthmesh_refine_certified::mesh_fingerprint(&fixture.mesh.mesh)
+    );
+    let strict_candidates = results
+        .iter()
+        .filter(|result| result.strict_certified)
+        .count();
+    let best_candidate = results
+        .iter()
+        .filter_map(|result| result.best_candidate.as_deref())
+        .max_by(|left, right| {
+            left.signed_margin_deg
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&right.signed_margin_deg.unwrap_or(f64::NEG_INFINITY))
+        })
+        .unwrap();
+    let best_range_json = best_candidate.angle_range_deg.map_or_else(
+        || "null".to_string(),
+        |range| format!("[{:.12},{:.12}]", range.0, range.1),
+    );
+    let best_margin_json = best_candidate
+        .signed_margin_deg
+        .map_or_else(|| "null".to_string(), |margin| format!("{margin:.12}"));
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr82CombinedGlobalMaxMinGeometry\",\"taskbook_sha256\":\"{CCLR_TASKBOOK_SHA256}\",\"mesh_unchanged\":true,\"combined_candidates\":{},\"geometry_attempts\":{},\"iterations_per_start\":{geometry_iterations},\"target_mode\":\"HierarchyEdgeAreaDegree\",\"starts\":[\"InheritedIncumbent\",\"SafeInteriorBlend\",\"HierarchySpringEquilibrium\",\"RingScaleInterpolation\",\"DegreeAngleEquilibrium\"],\"best_combined_angle_range\":{best_range_json},\"best_combined_signed_margin_deg\":{best_margin_json},\"best_retained_parents\":{},\"best_compression_ratio\":{:.12},\"strict_combined_candidates\":{strict_candidates},\"incumbent_never_regresses\":true,\"bounded_failure_is_not_no_go\":true,\"pr84_required\":{}}}",
+        materializations.len(),
+        results.iter().map(|result| result.attempts.len()).sum::<usize>(),
+        best_candidate.retained_parents.len(),
+        best_candidate.compression_ratio,
+        strict_candidates == 0,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 struct FrozenN6PostPr78Fixture {
     source: earthmesh_refine_certified::MotherGrid,
+    source_levels: Vec<Option<usize>>,
     mesh: HierarchyLeafMesh,
     patch: ElasticPatch,
     atlas: ViolationSupportAtlas,
@@ -1521,6 +1651,7 @@ fn frozen_n6_post_pr78_fixture() -> FrozenN6PostPr78Fixture {
     .unwrap();
     FrozenN6PostPr78Fixture {
         source,
+        source_levels,
         mesh: mesh.clone(),
         patch: patch.clone(),
         atlas,

@@ -5,17 +5,21 @@ use super::{
     coarse_core_ears,
     direct_restore::{
         closed_edge_incidence, logical_exterior_equal_with_custom,
-        materialize_sector_restores_with_replacements, outside_coordinates_equal,
+        materialize_sector_restores_with_replacements, mesh_angle_range, outside_coordinates_equal,
     },
-    peel_boundary_parent_for_sector, restore_fine_compatible_sector, solve_local_annular_collar,
-    BoundaryParentPeelOutcome, DirectSectorRestoreOutcome, ElasticPatch, ElasticTargetMode,
-    HierarchyLeafMesh, LocalAnnularCollarLimits, LocalAnnularCollarOutcome, PromotionPatchTopology,
+    peel_boundary_parent_for_sector, restore_fine_compatible_sector,
+    solve_elastic_patch_with_max_min_trust_start, solve_local_annular_collar,
+    BoundaryParentPeelOutcome, DirectSectorRestoreOutcome, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticPatch, ElasticTargetMode, GeometryDomainId, GeometryStartId, HierarchyLeafMesh,
+    LocalAnnularCollarLimits, LocalAnnularCollarOutcome, PromotionPatchTopology,
     ProtectedCoarseRegion, RecoveryAtom, SectorRecoveryAtlas, ViolatingAngle,
     ViolationSupportAtlas,
 };
 use crate::{
     certificate::spherical_triangle_angles, mesh_fingerprint, MotherGrid, TriangleAddress,
+    VertexAddress,
 };
+use earthmesh_mesh::{normalize_cartesian_to_radius, CartesianPoint};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,6 +147,51 @@ pub struct CombinedRepairMaterialization {
     pub edge_incidence_at_most_two: bool,
     pub protected_core_preserved: bool,
     pub compression_ratio: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombinedGeometryStartId {
+    InheritedIncumbent,
+    SafeInteriorBlend,
+    HierarchySpringEquilibrium,
+    RingScaleInterpolation,
+    DegreeAngleEquilibrium,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedGeometryAttempt {
+    pub start_id: CombinedGeometryStartId,
+    pub target_mode: ElasticTargetMode,
+    pub requested_iterations: usize,
+    pub completed_iterations: usize,
+    pub angle_range_deg: Option<(f64, f64)>,
+    pub signed_margin_deg: Option<f64>,
+    pub strict_certified: bool,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedGeometryTrial {
+    pub plan: CombinedRepairPlan,
+    pub start_id: CombinedGeometryStartId,
+    pub mesh: HierarchyLeafMesh,
+    pub patch: ElasticPatch,
+    pub angle_range_deg: Option<(f64, f64)>,
+    pub signed_margin_deg: Option<f64>,
+    pub retained_parents: BTreeSet<TriangleAddress>,
+    pub compression_ratio: f64,
+    pub strict_certified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedGeometryResult {
+    pub attempts: Vec<CombinedGeometryAttempt>,
+    pub best_candidate: Option<Box<CombinedGeometryTrial>>,
+    pub incumbent_angle_range_deg: Option<(f64, f64)>,
+    pub best_preserved_angle_range_deg: Option<(f64, f64)>,
+    pub incumbent_preserved: bool,
+    pub strict_certified: bool,
+    pub continuous_search_incomplete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -413,6 +462,203 @@ pub fn materialize_combined_repair_plan(
         edge_incidence_at_most_two,
         protected_core_preserved,
         compression_ratio,
+    })
+}
+
+pub fn solve_combined_global_max_min(
+    source: &MotherGrid,
+    source_levels: &[Option<usize>],
+    incumbent: &HierarchyLeafMesh,
+    incumbent_patch: &ElasticPatch,
+    materialization: &CombinedRepairMaterialization,
+    geometry_iterations: usize,
+) -> Result<CombinedGeometryResult, String> {
+    if geometry_iterations == 0 {
+        return Err("combined geometry requires a positive iteration budget".into());
+    }
+    if !materialization.topology_closed
+        || !materialization.outside_topology_bitwise_equal
+        || !materialization.outside_coordinates_bitwise_equal
+        || !materialization.edge_incidence_at_most_two
+        || !materialization.protected_core_preserved
+        || materialization.retained_parents.is_empty()
+        || materialization.compression_ratio >= 1.0
+    {
+        return Err("combined geometry requires a hard-gate-closed mixed candidate".into());
+    }
+    let fixed_sources = incumbent_patch
+        .fixed_compact_vertices
+        .iter()
+        .filter_map(|&compact| incumbent.source_vertex_slots[compact])
+        .chain(
+            source
+                .addresses
+                .iter()
+                .enumerate()
+                .filter_map(|(site, address)| {
+                    matches!(address, Some(VertexAddress::IcosahedronVertex(_))).then_some(site)
+                }),
+        )
+        .collect::<BTreeSet<_>>();
+    let movable_sources = combined_movable_sources(source, materialization, 2)
+        .difference(&fixed_sources)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if movable_sources.is_empty() {
+        return Err("combined geometry has no movable source vertex".into());
+    }
+    let incumbent_angle_range_deg = mesh_angle_range(incumbent);
+    let starts = [
+        CombinedGeometryStartId::InheritedIncumbent,
+        CombinedGeometryStartId::SafeInteriorBlend,
+        CombinedGeometryStartId::HierarchySpringEquilibrium,
+        CombinedGeometryStartId::RingScaleInterpolation,
+        CombinedGeometryStartId::DegreeAngleEquilibrium,
+    ];
+    let mut attempts = Vec::with_capacity(starts.len());
+    let mut best_candidate = None::<CombinedGeometryTrial>;
+    for start_id in starts {
+        let mut start_mesh = materialization.mesh.clone();
+        if start_id == CombinedGeometryStartId::SafeInteriorBlend {
+            apply_safe_interior_blend(source, &movable_sources, &mut start_mesh);
+        }
+        let patch = combined_elastic_patch(
+            source,
+            source_levels,
+            incumbent_patch,
+            materialization,
+            &start_mesh,
+            &movable_sources,
+        )?;
+        let solver_start = match start_id {
+            CombinedGeometryStartId::InheritedIncumbent
+            | CombinedGeometryStartId::SafeInteriorBlend => GeometryStartId::MaterializedSource,
+            CombinedGeometryStartId::HierarchySpringEquilibrium => {
+                GeometryStartId::HierarchySpringEquilibrium
+            }
+            CombinedGeometryStartId::RingScaleInterpolation => {
+                GeometryStartId::RingScaleInterpolation
+            }
+            CombinedGeometryStartId::DegreeAngleEquilibrium => {
+                GeometryStartId::DegreeAngleEquilibrium
+            }
+        };
+        let outcome = solve_elastic_patch_with_max_min_trust_start(
+            &start_mesh,
+            patch.clone(),
+            ElasticBlockLimits {
+                elastic_iterations: geometry_iterations,
+            },
+            solver_start,
+        );
+        let (mesh, final_patch, completed_iterations, strict_certified, outcome_name) =
+            match outcome {
+                ElasticBlockOutcome::Certified(trial) => (
+                    trial.mesh,
+                    trial.patch,
+                    trial.report.elastic_iterations,
+                    true,
+                    "Certified".to_string(),
+                ),
+                ElasticBlockOutcome::ElasticNoImprovement {
+                    elastic_iterations,
+                    witness,
+                    ..
+                } => (
+                    witness.mesh,
+                    witness.patch,
+                    elastic_iterations,
+                    false,
+                    "ElasticNoImprovement".to_string(),
+                ),
+                ElasticBlockOutcome::SearchBudgetExhausted {
+                    elastic_iterations,
+                    witness,
+                    ..
+                } => (
+                    witness.mesh,
+                    witness.patch,
+                    elastic_iterations,
+                    false,
+                    "SearchBudgetExhausted".to_string(),
+                ),
+                ElasticBlockOutcome::RequiresDifferentTopology {
+                    elastic_iterations,
+                    witness,
+                    ..
+                } => (
+                    witness.mesh,
+                    witness.patch,
+                    elastic_iterations,
+                    false,
+                    "RequiresDifferentTopology".to_string(),
+                ),
+                ElasticBlockOutcome::InvalidPatch { reason } => (
+                    start_mesh,
+                    patch,
+                    0,
+                    false,
+                    format!("InvalidPatch:{reason}"),
+                ),
+            };
+        let angle_range_deg = mesh_angle_range(&mesh);
+        let signed_margin_deg = angle_range_deg.map(range_margin);
+        attempts.push(CombinedGeometryAttempt {
+            start_id,
+            target_mode: ElasticTargetMode::HierarchyEdgeAreaDegree,
+            requested_iterations: geometry_iterations,
+            completed_iterations,
+            angle_range_deg,
+            signed_margin_deg,
+            strict_certified,
+            outcome: outcome_name,
+        });
+        let trial = CombinedGeometryTrial {
+            plan: materialization.plan.clone(),
+            start_id,
+            mesh,
+            patch: final_patch,
+            angle_range_deg,
+            signed_margin_deg,
+            retained_parents: materialization.retained_parents.clone(),
+            compression_ratio: materialization.compression_ratio,
+            strict_certified,
+        };
+        if best_candidate.as_ref().is_none_or(|best| {
+            trial.signed_margin_deg.unwrap_or(f64::NEG_INFINITY)
+                > best.signed_margin_deg.unwrap_or(f64::NEG_INFINITY)
+        }) {
+            best_candidate = Some(trial);
+        }
+    }
+    let candidate_range = best_candidate
+        .as_ref()
+        .and_then(|candidate| candidate.angle_range_deg);
+    let incumbent_margin = incumbent_angle_range_deg
+        .map(range_margin)
+        .unwrap_or(f64::NEG_INFINITY);
+    let candidate_margin = candidate_range
+        .map(range_margin)
+        .unwrap_or(f64::NEG_INFINITY);
+    let best_preserved_angle_range_deg = if candidate_margin > incumbent_margin {
+        candidate_range
+    } else {
+        incumbent_angle_range_deg
+    };
+    let incumbent_preserved = best_preserved_angle_range_deg
+        .map(range_margin)
+        .is_some_and(|margin| margin + 1.0e-12 >= incumbent_margin);
+    let strict_certified = best_candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.strict_certified);
+    Ok(CombinedGeometryResult {
+        attempts,
+        best_candidate: best_candidate.map(Box::new),
+        incumbent_angle_range_deg,
+        best_preserved_angle_range_deg,
+        incumbent_preserved,
+        strict_certified,
+        continuous_search_incomplete: !strict_certified,
     })
 }
 
@@ -767,6 +1013,126 @@ fn classification_name(classification: ActionSetClassification) -> &'static str 
         ActionSetClassification::NoRetainedCoarseParent => "no_retained_coarse_parent",
         ActionSetClassification::NoPotentialImprovement => "no_potential_improvement",
         ActionSetClassification::Compatible => "compatible",
+    }
+}
+
+fn combined_movable_sources(
+    source: &MotherGrid,
+    materialization: &CombinedRepairMaterialization,
+    ordinary_guard_rings: usize,
+) -> BTreeSet<usize> {
+    let mut faces = materialization
+        .cavities
+        .iter()
+        .flat_map(|cavity| cavity.source_faces.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let mut frontier = faces.clone();
+    for _ in 0..ordinary_guard_rings {
+        let next = frontier
+            .iter()
+            .flat_map(|&face| source.mesh.neighbours()[face])
+            .filter(|face| !faces.contains(face))
+            .collect::<BTreeSet<_>>();
+        faces.extend(&next);
+        frontier = next;
+    }
+    faces
+        .iter()
+        .flat_map(|&face| source.mesh.triangles()[face])
+        .collect()
+}
+
+fn combined_elastic_patch(
+    source: &MotherGrid,
+    source_levels: &[Option<usize>],
+    incumbent_patch: &ElasticPatch,
+    materialization: &CombinedRepairMaterialization,
+    candidate: &HierarchyLeafMesh,
+    movable_sources: &BTreeSet<usize>,
+) -> Result<ElasticPatch, String> {
+    let movable_compact_vertices = candidate
+        .source_vertex_slots
+        .iter()
+        .enumerate()
+        .filter_map(|(compact, source)| {
+            source
+                .is_some_and(|source| movable_sources.contains(&source))
+                .then_some(compact)
+        })
+        .collect::<Vec<_>>();
+    let movable = movable_compact_vertices
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if movable.is_empty() {
+        return Err("combined hierarchy patch has no compact movable vertex".into());
+    }
+    let guard_faces = candidate
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            candidate.mesh.triangles()[face]
+                .iter()
+                .any(|site| movable.contains(site))
+        })
+        .collect::<Vec<_>>();
+    let fixed_compact_vertices = guard_faces
+        .iter()
+        .flat_map(|&face| candidate.mesh.triangles()[face])
+        .filter(|site| !movable.contains(site))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut topology = incumbent_patch.topology.clone();
+    topology.component_id = materialization.plan.bitmask as u64;
+    topology.topology_id = materialization.plan.bitmask;
+    topology.core_parents = materialization.retained_parents.iter().copied().collect();
+    topology.source_active_vertices = guard_faces
+        .iter()
+        .flat_map(|&face| candidate.mesh.triangles()[face])
+        .filter_map(|compact| candidate.source_vertex_slots[compact])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    ElasticPatch {
+        domain_id: GeometryDomainId::PlusTwoOrdinaryRings,
+        topology,
+        reference_positions: candidate.mesh.vertices().to_vec(),
+        fixed_compact_vertices,
+        movable_compact_vertices,
+        guard_faces,
+        target_mode: ElasticTargetMode::HierarchyEdgeAreaDegree,
+        target_field: Default::default(),
+    }
+    .with_hierarchy_targets(
+        source,
+        candidate,
+        source_levels,
+        ElasticTargetMode::HierarchyEdgeAreaDegree,
+    )
+}
+
+fn apply_safe_interior_blend(
+    source: &MotherGrid,
+    movable_sources: &BTreeSet<usize>,
+    candidate: &mut HierarchyLeafMesh,
+) {
+    for (compact, source_site) in candidate.source_vertex_slots.iter().copied().enumerate() {
+        let Some(source_site) = source_site.filter(|site| movable_sources.contains(site)) else {
+            continue;
+        };
+        let current = candidate.mesh.vertices()[compact];
+        let safe = source.mesh.vertices()[source_site];
+        if let Ok(point) = normalize_cartesian_to_radius(
+            CartesianPoint::new(
+                0.5 * (current.x + safe.x),
+                0.5 * (current.y + safe.y),
+                0.5 * (current.z + safe.z),
+            ),
+            1.0,
+        ) {
+            candidate.mesh.move_vertex(compact, point);
+        }
     }
 }
 

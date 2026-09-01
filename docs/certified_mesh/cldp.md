@@ -146,6 +146,18 @@ optimization. W4 is therefore disabled.
   Closed candidates retain at least three hierarchy parents; the smallest
   observed face compression ratio is `0.925`. No candidate geometry is changed
   or certified in this stage; PR82 owns global max-min optimization.
+- PR82: combined candidates use the hierarchy edge/area/degree target, a
+  +2-ordinary-ring movable domain with original anchors fixed, five
+  deterministic starts (`InheritedIncumbent`, `SafeInteriorBlend`, hierarchy
+  spring, ring scale, and degree-angle equilibrium), and 128 max-min trust
+  iterations per start. Two highest-coverage closed combinations produced ten
+  bounded geometry attempts. None certified; the best combined range is only
+  `30.000000000281°–90.000000000509°` with retained seven coarse parents and
+  face compression ratio `0.944444444444`. Because this is worse than the
+  `39.278499430048°–80.721500570507°` incumbent, it is retained only as
+  diagnostic evidence. The incumbent never regresses, eight-iteration failure
+  is not treated as No-Go, and the result is `ContinuousSearchIncomplete`, so
+  the retained-core ladder remains required.
 
 ## Current stop condition
 
@@ -163,9 +175,11 @@ represent the compatible combination family. PR80 must enumerate and classify
 that exact 14-action family. PR80 has now classified every bitmask and passes
 the combination plan to PR81; PR81 proves that multi-action candidates can be
 materialized atomically while preserving a compressed coarse core and exact
-outside. Neither stage claims geometry feasibility. N12/N24/N40 and NXP80
-remain gated off until Frozen N6 returns `CertifiedAdaptive` or receives a
-genuinely scoped closure.
+outside. PR82's hierarchy-target global search finds no strict witness in the
+two highest-coverage candidates and preserves the better incumbent. This is a
+bounded continuous failure, not a family closure. N12/N24/N40 and NXP80 remain
+gated off until Frozen N6 returns `CertifiedAdaptive` or receives a genuinely
+scoped closure.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
