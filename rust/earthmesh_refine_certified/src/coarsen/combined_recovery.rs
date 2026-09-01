@@ -1,10 +1,15 @@
 //! Auditable local-repair actions used by the post-PR78 recovery ladder.
 
 use super::{
-    coarse_core_ears, direct_restore::closed_edge_incidence, peel_boundary_parent_for_sector,
-    restore_fine_compatible_sector, solve_local_annular_collar, BoundaryParentPeelOutcome,
-    DirectSectorRestoreOutcome, ElasticPatch, ElasticTargetMode, HierarchyLeafMesh,
-    LocalAnnularCollarLimits, LocalAnnularCollarOutcome, PromotionPatchTopology,
+    boundary_parent_peel::split_retained_interfaces,
+    coarse_core_ears,
+    direct_restore::{
+        closed_edge_incidence, logical_exterior_equal_with_custom,
+        materialize_sector_restores_with_replacements, outside_coordinates_equal,
+    },
+    peel_boundary_parent_for_sector, restore_fine_compatible_sector, solve_local_annular_collar,
+    BoundaryParentPeelOutcome, DirectSectorRestoreOutcome, ElasticPatch, ElasticTargetMode,
+    HierarchyLeafMesh, LocalAnnularCollarLimits, LocalAnnularCollarOutcome, PromotionPatchTopology,
     ProtectedCoarseRegion, RecoveryAtom, SectorRecoveryAtlas, ViolatingAngle,
     ViolationSupportAtlas,
 };
@@ -105,9 +110,39 @@ pub struct CombinedRepairPlan {
     pub retained_parents: BTreeSet<TriangleAddress>,
     pub removed_mixed_faces: BTreeSet<usize>,
     pub restored_source_faces: BTreeSet<usize>,
+    pub singleton_boundary_source_vertices: BTreeSet<usize>,
     pub original_violation_ids_covered: BTreeSet<usize>,
     pub uncovered_original_violations: usize,
     pub estimated_new_violations: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombinedCavity {
+    pub id: u64,
+    pub source_faces: BTreeSet<usize>,
+    pub boundary_source_vertices: BTreeSet<usize>,
+    pub movable_source_vertices: BTreeSet<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombinedRepairMaterialization {
+    pub plan: CombinedRepairPlan,
+    pub mesh: HierarchyLeafMesh,
+    pub rebuilds: usize,
+    pub removed_mixed_faces: BTreeSet<usize>,
+    pub restored_source_faces: BTreeSet<usize>,
+    pub released_parents: BTreeSet<TriangleAddress>,
+    pub split_interface_parents: BTreeSet<TriangleAddress>,
+    pub retained_parents: BTreeSet<TriangleAddress>,
+    pub protected_coarse_regions: Vec<ProtectedCoarseRegion>,
+    pub cavities: Vec<CombinedCavity>,
+    pub internal_singleton_boundary_vertices: BTreeSet<usize>,
+    pub topology_closed: bool,
+    pub outside_topology_bitwise_equal: bool,
+    pub outside_coordinates_bitwise_equal: bool,
+    pub edge_incidence_at_most_two: bool,
+    pub protected_core_preserved: bool,
+    pub compression_ratio: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,6 +276,143 @@ pub fn enumerate_compatible_action_sets(
         classifications,
         compatible_plans,
         classification_counts,
+    })
+}
+
+pub fn materialize_combined_repair_plan(
+    source: &MotherGrid,
+    incumbent: &HierarchyLeafMesh,
+    atlas: &SectorRecoveryAtlas,
+    original_retained_parents: &BTreeSet<TriangleAddress>,
+    plan: &CombinedRepairPlan,
+) -> Result<CombinedRepairMaterialization, String> {
+    if plan.action_ids.len() < 2 {
+        return Err("combined materialization requires at least two actions".into());
+    }
+    if plan.sector_ids.is_empty()
+        || plan
+            .sector_ids
+            .iter()
+            .any(|sector| !atlas.sectors.contains_key(sector))
+    {
+        return Err("combined materialization references an invalid sector set".into());
+    }
+    if !plan.released_parents.is_subset(original_retained_parents) {
+        return Err("combined materialization releases a non-retained parent".into());
+    }
+    let replacements = split_retained_interfaces(
+        source,
+        incumbent,
+        &plan.released_parents,
+        original_retained_parents,
+    )?;
+    let split_interface_parents = replacements.keys().copied().collect::<BTreeSet<_>>();
+    let materialized = materialize_sector_restores_with_replacements(
+        source,
+        incumbent,
+        atlas,
+        &plan.sector_ids,
+        &plan.released_parents,
+        &replacements,
+    )?;
+    let modified_parents = plan
+        .released_parents
+        .union(&split_interface_parents)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let removed_parent_faces = incumbent
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            incumbent.triangle_addresses[face]
+                .is_some_and(|address| modified_parents.contains(&address))
+        })
+        .collect::<BTreeSet<_>>();
+    let removed_faces = materialized
+        .removed_mixed_faces
+        .union(&removed_parent_faces)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let inserted_addresses = materialized
+        .restored_addresses
+        .union(&materialized.released_children)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut cavity_source_faces = materialized.restored_source_faces.clone();
+    for &child in &materialized.released_children {
+        cavity_source_faces.insert(source_face_for_address(source, child)?);
+    }
+    for &parent in &split_interface_parents {
+        cavity_source_faces.extend(source_descendant_faces(source, parent));
+    }
+    let candidate = materialized.mesh;
+    let retained_parents = original_retained_parents
+        .iter()
+        .copied()
+        .filter(|parent| {
+            candidate
+                .mesh
+                .active_triangle_slots()
+                .any(|face| candidate.triangle_addresses[face] == Some(*parent))
+        })
+        .collect::<BTreeSet<_>>();
+    let protected_coarse_regions = retained_parent_components(incumbent, &retained_parents)
+        .into_iter()
+        .enumerate()
+        .map(|(id, parents)| super::build_protected_coarse_region(source, id as u64, parents))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cavities = source_face_components(source, &cavity_source_faces)
+        .into_iter()
+        .enumerate()
+        .map(|(id, source_faces)| combined_cavity(source, id as u64, source_faces))
+        .collect::<Vec<_>>();
+    let combined_boundary = cavities
+        .iter()
+        .flat_map(|cavity| cavity.boundary_source_vertices.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let internal_singleton_boundary_vertices = plan
+        .singleton_boundary_source_vertices
+        .difference(&combined_boundary)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let topology_closed = candidate.mesh.open_edge_count() == 0;
+    let edge_incidence_at_most_two = closed_edge_incidence(&candidate);
+    let outside_topology_bitwise_equal = logical_exterior_equal_with_custom(
+        incumbent,
+        &removed_faces,
+        &modified_parents,
+        &candidate,
+        &inserted_addresses,
+        &materialized.inserted_custom_triangles,
+    );
+    let outside_coordinates_bitwise_equal =
+        outside_coordinates_equal(incumbent, &removed_faces, &candidate);
+    let protected_core_preserved = !protected_coarse_regions.is_empty()
+        && protected_coarse_regions.iter().all(|region| {
+            region
+                .descendant_source_faces
+                .is_disjoint(&cavity_source_faces)
+        });
+    let compression_ratio = candidate.mesh.active_triangle_slots().count() as f64
+        / source.mesh.active_triangle_slots().count() as f64;
+    Ok(CombinedRepairMaterialization {
+        plan: plan.clone(),
+        mesh: candidate,
+        rebuilds: 1,
+        removed_mixed_faces: materialized.removed_mixed_faces,
+        restored_source_faces: materialized.restored_source_faces,
+        released_parents: plan.released_parents.clone(),
+        split_interface_parents,
+        retained_parents,
+        protected_coarse_regions,
+        cavities,
+        internal_singleton_boundary_vertices,
+        topology_closed,
+        outside_topology_bitwise_equal,
+        outside_coordinates_bitwise_equal,
+        edge_incidence_at_most_two,
+        protected_core_preserved,
+        compression_ratio,
     })
 }
 
@@ -574,6 +746,10 @@ fn combined_plan(
             .iter()
             .flat_map(|action| action.restored_source_faces.iter().copied())
             .collect(),
+        singleton_boundary_source_vertices: selected
+            .iter()
+            .flat_map(|action| action.boundary_source_vertices.iter().copied())
+            .collect(),
         uncovered_original_violations: original_violation_count
             .saturating_sub(original_violation_ids_covered.len()),
         original_violation_ids_covered,
@@ -592,6 +768,119 @@ fn classification_name(classification: ActionSetClassification) -> &'static str 
         ActionSetClassification::NoPotentialImprovement => "no_potential_improvement",
         ActionSetClassification::Compatible => "compatible",
     }
+}
+
+fn source_face_for_address(source: &MotherGrid, address: TriangleAddress) -> Result<usize, String> {
+    source
+        .triangle_addresses
+        .iter()
+        .position(|candidate| candidate == &Some(address))
+        .ok_or_else(|| format!("source hierarchy address {address:?} is absent"))
+}
+
+fn source_descendant_faces(source: &MotherGrid, ancestor: TriangleAddress) -> BTreeSet<usize> {
+    source
+        .triangle_addresses
+        .iter()
+        .enumerate()
+        .filter_map(|(face, address)| {
+            address
+                .is_some_and(|address| is_descendant(address, ancestor))
+                .then_some(face)
+        })
+        .collect()
+}
+
+fn is_descendant(mut address: TriangleAddress, ancestor: TriangleAddress) -> bool {
+    while address.n > ancestor.n {
+        let Some(parent) = address.parent_2_to_1() else {
+            return false;
+        };
+        address = parent;
+    }
+    address == ancestor
+}
+
+fn source_face_components(source: &MotherGrid, faces: &BTreeSet<usize>) -> Vec<BTreeSet<usize>> {
+    let mut remaining = faces.clone();
+    let mut components = Vec::new();
+    while let Some(seed) = remaining.pop_first() {
+        let mut component = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        while let Some(face) = frontier.pop() {
+            for neighbour in source.mesh.neighbours()[face] {
+                if remaining.remove(&neighbour) {
+                    component.insert(neighbour);
+                    frontier.push(neighbour);
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
+}
+
+fn combined_cavity(source: &MotherGrid, id: u64, source_faces: BTreeSet<usize>) -> CombinedCavity {
+    let mut edges = BTreeMap::<(usize, usize), usize>::new();
+    for &face in &source_faces {
+        let triangle = source.mesh.triangles()[face];
+        for (left, right) in [
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ] {
+            *edges.entry((left.min(right), left.max(right))).or_default() += 1;
+        }
+    }
+    let boundary_source_vertices = edges
+        .into_iter()
+        .filter(|(_, count)| *count == 1)
+        .flat_map(|(edge, _)| [edge.0, edge.1])
+        .collect::<BTreeSet<_>>();
+    let movable_source_vertices = source_faces
+        .iter()
+        .flat_map(|&face| source.mesh.triangles()[face])
+        .filter(|site| !boundary_source_vertices.contains(site))
+        .collect::<BTreeSet<_>>();
+    CombinedCavity {
+        id,
+        source_faces,
+        boundary_source_vertices,
+        movable_source_vertices,
+    }
+}
+
+fn retained_parent_components(
+    incumbent: &HierarchyLeafMesh,
+    parents: &BTreeSet<TriangleAddress>,
+) -> Vec<BTreeSet<TriangleAddress>> {
+    let face_by_parent = incumbent
+        .mesh
+        .active_triangle_slots()
+        .filter_map(|face| incumbent.triangle_addresses[face].map(|parent| (parent, face)))
+        .collect::<BTreeMap<_, _>>();
+    let mut remaining = parents.clone();
+    let mut components = Vec::new();
+    while let Some(seed) = remaining.pop_first() {
+        let mut component = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        while let Some(parent) = frontier.pop() {
+            let Some(&face) = face_by_parent.get(&parent) else {
+                continue;
+            };
+            for neighbour in incumbent.mesh.neighbours()[face] {
+                let Some(next) = incumbent.triangle_addresses[neighbour] else {
+                    continue;
+                };
+                if remaining.remove(&next) {
+                    component.insert(next);
+                    frontier.push(next);
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
 }
 
 #[allow(clippy::too_many_arguments)]
