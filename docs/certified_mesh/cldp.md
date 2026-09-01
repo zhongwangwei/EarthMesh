@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR76
+## Frozen N6 evidence through PR77
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -97,6 +97,14 @@ optimization. W4 is therefore disabled.
   parents. Four closed candidates enter local max-min, none certify, and the best
   peel range is `19.671188302883°–100.328811696957°`; PR77 therefore owns the
   annular/two-parent collar escalation.
+- PR77: the two remaining two-parent blockers run a finite three-state ladder
+  (both single peels, then the exact pair peel). Both pair peels materialize
+  closed local collars while retaining five hierarchy coarse parents and one
+  protected coarse-core island. The collars promote at most 32 source faces;
+  fixed outside face/link contracts, source-coordinate bits, and edge incidence
+  remain exact. Neither candidate certifies after the five fixed homotopy starts
+  and eight local max-min iterations; the best collar range is
+  `23.608713897481°–96.548557913701°`.
 
 ## Current stop condition
 
@@ -106,10 +114,12 @@ single-release topology and no closed pair-release topology; four pair cases
 remain search-budget unknown rather than proven impossible. PR73 establishes a
 separate incumbent-preserving local family, PR74 classifies its three exact
 local cavities, PR75 proves direct restoration without exterior drift, and PR76
-proves that four single-parent local cavities close without exterior drift. None
-passes strict geometry; four two-parent interfaces remain topologically open and
-advance to the PR77 annular collar. Larger N12/N24/N40 and NXP80 runs remain
-gated off until Frozen N6 returns `CertifiedAdaptive`.
+proves that four single-parent local cavities close without exterior drift, and
+PR77 closes both remaining two-parent interfaces while retaining a protected
+coarse core. None passes strict geometry. PR78 must therefore run the final
+strict local-recovery gate and keep the existing mixed incumbent or certified
+safe fallback on failure. Larger N12/N24/N40 and NXP80 runs remain gated off
+until Frozen N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
