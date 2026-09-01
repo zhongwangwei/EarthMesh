@@ -27,6 +27,7 @@ mod global_exact_merge;
 mod hierarchy_component;
 mod local_annular_collar;
 mod local_topology;
+mod plan_band_domain;
 mod problem_identity;
 mod promotion;
 mod research_fixture;
@@ -196,6 +197,11 @@ pub use local_topology::{
     search_local_topology_neighbourhood, LocalEdgeFlip, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome,
 };
+pub use plan_band_domain::{
+    build_plan_band_domains, BoundaryContractionMap, ContractedBoundaryEdge, PlanBandDomain,
+    PlanBandDomainError, PlanBandDomainKey, PlanBandTopologyKind, SourceBoundaryCycle,
+    TopologyBoundary,
+};
 pub use problem_identity::{
     essential_cycle_problem_key, face_band_problem_identity_report_json,
     profile_frozen_n6_face_band_problems, CanonicalEdgeId, CanonicalFaceId, CanonicalVertexId,
@@ -218,12 +224,12 @@ pub use research_fixture::{
 pub use research_runner::{
     current_n12_validation_gate_report, decide_validation_gate, n12_cec_topology_probe_json,
     n12_legacy_baseline_json, n12_lifted_band_failure_audit_json,
-    n12_lifted_downstream_reject_audit_json, n12_lifted_v2_replay_json,
-    n12_validation_gate_report_json, research_cec_topology_evidence_json,
-    research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
-    run_n12_lifted_v2_replay, N12ValidationGateReport, ResearchCecTopologyEvidence,
-    ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome,
-    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
+    n12_lifted_downstream_reject_audit_json, n12_lifted_plan_band_domain_audit_json,
+    n12_lifted_v2_replay_json, n12_validation_gate_report_json,
+    research_cec_topology_evidence_json, research_legacy_evidence_json, run_n12_cec_topology_probe,
+    run_n12_legacy_baseline, run_n12_lifted_v2_replay, N12ValidationGateReport,
+    ResearchCecTopologyEvidence, ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind,
+    ResearchGeometryOutcome, ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
     ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
 };
 pub use retained_core::{
