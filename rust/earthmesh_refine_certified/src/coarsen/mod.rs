@@ -57,14 +57,15 @@ pub use effective_band::{
     build_effective_band_report, effective_band_report_json, EffectiveBandReport,
 };
 pub use elastic_block::{
-    angle_margin_objective, initial_elastic_phase, solve_elastic_patch,
-    solve_elastic_patch_with_active_trust_start,
+    angle_margin_objective, initial_elastic_phase, max_min_trust_step_evidence,
+    solve_elastic_patch, solve_elastic_patch_with_active_trust_start,
     solve_elastic_patch_with_active_trust_start_and_scale, solve_elastic_patch_with_margin_start,
-    solve_elastic_patch_with_start, solve_elastic_transition_block, ActiveBoundaryConstraintRatio,
-    AngleConstraintKey, AngleMarginObjective, ElasticBlockLimits, ElasticBlockOutcome,
-    ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
-    ElasticTargetMode, GeometryDomainId, GeometryFailureDiagnostics, GeometryFailureWitness,
-    GeometryStartId, MotherLevelMetric, MovementDistribution,
+    solve_elastic_patch_with_max_min_trust_start, solve_elastic_patch_with_start,
+    solve_elastic_transition_block, ActiveBoundaryConstraintRatio, AngleConstraintKey,
+    AngleMarginObjective, ElasticBlockLimits, ElasticBlockOutcome, ElasticBlockPhase,
+    ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField, ElasticTargetMode,
+    GeometryDomainId, GeometryFailureDiagnostics, GeometryFailureWitness, GeometryStartId,
+    MaxMinKktEvidence, MaxMinTrustOutcomeKind, MotherLevelMetric, MovementDistribution,
 };
 pub use embedding_audit::{
     audit_embedding_transfer, EmbeddingAudit, EmbeddingAuditOutcome, RotationMismatch,

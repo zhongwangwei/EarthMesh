@@ -1,14 +1,16 @@
 use earthmesh_refine_certified::coarsen::{
     audit_embedding_transfer, build_face_band_problem,
     build_face_band_problem_with_source_face_rings, continue_nested_domain,
-    frozen_n6_geometry_evidence_json_with_solver_domain,
-    n6_legacy_mixed_fixture_with_source_levels, solve_exact_face_bands,
+    frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
+    n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch_with_max_min_trust_start,
+    solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, AnchorBandPolicy,
     DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
-    ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
-    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome, GeometryDomainId,
-    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId,
+    ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode, EmbeddingAuditOutcome,
+    FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
+    FullPolygonMergeOutcome, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
+    GeometryStartId, MaxMinTrustOutcomeKind,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -293,6 +295,103 @@ fn frozen_n6_pr61_w3_embedding_audit_probe() {
         fs::write(path, &json).unwrap();
     }
     eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR62 W2 max-min gate"]
+fn frozen_n6_pr62_w2_max_min_probe() {
+    let iterations = usize_env("EARTHMESH_CBER_ITERATIONS", 128);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, incumbent_range) =
+        pr49_and_pr52_witnesses(&source, &component, &source_levels);
+    assert_close(incumbent_range.0, 38.551_143_486_745_16);
+    assert_close(incumbent_range.1, 81.453_074_281_139_5);
+
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: iterations,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (range, mesh, patch, certified) = elastic_outcome_geometry(&outcome);
+    let margin = (range.0 - 40.2).min(79.8 - range.1);
+    assert!(
+        margin + 1.0e-10 >= LEGACY_MARGIN_DEG,
+        "max-min must preserve the W2 incumbent"
+    );
+    let kkt = max_min_trust_step_evidence(&mesh.mesh, patch, 0.01).unwrap();
+    let gate = if certified {
+        "StrictPass"
+    } else if margin >= LEGACY_MARGIN_DEG + 0.1 {
+        "Improved"
+    } else if kkt.outcome == MaxMinTrustOutcomeKind::FirstOrderStationary {
+        "FirstOrderStationary"
+    } else {
+        "ContinuousIncomplete"
+    };
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr62W2MaxMin\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"solver\":\"LinearizedMaxMinTrust\",\"iterations\":{iterations},\"incumbent_angle_degrees\":[{:.12},{:.12}],\"final_angle_degrees\":[{:.12},{:.12}],\"final_signed_margin_deg\":{margin:.12},\"gate\":\"{gate}\",\"kkt\":{{\"outcome\":\"{:?}\",\"active_constraints\":{},\"orientation_guards\":{},\"projection_sweeps\":{},\"current_slack_deg\":{:.12},\"achieved_slack_deg\":{:.12},\"linearized_upper_bound_deg\":{:.12},\"projected_stationarity_norm\":{:.12e}}}}}",
+        incumbent_range.0,
+        incumbent_range.1,
+        range.0,
+        range.1,
+        kkt.outcome,
+        kkt.active_constraints,
+        kkt.orientation_guards,
+        kkt.projection_sweeps,
+        kkt.current_slack_deg,
+        kkt.achieved_slack_deg,
+        kkt.linearized_upper_bound_deg,
+        kkt.projected_stationarity_norm,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+fn elastic_outcome_geometry(
+    outcome: &ElasticBlockOutcome,
+) -> (
+    (f64, f64),
+    &earthmesh_refine_certified::coarsen::HierarchyLeafMesh,
+    &earthmesh_refine_certified::coarsen::ElasticPatch,
+    bool,
+) {
+    match outcome {
+        ElasticBlockOutcome::Certified(trial) => (
+            (
+                trial.geometry.min_angle_degrees,
+                trial.geometry.max_angle_degrees,
+            ),
+            &trial.mesh,
+            &trial.patch,
+            true,
+        ),
+        ElasticBlockOutcome::ElasticNoImprovement {
+            global_angle_degrees,
+            witness,
+            ..
+        }
+        | ElasticBlockOutcome::SearchBudgetExhausted {
+            global_angle_degrees,
+            witness,
+            ..
+        }
+        | ElasticBlockOutcome::RequiresDifferentTopology {
+            global_angle_degrees,
+            witness,
+            ..
+        } => (
+            global_angle_degrees.expect("max-min outcome must report its angle range"),
+            &witness.mesh,
+            &witness.patch,
+            false,
+        ),
+        ElasticBlockOutcome::InvalidPatch { reason } => panic!("invalid max-min patch: {reason}"),
+    }
 }
 
 fn embedding_audit(
