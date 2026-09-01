@@ -7,9 +7,10 @@ use earthmesh_refine_certified::coarsen::{
     evaluate_frozen_cldp_gate, frozen_n6_geometry_evidence_json_with_solver_domain,
     materialize_combined_repair_plan, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, peel_boundary_parent_for_sector,
-    restore_fine_compatible_sector, restore_source_patch, search_local_topology_neighbourhood,
-    solve_combined_global_max_min, solve_elastic_patch_with_max_min_trust_start,
-    solve_exact_face_bands, solve_expanding_collar,
+    plan_retained_core_subsets, restore_fine_compatible_sector, restore_source_patch,
+    retained_core_ladder_report_json, search_local_topology_neighbourhood,
+    solve_combined_global_max_min, solve_complete_retained_core_ladder,
+    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, solve_local_annular_collar,
     violation_support_atlas_json, AnchorBandPolicy, BoundaryParentPeelOutcome,
@@ -22,8 +23,10 @@ use earthmesh_refine_certified::coarsen::{
     HierarchyLeafMesh, LocalActionEffect, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
     LocalAnnularCollarOutcome, LocalRepairAction, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom, SingletonFailureReason,
-    ViolationSupportAtlas, WorkingMesh, WorkingMeshCandidate, WorkingMeshHardGates,
+    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
+    RetainedCoreFamilyStatus, RetainedCoreLadderLimits, RetainedCoreTopologyLimits,
+    SingletonFailureReason, ViolationSupportAtlas, WorkingMesh, WorkingMeshCandidate,
+    WorkingMeshHardGates,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -1665,6 +1668,100 @@ fn frozen_n6_pr82_combined_global_max_min_geometry_probe() {
         best_candidate.retained_parents.len(),
         best_candidate.compression_ratio,
         strict_candidates == 0,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit Frozen N6 PR84 retained-core cardinality and corridor ladder"]
+fn frozen_n6_pr84_complete_retained_core_ladder_probe() {
+    let face_band_states = usize_env("EARTHMESH_RETAINED_FACE_BAND_STATES", 16_384) as u64;
+    let topology_states = usize_env("EARTHMESH_RETAINED_TOPOLOGY_STATES", 1_024);
+    let geometry_topology_states = usize_env("EARTHMESH_RETAINED_GEOMETRY_TOPOLOGY_STATES", 512);
+    let geometry_iterations = usize_env("EARTHMESH_RETAINED_GEOMETRY_ITERATIONS", 8);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, _, _) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (incumbent_range, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let witness = GeometryFailureWitness {
+        mesh: mesh.clone(),
+        patch: patch.clone(),
+    };
+    let initial_core = component
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let plan = plan_retained_core_subsets(&source, &initial_core, &initial_core).unwrap();
+    let report = solve_complete_retained_core_ladder(
+        &source,
+        &component,
+        &plan,
+        &witness,
+        &source_levels,
+        false,
+        RetainedCoreLadderLimits {
+            topology: RetainedCoreTopologyLimits {
+                face_band_states,
+                topology_states,
+            },
+            geometry_topology_states,
+            geometry_iterations,
+        },
+    )
+    .unwrap();
+    assert!(report.triggered);
+    assert!(report.attempts.iter().all(|attempt| {
+        attempt.candidate.retained_components == 1
+            && (1..=7).contains(&attempt.candidate.retained_parents.len())
+    }));
+    assert!(report
+        .attempts
+        .iter()
+        .all(|attempt| attempt.status != RetainedCoreFamilyStatus::InvalidInput));
+    if !report.strict_certified {
+        assert_eq!(report.attempted_cardinalities, vec![7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(report.connected_candidates_attempted, 154);
+        assert_eq!(report.families_attempted, 154 * 6);
+        assert!(report.retain_one_tested);
+    }
+    let closed = report
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.status == RetainedCoreFamilyStatus::Closed)
+        .count();
+    let exact_no_solution = report
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.status == RetainedCoreFamilyStatus::ExactNoSolution)
+        .count();
+    let search_incomplete = report
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.status == RetainedCoreFamilyStatus::SearchIncomplete)
+        .count();
+    let geometry_attempted = report
+        .attempts
+        .iter()
+        .filter_map(|attempt| attempt.geometry.as_ref())
+        .map(|geometry| geometry.candidates_attempted)
+        .sum::<usize>();
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr84CompleteRetainedCoreLadder\",\"taskbook_sha256\":\"{CCLR_TASKBOOK_SHA256}\",\"incumbent_angle_range\":[{:.12},{:.12}],\"face_band_states_per_family\":{face_band_states},\"topology_states_per_plan\":{topology_states},\"geometry_topology_states\":{geometry_topology_states},\"geometry_iterations\":{geometry_iterations},\"closed\":{closed},\"exact_no_solution\":{exact_no_solution},\"search_incomplete\":{search_incomplete},\"geometry_candidates_attempted\":{geometry_attempted},\"report\":{}}}",
+        incumbent_range.0,
+        incumbent_range.1,
+        retained_core_ladder_report_json(&report),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();

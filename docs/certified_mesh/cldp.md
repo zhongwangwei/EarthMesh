@@ -167,28 +167,26 @@ optimization. W4 is therefore disabled.
   registry; visited fingerprints prevent cycles. The Frozen N6 sequential
   result is compared for equality with the exact combination oracle rather than
   being treated as a separate existence proof.
+- PR84: the retained-core trigger now depends on absence of a strict witness,
+  not on whether any local candidate materialized. All 154 remaining connected
+  retained subsets are attempted in cardinality order `7→1`, including all ten
+  retain-one cores, against six separately reported corridor families: current,
+  +1 ring, +2 rings, anchor-on-interface, and fine-cap radii one and two. The
+  16,384-face-band-state release probe classifies all 924 candidate/family pairs:
+  265 are exact family contradictions, 659 remain `SearchIncomplete` at the
+  face-band budget, and none closes topology. The result is therefore
+  `ContinuousSearchIncomplete`; geometry is correctly not entered because no
+  topology candidate closed. This is not a retained-core No-Go proof.
 
 ## Current stop condition
 
-CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
-does not yet produce a non-trivial strict mixed result. The retained-core search has no closed
-single-release topology and no closed pair-release topology; four pair cases
-remain search-budget unknown rather than proven impossible. PR73 establishes a
-separate incumbent-preserving local family, PR74 classifies its three exact
-local cavities, PR75 proves direct restoration without exterior drift, and PR76
-proves that four single-parent local cavities close without exterior drift, and
-PR77 closes both remaining two-parent interfaces while retaining a protected
-coarse core. PR78 exhausts only the singleton topology ladder; PR79 proves that
-every singleton necessarily leaves external violations and therefore cannot
-represent the compatible combination family. PR80 must enumerate and classify
-that exact 14-action family. PR80 has now classified every bitmask and passes
-the combination plan to PR81; PR81 proves that multi-action candidates can be
-materialized atomically while preserving a compressed coarse core and exact
-outside. PR82's hierarchy-target global search finds no strict witness in the
-two highest-coverage candidates and preserves the better incumbent. This is a
-bounded continuous failure, not a family closure. N12/N24/N40 and NXP80 remain
-gated off until Frozen N6 returns `CertifiedAdaptive` or receives a genuinely
-scoped closure.
+CLDP still guarantees the certified safe mother result, but no strict mixed N6
+witness exists in the evaluated singleton, combined, or retained-core trials.
+The best mixed incumbent remains `39.278499430048°–80.721500570507°`; the
+certified safe fallback remains `54.361673298250°–72.000000000000°`. The 659
+retained-core budget outcomes prevent a scoped N6 No-Go, so PR85 must report
+`ContinuousSearchIncomplete` and keep N12/N24/N40 and NXP80 gated unless its
+decisive final certificates find a new strict mixed witness.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
