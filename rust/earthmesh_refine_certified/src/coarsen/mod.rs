@@ -6,6 +6,7 @@ mod cldp_gate;
 mod collar;
 mod component_transaction;
 mod core_condensation;
+mod direct_restore;
 mod domain_continuation;
 mod effective_band;
 mod elastic_block;
@@ -62,6 +63,9 @@ pub use component_transaction::{
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
     HierarchyFaceKey, HierarchyLeafMesh, HierarchyLeafSet,
+};
+pub use direct_restore::{
+    restore_fine_compatible_sector, DirectSectorRestoreOutcome, DirectSectorRestoreTrial,
 };
 pub use domain_continuation::{
     continue_nested_domain, domain_continuation_evidence_json, ContinuationStageId,

@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR74
+## Frozen N6 evidence through PR75
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -82,6 +82,12 @@ optimization. W4 is therefore disabled.
   multi-hole patch that preserves two coarse-parent islands. Explicit selection
   of the largest fine-exterior component avoids the former 275-face conservative
   support collapse and the incorrect 707-face hole fill. No mesh is changed.
+- PR75: eight of the 14 violating exact sectors are fine-compatible and can be
+  materialized directly as source faces; six return a typed boundary-parent
+  peel blocker and none require an untyped global expansion. All direct trials
+  preserve the logical outside topology and source-coordinate bits and keep
+  closed edge incidence. Four trials enter local max-min, but none certify; the
+  best range remains `39.278499430048°–80.721500570507°`.
 
 ## Current stop condition
 
@@ -89,10 +95,11 @@ CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
 not a non-trivial mixed result. The retained-core search has no closed
 single-release topology and no closed pair-release topology; four pair cases
 remain search-budget unknown rather than proven impossible. PR73 establishes a
-separate incumbent-preserving local family, and PR74 classifies its three exact
-local cavities. PR75 may now attempt direct restoration while returning typed
-coarse-interface blockers. Larger N12/N24/N40 and NXP80 runs remain gated off
-until Frozen N6 returns `CertifiedAdaptive`.
+separate incumbent-preserving local family, PR74 classifies its three exact
+local cavities, and PR75 proves direct restoration without exterior drift. The
+six typed coarse-interface blockers now advance to the finite PR76 boundary-ear
+peel matrix. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen N6
+returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
