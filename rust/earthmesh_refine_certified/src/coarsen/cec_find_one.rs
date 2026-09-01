@@ -70,6 +70,7 @@ pub struct EssentialCycleFindOneLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EssentialCycleFindOneOutcomeKind {
     Closed,
+    ExactNoSolution,
     CycleSearchIncomplete,
     DownstreamSearchIncomplete,
     InvalidInput,
@@ -79,6 +80,7 @@ impl EssentialCycleFindOneOutcomeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Closed => "Closed",
+            Self::ExactNoSolution => "ExactNoSolution",
             Self::CycleSearchIncomplete => "CycleSearchIncomplete",
             Self::DownstreamSearchIncomplete => "DownstreamSearchIncomplete",
             Self::InvalidInput => "InvalidInput",
@@ -105,6 +107,9 @@ pub struct EssentialCycleFindOneEvidence {
     pub downstream_exact_rejects: u64,
     pub downstream_incomplete: u64,
     pub downstream_invalid: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub checkpoint_shards_created: u64,
     pub peak_trail_records: usize,
     pub peak_selected_edges: usize,
     pub elapsed_micros: u128,
@@ -129,6 +134,10 @@ pub enum PlanEvaluation {
 
 pub trait FaceBandPlanEvaluator {
     fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation;
+
+    fn topology_state_budget(&self) -> Option<usize> {
+        None
+    }
 }
 
 pub struct FullPolygonPlanEvaluator<'a> {
@@ -171,7 +180,60 @@ impl FaceBandPlanEvaluator for FullPolygonPlanEvaluator<'_> {
             }
         }
     }
+
+    fn topology_state_budget(&self) -> Option<usize> {
+        Some(self.limits.topology_states)
+    }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DownstreamEvaluationCacheKey {
+    pub problem_key: EssentialCycleProblemKey,
+    pub cycle_key: EssentialCycleKey,
+    pub topology_state_budget: usize,
+}
+
+pub type DownstreamEvaluationCache = BTreeMap<DownstreamEvaluationCacheKey, PlanEvaluation>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CycleProofShard {
+    pub problem_key: EssentialCycleProblemKey,
+    pub decision_prefix: Vec<(super::CanonicalEdgeId, bool)>,
+    pub lower_cycle_key_bound: Option<EssentialCycleKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CycleSearchCheckpoint {
+    pub problem_key: EssentialCycleProblemKey,
+    pub shards: Vec<CycleProofShard>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExactFaceBandV2Outcome {
+    Closed {
+        cycle: EssentialCycleKey,
+        plan: FaceBandPlan,
+        trial: Box<FullPolygonMergeTrial>,
+        evidence: EssentialCycleFindOneEvidence,
+    },
+    ExactNoSolution {
+        cycle_family_closed: bool,
+        all_downstream_exact_no_solution: bool,
+        evidence: EssentialCycleFindOneEvidence,
+    },
+    CycleSearchIncomplete {
+        checkpoint: CycleSearchCheckpoint,
+        evidence: EssentialCycleFindOneEvidence,
+    },
+    DownstreamSearchIncomplete {
+        evidence: EssentialCycleFindOneEvidence,
+    },
+    InvalidInput {
+        reason: String,
+    },
+}
+
+pub type ExactFaceBandV2Evidence = EssentialCycleFindOneEvidence;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EssentialCycleFindOneOutcome {
@@ -210,16 +272,120 @@ pub fn find_one_essential_cycle(
     limits: EssentialCycleFindOneLimits,
     evaluator: &mut impl FaceBandPlanEvaluator,
 ) -> EssentialCycleFindOneOutcome {
-    let mut search = match Search::new(source, face_problem, problem, limits, evaluator) {
+    let mut search = match Search::new(
+        source,
+        face_problem,
+        problem,
+        limits,
+        evaluator,
+        None,
+        false,
+    ) {
         Ok(search) => search,
         Err(reason) => return EssentialCycleFindOneOutcome::InvalidInput { reason },
     };
     search.run()
 }
 
+pub fn prove_essential_cycle_family(
+    source: &MotherGrid,
+    face_problem: &FaceBandProblem,
+    problem: &EssentialCycleProblem,
+    limits: EssentialCycleFindOneLimits,
+    checkpoint: Option<&CycleSearchCheckpoint>,
+    evaluator: &mut impl FaceBandPlanEvaluator,
+    cache: &mut DownstreamEvaluationCache,
+) -> ExactFaceBandV2Outcome {
+    let shards = match proof_shards(problem, checkpoint) {
+        Ok(shards) => shards,
+        Err(reason) => return ExactFaceBandV2Outcome::InvalidInput { reason },
+    };
+    let mut search = match Search::new(
+        source,
+        face_problem,
+        problem,
+        limits,
+        evaluator,
+        Some(cache),
+        true,
+    ) {
+        Ok(search) => search,
+        Err(reason) => return ExactFaceBandV2Outcome::InvalidInput { reason },
+    };
+    let mut remaining = shards.into_iter();
+    while let Some(shard) = remaining.next() {
+        if let Err(reason) = search.replay_shard(&shard) {
+            return ExactFaceBandV2Outcome::InvalidInput { reason };
+        }
+        if let Some(found) = search.search() {
+            search.rollback_replay();
+            search.finish_evidence(EssentialCycleFindOneOutcomeKind::Closed);
+            return ExactFaceBandV2Outcome::Closed {
+                cycle: found.cycle,
+                plan: found.plan,
+                trial: found.trial,
+                evidence: search.evidence,
+            };
+        }
+        search.rollback_replay();
+        if search.budget_hit {
+            search.pending_shards.extend(remaining);
+            break;
+        }
+    }
+    if !search.pending_shards.is_empty() {
+        let checkpoint = search.checkpoint();
+        search.finish_evidence(EssentialCycleFindOneOutcomeKind::CycleSearchIncomplete);
+        return ExactFaceBandV2Outcome::CycleSearchIncomplete {
+            checkpoint,
+            evidence: search.evidence,
+        };
+    }
+    if search.downstream_unknown {
+        search.finish_evidence(EssentialCycleFindOneOutcomeKind::DownstreamSearchIncomplete);
+        ExactFaceBandV2Outcome::DownstreamSearchIncomplete {
+            evidence: search.evidence,
+        }
+    } else {
+        search.finish_evidence(EssentialCycleFindOneOutcomeKind::ExactNoSolution);
+        ExactFaceBandV2Outcome::ExactNoSolution {
+            cycle_family_closed: true,
+            all_downstream_exact_no_solution: true,
+            evidence: search.evidence,
+        }
+    }
+}
+
+pub fn merge_cycle_search_checkpoints(
+    checkpoints: impl IntoIterator<Item = CycleSearchCheckpoint>,
+) -> Result<CycleSearchCheckpoint, String> {
+    let mut problem_key = None;
+    let mut shards = Vec::new();
+    for checkpoint in checkpoints {
+        if problem_key
+            .as_ref()
+            .is_some_and(|key| key != &checkpoint.problem_key)
+        {
+            return Err("cannot merge checkpoints from different exact problems".into());
+        }
+        problem_key.get_or_insert(checkpoint.problem_key.clone());
+        for shard in checkpoint.shards {
+            if shard.problem_key != checkpoint.problem_key {
+                return Err("checkpoint contains a shard for a different problem".into());
+            }
+            shards.push(shard);
+        }
+    }
+    sort_shards(&mut shards);
+    Ok(CycleSearchCheckpoint {
+        problem_key: problem_key.ok_or_else(|| "cannot merge zero checkpoints".to_string())?,
+        shards,
+    })
+}
+
 pub fn essential_cycle_find_one_evidence_json(evidence: &EssentialCycleFindOneEvidence) -> String {
     format!(
-        "{{\"schema_version\":1,\"source_n\":{},\"candidate_vertices\":{},\"candidate_edges\":{},\"raw_decisions\":{},\"propagation_events\":{},\"unique_states\":{},\"forced_includes\":{},\"forced_excludes\":{},\"path_connectivity_prunes\":{},\"dual_forced_path_prunes\":{},\"premature_cycle_prunes\":{},\"closed_cycles\":{},\"essential_cycles\":{},\"contractible_cycles\":{},\"downstream_exact_rejects\":{},\"downstream_incomplete\":{},\"downstream_invalid\":{},\"peak_trail_records\":{},\"peak_selected_edges\":{},\"elapsed_micros\":{},\"propagation_events_per_decision\":{:.12},\"outcome\":\"{}\"}}",
+        "{{\"schema_version\":1,\"source_n\":{},\"candidate_vertices\":{},\"candidate_edges\":{},\"raw_decisions\":{},\"propagation_events\":{},\"unique_states\":{},\"forced_includes\":{},\"forced_excludes\":{},\"path_connectivity_prunes\":{},\"dual_forced_path_prunes\":{},\"premature_cycle_prunes\":{},\"closed_cycles\":{},\"essential_cycles\":{},\"contractible_cycles\":{},\"downstream_exact_rejects\":{},\"downstream_incomplete\":{},\"downstream_invalid\":{},\"cache_hits\":{},\"cache_misses\":{},\"checkpoint_shards_created\":{},\"peak_trail_records\":{},\"peak_selected_edges\":{},\"elapsed_micros\":{},\"propagation_events_per_decision\":{:.12},\"outcome\":\"{}\"}}",
         evidence.problem_key.source_n,
         evidence.candidate_vertices,
         evidence.candidate_edges,
@@ -237,12 +403,65 @@ pub fn essential_cycle_find_one_evidence_json(evidence: &EssentialCycleFindOneEv
         evidence.downstream_exact_rejects,
         evidence.downstream_incomplete,
         evidence.downstream_invalid,
+        evidence.cache_hits,
+        evidence.cache_misses,
+        evidence.checkpoint_shards_created,
         evidence.peak_trail_records,
         evidence.peak_selected_edges,
         evidence.elapsed_micros,
         evidence.propagation_events_per_decision,
         evidence.outcome.as_str(),
     )
+}
+
+fn proof_shards(
+    problem: &EssentialCycleProblem,
+    checkpoint: Option<&CycleSearchCheckpoint>,
+) -> Result<Vec<CycleProofShard>, String> {
+    let mut shards = if let Some(checkpoint) = checkpoint {
+        if checkpoint.problem_key != problem.problem_key {
+            return Err("checkpoint does not match the exact problem key".into());
+        }
+        checkpoint.shards.clone()
+    } else {
+        vec![CycleProofShard {
+            problem_key: problem.problem_key.clone(),
+            decision_prefix: Vec::new(),
+            lower_cycle_key_bound: None,
+        }]
+    };
+    if shards.is_empty() {
+        return Err("proof checkpoint must contain at least one shard".into());
+    }
+    if shards
+        .iter()
+        .any(|shard| shard.problem_key != problem.problem_key)
+    {
+        return Err("checkpoint contains a shard for a different problem".into());
+    }
+    sort_shards(&mut shards);
+    Ok(shards)
+}
+
+fn sort_shards(shards: &mut Vec<CycleProofShard>) {
+    shards.sort_by(|left, right| {
+        left.decision_prefix
+            .iter()
+            .zip(&right.decision_prefix)
+            .find_map(|((left_edge, left_include), (right_edge, right_include))| {
+                let ordering = left_edge
+                    .cmp(right_edge)
+                    .then_with(|| right_include.cmp(left_include));
+                (ordering != Ordering::Equal).then_some(ordering)
+            })
+            .unwrap_or_else(|| {
+                left.decision_prefix
+                    .len()
+                    .cmp(&right.decision_prefix.len())
+                    .then_with(|| left.lower_cycle_key_bound.cmp(&right.lower_cycle_key_bound))
+            })
+    });
+    shards.dedup();
 }
 
 struct Found {
@@ -257,6 +476,8 @@ struct Search<'a, E> {
     problem: &'a EssentialCycleProblem,
     limits: EssentialCycleFindOneLimits,
     evaluator: &'a mut E,
+    cache: Option<&'a mut DownstreamEvaluationCache>,
+    proof_mode: bool,
     edge_vertices: Vec<[usize; 2]>,
     required_vertices: Vec<bool>,
     edge_potential: Vec<f64>,
@@ -269,6 +490,9 @@ struct Search<'a, E> {
     started: Instant,
     downstream_unknown: bool,
     budget_hit: bool,
+    decision_prefix: Vec<(usize, bool)>,
+    replay_checkpoint: Option<(usize, usize)>,
+    pending_shards: Vec<CycleProofShard>,
 }
 
 impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
@@ -278,6 +502,8 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
         problem: &'a EssentialCycleProblem,
         limits: EssentialCycleFindOneLimits,
         evaluator: &'a mut E,
+        cache: Option<&'a mut DownstreamEvaluationCache>,
+        proof_mode: bool,
     ) -> Result<Self, String> {
         if face_problem.band_count != 2
             || source.subdivision != problem.source_n
@@ -337,6 +563,8 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
             problem,
             limits,
             evaluator,
+            cache,
+            proof_mode,
             edge_vertices,
             required_vertices,
             edge_potential,
@@ -363,6 +591,9 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 downstream_exact_rejects: 0,
                 downstream_incomplete: 0,
                 downstream_invalid: 0,
+                cache_hits: 0,
+                cache_misses: 0,
+                checkpoint_shards_created: 0,
                 peak_trail_records: 0,
                 peak_selected_edges: 0,
                 elapsed_micros: 0,
@@ -372,19 +603,16 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
             started: Instant::now(),
             downstream_unknown: false,
             budget_hit: false,
+            decision_prefix: Vec::new(),
+            replay_checkpoint: None,
+            pending_shards: Vec::new(),
         })
     }
 
     fn run(&mut self) -> EssentialCycleFindOneOutcome {
         let found = self.search();
-        self.evidence.elapsed_micros = self.started.elapsed().as_micros();
-        self.evidence.propagation_events_per_decision = if self.evidence.raw_decisions == 0 {
-            0.0
-        } else {
-            self.evidence.propagation_events as f64 / self.evidence.raw_decisions as f64
-        };
         if let Some(found) = found {
-            self.evidence.outcome = EssentialCycleFindOneOutcomeKind::Closed;
+            self.finish_evidence(EssentialCycleFindOneOutcomeKind::Closed);
             return EssentialCycleFindOneOutcome::Closed {
                 cycle: found.cycle,
                 plan: found.plan,
@@ -393,16 +621,26 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
             };
         }
         if self.downstream_unknown {
-            self.evidence.outcome = EssentialCycleFindOneOutcomeKind::DownstreamSearchIncomplete;
+            self.finish_evidence(EssentialCycleFindOneOutcomeKind::DownstreamSearchIncomplete);
             EssentialCycleFindOneOutcome::DownstreamSearchIncomplete {
                 evidence: self.evidence.clone(),
             }
         } else {
-            self.evidence.outcome = EssentialCycleFindOneOutcomeKind::CycleSearchIncomplete;
+            self.finish_evidence(EssentialCycleFindOneOutcomeKind::CycleSearchIncomplete);
             EssentialCycleFindOneOutcome::CycleSearchIncomplete {
                 evidence: self.evidence.clone(),
             }
         }
+    }
+
+    fn finish_evidence(&mut self, outcome: EssentialCycleFindOneOutcomeKind) {
+        self.evidence.elapsed_micros = self.started.elapsed().as_micros();
+        self.evidence.propagation_events_per_decision = if self.evidence.raw_decisions == 0 {
+            0.0
+        } else {
+            self.evidence.propagation_events as f64 / self.evidence.raw_decisions as f64
+        };
+        self.evidence.outcome = outcome;
     }
 
     fn search(&mut self) -> Option<Found> {
@@ -413,6 +651,9 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
         }
         if self.evidence.unique_states >= self.limits.maximum_unique_states {
             self.budget_hit = true;
+            if self.proof_mode {
+                self.record_current_shard();
+            }
             self.state.rollback(checkpoint);
             return None;
         }
@@ -443,23 +684,120 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
         };
         for decision in [EdgeDecision::Included, EdgeDecision::Excluded] {
             if self.budget_hit {
+                if self.proof_mode {
+                    self.record_child_shard(edge, decision == EdgeDecision::Included);
+                    continue;
+                }
                 break;
             }
             let branch = self.state.checkpoint();
             self.evidence.raw_decisions += 1;
+            self.decision_prefix
+                .push((edge, decision == EdgeDecision::Included));
             let mut queue = VecDeque::new();
             let mut queued = vec![false; self.problem.candidate_vertices.len()];
             if self.assign(edge, decision, false, &mut queue, &mut queued) {
                 if let Some(found) = self.search() {
+                    self.decision_prefix.pop();
                     self.state.rollback(branch);
                     self.state.rollback(checkpoint);
                     return Some(found);
                 }
             }
+            self.decision_prefix.pop();
             self.state.rollback(branch);
         }
         self.state.rollback(checkpoint);
         None
+    }
+
+    fn replay_shard(&mut self, shard: &CycleProofShard) -> Result<(), String> {
+        if shard.problem_key != self.problem.problem_key {
+            return Err("proof shard does not match the exact problem key".into());
+        }
+        if self.replay_checkpoint.is_some() {
+            return Err("previous proof shard was not rolled back".into());
+        }
+        let edge_index = self
+            .problem
+            .candidate_edges
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, edge)| (edge, index))
+            .collect::<BTreeMap<_, _>>();
+        let checkpoint = self.state.checkpoint();
+        self.replay_checkpoint = Some(checkpoint);
+        self.decision_prefix.clear();
+        let mut seen_edges = BTreeSet::new();
+        for (edge, include) in &shard.decision_prefix {
+            let index = edge_index
+                .get(edge)
+                .copied()
+                .ok_or_else(|| "proof prefix contains a non-candidate edge".to_string())?;
+            if !seen_edges.insert(index) {
+                return Err("proof prefix decides one edge more than once".into());
+            }
+            let mut queue = VecDeque::new();
+            let mut queued = vec![false; self.problem.candidate_vertices.len()];
+            if !self.assign(
+                index,
+                if *include {
+                    EdgeDecision::Included
+                } else {
+                    EdgeDecision::Excluded
+                },
+                false,
+                &mut queue,
+                &mut queued,
+            ) {
+                return Err("proof prefix contains conflicting decisions".into());
+            }
+            self.decision_prefix.push((index, *include));
+        }
+        Ok(())
+    }
+
+    fn rollback_replay(&mut self) {
+        if let Some(checkpoint) = self.replay_checkpoint.take() {
+            self.state.rollback(checkpoint);
+        }
+        self.decision_prefix.clear();
+    }
+
+    fn record_current_shard(&mut self) {
+        self.pending_shards
+            .push(self.shard_from_prefix(self.decision_prefix.iter().copied()));
+        self.evidence.checkpoint_shards_created += 1;
+    }
+
+    fn record_child_shard(&mut self, edge: usize, include: bool) {
+        let mut prefix = self.decision_prefix.clone();
+        prefix.push((edge, include));
+        self.pending_shards.push(self.shard_from_prefix(prefix));
+        self.evidence.checkpoint_shards_created += 1;
+    }
+
+    fn shard_from_prefix(
+        &self,
+        prefix: impl IntoIterator<Item = (usize, bool)>,
+    ) -> CycleProofShard {
+        CycleProofShard {
+            problem_key: self.problem.problem_key.clone(),
+            decision_prefix: prefix
+                .into_iter()
+                .map(|(edge, include)| (self.problem.candidate_edges[edge].clone(), include))
+                .collect(),
+            lower_cycle_key_bound: None,
+        }
+    }
+
+    fn checkpoint(&mut self) -> CycleSearchCheckpoint {
+        sort_shards(&mut self.pending_shards);
+        CycleSearchCheckpoint {
+            problem_key: self.problem.problem_key.clone(),
+            shards: std::mem::take(&mut self.pending_shards),
+        }
     }
 
     fn propagate(&mut self) -> bool {
@@ -596,7 +934,31 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 return None;
             }
         };
-        match self.evaluator.evaluate(&plan) {
+        let cache_key =
+            self.evaluator
+                .topology_state_budget()
+                .map(|budget| DownstreamEvaluationCacheKey {
+                    problem_key: self.problem.problem_key.clone(),
+                    cycle_key: cycle.clone(),
+                    topology_state_budget: budget,
+                });
+        let evaluation = cache_key
+            .as_ref()
+            .and_then(|key| {
+                self.cache
+                    .as_deref()
+                    .and_then(|cache| cache.get(key).cloned())
+            })
+            .inspect(|_| self.evidence.cache_hits += 1)
+            .unwrap_or_else(|| {
+                self.evidence.cache_misses += u64::from(cache_key.is_some());
+                let evaluation = self.evaluator.evaluate(&plan);
+                if let (Some(cache), Some(key)) = (self.cache.as_deref_mut(), cache_key) {
+                    cache.insert(key, evaluation.clone());
+                }
+                evaluation
+            });
+        match evaluation {
             PlanEvaluation::Accepted(trial) => Some(Found { cycle, plan, trial }),
             PlanEvaluation::RejectedExact { .. } => {
                 self.evidence.downstream_exact_rejects += 1;
