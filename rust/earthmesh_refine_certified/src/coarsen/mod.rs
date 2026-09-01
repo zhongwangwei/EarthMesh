@@ -5,6 +5,7 @@ mod band_cycle_planner;
 mod boundary_parent_peel;
 mod cldp_gate;
 mod collar;
+mod combined_recovery;
 mod component_transaction;
 mod core_condensation;
 mod direct_restore;
@@ -60,6 +61,10 @@ pub use cldp_gate::{
 pub use collar::{
     solve_expanding_collar, ExpandingCollarResult, PromotionBudget, PromotionFailureReason,
     PromotionOutcome, PromotionTrial, PromotionTrialEvidence,
+};
+pub use combined_recovery::{
+    audit_local_repair_action, build_local_repair_action, LocalActionEffect, LocalRepairAction,
+    LocalRepairKind, SingletonFailureReason,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,

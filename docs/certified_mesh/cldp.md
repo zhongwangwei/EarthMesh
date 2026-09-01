@@ -115,6 +115,16 @@ optimization. W4 is therefore disabled.
   Delaunay/Voronoi, physical, balance, and remap with zero errors. It correctly
   fails adaptive delivery on `mixed_levels_delivered`,
   `retained_coarse_parents`, and `compression_ratio` (`1.0`).
+- PR79: the PR78 ladder is now classified correctly as a complete singleton
+  action ladder, not a complete combination family. Stable source-triangle and
+  source-corner violation IDs show that every singleton leaves external strict
+  violations unchanged: the smallest uncovered set has 69 of the original 109
+  violations, while the largest singleton covers 40. Twelve actions remove or
+  resolve at least one original violation, so their local effect is no longer
+  hidden by the unchanged global extreme. All 14 failures are classified as
+  `UncoveredOriginalViolations`; the audit also records the legacy
+  `TrialReference` target and eight-iteration limit. This evidence requires the
+  exact compatible-action-set search in PR80.
 
 ## Current stop condition
 
@@ -126,12 +136,11 @@ separate incumbent-preserving local family, PR74 classifies its three exact
 local cavities, PR75 proves direct restoration without exterior drift, and PR76
 proves that four single-parent local cavities close without exterior drift, and
 PR77 closes both remaining two-parent interfaces while retaining a protected
-coarse core. PR78 exhausts this finite topology ladder, but its bounded
-continuous geometry searches certify none of the 14 local candidates, so the
-product result remains `CertifiedSafeFallback`. PR79 is not triggered because
-the local family did materialize candidates; its condition is topology-candidate
-absence, not geometry-budget exhaustion. PR80 N12/N24/N40 and PR81 NXP80 remain
-gated off until Frozen N6 returns `CertifiedAdaptive`.
+coarse core. PR78 exhausts only the singleton topology ladder; PR79 proves that
+every singleton necessarily leaves external violations and therefore cannot
+represent the compatible combination family. PR80 must enumerate and classify
+that exact 14-action family. N12/N24/N40 and NXP80 remain gated off until Frozen
+N6 returns `CertifiedAdaptive` or receives a genuinely scoped closure.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
