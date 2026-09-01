@@ -135,6 +135,17 @@ optimization. W4 is therefore disabled.
   effect. The best discrete coverage leaves 16 of the 109 original violations
   for joint geometry, which is allowed by the CCLR contract; PR81 must now
   materialize selected actions atomically.
+- PR81: selected actions now enter one union transaction rather than mutating
+  the incumbent sequentially. The materializer unions sector restores and
+  parent releases, splits only the final retained interfaces, rebuilds once,
+  extracts merged source-face cavities, and recomputes their true boundaries
+  and movable interiors. The Frozen N6 probe tried 123 two-action/high-coverage
+  plans: all materialized, 122 passed the closed-topology, exact-outside,
+  retained-core, edge-incidence, and compression hard gates. Ninety-five plans
+  removed singleton-internal boundary vertices from the final cavity boundary.
+  Closed candidates retain at least three hierarchy parents; the smallest
+  observed face compression ratio is `0.925`. No candidate geometry is changed
+  or certified in this stage; PR82 owns global max-min optimization.
 
 ## Current stop condition
 
@@ -150,9 +161,11 @@ coarse core. PR78 exhausts only the singleton topology ladder; PR79 proves that
 every singleton necessarily leaves external violations and therefore cannot
 represent the compatible combination family. PR80 must enumerate and classify
 that exact 14-action family. PR80 has now classified every bitmask and passes
-the combination plan to PR81; it does not claim geometry feasibility. N12/N24/N40
-and NXP80 remain gated off until Frozen N6 returns `CertifiedAdaptive` or
-receives a genuinely scoped closure.
+the combination plan to PR81; PR81 proves that multi-action candidates can be
+materialized atomically while preserving a compressed coarse core and exact
+outside. Neither stage claims geometry feasibility. N12/N24/N40 and NXP80
+remain gated off until Frozen N6 returns `CertifiedAdaptive` or receives a
+genuinely scoped closure.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It
