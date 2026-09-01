@@ -1,7 +1,8 @@
 use earthmesh_refine_certified::coarsen::{
     audit_embedding_transfer, build_face_band_problem,
-    build_face_band_problem_with_source_face_rings, build_promotion_patch,
-    build_stratified_annulus, build_violation_support_atlas, continue_nested_domain,
+    build_face_band_problem_with_source_face_rings, build_frozen_cldp_gate_evidence,
+    build_promotion_patch, build_stratified_annulus, build_violation_support_atlas,
+    continue_nested_domain, evaluate_frozen_cldp_gate,
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, restore_source_patch,
     search_local_topology_neighbourhood, solve_elastic_patch_with_max_min_trust_start,
@@ -10,11 +11,12 @@ use earthmesh_refine_certified::coarsen::{
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
     AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
     DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode,
-    EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits,
-    FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
-    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
-    LocalTopologyEvidence, LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind,
-    PromotionBudget, PromotionFailureReason, PromotionLevel, PromotionOutcome,
+    EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FrozenCldpGateOutcome,
+    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
+    FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
+    GeometryStartId, GlobalExactSelectedEar, LocalTopologyEvidence, LocalTopologyLimits,
+    LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
+    PromotionLevel, PromotionOutcome,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -520,47 +522,13 @@ fn frozen_n6_pr65_source_face_promotion_probe() {
 #[test]
 #[ignore = "explicit finite Frozen N6 PR66 expanding-collar gate"]
 fn frozen_n6_pr66_expanding_collar_probe() {
-    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
-    let (_, incumbent, _, topology_keys, selected_ears) =
-        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
-    let outcome = solve_elastic_patch_with_max_min_trust_start(
-        &incumbent.mesh,
-        incumbent.patch.clone(),
-        ElasticBlockLimits {
-            elastic_iterations: 128,
-        },
-        GeometryStartId::MaterializedSource,
-    );
-    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
-    let improved = GeometryFailureWitness {
-        mesh: mesh.clone(),
-        patch: patch.clone(),
-    };
-    let stratified = build_stratified_annulus(&source, &component).unwrap();
-    let atlas = build_violation_support_atlas(
-        &source,
-        &improved.mesh,
-        &improved.patch,
-        &stratified,
-        &topology_keys,
-        &selected_ears,
-    )
-    .unwrap();
-    assert_eq!(atlas.components.len(), 1);
     let budget = PromotionBudget {
         local_topology_states: 128,
         local_geometry_iterations: usize_env("EARTHMESH_LOCAL_GEOMETRY_ITERATIONS", 32),
         maximum_patch_rings: 2,
         maximum_helper_vertices: 512,
     };
-    let result = solve_expanding_collar(
-        &source,
-        &component,
-        &improved,
-        &atlas,
-        &atlas.components[0],
-        budget,
-    );
+    let (_, _, result) = frozen_n6_cldp_result(budget);
     assert!(result
         .trials
         .windows(2)
@@ -621,6 +589,147 @@ fn frozen_n6_pr66_expanding_collar_probe() {
         fs::write(path, &json).unwrap();
     }
     eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit Frozen N6 PR67 strict CLDP product gate"]
+fn frozen_n6_pr67_strict_cldp_gate_probe() {
+    let budget = PromotionBudget {
+        local_topology_states: 128,
+        local_geometry_iterations: usize_env("EARTHMESH_LOCAL_GEOMETRY_ITERATIONS", 32),
+        maximum_patch_rings: 2,
+        maximum_helper_vertices: 512,
+    };
+    let (source, source_levels, result) = frozen_n6_cldp_result(budget);
+    let trial = match &result.outcome {
+        PromotionOutcome::Certified(trial) | PromotionOutcome::SafeMotherFallback(trial) => trial,
+        PromotionOutcome::NeedsLargerPatch { .. } => {
+            panic!("PR67 received an unfinished promotion ladder")
+        }
+        PromotionOutcome::SearchBudgetExhausted { .. } => {
+            panic!("PR67 promotion budget exhausted")
+        }
+        PromotionOutcome::InvalidInput(reason) => panic!("PR67 rejected its input: {reason}"),
+    };
+    let required_levels = source_levels
+        .into_iter()
+        .map(|level| level.unwrap_or(0))
+        .collect::<Vec<_>>();
+    let geometry = match earthmesh_refine_certified::certify_geometry(trial.mesh.mesh.clone()) {
+        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(geometry) => geometry,
+        other => panic!("PR67 final geometry rejected: {other:?}"),
+    };
+    let final_evidence = earthmesh_refine_certified::safe_mother_final_evidence(
+        &required_levels,
+        1,
+        geometry.primal(),
+    )
+    .unwrap();
+    let final_mesh =
+        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, final_evidence)
+            .unwrap();
+    let evidence =
+        build_frozen_cldp_gate_evidence(&source, trial, final_mesh.certificate()).unwrap();
+    let outcome = evaluate_frozen_cldp_gate(&evidence);
+    let (gate, strict_mixed, failures) = match &outcome {
+        FrozenCldpGateOutcome::CertifiedAdaptive => {
+            ("FrozenN6StrictMixedPass", true, "[]".to_string())
+        }
+        FrozenCldpGateOutcome::CertifiedSafeFallback => (
+            "FrozenN6StrictMixedFailedSafeFallback",
+            false,
+            "[\"mixed_levels_delivered\"]".to_string(),
+        ),
+        FrozenCldpGateOutcome::Failed(failures) => (
+            "FrozenN6HardGateFailed",
+            false,
+            format!(
+                "[{}]",
+                failures
+                    .iter()
+                    .map(|failure| format!("\"{failure}\""))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
+    };
+    assert_eq!(outcome, FrozenCldpGateOutcome::CertifiedSafeFallback);
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr67StrictCldpGate\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"gate\":\"{gate}\",\"strict_mixed\":{strict_mixed},\"hard_gate_failures\":{failures},\"internal_angle_degrees\":[{:.12},{:.12}],\"final_angle_degrees\":[{:.12},{:.12}],\"anchors_degree_five\":{},\"ordinary_degree_window\":{},\"links_are_cycles\":{},\"edge_incidence_two\":{},\"vertices\":{},\"edges\":{},\"faces\":{},\"euler\":{},\"charge\":{},\"delaunay_violations\":{},\"voronoi_invalid_cells\":{},\"voronoi_reciprocal_errors\":{},\"physical_residuals\":{},\"balance_residuals\":{},\"remap_closure_errors\":{},\"mixed_levels_delivered\":{},\"promoted_source_faces\":{},\"retained_coarse_parents\":{},\"compression_ratio\":{:.12},\"promotion_level\":\"{:?}\",\"pr68_started\":false,\"pr69_started\":false}}",
+        evidence.internal_angle_range_deg.0,
+        evidence.internal_angle_range_deg.1,
+        evidence.final_angle_range_deg.0,
+        evidence.final_angle_range_deg.1,
+        evidence.anchors_degree_five,
+        evidence.ordinary_degree_window,
+        evidence.links_are_cycles,
+        evidence.edge_incidence_two,
+        evidence.vertices,
+        evidence.edges,
+        evidence.faces,
+        evidence.euler,
+        evidence.charge,
+        evidence.delaunay_violations,
+        evidence.voronoi_invalid_cells,
+        evidence.voronoi_reciprocal_errors,
+        evidence.physical_residuals,
+        evidence.balance_residuals,
+        evidence.remap_closure_errors,
+        evidence.mixed_levels_delivered,
+        evidence.promoted_source_faces,
+        evidence.retained_coarse_parents,
+        evidence.compression_ratio,
+        evidence.promotion_level,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+fn frozen_n6_cldp_result(
+    budget: PromotionBudget,
+) -> (
+    earthmesh_refine_certified::MotherGrid,
+    Vec<Option<usize>>,
+    earthmesh_refine_certified::coarsen::ExpandingCollarResult,
+) {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let improved = GeometryFailureWitness {
+        mesh: mesh.clone(),
+        patch: patch.clone(),
+    };
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        &improved.mesh,
+        &improved.patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert_eq!(atlas.components.len(), 1);
+    let result = solve_expanding_collar(
+        &source,
+        &component,
+        &improved,
+        &atlas,
+        &atlas.components[0],
+        budget,
+    );
+    (source, source_levels, result)
 }
 
 fn elastic_outcome_geometry(

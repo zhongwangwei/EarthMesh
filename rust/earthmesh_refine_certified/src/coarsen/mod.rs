@@ -2,6 +2,7 @@ mod anchor_ear;
 mod angle_atlas;
 mod annulus;
 mod band_cycle_planner;
+mod cldp_gate;
 mod collar;
 mod component_transaction;
 mod core_condensation;
@@ -42,6 +43,10 @@ pub use band_cycle_planner::{
     plan_effective_transition_bands, transition_band_plan_json, EffectiveBandError,
     TransitionBandMode, TransitionBandPlan, TransitionBandPlanningFamily,
     TRANSITION_BAND_PLANNING_FAMILY,
+};
+pub use cldp_gate::{
+    build_frozen_cldp_gate_evidence, evaluate_frozen_cldp_gate, FrozenCldpGateEvidence,
+    FrozenCldpGateOutcome,
 };
 pub use collar::{
     solve_expanding_collar, ExpandingCollarResult, PromotionBudget, PromotionFailureReason,
