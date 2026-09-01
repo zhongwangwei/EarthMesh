@@ -205,10 +205,12 @@ pub use research_fixture::{
     FixtureRepresentativenessTelemetry,
 };
 pub use research_runner::{
-    n12_cec_topology_probe_json, n12_legacy_baseline_json, research_cec_topology_evidence_json,
+    current_n12_validation_gate_report, decide_validation_gate, n12_cec_topology_probe_json,
+    n12_legacy_baseline_json, n12_validation_gate_report_json, research_cec_topology_evidence_json,
     research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
-    ResearchCecTopologyEvidence, ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind,
-    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
+    N12ValidationGateReport, ResearchCecTopologyEvidence, ResearchCecTopologyLimits,
+    ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome, ResearchLegacyEvidence,
+    ResearchLegacyLimits, ResearchN12OutcomeKind, ValidationGateGovernanceDecision,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,

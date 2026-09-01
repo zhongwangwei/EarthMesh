@@ -86,6 +86,147 @@ pub enum ResearchCecTopologyOutcomeKind {
     ResearchDownstreamSearchIncomplete,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResearchGeometryOutcome {
+    StrictCertified,
+    ContinuousSearchIncomplete,
+    RequiresDifferentTopology,
+    ScopedInfeasible,
+    InvalidEmbedding,
+}
+
+impl ResearchGeometryOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StrictCertified => "StrictCertified",
+            Self::ContinuousSearchIncomplete => "ContinuousSearchIncomplete",
+            Self::RequiresDifferentTopology => "RequiresDifferentTopology",
+            Self::ScopedInfeasible => "ScopedInfeasible",
+            Self::InvalidEmbedding => "InvalidEmbedding",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationGateGovernanceDecision {
+    KeepN6ExistenceGate,
+    N6StressN12Existence,
+    TopologySolverBlocked,
+    ContinuousGeometryBlocked,
+    PentagonSpecificBlocked,
+}
+
+impl ValidationGateGovernanceDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepN6ExistenceGate => "KeepN6ExistenceGate",
+            Self::N6StressN12Existence => "N6Stress_N12Existence",
+            Self::TopologySolverBlocked => "TopologySolverBlocked",
+            Self::ContinuousGeometryBlocked => "ContinuousGeometryBlocked",
+            Self::PentagonSpecificBlocked => "PentagonSpecificBlocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct N12ValidationGateReport {
+    pub lifted_topology: ResearchCecTopologyOutcomeKind,
+    pub interior_topology: ResearchCecTopologyOutcomeKind,
+    pub lifted_geometry: Option<ResearchGeometryOutcome>,
+    pub interior_geometry: Option<ResearchGeometryOutcome>,
+    pub decision: ValidationGateGovernanceDecision,
+    pub best_mixed_angle_degrees: (f64, f64),
+    pub strict_target_degrees: (f64, f64),
+    pub product_gate_changed: bool,
+    pub research_staircase_unlocked: bool,
+    pub nxp80_unlocked: bool,
+}
+
+pub fn decide_validation_gate(
+    lifted_topology: ResearchCecTopologyOutcomeKind,
+    interior_topology: ResearchCecTopologyOutcomeKind,
+    lifted_geometry: Option<ResearchGeometryOutcome>,
+    interior_geometry: Option<ResearchGeometryOutcome>,
+) -> ValidationGateGovernanceDecision {
+    use ResearchCecTopologyOutcomeKind as Topology;
+    use ResearchGeometryOutcome::StrictCertified;
+    if matches!(
+        lifted_topology,
+        Topology::ResearchCycleSearchIncomplete | Topology::ResearchDownstreamSearchIncomplete
+    ) || matches!(
+        interior_topology,
+        Topology::ResearchCycleSearchIncomplete | Topology::ResearchDownstreamSearchIncomplete
+    ) {
+        return ValidationGateGovernanceDecision::TopologySolverBlocked;
+    }
+    if lifted_topology == Topology::ResearchTopologyClosed
+        && interior_topology == Topology::ResearchTopologyClosed
+    {
+        return match (lifted_geometry, interior_geometry) {
+            (Some(StrictCertified), Some(StrictCertified)) => {
+                ValidationGateGovernanceDecision::N6StressN12Existence
+            }
+            (lifted, Some(StrictCertified)) if lifted != Some(StrictCertified) => {
+                ValidationGateGovernanceDecision::PentagonSpecificBlocked
+            }
+            _ => ValidationGateGovernanceDecision::ContinuousGeometryBlocked,
+        };
+    }
+    if interior_topology == Topology::ResearchTopologyClosed
+        && interior_geometry == Some(StrictCertified)
+    {
+        ValidationGateGovernanceDecision::PentagonSpecificBlocked
+    } else {
+        ValidationGateGovernanceDecision::KeepN6ExistenceGate
+    }
+}
+
+pub fn current_n12_validation_gate_report() -> N12ValidationGateReport {
+    let lifted_topology = ResearchCecTopologyOutcomeKind::ResearchCycleSearchIncomplete;
+    let interior_topology = ResearchCecTopologyOutcomeKind::ResearchExactNoSolution;
+    let lifted_geometry = None;
+    let interior_geometry = None;
+    N12ValidationGateReport {
+        lifted_topology,
+        interior_topology,
+        lifted_geometry,
+        interior_geometry,
+        decision: decide_validation_gate(
+            lifted_topology,
+            interior_topology,
+            lifted_geometry,
+            interior_geometry,
+        ),
+        best_mixed_angle_degrees: (39.278_499_430_048, 80.721_500_570_507),
+        strict_target_degrees: (40.2, 79.8),
+        product_gate_changed: false,
+        research_staircase_unlocked: false,
+        nxp80_unlocked: false,
+    }
+}
+
+pub fn n12_validation_gate_report_json(report: &N12ValidationGateReport) -> String {
+    format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"b327b6afdf199abfaf1a77f4e403ef296e4f5bd2483d855b360c08152a10ae53\",\"research_only\":true,\"lifted_topology\":\"{}\",\"interior_topology\":\"{}\",\"lifted_geometry\":{},\"interior_geometry\":{},\"decision\":\"{}\",\"best_mixed_angle_degrees\":[{:.12},{:.12}],\"strict_target_degrees\":[{:.1},{:.1}],\"product_gate_changed\":{},\"research_staircase_unlocked\":{},\"nxp80_unlocked\":{}}}",
+        report.lifted_topology.as_str(),
+        report.interior_topology.as_str(),
+        report
+            .lifted_geometry
+            .map_or_else(|| "null".into(), |value| json_string(value.as_str())),
+        report
+            .interior_geometry
+            .map_or_else(|| "null".into(), |value| json_string(value.as_str())),
+        report.decision.as_str(),
+        report.best_mixed_angle_degrees.0,
+        report.best_mixed_angle_degrees.1,
+        report.strict_target_degrees.0,
+        report.strict_target_degrees.1,
+        report.product_gate_changed,
+        report.research_staircase_unlocked,
+        report.nxp80_unlocked,
+    )
+}
+
 impl ResearchCecTopologyOutcomeKind {
     pub fn as_str(self) -> &'static str {
         match self {
