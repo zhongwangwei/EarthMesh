@@ -88,6 +88,11 @@ pub struct FaceBandEvidence {
     pub states_examined: u64,
     pub propagation_rounds: usize,
     pub pruned_domains: usize,
+    pub full_domain_clone_checkpoints: u64,
+    pub domain_clone_payload_bytes: u64,
+    pub leaf_validations: u64,
+    pub leaf_rejections: u64,
+    pub propagation_rejections: u64,
     pub band_face_counts: Vec<usize>,
     pub interface_edge_counts: Vec<usize>,
     pub interface_vertex_counts: Vec<usize>,
@@ -343,7 +348,7 @@ pub fn face_band_evidence_json(evidence: &FaceBandEvidence) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"ladder_step\":\"{}\",\"band_count\":{},\"face_complex_fingerprint\":{},\"transition_faces\":{},\"coarse_boundary_faces\":{},\"fine_boundary_faces\":{},\"states_examined\":{},\"propagation_rounds\":{},\"pruned_domains\":{},\"band_face_counts\":{},\"interface_edge_counts\":{},\"interface_vertex_counts\":{},\"true_pinch_count\":{},\"one_face_wedge_count\":{},\"multi_face_wedge_count\":{},\"anchor_policies\":{{{}}},\"cap_faces\":{},\"corridor_faces\":{},\"core_faces_sacrificed\":{},\"outcome\":\"{}\"}}",
+        "{{\"ladder_step\":\"{}\",\"band_count\":{},\"face_complex_fingerprint\":{},\"transition_faces\":{},\"coarse_boundary_faces\":{},\"fine_boundary_faces\":{},\"states_examined\":{},\"propagation_rounds\":{},\"pruned_domains\":{},\"full_domain_clone_checkpoints\":{},\"domain_clone_payload_bytes\":{},\"leaf_validations\":{},\"leaf_rejections\":{},\"propagation_rejections\":{},\"band_face_counts\":{},\"interface_edge_counts\":{},\"interface_vertex_counts\":{},\"true_pinch_count\":{},\"one_face_wedge_count\":{},\"multi_face_wedge_count\":{},\"anchor_policies\":{{{}}},\"cap_faces\":{},\"corridor_faces\":{},\"core_faces_sacrificed\":{},\"outcome\":\"{}\"}}",
         ladder_step(evidence.source_face_rings),
         evidence.band_count,
         evidence.face_complex_fingerprint,
@@ -353,6 +358,11 @@ pub fn face_band_evidence_json(evidence: &FaceBandEvidence) -> String {
         evidence.states_examined,
         evidence.propagation_rounds,
         evidence.pruned_domains,
+        evidence.full_domain_clone_checkpoints,
+        evidence.domain_clone_payload_bytes,
+        evidence.leaf_validations,
+        evidence.leaf_rejections,
+        evidence.propagation_rejections,
         usize_json(&evidence.band_face_counts),
         usize_json(&evidence.interface_edge_counts),
         usize_json(&evidence.interface_vertex_counts),
@@ -426,6 +436,11 @@ struct Search<'a> {
     states: u64,
     propagation_rounds: usize,
     pruned_domains: usize,
+    full_domain_clone_checkpoints: u64,
+    domain_clone_payload_bytes: u64,
+    leaf_validations: u64,
+    leaf_rejections: u64,
+    propagation_rejections: u64,
     fingerprint: u64,
     budget_hit: bool,
 }
@@ -463,6 +478,11 @@ impl<'a> Search<'a> {
             states: 0,
             propagation_rounds: 0,
             pruned_domains: 0,
+            full_domain_clone_checkpoints: 0,
+            domain_clone_payload_bytes: 0,
+            leaf_validations: 0,
+            leaf_rejections: 0,
+            propagation_rejections: 0,
             fingerprint,
             budget_hit: false,
         }
@@ -470,6 +490,7 @@ impl<'a> Search<'a> {
 
     fn run(&mut self, mut accept: impl FnMut(&FaceBandPlan) -> bool) -> SearchResult {
         if !self.propagate() {
+            self.propagation_rejections += 1;
             return SearchResult::Exhausted;
         }
         if let Some(plan) = self.search(&mut accept) {
@@ -503,12 +524,22 @@ impl<'a> Search<'a> {
             .map(|(&face, _)| face);
         let Some(face) = next else {
             self.states += 1;
-            return validate_complete(self.problem, &self.domains, self.fingerprint)
-                .filter(|plan| accept(plan));
+            self.leaf_validations += 1;
+            if let Some(plan) = validate_complete(self.problem, &self.domains, self.fingerprint) {
+                if accept(&plan) {
+                    return Some(plan);
+                }
+            }
+            self.leaf_rejections += 1;
+            return None;
         };
         let mut labels = self.domains[&face].iter().copied().collect::<Vec<_>>();
         labels.sort_by_key(|label| (label.abs_diff(self.preferred[&face]), *label));
         let checkpoint = self.domains.clone();
+        self.full_domain_clone_checkpoints += 1;
+        self.domain_clone_payload_bytes = self
+            .domain_clone_payload_bytes
+            .saturating_add(domain_clone_payload_bytes(&checkpoint));
         for label in labels {
             if self.states >= self.maximum_states {
                 self.budget_hit = true;
@@ -520,6 +551,8 @@ impl<'a> Search<'a> {
                 if let Some(plan) = self.search(accept) {
                     return Some(plan);
                 }
+            } else {
+                self.propagation_rejections += 1;
             }
             self.domains.clone_from(&checkpoint);
         }
@@ -638,6 +671,11 @@ impl<'a> Search<'a> {
             states_examined: self.states,
             propagation_rounds: self.propagation_rounds,
             pruned_domains: self.pruned_domains,
+            full_domain_clone_checkpoints: self.full_domain_clone_checkpoints,
+            domain_clone_payload_bytes: self.domain_clone_payload_bytes,
+            leaf_validations: self.leaf_validations,
+            leaf_rejections: self.leaf_rejections,
+            propagation_rejections: self.propagation_rejections,
             band_face_counts,
             interface_edge_counts,
             interface_vertex_counts,
@@ -652,6 +690,16 @@ impl<'a> Search<'a> {
             outcome,
         }
     }
+}
+
+fn domain_clone_payload_bytes(domains: &BTreeMap<usize, BTreeSet<u8>>) -> u64 {
+    domains
+        .values()
+        .map(|labels| {
+            std::mem::size_of::<usize>() as u64
+                + labels.len() as u64 * std::mem::size_of::<u8>() as u64
+        })
+        .sum()
 }
 
 fn prune_local_label_constraints(
