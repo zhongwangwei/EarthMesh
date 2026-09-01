@@ -165,8 +165,10 @@ pub use transition_topology::{
     TransitionTopologyTrial,
 };
 pub use violation_support::{
-    build_violation_support_atlas, violation_support_atlas_json, AngleBoundKind,
-    CustomTriangleProvenance, ViolatingAngle, ViolationComponent, ViolationSupportAtlas,
+    build_violation_support_atlas, build_violation_support_atlas_with_promotion_seed_margin,
+    violation_support_atlas_json, AngleBoundKind, AngleEvidenceSets, CustomTriangleProvenance,
+    ProvenancePrecision, SupportInflationReport, ViolatingAngle, ViolationComponent,
+    ViolationSupportAtlas,
 };
 
 use crate::{

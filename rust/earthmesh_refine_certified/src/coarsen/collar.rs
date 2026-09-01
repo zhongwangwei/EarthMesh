@@ -682,10 +682,11 @@ mod tests {
         };
         let atlas = ViolationSupportAtlas {
             total_angles: 0,
-            active_angles: Vec::new(),
+            evidence_sets: Default::default(),
             custom_triangle_provenance: Vec::new(),
             components: vec![violation.clone()],
             patch_expansion_graph: BTreeMap::new(),
+            support_inflation: Default::default(),
         };
         (hierarchy, violation, atlas)
     }

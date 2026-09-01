@@ -68,7 +68,7 @@ pub fn search_local_topology_neighbourhood(
             "local topology limits require positive states/iterations and 1..=3 flips".into(),
         );
     }
-    if atlas.active_angles.is_empty() {
+    if atlas.evidence_sets.optimization_active.is_empty() {
         return LocalTopologySearchOutcome::InvalidInput(
             "local topology search requires active angle supports".into(),
         );
@@ -90,7 +90,8 @@ pub fn search_local_topology_neighbourhood(
         incumbent_preserved: true,
     };
     let seed_faces = atlas
-        .active_angles
+        .evidence_sets
+        .optimization_active
         .iter()
         .map(|angle| angle.face)
         .collect::<BTreeSet<_>>();
