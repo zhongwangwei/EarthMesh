@@ -398,35 +398,25 @@ mod tests {
     use super::*;
     use crate::coarsen::{
         build_violation_support_atlas, n6_legacy_mixed_fixture_with_source_levels,
-        FullPolygonTopologyKey, GeometryDomainId, TransitionTopologyCandidate,
+        solve_full_polygon_merge, FullPolygonMergeLimits, FullPolygonMergeOutcome,
+        GeometryDomainId, TransitionTopologyCandidate,
     };
 
     #[test]
     fn topology_search_rolls_back_and_is_deterministic() {
         let (source, component, _) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
         let stratified = super::super::build_stratified_annulus(&source, &component).unwrap();
-        let sector =
-            super::super::full_polygon_reachability::effective_sector_polygons(&stratified)
-                .unwrap()
-                .remove(0);
-        let key = FullPolygonTopologyKey {
-            sector_id: sector.id,
-            triangles: (1..sector.vertices.len() - 1)
-                .map(|index| {
-                    [
-                        sector.vertices[0],
-                        sector.vertices[index],
-                        sector.vertices[index + 1],
-                    ]
-                })
-                .collect(),
+        let FullPolygonMergeOutcome::Closed(topology) = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 500,
+            },
+        ) else {
+            panic!("Frozen N6 full-polygon topology must close")
         };
-        let leaf = HierarchyLeafMesh {
-            mesh: source.mesh.clone(),
-            triangle_addresses: source.triangle_addresses.clone(),
-            source_vertex_slots: (0..source.mesh.vertices().len()).map(Some).collect(),
-        };
-        let guard_faces = source.mesh.active_triangle_slots().collect::<Vec<_>>();
+        let leaf = topology.global_trial.mesh.clone();
+        let guard_faces = leaf.mesh.active_triangle_slots().collect::<Vec<_>>();
         let patch = ElasticPatch {
             domain_id: GeometryDomainId::PlusTwoOrdinaryRings,
             topology: TransitionTopologyCandidate {
@@ -435,12 +425,12 @@ mod tests {
                 core_parents: Vec::new(),
                 custom_transition_triangles: BTreeMap::new(),
                 source_triangles: Vec::new(),
-                source_active_vertices: (2..source.mesh.vertices().len()).collect(),
+                source_active_vertices: (2..leaf.mesh.vertices().len()).collect(),
                 source_degree_forecast: BTreeMap::new(),
             },
-            reference_positions: source.mesh.vertices().to_vec(),
+            reference_positions: leaf.mesh.vertices().to_vec(),
             fixed_compact_vertices: Vec::new(),
-            movable_compact_vertices: (2..source.mesh.vertices().len()).collect(),
+            movable_compact_vertices: (2..leaf.mesh.vertices().len()).collect(),
             guard_faces,
             target_mode: super::super::ElasticTargetMode::TrialReference,
             target_field: Default::default(),
@@ -451,7 +441,7 @@ mod tests {
             &incumbent.mesh,
             &incumbent.patch,
             &stratified,
-            &[key],
+            &topology.evidence.selected_topology_keys,
             &[],
         )
         .unwrap();

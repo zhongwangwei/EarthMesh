@@ -614,7 +614,9 @@ fn invalid(reason: impl Into<String>) -> ExpandingCollarResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coarsen::{condense_hierarchy_core, GeometryDomainId, TransitionTopologyCandidate};
+    use crate::coarsen::{
+        condense_hierarchy_core, GeometryDomainId, SectorRecoveryAtlas, TransitionTopologyCandidate,
+    };
 
     fn source_leaf_mesh(source: &MotherGrid) -> HierarchyLeafMesh {
         HierarchyLeafMesh {
@@ -684,6 +686,8 @@ mod tests {
             total_angles: 0,
             evidence_sets: Default::default(),
             custom_triangle_provenance: Vec::new(),
+            sector_recovery_atlas: SectorRecoveryAtlas::default(),
+            recovery_atoms: Vec::new(),
             components: vec![violation.clone()],
             patch_expansion_graph: BTreeMap::new(),
             support_inflation: Default::default(),

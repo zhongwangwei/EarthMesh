@@ -2,8 +2,9 @@
 
 use super::full_polygon_reachability::effective_sector_polygons;
 use super::{
-    build_worst_angle_atlas, ElasticPatch, FullPolygonTopologyKey, GlobalExactSelectedEar,
-    HierarchyLeafMesh, StratifiedAnnulus,
+    build_sector_recovery_atlas, build_strict_recovery_atoms, build_worst_angle_atlas,
+    ElasticPatch, FullPolygonTopologyKey, GlobalExactSelectedEar, HierarchyLeafMesh, RecoveryAtom,
+    SectorRecoveryAtlas, StratifiedAnnulus,
 };
 use crate::{mother_grid::TriangleAddress, MotherGrid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,9 +19,9 @@ pub enum AngleBoundKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvenancePrecision {
-    ExactSourceFace,
     ExactHierarchyLeaf,
-    ConservativeSector,
+    ExactSectorPartition,
+    ConservativeSectorUpperBound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,8 @@ pub struct ViolationSupportAtlas {
     pub total_angles: usize,
     pub evidence_sets: AngleEvidenceSets,
     pub custom_triangle_provenance: Vec<CustomTriangleProvenance>,
+    pub sector_recovery_atlas: SectorRecoveryAtlas,
+    pub recovery_atoms: Vec<RecoveryAtom>,
     pub components: Vec<ViolationComponent>,
     pub patch_expansion_graph: BTreeMap<usize, BTreeSet<usize>>,
     pub support_inflation: SupportInflationReport,
@@ -128,6 +131,8 @@ pub fn build_violation_support_atlas_with_promotion_seed_margin(
         selected_ears,
         usize::MAX,
     )?;
+    let sector_recovery_atlas = build_sector_recovery_atlas(source, stratified, topology_keys)
+        .map_err(|error| format!("exact sector recovery atlas failed: {error:?}"))?;
     let provenance = custom_triangle_provenance(source, stratified, topology_keys)?;
     let provenance_by_sector = provenance.iter().fold(
         BTreeMap::<u64, Vec<&CustomTriangleProvenance>>::new(),
@@ -234,15 +239,25 @@ pub fn build_violation_support_atlas_with_promotion_seed_margin(
         old_source_support_faces: union_source_support(&optimization_active).len(),
         strict_seed_source_faces: union_source_support(&promotion_violation_seeds).len(),
     };
+    let evidence_sets = AngleEvidenceSets {
+        strict_violations,
+        near_boundary_guards,
+        optimization_active,
+        promotion_violation_seeds,
+    };
+    let recovery_atoms = build_strict_recovery_atoms(
+        source,
+        mesh,
+        &evidence_sets.optimization_active,
+        &sector_recovery_atlas,
+    )
+    .map_err(|error| format!("strict recovery ownership failed: {error:?}"))?;
     Ok(ViolationSupportAtlas {
         total_angles: worst.total_angles,
-        evidence_sets: AngleEvidenceSets {
-            strict_violations,
-            near_boundary_guards,
-            optimization_active,
-            promotion_violation_seeds,
-        },
+        evidence_sets,
         custom_triangle_provenance: provenance,
+        sector_recovery_atlas,
+        recovery_atoms,
         components,
         patch_expansion_graph: graph,
         support_inflation,
@@ -312,7 +327,7 @@ fn custom_triangle_provenance(
                 triangle,
                 sector_id: key.sector_id,
                 face_band: band,
-                precision: ProvenancePrecision::ConservativeSector,
+                precision: ProvenancePrecision::ConservativeSectorUpperBound,
                 covered_source_faces: sector_faces.clone(),
                 source_parents: parents.clone(),
             });
@@ -517,6 +532,33 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         .map(component_json)
         .collect::<Vec<_>>()
         .join(",");
+    let exact_sectors = atlas
+        .sector_recovery_atlas
+        .sectors
+        .values()
+        .map(|sector| {
+            format!(
+                "{{\"sector_id\":{},\"band_id\":{},\"source_faces\":{},\"custom_triangles\":{},\"boundary_cycles\":{},\"source_area\":[{:.15e},{:.15e}],\"custom_area\":[{:.15e},{:.15e}],\"fingerprint\":{}}}",
+                sector.sector_id,
+                sector.band_id,
+                usize_set_json(&sector.source_faces),
+                sector.custom_triangles.len(),
+                sector.boundary_cycles.len(),
+                sector.source_area_interval.lo,
+                sector.source_area_interval.hi,
+                sector.custom_area_interval.lo,
+                sector.custom_area_interval.hi,
+                sector.fingerprint,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let recovery_atoms = atlas
+        .recovery_atoms
+        .iter()
+        .map(recovery_atom_json)
+        .collect::<Vec<_>>()
+        .join(",");
     let graph = atlas
         .patch_expansion_graph
         .iter()
@@ -524,7 +566,7 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"total_angles\":{},\"evidence_sets\":{{\"strict_violations\":[{}],\"near_boundary_guards\":[{}],\"optimization_active\":[{}],\"promotion_violation_seeds\":[{}]}},\"support_inflation\":{},\"custom_triangle_provenance\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
+        "{{\"total_angles\":{},\"evidence_sets\":{{\"strict_violations\":[{}],\"near_boundary_guards\":[{}],\"optimization_active\":[{}],\"promotion_violation_seeds\":[{}]}},\"support_inflation\":{},\"custom_triangle_provenance\":[{}],\"exact_sectors\":[{}],\"recovery_atoms\":[{}],\"components\":[{}],\"patch_expansion_graph\":{{{}}}}}",
         atlas.total_angles,
         strict,
         guards,
@@ -532,9 +574,40 @@ pub fn violation_support_atlas_json(atlas: &ViolationSupportAtlas) -> String {
         promotion_seeds,
         support_inflation_json(&atlas.support_inflation),
         provenance,
+        exact_sectors,
+        recovery_atoms,
         components,
         graph,
     )
+}
+
+fn recovery_atom_json(atom: &RecoveryAtom) -> String {
+    match atom {
+        RecoveryAtom::HierarchyLeaf {
+            address,
+            mixed_face,
+            source_faces,
+        } => format!(
+            "{{\"kind\":\"ExactHierarchyLeaf\",\"mixed_faces\":[{}],\"source_faces\":{},\"address\":{{\"base_face\":{},\"i\":{},\"j\":{},\"n\":{},\"orientation\":\"{:?}\"}}}}",
+            mixed_face,
+            usize_set_json(source_faces),
+            address.base_face,
+            address.i,
+            address.j,
+            address.n,
+            address.orientation,
+        ),
+        RecoveryAtom::Sector {
+            sector_id,
+            mixed_faces,
+            source_faces,
+        } => format!(
+            "{{\"kind\":\"ExactSectorPartition\",\"sector_id\":{},\"mixed_faces\":{},\"source_faces\":{}}}",
+            sector_id,
+            usize_set_json(mixed_faces),
+            usize_set_json(source_faces),
+        ),
+    }
 }
 
 fn violating_angle_json(angle: &ViolatingAngle) -> String {
@@ -563,7 +636,7 @@ fn provenance_json(item: &CustomTriangleProvenance) -> String {
         item.sector_id,
         item.face_band.map_or_else(|| "null".into(), |value| value.to_string()),
         item.precision,
-        item.precision == ProvenancePrecision::ConservativeSector,
+        item.precision == ProvenancePrecision::ConservativeSectorUpperBound,
         usize_set_json(&item.covered_source_faces),
         address_set_json(&item.source_parents),
     )
@@ -636,8 +709,9 @@ fn address_set_json(values: &BTreeSet<TriangleAddress>) -> String {
 mod tests {
     use super::*;
     use crate::coarsen::{
-        build_stratified_annulus, n6_legacy_mixed_fixture_with_source_levels, ElasticTargetField,
-        GeometryDomainId, TransitionTopologyCandidate,
+        build_stratified_annulus, n6_legacy_mixed_fixture_with_source_levels,
+        solve_full_polygon_merge, ElasticTargetField, FullPolygonMergeLimits,
+        FullPolygonMergeOutcome, GeometryDomainId, TransitionTopologyCandidate,
     };
 
     fn fixture() -> (
@@ -649,26 +723,18 @@ mod tests {
     ) {
         let (source, component, _) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
         let stratified = build_stratified_annulus(&source, &component).unwrap();
-        let sector = effective_sector_polygons(&stratified).unwrap().remove(0);
-        let triangles = (1..sector.vertices.len() - 1)
-            .map(|index| {
-                [
-                    sector.vertices[0],
-                    sector.vertices[index],
-                    sector.vertices[index + 1],
-                ]
-            })
-            .collect::<Vec<_>>();
-        let keys = vec![FullPolygonTopologyKey {
-            sector_id: sector.id,
-            triangles,
-        }];
-        let mesh = HierarchyLeafMesh {
-            mesh: source.mesh.clone(),
-            triangle_addresses: source.triangle_addresses.clone(),
-            source_vertex_slots: (0..source.mesh.vertices().len()).map(Some).collect(),
+        let FullPolygonMergeOutcome::Closed(trial) = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 500,
+            },
+        ) else {
+            panic!("Frozen N6 full-polygon topology must close")
         };
-        let guard_faces = source.mesh.active_triangle_slots().collect::<Vec<_>>();
+        let keys = trial.evidence.selected_topology_keys;
+        let mesh = trial.global_trial.mesh;
+        let guard_faces = mesh.mesh.active_triangle_slots().collect::<Vec<_>>();
         let patch = ElasticPatch {
             domain_id: GeometryDomainId::PlusTwoOrdinaryRings,
             topology: TransitionTopologyCandidate {
@@ -677,12 +743,12 @@ mod tests {
                 core_parents: Vec::new(),
                 custom_transition_triangles: BTreeMap::new(),
                 source_triangles: Vec::new(),
-                source_active_vertices: (2..source.mesh.vertices().len()).collect(),
+                source_active_vertices: (2..mesh.mesh.vertices().len()).collect(),
                 source_degree_forecast: BTreeMap::new(),
             },
-            reference_positions: source.mesh.vertices().to_vec(),
+            reference_positions: mesh.mesh.vertices().to_vec(),
             fixed_compact_vertices: Vec::new(),
-            movable_compact_vertices: (2..source.mesh.vertices().len()).collect(),
+            movable_compact_vertices: (2..mesh.mesh.vertices().len()).collect(),
             guard_faces,
             target_mode: super::super::ElasticTargetMode::TrialReference,
             target_field: ElasticTargetField::default(),
@@ -706,7 +772,7 @@ mod tests {
         let provenance = custom_triangle_provenance(&source, &stratified, &keys).unwrap();
         assert!(provenance
             .iter()
-            .all(|item| item.precision == ProvenancePrecision::ConservativeSector));
+            .all(|item| { item.precision == ProvenancePrecision::ConservativeSectorUpperBound }));
     }
 
     #[test]
