@@ -16,7 +16,7 @@ use earthmesh_refine_certified::coarsen::{
     FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
     GeometryStartId, GlobalExactSelectedEar, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome, RecoveryAtom,
+    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -512,6 +512,123 @@ fn frozen_n6_pr73_exact_sector_recovery_atlas_probe() {
         actual_custom_faces.len(),
         atlas.recovery_atoms.len(),
         atom_faces.len(),
+        violation_support_atlas_json(&atlas),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR74 incumbent-local component gate"]
+fn frozen_n6_pr74_incumbent_local_components_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+    let strict_faces = atlas
+        .evidence_sets
+        .strict_violations
+        .iter()
+        .map(|angle| angle.face)
+        .collect::<BTreeSet<_>>();
+    let component_mixed_faces = atlas
+        .local_recovery_components
+        .iter()
+        .flat_map(|component| component.mixed_faces.iter().copied())
+        .collect::<BTreeSet<_>>();
+    assert!(strict_faces.is_subset(&component_mixed_faces));
+    assert_eq!(
+        atlas
+            .local_recovery_components
+            .iter()
+            .map(|component| component.atoms.len())
+            .sum::<usize>(),
+        atlas.recovery_atoms.len()
+    );
+    assert!(atlas.local_recovery_components.iter().all(|component| {
+        match &component.topology {
+            PromotionPatchTopology::WholeSphere => component.boundary_cycles.is_empty(),
+            PromotionPatchTopology::Disk => component.boundary_cycles.len() == 1,
+            PromotionPatchTopology::Annulus { .. } => component.boundary_cycles.len() == 2,
+            PromotionPatchTopology::MultiHole { protected_holes } => {
+                component.boundary_cycles.len() == protected_holes.len() + 1
+            }
+        }
+    }));
+    let violating_sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter(|atom| matches!(atom, RecoveryAtom::Sector { .. }))
+        .count();
+    let violating_hierarchy_leaves = atlas.recovery_atoms.len() - violating_sectors;
+    let source_faces_per_component = atlas
+        .local_recovery_components
+        .iter()
+        .map(|component| component.source_faces.len().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let topologies = atlas
+        .local_recovery_components
+        .iter()
+        .map(|component| match component.topology {
+            PromotionPatchTopology::WholeSphere => "\"WholeSphere\"",
+            PromotionPatchTopology::Disk => "\"Disk\"",
+            PromotionPatchTopology::Annulus { .. } => "\"Annulus\"",
+            PromotionPatchTopology::MultiHole { .. } => "\"MultiHole\"",
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let surrounds_core = atlas
+        .local_recovery_components
+        .iter()
+        .filter(|component| !component.protected_coarse_regions.is_empty())
+        .count();
+    let largest_component_atoms = atlas
+        .local_recovery_components
+        .iter()
+        .map(|component| component.atoms.len())
+        .max()
+        .unwrap_or(0);
+    let largest_component_source_faces = atlas
+        .local_recovery_components
+        .iter()
+        .map(|component| component.source_faces.len())
+        .max()
+        .unwrap_or(0);
+    assert!(largest_component_source_faces < atlas.support_inflation.strict_seed_source_faces);
+    assert!(surrounds_core > 0);
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr74IncumbentLocalComponents\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"LocalComponentsClassified\",\"mesh_unchanged\":true,\"strict_violation_angles\":{},\"strict_violation_faces\":{},\"violating_sectors\":{violating_sectors},\"violating_hierarchy_leaves\":{violating_hierarchy_leaves},\"recovery_atoms\":{},\"local_component_count\":{},\"largest_component_atoms\":{largest_component_atoms},\"largest_component_source_faces\":{largest_component_source_faces},\"source_faces_per_component\":[{source_faces_per_component}],\"topologies\":[{topologies}],\"components_surrounding_coarse_core\":{surrounds_core},\"legacy_strict_seed_source_faces\":{},\"atlas\":{}}}",
+        atlas.evidence_sets.strict_violations.len(),
+        strict_faces.len(),
+        atlas.recovery_atoms.len(),
+        atlas.local_recovery_components.len(),
+        atlas.support_inflation.strict_seed_source_faces,
         violation_support_atlas_json(&atlas),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {

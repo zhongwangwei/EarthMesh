@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR73
+## Frozen N6 evidence through PR74
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -76,6 +76,12 @@ optimization. W4 is therefore disabled.
   Every face maps uniquely to one exact sector or hierarchy leaf, producing 58
   deterministic recovery atoms without changing the incumbent mesh. The 64
   non-violating optimization guards create no recovery atoms.
+- PR74: actual mixed-edge, required-active-vertex, and intersecting-boundary
+  adjacency clusters the 58 exact atoms into three incumbent-local components.
+  Two are one-face disks; the remaining 56-atom component is a 176-source-face
+  multi-hole patch that preserves two coarse-parent islands. Explicit selection
+  of the largest fine-exterior component avoids the former 275-face conservative
+  support collapse and the incorrect 707-face hole fill. No mesh is changed.
 
 ## Current stop condition
 
@@ -83,9 +89,10 @@ CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
 not a non-trivial mixed result. The retained-core search has no closed
 single-release topology and no closed pair-release topology; four pair cases
 remain search-budget unknown rather than proven impossible. PR73 establishes a
-separate incumbent-preserving local family, so PR74 may now cluster its exact
-atoms using actual mixed-mesh adjacency. Larger N12/N24/N40 and NXP80 runs
-remain gated off until Frozen N6 returns `CertifiedAdaptive`.
+separate incumbent-preserving local family, and PR74 classifies its three exact
+local cavities. PR75 may now attempt direct restoration while returning typed
+coarse-interface blockers. Larger N12/N24/N40 and NXP80 runs remain gated off
+until Frozen N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

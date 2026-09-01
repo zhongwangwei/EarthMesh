@@ -228,6 +228,58 @@ pub fn build_promotion_patch_for_transition_with_protected_regions(
     Ok(patch)
 }
 
+pub(super) fn build_local_recovery_patch(
+    source: &MotherGrid,
+    component: &ViolationComponent,
+    transition_parents: &BTreeSet<TriangleAddress>,
+    protected_regions: &[ProtectedCoarseRegion],
+) -> Result<PromotionPatch, String> {
+    validate_source_faces(source, &component.source_faces)?;
+    let connected = regularize_pinched_vertices(
+        source,
+        connect_faces(source, component.source_faces.clone())?,
+        protected_regions,
+    )?;
+    let exterior_seed = (connected.len() != source.mesh.triangle_count())
+        .then(|| resolve_local_exterior_seed(source, &connected, transition_parents))
+        .transpose()?;
+    let enclosed = if let Some(seed) = exterior_seed {
+        let complement = source
+            .mesh
+            .active_triangle_slots()
+            .filter(|face| !connected.contains(face))
+            .collect::<BTreeSet<_>>();
+        let components = face_components(source, &complement);
+        let exterior = components
+            .iter()
+            .position(|faces| faces.contains(&seed))
+            .ok_or_else(|| {
+                "local recovery exterior seed has no complement component".to_string()
+            })?;
+        protected_regions
+            .iter()
+            .filter(|region| {
+                components.iter().enumerate().any(|(index, faces)| {
+                    index != exterior && region.descendant_source_faces.is_subset(faces)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut regularized_component = component.clone();
+    regularized_component.source_faces = connected;
+    build_promotion_patch_for_transition_with_protected_regions(
+        source,
+        &regularized_component,
+        PromotionLevel::P1RestoreSourceFaces,
+        transition_parents,
+        &enclosed,
+        exterior_seed,
+    )
+}
+
 pub fn restore_source_patch(
     source: &MotherGrid,
     patch: PromotionPatch,
@@ -405,6 +457,127 @@ fn connect_faces(
             current = predecessor[&face];
         }
     }
+}
+
+fn regularize_pinched_vertices(
+    source: &MotherGrid,
+    mut faces: BTreeSet<usize>,
+    protected_regions: &[ProtectedCoarseRegion],
+) -> Result<BTreeSet<usize>, String> {
+    loop {
+        let mut addition = None;
+        for vertex in source.mesh.active_vertex_slots() {
+            let fan = source
+                .mesh
+                .triangle_fan(vertex)
+                .map_err(|error| format!("source vertex {vertex} fan failed: {error}"))?;
+            let mut gaps = Vec::<Vec<usize>>::new();
+            for index in 0..fan.len() {
+                if faces.contains(&fan[index])
+                    || !faces.contains(&fan[(index + fan.len() - 1) % fan.len()])
+                {
+                    continue;
+                }
+                let mut gap = Vec::new();
+                let mut cursor = index;
+                while !faces.contains(&fan[cursor]) {
+                    gap.push(fan[cursor]);
+                    cursor = (cursor + 1) % fan.len();
+                }
+                gaps.push(gap);
+            }
+            if gaps.len() <= 1 {
+                continue;
+            }
+            let protected_gaps = gaps
+                .iter()
+                .enumerate()
+                .map(|(index, gap)| {
+                    let protected_parent_count = protected_regions
+                        .iter()
+                        .filter(|region| {
+                            gap.iter()
+                                .any(|face| region.descendant_source_faces.contains(face))
+                        })
+                        .map(|region| region.retained_parents.len())
+                        .sum::<usize>();
+                    (index, protected_parent_count)
+                })
+                .filter(|(_, count)| *count > 0)
+                .collect::<Vec<_>>();
+            let keep = protected_gaps
+                .iter()
+                .max_by_key(|(index, parent_count)| (*parent_count, gaps[*index].len()))
+                .map(|(index, _)| *index)
+                .unwrap_or_else(|| {
+                    (1..gaps.len()).fold(0, |best, index| {
+                        if gaps[index].len() > gaps[best].len()
+                            || (gaps[index].len() == gaps[best].len() && gaps[index] < gaps[best])
+                        {
+                            index
+                        } else {
+                            best
+                        }
+                    })
+                });
+            let mut added = gaps
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| *index != keep)
+                .flat_map(|(_, gap)| gap)
+                .collect::<BTreeSet<_>>();
+            for region in protected_regions {
+                if !region.descendant_source_faces.is_disjoint(&added) {
+                    added.extend(&region.descendant_source_faces);
+                }
+            }
+            addition = Some(added);
+            break;
+        }
+        let Some(addition) = addition else {
+            return Ok(faces);
+        };
+        if addition.is_empty() {
+            return Err("local recovery pinch regularization made no progress".into());
+        }
+        faces.extend(addition);
+    }
+}
+
+fn resolve_local_exterior_seed(
+    source: &MotherGrid,
+    faces: &BTreeSet<usize>,
+    transition_parents: &BTreeSet<TriangleAddress>,
+) -> Result<usize, String> {
+    let complement = source
+        .mesh
+        .active_triangle_slots()
+        .filter(|face| !faces.contains(face))
+        .collect::<BTreeSet<_>>();
+    let components = face_components(source, &complement);
+    let candidates = components
+        .iter()
+        .filter(|component| {
+            component.iter().any(|&face| {
+                transition_parents.is_empty()
+                    || source_parent(source, face)
+                        .is_ok_and(|parent| !transition_parents.contains(&parent))
+            })
+        })
+        .collect::<Vec<_>>();
+    let pool = if candidates.is_empty() {
+        components.iter().collect::<Vec<_>>()
+    } else {
+        candidates
+    };
+    pool.into_iter()
+        .max_by(|left, right| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| right.first().cmp(&left.first()))
+        })
+        .and_then(|component| component.first().copied())
+        .ok_or_else(|| "local recovery patch has no fine exterior face".into())
 }
 
 fn resolve_exterior_seed(
