@@ -125,6 +125,16 @@ optimization. W4 is therefore disabled.
   `UncoveredOriginalViolations`; the audit also records the legacy
   `TrialReference` target and eight-iteration limit. This evidence requires the
   exact compatible-action-set search in PR80.
+- PR80: the exact 14-action planner classifies all 16,384 bitmasks without
+  changing the incumbent. The sector actions form one interaction component
+  inside the three-component PR74 support atlas: the other two components are
+  hierarchy-only and remain for combined geometry/coordinate release. The
+  graph records 33 merge-required and 58 independent action pairs, with no
+  contradictory replacement pairs in the registered family. All 16,383
+  non-empty subsets retain at least one coarse parent and have potential local
+  effect. The best discrete coverage leaves 16 of the 109 original violations
+  for joint geometry, which is allowed by the CCLR contract; PR81 must now
+  materialize selected actions atomically.
 
 ## Current stop condition
 
@@ -139,8 +149,10 @@ PR77 closes both remaining two-parent interfaces while retaining a protected
 coarse core. PR78 exhausts only the singleton topology ladder; PR79 proves that
 every singleton necessarily leaves external violations and therefore cannot
 represent the compatible combination family. PR80 must enumerate and classify
-that exact 14-action family. N12/N24/N40 and NXP80 remain gated off until Frozen
-N6 returns `CertifiedAdaptive` or receives a genuinely scoped closure.
+that exact 14-action family. PR80 has now classified every bitmask and passes
+the combination plan to PR81; it does not claim geometry feasibility. N12/N24/N40
+and NXP80 remain gated off until Frozen N6 returns `CertifiedAdaptive` or
+receives a genuinely scoped closure.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

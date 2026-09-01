@@ -63,8 +63,11 @@ pub use collar::{
     PromotionOutcome, PromotionTrial, PromotionTrialEvidence,
 };
 pub use combined_recovery::{
-    audit_local_repair_action, build_local_repair_action, LocalActionEffect, LocalRepairAction,
-    LocalRepairKind, SingletonFailureReason,
+    audit_local_repair_action, build_local_action_conflict_graph, build_local_repair_action,
+    build_singleton_local_repair_registry, enumerate_compatible_action_sets,
+    ActionSetClassification, CombinedRepairPlan, CompatibleActionSetPlan, LocalActionConflictGraph,
+    LocalActionEffect, LocalRepairAction, LocalRepairCandidate, LocalRepairKind,
+    SingletonFailureReason,
 };
 pub use component_transaction::{
     solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
