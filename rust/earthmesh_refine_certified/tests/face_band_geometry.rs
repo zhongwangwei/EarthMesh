@@ -1,16 +1,18 @@
 use earthmesh_refine_certified::coarsen::{
     audit_embedding_transfer, build_face_band_problem,
-    build_face_band_problem_with_source_face_rings, continue_nested_domain,
+    build_face_band_problem_with_source_face_rings, build_stratified_annulus,
+    build_violation_support_atlas, continue_nested_domain,
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch_with_max_min_trust_start,
     solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
-    solve_full_polygon_merge_from_face_bands_with_geometry_witness, AnchorBandPolicy,
-    DomainContinuationMode, DomainContinuationOutcome, DomainContinuationSchedule,
-    ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode, EmbeddingAuditOutcome,
-    FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
-    FullPolygonMergeOutcome, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
-    GeometryStartId, MaxMinTrustOutcomeKind,
+    solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
+    AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
+    DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode,
+    EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits,
+    FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
+    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
+    MaxMinTrustOutcomeKind,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -352,6 +354,50 @@ fn frozen_n6_pr62_w2_max_min_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR63 violation-support gate"]
+fn frozen_n6_pr63_violation_support_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    assert!(!atlas.active_angles.is_empty());
+    assert!(atlas
+        .active_angles
+        .iter()
+        .all(|angle| !angle.source_support_faces.is_empty() && !angle.parent_support.is_empty()));
+    assert!(atlas
+        .custom_triangle_provenance
+        .iter()
+        .all(|item| { !item.covered_source_faces.is_empty() && !item.source_parents.is_empty() }));
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr63ViolationSupport\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"gate\":\"AllActiveAnglesHaveFiniteSourceSupport\",\"atlas\":{}}}",
+        violation_support_atlas_json(&atlas),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn elastic_outcome_geometry(
     outcome: &ElasticBlockOutcome,
 ) -> (
@@ -454,6 +500,22 @@ fn pr49_and_pr52_witnesses(
     component: &earthmesh_refine_certified::coarsen::HierarchyComponent,
     source_levels: &[Option<usize>],
 ) -> (GeometryFailureWitness, GeometryFailureWitness, (f64, f64)) {
+    let (plus_one, plus_two, range, _, _) =
+        pr49_and_pr52_witnesses_with_topology(source, component, source_levels);
+    (plus_one, plus_two, range)
+}
+
+fn pr49_and_pr52_witnesses_with_topology(
+    source: &earthmesh_refine_certified::MotherGrid,
+    component: &earthmesh_refine_certified::coarsen::HierarchyComponent,
+    source_levels: &[Option<usize>],
+) -> (
+    GeometryFailureWitness,
+    GeometryFailureWitness,
+    (f64, f64),
+    Vec<FullPolygonTopologyKey>,
+    Vec<GlobalExactSelectedEar>,
+) {
     let outcome =
         solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain(
             source,
@@ -468,7 +530,9 @@ fn pr49_and_pr52_witnesses(
             &[GeometryStartId::MaterializedSource],
             GeometryDomainId::PlusOneOrdinaryRing,
         );
-    let failure = outcome_evidence(&outcome)
+    let evidence = outcome_evidence(&outcome);
+    let selected_ears = evidence.selected_ears.clone();
+    let failure = evidence
         .best_geometry_failure
         .as_ref()
         .expect("PR52 reconstruction requires the PR49 +1 witness");
@@ -486,6 +550,7 @@ fn pr49_and_pr52_witnesses(
         failure.guard_angle_degrees.unwrap(),
     )
     .unwrap();
+    let topology_keys = inherited.topology_keys.clone();
     let target_patch = inherited
         .expanded_patch(
             source,
@@ -506,6 +571,8 @@ fn pr49_and_pr52_witnesses(
         plus_one,
         continuation.best_witness.as_ref().clone(),
         continuation.best_angle_range_deg,
+        topology_keys,
+        selected_ears,
     )
 }
 

@@ -20,6 +20,7 @@ mod scheduler;
 mod stratified_annulus;
 mod transition_feasibility;
 mod transition_topology;
+mod violation_support;
 pub use anchor_ear::{
     apply_anchor_ear, build_anchor_ear_conflict_graph, derive_anchor_ear_candidates,
     AnchorEarApplyError, AnchorEarCandidate, AnchorEarConflictGraph, AnchorEarKey,
@@ -141,6 +142,10 @@ pub use transition_topology::{
     solve_transition_topology, TransitionBoundary, TransitionTopologyCandidate,
     TransitionTopologyLimits, TransitionTopologyOutcome, TransitionTopologyReport,
     TransitionTopologyTrial,
+};
+pub use violation_support::{
+    build_violation_support_atlas, violation_support_atlas_json, AngleBoundKind,
+    CustomTriangleProvenance, ViolatingAngle, ViolationComponent, ViolationSupportAtlas,
 };
 
 use crate::{
