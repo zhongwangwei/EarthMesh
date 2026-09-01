@@ -23,6 +23,7 @@
 - [Canonical Seam Annulus Enumerator](canonical_seam_annulus.md)
 - [Annular degree/link reachability](annular_degree_reachability.md)
 - [V3 transition-cell find-one merge](transition_cell_find_one_merge.md)
+- [Lifted-N12 V3 prefix replay](n12_v3_prefix_replay.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.

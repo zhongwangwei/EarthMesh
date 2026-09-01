@@ -42,6 +42,7 @@ pub enum AnnularSignatureSearchStatus {
 pub struct AnnularCellSignatureDomain {
     pub cell_id: u64,
     pub signatures: Vec<AnnularTopologySignature>,
+    pub root_bridges_considered: u64,
     pub states_examined: usize,
     pub degree_cap_prunes: usize,
     pub status: AnnularSignatureSearchStatus,
@@ -60,6 +61,7 @@ pub struct AnnularReachabilityEvidence {
     pub cell_signature_counts_after_ac3: Vec<usize>,
     pub cell_member_counts_before_ac3: Vec<usize>,
     pub fixed_contribution_caps: BTreeMap<(u64, usize), u8>,
+    pub root_bridges_considered: u64,
     pub states_examined: usize,
     pub degree_cap_prunes: usize,
     pub ac3_prunes: usize,
@@ -161,6 +163,7 @@ pub fn analyze_annular_signature_domains(
         cell_signature_counts_after_ac3: after,
         cell_member_counts_before_ac3: members,
         fixed_contribution_caps: fixed_contribution_caps(domain, ear_delta_domains)?,
+        root_bridges_considered: cells.iter().map(|cell| cell.root_bridges_considered).sum(),
         states_examined: cells.iter().map(|cell| cell.states_examined).sum(),
         degree_cap_prunes: cells.iter().map(|cell| cell.degree_cap_prunes).sum(),
         ac3_prunes,
@@ -194,11 +197,13 @@ pub fn enumerate_annular_degree_signatures(
     let mut signatures =
         BTreeMap::<(Vec<(usize, u8)>, Vec<(usize, LinkPathSignature)>, Edge), usize>::new();
     let mut states_examined = 0;
+    let mut root_bridges_considered = 0;
     let mut degree_cap_prunes = 0;
     let mut status = AnnularSignatureSearchStatus::ExhaustedNecessaryRelaxation;
 
     'roots: for lower_root in 0..cell.lower_cycle.len() {
         for upper_root in 0..cell.upper_cycle.len() {
+            root_bridges_considered += 1;
             let root_bridge = edge(cell.lower_cycle[lower_root], cell.upper_cycle[upper_root]);
             let occurrences = cut_occurrences(cell, lower_root, upper_root);
             let mut memo = BTreeMap::new();
@@ -264,6 +269,7 @@ pub fn enumerate_annular_degree_signatures(
                 },
             )
             .collect(),
+        root_bridges_considered,
         states_examined,
         degree_cap_prunes,
         status,
