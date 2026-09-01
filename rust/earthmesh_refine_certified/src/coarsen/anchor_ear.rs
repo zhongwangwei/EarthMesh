@@ -107,6 +107,22 @@ pub(super) fn derive_anchor_ear_candidates_with_fixed_edges(
     mutable_triangles: &[OwnedTopologyTriangle],
     fixed_mesh_edges: &BTreeSet<(usize, usize)>,
 ) -> Result<AnchorEarReport, AnchorEarApplyError> {
+    derive_anchor_ear_candidates_with_contracts(
+        source,
+        &stratified.link_contracts,
+        sector_topology_id,
+        mutable_triangles,
+        fixed_mesh_edges,
+    )
+}
+
+pub(super) fn derive_anchor_ear_candidates_with_contracts(
+    source: &MotherGrid,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
+    sector_topology_id: usize,
+    mutable_triangles: &[OwnedTopologyTriangle],
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+) -> Result<AnchorEarReport, AnchorEarApplyError> {
     let mutable = canonical_owned_triangles(mutable_triangles);
     let expected_topology_id = sector_topology_id as u64;
     if mutable
@@ -121,8 +137,7 @@ pub(super) fn derive_anchor_ear_candidates_with_fixed_edges(
         generated_by_generic_link_discovery: true,
         ..AnchorEarReport::default()
     };
-    let mut anchors = stratified
-        .link_contracts
+    let mut anchors = link_contracts
         .iter()
         .filter_map(|(&slot, contract)| {
             matches!(

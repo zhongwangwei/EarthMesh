@@ -3,13 +3,14 @@
 //! PR37B stays combinatorial: finite two-chain triangulations, PR37A anchor-ear
 //! flips, final manifold/valence/Euler gates, then hierarchy materialization.
 
-use super::anchor_ear::derive_anchor_ear_candidates_with_fixed_edges;
+use super::anchor_ear::derive_anchor_ear_candidates_with_contracts;
 use super::core_condensation::{
     rebuild_from_leaf_set_with_custom_face_slots, rebuild_from_leaf_set_with_custom_triangles,
 };
 use super::{
     apply_anchor_ear, build_stratified_annulus, condense_hierarchy_core, HierarchyComponent,
     HierarchyLeafMesh, OwnedTopologyTriangle, RingAnchorKind, StratifiedAnnulus,
+    VertexLinkContract,
 };
 use crate::mother_grid::{MotherGrid, TriangleAddress};
 use std::collections::{BTreeMap, BTreeSet};
@@ -731,7 +732,7 @@ pub(super) enum EarSolve {
 
 struct EarSearchContext<'a> {
     source: &'a MotherGrid,
-    stratified: &'a StratifiedAnnulus,
+    link_contracts: &'a BTreeMap<usize, VertexLinkContract>,
     fixed_mesh_edges: &'a BTreeSet<(usize, usize)>,
     fixed_final_triangles: &'a [[usize; 3]],
     vertex_sector_contributions: BTreeMap<usize, Vec<(u64, usize)>>,
@@ -748,10 +749,30 @@ pub(super) fn solve_ears(
     evidence: &mut GlobalExactMergeEvidence,
     states: &mut usize,
 ) -> EarSolve {
+    solve_ears_with_contracts(
+        source,
+        &stratified.link_contracts,
+        fixed_mesh_edges,
+        fixed_final_triangles,
+        triangles,
+        evidence,
+        states,
+    )
+}
+
+pub(super) fn solve_ears_with_contracts(
+    source: &MotherGrid,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+    fixed_final_triangles: &[[usize; 3]],
+    triangles: Vec<OwnedTopologyTriangle>,
+    evidence: &mut GlobalExactMergeEvidence,
+    states: &mut usize,
+) -> EarSolve {
     let vertex_sector_contributions = vertex_sector_contributions(&triangles);
     let context = EarSearchContext {
         source,
-        stratified,
+        link_contracts,
         fixed_mesh_edges,
         fixed_final_triangles,
         vertex_sector_contributions,
@@ -778,7 +799,6 @@ fn solve_ears_inner(
 ) -> EarSolve {
     if depth
         > context
-            .stratified
             .link_contracts
             .len()
             .saturating_mul(MAX_EARS_PER_ANCHOR)
@@ -798,7 +818,7 @@ fn solve_ears_inner(
     if !seen.insert((triangle_key, ear_counts)) {
         return EarSolve::NoSolution;
     }
-    let overfull = overfull_anchors(context.stratified, &triangles);
+    let overfull = overfull_anchors(context.link_contracts, &triangles);
     if overfull.is_empty() {
         let mut final_source_triangles = context.fixed_final_triangles.to_vec();
         final_source_triangles.extend(triangles.iter().map(|triangle| triangle.vertices));
@@ -807,9 +827,9 @@ fn solve_ears_inner(
         candidate_evidence.vertex_sector_contributions =
             context.vertex_sector_contributions.clone();
         candidate_evidence.vertex_ear_deltas = vertex_ear_deltas(&ears);
-        let closed = final_gate(
+        let closed = final_gate_with_contracts(
             context.source,
-            context.stratified,
+            context.link_contracts,
             &final_source_triangles,
             &mut candidate_evidence,
         )
@@ -830,9 +850,9 @@ fn solve_ears_inner(
         Ok(topology_id) => topology_id,
         Err(_) => return EarSolve::Invalid("topology id does not fit usize".into()),
     };
-    let report = match derive_anchor_ear_candidates_with_fixed_edges(
+    let report = match derive_anchor_ear_candidates_with_contracts(
         context.source,
-        context.stratified,
+        context.link_contracts,
         topology_id,
         &triangles,
         context.fixed_mesh_edges,
@@ -884,11 +904,10 @@ fn solve_ears_inner(
 }
 
 fn overfull_anchors(
-    stratified: &StratifiedAnnulus,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
     triangles: &[OwnedTopologyTriangle],
 ) -> BTreeSet<usize> {
-    stratified
-        .link_contracts
+    link_contracts
         .iter()
         .filter(|(_, contract)| {
             matches!(
@@ -1281,7 +1300,14 @@ pub(super) fn replace_fixed_link_contracts(
     stratified: &mut StratifiedAnnulus,
     fixed_triangles: &[[usize; 3]],
 ) {
-    for (&slot, contract) in &mut stratified.link_contracts {
+    replace_fixed_link_contract_map(&mut stratified.link_contracts, fixed_triangles);
+}
+
+pub(super) fn replace_fixed_link_contract_map(
+    link_contracts: &mut BTreeMap<usize, VertexLinkContract>,
+    fixed_triangles: &[[usize; 3]],
+) {
+    for (&slot, contract) in link_contracts {
         contract.fixed_link_edges = final_link_edges(slot, fixed_triangles);
         contract.fixed_link_nodes = contract
             .fixed_link_edges
@@ -1291,9 +1317,9 @@ pub(super) fn replace_fixed_link_contracts(
     }
 }
 
-pub(super) fn final_gate(
+pub(super) fn final_gate_with_contracts(
     source: &MotherGrid,
-    stratified: &StratifiedAnnulus,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
     triangles: &[[usize; 3]],
     evidence: &mut GlobalExactMergeEvidence,
 ) -> Result<(), String> {
@@ -1309,8 +1335,7 @@ pub(super) fn final_gate(
     }
     let edge_counts = edge_counts(triangles);
     let degrees = vertex_degrees(triangles);
-    let anchors = stratified
-        .link_contracts
+    let anchors = link_contracts
         .iter()
         .filter(|(_, contract)| {
             matches!(

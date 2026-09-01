@@ -40,6 +40,7 @@ mod scheduler;
 mod sector_recovery;
 mod stratified_annulus;
 mod topology_domain;
+mod transition_cell_merge;
 mod transition_cell_v3;
 mod transition_feasibility;
 mod transition_topology;
@@ -54,10 +55,10 @@ pub use angle_atlas::{
     AngleBlockerClassification, AngleWitness, EdgeClass, WorstAngleAtlas,
 };
 pub use annular_enumerator::{
-    annular_small_exact_oracle_json, brute_force_flip_annulus_keys, cut_annulus_polygon,
-    enumerate_canonical_seam_annulus, AnnularEnumerationError, AnnularEnumerationEvidence,
-    AnnularTopology, AnnularTopologyKey, CutAnnulusPolygon, FullAnnularFamily, OccurrenceEdge,
-    VertexOccurrenceId,
+    annular_small_exact_oracle_json, brute_force_flip_annulus_keys, certify_annular_topology,
+    cut_annulus_polygon, enumerate_canonical_seam_annulus, AnnularEnumerationError,
+    AnnularEnumerationEvidence, AnnularTopology, AnnularTopologyKey, CutAnnulusPolygon,
+    FullAnnularFamily, OccurrenceEdge, VertexOccurrenceId,
 };
 pub use annular_reachability::{
     analyze_annular_signature_domains, analyze_stratified_annular_degree_reachability,
@@ -287,6 +288,12 @@ pub use topology_domain::{
     build_geometry_guard_region, build_transition_topology_domain_from_face_bands, BoundaryCycle,
     BoundaryGraph, GeometryGuardError, GeometryGuardRegion, GeometryGuardRegionKey,
     TopologyDomainError, TransitionTopologyDomain, TransitionTopologyDomainKey,
+};
+pub use transition_cell_merge::{
+    solve_transition_cell_find_one, transition_cell_topology_from_annular,
+    AnnularTransitionCellFamily, TransitionCellFamily, TransitionCellMergeEvidence,
+    TransitionCellMergeLimits, TransitionCellMergeOutcome, TransitionCellMergeTrial,
+    TransitionCellProblem, TransitionCellTopology, TransitionCellTopologyKey,
 };
 pub use transition_cell_v3::{
     build_stratified_transition_domain_v3, AnnularCellDomain, AnnularCellKey, CellVertexOccurrence,

@@ -60,6 +60,7 @@ pub enum AnnularEnumerationError {
     BoundaryIntersection,
     DuplicateBoundaryVertex,
     EmptyFamily,
+    InvalidTopology(String),
 }
 
 pub fn cut_annulus_polygon(
@@ -201,6 +202,39 @@ pub fn brute_force_flip_annulus_keys(
         }
     }
     Ok(seen)
+}
+
+pub fn certify_annular_topology(
+    lower: &[usize],
+    upper: &[usize],
+    forbidden_global_edges: &BTreeSet<Edge>,
+    triangles: &[Triangle],
+) -> Result<AnnularTopology, AnnularEnumerationError> {
+    validate_boundaries(lower, upper)?;
+    let mut triangles = triangles.to_vec();
+    triangles
+        .iter_mut()
+        .for_each(|triangle| triangle.sort_unstable());
+    triangles.sort_unstable();
+    validate_global_annular_topology(lower, upper, &triangles, forbidden_global_edges)
+        .map_err(AnnularEnumerationError::InvalidTopology)?;
+    let lower_set = lower.iter().copied().collect::<BTreeSet<_>>();
+    let upper_set = upper.iter().copied().collect::<BTreeSet<_>>();
+    let root_bridge = topology_edges(&triangles)
+        .into_iter()
+        .find(|(a, b)| {
+            (lower_set.contains(a) && upper_set.contains(b))
+                || (lower_set.contains(b) && upper_set.contains(a))
+        })
+        .ok_or_else(|| AnnularEnumerationError::InvalidTopology("annulus has no bridge".into()))?;
+    let topology_key = AnnularTopologyKey {
+        triangles: triangles.clone(),
+    };
+    Ok(AnnularTopology {
+        root_bridge,
+        triangles,
+        topology_key,
+    })
 }
 
 pub fn annular_small_exact_oracle_json() -> Result<String, AnnularEnumerationError> {
