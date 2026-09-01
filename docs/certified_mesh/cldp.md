@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR67
+## Frozen N6 evidence through PR72
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -52,17 +52,34 @@ optimization. W4 is therefore disabled.
   balance, and remap with zero residuals. Its final counts are `V=362`,
   `E=1080`, `F=720`, but it retains zero coarse parents and has compression
   ratio `1.0`. The Frozen N6 strict mixed gate therefore fails only on
-  `mixed_levels_delivered`; PR68 and PR69 are not started.
+  `mixed_levels_delivered`.
+- PR68: promotion input is restricted to 109 true strict violations; the 64
+  non-violating solver guards remain optimization-only. Exact support shrinks
+  from 285 to 275 source faces but still forms one component.
+- PR69: the ten-parent retained-core planner exhaustively enumerates all 1024
+  subsets. It records 191 connected non-empty candidates, including all ten
+  single-release and 45 pair-release cases, in deterministic order.
+- PR70: rebuilding every single-release candidate from the source hierarchy
+  and the exact W2 face band produces ten exact
+  `TopologyFamilyExhaustedNoSolution` outcomes. No candidate reaches geometry.
+- PR71: of 45 pair-release candidates, 41 exhaust the registered topology
+  family without a solution and four exhaust the one-million-state search
+  budget. None closes topology, so geometry is not attempted.
+- PR72: promotion patches now identify the fine exterior by an explicit seed,
+  preserve protected coarse descendant components, and certify disk, annulus,
+  multi-hole, or whole-sphere topology by boundary count and Euler
+  characteristic. A constructed annular ring retains its coarse parent with
+  two boundary cycles and Euler characteristic zero.
 
 ## Current stop condition
 
-CLDP now guarantees a finite certified safe result for the Frozen N6 fixture,
-but not a non-trivial mixed result. The current violation provenance is too
-conservative: restoring any registered component removes every compressed leaf.
-Future work must first split the source support into exact, non-overlapping
-custom-face coverage or introduce a collar topology that retains at least one
-coarse parent. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen
-N6 returns `CertifiedAdaptive`.
+CLDP guarantees a finite certified safe result for the Frozen N6 fixture, but
+not a non-trivial mixed result. The retained-core search has no closed
+single-release topology and no closed pair-release topology; four pair cases
+remain search-budget unknown rather than proven impossible. PR73 is therefore
+not enabled because no retained subset reached geometry or improved the strict
+margin. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen N6
+returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

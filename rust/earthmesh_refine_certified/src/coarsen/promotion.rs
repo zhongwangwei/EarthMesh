@@ -29,6 +29,22 @@ impl PromotionLevel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromotionPatchTopology {
+    WholeSphere,
+    Disk,
+    Annulus { protected_hole_id: u64 },
+    MultiHole { protected_holes: Vec<u64> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtectedCoarseRegion {
+    pub id: u64,
+    pub retained_parents: BTreeSet<TriangleAddress>,
+    pub descendant_source_faces: BTreeSet<usize>,
+    pub boundary_cycle: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromotionPatch {
     pub id: u64,
     pub level: PromotionLevel,
@@ -37,6 +53,9 @@ pub struct PromotionPatch {
     pub interior_faces: BTreeSet<usize>,
     pub collar_faces: BTreeSet<usize>,
     pub boundary_cycles: Vec<Vec<usize>>,
+    pub topology: PromotionPatchTopology,
+    pub protected_coarse_regions: Vec<ProtectedCoarseRegion>,
+    pub fine_exterior_seed_face: Option<usize>,
     pub protected_exterior_faces: BTreeSet<usize>,
     pub source_mesh_fingerprint: u64,
     pub patch_fingerprint: u64,
@@ -71,14 +90,66 @@ pub fn build_promotion_patch_for_transition(
     level: PromotionLevel,
     transition_parents: &BTreeSet<TriangleAddress>,
 ) -> Result<PromotionPatch, String> {
+    build_promotion_patch_for_transition_with_protected_regions(
+        source,
+        component,
+        level,
+        transition_parents,
+        &[],
+        None,
+    )
+}
+
+pub fn build_promotion_patch_for_transition_with_protected_regions(
+    source: &MotherGrid,
+    component: &ViolationComponent,
+    level: PromotionLevel,
+    transition_parents: &BTreeSet<TriangleAddress>,
+    protected_regions: &[ProtectedCoarseRegion],
+    fine_exterior_seed_face: Option<usize>,
+) -> Result<PromotionPatch, String> {
     if level == PromotionLevel::P0LocalTopologyOnly {
         return Err("P0 does not restore source faces".into());
     }
     validate_source_faces(source, &component.source_faces)?;
-    let interior_faces = fill_holes(
+    for (index, region) in protected_regions.iter().enumerate() {
+        validate_protected_region(source, region)?;
+        if protected_regions[..index]
+            .iter()
+            .any(|other| other.id >= region.id)
+        {
+            return Err("protected coarse regions must have unique increasing ids".into());
+        }
+        if protected_regions[..index].iter().any(|other| {
+            !other
+                .descendant_source_faces
+                .is_disjoint(&region.descendant_source_faces)
+        }) {
+            return Err("protected coarse regions must be face-disjoint".into());
+        }
+    }
+    let effective_protected = if level == PromotionLevel::P5SafeMotherFallback {
+        &[][..]
+    } else {
+        protected_regions
+    };
+    let connected_interior = connect_faces(source, component.source_faces.clone())?;
+    let interior_seed = if connected_interior.len() == source.mesh.triangle_count() {
+        None
+    } else {
+        Some(resolve_exterior_seed(
+            source,
+            &connected_interior,
+            transition_parents,
+            fine_exterior_seed_face,
+        )?)
+    };
+    let interior_faces = fill_unprotected_holes(
         source,
-        connect_faces(source, component.source_faces.clone())?,
-    );
+        connected_interior,
+        interior_seed,
+        effective_protected,
+    )?;
     let mut source_faces = interior_faces.clone();
     match level {
         PromotionLevel::P0LocalTopologyOnly | PromotionLevel::P1RestoreSourceFaces => {}
@@ -103,7 +174,18 @@ pub fn build_promotion_patch_for_transition(
             source_faces = source.mesh.active_triangle_slots().collect();
         }
     }
-    source_faces = fill_holes(source, connect_faces(source, source_faces)?);
+    source_faces = connect_faces(source, source_faces)?;
+    let final_seed = if source_faces.len() == source.mesh.triangle_count() {
+        None
+    } else {
+        Some(resolve_exterior_seed(
+            source,
+            &source_faces,
+            transition_parents,
+            fine_exterior_seed_face,
+        )?)
+    };
+    source_faces = fill_unprotected_holes(source, source_faces, final_seed, effective_protected)?;
     let collar_faces = source_faces
         .difference(&interior_faces)
         .copied()
@@ -118,18 +200,15 @@ pub fn build_promotion_patch_for_transition(
         .map(|&face| source_parent(source, face))
         .collect::<Result<_, _>>()?;
     let boundary_cycles = boundary_cycles(source, &source_faces)?;
-    if boundary_cycles.len() > 1 {
-        return Err("promotion patch retains a hole after finite hole filling".into());
-    }
-    let source_mesh_fingerprint = mesh_fingerprint(&source.mesh);
-    let patch_fingerprint = patch_fingerprint(
-        source_mesh_fingerprint,
-        component.id,
-        level,
+    let topology = classify_patch_topology(
+        source,
         &source_faces,
         &boundary_cycles,
-    );
-    let patch = PromotionPatch {
+        effective_protected,
+        final_seed,
+    )?;
+    let source_mesh_fingerprint = mesh_fingerprint(&source.mesh);
+    let mut patch = PromotionPatch {
         id: component.id,
         level,
         source_faces,
@@ -137,10 +216,14 @@ pub fn build_promotion_patch_for_transition(
         interior_faces,
         collar_faces,
         boundary_cycles,
+        topology,
+        protected_coarse_regions: effective_protected.to_vec(),
+        fine_exterior_seed_face: final_seed,
         protected_exterior_faces,
         source_mesh_fingerprint,
-        patch_fingerprint,
+        patch_fingerprint: 0,
     };
+    patch.patch_fingerprint = patch_fingerprint(&patch);
     validate_promotion_patch(source, &patch)?;
     Ok(patch)
 }
@@ -207,6 +290,31 @@ pub fn validate_promotion_patch(source: &MotherGrid, patch: &PromotionPatch) -> 
     if boundary_cycles(source, &patch.source_faces)? != patch.boundary_cycles {
         return Err("promotion boundary cycles do not match its source-face union".into());
     }
+    for region in &patch.protected_coarse_regions {
+        validate_protected_region(source, region)?;
+        if !region
+            .descendant_source_faces
+            .is_subset(&patch.protected_exterior_faces)
+        {
+            return Err("protected coarse region is not outside promotion".into());
+        }
+    }
+    if patch
+        .fine_exterior_seed_face
+        .is_some_and(|seed| !patch.protected_exterior_faces.contains(&seed))
+    {
+        return Err("fine exterior seed is not outside promotion".into());
+    }
+    if classify_patch_topology(
+        source,
+        &patch.source_faces,
+        &patch.boundary_cycles,
+        &patch.protected_coarse_regions,
+        patch.fine_exterior_seed_face,
+    )? != patch.topology
+    {
+        return Err("promotion patch topology classification mismatch".into());
+    }
     let parents = patch
         .source_faces
         .iter()
@@ -215,15 +323,7 @@ pub fn validate_promotion_patch(source: &MotherGrid, patch: &PromotionPatch) -> 
     if parents != patch.hierarchy_parents {
         return Err("promotion hierarchy-parent coverage mismatch".into());
     }
-    if patch.patch_fingerprint
-        != patch_fingerprint(
-            patch.source_mesh_fingerprint,
-            patch.id,
-            patch.level,
-            &patch.source_faces,
-            &patch.boundary_cycles,
-        )
-    {
+    if patch.patch_fingerprint != patch_fingerprint(patch) {
         return Err("promotion patch fingerprint mismatch".into());
     }
     Ok(())
@@ -307,23 +407,211 @@ fn connect_faces(
     }
 }
 
-fn fill_holes(source: &MotherGrid, mut faces: BTreeSet<usize>) -> BTreeSet<usize> {
+fn resolve_exterior_seed(
+    source: &MotherGrid,
+    faces: &BTreeSet<usize>,
+    transition_parents: &BTreeSet<TriangleAddress>,
+    requested: Option<usize>,
+) -> Result<usize, String> {
+    if let Some(seed) = requested {
+        if !source.mesh.is_triangle_live(seed) || faces.contains(&seed) {
+            return Err("fine exterior seed must be a live source face outside the patch".into());
+        }
+        return Ok(seed);
+    }
+    source
+        .mesh
+        .active_triangle_slots()
+        .find(|face| {
+            !faces.contains(face)
+                && (transition_parents.is_empty()
+                    || source_parent(source, *face)
+                        .is_ok_and(|parent| !transition_parents.contains(&parent)))
+        })
+        .or_else(|| {
+            source
+                .mesh
+                .active_triangle_slots()
+                .find(|face| !faces.contains(face))
+        })
+        .ok_or_else(|| "promotion patch has no fine exterior face".into())
+}
+
+fn fill_unprotected_holes(
+    source: &MotherGrid,
+    mut faces: BTreeSet<usize>,
+    exterior_seed: Option<usize>,
+    protected_regions: &[ProtectedCoarseRegion],
+) -> Result<BTreeSet<usize>, String> {
     let complement = source
         .mesh
         .active_triangle_slots()
         .filter(|face| !faces.contains(face))
         .collect::<BTreeSet<_>>();
-    let mut components = face_components(source, &complement);
-    components.sort_by(|left, right| {
-        right
-            .len()
-            .cmp(&left.len())
-            .then_with(|| left.first().cmp(&right.first()))
-    });
-    for hole in components.into_iter().skip(1) {
-        faces.extend(hole);
+    if complement.is_empty() {
+        return Ok(faces);
     }
-    faces
+    let seed = exterior_seed
+        .ok_or_else(|| "non-global promotion patch needs an exterior seed".to_string())?;
+    if !complement.contains(&seed) {
+        return Err("fine exterior seed was absorbed by promotion".into());
+    }
+    let components = face_components(source, &complement);
+    let exterior = components
+        .iter()
+        .position(|component| component.contains(&seed))
+        .ok_or_else(|| "fine exterior seed has no complement component".to_string())?;
+    let mut protected_components = BTreeSet::new();
+    for region in protected_regions {
+        if !region.descendant_source_faces.is_disjoint(&faces) {
+            return Err(format!(
+                "promotion overlaps protected coarse region {}",
+                region.id
+            ));
+        }
+        let matches = components
+            .iter()
+            .enumerate()
+            .filter(|(_, component)| region.descendant_source_faces.is_subset(component))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if matches.len() != 1 || matches[0] == exterior {
+            return Err(format!(
+                "protected coarse region {} is not one non-exterior complement component",
+                region.id
+            ));
+        }
+        protected_components.insert(matches[0]);
+    }
+    for (index, hole) in components.into_iter().enumerate() {
+        if index != exterior && !protected_components.contains(&index) {
+            faces.extend(hole);
+        }
+    }
+    Ok(faces)
+}
+
+pub fn build_protected_coarse_region(
+    source: &MotherGrid,
+    id: u64,
+    retained_parents: BTreeSet<TriangleAddress>,
+) -> Result<ProtectedCoarseRegion, String> {
+    if retained_parents.is_empty() {
+        return Err("protected coarse region requires retained parents".into());
+    }
+    let descendant_source_faces = source
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            source_parent(source, face).is_ok_and(|parent| retained_parents.contains(&parent))
+        })
+        .collect::<BTreeSet<_>>();
+    if descendant_source_faces.is_empty() || !faces_are_connected(source, &descendant_source_faces)
+    {
+        return Err("protected coarse descendants must be non-empty and connected".into());
+    }
+    let mut cycles = boundary_cycles(source, &descendant_source_faces)?;
+    if cycles.len() != 1 {
+        return Err("protected coarse region must have one boundary cycle".into());
+    }
+    let region = ProtectedCoarseRegion {
+        id,
+        retained_parents,
+        descendant_source_faces,
+        boundary_cycle: cycles.remove(0),
+    };
+    validate_protected_region(source, &region)?;
+    Ok(region)
+}
+
+fn validate_protected_region(
+    source: &MotherGrid,
+    region: &ProtectedCoarseRegion,
+) -> Result<(), String> {
+    if region.retained_parents.is_empty() || region.descendant_source_faces.is_empty() {
+        return Err("protected coarse region is empty".into());
+    }
+    validate_source_faces(source, &region.descendant_source_faces)?;
+    if !faces_are_connected(source, &region.descendant_source_faces) {
+        return Err("protected coarse region is not connected".into());
+    }
+    let expected_faces = source
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| {
+            source_parent(source, face)
+                .is_ok_and(|parent| region.retained_parents.contains(&parent))
+        })
+        .collect::<BTreeSet<_>>();
+    if expected_faces != region.descendant_source_faces
+        || boundary_cycles(source, &region.descendant_source_faces)?
+            != vec![region.boundary_cycle.clone()]
+    {
+        return Err("protected coarse region evidence does not match the source hierarchy".into());
+    }
+    Ok(())
+}
+
+fn classify_patch_topology(
+    source: &MotherGrid,
+    faces: &BTreeSet<usize>,
+    boundary_cycles: &[Vec<usize>],
+    protected_regions: &[ProtectedCoarseRegion],
+    exterior_seed: Option<usize>,
+) -> Result<PromotionPatchTopology, String> {
+    let topology = if faces.len() == source.mesh.triangle_count() {
+        if !boundary_cycles.is_empty() || exterior_seed.is_some() || !protected_regions.is_empty() {
+            return Err("whole-sphere promotion has boundary or protected-hole evidence".into());
+        }
+        PromotionPatchTopology::WholeSphere
+    } else if protected_regions.is_empty() {
+        if boundary_cycles.len() != 1 {
+            return Err("disk promotion must have one boundary cycle".into());
+        }
+        PromotionPatchTopology::Disk
+    } else if protected_regions.len() == 1 && boundary_cycles.len() == 2 {
+        PromotionPatchTopology::Annulus {
+            protected_hole_id: protected_regions[0].id,
+        }
+    } else if boundary_cycles.len() == protected_regions.len() + 1 {
+        PromotionPatchTopology::MultiHole {
+            protected_holes: protected_regions.iter().map(|region| region.id).collect(),
+        }
+    } else {
+        return Err("promotion boundary count does not match protected coarse holes".into());
+    };
+    let expected_euler = match &topology {
+        PromotionPatchTopology::WholeSphere => 2,
+        PromotionPatchTopology::Disk => 1,
+        PromotionPatchTopology::Annulus { .. } => 0,
+        PromotionPatchTopology::MultiHole { protected_holes } => 1 - protected_holes.len() as isize,
+    };
+    let actual_euler = patch_euler(source, faces);
+    if actual_euler != expected_euler {
+        return Err(format!(
+            "promotion patch Euler mismatch: expected {expected_euler}, got {actual_euler}"
+        ));
+    }
+    Ok(topology)
+}
+
+fn patch_euler(source: &MotherGrid, faces: &BTreeSet<usize>) -> isize {
+    let mut vertices = BTreeSet::new();
+    let mut edges = BTreeSet::new();
+    for &face in faces {
+        let triangle = source.mesh.triangles()[face];
+        vertices.extend(triangle);
+        edges.extend([
+            canonical_edge(triangle[0], triangle[1]),
+            canonical_edge(triangle[1], triangle[2]),
+            canonical_edge(triangle[2], triangle[0]),
+        ]);
+    }
+    vertices.len() as isize - edges.len() as isize + faces.len() as isize
+}
+
+fn canonical_edge(left: usize, right: usize) -> (usize, usize) {
+    (left.min(right), left.max(right))
 }
 
 fn face_components(source: &MotherGrid, faces: &BTreeSet<usize>) -> Vec<BTreeSet<usize>> {
@@ -412,18 +700,42 @@ fn boundary_cycles(
     )
 }
 
-fn patch_fingerprint(
-    source_fingerprint: u64,
-    id: u64,
-    level: PromotionLevel,
-    faces: &BTreeSet<usize>,
-    cycles: &[Vec<usize>],
-) -> u64 {
-    let mut values = vec![source_fingerprint, id, level as u64, faces.len() as u64];
-    values.extend(faces.iter().map(|&face| face as u64));
-    for cycle in cycles {
+fn patch_fingerprint(patch: &PromotionPatch) -> u64 {
+    let mut values = vec![
+        patch.source_mesh_fingerprint,
+        patch.id,
+        patch.level as u64,
+        patch.source_faces.len() as u64,
+    ];
+    values.extend(patch.source_faces.iter().map(|&face| face as u64));
+    for cycle in &patch.boundary_cycles {
         values.push(cycle.len() as u64);
         values.extend(cycle.iter().map(|&site| site as u64));
+    }
+    match &patch.topology {
+        PromotionPatchTopology::WholeSphere => values.push(0),
+        PromotionPatchTopology::Disk => values.push(1),
+        PromotionPatchTopology::Annulus { protected_hole_id } => {
+            values.extend([2, *protected_hole_id]);
+        }
+        PromotionPatchTopology::MultiHole { protected_holes } => {
+            values.extend([3, protected_holes.len() as u64]);
+            values.extend(protected_holes);
+        }
+    }
+    values.push(
+        patch
+            .fine_exterior_seed_face
+            .map_or(u64::MAX, |seed| seed as u64),
+    );
+    for region in &patch.protected_coarse_regions {
+        values.extend([region.id, region.descendant_source_faces.len() as u64]);
+        values.extend(
+            region
+                .descendant_source_faces
+                .iter()
+                .map(|&face| face as u64),
+        );
     }
     fingerprint(values)
 }
@@ -464,6 +776,61 @@ fn fingerprint(values: impl IntoIterator<Item = u64>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn annular_patch() -> (MotherGrid, ProtectedCoarseRegion, PromotionPatch) {
+        let source = MotherGrid::generate(4).unwrap();
+        let parent = source
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .find_map(|address| address.parent_2_to_1())
+            .unwrap();
+        let protected =
+            build_protected_coarse_region(&source, 11, BTreeSet::from([parent])).unwrap();
+        let protected_vertices = protected
+            .descendant_source_faces
+            .iter()
+            .flat_map(|&face| source.mesh.triangles()[face])
+            .collect::<BTreeSet<_>>();
+        let exterior_parent = source
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .filter_map(|address| address.parent_2_to_1())
+            .find(|candidate| {
+                *candidate != parent
+                    && source
+                        .mesh
+                        .active_triangle_slots()
+                        .filter(|&face| source_parent(&source, face).unwrap() == *candidate)
+                        .flat_map(|face| source.mesh.triangles()[face])
+                        .all(|vertex| !protected_vertices.contains(&vertex))
+            })
+            .unwrap();
+        let exterior_faces = source
+            .mesh
+            .active_triangle_slots()
+            .filter(|&face| source_parent(&source, face).unwrap() == exterior_parent)
+            .collect::<BTreeSet<_>>();
+        let ring = source
+            .mesh
+            .active_triangle_slots()
+            .filter(|face| {
+                !protected.descendant_source_faces.contains(face) && !exterior_faces.contains(face)
+            })
+            .collect::<BTreeSet<_>>();
+        let exterior_seed = *exterior_faces.first().unwrap();
+        let patch = build_promotion_patch_for_transition_with_protected_regions(
+            &source,
+            &component(&source, ring),
+            PromotionLevel::P1RestoreSourceFaces,
+            &BTreeSet::new(),
+            std::slice::from_ref(&protected),
+            Some(exterior_seed),
+        )
+        .unwrap();
+        (source, protected, patch)
+    }
 
     fn component(source: &MotherGrid, faces: BTreeSet<usize>) -> ViolationComponent {
         let parents = faces
@@ -543,6 +910,45 @@ mod tests {
         let patch =
             build_promotion_patch(&source, &component, PromotionLevel::P2RestoreOneParentRing)
                 .unwrap();
+        validate_promotion_patch(&source, &patch).unwrap();
+    }
+
+    #[test]
+    fn annular_support_preserves_protected_coarse_hole() {
+        let (_, protected, patch) = annular_patch();
+        assert_eq!(patch.protected_coarse_regions, [protected]);
+        assert!(matches!(
+            patch.topology,
+            PromotionPatchTopology::Annulus {
+                protected_hole_id: 11
+            }
+        ));
+    }
+
+    #[test]
+    fn fill_unprotected_holes_does_not_fill_coarse_core() {
+        let (_, protected, patch) = annular_patch();
+        assert!(protected
+            .descendant_source_faces
+            .is_subset(&patch.protected_exterior_faces));
+        assert!(protected
+            .descendant_source_faces
+            .is_disjoint(&patch.source_faces));
+    }
+
+    #[test]
+    fn sphere_exterior_component_uses_explicit_seed() {
+        let (_, _, patch) = annular_patch();
+        assert!(patch
+            .fine_exterior_seed_face
+            .is_some_and(|seed| patch.protected_exterior_faces.contains(&seed)));
+    }
+
+    #[test]
+    fn annulus_has_two_boundary_cycles_and_euler_zero() {
+        let (source, _, patch) = annular_patch();
+        assert_eq!(patch.boundary_cycles.len(), 2);
+        assert_eq!(patch_euler(&source, &patch.source_faces), 0);
         validate_promotion_patch(&source, &patch).unwrap();
     }
 

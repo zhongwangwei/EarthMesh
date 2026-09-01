@@ -132,9 +132,10 @@ pub use local_topology::{
     LocalTopologySearchOutcome,
 };
 pub use promotion::{
-    build_promotion_patch, build_promotion_patch_for_transition, restore_source_patch,
-    validate_promotion_patch, PromotionLevel, PromotionPatch, RestoredSourceFace,
-    RestoredSourcePatch,
+    build_promotion_patch, build_promotion_patch_for_transition,
+    build_promotion_patch_for_transition_with_protected_regions, build_protected_coarse_region,
+    restore_source_patch, validate_promotion_patch, PromotionLevel, PromotionPatch,
+    PromotionPatchTopology, ProtectedCoarseRegion, RestoredSourceFace, RestoredSourcePatch,
 };
 pub use retained_core::{
     plan_retained_core_subsets, retained_core_search_plan_json,
