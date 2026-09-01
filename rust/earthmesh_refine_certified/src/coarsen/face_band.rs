@@ -272,6 +272,36 @@ pub fn solve_exact_face_bands(
     solve_exact_face_bands_with_filter(problem, limits, |_| true)
 }
 
+pub fn validate_face_band_plan(problem: &FaceBandProblem, plan: &FaceBandPlan) -> bool {
+    if validate_problem(problem).is_err()
+        || plan.band_count != problem.band_count
+        || problem
+            .coarse_boundary_faces
+            .iter()
+            .any(|face| plan.labels.get(face) != Some(&0))
+        || problem
+            .fine_boundary_faces
+            .iter()
+            .any(|face| plan.labels.get(face) != Some(&((problem.band_count - 1) as u8)))
+    {
+        return false;
+    }
+    let Some(domains) = problem
+        .transition_faces
+        .iter()
+        .map(|face| {
+            plan.labels
+                .get(face)
+                .copied()
+                .map(|label| (*face, BTreeSet::from([label])))
+        })
+        .collect::<Option<BTreeMap<_, _>>>()
+    else {
+        return false;
+    };
+    validate_complete(problem, &domains, fingerprint(problem)).as_ref() == Some(plan)
+}
+
 pub(crate) fn solve_exact_face_bands_with_filter(
     problem: &FaceBandProblem,
     limits: FaceBandLimits,
@@ -988,6 +1018,10 @@ fn fingerprint(problem: &FaceBandProblem) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+pub(crate) fn face_band_fingerprint(problem: &FaceBandProblem) -> u64 {
+    fingerprint(problem)
 }
 
 fn ladder_step(source_face_rings: usize) -> &'static str {

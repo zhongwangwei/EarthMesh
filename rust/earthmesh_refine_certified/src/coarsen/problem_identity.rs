@@ -407,7 +407,7 @@ fn profile_problem(
     }
 }
 
-fn canonical_vertex(source: &MotherGrid, slot: usize) -> CanonicalVertexId {
+pub(crate) fn canonical_vertex(source: &MotherGrid, slot: usize) -> CanonicalVertexId {
     source
         .addresses
         .get(slot)
@@ -419,7 +419,7 @@ fn canonical_vertex(source: &MotherGrid, slot: usize) -> CanonicalVertexId {
         })
 }
 
-fn canonical_edge(left: CanonicalVertexId, right: CanonicalVertexId) -> CanonicalEdgeId {
+pub(crate) fn canonical_edge(left: CanonicalVertexId, right: CanonicalVertexId) -> CanonicalEdgeId {
     CanonicalEdgeId {
         vertices: if left <= right {
             [left, right]
