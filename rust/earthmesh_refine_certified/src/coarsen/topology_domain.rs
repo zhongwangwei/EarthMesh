@@ -375,7 +375,7 @@ fn single_boundary_cycle(
     })
 }
 
-fn cycles_from_edges(edges: &BTreeSet<Edge>) -> Option<Vec<Vec<usize>>> {
+pub(super) fn cycles_from_edges(edges: &BTreeSet<Edge>) -> Option<Vec<Vec<usize>>> {
     let mut adjacency = BTreeMap::<usize, BTreeSet<usize>>::new();
     for &(a, b) in edges {
         if a == b {

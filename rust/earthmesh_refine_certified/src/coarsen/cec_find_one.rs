@@ -137,6 +137,8 @@ pub enum PlanEvaluation {
 }
 
 pub trait FaceBandPlanEvaluator {
+    fn observe_cycle(&mut self, _cycle: &EssentialCycleKey, _plan: &FaceBandPlan) {}
+
     fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation;
 
     fn topology_state_budget(&self) -> Option<usize> {
@@ -992,6 +994,7 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 return None;
             }
         };
+        self.evaluator.observe_cycle(&cycle, &plan);
         let cache_key =
             self.evaluator
                 .topology_state_budget()

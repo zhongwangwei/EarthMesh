@@ -622,7 +622,7 @@ fn face_band_sector_components(
     Ok(sectors)
 }
 
-fn monotone_connectors(
+pub(super) fn monotone_connectors(
     lower: &[usize],
     upper: &[usize],
     source_edges: &BTreeSet<(usize, usize)>,

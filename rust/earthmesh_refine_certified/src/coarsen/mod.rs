@@ -1,6 +1,7 @@
 mod anchor_ear;
 mod angle_atlas;
 mod annulus;
+mod band_boundary_audit;
 mod band_cycle_planner;
 mod boundary_parent_peel;
 mod cec_find_one;
@@ -51,6 +52,10 @@ pub use angle_atlas::{
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
     CycleOrientation, RingAnchorKind, RingCycle, RingVertex, RingVertexRole,
+};
+pub use band_boundary_audit::{
+    audit_face_band_boundaries, BandAuditConclusion, BandBoundaryAudit, BandBoundaryAuditSummary,
+    BandClassificationFailure, BandClassificationFailureKind,
 };
 pub use band_cycle_planner::{
     effective_band_error_json, parent_layer_trace_family_candidate,
@@ -212,7 +217,8 @@ pub use research_fixture::{
 };
 pub use research_runner::{
     current_n12_validation_gate_report, decide_validation_gate, n12_cec_topology_probe_json,
-    n12_legacy_baseline_json, n12_lifted_downstream_reject_audit_json, n12_lifted_v2_replay_json,
+    n12_legacy_baseline_json, n12_lifted_band_failure_audit_json,
+    n12_lifted_downstream_reject_audit_json, n12_lifted_v2_replay_json,
     n12_validation_gate_report_json, research_cec_topology_evidence_json,
     research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
     run_n12_lifted_v2_replay, N12ValidationGateReport, ResearchCecTopologyEvidence,
