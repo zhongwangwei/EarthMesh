@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR75
+## Frozen N6 evidence through PR76
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -88,6 +88,15 @@ optimization. W4 is therefore disabled.
   preserve the logical outside topology and source-coordinate bits and keep
   closed edge incidence. Four trials enter local max-min, but none certify; the
   best range remains `39.278499430048°–80.721500570507°`.
+- PR76: the ten retained parents contain eight coarse-core ears. The complete
+  eight sector/ear matrix closes four incumbent-local peel cavities by restoring
+  the peeled parent's four children and splitting only its one or two retained
+  coarse interfaces. All four closed candidates preserve the logical exterior,
+  source-coordinate bits, and closed edge incidence. The other four single-peel
+  candidates remain topologically open because their sectors touch two coarse
+  parents. Four closed candidates enter local max-min, none certify, and the best
+  peel range is `19.671188302883°–100.328811696957°`; PR77 therefore owns the
+  annular/two-parent collar escalation.
 
 ## Current stop condition
 
@@ -96,10 +105,11 @@ not a non-trivial mixed result. The retained-core search has no closed
 single-release topology and no closed pair-release topology; four pair cases
 remain search-budget unknown rather than proven impossible. PR73 establishes a
 separate incumbent-preserving local family, PR74 classifies its three exact
-local cavities, and PR75 proves direct restoration without exterior drift. The
-six typed coarse-interface blockers now advance to the finite PR76 boundary-ear
-peel matrix. Larger N12/N24/N40 and NXP80 runs remain gated off until Frozen N6
-returns `CertifiedAdaptive`.
+local cavities, PR75 proves direct restoration without exterior drift, and PR76
+proves that four single-parent local cavities close without exterior drift. None
+passes strict geometry; four two-parent interfaces remain topologically open and
+advance to the PR77 annular collar. Larger N12/N24/N40 and NXP80 runs remain
+gated off until Frozen N6 returns `CertifiedAdaptive`.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

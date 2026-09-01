@@ -46,6 +46,16 @@ pub enum DirectSectorRestoreOutcome {
     },
 }
 
+pub(super) struct SectorRestoreMaterialization {
+    pub mesh: HierarchyLeafMesh,
+    pub removed_mixed_faces: BTreeSet<usize>,
+    pub restored_source_faces: BTreeSet<usize>,
+    pub restored_addresses: BTreeSet<TriangleAddress>,
+    pub released_children: BTreeSet<TriangleAddress>,
+    pub inserted_custom_triangles: BTreeSet<[usize; 3]>,
+    pub helper_source_vertices: usize,
+}
+
 pub fn restore_fine_compatible_sector(
     source: &MotherGrid,
     incumbent: &HierarchyLeafMesh,
@@ -114,67 +124,36 @@ fn restore_fine_compatible_sector_inner(
         });
     }
 
-    let restored_addresses = coverage
-        .source_faces
-        .iter()
-        .map(|&face| {
-            source.triangle_addresses[face]
-                .ok_or_else(|| format!("source face {face} has no hierarchy address"))
+    let overlapping_parents = incumbent
+        .mesh
+        .active_triangle_slots()
+        .filter_map(|face| incumbent.triangle_addresses[face])
+        .filter(|&address| {
+            !source_descendant_faces(source, address).is_disjoint(&coverage.source_faces)
         })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    let mut leaves = BTreeSet::new();
-    let mut retained_custom_source_faces = BTreeSet::new();
-    let mut retained_custom_triangles = Vec::new();
-    let owners = custom_faces_by_sector(incumbent, atlas)?;
-    for face in incumbent.mesh.active_triangle_slots() {
-        if mixed_faces.contains(&face) {
-            continue;
-        }
-        if let Some(address) = incumbent.triangle_addresses[face] {
-            let descendants = source_descendant_faces(source, address);
-            if !descendants.is_disjoint(&coverage.source_faces) {
-                let adjacent_parents = BTreeSet::from([address]);
-                return Ok(DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
-                    sector_id,
-                    adjacent_parents,
-                });
-            }
-            leaves.insert(address);
-            continue;
-        }
-        let owner = owners
-            .iter()
-            .find_map(|(&owner, faces)| faces.contains(&face).then_some(owner))
-            .ok_or_else(|| format!("custom face {face} has no exact sector owner"))?;
-        retained_custom_source_faces.extend(&atlas.sectors[&owner].source_faces);
-        retained_custom_triangles.push(source_triangle(incumbent, face)?);
-    }
-    leaves.extend(restored_addresses.iter().copied());
-    let mut candidate = rebuild_from_leaf_set_with_custom_face_slots(
-        source,
-        &HierarchyLeafSet { leaves },
-        &retained_custom_source_faces,
-        &retained_custom_triangles,
-    )?;
-    restore_incumbent_positions(incumbent, &mut candidate);
-    let incumbent_sources = incumbent
-        .source_vertex_slots
-        .iter()
-        .flatten()
-        .copied()
         .collect::<BTreeSet<_>>();
-    let helper_source_vertices = candidate
-        .source_vertex_slots
-        .iter()
-        .flatten()
-        .filter(|source| !incumbent_sources.contains(source))
-        .count();
+    if !overlapping_parents.is_empty() {
+        return Ok(DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+            sector_id,
+            adjacent_parents: overlapping_parents,
+        });
+    }
+    let materialized =
+        materialize_sector_restore(source, incumbent, atlas, sector_id, &BTreeSet::new())?;
+    let SectorRestoreMaterialization {
+        mesh: candidate,
+        removed_mixed_faces: mixed_faces,
+        restored_source_faces,
+        restored_addresses,
+        helper_source_vertices,
+        ..
+    } = materialized;
 
     let trial_context = DirectTrialContext {
         sector_id,
         incumbent,
         removed_mixed_faces: &mixed_faces,
-        restored_source_faces: &coverage.source_faces,
+        restored_source_faces: &restored_source_faces,
         restored_addresses: &restored_addresses,
         helper_source_vertices,
     };
@@ -280,6 +259,222 @@ fn restore_fine_compatible_sector_inner(
     })
 }
 
+pub(super) fn materialize_sector_restore(
+    source: &MotherGrid,
+    incumbent: &HierarchyLeafMesh,
+    atlas: &SectorRecoveryAtlas,
+    sector_id: u64,
+    released_parents: &BTreeSet<TriangleAddress>,
+) -> Result<SectorRestoreMaterialization, String> {
+    materialize_sector_restores(
+        source,
+        incumbent,
+        atlas,
+        &BTreeSet::from([sector_id]),
+        released_parents,
+    )
+}
+
+pub(super) fn materialize_sector_restores(
+    source: &MotherGrid,
+    incumbent: &HierarchyLeafMesh,
+    atlas: &SectorRecoveryAtlas,
+    sector_ids: &BTreeSet<u64>,
+    released_parents: &BTreeSet<TriangleAddress>,
+) -> Result<SectorRestoreMaterialization, String> {
+    materialize_sector_restores_with_replacements(
+        source,
+        incumbent,
+        atlas,
+        sector_ids,
+        released_parents,
+        &BTreeMap::new(),
+    )
+}
+
+pub(super) fn materialize_sector_restores_with_replacements(
+    source: &MotherGrid,
+    incumbent: &HierarchyLeafMesh,
+    atlas: &SectorRecoveryAtlas,
+    sector_ids: &BTreeSet<u64>,
+    released_parents: &BTreeSet<TriangleAddress>,
+    custom_leaf_replacements: &BTreeMap<TriangleAddress, Vec<[usize; 3]>>,
+) -> Result<SectorRestoreMaterialization, String> {
+    if sector_ids.is_empty() {
+        return Err("sector restore requires at least one exact sector".into());
+    }
+    let owners = custom_faces_by_sector(incumbent, atlas)?;
+    let mixed_faces = sector_ids
+        .iter()
+        .map(|sector_id| {
+            owners
+                .get(sector_id)
+                .cloned()
+                .ok_or_else(|| format!("incumbent has no custom faces for sector {sector_id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let restored_source_faces = sector_ids
+        .iter()
+        .map(|sector_id| {
+            atlas
+                .sectors
+                .get(sector_id)
+                .map(|coverage| coverage.source_faces.iter().copied())
+                .ok_or_else(|| format!("exact sector {sector_id} is absent"))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let restored_addresses = restored_source_faces
+        .iter()
+        .map(|&face| {
+            source.triangle_addresses[face]
+                .ok_or_else(|| format!("source face {face} has no hierarchy address"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let mut leaves = BTreeSet::new();
+    let mut released_children = BTreeSet::new();
+    let mut seen_released = BTreeSet::new();
+    let mut seen_replacements = BTreeSet::new();
+    let mut retained_custom_source_faces = BTreeSet::new();
+    let mut retained_custom_triangles = Vec::new();
+    for face in incumbent.mesh.active_triangle_slots() {
+        if mixed_faces.contains(&face) {
+            continue;
+        }
+        if let Some(address) = incumbent.triangle_addresses[face] {
+            if released_parents.contains(&address) {
+                let children = address
+                    .children_2_to_1()
+                    .ok_or_else(|| format!("cannot release invalid parent {address:?}"))?;
+                if children[0].n != source.subdivision {
+                    return Err(format!(
+                        "released parent {address:?} is not one level above the source grid"
+                    ));
+                }
+                released_children.extend(children);
+                seen_released.insert(address);
+                continue;
+            }
+            if let Some(triangles) = custom_leaf_replacements.get(&address) {
+                retained_custom_source_faces.extend(source_descendant_faces(source, address));
+                retained_custom_triangles.extend(triangles.iter().copied());
+                seen_replacements.insert(address);
+                continue;
+            }
+            let descendants = source_descendant_faces(source, address);
+            if !descendants.is_disjoint(&restored_source_faces) {
+                return Err(format!(
+                    "selected sectors still overlap unreleased hierarchy leaf {address:?}"
+                ));
+            }
+            leaves.insert(address);
+            continue;
+        }
+        let owner = owners
+            .iter()
+            .find_map(|(&owner, faces)| faces.contains(&face).then_some(owner))
+            .ok_or_else(|| format!("custom face {face} has no exact sector owner"))?;
+        retained_custom_source_faces.extend(&atlas.sectors[&owner].source_faces);
+        retained_custom_triangles.push(source_triangle(incumbent, face)?);
+    }
+    if &seen_released != released_parents {
+        return Err(format!(
+            "released parents are not active incumbent leaves: {:?}",
+            released_parents
+                .difference(&seen_released)
+                .collect::<Vec<_>>()
+        ));
+    }
+    let expected_replacements = custom_leaf_replacements
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if seen_replacements != expected_replacements {
+        return Err(format!(
+            "custom replacement parents are not active incumbent leaves: {:?}",
+            expected_replacements
+                .difference(&seen_replacements)
+                .collect::<Vec<_>>()
+        ));
+    }
+    leaves.extend(restored_addresses.iter().copied());
+    leaves.extend(released_children.iter().copied());
+    let mut candidate = rebuild_from_leaf_set_with_custom_face_slots(
+        source,
+        &HierarchyLeafSet { leaves },
+        &retained_custom_source_faces,
+        &retained_custom_triangles,
+    )?;
+    restore_incumbent_positions(incumbent, &mut candidate);
+    let incumbent_sources = incumbent
+        .source_vertex_slots
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let helper_source_vertices = candidate
+        .source_vertex_slots
+        .iter()
+        .flatten()
+        .filter(|source| !incumbent_sources.contains(source))
+        .count();
+    Ok(SectorRestoreMaterialization {
+        mesh: candidate,
+        removed_mixed_faces: mixed_faces,
+        restored_source_faces,
+        restored_addresses,
+        released_children,
+        inserted_custom_triangles: custom_leaf_replacements
+            .values()
+            .flatten()
+            .copied()
+            .map(canonical_triangle)
+            .collect(),
+        helper_source_vertices,
+    })
+}
+
+pub(super) fn custom_sectors_adjacent_to_parent(
+    source: &MotherGrid,
+    mesh: &HierarchyLeafMesh,
+    atlas: &SectorRecoveryAtlas,
+    parent: TriangleAddress,
+) -> Result<BTreeSet<u64>, String> {
+    let parent_faces = mesh
+        .mesh
+        .active_triangle_slots()
+        .filter(|&face| mesh.triangle_addresses[face] == Some(parent))
+        .collect::<Vec<_>>();
+    if parent_faces.len() != 1 {
+        return Err(format!(
+            "boundary parent {parent:?} has {} incumbent faces",
+            parent_faces.len()
+        ));
+    }
+    let mut counts = BTreeMap::<Edge, usize>::new();
+    for face in source_descendant_faces(source, parent) {
+        for edge in triangle_edges(source.mesh.triangles()[face]) {
+            *counts.entry(edge).or_default() += 1;
+        }
+    }
+    let boundary = counts
+        .into_iter()
+        .filter_map(|(edge, count)| (count == 1).then_some(edge))
+        .collect::<BTreeSet<_>>();
+    Ok(atlas
+        .sectors
+        .iter()
+        .filter_map(|(&sector, coverage)| {
+            (!coverage.boundary_edges.is_disjoint(&boundary)).then_some(sector)
+        })
+        .collect())
+}
+
 fn custom_faces_by_sector(
     mesh: &HierarchyLeafMesh,
     atlas: &SectorRecoveryAtlas,
@@ -378,43 +573,90 @@ fn direct_trial(
     local_geometry_attempted: bool,
     strict_certified: bool,
 ) -> DirectSectorRestoreTrial {
-    let outside_before = face_signatures(
+    let angle_range_deg = mesh_angle_range(&mesh);
+    let outside_topology_bitwise_equal = logical_exterior_equal(
         context.incumbent,
-        Some(context.removed_mixed_faces),
+        context.removed_mixed_faces,
         &BTreeSet::new(),
+        &mesh,
+        context.restored_addresses,
     );
-    let outside_after = face_signatures(&mesh, None, context.restored_addresses);
-    let outside_sources = context
-        .incumbent
-        .mesh
-        .active_triangle_slots()
-        .filter(|face| !context.removed_mixed_faces.contains(face))
-        .flat_map(|face| context.incumbent.mesh.triangles()[face])
-        .filter_map(|compact| context.incumbent.source_vertex_slots[compact])
-        .collect::<BTreeSet<_>>();
-    let old_positions = source_positions(context.incumbent);
-    let new_positions = source_positions(&mesh);
-    let edge_incidence_at_most_two = edge_incidence(&mesh.mesh).values().all(|&count| count <= 2)
-        && mesh.mesh.open_edge_count() == 0;
+    let outside_coordinates_bitwise_equal =
+        outside_coordinates_equal(context.incumbent, context.removed_mixed_faces, &mesh);
+    let edge_incidence_at_most_two = closed_edge_incidence(&mesh);
     DirectSectorRestoreTrial {
         sector_id: context.sector_id,
-        angle_range_deg: angle_range(&mesh),
+        angle_range_deg,
         mesh,
         removed_mixed_faces: context.removed_mixed_faces.clone(),
         restored_source_faces: context.restored_source_faces.clone(),
         helper_source_vertices: context.helper_source_vertices,
-        outside_topology_bitwise_equal: outside_before == outside_after,
-        outside_coordinates_bitwise_equal: outside_sources.iter().all(|source| {
-            old_positions.get(source).is_some_and(|old| {
-                new_positions
-                    .get(source)
-                    .is_some_and(|new| point_bits_equal(*old, *new))
-            })
-        }),
+        outside_topology_bitwise_equal,
+        outside_coordinates_bitwise_equal,
         edge_incidence_at_most_two,
         local_geometry_attempted,
         strict_certified,
     }
+}
+
+pub(super) fn logical_exterior_equal(
+    before: &HierarchyLeafMesh,
+    removed_faces: &BTreeSet<usize>,
+    removed_addresses: &BTreeSet<TriangleAddress>,
+    after: &HierarchyLeafMesh,
+    inserted_addresses: &BTreeSet<TriangleAddress>,
+) -> bool {
+    logical_exterior_equal_with_custom(
+        before,
+        removed_faces,
+        removed_addresses,
+        after,
+        inserted_addresses,
+        &BTreeSet::new(),
+    )
+}
+
+pub(super) fn logical_exterior_equal_with_custom(
+    before: &HierarchyLeafMesh,
+    removed_faces: &BTreeSet<usize>,
+    removed_addresses: &BTreeSet<TriangleAddress>,
+    after: &HierarchyLeafMesh,
+    inserted_addresses: &BTreeSet<TriangleAddress>,
+    inserted_custom_triangles: &BTreeSet<[usize; 3]>,
+) -> bool {
+    face_signatures(
+        before,
+        Some(removed_faces),
+        removed_addresses,
+        &BTreeSet::new(),
+    ) == face_signatures(after, None, inserted_addresses, inserted_custom_triangles)
+}
+
+pub(super) fn outside_coordinates_equal(
+    before: &HierarchyLeafMesh,
+    removed_faces: &BTreeSet<usize>,
+    after: &HierarchyLeafMesh,
+) -> bool {
+    let outside_sources = before
+        .mesh
+        .active_triangle_slots()
+        .filter(|face| !removed_faces.contains(face))
+        .flat_map(|face| before.mesh.triangles()[face])
+        .filter_map(|compact| before.source_vertex_slots[compact])
+        .collect::<BTreeSet<_>>();
+    let old_positions = source_positions(before);
+    let new_positions = source_positions(after);
+    outside_sources.iter().all(|source| {
+        old_positions.get(source).is_some_and(|old| {
+            new_positions
+                .get(source)
+                .is_some_and(|new| point_bits_equal(*old, *new))
+        })
+    })
+}
+
+pub(super) fn closed_edge_incidence(mesh: &HierarchyLeafMesh) -> bool {
+    edge_incidence(&mesh.mesh).values().all(|&count| count <= 2) && mesh.mesh.open_edge_count() == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -427,6 +669,7 @@ fn face_signatures(
     mesh: &HierarchyLeafMesh,
     excluded_faces: Option<&BTreeSet<usize>>,
     excluded_addresses: &BTreeSet<TriangleAddress>,
+    excluded_custom_triangles: &BTreeSet<[usize; 3]>,
 ) -> BTreeMap<FaceSignature, usize> {
     let mut result = BTreeMap::new();
     for face in mesh.mesh.active_triangle_slots() {
@@ -439,7 +682,11 @@ fn face_signatures(
             }
             FaceSignature::Hierarchy(address)
         } else if let Ok(triangle) = source_triangle(mesh, face) {
-            FaceSignature::Custom(canonical_triangle(triangle))
+            let triangle = canonical_triangle(triangle);
+            if excluded_custom_triangles.contains(&triangle) {
+                continue;
+            }
+            FaceSignature::Custom(triangle)
         } else {
             continue;
         };
@@ -478,7 +725,7 @@ fn edge_incidence(mesh: &earthmesh_mesh::MeshState) -> BTreeMap<Edge, usize> {
     counts
 }
 
-fn angle_range(mesh: &HierarchyLeafMesh) -> Option<(f64, f64)> {
+pub(super) fn mesh_angle_range(mesh: &HierarchyLeafMesh) -> Option<(f64, f64)> {
     let mut minimum = f64::INFINITY;
     let mut maximum = f64::NEG_INFINITY;
     for face in mesh.mesh.active_triangle_slots() {
