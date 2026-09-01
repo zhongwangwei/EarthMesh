@@ -55,8 +55,10 @@ pub use boundary_parent_peel::{
     BoundaryParentPeelOutcome, BoundaryParentPeelTrial,
 };
 pub use cldp_gate::{
-    build_frozen_cldp_gate_evidence, evaluate_frozen_cldp_gate, FrozenCldpGateEvidence,
-    FrozenCldpGateOutcome,
+    build_frozen_cldp_gate_evidence, build_post_pr78_combined_recovery_report,
+    evaluate_frozen_cldp_gate, post_pr78_combined_recovery_report_json, FrozenCldpGateEvidence,
+    FrozenCldpGateOutcome, FrozenN6IntervalStatus, FrozenN6MixedExistenceStatus,
+    PostPr78CombinedRecoveryReport, PostPr78FamilyEvidence,
 };
 pub use collar::{
     solve_expanding_collar, ExpandingCollarResult, PromotionBudget, PromotionFailureReason,

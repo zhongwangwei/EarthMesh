@@ -18,7 +18,7 @@ W3 remains `TopologyClosedNoUsableEmbedding`: its initial candidates contain
 non-positive faces, crossings, and rotation mismatches before angle
 optimization. W4 is therefore disabled.
 
-## Frozen N6 evidence through PR78
+## Frozen N6 evidence through PR85
 
 - PR61: W3 +1/+2 initial audits report `17/13` crossing pairs and two rotation
   mismatches each.
@@ -177,6 +177,16 @@ optimization. W4 is therefore disabled.
   face-band budget, and none closes topology. The result is therefore
   `ContinuousSearchIncomplete`; geometry is correctly not entered because no
   topology candidate closed. This is not a retained-core No-Go proof.
+- PR85: the decisive gate aggregates the singleton, exact action-set, combined
+  geometry, and retained-core evidence without changing their scopes. No strict
+  mixed candidate exists in the evaluated searches, interval closure has not
+  been attempted, and 659 retained-core families remain budget-incomplete. The
+  mixed existence status is therefore `ContinuousSearchIncomplete`, while the
+  separately certified all-fine product remains `CertifiedSafeFallback` at
+  `54.361673298250°–72.000000000000°`. Its only adaptive-delivery failures are
+  zero retained parents, no mixed levels, and compression ratio `1.0`. N12 and
+  NXP80 stay locked because neither strict N6 success nor scoped N6 closure has
+  been established.
 
 ## Current stop condition
 
@@ -184,9 +194,9 @@ CLDP still guarantees the certified safe mother result, but no strict mixed N6
 witness exists in the evaluated singleton, combined, or retained-core trials.
 The best mixed incumbent remains `39.278499430048°–80.721500570507°`; the
 certified safe fallback remains `54.361673298250°–72.000000000000°`. The 659
-retained-core budget outcomes prevent a scoped N6 No-Go, so PR85 must report
-`ContinuousSearchIncomplete` and keep N12/N24/N40 and NXP80 gated unless its
-decisive final certificates find a new strict mixed witness.
+retained-core budget outcomes prevent a scoped N6 No-Go. PR85 therefore reports
+`ContinuousSearchIncomplete`, publishes only the certified safe fallback, and
+keeps N12/N24/N40 and NXP80 gated.
 
 The PR63 atlas records every active angle, custom-triangle provenance entry,
 violation component, and source-face expansion edge in deterministic JSON. It

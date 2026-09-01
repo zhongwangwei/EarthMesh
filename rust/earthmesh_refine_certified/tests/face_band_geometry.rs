@@ -1,29 +1,32 @@
 use earthmesh_refine_certified::coarsen::{
     accept_monotone_working_candidate, audit_embedding_transfer, audit_local_repair_action,
     build_face_band_problem, build_face_band_problem_with_source_face_rings,
-    build_frozen_cldp_gate_evidence, build_local_action_conflict_graph, build_promotion_patch,
+    build_frozen_cldp_gate_evidence, build_local_action_conflict_graph,
+    build_post_pr78_combined_recovery_report, build_promotion_patch,
     build_singleton_local_repair_registry, build_stratified_annulus, build_violation_support_atlas,
     coarse_core_ears, continue_nested_domain, enumerate_compatible_action_sets,
     evaluate_frozen_cldp_gate, frozen_n6_geometry_evidence_json_with_solver_domain,
     materialize_combined_repair_plan, max_min_trust_step_evidence,
     n6_legacy_mixed_fixture_with_source_levels, peel_boundary_parent_for_sector,
-    plan_retained_core_subsets, restore_fine_compatible_sector, restore_source_patch,
-    retained_core_ladder_report_json, search_local_topology_neighbourhood,
-    solve_combined_global_max_min, solve_complete_retained_core_ladder,
-    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
+    plan_retained_core_subsets, post_pr78_combined_recovery_report_json,
+    restore_fine_compatible_sector, restore_source_patch, retained_core_ladder_report_json,
+    search_local_topology_neighbourhood, solve_combined_global_max_min,
+    solve_complete_retained_core_ladder, solve_elastic_patch_with_max_min_trust_start,
+    solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, solve_local_annular_collar,
     violation_support_atlas_json, AnchorBandPolicy, BoundaryParentPeelOutcome,
     CombinedRepairMaterialization, DirectSectorRestoreOutcome, DomainContinuationMode,
     DomainContinuationOutcome, DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome,
     ElasticPatch, ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
-    FrozenCldpGateOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
-    FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDefectVector, GeometryDomainId,
-    GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
-    HierarchyLeafMesh, LocalActionEffect, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
+    FrozenCldpGateOutcome, FrozenN6IntervalStatus, FrozenN6MixedExistenceStatus,
+    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
+    FullPolygonTopologyKey, GeometryDefectVector, GeometryDomainId, GeometryDomainWitness,
+    GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar, HierarchyLeafMesh,
+    LocalActionEffect, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
     LocalAnnularCollarOutcome, LocalRepairAction, LocalTopologyEvidence, LocalTopologyLimits,
-    LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
+    LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PostPr78FamilyEvidence, PromotionBudget,
+    PromotionFailureReason, PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
     RetainedCoreFamilyStatus, RetainedCoreLadderLimits, RetainedCoreTopologyLimits,
     SingletonFailureReason, ViolationSupportAtlas, WorkingMesh, WorkingMeshCandidate,
     WorkingMeshHardGates,
@@ -1226,37 +1229,7 @@ fn frozen_n6_pr78_final_local_recovery_gate_probe() {
         earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
     );
 
-    let budget = PromotionBudget {
-        local_topology_states: 128,
-        local_geometry_iterations: local_iterations,
-        maximum_patch_rings: 2,
-        maximum_helper_vertices: 512,
-    };
-    let (fallback_source, fallback_levels, fallback_result) = frozen_n6_cldp_result(budget);
-    let fallback = match &fallback_result.outcome {
-        PromotionOutcome::SafeMotherFallback(trial) => trial,
-        other => panic!("PR78 expected a certified safe fallback, got {other:?}"),
-    };
-    let required_levels = fallback_levels
-        .into_iter()
-        .map(|level| level.unwrap_or(0))
-        .collect::<Vec<_>>();
-    let geometry = match earthmesh_refine_certified::certify_geometry(fallback.mesh.mesh.clone()) {
-        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(geometry) => geometry,
-        other => panic!("PR78 fallback geometry rejected: {other:?}"),
-    };
-    let final_evidence = earthmesh_refine_certified::safe_mother_final_evidence(
-        &required_levels,
-        1,
-        geometry.primal(),
-    )
-    .unwrap();
-    let final_mesh =
-        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, final_evidence)
-            .unwrap();
-    let gate_evidence =
-        build_frozen_cldp_gate_evidence(&fallback_source, fallback, final_mesh.certificate())
-            .unwrap();
+    let gate_evidence = frozen_n6_safe_fallback_gate_evidence(local_iterations);
     let gate = evaluate_frozen_cldp_gate(&gate_evidence);
     assert_eq!(gate, FrozenCldpGateOutcome::CertifiedSafeFallback);
     assert_eq!(gate_evidence.retained_coarse_parents, 0);
@@ -1769,6 +1742,105 @@ fn frozen_n6_pr84_complete_retained_core_ladder_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit Frozen N6 PR85 decisive mixed gate"]
+fn frozen_n6_pr85_decisive_mixed_gate_probe() {
+    let fixture = frozen_n6_post_pr78_fixture();
+    let registry = build_singleton_local_repair_registry(
+        &fixture.source,
+        &fixture.mesh,
+        &fixture.patch,
+        &fixture.atlas,
+        &fixture.retained_parents,
+        8,
+    )
+    .unwrap();
+    let effects = registry
+        .iter()
+        .map(|candidate| {
+            audit_local_repair_action(
+                &candidate.action,
+                &fixture.atlas.evidence_sets.strict_violations,
+                &fixture.mesh,
+                &candidate.mesh,
+            )
+        })
+        .collect::<Vec<_>>();
+    let actions = registry
+        .into_iter()
+        .map(|candidate| candidate.action)
+        .collect::<Vec<_>>();
+    let graph = build_local_action_conflict_graph(&actions).unwrap();
+    let action_sets = enumerate_compatible_action_sets(
+        &graph,
+        &effects,
+        fixture.atlas.evidence_sets.strict_violations.len(),
+    )
+    .unwrap();
+    let original_violating_faces = fixture
+        .atlas
+        .evidence_sets
+        .strict_violations
+        .iter()
+        .map(|violation| violation.face)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let safe_fallback = frozen_n6_safe_fallback_gate_evidence(8);
+    let report = build_post_pr78_combined_recovery_report(
+        earthmesh_refine_certified::mesh_fingerprint(&fixture.mesh.mesh),
+        PostPr78FamilyEvidence {
+            original_violation_count: fixture.atlas.evidence_sets.strict_violations.len(),
+            original_violating_faces,
+            singleton_actions: actions.len(),
+            strict_singleton_candidates: effects
+                .iter()
+                .filter(|effect| effect.strict_certified)
+                .count(),
+            compatible_action_sets: action_sets.compatible_plans.len(),
+            pruned_action_sets: 0,
+            combined_topologies_closed: 122,
+            combined_geometry_attempted: 10,
+            strict_combined_candidates: 0,
+            best_mixed_angle_range_deg: Some((39.278499430048, 80.721500570507)),
+            best_combined_angle_range_deg: Some((30.000000000281, 90.000000000509)),
+            best_combined_margin_deg: Some(-10.200000000509),
+            best_combined_retained_parents: 7,
+            retained_core_subsets_tested: 154,
+            retained_core_families_tested: 924,
+            retained_core_topologies_closed: 0,
+            retained_core_geometry_attempted: 0,
+            retained_core_exact_no_solution: 265,
+            retained_core_search_incomplete: 659,
+            strict_retained_core_candidates: 0,
+            combined_continuous_search_incomplete: true,
+        },
+        None,
+        safe_fallback,
+        FrozenN6IntervalStatus::NotAttempted,
+    )
+    .unwrap();
+    assert_eq!(actions.len(), 14);
+    assert_eq!(original_violating_faces, 89);
+    assert_eq!(action_sets.compatible_plans.len(), 16_383);
+    assert_eq!(
+        report.product_outcome,
+        FrozenCldpGateOutcome::CertifiedSafeFallback
+    );
+    assert_eq!(
+        report.mixed_existence_status,
+        FrozenN6MixedExistenceStatus::ContinuousSearchIncomplete
+    );
+    assert!(!report.next_scale_unlocked);
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr85DecisiveMixedGate\",\"taskbook_sha256\":\"{CCLR_TASKBOOK_SHA256}\",\"report\":{}}}",
+        post_pr78_combined_recovery_report_json(&report),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 struct FrozenN6PostPr78Fixture {
     source: earthmesh_refine_certified::MotherGrid,
     source_levels: Vec<Option<usize>>,
@@ -2176,6 +2248,40 @@ fn frozen_n6_cldp_result(
         budget,
     );
     (source, source_levels, result)
+}
+
+fn frozen_n6_safe_fallback_gate_evidence(
+    local_geometry_iterations: usize,
+) -> earthmesh_refine_certified::coarsen::FrozenCldpGateEvidence {
+    let budget = PromotionBudget {
+        local_topology_states: 128,
+        local_geometry_iterations,
+        maximum_patch_rings: 2,
+        maximum_helper_vertices: 512,
+    };
+    let (source, source_levels, result) = frozen_n6_cldp_result(budget);
+    let fallback = match &result.outcome {
+        PromotionOutcome::SafeMotherFallback(trial) => trial,
+        other => panic!("expected a certified safe fallback, got {other:?}"),
+    };
+    let required_levels = source_levels
+        .into_iter()
+        .map(|level| level.unwrap_or(0))
+        .collect::<Vec<_>>();
+    let geometry = match earthmesh_refine_certified::certify_geometry(fallback.mesh.mesh.clone()) {
+        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(geometry) => geometry,
+        other => panic!("fallback geometry rejected: {other:?}"),
+    };
+    let final_evidence = earthmesh_refine_certified::safe_mother_final_evidence(
+        &required_levels,
+        1,
+        geometry.primal(),
+    )
+    .unwrap();
+    let final_mesh =
+        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, final_evidence)
+            .unwrap();
+    build_frozen_cldp_gate_evidence(&source, fallback, final_mesh.certificate()).unwrap()
 }
 
 fn elastic_outcome_geometry(

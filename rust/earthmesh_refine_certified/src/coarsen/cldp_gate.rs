@@ -37,6 +37,159 @@ pub enum FrozenCldpGateOutcome {
     Failed(Vec<&'static str>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrozenN6MixedExistenceStatus {
+    CertifiedAdaptive,
+    ContinuousSearchIncomplete,
+    ScopedNoGo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrozenN6IntervalStatus {
+    NotAttempted,
+    ScopedInfeasible,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostPr78FamilyEvidence {
+    pub original_violation_count: usize,
+    pub original_violating_faces: usize,
+    pub singleton_actions: usize,
+    pub strict_singleton_candidates: usize,
+    pub compatible_action_sets: usize,
+    pub pruned_action_sets: usize,
+    pub combined_topologies_closed: usize,
+    pub combined_geometry_attempted: usize,
+    pub strict_combined_candidates: usize,
+    pub best_mixed_angle_range_deg: Option<(f64, f64)>,
+    pub best_combined_angle_range_deg: Option<(f64, f64)>,
+    pub best_combined_margin_deg: Option<f64>,
+    pub best_combined_retained_parents: usize,
+    pub retained_core_subsets_tested: usize,
+    pub retained_core_families_tested: usize,
+    pub retained_core_topologies_closed: usize,
+    pub retained_core_geometry_attempted: usize,
+    pub retained_core_exact_no_solution: usize,
+    pub retained_core_search_incomplete: usize,
+    pub strict_retained_core_candidates: usize,
+    pub combined_continuous_search_incomplete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostPr78CombinedRecoveryReport {
+    pub fixture_fingerprint: u64,
+    pub families: PostPr78FamilyEvidence,
+    pub interval_status: FrozenN6IntervalStatus,
+    pub mixed_existence_status: FrozenN6MixedExistenceStatus,
+    pub product_outcome: FrozenCldpGateOutcome,
+    pub safe_fallback: FrozenCldpGateEvidence,
+    pub next_scale_unlocked: bool,
+}
+
+pub fn build_post_pr78_combined_recovery_report(
+    fixture_fingerprint: u64,
+    families: PostPr78FamilyEvidence,
+    strict_candidate: Option<&FrozenCldpGateEvidence>,
+    safe_fallback: FrozenCldpGateEvidence,
+    interval_status: FrozenN6IntervalStatus,
+) -> Result<PostPr78CombinedRecoveryReport, String> {
+    if families.original_violation_count == 0
+        || families.original_violating_faces == 0
+        || families.singleton_actions == 0
+        || families.compatible_action_sets == 0
+        || families.retained_core_subsets_tested == 0
+        || families.retained_core_families_tested == 0
+    {
+        return Err("post-PR78 report requires evidence from every registered family".into());
+    }
+    if families.retained_core_families_tested != families.retained_core_subsets_tested * 6
+        || families.retained_core_exact_no_solution
+            + families.retained_core_search_incomplete
+            + families.retained_core_topologies_closed
+            != families.retained_core_families_tested
+    {
+        return Err("retained-core F0-F5 family accounting is incomplete".into());
+    }
+    let fallback_outcome = evaluate_frozen_cldp_gate(&safe_fallback);
+    if fallback_outcome != FrozenCldpGateOutcome::CertifiedSafeFallback {
+        return Err(format!(
+            "Frozen N6 report lacks its certified safe fallback: {fallback_outcome:?}"
+        ));
+    }
+    let adaptive = strict_candidate
+        .map(evaluate_frozen_cldp_gate)
+        .is_some_and(|outcome| outcome == FrozenCldpGateOutcome::CertifiedAdaptive);
+    let product_outcome = if adaptive {
+        FrozenCldpGateOutcome::CertifiedAdaptive
+    } else {
+        fallback_outcome
+    };
+    let incomplete = families.combined_continuous_search_incomplete
+        || families.retained_core_search_incomplete > 0;
+    let mixed_existence_status = if adaptive {
+        FrozenN6MixedExistenceStatus::CertifiedAdaptive
+    } else if incomplete || interval_status == FrozenN6IntervalStatus::NotAttempted {
+        FrozenN6MixedExistenceStatus::ContinuousSearchIncomplete
+    } else {
+        FrozenN6MixedExistenceStatus::ScopedNoGo
+    };
+    let next_scale_unlocked = matches!(
+        mixed_existence_status,
+        FrozenN6MixedExistenceStatus::CertifiedAdaptive | FrozenN6MixedExistenceStatus::ScopedNoGo
+    );
+    Ok(PostPr78CombinedRecoveryReport {
+        fixture_fingerprint,
+        families,
+        interval_status,
+        mixed_existence_status,
+        product_outcome,
+        safe_fallback,
+        next_scale_unlocked,
+    })
+}
+
+pub fn post_pr78_combined_recovery_report_json(report: &PostPr78CombinedRecoveryReport) -> String {
+    let families = &report.families;
+    let fallback = &report.safe_fallback;
+    format!(
+        "{{\"fixture_fingerprint\":{},\"original_violation_count\":{},\"original_violating_faces\":{},\"singleton_actions\":{},\"strict_singleton_candidates\":{},\"compatible_action_sets\":{},\"pruned_action_sets\":{},\"combined_topologies_closed\":{},\"combined_geometry_attempted\":{},\"strict_combined_candidates\":{},\"best_mixed_angle_range_deg\":{},\"best_combined_angle_range_deg\":{},\"best_combined_margin_deg\":{},\"best_combined_retained_parents\":{},\"retained_core_subsets_tested\":{},\"retained_core_families_tested\":{},\"retained_core_topologies_closed\":{},\"retained_core_geometry_attempted\":{},\"retained_core_exact_no_solution\":{},\"retained_core_search_incomplete\":{},\"strict_retained_core_candidates\":{},\"combined_continuous_search_incomplete\":{},\"interval_status\":\"{:?}\",\"mixed_existence_status\":\"{:?}\",\"product_outcome\":\"{:?}\",\"safe_fallback_internal_angle_range_deg\":[{:.12},{:.12}],\"safe_fallback_final_angle_range_deg\":[{:.12},{:.12}],\"safe_fallback_retained_parents\":{},\"safe_fallback_compression_ratio\":{:.12},\"next_scale_unlocked\":{}}}",
+        report.fixture_fingerprint,
+        families.original_violation_count,
+        families.original_violating_faces,
+        families.singleton_actions,
+        families.strict_singleton_candidates,
+        families.compatible_action_sets,
+        families.pruned_action_sets,
+        families.combined_topologies_closed,
+        families.combined_geometry_attempted,
+        families.strict_combined_candidates,
+        optional_range_json(families.best_mixed_angle_range_deg),
+        optional_range_json(families.best_combined_angle_range_deg),
+        families
+            .best_combined_margin_deg
+            .map_or_else(|| "null".into(), |value| format!("{value:.12}")),
+        families.best_combined_retained_parents,
+        families.retained_core_subsets_tested,
+        families.retained_core_families_tested,
+        families.retained_core_topologies_closed,
+        families.retained_core_geometry_attempted,
+        families.retained_core_exact_no_solution,
+        families.retained_core_search_incomplete,
+        families.strict_retained_core_candidates,
+        families.combined_continuous_search_incomplete,
+        report.interval_status,
+        report.mixed_existence_status,
+        report.product_outcome,
+        fallback.internal_angle_range_deg.0,
+        fallback.internal_angle_range_deg.1,
+        fallback.final_angle_range_deg.0,
+        fallback.final_angle_range_deg.1,
+        fallback.retained_coarse_parents,
+        fallback.compression_ratio,
+        report.next_scale_unlocked,
+    )
+}
+
 pub fn build_frozen_cldp_gate_evidence(
     source: &MotherGrid,
     trial: &PromotionTrial,
@@ -177,6 +330,13 @@ pub fn evaluate_frozen_cldp_gate(evidence: &FrozenCldpGateEvidence) -> FrozenCld
     }
 }
 
+fn optional_range_json(range: Option<(f64, f64)>) -> String {
+    range.map_or_else(
+        || "null".into(),
+        |(minimum, maximum)| format!("[{minimum:.12},{maximum:.12}]"),
+    )
+}
+
 fn vertex_degrees(mesh: &HierarchyLeafMesh) -> Vec<usize> {
     let mut degrees = vec![0; mesh.mesh.vertices().len()];
     for face in mesh.mesh.active_triangle_slots() {
@@ -222,6 +382,32 @@ mod tests {
         }
     }
 
+    fn families(search_incomplete: usize) -> PostPr78FamilyEvidence {
+        PostPr78FamilyEvidence {
+            original_violation_count: 109,
+            original_violating_faces: 89,
+            singleton_actions: 14,
+            strict_singleton_candidates: 0,
+            compatible_action_sets: 16_383,
+            pruned_action_sets: 0,
+            combined_topologies_closed: 122,
+            combined_geometry_attempted: 10,
+            strict_combined_candidates: 0,
+            best_mixed_angle_range_deg: Some((39.278499430048, 80.721500570507)),
+            best_combined_angle_range_deg: Some((30.000000000281, 90.000000000509)),
+            best_combined_margin_deg: Some(-10.200000000509),
+            best_combined_retained_parents: 7,
+            retained_core_subsets_tested: 154,
+            retained_core_families_tested: 924,
+            retained_core_topologies_closed: 0,
+            retained_core_geometry_attempted: 0,
+            retained_core_exact_no_solution: 265,
+            retained_core_search_incomplete: search_incomplete,
+            strict_retained_core_candidates: 0,
+            combined_continuous_search_incomplete: true,
+        }
+    }
+
     #[test]
     fn strict_mixed_returns_certified_adaptive() {
         assert_eq!(
@@ -246,5 +432,67 @@ mod tests {
             evaluate_frozen_cldp_gate(&evidence),
             FrozenCldpGateOutcome::Failed(vec!["compression_ratio"])
         );
+    }
+
+    #[test]
+    fn incomplete_mixed_search_keeps_the_certified_safe_fallback() {
+        let report = build_post_pr78_combined_recovery_report(
+            7,
+            families(659),
+            None,
+            passing(false),
+            FrozenN6IntervalStatus::NotAttempted,
+        )
+        .unwrap();
+        assert_eq!(
+            report.product_outcome,
+            FrozenCldpGateOutcome::CertifiedSafeFallback
+        );
+        assert_eq!(
+            report.mixed_existence_status,
+            FrozenN6MixedExistenceStatus::ContinuousSearchIncomplete
+        );
+        assert!(!report.next_scale_unlocked);
+    }
+
+    #[test]
+    fn strict_mixed_witness_overrides_incomplete_searches() {
+        let report = build_post_pr78_combined_recovery_report(
+            7,
+            families(659),
+            Some(&passing(true)),
+            passing(false),
+            FrozenN6IntervalStatus::NotAttempted,
+        )
+        .unwrap();
+        assert_eq!(
+            report.mixed_existence_status,
+            FrozenN6MixedExistenceStatus::CertifiedAdaptive
+        );
+        assert_eq!(
+            report.product_outcome,
+            FrozenCldpGateOutcome::CertifiedAdaptive
+        );
+        assert!(report.next_scale_unlocked);
+    }
+
+    #[test]
+    fn scoped_no_go_requires_closed_search_and_interval_proof() {
+        let mut evidence = families(0);
+        evidence.combined_continuous_search_incomplete = false;
+        evidence.retained_core_exact_no_solution = evidence.retained_core_families_tested;
+        let report = build_post_pr78_combined_recovery_report(
+            7,
+            evidence,
+            None,
+            passing(false),
+            FrozenN6IntervalStatus::ScopedInfeasible,
+        )
+        .unwrap();
+        assert_eq!(
+            report.mixed_existence_status,
+            FrozenN6MixedExistenceStatus::ScopedNoGo
+        );
+        assert!(report.next_scale_unlocked);
     }
 }
