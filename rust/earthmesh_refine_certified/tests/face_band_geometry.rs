@@ -4,19 +4,19 @@ use earthmesh_refine_certified::coarsen::{
     build_promotion_patch, build_stratified_annulus, build_violation_support_atlas,
     continue_nested_domain, evaluate_frozen_cldp_gate,
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
-    n6_legacy_mixed_fixture_with_source_levels, restore_source_patch,
-    search_local_topology_neighbourhood, solve_elastic_patch_with_max_min_trust_start,
-    solve_exact_face_bands, solve_expanding_collar,
+    n6_legacy_mixed_fixture_with_source_levels, restore_fine_compatible_sector,
+    restore_source_patch, search_local_topology_neighbourhood,
+    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
-    AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
-    DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome, ElasticTargetMode,
-    EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FrozenCldpGateOutcome,
-    FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
-    FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
-    GeometryStartId, GlobalExactSelectedEar, LocalTopologyEvidence, LocalTopologyLimits,
-    LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
+    AnchorBandPolicy, DirectSectorRestoreOutcome, DomainContinuationMode,
+    DomainContinuationOutcome, DomainContinuationSchedule, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticTargetMode, EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome,
+    FrozenCldpGateOutcome, FullPolygonCberLimits, FullPolygonMergeEvidence,
+    FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness,
+    GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar, LocalTopologyEvidence,
+    LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget,
+    PromotionFailureReason, PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -630,6 +630,118 @@ fn frozen_n6_pr74_incumbent_local_components_probe() {
         atlas.local_recovery_components.len(),
         atlas.support_inflation.strict_seed_source_faces,
         violation_support_atlas_json(&atlas),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit finite Frozen N6 PR75 direct-sector restore gate"]
+fn frozen_n6_pr75_direct_sector_restore_probe() {
+    let local_iterations = usize_env("EARTHMESH_LOCAL_RESTORE_ITERATIONS", 8);
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    let sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter_map(|atom| match atom {
+            RecoveryAtom::Sector { sector_id, .. } => Some(*sector_id),
+            RecoveryAtom::HierarchyLeaf { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut fine_compatible = 0usize;
+    let mut certified = 0usize;
+    let mut geometry_attempted = 0usize;
+    let mut parent_peel = 0usize;
+    let mut local_collar = 0usize;
+    let mut invalid = 0usize;
+    let mut exterior_topology_equal = true;
+    let mut exterior_coordinates_equal = true;
+    let mut edge_incidence_two = true;
+    let mut best_range = None::<(f64, f64)>;
+    for sector_id in sectors.iter().copied() {
+        match restore_fine_compatible_sector(
+            &source,
+            mesh,
+            patch,
+            &atlas.sector_recovery_atlas,
+            sector_id,
+            local_iterations,
+        ) {
+            DirectSectorRestoreOutcome::Certified(trial) => {
+                fine_compatible += 1;
+                certified += 1;
+                geometry_attempted += usize::from(trial.local_geometry_attempted);
+                exterior_topology_equal &= trial.outside_topology_bitwise_equal;
+                exterior_coordinates_equal &= trial.outside_coordinates_bitwise_equal;
+                edge_incidence_two &= trial.edge_incidence_at_most_two;
+                if let Some(range) = trial.angle_range_deg {
+                    if best_range.is_none_or(|best| {
+                        (range.0 - 40.2).min(79.8 - range.1) > (best.0 - 40.2).min(79.8 - best.1)
+                    }) {
+                        best_range = Some(range);
+                    }
+                }
+            }
+            DirectSectorRestoreOutcome::GeometryNotCertified { trial, .. } => {
+                fine_compatible += 1;
+                geometry_attempted += usize::from(trial.local_geometry_attempted);
+                exterior_topology_equal &= trial.outside_topology_bitwise_equal;
+                exterior_coordinates_equal &= trial.outside_coordinates_bitwise_equal;
+                edge_incidence_two &= trial.edge_incidence_at_most_two;
+                if let Some(range) = trial.angle_range_deg {
+                    if best_range.is_none_or(|best| {
+                        (range.0 - 40.2).min(79.8 - range.1) > (best.0 - 40.2).min(79.8 - best.1)
+                    }) {
+                        best_range = Some(range);
+                    }
+                }
+            }
+            DirectSectorRestoreOutcome::RequiresBoundaryParentPeel { .. } => parent_peel += 1,
+            DirectSectorRestoreOutcome::RequiresLocalCollar { .. } => local_collar += 1,
+            DirectSectorRestoreOutcome::InvalidInput { .. } => invalid += 1,
+        }
+    }
+    assert!(fine_compatible > 0);
+    assert!(parent_peel + local_collar > 0);
+    assert_eq!(invalid, 0);
+    assert!(exterior_topology_equal);
+    assert!(exterior_coordinates_equal);
+    assert!(edge_incidence_two);
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+    let best_range_json = best_range.map_or_else(
+        || "null".into(),
+        |range| format!("[{:.12},{:.12}]", range.0, range.1),
+    );
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr75DirectSectorRestore\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"DirectRestoreMaterialized\",\"mesh_unchanged\":true,\"violating_sectors\":{},\"fine_compatible_restores\":{fine_compatible},\"boundary_parent_peel_blockers\":{parent_peel},\"local_collar_blockers\":{local_collar},\"invalid_candidates\":{invalid},\"local_geometry_iterations\":{local_iterations},\"local_geometry_attempted\":{geometry_attempted},\"strict_certified\":{certified},\"outside_topology_bitwise_equal\":{exterior_topology_equal},\"outside_coordinates_bitwise_equal\":{exterior_coordinates_equal},\"edge_incidence_at_most_two\":{edge_incidence_two},\"best_direct_angle_range\":{best_range_json}}}",
+        sectors.len(),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();
