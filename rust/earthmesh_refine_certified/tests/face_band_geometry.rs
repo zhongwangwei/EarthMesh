@@ -1,12 +1,13 @@
 use earthmesh_refine_certified::coarsen::{
-    audit_embedding_transfer, build_face_band_problem,
+    audit_embedding_transfer, audit_local_repair_action, build_face_band_problem,
     build_face_band_problem_with_source_face_rings, build_frozen_cldp_gate_evidence,
-    build_promotion_patch, build_stratified_annulus, build_violation_support_atlas,
-    coarse_core_ears, continue_nested_domain, evaluate_frozen_cldp_gate,
-    frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
-    n6_legacy_mixed_fixture_with_source_levels, peel_boundary_parent_for_sector,
-    restore_fine_compatible_sector, restore_source_patch, search_local_topology_neighbourhood,
-    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands, solve_expanding_collar,
+    build_local_repair_action, build_promotion_patch, build_stratified_annulus,
+    build_violation_support_atlas, coarse_core_ears, continue_nested_domain,
+    evaluate_frozen_cldp_gate, frozen_n6_geometry_evidence_json_with_solver_domain,
+    max_min_trust_step_evidence, n6_legacy_mixed_fixture_with_source_levels,
+    peel_boundary_parent_for_sector, restore_fine_compatible_sector, restore_source_patch,
+    search_local_topology_neighbourhood, solve_elastic_patch_with_max_min_trust_start,
+    solve_exact_face_bands, solve_expanding_collar,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, solve_local_annular_collar,
     violation_support_atlas_json, AnchorBandPolicy, BoundaryParentPeelOutcome,
@@ -16,9 +17,9 @@ use earthmesh_refine_certified::coarsen::{
     FullPolygonCberLimits, FullPolygonMergeEvidence, FullPolygonMergeOutcome,
     FullPolygonTopologyKey, GeometryDomainId, GeometryDomainWitness, GeometryFailureWitness,
     GeometryStartId, GlobalExactSelectedEar, LocalAnnularCollarLevel, LocalAnnularCollarLimits,
-    LocalAnnularCollarOutcome, LocalTopologyEvidence, LocalTopologyLimits,
+    LocalAnnularCollarOutcome, LocalRepairKind, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome, MaxMinTrustOutcomeKind, PromotionBudget, PromotionFailureReason,
-    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom,
+    PromotionLevel, PromotionOutcome, PromotionPatchTopology, RecoveryAtom, SingletonFailureReason,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -27,6 +28,8 @@ const CLDP_TASKBOOK_SHA256: &str =
     "546a7b60ed8ad94e04f337bfb0c870ef9a2a40ea65545ebe2c256be967a8d722";
 const SEACR_TASKBOOK_SHA256: &str =
     "5f9e16b4fb8f51935a0aebf9ce313c87ab4dc4a9761aaa53c51c98ab6d8cd6e0";
+const CCLR_TASKBOOK_SHA256: &str =
+    "2fcf2585b7ce80f4c1114a1e90ec0f5da175ca79ffca0df8a2ed0ba5d364ec7a";
 const LEGACY_MARGIN_DEG: f64 = -1.653_074_281_139_495_8;
 const MATERIAL_IMPROVEMENT_DEG: f64 = 0.25;
 const DEFAULT_TOPOLOGY_STATES: usize = 500;
@@ -1256,7 +1259,7 @@ fn frozen_n6_pr78_final_local_recovery_gate_probe() {
         |range| format!("[{:.12},{:.12}]", range.0, range.1),
     );
     let json = format!(
-        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr78FinalLocalRecoveryGate\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"CertifiedSafeFallback\",\"certified_adaptive\":false,\"mesh_unchanged\":true,\"violating_sectors\":{sector_count},\"materialized_local_candidates\":{materialized},\"direct_trials\":{direct_trials},\"one_parent_trials\":{one_parent_trials},\"two_parent_trials\":{two_parent_trials},\"invalid_candidates\":{invalid},\"strict_local_candidates\":{strict_candidates},\"local_geometry_iterations\":{local_iterations},\"best_local_angle_range\":{best_range_json},\"internal_fallback_angle_range\":[{:.12},{:.12}],\"final_fallback_angle_range\":[{:.12},{:.12}],\"retained_coarse_parents\":{},\"compression_ratio\":{:.12},\"mixed_levels_delivered\":{},\"euler\":{},\"charge\":{},\"delaunay_violations\":{},\"voronoi_invalid_cells\":{},\"voronoi_reciprocal_errors\":{},\"physical_residuals\":{},\"balance_residuals\":{},\"remap_closure_errors\":{},\"adaptive_failures\":[\"mixed_levels_delivered\",\"retained_coarse_parents\",\"compression_ratio\"],\"pr79_required\":false,\"pr80_pr81_gated\":true}}",
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr78FinalLocalRecoveryGate\",\"taskbook_sha256\":\"{SEACR_TASKBOOK_SHA256}\",\"gate\":\"CertifiedSafeFallback\",\"certified_adaptive\":false,\"mesh_unchanged\":true,\"violating_sectors\":{sector_count},\"materialized_local_candidates\":{materialized},\"direct_trials\":{direct_trials},\"one_parent_trials\":{one_parent_trials},\"two_parent_trials\":{two_parent_trials},\"invalid_candidates\":{invalid},\"strict_local_candidates\":{strict_candidates},\"local_geometry_iterations\":{local_iterations},\"best_local_angle_range\":{best_range_json},\"internal_fallback_angle_range\":[{:.12},{:.12}],\"final_fallback_angle_range\":[{:.12},{:.12}],\"retained_coarse_parents\":{},\"compression_ratio\":{:.12},\"mixed_levels_delivered\":{},\"euler\":{},\"charge\":{},\"delaunay_violations\":{},\"voronoi_invalid_cells\":{},\"voronoi_reciprocal_errors\":{},\"physical_residuals\":{},\"balance_residuals\":{},\"remap_closure_errors\":{},\"adaptive_failures\":[\"mixed_levels_delivered\",\"retained_coarse_parents\",\"compression_ratio\"],\"pr79_required\":true,\"pr80_pr81_gated\":false}}",
         gate_evidence.internal_angle_range_deg.0,
         gate_evidence.internal_angle_range_deg.1,
         gate_evidence.final_angle_range_deg.0,
@@ -1272,6 +1275,230 @@ fn frozen_n6_pr78_final_local_recovery_gate_probe() {
         gate_evidence.physical_residuals,
         gate_evidence.balance_residuals,
         gate_evidence.remap_closure_errors,
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
+#[test]
+#[ignore = "explicit Frozen N6 PR79 singleton sufficiency audit"]
+fn frozen_n6_pr79_singleton_sufficiency_audit_probe() {
+    let local_iterations = usize_env("EARTHMESH_FINAL_LOCAL_ITERATIONS", 8);
+    let (source, hierarchy, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &hierarchy, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let mesh_before = earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh);
+    let stratified = build_stratified_annulus(&source, &hierarchy).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        mesh,
+        patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    let original = &atlas.evidence_sets.strict_violations;
+    let retained_parents = hierarchy
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let ear_parents = coarse_core_ears(&source, &retained_parents)
+        .unwrap()
+        .into_iter()
+        .map(|ear| ear.parent)
+        .collect::<BTreeSet<_>>();
+    let sectors = atlas
+        .recovery_atoms
+        .iter()
+        .filter_map(|atom| match atom {
+            RecoveryAtom::Sector { sector_id, .. } => Some(*sector_id),
+            RecoveryAtom::HierarchyLeaf { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut actions = Vec::new();
+    let mut effects = Vec::new();
+    for sector_id in sectors {
+        let (kind, sector_ids, removed_faces, restored_faces, released, candidate) =
+            match restore_fine_compatible_sector(
+                &source,
+                mesh,
+                patch,
+                &atlas.sector_recovery_atlas,
+                sector_id,
+                0,
+            ) {
+                DirectSectorRestoreOutcome::Certified(trial)
+                | DirectSectorRestoreOutcome::GeometryNotCertified { trial, .. } => (
+                    LocalRepairKind::DirectSectorRestore,
+                    BTreeSet::from([sector_id]),
+                    trial.removed_mixed_faces.clone(),
+                    trial.restored_source_faces.clone(),
+                    BTreeSet::new(),
+                    trial.mesh.clone(),
+                ),
+                DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+                    adjacent_parents, ..
+                } if adjacent_parents.len() == 1 => {
+                    let parent = adjacent_parents
+                        .intersection(&ear_parents)
+                        .copied()
+                        .next()
+                        .expect("one-parent action must release a coarse-core ear");
+                    let trial = match peel_boundary_parent_for_sector(
+                        &source,
+                        mesh,
+                        patch,
+                        &atlas.sector_recovery_atlas,
+                        &retained_parents,
+                        sector_id,
+                        parent,
+                        0,
+                    ) {
+                        BoundaryParentPeelOutcome::Certified(trial)
+                        | BoundaryParentPeelOutcome::GeometryNotCertified { trial, .. } => trial,
+                        other => panic!("PR79 one-parent action failed to materialize: {other:?}"),
+                    };
+                    (
+                        LocalRepairKind::OneParentPeel,
+                        trial.restored_sector_ids.clone(),
+                        trial.removed_mixed_faces.clone(),
+                        trial.restored_source_faces.clone(),
+                        BTreeSet::from([parent]),
+                        trial.mesh.clone(),
+                    )
+                }
+                DirectSectorRestoreOutcome::RequiresBoundaryParentPeel {
+                    adjacent_parents, ..
+                } if adjacent_parents.len() == 2 => {
+                    let component = atlas
+                        .local_recovery_components
+                        .iter()
+                        .find(|component| {
+                            component.atoms.iter().any(|atom| {
+                                matches!(atom, RecoveryAtom::Sector { sector_id: candidate, .. } if *candidate == sector_id)
+                            })
+                        })
+                        .expect("two-parent action must belong to a local recovery component");
+                    let trial = match solve_local_annular_collar(
+                        &source,
+                        mesh,
+                        patch,
+                        &atlas.sector_recovery_atlas,
+                        component,
+                        &retained_parents,
+                        sector_id,
+                        &adjacent_parents,
+                        LocalAnnularCollarLimits {
+                            topology_states: 3,
+                            geometry_iterations: 0,
+                            maximum_parent_peels: 2,
+                        },
+                    ) {
+                        LocalAnnularCollarOutcome::Certified(trial) => trial,
+                        LocalAnnularCollarOutcome::MaterializedNotCertified { best, .. } => best,
+                        other => panic!("PR79 two-parent action failed to materialize: {other:?}"),
+                    };
+                    let restored = trial
+                        .evidence
+                        .restored_sector_ids
+                        .iter()
+                        .flat_map(|sector| {
+                            atlas.sector_recovery_atlas.sectors[sector]
+                                .source_faces
+                                .iter()
+                                .copied()
+                        })
+                        .collect::<BTreeSet<_>>();
+                    (
+                        LocalRepairKind::TwoParentAnnularCollar,
+                        trial.evidence.restored_sector_ids.clone(),
+                        BTreeSet::new(),
+                        restored,
+                        trial.evidence.released_parents.clone(),
+                        trial.mesh.clone(),
+                    )
+                }
+                other => {
+                    panic!("PR79 action registry did not classify sector {sector_id}: {other:?}")
+                }
+            };
+        let action = build_local_repair_action(
+            &source,
+            &candidate,
+            &atlas.sector_recovery_atlas,
+            original,
+            &retained_parents,
+            sector_id,
+            kind,
+            sector_ids,
+            removed_faces,
+            restored_faces,
+            released,
+            BTreeSet::new(),
+            local_iterations,
+        )
+        .unwrap();
+        let effect = audit_local_repair_action(&action, original, mesh, &candidate);
+        actions.push(action);
+        effects.push(effect);
+    }
+    assert_eq!(actions.len(), 14);
+    assert_eq!(effects.len(), 14);
+    assert_eq!(original.len(), 109);
+    assert!(actions.iter().all(|action| {
+        action.geometry_target_mode == ElasticTargetMode::TrialReference
+            && action.geometry_iteration_limit == local_iterations
+            && !action.original_violation_ids_untouched.is_empty()
+    }));
+    assert!(effects.iter().all(|effect| {
+        effect.failure_reason == SingletonFailureReason::UncoveredOriginalViolations
+            && effect.uncovered_original_violations > 0
+            && effect.original_violations_persisted >= effect.uncovered_original_violations
+            && effect.local_angle_range.is_some()
+            && effect.outside_angle_range.is_some()
+            && effect.global_angle_range.is_some()
+            && !effect.strict_certified
+    }));
+    assert!(effects.iter().any(|effect| {
+        effect.original_violations_removed + effect.original_violations_resolved > 0
+    }));
+    assert_eq!(
+        mesh_before,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh.mesh)
+    );
+    let locally_effective = effects
+        .iter()
+        .filter(|effect| {
+            effect.original_violations_removed + effect.original_violations_resolved > 0
+        })
+        .count();
+    let minimum_uncovered = effects
+        .iter()
+        .map(|effect| effect.uncovered_original_violations)
+        .min()
+        .unwrap();
+    let maximum_covered = actions
+        .iter()
+        .map(|action| action.original_violation_ids_covered.len())
+        .max()
+        .unwrap();
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr79SingletonSufficiencyAudit\",\"taskbook_sha256\":\"{CCLR_TASKBOOK_SHA256}\",\"mesh_unchanged\":true,\"original_violations\":{},\"singleton_actions\":{},\"all_actions_have_uncovered_violations\":true,\"minimum_uncovered_violations\":{minimum_uncovered},\"maximum_covered_violations\":{maximum_covered},\"locally_effective_actions\":{locally_effective},\"target_mode\":\"TrialReference\",\"local_geometry_iterations\":{local_iterations},\"strict_singletons\":0,\"failure_reason\":\"UncoveredOriginalViolations\",\"pr80_required\":true}}",
+        original.len(),
+        actions.len(),
     );
     if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
         fs::write(path, &json).unwrap();
