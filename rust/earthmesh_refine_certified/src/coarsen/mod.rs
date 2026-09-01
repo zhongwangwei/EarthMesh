@@ -205,7 +205,9 @@ pub use research_fixture::{
     FixtureRepresentativenessTelemetry,
 };
 pub use research_runner::{
-    n12_legacy_baseline_json, research_legacy_evidence_json, run_n12_legacy_baseline,
+    n12_cec_topology_probe_json, n12_legacy_baseline_json, research_cec_topology_evidence_json,
+    research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
+    ResearchCecTopologyEvidence, ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind,
     ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
 };
 pub use retained_core::{

@@ -145,6 +145,7 @@ pub struct FullPolygonPlanEvaluator<'a> {
     component: &'a HierarchyComponent,
     limits: FullPolygonMergeLimits,
     cacheable: bool,
+    last_invalid_reason: Option<String>,
 }
 
 impl<'a> FullPolygonPlanEvaluator<'a> {
@@ -158,6 +159,7 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
             component,
             limits,
             cacheable: true,
+            last_invalid_reason: None,
         }
     }
 
@@ -171,7 +173,12 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
             component,
             limits,
             cacheable: false,
+            last_invalid_reason: None,
         }
+    }
+
+    pub fn last_invalid_reason(&self) -> Option<&str> {
+        self.last_invalid_reason.as_deref()
     }
 }
 
@@ -191,6 +198,7 @@ impl FaceBandPlanEvaluator for FullPolygonPlanEvaluator<'_> {
                 PlanEvaluation::RejectedSearchIncomplete { evidence }
             }
             FullPolygonMergeOutcome::InvalidInput { reason, evidence } => {
+                self.last_invalid_reason = Some(reason.clone());
                 PlanEvaluation::RejectedInvalid { reason, evidence }
             }
         }
