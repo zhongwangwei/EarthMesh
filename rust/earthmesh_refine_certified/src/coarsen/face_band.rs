@@ -264,10 +264,18 @@ pub fn solve_exact_face_bands(
     problem: &FaceBandProblem,
     limits: FaceBandLimits,
 ) -> FaceBandSolveOutcome {
+    solve_exact_face_bands_with_filter(problem, limits, |_| true)
+}
+
+pub(crate) fn solve_exact_face_bands_with_filter(
+    problem: &FaceBandProblem,
+    limits: FaceBandLimits,
+    accept: impl FnMut(&FaceBandPlan) -> bool,
+) -> FaceBandSolveOutcome {
     let Err(reason) = validate_problem(problem) else {
         let fingerprint = fingerprint(problem);
         let mut search = Search::new(problem, limits.maximum_states, fingerprint);
-        let outcome = search.run();
+        let outcome = search.run(accept);
         return match outcome {
             SearchResult::Closed(plan) => {
                 let evidence = search.evidence(FaceBandOutcomeKind::Closed, Some(&plan));
@@ -460,11 +468,11 @@ impl<'a> Search<'a> {
         }
     }
 
-    fn run(&mut self) -> SearchResult {
+    fn run(&mut self, mut accept: impl FnMut(&FaceBandPlan) -> bool) -> SearchResult {
         if !self.propagate() {
             return SearchResult::Exhausted;
         }
-        if let Some(plan) = self.search() {
+        if let Some(plan) = self.search(&mut accept) {
             SearchResult::Closed(plan)
         } else if self.budget_hit {
             SearchResult::Budget
@@ -473,7 +481,7 @@ impl<'a> Search<'a> {
         }
     }
 
-    fn search(&mut self) -> Option<FaceBandPlan> {
+    fn search(&mut self, accept: &mut impl FnMut(&FaceBandPlan) -> bool) -> Option<FaceBandPlan> {
         if self.states >= self.maximum_states {
             self.budget_hit = true;
             return None;
@@ -495,7 +503,8 @@ impl<'a> Search<'a> {
             .map(|(&face, _)| face);
         let Some(face) = next else {
             self.states += 1;
-            return validate_complete(self.problem, &self.domains, self.fingerprint);
+            return validate_complete(self.problem, &self.domains, self.fingerprint)
+                .filter(|plan| accept(plan));
         };
         let mut labels = self.domains[&face].iter().copied().collect::<Vec<_>>();
         labels.sort_by_key(|label| (label.abs_diff(self.preferred[&face]), *label));
@@ -508,7 +517,7 @@ impl<'a> Search<'a> {
             self.states += 1;
             self.domains.insert(face, BTreeSet::from([label]));
             if self.propagate() {
-                if let Some(plan) = self.search() {
+                if let Some(plan) = self.search(accept) {
                     return Some(plan);
                 }
             }

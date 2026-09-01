@@ -1,6 +1,13 @@
 //! Deterministic retained coarse-parent subset planning for Frozen N6 recovery.
 
-use super::annulus::{parent_by_source_face, parent_graph};
+use super::{
+    annulus::{parent_by_source_face, parent_graph},
+    build_face_band_problem, build_stratified_annulus_from_face_bands,
+    face_band::solve_exact_face_bands_with_filter,
+    solve_full_polygon_merge_from_face_bands, FaceBandLimits, FaceBandOutcomeKind, FaceBandPlan,
+    FaceBandSolveOutcome, FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonMergeTrial,
+    HierarchyComponent,
+};
 use crate::{mother_grid::TriangleAddress, MotherGrid};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -20,6 +27,61 @@ pub struct RetainedCoreSearchPlan {
     pub initial_coarse_parents: BTreeSet<TriangleAddress>,
     pub parent_adjacency: BTreeMap<TriangleAddress, BTreeSet<TriangleAddress>>,
     pub candidates: Vec<RetainedCoreCandidate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetainedCoreTopologyLimits {
+    pub face_band_states: u64,
+    pub topology_states: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetainedCoreTopologyOutcomeKind {
+    Closed,
+    TopologyFamilyExhaustedNoSolution,
+    SearchBudgetExhausted,
+    InvalidInput,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetainedCoreTopologyEvidence {
+    pub retained_parents: BTreeSet<TriangleAddress>,
+    pub released_parents: BTreeSet<TriangleAddress>,
+    pub face_band_outcome: FaceBandOutcomeKind,
+    pub face_band_states: u64,
+    pub topology_outcome: RetainedCoreTopologyOutcomeKind,
+    pub topology_states: usize,
+    pub selected_topologies: usize,
+    pub vertices: Option<usize>,
+    pub edges: Option<usize>,
+    pub faces: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetainedCoreTopologyOutcome {
+    Closed {
+        component: HierarchyComponent,
+        face_band_plan: Box<FaceBandPlan>,
+        trial: Box<FullPolygonMergeTrial>,
+        evidence: RetainedCoreTopologyEvidence,
+    },
+    TopologyFamilyExhaustedNoSolution(RetainedCoreTopologyEvidence),
+    SearchBudgetExhausted(RetainedCoreTopologyEvidence),
+    InvalidInput {
+        reason: String,
+        evidence: RetainedCoreTopologyEvidence,
+    },
+}
+
+impl RetainedCoreTopologyOutcome {
+    pub fn evidence(&self) -> &RetainedCoreTopologyEvidence {
+        match self {
+            Self::Closed { evidence, .. }
+            | Self::TopologyFamilyExhaustedNoSolution(evidence)
+            | Self::SearchBudgetExhausted(evidence)
+            | Self::InvalidInput { evidence, .. } => evidence,
+        }
+    }
 }
 
 impl RetainedCoreSearchPlan {
@@ -120,6 +182,202 @@ pub fn plan_retained_core_subsets(
     })
 }
 
+pub fn solve_retained_core_topology(
+    source: &MotherGrid,
+    original: &HierarchyComponent,
+    candidate: &RetainedCoreCandidate,
+    limits: RetainedCoreTopologyLimits,
+) -> RetainedCoreTopologyOutcome {
+    let component = match component_for_retained_core(original, candidate) {
+        Ok(component) => component,
+        Err(reason) => {
+            return invalid_topology(candidate, reason, FaceBandOutcomeKind::InvalidInput, 0, 0)
+        }
+    };
+    let problem = match build_face_band_problem(source, &component, 2) {
+        Ok(problem) => problem,
+        Err(reason) => {
+            return invalid_topology(candidate, reason, FaceBandOutcomeKind::InvalidInput, 0, 0)
+        }
+    };
+    let (face_band_plan, face_band_states) = match solve_exact_face_bands_with_filter(
+        &problem,
+        FaceBandLimits {
+            maximum_states: limits.face_band_states,
+        },
+        |plan| build_stratified_annulus_from_face_bands(source, &component, plan).is_ok(),
+    ) {
+        FaceBandSolveOutcome::Closed(plan, evidence) => (plan, evidence.states_examined),
+        FaceBandSolveOutcome::FamilyExhaustedNoSolution { evidence, .. } => {
+            return RetainedCoreTopologyOutcome::TopologyFamilyExhaustedNoSolution(evidence_for(
+                candidate,
+                evidence.outcome,
+                evidence.states_examined,
+                RetainedCoreTopologyOutcomeKind::TopologyFamilyExhaustedNoSolution,
+                0,
+                None,
+            ))
+        }
+        FaceBandSolveOutcome::SearchBudgetExhausted { evidence, .. } => {
+            return RetainedCoreTopologyOutcome::SearchBudgetExhausted(evidence_for(
+                candidate,
+                evidence.outcome,
+                evidence.states_examined,
+                RetainedCoreTopologyOutcomeKind::SearchBudgetExhausted,
+                0,
+                None,
+            ))
+        }
+        FaceBandSolveOutcome::InvalidInput { reason } => {
+            return invalid_topology(candidate, reason, FaceBandOutcomeKind::InvalidInput, 0, 0)
+        }
+    };
+    match solve_full_polygon_merge_from_face_bands(
+        source,
+        &component,
+        &face_band_plan,
+        FullPolygonMergeLimits {
+            topology_states: limits.topology_states,
+        },
+    ) {
+        FullPolygonMergeOutcome::Closed(trial) => {
+            let global = &trial.global_trial.evidence;
+            let evidence = evidence_for(
+                candidate,
+                FaceBandOutcomeKind::Closed,
+                face_band_states,
+                RetainedCoreTopologyOutcomeKind::Closed,
+                trial.evidence.states_examined,
+                Some((
+                    trial.evidence.selected_topology_keys.len(),
+                    global.vertices,
+                    global.edges,
+                    global.faces,
+                )),
+            );
+            RetainedCoreTopologyOutcome::Closed {
+                component,
+                face_band_plan,
+                trial,
+                evidence,
+            }
+        }
+        FullPolygonMergeOutcome::TopologyFamilyExhaustedNoSolution(topology) => {
+            RetainedCoreTopologyOutcome::TopologyFamilyExhaustedNoSolution(evidence_for(
+                candidate,
+                FaceBandOutcomeKind::Closed,
+                face_band_states,
+                RetainedCoreTopologyOutcomeKind::TopologyFamilyExhaustedNoSolution,
+                topology.states_examined,
+                None,
+            ))
+        }
+        FullPolygonMergeOutcome::SearchBudgetExhausted(topology) => {
+            RetainedCoreTopologyOutcome::SearchBudgetExhausted(evidence_for(
+                candidate,
+                FaceBandOutcomeKind::Closed,
+                face_band_states,
+                RetainedCoreTopologyOutcomeKind::SearchBudgetExhausted,
+                topology.states_examined,
+                None,
+            ))
+        }
+        FullPolygonMergeOutcome::InvalidInput { reason, evidence } => invalid_topology(
+            candidate,
+            reason,
+            FaceBandOutcomeKind::Closed,
+            face_band_states,
+            evidence.states_examined,
+        ),
+    }
+}
+
+fn component_for_retained_core(
+    original: &HierarchyComponent,
+    candidate: &RetainedCoreCandidate,
+) -> Result<HierarchyComponent, String> {
+    if candidate.retained_parents.is_empty() {
+        return Err("retained-core topology requires a non-empty retained set".into());
+    }
+    let initial = original
+        .core_parents
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if candidate
+        .retained_parents
+        .union(&candidate.released_parents)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != initial
+        || !candidate
+            .retained_parents
+            .is_disjoint(&candidate.released_parents)
+    {
+        return Err("retained-core candidate does not partition the original core".into());
+    }
+    let retained = &candidate.retained_parents;
+    Ok(HierarchyComponent {
+        id: original.id,
+        parents: original.parents.clone(),
+        boundary_edges: original.boundary_edges.clone(),
+        core_parents: retained.iter().copied().collect(),
+        transition_parents: original
+            .parents
+            .iter()
+            .copied()
+            .filter(|parent| !retained.contains(parent))
+            .collect(),
+    })
+}
+
+fn evidence_for(
+    candidate: &RetainedCoreCandidate,
+    face_band_outcome: FaceBandOutcomeKind,
+    face_band_states: u64,
+    topology_outcome: RetainedCoreTopologyOutcomeKind,
+    topology_states: usize,
+    closed: Option<(usize, usize, usize, usize)>,
+) -> RetainedCoreTopologyEvidence {
+    let (selected_topologies, vertices, edges, faces) = closed
+        .map(|(selected, vertices, edges, faces)| {
+            (selected, Some(vertices), Some(edges), Some(faces))
+        })
+        .unwrap_or((0, None, None, None));
+    RetainedCoreTopologyEvidence {
+        retained_parents: candidate.retained_parents.clone(),
+        released_parents: candidate.released_parents.clone(),
+        face_band_outcome,
+        face_band_states,
+        topology_outcome,
+        topology_states,
+        selected_topologies,
+        vertices,
+        edges,
+        faces,
+    }
+}
+
+fn invalid_topology(
+    candidate: &RetainedCoreCandidate,
+    reason: String,
+    face_band_outcome: FaceBandOutcomeKind,
+    face_band_states: u64,
+    topology_states: usize,
+) -> RetainedCoreTopologyOutcome {
+    RetainedCoreTopologyOutcome::InvalidInput {
+        reason,
+        evidence: evidence_for(
+            candidate,
+            face_band_outcome,
+            face_band_states,
+            RetainedCoreTopologyOutcomeKind::InvalidInput,
+            topology_states,
+            None,
+        ),
+    }
+}
+
 fn graph_distances(
     graph: &BTreeMap<TriangleAddress, BTreeSet<TriangleAddress>>,
     seeds: &BTreeSet<TriangleAddress>,
@@ -185,6 +443,26 @@ pub fn retained_core_search_plan_json(plan: &RetainedCoreSearchPlan) -> String {
         plan.connected_candidates().count(),
         candidates,
     )
+}
+
+pub fn retained_core_topology_evidence_json(evidence: &RetainedCoreTopologyEvidence) -> String {
+    format!(
+        "{{\"retained_parents\":{},\"released_parents\":{},\"face_band_outcome\":\"{:?}\",\"face_band_states\":{},\"topology_outcome\":\"{:?}\",\"topology_states\":{},\"selected_topologies\":{},\"vertices\":{},\"edges\":{},\"faces\":{}}}",
+        address_set_json(&evidence.retained_parents),
+        address_set_json(&evidence.released_parents),
+        evidence.face_band_outcome,
+        evidence.face_band_states,
+        evidence.topology_outcome,
+        evidence.topology_states,
+        evidence.selected_topologies,
+        option_usize(evidence.vertices),
+        option_usize(evidence.edges),
+        option_usize(evidence.faces),
+    )
+}
+
+fn option_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "null".into(), |value| value.to_string())
 }
 
 fn address_set_json(values: &BTreeSet<TriangleAddress>) -> String {

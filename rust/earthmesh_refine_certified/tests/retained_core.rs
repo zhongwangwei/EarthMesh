@@ -1,7 +1,8 @@
 use earthmesh_refine_certified::{
     coarsen::{
         condense_hierarchy_core, n6_legacy_mixed_fixture, plan_retained_core_subsets,
-        retained_core_search_plan_json,
+        retained_core_search_plan_json, retained_core_topology_evidence_json,
+        solve_retained_core_topology, RetainedCoreTopologyLimits, RetainedCoreTopologyOutcomeKind,
     },
     mesh_fingerprint,
 };
@@ -97,6 +98,68 @@ fn empty_retained_set_equals_safe_mother() {
         mesh_fingerprint(&rebuilt.mesh.mesh),
         mesh_fingerprint(&source.mesh)
     );
+}
+
+#[test]
+fn candidate_rebuild_never_calls_sector_promotion_provenance() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let candidate = frozen_plan()
+        .candidates
+        .into_iter()
+        .find(|candidate| candidate.released_parents.len() == 1)
+        .unwrap();
+    let outcome = solve_retained_core_topology(
+        &source,
+        &component,
+        &candidate,
+        RetainedCoreTopologyLimits {
+            face_band_states: 1_000_000,
+            topology_states: 10_000,
+        },
+    );
+    assert_ne!(
+        outcome.evidence().topology_outcome,
+        RetainedCoreTopologyOutcomeKind::InvalidInput,
+        "{outcome:?}"
+    );
+}
+
+#[test]
+#[ignore = "explicit Frozen N6 PR70 single-release topology matrix"]
+fn frozen_n6_pr70_single_release_topology_probe() {
+    let (source, component) = n6_legacy_mixed_fixture().unwrap();
+    let plan = frozen_plan();
+    let outcomes = plan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.released_parents.len() == 1)
+        .map(|candidate| {
+            solve_retained_core_topology(
+                &source,
+                &component,
+                candidate,
+                RetainedCoreTopologyLimits {
+                    face_band_states: 1_000_000,
+                    topology_states: 10_000,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(outcomes.iter().all(|outcome| {
+        outcome.evidence().topology_outcome != RetainedCoreTopologyOutcomeKind::InvalidInput
+    }));
+    let matrix = outcomes
+        .iter()
+        .map(|outcome| retained_core_topology_evidence_json(outcome.evidence()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr70SingleReleaseTopology\",\"taskbook_sha256\":\"{RCR_TASKBOOK_SHA256}\",\"matrix\":[{matrix}]}}"
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_RETAINED_CORE_JSON") {
+        std::fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
 }
 
 #[test]
