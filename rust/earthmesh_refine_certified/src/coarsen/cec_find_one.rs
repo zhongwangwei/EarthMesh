@@ -1,11 +1,12 @@
 //! Rollback find-one search for canonical W2 essential cycles.
 
+use super::downstream_contract::classify_downstream_invalid;
 use super::{
     essential_cycle_seam_parity, face_band_plan_from_essential_cycle,
     solve_full_polygon_merge_from_face_bands, validate_selected_essential_cycle, AnchorBandPolicy,
-    EssentialCycleKey, EssentialCycleProblem, EssentialCycleProblemKey, FaceBandPlan,
-    FaceBandProblem, FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    FullPolygonMergeTrial, HierarchyComponent,
+    DownstreamRejectHistogram, DownstreamRejectStage, EssentialCycleKey, EssentialCycleProblem,
+    EssentialCycleProblemKey, FaceBandPlan, FaceBandProblem, FullPolygonMergeEvidence,
+    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonMergeTrial, HierarchyComponent,
 };
 use crate::MotherGrid;
 use std::{
@@ -107,6 +108,7 @@ pub struct EssentialCycleFindOneEvidence {
     pub downstream_exact_rejects: u64,
     pub downstream_incomplete: u64,
     pub downstream_invalid: u64,
+    pub downstream_reject_histogram: DownstreamRejectHistogram,
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub checkpoint_shards_created: u64,
@@ -614,6 +616,7 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
                 downstream_exact_rejects: 0,
                 downstream_incomplete: 0,
                 downstream_invalid: 0,
+                downstream_reject_histogram: DownstreamRejectHistogram::default(),
                 cache_hits: 0,
                 cache_misses: 0,
                 checkpoint_shards_created: 0,
@@ -985,15 +988,30 @@ impl<'a, E: FaceBandPlanEvaluator> Search<'a, E> {
             PlanEvaluation::Accepted(trial) => Some(Found { cycle, plan, trial }),
             PlanEvaluation::RejectedExact { .. } => {
                 self.evidence.downstream_exact_rejects += 1;
+                self.evidence.downstream_reject_histogram.record(
+                    DownstreamRejectStage::GlobalLinkMerge,
+                    "TopologyFamilyExhaustedNoSolution",
+                    &cycle,
+                );
                 None
             }
             PlanEvaluation::RejectedSearchIncomplete { .. } => {
                 self.evidence.downstream_incomplete += 1;
+                self.evidence.downstream_reject_histogram.record(
+                    DownstreamRejectStage::SearchIncomplete,
+                    "TopologySearchBudgetExhausted",
+                    &cycle,
+                );
                 self.downstream_unknown = true;
                 None
             }
-            PlanEvaluation::RejectedInvalid { .. } => {
+            PlanEvaluation::RejectedInvalid { reason, .. } => {
                 self.evidence.downstream_invalid += 1;
+                self.evidence.downstream_reject_histogram.record(
+                    classify_downstream_invalid(&reason),
+                    reason,
+                    &cycle,
+                );
                 self.downstream_unknown = true;
                 None
             }
