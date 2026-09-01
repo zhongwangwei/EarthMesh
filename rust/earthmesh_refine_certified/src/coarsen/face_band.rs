@@ -125,6 +125,13 @@ pub enum FaceBandSolveOutcome {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyFaceBandEnumeration {
+    pub plans: Vec<FaceBandPlan>,
+    pub states_examined: u64,
+    pub complete: bool,
+}
+
 pub fn build_face_band_problem(
     source: &MotherGrid,
     component: &HierarchyComponent,
@@ -270,6 +277,38 @@ pub fn solve_exact_face_bands(
     limits: FaceBandLimits,
 ) -> FaceBandSolveOutcome {
     solve_exact_face_bands_with_filter(problem, limits, |_| true)
+}
+
+/// Exhaustive Alpha5 face-label oracle for small regression fixtures only.
+pub fn enumerate_legacy_face_band_plans(
+    problem: &FaceBandProblem,
+    limits: FaceBandLimits,
+) -> Result<LegacyFaceBandEnumeration, String> {
+    let mut plans = Vec::new();
+    let outcome = solve_exact_face_bands_with_filter(problem, limits, |plan| {
+        plans.push(plan.clone());
+        false
+    });
+    match outcome {
+        FaceBandSolveOutcome::FamilyExhaustedNoSolution {
+            states_examined, ..
+        } => Ok(LegacyFaceBandEnumeration {
+            plans,
+            states_examined,
+            complete: true,
+        }),
+        FaceBandSolveOutcome::SearchBudgetExhausted {
+            states_examined, ..
+        } => Ok(LegacyFaceBandEnumeration {
+            plans,
+            states_examined,
+            complete: false,
+        }),
+        FaceBandSolveOutcome::InvalidInput { reason } => Err(reason),
+        FaceBandSolveOutcome::Closed(..) => {
+            unreachable!("oracle collector never accepts a plan")
+        }
+    }
 }
 
 pub fn validate_face_band_plan(problem: &FaceBandProblem, plan: &FaceBandPlan) -> bool {
