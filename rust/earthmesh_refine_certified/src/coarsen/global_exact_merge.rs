@@ -713,6 +713,7 @@ impl ExactSearch<'_> {
                 self.last = trial_evidence;
                 SearchStep::NoSolution
             }
+            EarSolve::SearchIncomplete => unreachable!("unlimited ear search cannot exhaust"),
             EarSolve::Invalid(reason) => {
                 trial_evidence.ear_states_examined += ear_states;
                 SearchStep::Invalid(reason, Box::new(trial_evidence))
@@ -727,6 +728,7 @@ pub(super) enum EarSolve {
         ears: Vec<GlobalExactSelectedEar>,
     },
     NoSolution,
+    SearchIncomplete,
     Invalid(String),
 }
 
@@ -769,6 +771,29 @@ pub(super) fn solve_ears_with_contracts(
     evidence: &mut GlobalExactMergeEvidence,
     states: &mut usize,
 ) -> EarSolve {
+    solve_ears_with_contracts_limited(
+        source,
+        link_contracts,
+        fixed_mesh_edges,
+        fixed_final_triangles,
+        triangles,
+        evidence,
+        states,
+        usize::MAX,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn solve_ears_with_contracts_limited(
+    source: &MotherGrid,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+    fixed_final_triangles: &[[usize; 3]],
+    triangles: Vec<OwnedTopologyTriangle>,
+    evidence: &mut GlobalExactMergeEvidence,
+    states: &mut usize,
+    maximum_states: usize,
+) -> EarSolve {
     let vertex_sector_contributions = vertex_sector_contributions(&triangles);
     let context = EarSearchContext {
         source,
@@ -784,10 +809,12 @@ pub(super) fn solve_ears_with_contracts(
         0,
         evidence,
         states,
+        maximum_states,
         &mut BTreeSet::new(),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn solve_ears_inner(
     context: &EarSearchContext<'_>,
     triangles: Vec<OwnedTopologyTriangle>,
@@ -795,6 +822,7 @@ fn solve_ears_inner(
     depth: usize,
     evidence: &mut GlobalExactMergeEvidence,
     states: &mut usize,
+    maximum_states: usize,
     seen: &mut BTreeSet<EarSearchKey>,
 ) -> EarSolve {
     if depth
@@ -880,6 +908,9 @@ fn solve_ears_inner(
         return EarSolve::NoSolution;
     }
     for candidate in candidates {
+        if *states >= maximum_states {
+            return EarSolve::SearchIncomplete;
+        }
         *states += 1;
         let next = match apply_anchor_ear(&triangles, &candidate) {
             Ok(next) => next,
@@ -895,7 +926,16 @@ fn solve_ears_inner(
             inserted_chord: candidate.inserted_chord,
             owner_sector_ids: candidate.owner_sector_ids.clone(),
         });
-        match solve_ears_inner(context, next, next_ears, depth + 1, evidence, states, seen) {
+        match solve_ears_inner(
+            context,
+            next,
+            next_ears,
+            depth + 1,
+            evidence,
+            states,
+            maximum_states,
+            seen,
+        ) {
             EarSolve::NoSolution => {}
             terminal => return terminal,
         }

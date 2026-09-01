@@ -35,6 +35,7 @@ type TopologyAnchorNeighbours = Vec<(usize, usize)>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopologyFamilyId {
     FullPolygonAnchorEar,
+    TransitionCellAnnulus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1082,6 +1083,7 @@ impl Search<'_> {
                 self.evidence.best_global_evidence = global;
                 Step::NoSolution
             }
+            EarSolve::SearchIncomplete => unreachable!("unlimited ear search cannot exhaust"),
             EarSolve::Invalid(reason) => Step::Invalid(reason),
         }
     }

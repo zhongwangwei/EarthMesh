@@ -55,6 +55,13 @@ pub struct FullAnnularFamily {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BalancedAnnularStripSearch {
+    pub family: FullAnnularFamily,
+    pub candidates_examined: usize,
+    pub subset_exhausted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnnularEnumerationError {
     BoundaryTooShort,
     BoundaryIntersection,
@@ -235,6 +242,114 @@ pub fn certify_annular_topology(
         triangles,
         topology_key,
     })
+}
+
+pub fn enumerate_balanced_annular_strips(
+    lower: &[usize],
+    upper: &[usize],
+    forbidden_global_edges: &BTreeSet<Edge>,
+    maximum_topologies: usize,
+) -> Result<BalancedAnnularStripSearch, AnnularEnumerationError> {
+    validate_boundaries(lower, upper)?;
+    if maximum_topologies == 0 {
+        return Err(AnnularEnumerationError::EmptyFamily);
+    }
+    let total = lower.len() + upper.len();
+    let mut evidence = AnnularEnumerationEvidence::default();
+    let mut unique = BTreeMap::<AnnularTopologyKey, AnnularTopology>::new();
+    let mut seen_candidates = BTreeSet::<AnnularTopologyKey>::new();
+    let mut candidates_examined = 0;
+    let mut subset_exhausted = true;
+    'roots: for lower_root in 0..lower.len() {
+        for upper_root in 0..upper.len() {
+            evidence.root_bridges_considered += 1;
+            for phase in 0..total {
+                candidates_examined += 1;
+                let mut triangles =
+                    balanced_strip_triangles(lower, upper, lower_root, upper_root, phase);
+                triangles
+                    .iter_mut()
+                    .for_each(|triangle| triangle.sort_unstable());
+                triangles.sort_unstable();
+                if !seen_candidates.insert(AnnularTopologyKey {
+                    triangles: triangles.clone(),
+                }) {
+                    evidence.duplicate_topologies += 1;
+                    continue;
+                }
+                match certify_annular_topology(lower, upper, forbidden_global_edges, &triangles) {
+                    Ok(topology) => {
+                        if unique
+                            .insert(topology.topology_key.clone(), topology)
+                            .is_some()
+                        {
+                            evidence.duplicate_topologies += 1;
+                        } else {
+                            evidence.glued_topologies += 1;
+                        }
+                    }
+                    Err(error) => {
+                        *evidence
+                            .glue_rejects
+                            .entry(format!("{error:?}"))
+                            .or_default() += 1
+                    }
+                }
+                if unique.len() >= maximum_topologies {
+                    subset_exhausted = false;
+                    break 'roots;
+                }
+            }
+        }
+    }
+    if unique.is_empty() {
+        return Err(AnnularEnumerationError::EmptyFamily);
+    }
+    Ok(BalancedAnnularStripSearch {
+        family: FullAnnularFamily {
+            lower_vertices: lower.len(),
+            upper_vertices: upper.len(),
+            topologies: unique.into_values().collect(),
+            evidence,
+        },
+        candidates_examined,
+        subset_exhausted,
+    })
+}
+
+fn balanced_strip_triangles(
+    lower: &[usize],
+    upper: &[usize],
+    lower_root: usize,
+    upper_root: usize,
+    phase: usize,
+) -> Vec<Triangle> {
+    let total = lower.len() + upper.len();
+    let mut lower_index = lower_root;
+    let mut upper_index = upper_root;
+    let mut triangles = Vec::with_capacity(total);
+    for step in 0..total {
+        let lower_step =
+            ((step + 1) * lower.len() + phase) / total != (step * lower.len() + phase) / total;
+        if lower_step {
+            let next = (lower_index + 1) % lower.len();
+            triangles.push(triangle(
+                lower[lower_index],
+                lower[next],
+                upper[upper_index],
+            ));
+            lower_index = next;
+        } else {
+            let next = (upper_index + 1) % upper.len();
+            triangles.push(triangle(
+                lower[lower_index],
+                upper[upper_index],
+                upper[next],
+            ));
+            upper_index = next;
+        }
+    }
+    triangles
 }
 
 pub fn annular_small_exact_oracle_json() -> Result<String, AnnularEnumerationError> {

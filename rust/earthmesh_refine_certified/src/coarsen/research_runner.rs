@@ -3,17 +3,21 @@
 use super::{
     analyze_stratified_annular_degree_reachability, audit_face_band_boundaries,
     audit_legacy_downstream_preflight, build_essential_cycle_problem, build_face_band_problem,
-    build_plan_band_domains, build_stratified_transition_domain_v3, face_band_evidence_json,
+    build_plan_band_domains, build_stratified_transition_domain_v3,
+    enumerate_balanced_annular_strips, face_band_evidence_json, find_one_essential_cycle,
     n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
-    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, AnnularReachabilityLimits,
-    AnnularReachabilityOutcome, BandBoundaryAudit, BandBoundaryAuditSummary,
-    CertifiedResearchFixture, DownstreamEvaluationCache, DownstreamPreflightOutcome,
-    DownstreamRejectStage, EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits,
-    EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
-    FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
-    FullPolygonMergeLimits, FullPolygonMergeOutcome, FullPolygonPlanEvaluator,
-    PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
-    TransitionCellDomain,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    solve_transition_cell_find_one, AnnularEnumerationError, AnnularReachabilityLimits,
+    AnnularReachabilityOutcome, AnnularTransitionCellFamily, BandBoundaryAudit,
+    BandBoundaryAuditSummary, CertifiedResearchFixture, DownstreamEvaluationCache,
+    DownstreamPreflightOutcome, DownstreamRejectStage, EssentialCycleFindOneEvidence,
+    EssentialCycleFindOneLimits, EssentialCycleFindOneOutcome, EssentialCycleKey,
+    ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence, FaceBandLimits, FaceBandPlan,
+    FaceBandPlanEvaluator, FaceBandSolveOutcome, FullPolygonMergeEvidence, FullPolygonMergeLimits,
+    FullPolygonMergeOutcome, FullPolygonMergeTrial, FullPolygonPlanEvaluator, PlanBandTopologyKind,
+    PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId,
+    TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
+    TransitionCellMergeOutcome, TransitionCellMergeTrial,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -73,6 +77,25 @@ pub struct ResearchLegacyEvidence {
 pub struct ResearchCecTopologyLimits {
     pub cycle_unique_states: u64,
     pub downstream_topology_states: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchV3FindOneLimits {
+    pub cycle_unique_states: u64,
+    pub balanced_topologies_per_cell: usize,
+    pub global_topology_states: usize,
+    pub ear_states_per_topology: usize,
+}
+
+impl Default for ResearchV3FindOneLimits {
+    fn default() -> Self {
+        Self {
+            cycle_unique_states: 16_384,
+            balanced_topologies_per_cell: 64,
+            global_topology_states: 4_096,
+            ear_states_per_topology: 256,
+        }
+    }
 }
 
 impl Default for ResearchCecTopologyLimits {
@@ -866,6 +889,276 @@ pub fn n12_lifted_v3_prefix_replay_json(
         gate_passed,
         evidence.outcome.as_str(),
     ))
+}
+
+pub fn n12_lifted_v3_find_one_json(limits: ResearchV3FindOneLimits) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = V3BalancedFindOneEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        topology_limit: limits.balanced_topologies_per_cell,
+        global_limit: limits.global_topology_states,
+        ear_limit: limits.ear_states_per_topology,
+        current_cycle: None,
+        domains_built: 0,
+        candidates_examined: 0,
+        topologies_generated: 0,
+        exhaustive_cell_subsets: 0,
+        partial_cell_subsets: 0,
+        global_states: 0,
+        ear_states: 0,
+        closed_cycle: None,
+        closed: None,
+        errors: BTreeMap::new(),
+    };
+    let outcome = find_one_essential_cycle(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        &mut evaluator,
+    );
+    let evidence = outcome.evidence().ok_or_else(|| match &outcome {
+        EssentialCycleFindOneOutcome::InvalidInput { reason } => reason.clone(),
+        _ => "Lifted V3 find-one returned no evidence".into(),
+    })?;
+    let topology_closed = matches!(outcome, EssentialCycleFindOneOutcome::Closed { .. });
+    let outcome_kind = match &outcome {
+        EssentialCycleFindOneOutcome::Closed { .. } => "Closed",
+        EssentialCycleFindOneOutcome::CycleSearchIncomplete { .. } => "CycleSearchIncomplete",
+        EssentialCycleFindOneOutcome::DownstreamSearchIncomplete { .. } => {
+            "DownstreamSearchIncomplete"
+        }
+        EssentialCycleFindOneOutcome::InvalidInput { .. } => unreachable!(),
+    };
+    let global = evaluator.closed.as_ref().map(|closed| &closed.global);
+    let selected_keys = evaluator.closed.as_ref().map_or_else(
+        || "[]".into(),
+        |closed| {
+            format!(
+                "[{}]",
+                closed
+                    .selected_annular_keys
+                    .iter()
+                    .map(|key| json_string(&format!("{key:?}")))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        },
+    );
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(reason, count)| format!("{}:{count}", json_string(reason)))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"cb911eef1de3593df10d042bf72ce3707080d2b521ceb074d36b8b05cfe4b63e\",\"fixture\":\"N12-Lifted-N6\",\"adapter_version\":3,\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+BalancedAnnularStripFindOne\",\"limits\":{{\"cycle_unique_states\":{},\"balanced_topologies_per_cell\":{},\"global_topology_states\":{},\"ear_states_per_topology\":{}}},\"unique_states\":{},\"essential_cycles_examined\":{},\"domains_built\":{},\"balanced_candidates_examined\":{},\"concrete_topologies_generated\":{},\"exhaustive_cell_subsets\":{},\"partial_cell_subsets\":{},\"global_states\":{},\"ear_states\":{},\"downstream_incomplete\":{},\"topology_closed\":{},\"closed_cycle\":{},\"selected_annular_topology_keys\":{},\"vertices\":{},\"edges\":{},\"faces\":{},\"euler\":{},\"charge\":{},\"anchor_degrees\":{},\"ordinary_degree_histogram\":{},\"errors\":{{{}}},\"remaining_resumable_shards\":49,\"shards_resumed\":false,\"geometry_attempted\":false,\"outcome\":\"{}\",\"product_grid_written\":false,\"ready_marker_written\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.balanced_topologies_per_cell,
+        limits.global_topology_states,
+        limits.ear_states_per_topology,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.domains_built,
+        evaluator.candidates_examined,
+        evaluator.topologies_generated,
+        evaluator.exhaustive_cell_subsets,
+        evaluator.partial_cell_subsets,
+        evaluator.global_states,
+        evaluator.ear_states,
+        evidence.downstream_incomplete,
+        topology_closed,
+        evaluator
+            .closed_cycle
+            .as_ref()
+            .map_or_else(|| "null".into(), |cycle| json_string(&format!("{cycle:?}"))),
+        selected_keys,
+        json_option(global.map(|evidence| evidence.vertices)),
+        json_option(global.map(|evidence| evidence.edges)),
+        json_option(global.map(|evidence| evidence.faces)),
+        json_option(global.map(|evidence| evidence.euler)),
+        json_option(global.map(|evidence| evidence.charge)),
+        global.map_or_else(|| "null".into(), |evidence| json_usize_map(&evidence.anchor_degrees)),
+        global.map_or_else(
+            || "null".into(),
+            |evidence| json_usize_map(&evidence.ordinary_degree_histogram),
+        ),
+        errors,
+        outcome_kind,
+    ))
+}
+
+struct V3BalancedFindOneEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    topology_limit: usize,
+    global_limit: usize,
+    ear_limit: usize,
+    current_cycle: Option<EssentialCycleKey>,
+    domains_built: u64,
+    candidates_examined: usize,
+    topologies_generated: usize,
+    exhaustive_cell_subsets: u64,
+    partial_cell_subsets: u64,
+    global_states: usize,
+    ear_states: usize,
+    closed_cycle: Option<EssentialCycleKey>,
+    closed: Option<super::TransitionCellMergeEvidence>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl FaceBandPlanEvaluator for V3BalancedFindOneEvaluator<'_> {
+    fn observe_cycle(&mut self, cycle: &EssentialCycleKey, _: &FaceBandPlan) {
+        self.current_cycle = Some(cycle.clone());
+    }
+
+    fn evaluate(&mut self, plan: &FaceBandPlan) -> PlanEvaluation {
+        let domain = match build_stratified_transition_domain_v3(self.source, self.component, plan)
+        {
+            Ok(domain) => domain,
+            Err(error) => {
+                return self.invalid(DownstreamRejectStage::BandDomain, format!("{error:?}"))
+            }
+        };
+        self.domains_built += 1;
+        let mut families = Vec::with_capacity(domain.cells.len());
+        for cell in &domain.cells {
+            let TransitionCellDomain::Annulus(cell) = cell else {
+                return PlanEvaluation::RejectedV3SearchIncomplete {
+                    states_examined: 0,
+                    stage: DownstreamRejectStage::AnnularConcreteEnumeration,
+                    reason: "BalancedAnnularSubsetDoesNotEnumerateDiskCells".into(),
+                };
+            };
+            let search = match enumerate_balanced_annular_strips(
+                &cell.lower_cycle,
+                &cell.upper_cycle,
+                &cell.forbidden_global_edges,
+                self.topology_limit,
+            ) {
+                Ok(search) => search,
+                Err(AnnularEnumerationError::EmptyFamily) => {
+                    return PlanEvaluation::RejectedV3SearchIncomplete {
+                        states_examined: 0,
+                        stage: DownstreamRejectStage::AnnularConcreteEnumeration,
+                        reason: "BalancedAnnularSubsetEmpty".into(),
+                    }
+                }
+                Err(error) => {
+                    return self.invalid(
+                        DownstreamRejectStage::AnnularConcreteEnumeration,
+                        format!("{error:?}"),
+                    )
+                }
+            };
+            self.candidates_examined += search.candidates_examined;
+            self.topologies_generated += search.family.topologies.len();
+            if search.subset_exhausted {
+                self.exhaustive_cell_subsets += 1;
+            } else {
+                self.partial_cell_subsets += 1;
+            }
+            families.push(TransitionCellFamily::Annulus(AnnularTransitionCellFamily {
+                cell_id: cell.cell_id,
+                family: search.family,
+            }));
+        }
+        match solve_transition_cell_find_one(
+            self.source,
+            self.component,
+            &domain,
+            &families,
+            TransitionCellMergeLimits {
+                topology_states: self.global_limit,
+                ear_states_per_topology: self.ear_limit,
+            },
+        ) {
+            TransitionCellMergeOutcome::Closed(trial) => {
+                self.global_states += trial.evidence.states_examined;
+                self.ear_states += trial.evidence.ear_states_examined;
+                self.closed_cycle = self.current_cycle.clone();
+                self.closed = Some(trial.evidence.clone());
+                PlanEvaluation::Accepted(Box::new(adapt_transition_trial(*trial)))
+            }
+            TransitionCellMergeOutcome::TopologyFamilyExhaustedNoSolution(evidence) => {
+                self.global_states += evidence.states_examined;
+                self.ear_states += evidence.ear_states_examined;
+                PlanEvaluation::RejectedV3SearchIncomplete {
+                    states_examined: evidence.states_examined,
+                    stage: DownstreamRejectStage::GlobalLinkMerge,
+                    reason: "BalancedAnnularSubsetExhaustedWithoutClosure".into(),
+                }
+            }
+            TransitionCellMergeOutcome::SearchIncomplete(evidence) => {
+                self.global_states += evidence.states_examined;
+                self.ear_states += evidence.ear_states_examined;
+                PlanEvaluation::RejectedV3SearchIncomplete {
+                    states_examined: evidence.states_examined,
+                    stage: DownstreamRejectStage::GlobalLinkMerge,
+                    reason: "BalancedAnnularGlobalMergeBudgetExhausted".into(),
+                }
+            }
+            TransitionCellMergeOutcome::InvalidInput { reason, evidence } => {
+                self.global_states += evidence.states_examined;
+                self.ear_states += evidence.ear_states_examined;
+                self.invalid(DownstreamRejectStage::GlobalLinkMerge, reason)
+            }
+        }
+    }
+
+    fn topology_state_budget(&self) -> Option<usize> {
+        Some(self.global_limit)
+    }
+}
+
+impl V3BalancedFindOneEvaluator<'_> {
+    fn invalid(&mut self, stage: DownstreamRejectStage, reason: String) -> PlanEvaluation {
+        *self.errors.entry(reason.clone()).or_default() += 1;
+        PlanEvaluation::RejectedV3Invalid {
+            states_examined: 0,
+            stage,
+            reason,
+        }
+    }
+}
+
+fn adapt_transition_trial(trial: TransitionCellMergeTrial) -> FullPolygonMergeTrial {
+    let TransitionCellMergeTrial {
+        global_trial,
+        evidence,
+    } = trial;
+    let global = global_trial.evidence.clone();
+    FullPolygonMergeTrial {
+        global_trial,
+        evidence: FullPolygonMergeEvidence {
+            family_id: TopologyFamilyId::TransitionCellAnnulus,
+            sector_family_counts: evidence.cell_family_counts.clone(),
+            retained_topology_counts: evidence.cell_family_counts,
+            reachability: None,
+            states_examined: evidence.states_examined,
+            states_by_depth: Vec::new(),
+            ear_states_examined: evidence.ear_states_examined,
+            topology_candidates_closed: evidence.topology_candidates_closed,
+            ear_degree_feasible_candidates: usize::from(evidence.topology_candidates_closed > 0),
+            geometry_candidates_attempted: 0,
+            last_geometry_failure: None,
+            best_geometry_failure: None,
+            geometry_failure_phase_counts: BTreeMap::new(),
+            selected_topology_keys: Vec::new(),
+            selected_ears: global.selected_ears.clone(),
+            best_global_evidence: global,
+        },
+    }
 }
 
 struct V3PrefixReplayEvaluator<'a> {
