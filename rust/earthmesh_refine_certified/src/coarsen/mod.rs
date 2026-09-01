@@ -22,6 +22,7 @@ mod global_exact_merge;
 mod hierarchy_component;
 mod local_annular_collar;
 mod local_topology;
+mod problem_identity;
 mod promotion;
 mod research_fixture;
 mod research_runner;
@@ -162,6 +163,12 @@ pub use local_annular_collar::{
 pub use local_topology::{
     search_local_topology_neighbourhood, LocalEdgeFlip, LocalTopologyEvidence, LocalTopologyLimits,
     LocalTopologySearchOutcome,
+};
+pub use problem_identity::{
+    essential_cycle_problem_key, face_band_problem_identity_report_json,
+    profile_frozen_n6_face_band_problems, CanonicalEdgeId, CanonicalFaceId, CanonicalVertexId,
+    EssentialCycleProblemKey, FaceBandProblemIdentityReport,
+    DOWNSTREAM_FULL_POLYGON_CONTRACT_VERSION, ESSENTIAL_CYCLE_CONTRACT_VERSION,
 };
 pub use promotion::{
     build_promotion_patch, build_promotion_patch_for_transition,

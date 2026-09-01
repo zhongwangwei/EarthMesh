@@ -610,12 +610,12 @@ pub fn retained_core_ladder_report_json(report: &RetainedCoreLadderReport) -> St
     )
 }
 
-enum FamilyProblemError {
+pub(crate) enum FamilyProblemError {
     ExactNoSolution,
     Invalid(String),
 }
 
-fn retained_core_family_problem(
+pub(crate) fn retained_core_family_problem(
     source: &MotherGrid,
     component: &HierarchyComponent,
     family: RetainedCoreCorridorFamily,
@@ -792,7 +792,7 @@ fn angle_range_json(range: Option<(f64, f64)>) -> String {
     )
 }
 
-fn component_for_retained_core(
+pub(crate) fn component_for_retained_core(
     original: &HierarchyComponent,
     candidate: &RetainedCoreCandidate,
 ) -> Result<HierarchyComponent, String> {
