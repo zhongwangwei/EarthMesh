@@ -3,6 +3,7 @@
 - [Alpha5 frozen baseline manifest](alpha5_baseline_manifest.json)
 - [Alpha6 research line](alpha6_research_line.md)
 - [Alpha6 N12 research fixtures](alpha6_n12_fixtures.md)
+- [Alpha6 N12 legacy baseline](alpha6_n12_legacy_baseline.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
