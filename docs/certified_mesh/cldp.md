@@ -158,6 +158,15 @@ optimization. W4 is therefore disabled.
   diagnostic evidence. The incumbent never regresses, eight-iteration failure
   is not treated as No-Go, and the result is `ContinuousSearchIncomplete`, so
   the retained-core ladder remains required.
+- PR83: production-scale sequential recovery now has an explicitly
+  non-publishable `WorkingMesh`. A candidate is accepted only after all
+  topology/degree/link/Euler/charge/physical gates pass, orientation and
+  crossings do not regress, the specified defect vector decreases
+  lexicographically, no outside angle violation appears, and its mesh
+  fingerprint is new. Every accepted step atomically recomputes the action
+  registry; visited fingerprints prevent cycles. The Frozen N6 sequential
+  result is compared for equality with the exact combination oracle rather than
+  being treated as a separate existence proof.
 
 ## Current stop condition
 
