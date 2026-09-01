@@ -19,6 +19,7 @@ mod global_exact_merge;
 mod hierarchy_component;
 mod local_topology;
 mod promotion;
+mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
 mod stratified_annulus;
@@ -134,6 +135,10 @@ pub use promotion::{
     build_promotion_patch, build_promotion_patch_for_transition, restore_source_patch,
     validate_promotion_patch, PromotionLevel, PromotionPatch, RestoredSourceFace,
     RestoredSourcePatch,
+};
+pub use retained_core::{
+    plan_retained_core_subsets, retained_core_search_plan_json, RetainedCoreCandidate,
+    RetainedCoreSearchPlan,
 };
 pub use rotation_width_audit::{
     audit_coupled_rotation_aware_width, audit_rotation_aware_width,
