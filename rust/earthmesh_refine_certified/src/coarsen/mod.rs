@@ -16,6 +16,7 @@ mod elastic_block;
 mod embedding_audit;
 mod essential_cycle;
 mod face_band;
+mod frozen_n6_cec;
 mod full_polygon;
 mod full_polygon_merge;
 mod full_polygon_reachability;
@@ -134,6 +135,10 @@ pub use face_band::{
     solve_exact_face_bands, validate_face_band_plan, AnchorBandPolicy, FaceBandDomain,
     FaceBandEvidence, FaceBandLimits, FaceBandOutcomeKind, FaceBandPlan, FaceBandProblem,
     FaceBandSolveOutcome, LegacyFaceBandEnumeration,
+};
+pub use frozen_n6_cec::{
+    frozen_n6_cec_closure_report_json, run_frozen_n6_cec_closure, FrozenN6CecAttemptRecord,
+    FrozenN6CecClosureLimits, FrozenN6CecClosureReport, FrozenN6CecResumeMap, FrozenN6CecStatus,
 };
 pub use full_polygon::{
     enumerate_full_polygon_families, enumerate_full_polygon_family,
