@@ -3,8 +3,8 @@ use earthmesh_refine_certified::coarsen::{
     build_face_band_problem_with_source_face_rings, build_stratified_annulus,
     build_violation_support_atlas, continue_nested_domain,
     frozen_n6_geometry_evidence_json_with_solver_domain, max_min_trust_step_evidence,
-    n6_legacy_mixed_fixture_with_source_levels, solve_elastic_patch_with_max_min_trust_start,
-    solve_exact_face_bands,
+    n6_legacy_mixed_fixture_with_source_levels, search_local_topology_neighbourhood,
+    solve_elastic_patch_with_max_min_trust_start, solve_exact_face_bands,
     solve_full_polygon_merge_free_interface_cber_with_targets_active_trust_starts_and_domain,
     solve_full_polygon_merge_from_face_bands_with_geometry_witness, violation_support_atlas_json,
     AnchorBandPolicy, DomainContinuationMode, DomainContinuationOutcome,
@@ -12,7 +12,7 @@ use earthmesh_refine_certified::coarsen::{
     EmbeddingAuditOutcome, FaceBandLimits, FaceBandSolveOutcome, FullPolygonCberLimits,
     FullPolygonMergeEvidence, FullPolygonMergeOutcome, FullPolygonTopologyKey, GeometryDomainId,
     GeometryDomainWitness, GeometryFailureWitness, GeometryStartId, GlobalExactSelectedEar,
-    MaxMinTrustOutcomeKind,
+    LocalTopologyEvidence, LocalTopologyLimits, LocalTopologySearchOutcome, MaxMinTrustOutcomeKind,
 };
 use std::{collections::BTreeSet, fs, process::Command};
 
@@ -398,6 +398,70 @@ fn frozen_n6_pr63_violation_support_probe() {
     eprintln!("{json}");
 }
 
+#[test]
+#[ignore = "explicit finite Frozen N6 PR64 local-topology gate"]
+fn frozen_n6_pr64_local_topology_probe() {
+    let (source, component, source_levels) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+    let (_, incumbent, _, topology_keys, selected_ears) =
+        pr49_and_pr52_witnesses_with_topology(&source, &component, &source_levels);
+    let outcome = solve_elastic_patch_with_max_min_trust_start(
+        &incumbent.mesh,
+        incumbent.patch.clone(),
+        ElasticBlockLimits {
+            elastic_iterations: 128,
+        },
+        GeometryStartId::MaterializedSource,
+    );
+    let (_, mesh, patch, _) = elastic_outcome_geometry(&outcome);
+    let improved = GeometryFailureWitness {
+        mesh: mesh.clone(),
+        patch: patch.clone(),
+    };
+    let stratified = build_stratified_annulus(&source, &component).unwrap();
+    let atlas = build_violation_support_atlas(
+        &source,
+        &improved.mesh,
+        &improved.patch,
+        &stratified,
+        &topology_keys,
+        &selected_ears,
+    )
+    .unwrap();
+    let limits = LocalTopologyLimits {
+        maximum_states: usize_env("EARTHMESH_LOCAL_TOPOLOGY_STATES", 128),
+        maximum_flips: 3,
+        local_geometry_iterations: usize_env("EARTHMESH_LOCAL_GEOMETRY_ITERATIONS", 32),
+    };
+    let anchors = [2usize, 29, 77, 155].into_iter().collect();
+    let result = search_local_topology_neighbourhood(&improved, &atlas, &anchors, limits);
+    let (gate, evidence) = match &result {
+        LocalTopologySearchOutcome::StrictCertified { evidence, .. } => {
+            ("StrictCandidateStopPromotion", evidence)
+        }
+        LocalTopologySearchOutcome::NoStrictCandidate(evidence) => {
+            ("NoStrictCandidateEnterPromotion", evidence)
+        }
+        LocalTopologySearchOutcome::SearchBudgetExhausted(evidence) => {
+            ("LocalTopologyBudgetExhausted", evidence)
+        }
+        LocalTopologySearchOutcome::InvalidInput(reason) => {
+            panic!("PR64 local-topology input rejected: {reason}")
+        }
+    };
+    assert!(evidence.incumbent_preserved);
+    let json = format!(
+        "{{\"schema_version\":1,\"probe\":\"FrozenN6Pr64LocalTopology\",\"taskbook_sha256\":\"{CLDP_TASKBOOK_SHA256}\",\"limits\":{{\"maximum_states\":{},\"maximum_flips\":{},\"local_geometry_iterations\":{}}},\"gate\":\"{gate}\",\"evidence\":{}}}",
+        limits.maximum_states,
+        limits.maximum_flips,
+        limits.local_geometry_iterations,
+        local_topology_evidence_json(evidence),
+    );
+    if let Ok(path) = std::env::var("EARTHMESH_GEOMETRY_JSON") {
+        fs::write(path, &json).unwrap();
+    }
+    eprintln!("{json}");
+}
+
 fn elastic_outcome_geometry(
     outcome: &ElasticBlockOutcome,
 ) -> (
@@ -438,6 +502,33 @@ fn elastic_outcome_geometry(
         ),
         ElasticBlockOutcome::InvalidPatch { reason } => panic!("invalid max-min patch: {reason}"),
     }
+}
+
+fn local_topology_evidence_json(evidence: &LocalTopologyEvidence) -> String {
+    let flips = evidence
+        .best_flips
+        .iter()
+        .map(|flip| {
+            format!(
+                "{{\"face\":{},\"neighbour\":{}}}",
+                flip.face, flip.neighbour
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"states_examined\":{},\"rejected_flips\":{},\"topology_gate_rejections\":{},\"geometry_candidates\":{},\"incumbent_angle_degrees\":[{:.12},{:.12}],\"best_angle_degrees\":[{:.12},{:.12}],\"best_signed_margin_deg\":{:.12},\"best_flips\":[{flips}],\"incumbent_preserved\":{}}}",
+        evidence.states_examined,
+        evidence.rejected_flip_count,
+        evidence.topology_gate_rejections,
+        evidence.geometry_candidates,
+        evidence.incumbent_angle_range_deg.0,
+        evidence.incumbent_angle_range_deg.1,
+        evidence.best_angle_range_deg.0,
+        evidence.best_angle_range_deg.1,
+        evidence.best_signed_margin_deg,
+        evidence.incumbent_preserved,
+    )
 }
 
 fn embedding_audit(
