@@ -194,3 +194,18 @@ family does not certify `40.2--79.8` degrees. Because failure is global rather
 than confined to otherwise-feasible anchor neighbourhoods, local W4 is not
 entered. This is a bounded solver result, not a proof that every continuous W3
 embedding is impossible.
+
+## PR61 W3 embedding audit
+
+PR61 freezes the PR60 geometry result as
+`TopologyClosedNoUsableEmbedding`. The deterministic audit compares each
+retained W3 candidate with its W2 domain witness by source vertices, edges,
+triangles, orientation, minor-arc crossings, near-degenerate faces, fixed-only
+degeneracies, and combinatorial-versus-geometric vertex rotation. Any such
+embedding defect prevents classification as an angle-feasibility failure. The
+solver and W3 topology are unchanged, and W4 remains disabled.
+
+The zero-iteration Frozen N6 audit reports one non-positive triangle, 17/13
+minor-arc crossing pairs, and two rotation mismatches for the +1/+2 starts.
+Those defects exist before angle optimization, so the registered W3 state is
+an embedding failure rather than an angle-feasibility result.

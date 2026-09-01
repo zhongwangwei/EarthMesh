@@ -7,6 +7,7 @@ mod core_condensation;
 mod domain_continuation;
 mod effective_band;
 mod elastic_block;
+mod embedding_audit;
 mod face_band;
 mod full_polygon;
 mod full_polygon_merge;
@@ -64,6 +65,9 @@ pub use elastic_block::{
     ElasticBlockPhase, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
     ElasticTargetMode, GeometryDomainId, GeometryFailureDiagnostics, GeometryFailureWitness,
     GeometryStartId, MotherLevelMetric, MovementDistribution,
+};
+pub use embedding_audit::{
+    audit_embedding_transfer, EmbeddingAudit, EmbeddingAuditOutcome, RotationMismatch,
 };
 pub use face_band::{
     build_face_band_problem, build_face_band_problem_with_source_face_rings,
