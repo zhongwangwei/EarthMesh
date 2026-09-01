@@ -144,6 +144,7 @@ pub struct FullPolygonPlanEvaluator<'a> {
     source: &'a MotherGrid,
     component: &'a HierarchyComponent,
     limits: FullPolygonMergeLimits,
+    cacheable: bool,
 }
 
 impl<'a> FullPolygonPlanEvaluator<'a> {
@@ -156,6 +157,20 @@ impl<'a> FullPolygonPlanEvaluator<'a> {
             source,
             component,
             limits,
+            cacheable: true,
+        }
+    }
+
+    pub fn uncached(
+        source: &'a MotherGrid,
+        component: &'a HierarchyComponent,
+        limits: FullPolygonMergeLimits,
+    ) -> Self {
+        Self {
+            source,
+            component,
+            limits,
+            cacheable: false,
         }
     }
 }
@@ -182,7 +197,7 @@ impl FaceBandPlanEvaluator for FullPolygonPlanEvaluator<'_> {
     }
 
     fn topology_state_budget(&self) -> Option<usize> {
-        Some(self.limits.topology_states)
+        self.cacheable.then_some(self.limits.topology_states)
     }
 }
 
