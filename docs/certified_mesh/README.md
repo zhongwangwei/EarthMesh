@@ -31,6 +31,7 @@
 - [PIER exact polygon incidence recovery](pier_small_exact_oracle.md)
 - [Frozen N6 annular target witnesses](frozen_n6_annular_target_witness.md)
 - [Joint two-cell SDCE](joint_two_cell_sdce.md)
+- [Lifted-N12 fixed-prefix SDCE closure](n12_sdce_find_one.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.

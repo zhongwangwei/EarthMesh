@@ -41,6 +41,7 @@ mod research_runner;
 mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
+mod sdce_find_one;
 mod sdce_gipc;
 mod sdce_incidence;
 mod sector_recovery;
@@ -303,6 +304,11 @@ pub use rotation_width_audit::{
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+};
+pub use sdce_find_one::{
+    find_one_sdce_essential_cycle, solve_sdce_plan_find_one, SdceCycleFindOneEvidence,
+    SdceCycleFindOneLimits, SdceCycleFindOneOutcome, SdcePlanFindOneEvidence,
+    SdcePlanFindOneOutcome, SdcePlanQuantum, SdcePlanSearchStage,
 };
 pub use sdce_gipc::{
     solve_global_incidence_plan, GlobalIncidencePlan, GlobalIncidencePlanKey,
