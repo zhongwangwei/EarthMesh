@@ -152,9 +152,11 @@ pub use domain_continuation::{
 };
 pub use domain_quality::{
     commit_domain_quality_candidate, domain_quality_evaluation_from_atlas,
-    evaluate_domain_quality_candidate, DomainQualityAcceptanceReport, DomainQualityCosts,
+    evaluate_domain_quality_candidate, transition_intrusion_report,
+    transition_intrusion_report_json, DomainQualityAcceptanceReport, DomainQualityCosts,
     DomainQualityDamageMetrics, DomainQualityEvaluation, DomainQualityRejectReason,
-    DomainQualityVector, ExportDamageGuard, ExportDamageRejectReason, DOMAIN_QUALITY_SCALE,
+    DomainQualityVector, ExportDamageGuard, ExportDamageRejectReason, TransitionIntrusionReport,
+    TransitionZoneIntrusion, DOMAIN_QUALITY_SCALE,
 };
 pub use downstream_contract::{
     audit_legacy_downstream_preflight, DownstreamContractStage, DownstreamPreflightEvidence,

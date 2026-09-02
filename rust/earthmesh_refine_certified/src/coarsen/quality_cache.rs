@@ -750,6 +750,37 @@ mod tests {
     }
 
     #[test]
+    fn transition_overlap_is_partitioned_between_target_and_boundary() {
+        let (mesh, context) = fixture();
+        let evaluation = DomainQualityCache::build(&mesh, &context, DomainQualityCosts::default())
+            .unwrap()
+            .evaluation()
+            .unwrap();
+        let expected_target = context
+            .values()
+            .filter(|item| {
+                item.transition_owner.is_some() && item.quality.zone == QualityZone::TargetCore
+            })
+            .count();
+        let expected_boundary = context
+            .values()
+            .filter(|item| {
+                item.transition_owner.is_some()
+                    && item.quality.zone == QualityZone::BoundaryProtection
+            })
+            .count();
+
+        assert_eq!(
+            evaluation.vector.transition_faces_in_target,
+            expected_target
+        );
+        assert_eq!(
+            evaluation.vector.transition_faces_in_boundary,
+            expected_boundary
+        );
+    }
+
+    #[test]
     fn vertex_move_delta_equals_full_and_rollback_restores_cache() {
         let (mut mesh, context) = fixture();
         let mut cache =

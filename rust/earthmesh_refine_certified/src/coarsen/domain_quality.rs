@@ -101,6 +101,162 @@ pub struct DomainQualityAcceptanceReport {
     pub rejection: Option<DomainQualityRejectReason>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransitionZoneIntrusion {
+    pub transition_faces: usize,
+    pub preferred_violation_count: usize,
+    pub worst_preferred_violation_microdeg: i64,
+    pub preferred_l2_scaled: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionIntrusionReport {
+    pub target_before: TransitionZoneIntrusion,
+    pub target_after: TransitionZoneIntrusion,
+    pub boundary_before: TransitionZoneIntrusion,
+    pub boundary_after: TransitionZoneIntrusion,
+    pub accepted: bool,
+    pub rejection: Option<DomainQualityRejectReason>,
+}
+
+pub fn transition_intrusion_report(
+    before_atlas: &SpatialAngleAtlas,
+    after_atlas: &SpatialAngleAtlas,
+    acceptance: DomainQualityAcceptanceReport,
+) -> Result<TransitionIntrusionReport, String> {
+    let (target_before, boundary_before) = transition_intrusions(before_atlas)?;
+    let (target_after, boundary_after) = transition_intrusions(after_atlas)?;
+    if target_before.transition_faces != acceptance.before.vector.transition_faces_in_target
+        || boundary_before.transition_faces != acceptance.before.vector.transition_faces_in_boundary
+        || target_after.transition_faces != acceptance.after.vector.transition_faces_in_target
+        || boundary_after.transition_faces != acceptance.after.vector.transition_faces_in_boundary
+    {
+        return Err("transition intrusion report does not match quality evaluation".into());
+    }
+    Ok(TransitionIntrusionReport {
+        target_before,
+        target_after,
+        boundary_before,
+        boundary_after,
+        accepted: acceptance.accepted,
+        rejection: acceptance.rejection,
+    })
+}
+
+pub fn transition_intrusion_report_json(report: &TransitionIntrusionReport) -> String {
+    format!(
+        "{{\"schema_version\":1,\"target_before\":{},\"target_after\":{},\"boundary_before\":{},\"boundary_after\":{},\"accepted\":{},\"rejection\":{}}}",
+        transition_zone_json(report.target_before),
+        transition_zone_json(report.target_after),
+        transition_zone_json(report.boundary_before),
+        transition_zone_json(report.boundary_after),
+        report.accepted,
+        report.rejection.map_or_else(
+            || "null".to_string(),
+            |reason| format!("\"{}\"", domain_quality_reject_reason(reason))
+        ),
+    )
+}
+
+fn transition_intrusions(
+    atlas: &SpatialAngleAtlas,
+) -> Result<(TransitionZoneIntrusion, TransitionZoneIntrusion), String> {
+    if atlas.contract_id != AngleContractId::DomainQuality38To82V1 {
+        return Err("transition intrusion report requires the DQX angle contract".into());
+    }
+    let mut faces = BTreeMap::new();
+    let mut target = TransitionZoneIntrusion::default();
+    let mut boundary = TransitionZoneIntrusion::default();
+    for witness in &atlas.witnesses {
+        if witness.is_transition_face != witness.transition_owner.is_some() {
+            return Err(format!(
+                "transition intrusion witness for face {} has inconsistent ownership",
+                witness.face
+            ));
+        }
+        if !witness.is_transition_face {
+            continue;
+        }
+        let owner = witness
+            .transition_owner
+            .expect("validated transition owner");
+        if let Some(&(existing_zone, existing_owner)) = faces.get(&witness.face) {
+            if existing_zone != witness.zone || existing_owner != owner {
+                return Err(format!(
+                    "transition intrusion face {} has inconsistent context",
+                    witness.face
+                ));
+            }
+        } else {
+            faces.insert(witness.face, (witness.zone, owner));
+        }
+        let metrics = match witness.zone {
+            QualityZone::TargetCore => &mut target,
+            QualityZone::BoundaryProtection => &mut boundary,
+            QualityZone::ExportCorridor
+            | QualityZone::DeepExterior
+            | QualityZone::GlobalNeutral => continue,
+        };
+        if witness.preferred_violation > 0.0 {
+            let violation = scale_nonnegative(
+                witness.preferred_violation,
+                "transition preferred violation",
+            )?;
+            metrics.preferred_violation_count = metrics
+                .preferred_violation_count
+                .checked_add(1)
+                .ok_or_else(|| "transition preferred count overflow".to_string())?;
+            metrics.worst_preferred_violation_microdeg =
+                metrics.worst_preferred_violation_microdeg.max(violation);
+            metrics.preferred_l2_scaled = metrics
+                .preferred_l2_scaled
+                .checked_add(squared_scaled(violation)?)
+                .ok_or_else(|| "transition preferred score overflow".to_string())?;
+        }
+    }
+    target.transition_faces = faces
+        .values()
+        .filter(|&&(zone, _)| zone == QualityZone::TargetCore)
+        .count();
+    boundary.transition_faces = faces
+        .values()
+        .filter(|&&(zone, _)| zone == QualityZone::BoundaryProtection)
+        .count();
+    Ok((target, boundary))
+}
+
+fn transition_zone_json(zone: TransitionZoneIntrusion) -> String {
+    format!(
+        "{{\"transition_faces\":{},\"preferred_violation_count\":{},\"worst_preferred_violation_microdeg\":{},\"preferred_l2_scaled\":{}}}",
+        zone.transition_faces,
+        zone.preferred_violation_count,
+        zone.worst_preferred_violation_microdeg,
+        zone.preferred_l2_scaled,
+    )
+}
+
+fn domain_quality_reject_reason(reason: DomainQualityRejectReason) -> &'static str {
+    match reason {
+        DomainQualityRejectReason::HardCertificateFailed => "hard_certificate_failed",
+        DomainQualityRejectReason::InvalidScore => "invalid_score",
+        DomainQualityRejectReason::GlobalHardViolation => "global_hard_violation",
+        DomainQualityRejectReason::RequirementResidual => "requirement_residual",
+        DomainQualityRejectReason::TopologyResidual => "topology_residual",
+        DomainQualityRejectReason::DualResidual => "dual_residual",
+        DomainQualityRejectReason::RemapResidual => "remap_residual",
+        DomainQualityRejectReason::ExportDamage(
+            ExportDamageRejectReason::NewPreferredViolations,
+        ) => "export_damage_new_preferred_violations",
+        DomainQualityRejectReason::ExportDamage(ExportDamageRejectReason::PreferredL2Increase) => {
+            "export_damage_preferred_l2_increase"
+        }
+        DomainQualityRejectReason::ExportDamage(ExportDamageRejectReason::InternalHardMargin) => {
+            "export_damage_internal_hard_margin"
+        }
+        DomainQualityRejectReason::NotStrictImprovement => "not_strict_improvement",
+    }
+}
+
 pub fn domain_quality_evaluation_from_atlas(
     atlas: &SpatialAngleAtlas,
     costs: DomainQualityCosts,
@@ -594,6 +750,7 @@ mod tests {
     use crate::coarsen::{
         EdgeClass, SpatialAngleWitness, SpatialAtlasConclusion, SpatialZoneAngleMetrics,
     };
+    use std::collections::BTreeSet;
 
     fn witness(face: usize, angle: f64, zone: QualityZone, priority: f64) -> SpatialAngleWitness {
         let contract = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
@@ -625,14 +782,28 @@ mod tests {
     }
 
     fn atlas(witnesses: Vec<SpatialAngleWitness>) -> SpatialAngleAtlas {
+        let transition_faces = |zone| {
+            witnesses
+                .iter()
+                .filter(|witness| witness.is_transition_face && witness.zone == zone)
+                .map(|witness| witness.face)
+                .collect::<BTreeSet<_>>()
+                .len()
+        };
         SpatialAngleAtlas {
             contract_id: AngleContractId::DomainQuality38To82V1,
             global: SpatialZoneAngleMetrics {
                 angle_count: witnesses.len(),
                 ..SpatialZoneAngleMetrics::default()
             },
-            target: SpatialZoneAngleMetrics::default(),
-            boundary: SpatialZoneAngleMetrics::default(),
+            target: SpatialZoneAngleMetrics {
+                transition_face_count: transition_faces(QualityZone::TargetCore),
+                ..SpatialZoneAngleMetrics::default()
+            },
+            boundary: SpatialZoneAngleMetrics {
+                transition_face_count: transition_faces(QualityZone::BoundaryProtection),
+                ..SpatialZoneAngleMetrics::default()
+            },
             export: SpatialZoneAngleMetrics::default(),
             deep_exterior: SpatialZoneAngleMetrics::default(),
             global_neutral: SpatialZoneAngleMetrics::default(),
@@ -641,6 +812,25 @@ mod tests {
             conclusion: SpatialAtlasConclusion::DomainRepairRequired,
             witnesses,
         }
+    }
+
+    fn face_witnesses(
+        face: usize,
+        angles: [f64; 3],
+        zone: QualityZone,
+        transition_owner: Option<u64>,
+    ) -> Vec<SpatialAngleWitness> {
+        angles
+            .into_iter()
+            .enumerate()
+            .map(|(corner, angle)| {
+                let mut witness = witness(face, angle, zone, 1.0);
+                witness.corner = corner;
+                witness.is_transition_face = transition_owner.is_some();
+                witness.transition_owner = transition_owner;
+                witness
+            })
+            .collect()
     }
 
     fn evaluation(
@@ -852,5 +1042,60 @@ mod tests {
         assert!(accepted.accepted);
         assert_eq!(accepted.before, before);
         assert_eq!(state, 8);
+    }
+
+    #[test]
+    fn transition_report_excludes_non_transition_defects_and_rejects_new_intrusion() {
+        let mut before_witnesses =
+            face_witnesses(2, [39.5, 60.0, 60.0], QualityZone::TargetCore, None);
+        before_witnesses.extend(face_witnesses(
+            3,
+            [60.0; 3],
+            QualityZone::TargetCore,
+            Some(7),
+        ));
+        let mut after_witnesses = before_witnesses[..3].to_vec();
+        after_witnesses.extend(face_witnesses(
+            3,
+            [39.5, 60.0, 60.0],
+            QualityZone::TargetCore,
+            Some(7),
+        ));
+        let before_atlas = atlas(before_witnesses);
+        let after_atlas = atlas(after_witnesses);
+        let before =
+            domain_quality_evaluation_from_atlas(&before_atlas, DomainQualityCosts::default())
+                .unwrap();
+        let after =
+            domain_quality_evaluation_from_atlas(&after_atlas, DomainQualityCosts::default())
+                .unwrap();
+        let mut state = 7_u64;
+        let acceptance = commit_domain_quality_candidate(
+            &mut state,
+            8,
+            before,
+            after,
+            true,
+            ExportDamageGuard::default(),
+        );
+        let report = transition_intrusion_report(&before_atlas, &after_atlas, acceptance).unwrap();
+
+        assert_eq!(state, 7);
+        assert!(!report.accepted);
+        assert_eq!(
+            report.rejection,
+            Some(DomainQualityRejectReason::ExportDamage(
+                ExportDamageRejectReason::PreferredL2Increase
+            ))
+        );
+        assert_eq!(report.target_before.transition_faces, 1);
+        assert_eq!(report.target_before.preferred_violation_count, 0);
+        assert_eq!(report.target_after.transition_faces, 1);
+        assert_eq!(report.target_after.preferred_violation_count, 1);
+        assert_eq!(report.target_after.preferred_l2_scaled, 250_000);
+        assert_eq!(
+            transition_intrusion_report_json(&report),
+            "{\"schema_version\":1,\"target_before\":{\"transition_faces\":1,\"preferred_violation_count\":0,\"worst_preferred_violation_microdeg\":0,\"preferred_l2_scaled\":0},\"target_after\":{\"transition_faces\":1,\"preferred_violation_count\":1,\"worst_preferred_violation_microdeg\":500000,\"preferred_l2_scaled\":250000},\"boundary_before\":{\"transition_faces\":0,\"preferred_violation_count\":0,\"worst_preferred_violation_microdeg\":0,\"preferred_l2_scaled\":0},\"boundary_after\":{\"transition_faces\":0,\"preferred_violation_count\":0,\"worst_preferred_violation_microdeg\":0,\"preferred_l2_scaled\":0},\"accepted\":false,\"rejection\":\"export_damage_preferred_l2_increase\"}"
+        );
     }
 }
