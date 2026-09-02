@@ -1,8 +1,9 @@
 //! Integer-only DQX candidate scoring and atomic acceptance.
 
-use super::SpatialAngleAtlas;
+use super::{SpatialAngleAtlas, SpatialAngleWitness};
 use crate::certificate::{AngleContract, AngleContractId};
 use earthmesh_quality::domain::QualityZone;
+use std::collections::BTreeMap;
 
 pub const DOMAIN_QUALITY_SCALE: i64 = 1_000_000;
 
@@ -115,93 +116,16 @@ pub fn domain_quality_evaluation_from_atlas(
     if costs.geometry_move_scaled < 0 {
         return Err("domain quality geometry move must be non-negative".into());
     }
-    let contract = AngleContract::for_id(atlas.contract_id);
-    let mut vector = DomainQualityVector {
-        requirement_residuals: costs.requirement_residuals,
-        topology_residuals: costs.topology_residuals,
-        dual_residuals: costs.dual_residuals,
-        remap_residuals: costs.remap_residuals,
-        transition_faces_in_target: atlas.target.transition_face_count,
-        transition_faces_in_boundary: atlas.boundary.transition_face_count,
-        final_cell_count: atlas.global.angle_count / 3,
-        geometry_move_scaled: costs.geometry_move_scaled,
-        topology_change_count: costs.topology_change_count,
-        work_units: costs.work_units,
-        ..DomainQualityVector::default()
-    };
-    let mut damage = DomainQualityDamageMetrics::default();
-    let mut target_equilateral_squared = 0_u128;
-    let mut target_angle_count = 0_u128;
-
+    let mut accumulator = DomainQualityAccumulator::default();
     for witness in &atlas.witnesses {
-        if !witness.angle_degrees.is_finite()
-            || !witness.maximum_priority.is_finite()
-            || !(0.0..=1.0).contains(&witness.maximum_priority)
-        {
-            return Err("domain quality atlas contains an invalid angle or priority".into());
-        }
-        let hard = scale_nonnegative(witness.global_hard_violation, "global hard violation")?;
-        let preferred = scale_nonnegative(witness.preferred_violation, "preferred violation")?;
-        let preferred_l2 = squared_scaled(preferred)?;
-        vector.global_hard_violation_count += usize::from(witness.global_hard_violation > 0.0);
-        vector.global_hard_max_violation_microdeg =
-            vector.global_hard_max_violation_microdeg.max(hard);
-        add_scaled(&mut vector.global_preferred_l2_scaled, preferred_l2)?;
-
-        match witness.zone {
-            QualityZone::TargetCore => {
-                vector.target_preferred_violation_count +=
-                    usize::from(witness.preferred_violation > 0.0);
-                vector.target_worst_preferred_violation_microdeg = vector
-                    .target_worst_preferred_violation_microdeg
-                    .max(preferred);
-                add_scaled(&mut vector.target_preferred_l2_scaled, preferred_l2)?;
-                let equilateral = scale_signed(witness.angle_degrees - 60.0, "angle")?;
-                target_equilateral_squared = target_equilateral_squared
-                    .checked_add(
-                        equilateral.unsigned_abs() as u128 * equilateral.unsigned_abs() as u128,
-                    )
-                    .ok_or_else(|| "target equilateral score overflow".to_string())?;
-                target_angle_count += 1;
-            }
-            QualityZone::BoundaryProtection => {
-                vector.boundary_preferred_violation_count +=
-                    usize::from(witness.preferred_violation > 0.0);
-                vector.boundary_worst_preferred_violation_microdeg = vector
-                    .boundary_worst_preferred_violation_microdeg
-                    .max(preferred);
-                add_scaled(&mut vector.boundary_preferred_l2_scaled, preferred_l2)?;
-            }
-            QualityZone::ExportCorridor | QualityZone::DeepExterior => {
-                damage.external_preferred_violation_count +=
-                    usize::from(witness.preferred_violation > 0.0);
-                add_scaled(&mut damage.external_preferred_l2_scaled, preferred_l2)?;
-                let priority = scale_nonnegative(witness.maximum_priority, "quality priority")?;
-                add_scaled(
-                    &mut vector.export_near_boundary_penalty_scaled,
-                    multiply_scaled(preferred_l2, priority)?,
-                )?;
-                let margin = scale_signed(
-                    (witness.angle_degrees - contract.final_delivery.minimum_degrees)
-                        .min(contract.final_delivery.maximum_degrees - witness.angle_degrees),
-                    "external hard margin",
-                )?;
-                damage.external_minimum_hard_margin_microdeg = Some(
-                    damage
-                        .external_minimum_hard_margin_microdeg
-                        .map_or(margin, |current| current.min(margin)),
-                );
-            }
-            QualityZone::GlobalNeutral => {}
-        }
+        accumulator.add(witness)?;
     }
-
-    if let Some(mean) = target_equilateral_squared.checked_div(target_angle_count) {
-        vector.target_equilateral_rmse_scaled = rounded_integer_sqrt(mean)
-            .try_into()
-            .map_err(|_| "target equilateral score overflow".to_string())?;
-    }
-    Ok(DomainQualityEvaluation { vector, damage })
+    accumulator.evaluation(
+        costs,
+        atlas.global.angle_count / 3,
+        atlas.target.transition_face_count,
+        atlas.boundary.transition_face_count,
+    )
 }
 
 pub fn evaluate_domain_quality_candidate(
@@ -329,6 +253,300 @@ fn export_damage_rejection(
     None
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct DomainQualityAccumulator {
+    global_hard_violation_count: usize,
+    global_hard_violations: BTreeMap<i64, usize>,
+    target_preferred_violation_count: usize,
+    target_preferred_violations: BTreeMap<i64, usize>,
+    target_preferred_l2_scaled: i64,
+    target_equilateral_squared: u128,
+    target_angle_count: usize,
+    boundary_preferred_violation_count: usize,
+    boundary_preferred_violations: BTreeMap<i64, usize>,
+    boundary_preferred_l2_scaled: i64,
+    export_near_boundary_penalty_scaled: i64,
+    global_preferred_l2_scaled: i64,
+    external_preferred_violation_count: usize,
+    external_preferred_l2_scaled: i64,
+    external_hard_margins: BTreeMap<i64, usize>,
+}
+
+impl DomainQualityAccumulator {
+    pub(super) fn add(&mut self, witness: &SpatialAngleWitness) -> Result<(), String> {
+        self.add_angle(DomainQualityAngle::from(witness))
+    }
+
+    pub(super) fn add_angle(&mut self, angle: DomainQualityAngle) -> Result<(), String> {
+        self.apply(AngleContribution::from_angle(angle)?, true)
+    }
+
+    pub(super) fn remove_angle(&mut self, angle: DomainQualityAngle) -> Result<(), String> {
+        self.apply(AngleContribution::from_angle(angle)?, false)
+    }
+
+    pub(super) fn evaluation(
+        &self,
+        costs: DomainQualityCosts,
+        final_cell_count: usize,
+        transition_faces_in_target: usize,
+        transition_faces_in_boundary: usize,
+    ) -> Result<DomainQualityEvaluation, String> {
+        if costs.geometry_move_scaled < 0 {
+            return Err("domain quality geometry move must be non-negative".into());
+        }
+        let target_equilateral_rmse_scaled = self
+            .target_equilateral_squared
+            .checked_div(self.target_angle_count as u128)
+            .map(rounded_integer_sqrt)
+            .unwrap_or(0)
+            .try_into()
+            .map_err(|_| "target equilateral score overflow".to_string())?;
+        Ok(DomainQualityEvaluation {
+            vector: DomainQualityVector {
+                global_hard_violation_count: self.global_hard_violation_count,
+                global_hard_max_violation_microdeg: maximum_key(&self.global_hard_violations),
+                requirement_residuals: costs.requirement_residuals,
+                topology_residuals: costs.topology_residuals,
+                dual_residuals: costs.dual_residuals,
+                remap_residuals: costs.remap_residuals,
+                target_preferred_violation_count: self.target_preferred_violation_count,
+                target_worst_preferred_violation_microdeg: maximum_key(
+                    &self.target_preferred_violations,
+                ),
+                target_preferred_l2_scaled: self.target_preferred_l2_scaled,
+                target_equilateral_rmse_scaled,
+                boundary_preferred_violation_count: self.boundary_preferred_violation_count,
+                boundary_worst_preferred_violation_microdeg: maximum_key(
+                    &self.boundary_preferred_violations,
+                ),
+                boundary_preferred_l2_scaled: self.boundary_preferred_l2_scaled,
+                transition_faces_in_target,
+                transition_faces_in_boundary,
+                export_near_boundary_penalty_scaled: self.export_near_boundary_penalty_scaled,
+                final_cell_count,
+                global_preferred_l2_scaled: self.global_preferred_l2_scaled,
+                geometry_move_scaled: costs.geometry_move_scaled,
+                topology_change_count: costs.topology_change_count,
+                work_units: costs.work_units,
+            },
+            damage: DomainQualityDamageMetrics {
+                external_preferred_violation_count: self.external_preferred_violation_count,
+                external_preferred_l2_scaled: self.external_preferred_l2_scaled,
+                external_minimum_hard_margin_microdeg: self
+                    .external_hard_margins
+                    .first_key_value()
+                    .map(|(&margin, _)| margin),
+            },
+        })
+    }
+
+    fn apply(&mut self, value: AngleContribution, add: bool) -> Result<(), String> {
+        adjust_usize(
+            &mut self.global_hard_violation_count,
+            value.global_hard_violation,
+            add,
+        )?;
+        adjust_histogram(&mut self.global_hard_violations, value.global_hard, add)?;
+        adjust_i64(
+            &mut self.global_preferred_l2_scaled,
+            value.preferred_l2,
+            add,
+        )?;
+        match value.zone {
+            QualityZone::TargetCore => {
+                adjust_usize(
+                    &mut self.target_preferred_violation_count,
+                    value.preferred_violation,
+                    add,
+                )?;
+                adjust_histogram(&mut self.target_preferred_violations, value.preferred, add)?;
+                adjust_i64(
+                    &mut self.target_preferred_l2_scaled,
+                    value.preferred_l2,
+                    add,
+                )?;
+                adjust_u128(
+                    &mut self.target_equilateral_squared,
+                    value.equilateral_squared,
+                    add,
+                )?;
+                adjust_usize(&mut self.target_angle_count, 1, add)?;
+            }
+            QualityZone::BoundaryProtection => {
+                adjust_usize(
+                    &mut self.boundary_preferred_violation_count,
+                    value.preferred_violation,
+                    add,
+                )?;
+                adjust_histogram(
+                    &mut self.boundary_preferred_violations,
+                    value.preferred,
+                    add,
+                )?;
+                adjust_i64(
+                    &mut self.boundary_preferred_l2_scaled,
+                    value.preferred_l2,
+                    add,
+                )?;
+            }
+            QualityZone::ExportCorridor | QualityZone::DeepExterior => {
+                adjust_usize(
+                    &mut self.external_preferred_violation_count,
+                    value.preferred_violation,
+                    add,
+                )?;
+                adjust_i64(
+                    &mut self.external_preferred_l2_scaled,
+                    value.preferred_l2,
+                    add,
+                )?;
+                adjust_i64(
+                    &mut self.export_near_boundary_penalty_scaled,
+                    value.export_penalty,
+                    add,
+                )?;
+                adjust_histogram(
+                    &mut self.external_hard_margins,
+                    value
+                        .external_hard_margin
+                        .expect("external contribution has a margin"),
+                    add,
+                )?;
+            }
+            QualityZone::GlobalNeutral => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct DomainQualityAngle {
+    pub angle_degrees: f64,
+    pub global_hard_violation: f64,
+    pub preferred_violation: f64,
+    pub zone: QualityZone,
+    pub maximum_priority: f64,
+}
+
+impl From<&SpatialAngleWitness> for DomainQualityAngle {
+    fn from(witness: &SpatialAngleWitness) -> Self {
+        Self {
+            angle_degrees: witness.angle_degrees,
+            global_hard_violation: witness.global_hard_violation,
+            preferred_violation: witness.preferred_violation,
+            zone: witness.zone,
+            maximum_priority: witness.maximum_priority,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AngleContribution {
+    zone: QualityZone,
+    global_hard_violation: usize,
+    global_hard: i64,
+    preferred_violation: usize,
+    preferred: i64,
+    preferred_l2: i64,
+    equilateral_squared: u128,
+    export_penalty: i64,
+    external_hard_margin: Option<i64>,
+}
+
+impl AngleContribution {
+    fn from_angle(angle: DomainQualityAngle) -> Result<Self, String> {
+        if !angle.angle_degrees.is_finite()
+            || !angle.maximum_priority.is_finite()
+            || !(0.0..=1.0).contains(&angle.maximum_priority)
+        {
+            return Err("domain quality atlas contains an invalid angle or priority".into());
+        }
+        let contract = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        let global_hard = scale_nonnegative(angle.global_hard_violation, "global hard violation")?;
+        let preferred = scale_nonnegative(angle.preferred_violation, "preferred violation")?;
+        let preferred_l2 = squared_scaled(preferred)?;
+        let equilateral = scale_signed(angle.angle_degrees - 60.0, "angle")?;
+        let priority = scale_nonnegative(angle.maximum_priority, "quality priority")?;
+        Ok(Self {
+            zone: angle.zone,
+            global_hard_violation: usize::from(angle.global_hard_violation > 0.0),
+            global_hard,
+            preferred_violation: usize::from(angle.preferred_violation > 0.0),
+            preferred,
+            preferred_l2,
+            equilateral_squared: equilateral.unsigned_abs() as u128
+                * equilateral.unsigned_abs() as u128,
+            export_penalty: multiply_scaled(preferred_l2, priority)?,
+            external_hard_margin: matches!(
+                angle.zone,
+                QualityZone::ExportCorridor | QualityZone::DeepExterior
+            )
+            .then(|| {
+                scale_signed(
+                    (angle.angle_degrees - contract.final_delivery.minimum_degrees)
+                        .min(contract.final_delivery.maximum_degrees - angle.angle_degrees),
+                    "external hard margin",
+                )
+            })
+            .transpose()?,
+        })
+    }
+}
+
+fn maximum_key(histogram: &BTreeMap<i64, usize>) -> i64 {
+    histogram.last_key_value().map_or(0, |(&value, _)| value)
+}
+
+fn adjust_histogram(
+    histogram: &mut BTreeMap<i64, usize>,
+    value: i64,
+    add: bool,
+) -> Result<(), String> {
+    if add {
+        *histogram.entry(value).or_default() += 1;
+        return Ok(());
+    }
+    let count = histogram
+        .get_mut(&value)
+        .ok_or_else(|| "domain quality cache histogram underflow".to_string())?;
+    *count -= 1;
+    if *count == 0 {
+        histogram.remove(&value);
+    }
+    Ok(())
+}
+
+fn adjust_usize(target: &mut usize, value: usize, add: bool) -> Result<(), String> {
+    *target = if add {
+        target.checked_add(value)
+    } else {
+        target.checked_sub(value)
+    }
+    .ok_or_else(|| "domain quality cache count overflow".to_string())?;
+    Ok(())
+}
+
+fn adjust_i64(target: &mut i64, value: i64, add: bool) -> Result<(), String> {
+    *target = if add {
+        target.checked_add(value)
+    } else {
+        target.checked_sub(value)
+    }
+    .ok_or_else(|| "domain quality cache score overflow".to_string())?;
+    Ok(())
+}
+
+fn adjust_u128(target: &mut u128, value: u128, add: bool) -> Result<(), String> {
+    *target = if add {
+        target.checked_add(value)
+    } else {
+        target.checked_sub(value)
+    }
+    .ok_or_else(|| "domain quality cache squared score overflow".to_string())?;
+    Ok(())
+}
+
 fn scale_nonnegative(value: f64, label: &str) -> Result<i64, String> {
     if !value.is_finite() || value < 0.0 {
         return Err(format!(
@@ -358,13 +576,6 @@ fn multiply_scaled(left: i64, right: i64) -> Result<i64, String> {
         / DOMAIN_QUALITY_SCALE as i128)
         .try_into()
         .map_err(|_| "domain quality weighted score overflow".to_string())
-}
-
-fn add_scaled(target: &mut i64, value: i64) -> Result<(), String> {
-    *target = target
-        .checked_add(value)
-        .ok_or_else(|| "domain quality accumulated score overflow".to_string())?;
-    Ok(())
 }
 
 fn rounded_integer_sqrt(value: u128) -> u128 {

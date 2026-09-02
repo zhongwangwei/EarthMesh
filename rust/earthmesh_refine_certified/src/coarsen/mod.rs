@@ -37,6 +37,7 @@ mod plan_band_domain;
 mod polygon_incidence_ear;
 mod problem_identity;
 mod promotion;
+mod quality_cache;
 mod research_fixture;
 mod research_runner;
 mod retained_core;
@@ -272,6 +273,11 @@ pub use promotion::{
     build_promotion_patch_for_transition_with_protected_regions, build_protected_coarse_region,
     restore_source_patch, validate_promotion_patch, PromotionLevel, PromotionPatch,
     PromotionPatchTopology, ProtectedCoarseRegion, RestoredSourceFace, RestoredSourcePatch,
+};
+pub use quality_cache::{
+    DomainQualityCache, EdgeQualityCacheEntry, FaceQualityCacheEntry, LocalDelaunayStatus,
+    QualityCacheInstrumentation, QualityCacheItem, QualityCacheSnapshot, QualityDirtySet,
+    VertexQualityCacheEntry,
 };
 pub use research_fixture::{
     lift_component_2_to_1, n12_interior_control_fixture, n12_lifted_n6_fixture,
