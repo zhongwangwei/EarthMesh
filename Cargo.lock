@@ -229,6 +229,7 @@ dependencies = [
 name = "earthmesh_quality"
 version = "3.0.0-alpha5"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_geometry",
 ]

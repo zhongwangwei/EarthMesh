@@ -11,5 +11,6 @@ name = "earthmesh_quality"
 path = "src/lib.rs"
 
 [dependencies]
+earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }

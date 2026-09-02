@@ -16,6 +16,7 @@ use earthmesh_geometry::{
 };
 
 pub mod coupling;
+pub mod domain;
 pub mod io;
 pub mod topology;
 

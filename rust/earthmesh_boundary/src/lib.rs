@@ -87,6 +87,13 @@ pub struct BoundaryVertex {
     pub pinned: bool,
 }
 
+/// Conservative evidence for a valid spherical cell against this domain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PolygonOverlap {
+    pub positive_area: bool,
+    pub intersects_boundary: bool,
+}
+
 /// One closed ring of boundary vertices.
 ///
 /// # Why `vertices` is not public
@@ -641,6 +648,38 @@ fn spherical_segments_intersect(a0: [f64; 3], a1: [f64; 3], b0: [f64; 3], b1: [f
             && point_on_minor_arc(b0, b1, scale(p, -1.0)))
 }
 
+fn spherical_segments_cross_strictly(
+    a0: [f64; 3],
+    a1: [f64; 3],
+    b0: [f64; 3],
+    b1: [f64; 3],
+) -> bool {
+    let na = cross(a0, a1);
+    let nb = cross(b0, b1);
+    let line = cross(na, nb);
+    let length = norm(line);
+    if length <= 1.0e-12 {
+        return false;
+    }
+    let strictly_on_arc = |from, to, point| {
+        let whole = angle(from, to);
+        let start = angle(from, point);
+        let end = angle(point, to);
+        start > 1.0e-10 && end > 1.0e-10 && start + end <= whole + 1.0e-10
+    };
+    let intersection = scale(line, 1.0 / length);
+    [intersection, scale(intersection, -1.0)]
+        .into_iter()
+        .any(|point| strictly_on_arc(a0, a1, point) && strictly_on_arc(b0, b1, point))
+}
+
+fn point_on_ring_boundary(point: [f64; 3], ring: &[[f64; 3]]) -> bool {
+    ring.iter()
+        .zip(ring.iter().cycle().skip(1))
+        .take(ring.len())
+        .any(|(&from, &to)| point_on_minor_arc(from, to, point))
+}
+
 impl SphericalBoundaryModel {
     /// Check every invariant the rest of the system is entitled to assume.
     ///
@@ -977,6 +1016,130 @@ impl SphericalBoundaryModel {
             }
         }
         inside
+    }
+
+    /// Conservative overlap evidence for a small spherical cell ring.
+    ///
+    /// This checks containment in both directions and every minor-arc edge,
+    /// so a cell crossing or containing a domain boundary is not missed.
+    /// Boundary-only contact does not count as positive-area target overlap.
+    /// Callers must validate the boundary model once before querying it.
+    pub fn polygon_overlap(
+        &self,
+        polygon: &[(f64, f64)],
+    ) -> Result<PolygonOverlap, SphericalPolygonError> {
+        let polygon_points = polygon
+            .iter()
+            .map(|&(lon, lat)| Point::new(lon, lat))
+            .collect::<Vec<_>>();
+        if try_spherical_polygon_area(&polygon_points)?.minor_sr <= 1.0e-14 {
+            return Err(SphericalPolygonError::DegenerateArea);
+        }
+        let polygon_units = polygon
+            .iter()
+            .map(|&(lon, lat)| {
+                unit_from_vertex(&BoundaryVertex {
+                    lon_degrees: lon,
+                    lat_degrees: lat,
+                    pinned: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let strictly_inside_domain = |lon, lat| {
+            self.contains(lon, lat)
+                && self
+                    .distance_to_boundary_radians(lon, lat)
+                    .is_some_and(|distance| distance > 1.0e-10)
+        };
+        let mut overlap = PolygonOverlap::default();
+        if polygon
+            .iter()
+            .any(|&(lon, lat)| strictly_inside_domain(lon, lat))
+        {
+            overlap.positive_area = true;
+        }
+        if polygon.iter().any(|&(lon, lat)| {
+            self.distance_to_boundary_radians(lon, lat)
+                .is_some_and(|distance| distance <= 1.0e-10)
+        }) {
+            overlap.intersects_boundary = true;
+        }
+        if self
+            .loops
+            .iter()
+            .flat_map(|ring| ring.vertices())
+            .filter_map(|&vertex| self.vertices.get(vertex))
+            .any(|vertex| {
+                let point = unit_from_vertex(vertex);
+                spherical_ring_contains_minor(
+                    polygon,
+                    vertex.lon_degrees,
+                    vertex.lat_degrees,
+                    |p| *p,
+                ) && !point_on_ring_boundary(point, &polygon_units)
+            })
+        {
+            overlap.positive_area = true;
+            overlap.intersects_boundary = true;
+        }
+
+        for polygon_edge in 0..polygon.len() {
+            let a = polygon[polygon_edge];
+            let b = polygon[(polygon_edge + 1) % polygon.len()];
+            let a = unit_from_vertex(&BoundaryVertex {
+                lon_degrees: a.0,
+                lat_degrees: a.1,
+                pinned: false,
+            });
+            let b = unit_from_vertex(&BoundaryVertex {
+                lon_degrees: b.0,
+                lat_degrees: b.1,
+                pinned: false,
+            });
+            for ring in &self.loops {
+                for edge in 0..ring.vertices().len() {
+                    let Some(from) = self.vertices.get(ring.vertices()[edge]) else {
+                        continue;
+                    };
+                    let Some(to) = self
+                        .vertices
+                        .get(ring.vertices()[(edge + 1) % ring.vertices().len()])
+                    else {
+                        continue;
+                    };
+                    if spherical_segments_cross_strictly(
+                        a,
+                        b,
+                        unit_from_vertex(from),
+                        unit_from_vertex(to),
+                    ) {
+                        overlap.positive_area = true;
+                        overlap.intersects_boundary = true;
+                    }
+                }
+            }
+        }
+
+        let sum = polygon_units.iter().fold([0.0; 3], |sum, point| {
+            [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
+        });
+        let length = norm(sum);
+        if length <= 1.0e-12 {
+            return Ok(overlap);
+        }
+        let center = scale(sum, 1.0 / length);
+        overlap.positive_area |= strictly_inside_domain(
+            center[1].atan2(center[0]).to_degrees(),
+            center[2].clamp(-1.0, 1.0).asin().to_degrees(),
+        );
+        overlap.intersects_boundary &= overlap.positive_area;
+        Ok(overlap)
+    }
+
+    /// Whether a valid cell has positive-area target overlap.
+    pub fn overlaps_polygon(&self, polygon: &[(f64, f64)]) -> bool {
+        self.polygon_overlap(polygon)
+            .is_ok_and(|overlap| overlap.positive_area)
     }
 
     /// Whether this ring encloses the point, by spherical winding.

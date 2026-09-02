@@ -237,6 +237,127 @@ fn a_ring_across_the_dateline_still_knows_its_inside() {
 }
 
 #[test]
+fn polygon_overlap_does_not_depend_on_the_centroid() {
+    let model = SphericalBoundaryModel {
+        vertices: square(),
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    let triangle = [(-1.0, 0.4), (-1.0, 0.6), (0.1, 0.5)];
+    let centroid = (
+        triangle.iter().map(|point| point.0).sum::<f64>() / 3.0,
+        triangle.iter().map(|point| point.1).sum::<f64>() / 3.0,
+    );
+
+    assert!(!model.contains(centroid.0, centroid.1));
+    assert!(model.overlaps_polygon(&triangle));
+}
+
+#[test]
+fn polygon_overlap_requires_positive_area() {
+    let model = SphericalBoundaryModel {
+        vertices: square(),
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    model.validate().expect("valid");
+
+    assert!(!model.overlaps_polygon(&[(0.5, 0.2), (0.5, 0.5), (0.5, 0.8)]));
+    assert!(!model.overlaps_polygon(&[(-0.2, -0.2), (0.0, 0.0), (-0.2, 0.2)]));
+    assert!(!model.overlaps_polygon(&[(0.2, -0.2), (0.8, -0.2), (0.5, 0.0)]));
+}
+
+#[test]
+fn polygon_inside_a_hole_does_not_overlap_the_target() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(0.25, 0.25),
+        vertex(0.75, 0.25),
+        vertex(0.75, 0.75),
+        vertex(0.25, 0.75),
+    ]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+
+    assert!(!model.overlaps_polygon(&[(0.4, 0.4), (0.6, 0.4), (0.5, 0.6)]));
+    assert!(model.overlaps_polygon(&[(0.1, 0.4), (0.4, 0.4), (0.1, 0.6)]));
+}
+
+#[test]
+fn polygon_overlap_reports_a_contained_hole_boundary() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(0.4, 0.4),
+        vertex(0.6, 0.4),
+        vertex(0.6, 0.6),
+        vertex(0.4, 0.6),
+    ]);
+    let model = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Hole, vec![4, 5, 6, 7], Some(0)),
+        ],
+    };
+    model.validate().expect("valid");
+
+    let overlap = model
+        .polygon_overlap(&[(0.2, 0.2), (0.8, 0.2), (0.5, 0.8)])
+        .unwrap();
+    assert!(overlap.positive_area);
+    assert!(overlap.intersects_boundary);
+}
+
+#[test]
+fn polygon_overlap_handles_multipart_dateline_and_poles() {
+    let mut vertices = square();
+    vertices.extend([
+        vertex(10.0, 0.0),
+        vertex(11.0, 0.0),
+        vertex(11.0, 1.0),
+        vertex(10.0, 1.0),
+    ]);
+    let multipart = SphericalBoundaryModel {
+        vertices,
+        loops: vec![
+            ring(LoopType::Outer, vec![0, 1, 2, 3], None),
+            ring(LoopType::Outer, vec![4, 5, 6, 7], None),
+        ],
+    };
+    multipart.validate().expect("valid multipart region");
+    assert!(multipart.overlaps_polygon(&[(10.2, 0.2), (10.8, 0.2), (10.5, 0.8)]));
+
+    let dateline = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(170.0, -10.0),
+            vertex(-170.0, -10.0),
+            vertex(-170.0, 10.0),
+            vertex(170.0, 10.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    dateline.validate().expect("valid dateline region");
+    assert!(dateline.overlaps_polygon(&[(169.0, -1.0), (169.0, 1.0), (171.0, 0.0)]));
+    assert!(!dateline.overlaps_polygon(&[(-1.0, -1.0), (1.0, -1.0), (0.0, 1.0)]));
+
+    let polar = SphericalBoundaryModel {
+        vertices: vec![
+            vertex(0.0, 80.0),
+            vertex(90.0, 80.0),
+            vertex(180.0, 80.0),
+            vertex(-90.0, 80.0),
+        ],
+        loops: vec![ring(LoopType::Outer, vec![0, 1, 2, 3], None)],
+    };
+    polar.validate().expect("valid polar region");
+    assert!(polar.overlaps_polygon(&[(0.0, 79.0), (20.0, 82.0), (-20.0, 82.0)]));
+    assert!(!polar.overlaps_polygon(&[(0.0, 69.0), (20.0, 72.0), (-20.0, 72.0)]));
+}
+
+#[test]
 fn distance_to_boundary_uses_minor_great_circle_segments() {
     let model = SphericalBoundaryModel {
         vertices: square(),
