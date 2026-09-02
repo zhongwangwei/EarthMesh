@@ -42,7 +42,11 @@ fn reachability_audit_reports_partial_signatures_without_witnesses() {
 
 #[test]
 fn production_has_no_slot_special_case() {
-    let source = include_str!("../src/coarsen/sdce_incidence.rs");
+    let source = [
+        include_str!("../src/coarsen/sdce_incidence.rs"),
+        include_str!("../src/coarsen/sdce_gipc.rs"),
+    ]
+    .join("\n");
     let numeric_tokens = source
         .split(|character: char| !character.is_ascii_digit())
         .filter(|token| !token.is_empty())

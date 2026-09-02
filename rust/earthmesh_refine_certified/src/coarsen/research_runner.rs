@@ -7,7 +7,7 @@ use super::{
     build_plan_band_domains, build_stratified_transition_domain_v3,
     enumerate_balanced_annular_strips, face_band_evidence_json, find_one_essential_cycle,
     n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
-    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands, solve_global_incidence_plan,
     solve_transition_cell_find_one, AnchorRepairPortfolioEvidence, AnnularEnumerationError,
     AnnularReachabilityLimits, AnnularReachabilityOutcome, AnnularTransitionCellFamily,
     BandBoundaryAudit, BandBoundaryAuditSummary, CertifiedResearchFixture,
@@ -17,9 +17,10 @@ use super::{
     FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
     FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
     FullPolygonMergeTrial, FullPolygonPlanEvaluator, GlobalIncidenceContractError,
-    PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
-    TopologyFamilyId, TopologyPairClass, TransitionCellDomain, TransitionCellFamily,
-    TransitionCellMergeLimits, TransitionCellMergeOutcome, TransitionCellMergeTrial,
+    IncidencePlanOutcome, IncidencePlanSearchConfig, PlanBandTopologyKind, PlanEvaluation,
+    RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId, TopologyPairClass,
+    TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
+    TransitionCellMergeOutcome, TransitionCellMergeTrial,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -898,6 +899,109 @@ pub fn n12_lifted_sdce_incidence_contract_audit_json(
         } else {
             "StopFixIncidenceContract"
         },
+    ))
+}
+
+pub fn n12_lifted_sdce_gipc_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = SdceGipcAuditingEvaluator::new(
+        &fixture.source,
+        &fixture.component,
+        limits.downstream_topology_states as u64,
+    );
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let accounted = evaluator.plans_found
+        + evaluator.exact_no_plan
+        + evaluator.search_incomplete
+        + evaluator.invalid;
+    let gate_passed = evaluator.cycles_observed == evidence.essential_cycles
+        && evaluator.contracts_built == evidence.essential_cycles
+        && accounted == evidence.essential_cycles
+        && evaluator.plans_found > 0
+        && evaluator.invalid == 0
+        && evaluator.errors.is_empty();
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(error, count)| format!("{}:{count}", json_string(error)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let defect_degrees = evaluator
+        .defect_degrees
+        .iter()
+        .map(|(slot, degrees)| {
+            let histogram = degrees
+                .iter()
+                .map(|(degree, count)| format!("{}:{count}", json_string(&degree.to_string())))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{}:{{{histogram}}}", json_string(&slot.to_string()))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"65f26b64c78dd7dfadaaf2a1099f52d11c6a67461afb0a9558edbbf5941ef473\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+SdceZeroEarGipc\",\"limits\":{{\"cycle_unique_states\":{},\"gipc_states_per_cycle\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_observed\":{},\"contracts_built\":{},\"incidence_plans_found\":{},\"exact_no_plan\":{},\"search_incomplete\":{},\"invalid\":{},\"gipc_states\":{},\"incidence_sum_prunes\":{},\"charge_prunes\":{},\"checkpoints_created\":{},\"first_plan_key\":{},\"first_curvature_score\":{},\"first_roughness_score\":{},\"pr111_selected_final_degrees\":{{{}}},\"cycle_accounting_complete\":{},\"gate_passed\":{},\"go_no_go\":\"{}\",\"zero_ear_family_only\":true,\"concrete_topology_search_run\":false,\"topology_closed\":false,\"geometry_attempted\":false,\"remaining_cec_shards\":49,\"cec_shards_resumed\":false,\"errors\":{{{}}},\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.downstream_topology_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_observed,
+        evaluator.contracts_built,
+        evaluator.plans_found,
+        evaluator.exact_no_plan,
+        evaluator.search_incomplete,
+        evaluator.invalid,
+        evaluator.states,
+        evaluator.incidence_sum_prunes,
+        evaluator.charge_prunes,
+        evaluator.checkpoints_created,
+        evaluator
+            .first_plan_key
+            .as_ref()
+            .map_or_else(|| "null".into(), |key| json_string(key)),
+        evaluator
+            .first_curvature_score
+            .map_or_else(|| "null".into(), |score| score.to_string()),
+        evaluator
+            .first_roughness_score
+            .map_or_else(|| "null".into(), |score| score.to_string()),
+        defect_degrees,
+        accounted == evidence.essential_cycles,
+        gate_passed,
+        if evaluator.plans_found > 0 {
+            "GoPierExactWitness"
+        } else if evaluator.search_incomplete > 0 {
+            "ContinueGipcCheckpoints"
+        } else {
+            "RedirectSignatureAwareRepair"
+        },
+        errors,
     ))
 }
 
@@ -1997,6 +2101,134 @@ impl FaceBandPlanEvaluator for SdceContractAuditingEvaluator<'_> {
             audit.tuple_count_min =
                 Some(audit.tuple_count_min.map_or(tuples, |old| old.min(tuples)));
             audit.tuple_count_max = audit.tuple_count_max.max(tuples);
+        }
+    }
+
+    fn evaluate(&mut self, _: &FaceBandPlan) -> PlanEvaluation {
+        PlanEvaluation::AuditOnly
+    }
+}
+
+struct SdceGipcAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    maximum_states: u64,
+    cycles_observed: u64,
+    contracts_built: u64,
+    plans_found: u64,
+    exact_no_plan: u64,
+    search_incomplete: u64,
+    invalid: u64,
+    states: u64,
+    incidence_sum_prunes: u64,
+    charge_prunes: u64,
+    checkpoints_created: u64,
+    first_plan_key: Option<String>,
+    first_curvature_score: Option<i32>,
+    first_roughness_score: Option<i32>,
+    defect_degrees: BTreeMap<usize, BTreeMap<u8, u64>>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl<'a> SdceGipcAuditingEvaluator<'a> {
+    fn new(
+        source: &'a crate::MotherGrid,
+        component: &'a super::HierarchyComponent,
+        maximum_states: u64,
+    ) -> Self {
+        Self {
+            source,
+            component,
+            maximum_states,
+            cycles_observed: 0,
+            contracts_built: 0,
+            plans_found: 0,
+            exact_no_plan: 0,
+            search_incomplete: 0,
+            invalid: 0,
+            states: 0,
+            incidence_sum_prunes: 0,
+            charge_prunes: 0,
+            checkpoints_created: 0,
+            first_plan_key: None,
+            first_curvature_score: None,
+            first_roughness_score: None,
+            defect_degrees: [48, 52, 78, 252, 256, 343]
+                .into_iter()
+                .map(|slot| (slot, BTreeMap::new()))
+                .collect(),
+            errors: BTreeMap::new(),
+        }
+    }
+
+    fn add_evidence(&mut self, evidence: &super::IncidencePlanEvidence) {
+        self.states += evidence.states;
+        self.incidence_sum_prunes += evidence.incidence_sum_prunes;
+        self.charge_prunes += evidence.charge_prunes;
+    }
+}
+
+impl FaceBandPlanEvaluator for SdceGipcAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, cycle: &EssentialCycleKey, face_plan: &FaceBandPlan) {
+        self.cycles_observed += 1;
+        let domain =
+            match build_stratified_transition_domain_v3(self.source, self.component, face_plan) {
+                Ok(domain) => domain,
+                Err(error) => {
+                    self.invalid += 1;
+                    *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                    return;
+                }
+            };
+        let contract = match build_global_incidence_contract(self.source, self.component, &domain) {
+            Ok(contract) => {
+                self.contracts_built += 1;
+                contract
+            }
+            Err(error) => {
+                self.invalid += 1;
+                *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                return;
+            }
+        };
+        let outcome = solve_global_incidence_plan(
+            cycle,
+            &contract,
+            &domain,
+            &IncidencePlanSearchConfig {
+                maximum_states: self.maximum_states,
+                priority_vertices: self.defect_degrees.keys().copied().collect(),
+            },
+            None,
+        );
+        match outcome {
+            IncidencePlanOutcome::Found { plan, evidence } => {
+                self.plans_found += 1;
+                self.add_evidence(&evidence);
+                self.first_plan_key.get_or_insert(plan.plan_key.0.clone());
+                self.first_curvature_score
+                    .get_or_insert(plan.ordinary_curvature_score);
+                self.first_roughness_score
+                    .get_or_insert(plan.incidence_roughness_score);
+                for (&slot, histogram) in &mut self.defect_degrees {
+                    if let Some(&degree) = plan.final_degrees.get(&slot) {
+                        *histogram.entry(degree).or_default() += 1;
+                    }
+                }
+            }
+            IncidencePlanOutcome::ExactNoPlan { evidence, .. } => {
+                self.exact_no_plan += 1;
+                self.add_evidence(&evidence);
+            }
+            IncidencePlanOutcome::SearchIncomplete { evidence, .. } => {
+                self.search_incomplete += 1;
+                self.checkpoints_created += 1;
+                self.add_evidence(&evidence);
+            }
+            IncidencePlanOutcome::InvalidInput(reason) => {
+                self.invalid += 1;
+                *self.errors.entry(reason).or_default() += 1;
+            }
         }
     }
 
