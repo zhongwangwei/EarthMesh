@@ -28,6 +28,7 @@
 - [Lifted-N12 R2 repair-support preflight](n12_r2_repair_support.md)
 - [Lifted-N12 SDCE incidence contract](n12_sdce_incidence_contract.md)
 - [Lifted-N12 SDCE global incidence plans](n12_sdce_gipc.md)
+- [PIER exact polygon incidence recovery](pier_small_exact_oracle.md)
 
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
