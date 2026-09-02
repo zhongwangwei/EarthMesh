@@ -15,6 +15,7 @@ mod component_transaction;
 mod core_condensation;
 mod direct_restore;
 mod domain_continuation;
+mod domain_quality;
 mod downstream_contract;
 mod effective_band;
 mod elastic_block;
@@ -147,6 +148,12 @@ pub use domain_continuation::{
     continue_nested_domain, domain_continuation_evidence_json, ContinuationStageId,
     DomainContinuationMode, DomainContinuationOutcome, DomainContinuationResult,
     DomainContinuationSchedule, DomainContinuationStageReport,
+};
+pub use domain_quality::{
+    commit_domain_quality_candidate, domain_quality_evaluation_from_atlas,
+    evaluate_domain_quality_candidate, DomainQualityAcceptanceReport, DomainQualityCosts,
+    DomainQualityDamageMetrics, DomainQualityEvaluation, DomainQualityRejectReason,
+    DomainQualityVector, ExportDamageGuard, ExportDamageRejectReason, DOMAIN_QUALITY_SCALE,
 };
 pub use downstream_contract::{
     audit_legacy_downstream_preflight, DownstreamContractStage, DownstreamPreflightEvidence,
