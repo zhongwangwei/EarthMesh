@@ -381,7 +381,7 @@ pub fn annular_small_exact_oracle_json() -> Result<String, AnnularEnumerationErr
     ))
 }
 
-fn glue_cut_topology(
+pub(crate) fn glue_cut_topology(
     lower: &[usize],
     upper: &[usize],
     cut: &CutAnnulusPolygon,

@@ -31,6 +31,7 @@ mod hierarchy_component;
 mod local_annular_collar;
 mod local_topology;
 mod plan_band_domain;
+mod polygon_incidence_ear;
 mod problem_identity;
 mod promotion;
 mod research_fixture;
@@ -230,6 +231,12 @@ pub use plan_band_domain::{
     build_plan_band_domains, BoundaryContractionMap, ContractedBoundaryEdge, PlanBandDomain,
     PlanBandDomainError, PlanBandDomainKey, PlanBandTopologyKind, SourceBoundaryCycle,
     TopologyBoundary,
+};
+pub use polygon_incidence_ear::{
+    pier_small_exact_oracle_json, solve_polygon_incidence_witness, OccurrenceIncidenceTarget,
+    OccurrenceIncidenceTargetKey, OccurrenceTriangulation, PolygonIncidenceCheckpoint,
+    PolygonIncidenceEvidence, PolygonIncidenceOutcomeKind, PolygonIncidenceState,
+    PolygonIncidenceStateKey, PolygonIncidenceWitnessOutcome,
 };
 pub use problem_identity::{
     essential_cycle_problem_key, face_band_problem_identity_report_json,
