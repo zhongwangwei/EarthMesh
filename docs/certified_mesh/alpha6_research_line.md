@@ -14,3 +14,8 @@ Alpha6 research is fail-closed:
 - `SearchIncomplete` is not `ExactNoSolution`.
 - The frozen `40.2°–79.8°` internal geometry contract is unchanged.
 - N12 success does not unlock NXP80 without the N12 → N24 → N40 ladder.
+
+Alpha7 DQX archives the CEC checkpoints, SDCE frontiers, and tangled N12
+topology as byte-frozen research-only evidence in
+[`ACTIVE_TASKBOOK.toml`](ACTIVE_TASKBOOK.toml). DQX production code must not
+resume or consume those paths.

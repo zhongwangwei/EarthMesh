@@ -19,7 +19,7 @@ CARGO_PROFILE_FLAG =
 CLI_BINARY = $(CARGO_TARGET_DIR)/debug/earthmesh_cli
 endif
 
-.PHONY: all build build-python build-gui-bundle clean test test-fast test-gui check-gui-js check-architecture check-architecture-selftest check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
+.PHONY: all build build-python build-gui-bundle clean test test-fast test-gui check-active-taskbook check-gui-js check-architecture check-architecture-selftest check-mesh-quality-views test-slow test-full test-real-hydro release-full-real fmt fmt-gui clippy clippy-gui clippy-full release-check check-method-c-neighbors
 
 all: build
 
@@ -85,6 +85,9 @@ clippy-full: clippy
 # `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
 test-fast:
 	$(CARGO) test --workspace --exclude earthmesh_cli --all-targets
+
+check-active-taskbook:
+	python3 scripts/check_active_taskbook.py .
 
 check-gui-js:
 	node scripts/check_gui_js.js

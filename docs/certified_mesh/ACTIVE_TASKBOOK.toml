@@ -1,0 +1,36 @@
+schema_version = 1
+taskbook_id = "CMRC-DQX-2026-09-03-R1"
+taskbook_sha256 = "a8650d0c882330fb7ef6ba35945192b8943ceb4fba8aa60d2c8d67c169a17951"
+source_file_sha256 = "1e5025740cf826bfc3f64c01a2faa6ecca37baaf92ba03b8c8e0fdeb233bc0db"
+baseline_branch = "v3.0.0-alpha6"
+baseline_commit = "20551dbd24ec05556bbe9a4e7f913803cf77b001"
+implementation_branch = "v3.0.0-alpha7"
+active_milestone = "DQX-00"
+quality_policy = "domain_export"
+
+# These Alpha6 paths remain reproducible evidence, never DQX production inputs.
+research_only_paths = ["CEC", "SDCE", "general_annular_topology_search", "anchor_ear_portfolio", "unbounded_untangle"]
+
+[[frozen_evidence]]
+kind = "cec_checkpoints"
+path = "rust/earthmesh_refine_certified/tests/fixtures/n12_cec_shard_resume.json"
+sha256 = "b19ac4a63243806852670063da5087112666ada0b7712c9ad6602073795465cd"
+research_only = true
+
+[[frozen_evidence]]
+kind = "sdce_frontier"
+path = "rust/earthmesh_refine_certified/tests/fixtures/n12_sdce_find_one.json"
+sha256 = "457ad6b4323b43d3f2b4f25710a14c7eb4ce0343004d3175e1085b3bdfc2f15b"
+research_only = true
+
+[[frozen_evidence]]
+kind = "tangled_n12_topology"
+path = "rust/earthmesh_refine_certified/tests/fixtures/n12_strict_geometry_probe.json"
+sha256 = "5cb5c566d282eb08072c51ddb8fec801ffd809130cba1eafb8f988920bcd080f"
+research_only = true
+
+[[frozen_evidence]]
+kind = "alpha6_governance"
+path = "rust/earthmesh_refine_certified/tests/fixtures/n12_validation_gate_governance.json"
+sha256 = "5a6cfa8f9ca2576d1b0e10fc5279bc687641631990138fab4c73b000f0159a29"
+research_only = true
