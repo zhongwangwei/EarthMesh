@@ -3,7 +3,7 @@ use earthmesh_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::CloseBoundaryMode;
+use crate::{CloseBoundaryMode, QualityPolicy, SpatialQualityDomain};
 
 pub const DEFAULT_MIN_ANGLE_DEG: f64 = DEFAULT_MIN_ANGLE_WARN_DEG;
 pub const DEFAULT_AUTO_REFINE_BATCH_CELLS: usize = 1;
@@ -775,6 +775,10 @@ pub struct SpecifiedCloseRefinement {
 #[serde(deny_unknown_fields)]
 pub struct QualityConfig {
     pub min_angle_deg: f64,
+    #[serde(default, skip_serializing_if = "QualityPolicy::is_legacy")]
+    pub quality_policy: QualityPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spatial_quality_domain: Option<SpatialQualityDomain>,
     /// Maximum connected defect cells changed by one AutoRefine pass.
     #[serde(default = "default_auto_refine_batch_cells")]
     pub auto_refine_batch_cells: usize,
@@ -811,6 +815,8 @@ impl Default for QualityConfig {
     fn default() -> Self {
         Self {
             min_angle_deg: DEFAULT_MIN_ANGLE_DEG,
+            quality_policy: QualityPolicy::default(),
+            spatial_quality_domain: None,
             auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
             on_violation: ViolationPolicy::AutoRefine,
             lepp_post_quality: None,

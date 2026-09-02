@@ -73,6 +73,11 @@ mod lowering;
 pub use lowering::LoweredProject;
 mod presets;
 pub use presets::{PresetDefaults, DEPRECATED_ATMOSPHERE_TYPHOON_INTENT_ID};
+mod quality_domain;
+pub use quality_domain::{
+    DistanceSpec, DomainKey, DomainSource, DomainValidationError, LonLat, QualityDomainKind,
+    QualityPolicy, QualityZone, SpatialQualityDomain, SpatialQualityDomainSpec,
+};
 mod stage_cache;
 pub use stage_cache::{content_addressed_stage_key, StageCache};
 mod validation;

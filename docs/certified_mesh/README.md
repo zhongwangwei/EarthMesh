@@ -43,6 +43,11 @@ Alpha7 adds an explicit `DomainQuality38To82V1` certificate contract with a
 default remains the legacy 40.2--79.8 / 40--80 contract until the DQX production
 gate is complete.
 
+The DQX project schema also has a fail-closed `domain_export` policy and a
+content-addressed quality-domain IR. It records multipart/hole/dateline/pole
+facts and rejects regional work domains whose halo cannot contain both boundary
+protection and the export corridor; it does not yet activate DQX coarsening.
+
 The backend starts from a radially projected integer subdivision of a regular
 icosahedron and turns every requirement into a conservative minimum level. The
 reverse path uses a complete global 2:1 hierarchy rebuild for uniform fields

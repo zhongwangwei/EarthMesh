@@ -2,8 +2,8 @@ use crate::{
     criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
     HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, MethodCAlgorithm,
     MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
-    ProjectTargetTriple, QualityConfig, RefinementRecipe, RegionShape, ResolutionSpec,
-    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
+    ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementRecipe, RegionShape,
+    ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ThresholdStatistic, LANDCOVER_CRITERION_ID,
     METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
 };
@@ -60,6 +60,14 @@ impl ProjectConfig {
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
         self.quality.validate()?;
+        if self.quality.quality_policy == QualityPolicy::DomainExport
+            && self.refinement.backend != crate::RefinementBackend::Certified
+        {
+            return Err(
+                "quality quality_policy=domain_export requires refinement.backend=certified"
+                    .to_string(),
+            );
+        }
         if self.quality.lepp_post_quality.is_some() {
             if !self.refinement.enabled {
                 return Err(
@@ -449,6 +457,24 @@ impl QualityConfig {
         }
         if self.auto_refine_batch_cells > i32::MAX as usize {
             return Err("quality auto_refine_batch_cells exceeds the engine limit".to_string());
+        }
+        match (self.quality_policy, &self.spatial_quality_domain) {
+            (QualityPolicy::Legacy, None) => {}
+            (QualityPolicy::Legacy, Some(_)) => {
+                return Err(
+                    "quality spatial_quality_domain requires quality_policy=domain_export"
+                        .to_string(),
+                )
+            }
+            (QualityPolicy::DomainExport, None) => {
+                return Err(
+                    "quality quality_policy=domain_export requires spatial_quality_domain"
+                        .to_string(),
+                )
+            }
+            (QualityPolicy::DomainExport, Some(domain)) => {
+                domain.validate().map_err(|error| error.to_string())?;
+            }
         }
         if let Some(lepp) = &self.lepp_post_quality {
             if lepp.maximum_insertions == 0 {

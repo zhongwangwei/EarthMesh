@@ -187,6 +187,8 @@ impl ProjectConfig {
             },
             quality: QualityConfig {
                 min_angle_deg: d.min_angle_deg,
+                quality_policy: Default::default(),
+                spatial_quality_domain: None,
                 auto_refine_batch_cells: crate::DEFAULT_AUTO_REFINE_BATCH_CELLS,
                 on_violation: ViolationPolicy::AutoRefine,
                 lepp_post_quality: None,

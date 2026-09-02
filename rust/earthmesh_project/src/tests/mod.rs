@@ -57,6 +57,8 @@ fn sample() -> ProjectConfig {
         },
         quality: QualityConfig {
             min_angle_deg: 28.0,
+            quality_policy: QualityPolicy::default(),
+            spatial_quality_domain: None,
             auto_refine_batch_cells: DEFAULT_AUTO_REFINE_BATCH_CELLS,
             on_violation: ViolationPolicy::Block,
             lepp_post_quality: None,
@@ -119,6 +121,11 @@ fn quality_policy_omission_matches_the_whole_config_default() {
         QualityConfig::default().on_violation,
         ViolationPolicy::AutoRefine
     );
+    assert_eq!(
+        QualityConfig::default().quality_policy,
+        QualityPolicy::Legacy
+    );
+    assert_eq!(QualityConfig::default().spatial_quality_domain, None);
     let preset = ProjectConfig::scaffold(
         "auto-refine-default",
         MeshIntentPreset::MeritHydroCoast,
@@ -139,6 +146,68 @@ fn quality_policy_omission_matches_the_whole_config_default() {
         .join("\n");
     let reopened = ProjectConfig::from_yaml(&legacy).unwrap();
     assert_eq!(reopened.quality.on_violation, ViolationPolicy::AutoRefine);
+    assert!(!preset.to_yaml().unwrap().contains("quality_policy:"));
+}
+
+#[test]
+fn domain_export_quality_policy_round_trips_and_requires_certified_backend() {
+    let mask = DomainSource {
+        content_sha256: "ab".repeat(32),
+        variable: Some("land_fraction".into()),
+        classification: Some("fraction_ge_0_5".into()),
+        part_sha256: vec!["cd".repeat(32), "ef".repeat(32)],
+        has_holes: true,
+        crosses_antimeridian: true,
+        includes_north_pole: false,
+        includes_south_pole: false,
+    };
+    let domain = SpatialQualityDomain {
+        spec: SpatialQualityDomainSpec::Region {
+            source: mask,
+            boundary_protection: DistanceSpec::GraphRings(2),
+            export_halo: DistanceSpec::GraphRings(3),
+        },
+        critical_features: Vec::new(),
+        working_halo: DistanceSpec::GraphRings(5),
+    };
+    let mut project = sample();
+    project.quality.quality_policy = QualityPolicy::DomainExport;
+    project.quality.spatial_quality_domain = Some(domain.clone());
+
+    assert!(yaml_err(&project).contains("requires refinement.backend=certified"));
+    project.refinement.backend = RefinementBackend::Certified;
+    let reopened = yaml_round_trip(&project);
+    assert_eq!(reopened.quality.spatial_quality_domain, Some(domain));
+    assert_eq!(
+        reopened
+            .quality
+            .spatial_quality_domain
+            .as_ref()
+            .unwrap()
+            .domain_key(),
+        project
+            .quality
+            .spatial_quality_domain
+            .as_ref()
+            .unwrap()
+            .domain_key()
+    );
+}
+
+#[test]
+fn domain_export_quality_policy_fails_closed_on_missing_or_unknown_config() {
+    let mut project = sample();
+    project.refinement.backend = RefinementBackend::Certified;
+    project.quality.quality_policy = QualityPolicy::DomainExport;
+    assert!(yaml_err(&project).contains("requires spatial_quality_domain"));
+
+    let yaml = sample().to_yaml().unwrap().replace(
+        "  min_angle_deg: 28.0",
+        "  min_angle_deg: 28.0\n  quality_policy: not_a_policy",
+    );
+    assert!(ProjectConfig::from_yaml(&yaml)
+        .unwrap_err()
+        .contains("unknown variant"));
 }
 
 #[test]
