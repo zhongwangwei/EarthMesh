@@ -11,7 +11,7 @@
 - [Alpha6 legacy/CEC finite-family oracle](cec_legacy_oracle.md)
 - [Alpha6 Frozen N6 CEC reclassification](frozen_n6_cec_closure.md)
 - [Alpha6 N12 CEC topology probe](n12_cec_topology_probe.md)
-- [Alpha6 N12 strict geometry precondition](n12_strict_geometry_probe.md)
+- [Alpha6 N12 strict geometry probe](n12_strict_geometry_probe.md)
 - [Alpha6 validation-gate governance](alpha6_validation_gate_governance.md)
 - [Lifted-N12 downstream uniform-rejection audit](n12_downstream_reject_audit.md)
 - [Topology-domain / geometry-guard split](topology_domain_geometry_guard_split.md)

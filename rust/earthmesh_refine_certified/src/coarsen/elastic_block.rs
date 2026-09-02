@@ -3,8 +3,8 @@
 use super::{
     build_stratified_annulus, build_stratified_annulus_from_face_bands,
     full_polygon::minor_arc_crossing_strength, relocation_step_window, FaceBandPlan,
-    FullPolygonMergeTrial, HierarchyComponent, HierarchyLeafMesh, RingAnchorKind,
-    StratifiedAnnulus, TransitionTopologyCandidate,
+    FullPolygonMergeTrial, GlobalExactMergeTrial, HierarchyComponent, HierarchyLeafMesh,
+    RingAnchorKind, StratifiedAnnulus, TransitionTopologyCandidate,
 };
 use crate::{
     certificate::{
@@ -425,6 +425,100 @@ impl ElasticPatch {
             physical_fixed_sources,
             GeometryDomainId::CurrentAnnulus,
         )
+    }
+
+    pub fn from_global_exact_merge_with_domain(
+        source: &MotherGrid,
+        component: &HierarchyComponent,
+        trial: &GlobalExactMergeTrial,
+        physical_fixed_sources: &BTreeSet<usize>,
+        domain_id: GeometryDomainId,
+    ) -> Result<Self, String> {
+        let mesh = &trial.mesh.mesh;
+        let source_slots = &trial.mesh.source_vertex_slots;
+        if source_slots.len() != mesh.vertices().len() {
+            return Err("global exact source-slot map does not match compact vertices".into());
+        }
+        let source_to_compact = source_slots
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(compact, source)| source.map(|source| (source, compact)))
+            .collect::<BTreeMap<_, _>>();
+        let permanent_fixed = source
+            .addresses
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, address)| {
+                (physical_fixed_sources.contains(&slot)
+                    || matches!(address, Some(VertexAddress::IcosahedronVertex(_))))
+                .then_some(slot)
+            })
+            .collect::<BTreeSet<_>>();
+        let permanent_fixed_compact = source_set_to_compact(
+            &source_to_compact,
+            &permanent_fixed,
+            mesh,
+            "global exact fixed source vertex",
+        )?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let base_movable_sources = trial
+            .custom_triangles
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|slot| !permanent_fixed.contains(slot))
+            .collect::<BTreeSet<_>>();
+        let base_movable = source_set_to_compact(
+            &source_to_compact,
+            &base_movable_sources,
+            mesh,
+            "global exact movable source vertex",
+        )?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let movable_compact_vertices = expand_movable_domain(
+            mesh,
+            source_slots,
+            &base_movable,
+            &permanent_fixed_compact,
+            domain_id,
+        );
+        if movable_compact_vertices.is_empty() {
+            return Err("global exact geometry domain has no movable source vertex".into());
+        }
+        let guard_faces = incident_faces(mesh, &movable_compact_vertices);
+        let fixed_compact_vertices = guard_faces
+            .iter()
+            .flat_map(|&face| mesh.triangles()[face])
+            .filter(|site| !movable_compact_vertices.contains(site))
+            .collect::<BTreeSet<_>>();
+        let topology = TransitionTopologyCandidate {
+            component_id: component.id,
+            topology_id: trial.evidence.states_examined,
+            core_parents: component.core_parents.clone(),
+            custom_transition_triangles: BTreeMap::new(),
+            source_triangles: trial.custom_triangles.clone(),
+            source_active_vertices: movable_compact_vertices
+                .iter()
+                .chain(&fixed_compact_vertices)
+                .filter_map(|&compact| source_slots[compact])
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            source_degree_forecast: trial.evidence.vertex_degrees.clone(),
+        };
+        Ok(Self {
+            domain_id,
+            topology,
+            reference_positions: mesh.vertices().to_vec(),
+            fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
+            movable_compact_vertices: movable_compact_vertices.into_iter().collect(),
+            guard_faces: guard_faces.into_iter().collect(),
+            target_mode: ElasticTargetMode::TrialReference,
+            target_field: ElasticTargetField::default(),
+        })
     }
 
     pub fn from_full_polygon_merge_with_domain(
@@ -4429,6 +4523,53 @@ mod tests {
         assert!(plus_one_set.is_subset(&plus_two_set));
         assert!(current_set.len() < plus_one_set.len());
         assert!(plus_one_set.len() < plus_two_set.len());
+    }
+
+    #[test]
+    fn global_exact_patch_domains_are_nested_and_keep_anchors_fixed() {
+        let (source, component, _) = n6_legacy_mixed_fixture_with_source_levels().unwrap();
+        let FullPolygonMergeOutcome::Closed(trial) = solve_full_polygon_merge(
+            &source,
+            &component,
+            FullPolygonMergeLimits {
+                topology_states: 100_000,
+            },
+        ) else {
+            panic!("frozen N6 full-polygon family must close")
+        };
+        let make = |domain| {
+            ElasticPatch::from_global_exact_merge_with_domain(
+                &source,
+                &component,
+                &trial.global_trial,
+                &BTreeSet::new(),
+                domain,
+            )
+            .unwrap()
+        };
+        let current = make(GeometryDomainId::CurrentAnnulus);
+        let plus_one = make(GeometryDomainId::PlusOneOrdinaryRing);
+        let plus_two = make(GeometryDomainId::PlusTwoOrdinaryRings);
+        let movable = |patch: &ElasticPatch| {
+            patch
+                .movable_compact_vertices
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(movable(&current).is_subset(&movable(&plus_one)));
+        assert!(movable(&plus_one).is_subset(&movable(&plus_two)));
+        let source_slots = &trial.global_trial.mesh.source_vertex_slots;
+        let plus_two_sources = plus_two
+            .movable_compact_vertices
+            .iter()
+            .filter_map(|&site| source_slots[site])
+            .collect::<BTreeSet<_>>();
+        for (source_slot, address) in source.addresses.iter().enumerate() {
+            if matches!(address, Some(VertexAddress::IcosahedronVertex(_))) {
+                assert!(!plus_two_sources.contains(&source_slot));
+            }
+        }
     }
 
     #[test]
