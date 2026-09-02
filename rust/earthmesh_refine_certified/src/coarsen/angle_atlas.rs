@@ -341,7 +341,10 @@ pub fn spatial_angle_atlas_json(atlas: &SpatialAngleAtlas) -> String {
     )
 }
 
-fn validate_spatial_context(face: usize, context: &SpatialFaceContext) -> Result<(), String> {
+pub(super) fn validate_spatial_context(
+    face: usize,
+    context: &SpatialFaceContext,
+) -> Result<(), String> {
     let quality = context.quality;
     if !quality.maximum_priority.is_finite()
         || !(0.0..=1.0).contains(&quality.maximum_priority)

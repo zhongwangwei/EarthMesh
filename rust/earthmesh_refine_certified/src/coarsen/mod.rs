@@ -317,8 +317,10 @@ pub use rotation_width_audit::{
     RotationAwareWidthReport,
 };
 pub use scheduler::{
-    run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
-    ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+    run_elastic_component_epochs, run_elastic_component_epochs_with_quality_context,
+    sort_components_outside_in, CoarseningPriority, CoarseningScheduleStats, ComponentOutcomeKind,
+    ElasticCmrcConfig, ElasticCmrcOutcome, ElasticCmrcReport, ElasticCmrcResult,
+    ElasticComponentRecord, ElasticLevelReport,
 };
 pub use sdce_find_one::{
     find_one_sdce_essential_cycle, solve_sdce_plan_find_one, SdceCycleFindOneEvidence,

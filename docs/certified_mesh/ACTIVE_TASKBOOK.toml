@@ -5,8 +5,8 @@ source_file_sha256 = "1e5025740cf826bfc3f64c01a2faa6ecca37baaf92ba03b8c8e0fdeb23
 baseline_branch = "v3.0.0-alpha6"
 baseline_commit = "20551dbd24ec05556bbe9a4e7f913803cf77b001"
 implementation_branch = "v3.0.0-alpha7"
-active_milestone = "DQX-06"
-active_slice = "DQX-06-quality-cache-delta-oracle"
+active_milestone = "DQX-07"
+active_slice = "DQX-07-outside-in-coarsening-scheduler"
 quality_policy = "domain_export"
 
 # These Alpha6 paths remain reproducible evidence, never DQX production inputs.
