@@ -17,6 +17,7 @@ mod direct_restore;
 mod domain_continuation;
 mod domain_quality;
 mod downstream_contract;
+mod dqx_output;
 mod effective_band;
 mod elastic_block;
 mod embedding_audit;
@@ -161,6 +162,12 @@ pub use domain_quality::{
 pub use downstream_contract::{
     audit_legacy_downstream_preflight, DownstreamContractStage, DownstreamPreflightEvidence,
     DownstreamPreflightOutcome, DownstreamRejectHistogram, DownstreamRejectStage,
+};
+pub use dqx_output::{
+    build_spatial_quality_fulfillment_report, dqx_run_evidence_json,
+    spatial_quality_fulfillment_report_json, DqxRunEvidence, QualityCellAction,
+    QualityOptimizationStatus, SpatialQualityFulfillmentReport, DQX_NETCDF_CELL_VARIABLES,
+    DQX_NETCDF_GLOBAL_ATTRIBUTES, DQX_OUTPUT_SCHEMA_VERSION,
 };
 pub use effective_band::{
     build_effective_band_report, effective_band_report_json, EffectiveBandReport,
