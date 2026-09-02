@@ -8,6 +8,79 @@ use interval::{next_down, next_up, Interval};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const GEOMETRY_INTERIOR_MARGIN_DEGREES: f64 = 0.2;
+pub const CERTIFICATE_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AngleContractId {
+    #[default]
+    LegacyStrict40To80,
+    DomainQuality38To82V1,
+}
+
+impl AngleContractId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyStrict40To80 => "legacy_strict_40_to_80",
+            Self::DomainQuality38To82V1 => "domain_quality_38_to_82_v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AngleWindow {
+    pub minimum_degrees: f64,
+    pub maximum_degrees: f64,
+}
+
+impl AngleWindow {
+    pub fn contains_range(self, minimum_degrees: f64, maximum_degrees: f64) -> bool {
+        minimum_degrees <= maximum_degrees
+            && minimum_degrees >= self.minimum_degrees
+            && maximum_degrees <= self.maximum_degrees
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AngleContract {
+    pub id: AngleContractId,
+    pub internal: AngleWindow,
+    pub final_delivery: AngleWindow,
+    pub preferred: Option<AngleWindow>,
+}
+
+impl AngleContract {
+    pub const fn for_id(id: AngleContractId) -> Self {
+        match id {
+            AngleContractId::LegacyStrict40To80 => Self {
+                id,
+                internal: AngleWindow {
+                    minimum_degrees: 40.2,
+                    maximum_degrees: 79.8,
+                },
+                final_delivery: AngleWindow {
+                    minimum_degrees: 40.0,
+                    maximum_degrees: 80.0,
+                },
+                preferred: None,
+            },
+            AngleContractId::DomainQuality38To82V1 => Self {
+                id,
+                internal: AngleWindow {
+                    minimum_degrees: 38.2,
+                    maximum_degrees: 81.8,
+                },
+                final_delivery: AngleWindow {
+                    minimum_degrees: 38.0,
+                    maximum_degrees: 82.0,
+                },
+                preferred: Some(AngleWindow {
+                    minimum_degrees: 40.0,
+                    maximum_degrees: 80.0,
+                }),
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Certificate {
@@ -17,16 +90,36 @@ pub struct Certificate {
 
 impl Certificate {
     pub fn final_delivery() -> Self {
-        Self {
-            min_angle_degrees: 40.0,
-            max_angle_degrees: 80.0,
-        }
+        Self::final_delivery_for(AngleContractId::default())
     }
 
     pub fn internal() -> Self {
+        Self::internal_for(AngleContractId::default())
+    }
+
+    pub fn final_delivery_for(id: AngleContractId) -> Self {
+        Self::from_window(AngleContract::for_id(id).final_delivery)
+    }
+
+    pub fn internal_for(id: AngleContractId) -> Self {
+        Self::from_window(AngleContract::for_id(id).internal)
+    }
+
+    pub fn angle_contract_id(&self) -> Result<AngleContractId, CertificateError> {
+        match (self.min_angle_degrees, self.max_angle_degrees) {
+            (40.0, 80.0) | (40.2, 79.8) => Ok(AngleContractId::LegacyStrict40To80),
+            (38.0, 82.0) | (38.2, 81.8) => Ok(AngleContractId::DomainQuality38To82V1),
+            _ => Err(CertificateError::CriterionNotCertifiable(format!(
+                "no registered angle contract for [{}, {}] degrees",
+                self.min_angle_degrees, self.max_angle_degrees
+            ))),
+        }
+    }
+
+    fn from_window(window: AngleWindow) -> Self {
         Self {
-            min_angle_degrees: 40.2,
-            max_angle_degrees: 79.8,
+            min_angle_degrees: window.minimum_degrees,
+            max_angle_degrees: window.maximum_degrees,
         }
     }
 
@@ -34,6 +127,7 @@ impl Certificate {
         &self,
         grid: &MotherGrid,
     ) -> Result<GeometryCertificateReport, CertificateError> {
+        let angle_contract_id = self.angle_contract_id()?;
         let angle_gate = SupportedMotherAngleGate::verify(grid.subdivision, &grid.mesh, self)?;
         let topology = topology(&grid.mesh);
         check_topology(&topology)?;
@@ -43,6 +137,8 @@ impl Certificate {
         }
         let dual = verify_dual(&grid.mesh)?;
         let report = GeometryCertificateReport {
+            schema_version: CERTIFICATE_SCHEMA_VERSION,
+            angle_contract_id,
             vertices: topology.vertices,
             edges: topology.edges,
             faces: topology.faces,
@@ -67,6 +163,7 @@ impl Certificate {
         &self,
         mesh: &MeshState,
     ) -> Result<GeometryCertificateReport, CertificateError> {
+        let angle_contract_id = self.angle_contract_id()?;
         prove_angle_window_with_outward_intervals(mesh, self)?;
         let angles = fast_angle_filter(mesh)?;
         if angles.min < self.min_angle_degrees || angles.max > self.max_angle_degrees {
@@ -83,6 +180,8 @@ impl Certificate {
         }
         let dual = verify_dual(mesh)?;
         let report = GeometryCertificateReport {
+            schema_version: CERTIFICATE_SCHEMA_VERSION,
+            angle_contract_id,
             vertices: topology.vertices,
             edges: topology.edges,
             faces: topology.faces,
@@ -307,17 +406,7 @@ fn prove_angle_window_for_triangles(
     // values, respectively. This avoids relying on libm trigonometric
     // rounding inside the proof; only IEEE-754 +,-,* and nextafter widening
     // participate in the interval comparisons.
-    let (min_angle_cos_lower, max_angle_cos_upper) =
-        match (certificate.min_angle_degrees, certificate.max_angle_degrees) {
-            (40.0, 80.0) => (0.766_044_443_118, 0.173_648_177_667),
-            (40.2, 79.8) => (0.763_796_028_634, 0.177_084_740_320),
-            _ => {
-                return Err(CertificateError::CriterionNotCertifiable(format!(
-                    "no outward interval threshold constants for [{}, {}] degrees",
-                    certificate.min_angle_degrees, certificate.max_angle_degrees
-                )))
-            }
-        };
+    let (min_angle_cos_lower, max_angle_cos_upper) = outward_interval_thresholds(certificate)?;
     let min_cos_sq_lower = next_down(min_angle_cos_lower * min_angle_cos_lower);
     let max_cos_sq_upper = next_up(max_angle_cos_upper * max_angle_cos_upper);
     let mut interval_boxes = 0;
@@ -356,6 +445,19 @@ fn prove_angle_window_for_triangles(
     Ok(interval_boxes)
 }
 
+fn outward_interval_thresholds(certificate: &Certificate) -> Result<(f64, f64), CertificateError> {
+    match (certificate.min_angle_degrees, certificate.max_angle_degrees) {
+        (40.0, 80.0) => Ok((0.766_044_443_118, 0.173_648_177_667)),
+        (40.2, 79.8) => Ok((0.763_796_028_634, 0.177_084_740_320)),
+        (38.0, 82.0) => Ok((0.788_010_753_606, 0.139_173_100_961)),
+        (38.2, 81.8) => Ok((0.785_856_893_175, 0.142_628_933_706)),
+        _ => Err(CertificateError::CriterionNotCertifiable(format!(
+            "no outward interval threshold constants for [{}, {}] degrees",
+            certificate.min_angle_degrees, certificate.max_angle_degrees
+        ))),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeometryRegionCertificateReport {
     pub faces: usize,
@@ -389,6 +491,8 @@ impl GeometryRegionCertificateReport {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeometryCertificateReport {
+    pub schema_version: u32,
+    pub angle_contract_id: AngleContractId,
     pub vertices: usize,
     pub edges: usize,
     pub faces: usize,
@@ -1012,6 +1116,134 @@ fn tangent(
 mod tests {
     use super::*;
     use crate::mother_grid::MotherGrid;
+
+    #[test]
+    fn legacy_40_80_unchanged() {
+        let contract = AngleContract::for_id(AngleContractId::LegacyStrict40To80);
+        assert_eq!(
+            contract.internal,
+            AngleWindow {
+                minimum_degrees: 40.2,
+                maximum_degrees: 79.8,
+            }
+        );
+        assert_eq!(
+            contract.final_delivery,
+            AngleWindow {
+                minimum_degrees: 40.0,
+                maximum_degrees: 80.0,
+            }
+        );
+        assert_eq!(contract.preferred, None);
+        assert_eq!(
+            Certificate::internal().angle_contract_id().unwrap(),
+            contract.id
+        );
+        assert_eq!(
+            Certificate::final_delivery().angle_contract_id().unwrap(),
+            contract.id
+        );
+    }
+
+    #[test]
+    fn dqx_38_82_accepts_39_278_80_721() {
+        let range = (39.278_499_430_048, 80.721_500_570_507);
+        let legacy = AngleContract::for_id(AngleContractId::LegacyStrict40To80);
+        let dqx = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        assert!(!legacy.final_delivery.contains_range(range.0, range.1));
+        assert!(dqx.final_delivery.contains_range(range.0, range.1));
+    }
+
+    #[test]
+    fn dqx_rejects_37_999() {
+        let dqx = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        assert!(!dqx.final_delivery.contains_range(37.999, 80.0));
+    }
+
+    #[test]
+    fn dqx_rejects_82_001() {
+        let dqx = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        assert!(!dqx.final_delivery.contains_range(40.0, 82.001));
+        assert!(!dqx.final_delivery.contains_range(80.0, 40.0));
+    }
+
+    #[test]
+    fn internal_margin_is_stricter() {
+        for id in [
+            AngleContractId::LegacyStrict40To80,
+            AngleContractId::DomainQuality38To82V1,
+        ] {
+            let contract = AngleContract::for_id(id);
+            assert!(contract.final_delivery.contains_range(
+                contract.internal.minimum_degrees,
+                contract.internal.maximum_degrees
+            ));
+            assert!(!contract.internal.contains_range(
+                contract.final_delivery.minimum_degrees,
+                contract.final_delivery.maximum_degrees
+            ));
+        }
+    }
+
+    #[test]
+    fn interval_constants_are_outward() {
+        let registered = [
+            Certificate::final_delivery(),
+            Certificate::internal(),
+            Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1),
+            Certificate::internal_for(AngleContractId::DomainQuality38To82V1),
+        ];
+        for certificate in registered {
+            let (minimum_lower, maximum_upper) = outward_interval_thresholds(&certificate).unwrap();
+            assert!(minimum_lower <= certificate.min_angle_degrees.to_radians().cos());
+            assert!(maximum_upper >= certificate.max_angle_degrees.to_radians().cos());
+        }
+
+        assert_eq!(
+            outward_interval_thresholds(&Certificate::final_delivery()).unwrap(),
+            (0.766_044_443_118, 0.173_648_177_667)
+        );
+        assert_eq!(
+            outward_interval_thresholds(&Certificate::internal()).unwrap(),
+            (0.763_796_028_634, 0.177_084_740_320)
+        );
+    }
+
+    #[test]
+    fn unregistered_thresholds_are_not_certifiable() {
+        let certificate = Certificate {
+            min_angle_degrees: 39.0,
+            max_angle_degrees: 81.0,
+        };
+        assert!(matches!(
+            outward_interval_thresholds(&certificate),
+            Err(CertificateError::CriterionNotCertifiable(_))
+        ));
+    }
+
+    #[test]
+    fn tangled_n12_range_still_fails_dqx() {
+        let dqx = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        assert!(!dqx
+            .final_delivery
+            .contains_range(1.337_009_876_734, 173.470_265_136_292));
+    }
+
+    #[test]
+    fn explicit_dqx_report_carries_versioned_contract() {
+        let grid = MotherGrid::generate(2).unwrap();
+        Certificate::internal_for(AngleContractId::DomainQuality38To82V1)
+            .verify_mother_grid(&grid)
+            .unwrap();
+        let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
+            .verify_mother_grid(&grid)
+            .unwrap();
+        assert_eq!(report.schema_version, CERTIFICATE_SCHEMA_VERSION);
+        assert_eq!(
+            report.angle_contract_id,
+            AngleContractId::DomainQuality38To82V1
+        );
+    }
 
     #[test]
     fn final_certificate_accepts_supported_mothers_as_geometry_only() {

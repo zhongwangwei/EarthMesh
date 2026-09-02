@@ -1,4 +1,4 @@
-use crate::certificate::{FinalCertificateReport, GeometryCertificateReport};
+use crate::certificate::{AngleContractId, FinalCertificateReport, GeometryCertificateReport};
 use earthmesh_mesh::MeshState;
 use std::collections::BTreeMap;
 
@@ -137,6 +137,10 @@ impl GeometryCertifiedMotherGrid {
         &self.certificate
     }
 
+    pub fn angle_contract_id(&self) -> AngleContractId {
+        self.certificate.angle_contract_id
+    }
+
     pub(crate) fn into_parts(self) -> (MeshState, GeometryCertificateReport) {
         (self.primal, self.certificate)
     }
@@ -211,6 +215,10 @@ impl CertifiedPrimalDualMesh {
 
     pub fn certificate(&self) -> &FinalCertificateReport {
         &self.certificate
+    }
+
+    pub fn angle_contract_id(&self) -> AngleContractId {
+        self.certificate.geometry.angle_contract_id
     }
 }
 

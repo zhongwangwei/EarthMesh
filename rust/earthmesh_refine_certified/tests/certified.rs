@@ -607,6 +607,7 @@ fn supported_large_levels_include_n80_interval_certification() {
         grid160.mesh.triangle_count()
     );
     match earthmesh_refine_certified::generate_certified_mother_grid(&CertifiedConfig {
+        angle_contract: earthmesh_refine_certified::AngleContractId::LegacyStrict40To80,
         mother_subdivision: 160,
         delivery: earthmesh_refine_certified::DeliveryMode::Coupled,
         max_cells: Some(20 * 160 * 160),
@@ -623,6 +624,19 @@ fn supported_large_levels_include_n80_interval_certification() {
                 160
             );
         }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+#[test]
+fn explicit_dqx_config_selects_versioned_contract() {
+    let mut config = CertifiedConfig::mother_only(2);
+    config.angle_contract = earthmesh_refine_certified::AngleContractId::DomainQuality38To82V1;
+    match earthmesh_refine_certified::generate_certified_mother_grid(&config) {
+        CertifiedMeshOutcome::GeometryCertified(mesh) => assert_eq!(
+            mesh.angle_contract_id(),
+            earthmesh_refine_certified::AngleContractId::DomainQuality38To82V1
+        ),
         other => panic!("unexpected outcome: {other:?}"),
     }
 }

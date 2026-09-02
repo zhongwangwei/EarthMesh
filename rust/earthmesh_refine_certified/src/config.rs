@@ -1,3 +1,5 @@
+use crate::certificate::AngleContractId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryMode {
     Triangular,
@@ -7,6 +9,7 @@ pub enum DeliveryMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertifiedConfig {
+    pub angle_contract: AngleContractId,
     pub mother_subdivision: usize,
     pub delivery: DeliveryMode,
     pub max_cells: Option<usize>,
@@ -17,6 +20,7 @@ pub struct CertifiedConfig {
 impl CertifiedConfig {
     pub fn mother_only(mother_subdivision: usize) -> Self {
         Self {
+            angle_contract: AngleContractId::default(),
             mother_subdivision,
             delivery: DeliveryMode::Coupled,
             max_cells: None,

@@ -9,13 +9,15 @@ pub mod remap;
 pub mod requirement;
 
 pub use api::{
-    certify_geometry, certify_mother_grid, finalize_geometry_certified_mother,
-    generate_certified_mother_grid, geometry_certified_mother_grid, safe_mother_final_evidence,
-    safe_mother_only,
+    certify_geometry, certify_geometry_with_contract, certify_mother_grid,
+    certify_mother_grid_with_contract, finalize_geometry_certified_mother,
+    generate_certified_mother_grid, geometry_certified_mother_grid,
+    geometry_certified_mother_grid_with_contract, safe_mother_final_evidence, safe_mother_only,
 };
 pub use certificate::{
-    BalanceCertificate, Certificate, CertificateError, CertificateReport, FinalCertificateReport,
-    GeometryCertificateReport, GeometryRegionCertificateReport, PhysicalCertificate,
+    AngleContract, AngleContractId, AngleWindow, BalanceCertificate, Certificate, CertificateError,
+    CertificateReport, FinalCertificateReport, GeometryCertificateReport,
+    GeometryRegionCertificateReport, PhysicalCertificate, CERTIFICATE_SCHEMA_VERSION,
 };
 pub use config::{CertifiedConfig, DeliveryMode};
 pub use fingerprint::mesh_fingerprint;

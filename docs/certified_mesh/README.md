@@ -38,6 +38,11 @@
 CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
 HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
 
+Alpha7 adds an explicit `DomainQuality38To82V1` certificate contract with a
+38.2--81.8 degree internal window and a 38--82 degree final hard window. The
+default remains the legacy 40.2--79.8 / 40--80 contract until the DQX production
+gate is complete.
+
 The backend starts from a radially projected integer subdivision of a regular
 icosahedron and turns every requirement into a conservative minimum level. The
 reverse path uses a complete global 2:1 hierarchy rebuild for uniform fields

@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Generate conservative 12-decimal cosine constants without float trig."""
+
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
+
+
+def atan(value: Decimal) -> Decimal:
+    term = total = value
+    n = 1
+    while True:
+        term *= -(value * value)
+        previous, total = total, total + term / Decimal(2 * n + 1)
+        if total == previous:
+            return total
+        n += 1
+
+
+def cosine(value: Decimal) -> Decimal:
+    term = total = Decimal(1)
+    n = 1
+    while True:
+        term *= -(value * value) / Decimal((2 * n - 1) * (2 * n))
+        previous, total = total, total + term
+        if total == previous:
+            return total
+        n += 1
+
+
+with localcontext() as context:
+    context.prec = 90
+    pi = Decimal(16) * atan(Decimal(1) / 5) - Decimal(4) * atan(Decimal(1) / 239)
+    quantum = Decimal("0.000000000001")
+    for minimum, maximum in (("40", "80"), ("40.2", "79.8"), ("38", "82"), ("38.2", "81.8")):
+        lower = cosine(Decimal(minimum) * pi / 180).quantize(quantum, rounding=ROUND_FLOOR)
+        upper = cosine(Decimal(maximum) * pi / 180).quantize(quantum, rounding=ROUND_CEILING)
+        print(f"({minimum}, {maximum}) => ({lower}, {upper})")

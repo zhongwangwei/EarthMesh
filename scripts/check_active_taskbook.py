@@ -13,6 +13,7 @@ EXPECTED = {
     "schema_version": 1,
     "taskbook_id": "CMRC-DQX-2026-09-03-R1",
     "taskbook_sha256": "a8650d0c882330fb7ef6ba35945192b8943ceb4fba8aa60d2c8d67c169a17951",
+    "source_file_sha256": "1e5025740cf826bfc3f64c01a2faa6ecca37baaf92ba03b8c8e0fdeb233bc0db",
     "baseline_branch": "v3.0.0-alpha6",
     "baseline_commit": "20551dbd24ec05556bbe9a4e7f913803cf77b001",
     "implementation_branch": "v3.0.0-alpha7",

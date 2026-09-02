@@ -1,5 +1,7 @@
 use crate::{
-    certificate::{BalanceCertificate, Certificate, CertificateError, PhysicalCertificate},
+    certificate::{
+        AngleContractId, BalanceCertificate, Certificate, CertificateError, PhysicalCertificate,
+    },
     config::CertifiedConfig,
     mother_grid::{mother_cell_count, MotherGrid},
     outcome::{
@@ -35,7 +37,7 @@ pub fn generate_certified_mother_grid(config: &CertifiedConfig) -> CertifiedMesh
             };
         }
     }
-    geometry_certified_mother_grid(config.mother_subdivision)
+    geometry_certified_mother_grid_with_contract(config.mother_subdivision, config.angle_contract)
 }
 
 pub fn safe_mother_only(subdivision: usize, max_cells: usize) -> CertifiedMeshOutcome {
@@ -45,14 +47,28 @@ pub fn safe_mother_only(subdivision: usize, max_cells: usize) -> CertifiedMeshOu
 }
 
 pub fn geometry_certified_mother_grid(subdivision: usize) -> CertifiedMeshOutcome {
+    geometry_certified_mother_grid_with_contract(subdivision, AngleContractId::default())
+}
+
+pub fn geometry_certified_mother_grid_with_contract(
+    subdivision: usize,
+    angle_contract: AngleContractId,
+) -> CertifiedMeshOutcome {
     match MotherGrid::generate(subdivision) {
-        Ok(grid) => certify_mother_grid(grid),
+        Ok(grid) => certify_mother_grid_with_contract(grid, angle_contract),
         Err(error) => CertifiedMeshOutcome::InternalCertificationFailure { reason: error },
     }
 }
 
 pub fn certify_mother_grid(grid: MotherGrid) -> CertifiedMeshOutcome {
-    match Certificate::final_delivery().verify_mother_grid(&grid) {
+    certify_mother_grid_with_contract(grid, AngleContractId::default())
+}
+
+pub fn certify_mother_grid_with_contract(
+    grid: MotherGrid,
+    angle_contract: AngleContractId,
+) -> CertifiedMeshOutcome {
+    match Certificate::final_delivery_for(angle_contract).verify_mother_grid(&grid) {
         Ok(report) => CertifiedMeshOutcome::GeometryCertified(Box::new(
             GeometryCertifiedMotherGrid::new(grid.mesh, report),
         )),
@@ -72,7 +88,14 @@ pub fn certify_mother_grid(grid: MotherGrid) -> CertifiedMeshOutcome {
 }
 
 pub fn certify_geometry(mesh: earthmesh_mesh::MeshState) -> CertifiedMeshOutcome {
-    match Certificate::final_delivery().verify_geometry(&mesh) {
+    certify_geometry_with_contract(mesh, AngleContractId::default())
+}
+
+pub fn certify_geometry_with_contract(
+    mesh: earthmesh_mesh::MeshState,
+    angle_contract: AngleContractId,
+) -> CertifiedMeshOutcome {
+    match Certificate::final_delivery_for(angle_contract).verify_geometry(&mesh) {
         Ok(report) => CertifiedMeshOutcome::GeometryCertified(Box::new(
             GeometryCertifiedMotherGrid::new(mesh, report),
         )),
