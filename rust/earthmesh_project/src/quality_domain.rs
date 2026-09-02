@@ -74,7 +74,7 @@ pub struct DomainSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SpatialQualityDomainSpec {
     Global,
     Region {
@@ -236,6 +236,7 @@ impl SpatialQualityDomain {
         self.validate()?;
         let mut canonical = self.clone();
         canonicalize_spec(&mut canonical.spec);
+        canonicalize_distance(&mut canonical.working_halo);
         for source in &mut canonical.critical_features {
             canonicalize_source(source);
         }
@@ -304,7 +305,7 @@ fn validate_regional_halo(
             DistanceSpec::Kilometres(boundary),
             DistanceSpec::Kilometres(export),
             DistanceSpec::Kilometres(working),
-        ) if working >= boundary + export => Ok(()),
+        ) if greater_or_approximately_equal(working, boundary + export) => Ok(()),
         (DistanceSpec::GraphRings(_), DistanceSpec::GraphRings(_), DistanceSpec::GraphRings(_))
         | (DistanceSpec::Kilometres(_), DistanceSpec::Kilometres(_), DistanceSpec::Kilometres(_)) => {
             Err(DomainValidationError::InsufficientWorkingHalo)
@@ -341,11 +342,21 @@ fn validate_deep_exterior(
 fn canonicalize_spec(spec: &mut SpatialQualityDomainSpec) {
     match spec {
         SpatialQualityDomainSpec::Global => {}
-        SpatialQualityDomainSpec::Region { source, .. } => canonicalize_source(source),
+        SpatialQualityDomainSpec::Region {
+            source,
+            boundary_protection,
+            export_halo,
+        } => {
+            canonicalize_source(source);
+            canonicalize_distance(boundary_protection);
+            canonicalize_distance(export_halo);
+        }
         SpatialQualityDomainSpec::Watershed {
             watershed,
             river_network,
             outlets,
+            boundary_protection,
+            export_halo,
             ..
         } => {
             canonicalize_source(watershed);
@@ -358,12 +369,41 @@ fn canonicalize_spec(spec: &mut SpatialQualityDomainSpec) {
             }
             outlets.sort_by(|a, b| a.lon.total_cmp(&b.lon).then(a.lat.total_cmp(&b.lat)));
             outlets.dedup();
+            canonicalize_distance(boundary_protection);
+            canonicalize_distance(export_halo);
         }
-        SpatialQualityDomainSpec::Land { land_mask, .. } => canonicalize_source(land_mask),
-        SpatialQualityDomainSpec::Ocean { ocean_mask, .. } => canonicalize_source(ocean_mask),
+        SpatialQualityDomainSpec::Land {
+            land_mask,
+            coast_protection,
+            deep_ocean_start,
+        } => {
+            canonicalize_source(land_mask);
+            canonicalize_distance(coast_protection);
+            canonicalize_distance(deep_ocean_start);
+        }
+        SpatialQualityDomainSpec::Ocean {
+            ocean_mask,
+            coast_protection,
+            deep_land_start,
+        } => {
+            canonicalize_source(ocean_mask);
+            canonicalize_distance(coast_protection);
+            canonicalize_distance(deep_land_start);
+        }
         SpatialQualityDomainSpec::Custom { priority_raster } => {
             canonicalize_source(priority_raster)
         }
+    }
+}
+
+fn greater_or_approximately_equal(value: f64, required: f64) -> bool {
+    value >= required
+        || (value - required).abs() <= f64::EPSILON * 8.0 * value.abs().max(required.abs()).max(1.0)
+}
+
+fn canonicalize_distance(distance: &mut DistanceSpec) {
+    if let DistanceSpec::Kilometres(value) = distance {
+        *value = canonical_zero(*value);
     }
 }
 
@@ -454,6 +494,40 @@ mod tests {
             domain.validate(),
             Err(DomainValidationError::MixedDistanceUnits)
         );
+
+        domain = region();
+        if let SpatialQualityDomainSpec::Region {
+            boundary_protection,
+            export_halo,
+            ..
+        } = &mut domain.spec
+        {
+            *boundary_protection = DistanceSpec::Kilometres(0.1);
+            *export_halo = DistanceSpec::Kilometres(0.2);
+        }
+        domain.working_halo = DistanceSpec::Kilometres(0.3);
+        domain.validate().unwrap();
+    }
+
+    #[test]
+    fn domain_schema_rejects_unknown_variant_fields() {
+        let json = r#"{"region":{"source":{"content_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","has_holes":false,"crosses_antimeridian":false,"includes_north_pole":false,"includes_south_pole":false},"boundary_protection":{"graph_rings":1},"export_halo":{"graph_rings":1},"typo":true}}"#;
+        assert!(serde_json::from_str::<SpatialQualityDomainSpec>(json).is_err());
+
+        let yaml = "custom:\n  priority_raster:\n    content_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    typo: true\n";
+        assert!(serde_yaml::from_str::<SpatialQualityDomainSpec>(yaml).is_err());
+    }
+
+    #[test]
+    fn negative_zero_does_not_change_domain_key() {
+        let positive = SpatialQualityDomain {
+            spec: SpatialQualityDomainSpec::Global,
+            critical_features: Vec::new(),
+            working_halo: DistanceSpec::Kilometres(0.0),
+        };
+        let mut negative = positive.clone();
+        negative.working_halo = DistanceSpec::Kilometres(-0.0);
+        assert_eq!(positive.domain_key(), negative.domain_key());
     }
 
     #[test]

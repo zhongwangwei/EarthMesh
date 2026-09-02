@@ -192,6 +192,10 @@ fn domain_export_quality_policy_round_trips_and_requires_certified_backend() {
             .unwrap()
             .domain_key()
     );
+    assert!(project
+        .try_lower()
+        .unwrap_err()
+        .contains("schema/preflight-only"));
 }
 
 #[test]

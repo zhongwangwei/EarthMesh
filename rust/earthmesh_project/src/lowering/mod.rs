@@ -219,6 +219,12 @@ impl ProjectConfig {
     /// data layers; the mesh algorithm is untouched.
     pub fn try_lower(&self) -> Result<LoweredProject, String> {
         self.validate()?;
+        if self.quality.quality_policy == crate::QualityPolicy::DomainExport {
+            return Err(
+                "quality_policy=domain_export is schema/preflight-only until DQX execution is implemented"
+                    .to_string(),
+            );
+        }
         let mut mkgrd = EarthmeshConfig::default();
         let mut refine = RefineConfig::default();
 
