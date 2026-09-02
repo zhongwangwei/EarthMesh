@@ -29,6 +29,7 @@ mod full_polygon_reachability;
 mod geometry_witness;
 mod global_exact_merge;
 mod hierarchy_component;
+mod joint_concrete_extraction;
 mod local_annular_collar;
 mod local_topology;
 mod plan_band_domain;
@@ -224,6 +225,11 @@ pub use hierarchy_component::{
     plan_hierarchy_components, plan_hierarchy_components_from_parent_requirements,
     ExplicitParentRequirement, HierarchyComponent, HierarchyComponentPlan, HierarchyEdgeKey,
     ParentRequirement,
+};
+pub use joint_concrete_extraction::{
+    solve_joint_concrete_extraction, JointConcreteCheckpoint, JointConcreteEvidence,
+    JointConcreteExtractionOutcome, JointConcreteExtractionPlan, JointConcreteExtractionPlanKey,
+    JointConcreteLimits, JointPairConflict,
 };
 pub use local_annular_collar::{
     solve_local_annular_collar, LocalAnnularCollarEvidence, LocalAnnularCollarLevel,
