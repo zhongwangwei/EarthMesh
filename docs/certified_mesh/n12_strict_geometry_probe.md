@@ -1,22 +1,22 @@
-# Alpha6 N12 strict geometry precondition
+# Alpha6 N12 strict geometry probe
 
-PR96 freezes the taskbook geometry protocol but does not run it because PR95
-found no closed N12 topology. Geometry is conditional on a closed topology;
-running the optimizer against an invalid or incomplete combinatorial mesh would
-not be scientific evidence.
+PR118 runs the frozen geometry protocol on the closed PR117 SDCE topology. It
+uses `HierarchyEdgeAreaDegree` targets, max-min active-tangent steps, the six
+concrete geometry starts plus inherited continuation, and the Current/+1/+2
+nested domains.
 
-| Fixture | Topology input | Geometry |
-| --- | --- | --- |
-| N12-Lifted-N6 | `ResearchCycleSearchIncomplete` | not attempted |
-| N12-Interior-Control | `ResearchExactNoSolution` | not attempted |
+The bounded screen gives every domain/start pair one iteration, then spends 64
+iterations on the best inherited +2-ring witness. All 21 attempts remain in
+the `Untangle` phase and exhaust their budgets. The best screened range is
+`1.337009876734°–173.470265136292°`; the deepened witness regresses to
+`0.004437965593°–179.982388813662°` and is not accepted as the incumbent.
 
-The frozen, unexecuted protocol retains the `40.2°–79.8°` target,
-`HierarchyEdgeAreaDegree` targets, seven prescribed starts, and the
-Current/+1/+2 nested domains. Delaunay/Voronoi and
-physical/balance/remap research checks are likewise not attempted.
+No attempt reaches angle feasibility, so Delaunay/Voronoi and downstream
+physical/balance/remap gates are not claimed. The strict `40.2°–79.8°`
+internal window and final `40°–80°` product window remain unmet. The existing
+mixed-topology baseline `39.278499430048°–80.721500570507°` is unchanged; it is
+not a witness for the PR117 topology.
 
-This PR writes no grid or ready marker and changes no product gate. The record
-is stored in `tests/fixtures/n12_strict_geometry_probe.json`.
-
-No new angle witness exists. The best known mixed range remains
-`39.278499430048°–80.721500570507°`.
+This probe writes no grid or ready marker, does not resume the 49 CEC shards,
+and changes no product gate. Frozen evidence is stored in
+`tests/fixtures/n12_strict_geometry_probe.json`.
