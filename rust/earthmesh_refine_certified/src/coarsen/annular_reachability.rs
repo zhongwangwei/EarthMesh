@@ -28,6 +28,27 @@ pub struct AnnularTopologySignature {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnnularReachabilityStorageAudit {
+    pub stores_incidence_signatures: bool,
+    pub stores_link_path_signatures: bool,
+    pub stores_member_counts: bool,
+    pub stores_concrete_witnesses: bool,
+    pub stores_backpointers: bool,
+    pub necessary_relaxation_only: bool,
+}
+
+pub fn annular_reachability_storage_audit() -> AnnularReachabilityStorageAudit {
+    AnnularReachabilityStorageAudit {
+        stores_incidence_signatures: true,
+        stores_link_path_signatures: true,
+        stores_member_counts: true,
+        stores_concrete_witnesses: false,
+        stores_backpointers: false,
+        necessary_relaxation_only: true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnnularReachabilityLimits {
     pub maximum_signature_states: usize,
 }
@@ -614,7 +635,7 @@ fn triangle_allowed(triangle: [usize; 3], context: &DpContext<'_>) -> bool {
     })
 }
 
-fn path_signature(edges: &BTreeSet<Edge>) -> Option<LinkPathSignature> {
+pub(super) fn path_signature(edges: &BTreeSet<Edge>) -> Option<LinkPathSignature> {
     if edges.is_empty() {
         return Some(LinkPathSignature::Empty);
     }
@@ -651,7 +672,7 @@ fn path_signature(edges: &BTreeSet<Edge>) -> Option<LinkPathSignature> {
     })
 }
 
-fn contracted_fixed_link_signature(
+pub(super) fn contracted_fixed_link_signature(
     domain: &StratifiedTransitionDomainV3,
     vertex: usize,
     contract: &VertexLinkContract,
