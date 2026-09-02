@@ -191,11 +191,16 @@ impl ValidationGateGovernanceDecision {
 pub struct N12ValidationGateReport {
     pub lifted_topology: ResearchCecTopologyOutcomeKind,
     pub interior_topology: ResearchCecTopologyOutcomeKind,
+    pub interior_is_capacity_control: bool,
     pub lifted_geometry: Option<ResearchGeometryOutcome>,
     pub interior_geometry: Option<ResearchGeometryOutcome>,
     pub decision: ValidationGateGovernanceDecision,
     pub best_mixed_angle_degrees: (f64, f64),
+    pub best_closed_topology_angle_degrees: Option<(f64, f64)>,
     pub strict_target_degrees: (f64, f64),
+    pub cec_shards_resumed: bool,
+    pub cec_resume_complete: bool,
+    pub remaining_cec_checkpoint_shards: usize,
     pub product_gate_changed: bool,
     pub research_staircase_unlocked: bool,
     pub nxp80_unlocked: bool,
@@ -204,6 +209,7 @@ pub struct N12ValidationGateReport {
 pub fn decide_validation_gate(
     lifted_topology: ResearchCecTopologyOutcomeKind,
     interior_topology: ResearchCecTopologyOutcomeKind,
+    interior_is_capacity_control: bool,
     lifted_geometry: Option<ResearchGeometryOutcome>,
     interior_geometry: Option<ResearchGeometryOutcome>,
 ) -> ValidationGateGovernanceDecision {
@@ -218,18 +224,21 @@ pub fn decide_validation_gate(
     ) {
         return ValidationGateGovernanceDecision::TopologySolverBlocked;
     }
-    if lifted_topology == Topology::ResearchTopologyClosed
-        && interior_topology == Topology::ResearchTopologyClosed
-    {
-        return match (lifted_geometry, interior_geometry) {
-            (Some(StrictCertified), Some(StrictCertified)) => {
+    if lifted_topology == Topology::ResearchTopologyClosed {
+        if lifted_geometry != Some(StrictCertified) {
+            return ValidationGateGovernanceDecision::ContinuousGeometryBlocked;
+        }
+        if interior_topology == Topology::ResearchTopologyClosed {
+            return if interior_geometry == Some(StrictCertified) {
                 ValidationGateGovernanceDecision::N6StressN12Existence
-            }
-            (lifted, Some(StrictCertified)) if lifted != Some(StrictCertified) => {
-                ValidationGateGovernanceDecision::PentagonSpecificBlocked
-            }
-            _ => ValidationGateGovernanceDecision::ContinuousGeometryBlocked,
-        };
+            } else {
+                ValidationGateGovernanceDecision::ContinuousGeometryBlocked
+            };
+        }
+        if interior_is_capacity_control && interior_topology == Topology::ResearchExactNoSolution {
+            return ValidationGateGovernanceDecision::N6StressN12Existence;
+        }
+        return ValidationGateGovernanceDecision::KeepN6ExistenceGate;
     }
     if interior_topology == Topology::ResearchTopologyClosed
         && interior_geometry == Some(StrictCertified)
@@ -241,23 +250,29 @@ pub fn decide_validation_gate(
 }
 
 pub fn current_n12_validation_gate_report() -> N12ValidationGateReport {
-    let lifted_topology = ResearchCecTopologyOutcomeKind::ResearchCycleSearchIncomplete;
+    let lifted_topology = ResearchCecTopologyOutcomeKind::ResearchTopologyClosed;
     let interior_topology = ResearchCecTopologyOutcomeKind::ResearchExactNoSolution;
-    let lifted_geometry = None;
+    let lifted_geometry = Some(ResearchGeometryOutcome::ContinuousSearchIncomplete);
     let interior_geometry = None;
     N12ValidationGateReport {
         lifted_topology,
         interior_topology,
+        interior_is_capacity_control: true,
         lifted_geometry,
         interior_geometry,
         decision: decide_validation_gate(
             lifted_topology,
             interior_topology,
+            true,
             lifted_geometry,
             interior_geometry,
         ),
         best_mixed_angle_degrees: (39.278_499_430_048, 80.721_500_570_507),
+        best_closed_topology_angle_degrees: Some((1.337_009_876_734, 173.470_265_136_292)),
         strict_target_degrees: (40.2, 79.8),
+        cec_shards_resumed: true,
+        cec_resume_complete: false,
+        remaining_cec_checkpoint_shards: 1_233,
         product_gate_changed: false,
         research_staircase_unlocked: false,
         nxp80_unlocked: false,
@@ -266,9 +281,10 @@ pub fn current_n12_validation_gate_report() -> N12ValidationGateReport {
 
 pub fn n12_validation_gate_report_json(report: &N12ValidationGateReport) -> String {
     format!(
-        "{{\"schema_version\":1,\"taskbook_sha256\":\"b327b6afdf199abfaf1a77f4e403ef296e4f5bd2483d855b360c08152a10ae53\",\"research_only\":true,\"lifted_topology\":\"{}\",\"interior_topology\":\"{}\",\"lifted_geometry\":{},\"interior_geometry\":{},\"decision\":\"{}\",\"best_mixed_angle_degrees\":[{:.12},{:.12}],\"strict_target_degrees\":[{:.1},{:.1}],\"product_gate_changed\":{},\"research_staircase_unlocked\":{},\"nxp80_unlocked\":{}}}",
+        "{{\"schema_version\":2,\"taskbook_sha256\":\"65f26b64c78dd7dfadaaf2a1099f52d11c6a67461afb0a9558edbbf5941ef473\",\"research_only\":true,\"lifted_topology\":\"{}\",\"interior_topology\":\"{}\",\"interior_is_capacity_control\":{},\"lifted_geometry\":{},\"interior_geometry\":{},\"decision\":\"{}\",\"best_mixed_angle_degrees\":[{:.12},{:.12}],\"best_closed_topology_angle_degrees\":{},\"strict_target_degrees\":[{:.1},{:.1}],\"cec_shards_resumed\":{},\"cec_resume_complete\":{},\"remaining_cec_checkpoint_shards\":{},\"product_gate_changed\":{},\"research_staircase_unlocked\":{},\"nxp80_unlocked\":{}}}",
         report.lifted_topology.as_str(),
         report.interior_topology.as_str(),
+        report.interior_is_capacity_control,
         report
             .lifted_geometry
             .map_or_else(|| "null".into(), |value| json_string(value.as_str())),
@@ -278,8 +294,15 @@ pub fn n12_validation_gate_report_json(report: &N12ValidationGateReport) -> Stri
         report.decision.as_str(),
         report.best_mixed_angle_degrees.0,
         report.best_mixed_angle_degrees.1,
+        report.best_closed_topology_angle_degrees.map_or_else(
+            || "null".into(),
+            |(min, max)| format!("[{min:.12},{max:.12}]")
+        ),
         report.strict_target_degrees.0,
         report.strict_target_degrees.1,
+        report.cec_shards_resumed,
+        report.cec_resume_complete,
+        report.remaining_cec_checkpoint_shards,
         report.product_gate_changed,
         report.research_staircase_unlocked,
         report.nxp80_unlocked,
