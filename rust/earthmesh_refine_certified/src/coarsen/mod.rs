@@ -168,8 +168,11 @@ pub use face_band::{
     FaceBandSolveOutcome, LegacyFaceBandEnumeration,
 };
 pub use fair_pair_audit::{
-    audit_transition_cell_pairs, CellTopologyMergeSignature, FairPairAuditEvidence,
-    PairRejectReason, TopologyPairClass, TopologyPairKey, TopologyPairSignature,
+    audit_transition_cell_pairs, repair_support_preflight, AnchorRepairDepth,
+    AnchorRepairPortfolioEvidence, CellTopologyMergeSignature, FairPairAuditEvidence,
+    PairPermanentRejectReason, PairRejectReason, RepairSupportPreflight,
+    RepairSupportPreflightOutcome, RepairSupportRejectReason, TopologyPairClass,
+    TopologyPairClassV2, TopologyPairKey, TopologyPairSignature,
 };
 pub use frozen_n6_cec::{
     frozen_n6_cec_closure_report_json, run_frozen_n6_cec_closure, FrozenN6CecAttemptRecord,
@@ -248,14 +251,14 @@ pub use research_runner::{
     current_n12_validation_gate_report, decide_validation_gate, n12_cec_topology_probe_json,
     n12_legacy_baseline_json, n12_lifted_band_failure_audit_json,
     n12_lifted_downstream_reject_audit_json, n12_lifted_fair_pair_audit_json,
-    n12_lifted_plan_band_domain_audit_json, n12_lifted_transition_cell_v3_audit_json,
-    n12_lifted_v2_replay_json, n12_lifted_v3_find_one_json, n12_lifted_v3_prefix_replay_json,
-    n12_validation_gate_report_json, research_cec_topology_evidence_json,
-    research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
-    run_n12_lifted_v2_replay, N12ValidationGateReport, ResearchCecTopologyEvidence,
-    ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome,
-    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind, ResearchV3FindOneLimits,
-    ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
+    n12_lifted_plan_band_domain_audit_json, n12_lifted_r2_repair_support_audit_json,
+    n12_lifted_transition_cell_v3_audit_json, n12_lifted_v2_replay_json,
+    n12_lifted_v3_find_one_json, n12_lifted_v3_prefix_replay_json, n12_validation_gate_report_json,
+    research_cec_topology_evidence_json, research_legacy_evidence_json, run_n12_cec_topology_probe,
+    run_n12_legacy_baseline, run_n12_lifted_v2_replay, N12ValidationGateReport,
+    ResearchCecTopologyEvidence, ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind,
+    ResearchGeometryOutcome, ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
+    ResearchV3FindOneLimits, ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,
