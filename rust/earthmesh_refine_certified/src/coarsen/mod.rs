@@ -38,6 +38,7 @@ mod research_runner;
 mod retained_core;
 mod rotation_width_audit;
 mod scheduler;
+mod sdce_gipc;
 mod sdce_incidence;
 mod sector_recovery;
 mod stratified_annulus;
@@ -254,14 +255,14 @@ pub use research_runner::{
     n12_legacy_baseline_json, n12_lifted_band_failure_audit_json,
     n12_lifted_downstream_reject_audit_json, n12_lifted_fair_pair_audit_json,
     n12_lifted_plan_band_domain_audit_json, n12_lifted_r2_repair_support_audit_json,
-    n12_lifted_sdce_incidence_contract_audit_json, n12_lifted_transition_cell_v3_audit_json,
-    n12_lifted_v2_replay_json, n12_lifted_v3_find_one_json, n12_lifted_v3_prefix_replay_json,
-    n12_validation_gate_report_json, research_cec_topology_evidence_json,
-    research_legacy_evidence_json, run_n12_cec_topology_probe, run_n12_legacy_baseline,
-    run_n12_lifted_v2_replay, N12ValidationGateReport, ResearchCecTopologyEvidence,
-    ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind, ResearchGeometryOutcome,
-    ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind, ResearchV3FindOneLimits,
-    ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
+    n12_lifted_sdce_gipc_audit_json, n12_lifted_sdce_incidence_contract_audit_json,
+    n12_lifted_transition_cell_v3_audit_json, n12_lifted_v2_replay_json,
+    n12_lifted_v3_find_one_json, n12_lifted_v3_prefix_replay_json, n12_validation_gate_report_json,
+    research_cec_topology_evidence_json, research_legacy_evidence_json, run_n12_cec_topology_probe,
+    run_n12_legacy_baseline, run_n12_lifted_v2_replay, N12ValidationGateReport,
+    ResearchCecTopologyEvidence, ResearchCecTopologyLimits, ResearchCecTopologyOutcomeKind,
+    ResearchGeometryOutcome, ResearchLegacyEvidence, ResearchLegacyLimits, ResearchN12OutcomeKind,
+    ResearchV3FindOneLimits, ValidationGateGovernanceDecision, ValidationGovernanceDecisionV2,
 };
 pub use retained_core::{
     plan_retained_core_subsets, remaining_connected_retained_core_candidates,
@@ -282,6 +283,11 @@ pub use rotation_width_audit::{
 pub use scheduler::{
     run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport,
+};
+pub use sdce_gipc::{
+    solve_global_incidence_plan, GlobalIncidencePlan, GlobalIncidencePlanKey,
+    IncidencePlanCheckpoint, IncidencePlanEvidence, IncidencePlanOutcome, IncidencePlanOutcomeKind,
+    IncidencePlanPartialState, IncidencePlanSearchConfig,
 };
 pub use sdce_incidence::{
     build_fixed_final_topology_context, build_global_incidence_contract, FixedFinalTopologyContext,
