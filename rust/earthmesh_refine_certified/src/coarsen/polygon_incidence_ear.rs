@@ -198,6 +198,13 @@ pub fn solve_polygon_incidence_witness(
     }
 }
 
+pub fn enumerate_polygon_incidence_witnesses(
+    target: &OccurrenceIncidenceTarget,
+) -> Result<(Vec<OccurrenceTriangulation>, PolygonIncidenceEvidence), String> {
+    let (witnesses, evidence) = enumerate_all(target)?;
+    Ok((witnesses.into_iter().collect(), evidence))
+}
+
 pub fn pier_small_exact_oracle_json() -> Result<String, String> {
     let mut fixtures = Vec::new();
     let mut all_equal = true;
@@ -729,7 +736,7 @@ fn is_cyclic_subsequence(
     true
 }
 
-fn occurrence_triangle_indices(
+pub(crate) fn occurrence_triangle_indices(
     cut: &CutAnnulusPolygon,
     witness: &OccurrenceTriangulation,
 ) -> Result<Vec<[usize; 3]>, String> {
