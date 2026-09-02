@@ -1,9 +1,10 @@
 //! Research-only runners. They never produce a product mesh or gate decision.
 
 use super::{
-    analyze_stratified_annular_degree_reachability, audit_face_band_boundaries,
-    audit_legacy_downstream_preflight, audit_transition_cell_pairs, build_essential_cycle_problem,
-    build_face_band_problem, build_plan_band_domains, build_stratified_transition_domain_v3,
+    analyze_stratified_annular_degree_reachability, annular_reachability_storage_audit,
+    audit_face_band_boundaries, audit_legacy_downstream_preflight, audit_transition_cell_pairs,
+    build_essential_cycle_problem, build_face_band_problem, build_global_incidence_contract,
+    build_plan_band_domains, build_stratified_transition_domain_v3,
     enumerate_balanced_annular_strips, face_band_evidence_json, find_one_essential_cycle,
     n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
     solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
@@ -15,10 +16,10 @@ use super::{
     EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
     FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
     FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
-    FullPolygonMergeTrial, FullPolygonPlanEvaluator, PlanBandTopologyKind, PlanEvaluation,
-    RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId, TopologyPairClass,
-    TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
-    TransitionCellMergeOutcome, TransitionCellMergeTrial,
+    FullPolygonMergeTrial, FullPolygonPlanEvaluator, GlobalIncidenceContractError,
+    PlanBandTopologyKind, PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary,
+    TopologyFamilyId, TopologyPairClass, TransitionCellDomain, TransitionCellFamily,
+    TransitionCellMergeLimits, TransitionCellMergeOutcome, TransitionCellMergeTrial,
 };
 use crate::certificate::Certificate;
 use std::collections::BTreeMap;
@@ -788,6 +789,115 @@ pub fn n12_lifted_transition_cell_v3_audit_json(
             .map_or_else(|| "null".into(), |count| count.to_string()),
         errors,
         gate_passed,
+    ))
+}
+
+pub fn n12_lifted_sdce_incidence_contract_audit_json(
+    limits: ResearchCecTopologyLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = SdceContractAuditingEvaluator::new(&fixture.source, &fixture.component);
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let gate_passed = evaluator.cycles_observed == evidence.essential_cycles
+        && evaluator.domains_built == evidence.essential_cycles
+        && evaluator.contracts_built == evidence.essential_cycles
+        && evaluator.empty_vertex_domains == 0
+        && evaluator.invalid_cell_sums == 0
+        && evaluator.errors.is_empty();
+    let errors = evaluator
+        .errors
+        .iter()
+        .map(|(error, count)| format!("{}:{count}", json_string(error)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let charges = evaluator
+        .transition_charges
+        .iter()
+        .map(|(charge, count)| format!("{}:{count}", json_string(&charge.to_string())))
+        .collect::<Vec<_>>()
+        .join(",");
+    let defect_roles = evaluator
+        .defect_roles
+        .iter()
+        .map(|(slot, audit)| {
+            let fixed_degrees = audit
+                .fixed_degrees
+                .iter()
+                .map(|(degree, count)| format!("{}:{count}", json_string(&degree.to_string())))
+                .collect::<Vec<_>>()
+                .join(",");
+            let owner_counts = audit
+                .owner_counts
+                .iter()
+                .map(|(owners, count)| format!("{}:{count}", json_string(&owners.to_string())))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{}:{{\"cycles_present\":{},\"fixed_degrees\":{{{}}},\"owner_counts\":{{{}}},\"tuple_count_min\":{},\"tuple_count_max\":{},\"anchor_kind\":\"Ordinary\"}}",
+                json_string(&slot.to_string()),
+                audit.cycles_present,
+                fixed_degrees,
+                owner_counts,
+                audit.tuple_count_min.unwrap_or(0),
+                audit.tuple_count_max,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let storage = annular_reachability_storage_audit();
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"65f26b64c78dd7dfadaaf2a1099f52d11c6a67461afb0a9558edbbf5941ef473\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+SdceIncidenceContractOnly\",\"limits\":{{\"cycle_unique_states\":{},\"concrete_topology_states\":0}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_observed\":{},\"domains_built\":{},\"contracts_built\":{},\"contract_vertices\":{},\"contract_owner_tuples\":{},\"empty_vertex_domains\":{},\"invalid_cell_sums\":{},\"transition_charge_histogram\":{{{}}},\"pr111_defect_vertex_roles\":{{{}}},\"reachability_storage\":{{\"incidence_signatures\":{},\"link_path_signatures\":{},\"member_counts\":{},\"concrete_witnesses\":{},\"backpointers\":{},\"necessary_relaxation_only\":{}}},\"errors\":{{{}}},\"all_vertex_domains_nonempty\":{},\"adapter_mismatch\":{},\"gate_passed\":{},\"go_no_go\":\"{}\",\"concrete_topology_search_run\":false,\"geometry_attempted\":false,\"remaining_cec_shards\":49,\"cec_shards_resumed\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_observed,
+        evaluator.domains_built,
+        evaluator.contracts_built,
+        evaluator.contract_vertices,
+        evaluator.contract_owner_tuples,
+        evaluator.empty_vertex_domains,
+        evaluator.invalid_cell_sums,
+        charges,
+        defect_roles,
+        storage.stores_incidence_signatures,
+        storage.stores_link_path_signatures,
+        storage.stores_member_counts,
+        storage.stores_concrete_witnesses,
+        storage.stores_backpointers,
+        storage.necessary_relaxation_only,
+        errors,
+        evaluator.empty_vertex_domains == 0,
+        evaluator.adapter_mismatches,
+        gate_passed,
+        if gate_passed {
+            "GoGlobalIncidencePlanCsp"
+        } else {
+            "StopFixIncidenceContract"
+        },
     ))
 }
 
@@ -1773,6 +1883,120 @@ impl FaceBandPlanEvaluator for V3DomainAuditingEvaluator<'_> {
                 }
             }
             Err(error) => *self.errors.entry(format!("{error:?}")).or_default() += 1,
+        }
+    }
+
+    fn evaluate(&mut self, _: &FaceBandPlan) -> PlanEvaluation {
+        PlanEvaluation::AuditOnly
+    }
+}
+
+#[derive(Debug, Default)]
+struct DefectVertexRoleAudit {
+    cycles_present: u64,
+    fixed_degrees: BTreeMap<u8, u64>,
+    owner_counts: BTreeMap<usize, u64>,
+    tuple_count_min: Option<usize>,
+    tuple_count_max: usize,
+}
+
+struct SdceContractAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    cycles_observed: u64,
+    domains_built: u64,
+    contracts_built: u64,
+    contract_vertices: u64,
+    contract_owner_tuples: u64,
+    empty_vertex_domains: u64,
+    invalid_cell_sums: u64,
+    adapter_mismatches: u64,
+    transition_charges: BTreeMap<i16, u64>,
+    defect_roles: BTreeMap<usize, DefectVertexRoleAudit>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl<'a> SdceContractAuditingEvaluator<'a> {
+    fn new(source: &'a crate::MotherGrid, component: &'a super::HierarchyComponent) -> Self {
+        Self {
+            source,
+            component,
+            cycles_observed: 0,
+            domains_built: 0,
+            contracts_built: 0,
+            contract_vertices: 0,
+            contract_owner_tuples: 0,
+            empty_vertex_domains: 0,
+            invalid_cell_sums: 0,
+            adapter_mismatches: 0,
+            transition_charges: BTreeMap::new(),
+            defect_roles: [48, 52, 78, 252, 256, 343]
+                .into_iter()
+                .map(|slot| (slot, DefectVertexRoleAudit::default()))
+                .collect(),
+            errors: BTreeMap::new(),
+        }
+    }
+}
+
+impl FaceBandPlanEvaluator for SdceContractAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, _: &EssentialCycleKey, plan: &FaceBandPlan) {
+        self.cycles_observed += 1;
+        let domain = match build_stratified_transition_domain_v3(self.source, self.component, plan)
+        {
+            Ok(domain) => {
+                self.domains_built += 1;
+                domain
+            }
+            Err(error) => {
+                *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                return;
+            }
+        };
+        let contract = match build_global_incidence_contract(self.source, self.component, &domain) {
+            Ok(contract) => contract,
+            Err(error) => {
+                if matches!(error, GlobalIncidenceContractError::AdapterMismatch { .. }) {
+                    self.adapter_mismatches += 1;
+                }
+                *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                return;
+            }
+        };
+        self.contracts_built += 1;
+        self.contract_vertices += contract.vertex_domains.len() as u64;
+        self.contract_owner_tuples += contract
+            .vertex_domains
+            .values()
+            .map(|domain| domain.allowed_owner_tuples.len() as u64)
+            .sum::<u64>();
+        self.empty_vertex_domains += contract
+            .vertex_domains
+            .values()
+            .filter(|domain| domain.allowed_owner_tuples.is_empty())
+            .count() as u64;
+        self.invalid_cell_sums += contract
+            .cell_ids
+            .iter()
+            .filter(|cell| {
+                contract.cell_incidence_sums[*cell] != 3 * contract.cell_triangle_counts[*cell]
+            })
+            .count() as u64;
+        *self
+            .transition_charges
+            .entry(contract.target_transition_charge)
+            .or_default() += 1;
+        for (&slot, audit) in &mut self.defect_roles {
+            let Some(vertex) = contract.vertex_domains.get(&slot) else {
+                continue;
+            };
+            audit.cycles_present += 1;
+            *audit.fixed_degrees.entry(vertex.fixed_degree).or_default() += 1;
+            *audit.owner_counts.entry(vertex.owners.len()).or_default() += 1;
+            let tuples = vertex.allowed_owner_tuples.len();
+            audit.tuple_count_min =
+                Some(audit.tuple_count_min.map_or(tuples, |old| old.min(tuples)));
+            audit.tuple_count_max = audit.tuple_count_max.max(tuples);
         }
     }
 
