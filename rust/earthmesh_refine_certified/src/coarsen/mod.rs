@@ -2,6 +2,7 @@ mod anchor_ear;
 mod angle_atlas;
 mod annular_enumerator;
 mod annular_reachability;
+mod annular_target_witness;
 mod annulus;
 mod band_boundary_audit;
 mod band_cycle_planner;
@@ -72,6 +73,11 @@ pub use annular_reachability::{
     AnnularReachabilityEvidence, AnnularReachabilityLimits, AnnularReachabilityOutcome,
     AnnularReachabilityStorageAudit, AnnularSignatureSearchStatus, AnnularTopologySignature,
     LinkPathSignature,
+};
+pub use annular_target_witness::{
+    enumerate_annular_incidence_targets, recover_annular_target_witnesses, AnnularConcreteWitness,
+    AnnularIncidenceTarget, AnnularIncidenceTargetKey, AnnularTargetProblemKey,
+    AnnularTargetWitnessEvidence, AnnularTargetWitnessOutcome,
 };
 pub use annulus::{
     extract_coupled_annulus, AnnulusExtractionError, BoundaryIncidenceContract, CoupledAnnulus,
@@ -233,10 +239,11 @@ pub use plan_band_domain::{
     TopologyBoundary,
 };
 pub use polygon_incidence_ear::{
-    pier_small_exact_oracle_json, solve_polygon_incidence_witness, OccurrenceIncidenceTarget,
-    OccurrenceIncidenceTargetKey, OccurrenceTriangulation, PolygonIncidenceCheckpoint,
-    PolygonIncidenceEvidence, PolygonIncidenceOutcomeKind, PolygonIncidenceState,
-    PolygonIncidenceStateKey, PolygonIncidenceWitnessOutcome,
+    enumerate_polygon_incidence_witnesses, pier_small_exact_oracle_json,
+    solve_polygon_incidence_witness, OccurrenceIncidenceTarget, OccurrenceIncidenceTargetKey,
+    OccurrenceTriangulation, PolygonIncidenceCheckpoint, PolygonIncidenceEvidence,
+    PolygonIncidenceOutcomeKind, PolygonIncidenceState, PolygonIncidenceStateKey,
+    PolygonIncidenceWitnessOutcome,
 };
 pub use problem_identity::{
     essential_cycle_problem_key, face_band_problem_identity_report_json,
