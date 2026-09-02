@@ -55,6 +55,93 @@ pub enum TopologyPairClass {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnchorRepairDepth {
+    R2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PairPermanentRejectReason {
+    DuplicateTriangle,
+    AnchorBelowTarget {
+        anchor: usize,
+        degree: usize,
+    },
+    UnaffectedOrdinaryDegree {
+        vertex: usize,
+        degree: usize,
+    },
+    UnaffectedLinkNotSingleCycle {
+        vertex: usize,
+    },
+    AffectedDegreeCapacity {
+        after_ears: usize,
+        lower: usize,
+        upper: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopologyPairClassV2 {
+    DirectNoEarCandidate,
+    RepairDepthR2Candidate {
+        total_required_ears: u8,
+    },
+    OutsideRepairDepthR2 {
+        required_ears_per_anchor: BTreeMap<usize, u8>,
+    },
+    ExactImpossibleForAllEarDepths {
+        reason: PairPermanentRejectReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RepairSupportRejectReason {
+    DuplicateTriangle,
+    AnchorBelowTarget {
+        anchor: usize,
+        degree: usize,
+    },
+    UnaffectedOrdinaryDegree {
+        vertex: usize,
+        degree: usize,
+    },
+    UnaffectedLinkNotSingleCycle {
+        vertex: usize,
+    },
+    AffectedDegreeCapacity {
+        after_ears: usize,
+        lower: usize,
+        upper: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepairSupportPreflightOutcome {
+    Proceed,
+    ExactReject {
+        reason: RepairSupportRejectReason,
+    },
+    OutsideRegisteredRepairDepth {
+        required_per_anchor: BTreeMap<usize, u8>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairSupportPreflight {
+    pub pair_key: TopologyPairKey,
+    pub anchor_degrees: BTreeMap<usize, u8>,
+    pub required_ears: BTreeMap<usize, u8>,
+    pub total_required_ears: u8,
+    pub potential_ear_vertices: BTreeSet<usize>,
+    pub unaffected_ordinary_defects: Vec<(usize, usize)>,
+    pub affected_degree_sum: usize,
+    pub affected_degree_lower_capacity: usize,
+    pub affected_degree_upper_capacity: usize,
+    pub repair_depth: AnchorRepairDepth,
+    pub outcome: RepairSupportPreflightOutcome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyPairSignature {
     pub pair_key: TopologyPairKey,
@@ -64,6 +151,25 @@ pub struct TopologyPairSignature {
     pub unmatched_edge_count: usize,
     pub nonrepairable_link_count: usize,
     pub pair_class: TopologyPairClass,
+    pub pair_class_v2: TopologyPairClassV2,
+    pub repair_support_preflight: RepairSupportPreflight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnchorRepairPortfolioEvidence {
+    pub pair_total: usize,
+    pub direct_no_ear_candidates: usize,
+    pub permanent_impossible: usize,
+    pub outside_r2: usize,
+    pub r2_anchor_necessary_candidates: usize,
+    pub r2_preflight_passed: usize,
+    pub unaffected_degree_rejects: usize,
+    pub total_capacity_rejects: usize,
+    pub fixed_link_rejects: usize,
+    pub k_tiers: BTreeMap<u8, usize>,
+    pub preflight_passed_by_k: BTreeMap<u8, usize>,
+    pub preflight_rejected_by_k: BTreeMap<u8, usize>,
+    pub permanent_reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -83,6 +189,7 @@ pub struct FairPairAuditEvidence {
     pub best_ranked_pair: Option<TopologyPairSignature>,
     pub first_pair_ear_outcome: Option<String>,
     pub first_pair_ear_telemetry: Option<AnchorEarSearchTelemetry>,
+    pub anchor_repair_portfolio: AnchorRepairPortfolioEvidence,
 }
 
 pub fn audit_transition_cell_pairs(
@@ -161,6 +268,10 @@ pub fn audit_transition_cell_pairs(
     let mut evidence = FairPairAuditEvidence {
         cell_family_counts,
         total_pair_product,
+        anchor_repair_portfolio: AnchorRepairPortfolioEvidence {
+            pair_total: total_pair_product,
+            ..AnchorRepairPortfolioEvidence::default()
+        },
         ..FairPairAuditEvidence::default()
     };
     let mut first_score = None;
@@ -186,6 +297,11 @@ pub fn audit_transition_cell_pairs(
                 TopologyPairClass::NoEarFinalGateCandidate => {
                     evidence.zero_ear_pairs += 1;
                     zero_ear_candidates.push((lower_index, upper_index));
+                    record_preflight(
+                        &mut evidence.anchor_repair_portfolio,
+                        fast_repair_support_preflight(lower, upper, &contracts, &anchors, 0),
+                        None,
+                    );
                 }
                 TopologyPairClass::EarRepairCandidate {
                     total_required_ears,
@@ -196,10 +312,47 @@ pub fn audit_transition_cell_pairs(
                         .low_ear_pairs
                         .entry(*total_required_ears)
                         .or_default() += 1;
+                    evidence
+                        .anchor_repair_portfolio
+                        .r2_anchor_necessary_candidates += 1;
+                    *evidence
+                        .anchor_repair_portfolio
+                        .k_tiers
+                        .entry(*total_required_ears)
+                        .or_default() += 1;
+                    record_preflight(
+                        &mut evidence.anchor_repair_portfolio,
+                        fast_repair_support_preflight(
+                            lower,
+                            upper,
+                            &contracts,
+                            &anchors,
+                            *total_required_ears,
+                        ),
+                        Some(*total_required_ears),
+                    );
                 }
                 TopologyPairClass::ImpossibleBeforeEar { reason } => {
                     evidence.impossible_pairs += 1;
                     *impossible_reasons.entry(reason.clone()).or_default() += 1;
+                    match reason {
+                        PairRejectReason::AnchorAboveRepairRange { .. } => {
+                            evidence.anchor_repair_portfolio.outside_r2 += 1;
+                        }
+                        PairRejectReason::DuplicateTriangle => record_permanent_reject(
+                            &mut evidence.anchor_repair_portfolio,
+                            PairPermanentRejectReason::DuplicateTriangle,
+                        ),
+                        PairRejectReason::AnchorBelowRepairRange { anchor, degree } => {
+                            record_permanent_reject(
+                                &mut evidence.anchor_repair_portfolio,
+                                PairPermanentRejectReason::AnchorBelowTarget {
+                                    anchor: *anchor,
+                                    degree: *degree,
+                                },
+                            );
+                        }
+                    }
                 }
                 TopologyPairClass::DirectlyClosedWithoutEar => unreachable!(),
             }
@@ -331,7 +484,7 @@ fn cell_signature(
                 .collect::<Vec<_>>();
             (!triangles.is_empty()).then_some((*anchor, triangles))
         })
-        .collect();
+        .collect::<BTreeMap<_, _>>();
     CellTopologyMergeSignature {
         cell_id: topology.cell_id,
         topology_key: topology.topology_key.clone(),
@@ -403,6 +556,302 @@ fn classify_pair(
     }
 }
 
+pub fn repair_support_preflight(
+    lower: &CellTopologyMergeSignature,
+    upper: &CellTopologyMergeSignature,
+    contracts: &BTreeMap<usize, super::VertexLinkContract>,
+    anchors: &BTreeSet<usize>,
+    duplicate_triangle: bool,
+) -> RepairSupportPreflight {
+    let mut anchor_degrees = BTreeMap::new();
+    let mut required_ears = BTreeMap::new();
+    let mut outcome = duplicate_triangle.then_some(RepairSupportPreflightOutcome::ExactReject {
+        reason: RepairSupportRejectReason::DuplicateTriangle,
+    });
+    for &anchor in anchors {
+        let contract = &contracts[&anchor];
+        let degree = union_link_count(
+            &contract.fixed_link_edges,
+            lower.vertex_link_edges.get(&anchor),
+            upper.vertex_link_edges.get(&anchor),
+        );
+        anchor_degrees.insert(anchor, u8::try_from(degree).unwrap_or(u8::MAX));
+        if degree < usize::from(contract.target_degree_min) {
+            outcome.get_or_insert(RepairSupportPreflightOutcome::ExactReject {
+                reason: RepairSupportRejectReason::AnchorBelowTarget { anchor, degree },
+            });
+        }
+        let required = degree.saturating_sub(usize::from(contract.target_degree_max));
+        if required > 0 {
+            required_ears.insert(anchor, u8::try_from(required).unwrap_or(u8::MAX));
+        }
+    }
+    let total_required_ears = required_ears
+        .values()
+        .copied()
+        .fold(0_u8, u8::saturating_add);
+    if outcome.is_none() && required_ears.values().any(|&required| required > 2) {
+        outcome = Some(
+            RepairSupportPreflightOutcome::OutsideRegisteredRepairDepth {
+                required_per_anchor: required_ears.clone(),
+            },
+        );
+    }
+    let potential_ear_vertices = required_ears
+        .keys()
+        .flat_map(|anchor| {
+            lower
+                .anchor_star_triangles
+                .get(anchor)
+                .into_iter()
+                .chain(upper.anchor_star_triangles.get(anchor))
+                .flat_map(|triangles| triangles.iter())
+        })
+        .flat_map(|triangle| triangle.iter().copied())
+        .filter(|vertex| !anchors.contains(vertex))
+        .collect::<BTreeSet<_>>();
+    let mut unaffected_ordinary_defects = Vec::new();
+    let mut affected_degree_sum = 0;
+    let mut affected_vertices = 0;
+    if outcome.is_none() {
+        for (&vertex, contract) in contracts {
+            if anchors.contains(&vertex) {
+                continue;
+            }
+            let degree = union_link_count(
+                &contract.fixed_link_edges,
+                lower.vertex_link_edges.get(&vertex),
+                upper.vertex_link_edges.get(&vertex),
+            );
+            // Contracts also cover dormant domain slots; absent vertices are not final defects.
+            if degree == 0 {
+                continue;
+            }
+            if potential_ear_vertices.contains(&vertex) {
+                affected_vertices += 1;
+                affected_degree_sum += degree;
+            } else if !(5..=7).contains(&degree) {
+                unaffected_ordinary_defects.push((vertex, degree));
+                outcome.get_or_insert(RepairSupportPreflightOutcome::ExactReject {
+                    reason: RepairSupportRejectReason::UnaffectedOrdinaryDegree { vertex, degree },
+                });
+            } else if !union_link_is_single_cycle(
+                &contract.fixed_link_edges,
+                lower.vertex_link_edges.get(&vertex),
+                upper.vertex_link_edges.get(&vertex),
+            ) {
+                outcome.get_or_insert(RepairSupportPreflightOutcome::ExactReject {
+                    reason: RepairSupportRejectReason::UnaffectedLinkNotSingleCycle { vertex },
+                });
+            }
+        }
+    }
+    let affected_degree_lower_capacity = affected_vertices * 5;
+    let affected_degree_upper_capacity = affected_vertices * 7;
+    // Every anchor ear adds exactly one to the ordinary degree sum on this support.
+    let after_ears = affected_degree_sum + usize::from(total_required_ears);
+    if outcome.is_none()
+        && !(affected_degree_lower_capacity..=affected_degree_upper_capacity).contains(&after_ears)
+    {
+        outcome = Some(RepairSupportPreflightOutcome::ExactReject {
+            reason: RepairSupportRejectReason::AffectedDegreeCapacity {
+                after_ears,
+                lower: affected_degree_lower_capacity,
+                upper: affected_degree_upper_capacity,
+            },
+        });
+    }
+    RepairSupportPreflight {
+        pair_key: TopologyPairKey {
+            lower_topology: lower.topology_key.clone(),
+            upper_topology: upper.topology_key.clone(),
+        },
+        anchor_degrees,
+        required_ears,
+        total_required_ears,
+        potential_ear_vertices,
+        unaffected_ordinary_defects,
+        affected_degree_sum,
+        affected_degree_lower_capacity,
+        affected_degree_upper_capacity,
+        repair_depth: AnchorRepairDepth::R2,
+        outcome: outcome.unwrap_or(RepairSupportPreflightOutcome::Proceed),
+    }
+}
+
+fn fast_repair_support_preflight(
+    lower: &CellTopologyMergeSignature,
+    upper: &CellTopologyMergeSignature,
+    contracts: &BTreeMap<usize, super::VertexLinkContract>,
+    anchors: &BTreeSet<usize>,
+    total_required_ears: u8,
+) -> Result<(), RepairSupportRejectReason> {
+    // Registered domains have four anchors; larger domains retain exactness via the slow path.
+    let mut active_anchors = [0; 64];
+    let mut active_anchor_count = 0;
+    let mut active_anchor_overflow = false;
+    for &anchor in anchors {
+        if anchor_is_overfull(anchor, lower, upper, contracts) {
+            if active_anchor_count < active_anchors.len() {
+                active_anchors[active_anchor_count] = anchor;
+                active_anchor_count += 1;
+            } else {
+                active_anchor_overflow = true;
+            }
+        }
+    }
+    let mut affected_degree_sum = 0;
+    let mut affected_vertices = 0;
+    for (&vertex, contract) in contracts {
+        if anchors.contains(&vertex) {
+            continue;
+        }
+        let degree = union_link_count(
+            &contract.fixed_link_edges,
+            lower.vertex_link_edges.get(&vertex),
+            upper.vertex_link_edges.get(&vertex),
+        );
+        if degree == 0 {
+            continue;
+        }
+        let affected = if active_anchor_overflow {
+            anchors.iter().copied().any(|anchor| {
+                anchor_is_overfull(anchor, lower, upper, contracts)
+                    && anchor_star_contains(vertex, anchor, lower, upper)
+            })
+        } else {
+            active_anchors[..active_anchor_count]
+                .iter()
+                .copied()
+                .any(|anchor| anchor_star_contains(vertex, anchor, lower, upper))
+        };
+        if affected {
+            affected_vertices += 1;
+            affected_degree_sum += degree;
+        } else if !(5..=7).contains(&degree) {
+            return Err(RepairSupportRejectReason::UnaffectedOrdinaryDegree { vertex, degree });
+        } else if !union_link_is_single_cycle(
+            &contract.fixed_link_edges,
+            lower.vertex_link_edges.get(&vertex),
+            upper.vertex_link_edges.get(&vertex),
+        ) {
+            return Err(RepairSupportRejectReason::UnaffectedLinkNotSingleCycle { vertex });
+        }
+    }
+    let lower_capacity = affected_vertices * 5;
+    let upper_capacity = affected_vertices * 7;
+    let after_ears = affected_degree_sum + usize::from(total_required_ears);
+    if !(lower_capacity..=upper_capacity).contains(&after_ears) {
+        return Err(RepairSupportRejectReason::AffectedDegreeCapacity {
+            after_ears,
+            lower: lower_capacity,
+            upper: upper_capacity,
+        });
+    }
+    Ok(())
+}
+
+fn anchor_is_overfull(
+    anchor: usize,
+    lower: &CellTopologyMergeSignature,
+    upper: &CellTopologyMergeSignature,
+    contracts: &BTreeMap<usize, super::VertexLinkContract>,
+) -> bool {
+    let contract = &contracts[&anchor];
+    union_link_count(
+        &contract.fixed_link_edges,
+        lower.vertex_link_edges.get(&anchor),
+        upper.vertex_link_edges.get(&anchor),
+    ) > usize::from(contract.target_degree_max)
+}
+
+fn anchor_star_contains(
+    vertex: usize,
+    anchor: usize,
+    lower: &CellTopologyMergeSignature,
+    upper: &CellTopologyMergeSignature,
+) -> bool {
+    lower
+        .anchor_star_triangles
+        .get(&anchor)
+        .into_iter()
+        .chain(upper.anchor_star_triangles.get(&anchor))
+        .flatten()
+        .any(|triangle| triangle.contains(&vertex))
+}
+
+fn record_preflight(
+    evidence: &mut AnchorRepairPortfolioEvidence,
+    outcome: Result<(), RepairSupportRejectReason>,
+    ear_tier: Option<u8>,
+) {
+    match outcome {
+        Ok(()) => match ear_tier {
+            Some(ears) => {
+                evidence.r2_preflight_passed += 1;
+                *evidence.preflight_passed_by_k.entry(ears).or_default() += 1;
+            }
+            None => evidence.direct_no_ear_candidates += 1,
+        },
+        Err(reason) => {
+            if let Some(ears) = ear_tier {
+                *evidence.preflight_rejected_by_k.entry(ears).or_default() += 1;
+            }
+            match reason {
+                RepairSupportRejectReason::UnaffectedOrdinaryDegree { .. } => {
+                    evidence.unaffected_degree_rejects += 1;
+                }
+                RepairSupportRejectReason::UnaffectedLinkNotSingleCycle { .. } => {
+                    evidence.fixed_link_rejects += 1;
+                }
+                RepairSupportRejectReason::AffectedDegreeCapacity { .. } => {
+                    evidence.total_capacity_rejects += 1;
+                }
+                RepairSupportRejectReason::DuplicateTriangle
+                | RepairSupportRejectReason::AnchorBelowTarget { .. } => {}
+            }
+            record_permanent_reject(evidence, permanent_reason(reason));
+        }
+    }
+}
+
+fn record_permanent_reject(
+    evidence: &mut AnchorRepairPortfolioEvidence,
+    reason: PairPermanentRejectReason,
+) {
+    evidence.permanent_impossible += 1;
+    *evidence
+        .permanent_reasons
+        .entry(format!("{reason:?}"))
+        .or_default() += 1;
+}
+
+fn permanent_reason(reason: RepairSupportRejectReason) -> PairPermanentRejectReason {
+    match reason {
+        RepairSupportRejectReason::DuplicateTriangle => {
+            PairPermanentRejectReason::DuplicateTriangle
+        }
+        RepairSupportRejectReason::AnchorBelowTarget { anchor, degree } => {
+            PairPermanentRejectReason::AnchorBelowTarget { anchor, degree }
+        }
+        RepairSupportRejectReason::UnaffectedOrdinaryDegree { vertex, degree } => {
+            PairPermanentRejectReason::UnaffectedOrdinaryDegree { vertex, degree }
+        }
+        RepairSupportRejectReason::UnaffectedLinkNotSingleCycle { vertex } => {
+            PairPermanentRejectReason::UnaffectedLinkNotSingleCycle { vertex }
+        }
+        RepairSupportRejectReason::AffectedDegreeCapacity {
+            after_ears,
+            lower,
+            upper,
+        } => PairPermanentRejectReason::AffectedDegreeCapacity {
+            after_ears,
+            lower,
+            upper,
+        },
+    }
+}
+
 fn detailed_pair_signature(
     fixed: &[[usize; 3]],
     contracts: &BTreeMap<usize, super::VertexLinkContract>,
@@ -412,6 +861,9 @@ fn detailed_pair_signature(
 ) -> TopologyPairSignature {
     let lower_signature = cell_signature(lower, anchors);
     let upper_signature = cell_signature(upper, anchors);
+    let duplicate_triangle = has_fixed_duplicate(fixed, &lower_signature)
+        || has_fixed_duplicate(fixed, &upper_signature)
+        || has_duplicate_triangle_pair(&lower_signature, &upper_signature);
     let mut anchor_degrees = BTreeMap::new();
     let mut required_ears = BTreeMap::new();
     let pair_class = classify_pair(
@@ -419,9 +871,7 @@ fn detailed_pair_signature(
         &upper_signature,
         contracts,
         anchors,
-        has_fixed_duplicate(fixed, &lower_signature)
-            || has_fixed_duplicate(fixed, &upper_signature)
-            || has_duplicate_triangle_pair(&lower_signature, &upper_signature),
+        duplicate_triangle,
         |anchor, degree| {
             let degree = u8::try_from(degree).unwrap_or(u8::MAX);
             anchor_degrees.insert(anchor, degree);
@@ -431,6 +881,14 @@ fn detailed_pair_signature(
             }
         },
     );
+    let repair_support_preflight = repair_support_preflight(
+        &lower_signature,
+        &upper_signature,
+        contracts,
+        anchors,
+        duplicate_triangle,
+    );
+    let pair_class_v2 = pair_class_v2(&repair_support_preflight);
     let mut triangles = fixed.to_vec();
     triangles.extend(pair_triangles(lower, upper));
     let degrees = vertex_degrees(&triangles);
@@ -457,6 +915,29 @@ fn detailed_pair_signature(
         unmatched_edge_count,
         nonrepairable_link_count,
         pair_class,
+        pair_class_v2,
+        repair_support_preflight,
+    }
+}
+
+fn pair_class_v2(preflight: &RepairSupportPreflight) -> TopologyPairClassV2 {
+    match &preflight.outcome {
+        RepairSupportPreflightOutcome::Proceed if preflight.total_required_ears == 0 => {
+            TopologyPairClassV2::DirectNoEarCandidate
+        }
+        RepairSupportPreflightOutcome::Proceed => TopologyPairClassV2::RepairDepthR2Candidate {
+            total_required_ears: preflight.total_required_ears,
+        },
+        RepairSupportPreflightOutcome::OutsideRegisteredRepairDepth {
+            required_per_anchor,
+        } => TopologyPairClassV2::OutsideRepairDepthR2 {
+            required_ears_per_anchor: required_per_anchor.clone(),
+        },
+        RepairSupportPreflightOutcome::ExactReject { reason } => {
+            TopologyPairClassV2::ExactImpossibleForAllEarDepths {
+                reason: permanent_reason(reason.clone()),
+            }
+        }
     }
 }
 
@@ -485,17 +966,15 @@ fn union_link_count(
     let mut lower = lower.into_iter().flat_map(BTreeSet::iter).peekable();
     let mut upper = upper.into_iter().flat_map(BTreeSet::iter).peekable();
     let mut count = 0;
-    loop {
-        let Some(next) = [
-            fixed.peek().map(|&&edge| edge),
-            lower.peek().map(|&&edge| edge),
-            upper.peek().map(|&&edge| edge),
-        ]
-        .into_iter()
-        .flatten()
-        .min() else {
-            return count;
-        };
+    while let Some(next) = [
+        fixed.peek().map(|&&edge| edge),
+        lower.peek().map(|&&edge| edge),
+        upper.peek().map(|&&edge| edge),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
         count += 1;
         if fixed.peek().is_some_and(|&&edge| edge == next) {
             fixed.next();
@@ -505,6 +984,92 @@ fn union_link_count(
         }
         if upper.peek().is_some_and(|&&edge| edge == next) {
             upper.next();
+        }
+    }
+    count
+}
+
+fn union_link_is_single_cycle(
+    fixed: &BTreeSet<Edge>,
+    lower: Option<&BTreeSet<Edge>>,
+    upper: Option<&BTreeSet<Edge>>,
+) -> bool {
+    let mut fixed = fixed.iter().peekable();
+    let mut lower = lower.into_iter().flat_map(BTreeSet::iter).peekable();
+    let mut upper = upper.into_iter().flat_map(BTreeSet::iter).peekable();
+    let mut edges = [(0, 0); 7];
+    let mut edge_count = 0;
+    while let Some(next) = [
+        fixed.peek().map(|&&edge| edge),
+        lower.peek().map(|&&edge| edge),
+        upper.peek().map(|&&edge| edge),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
+        if edge_count == edges.len() {
+            return false;
+        }
+        edges[edge_count] = next;
+        edge_count += 1;
+        if fixed.peek().is_some_and(|&&edge| edge == next) {
+            fixed.next();
+        }
+        if lower.peek().is_some_and(|&&edge| edge == next) {
+            lower.next();
+        }
+        if upper.peek().is_some_and(|&&edge| edge == next) {
+            upper.next();
+        }
+    }
+    if edge_count == 0 {
+        return false;
+    }
+    let mut nodes = [0; 14];
+    let mut degrees = [0_u8; 14];
+    let mut node_count = 0;
+    for &(a, b) in &edges[..edge_count] {
+        for node in [a, b] {
+            let index = if let Some(index) = nodes[..node_count]
+                .iter()
+                .position(|&candidate| candidate == node)
+            {
+                index
+            } else {
+                nodes[node_count] = node;
+                node_count += 1;
+                node_count - 1
+            };
+            degrees[index] += 1;
+        }
+    }
+    if degrees[..node_count].iter().any(|&degree| degree != 2) {
+        return false;
+    }
+    let mut seen = [false; 14];
+    seen[0] = true;
+    loop {
+        let mut changed = false;
+        for &(a, b) in &edges[..edge_count] {
+            let a = nodes[..node_count]
+                .iter()
+                .position(|&node| node == a)
+                .unwrap();
+            let b = nodes[..node_count]
+                .iter()
+                .position(|&node| node == b)
+                .unwrap();
+            if seen[a] && !seen[b] {
+                seen[b] = true;
+                changed = true;
+            } else if seen[b] && !seen[a] {
+                seen[a] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return seen[..node_count].iter().all(|&visited| visited);
         }
     }
 }
@@ -569,4 +1134,175 @@ fn owned_pair_triangles(
 fn canonical_triangle(mut triangle: [usize; 3]) -> [usize; 3] {
     triangle.sort_unstable();
     triangle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coarsen::VertexLinkContract;
+
+    #[test]
+    fn degree8_is_outside_r2_not_permanent_impossible() {
+        let (lower, upper, contracts, anchors) = fixture(8, None);
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert!(matches!(
+            pair_class_v2(&preflight),
+            TopologyPairClassV2::OutsideRepairDepthR2 { .. }
+        ));
+    }
+
+    #[test]
+    fn anchor_below5_is_permanent_impossible() {
+        let (lower, upper, contracts, anchors) = fixture(4, None);
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert!(matches!(
+            pair_class_v2(&preflight),
+            TopologyPairClassV2::ExactImpossibleForAllEarDepths {
+                reason: PairPermanentRejectReason::AnchorBelowTarget { degree: 4, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn affected_capacity_reject_is_sound() {
+        let (lower, upper, mut contracts, anchors) = fixture(6, Some(10));
+        contracts.insert(10, contract(10, 7, RingAnchorKind::Ordinary));
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert_eq!(preflight.affected_degree_sum, 7);
+        assert_eq!(preflight.total_required_ears, 1);
+        assert!(matches!(
+            preflight.outcome,
+            RepairSupportPreflightOutcome::ExactReject {
+                reason: RepairSupportRejectReason::AffectedDegreeCapacity {
+                    after_ears: 8,
+                    lower: 5,
+                    upper: 7
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn unaffected_illegal_vertex_rejects() {
+        let (lower, upper, mut contracts, anchors) = fixture(6, None);
+        contracts.insert(10, contract(10, 8, RingAnchorKind::Ordinary));
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert_eq!(preflight.unaffected_ordinary_defects, vec![(10, 8)]);
+        assert!(matches!(
+            preflight.outcome,
+            RepairSupportPreflightOutcome::ExactReject {
+                reason: RepairSupportRejectReason::UnaffectedOrdinaryDegree {
+                    vertex: 10,
+                    degree: 8
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn unaffected_broken_link_rejects() {
+        let (lower, upper, mut contracts, anchors) = fixture(6, None);
+        let mut broken = contract(10, 6, RingAnchorKind::Ordinary);
+        broken.fixed_link_edges = BTreeSet::from([
+            (100, 101),
+            (100, 102),
+            (101, 102),
+            (103, 104),
+            (103, 105),
+            (104, 105),
+        ]);
+        contracts.insert(10, broken);
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert!(matches!(
+            preflight.outcome,
+            RepairSupportPreflightOutcome::ExactReject {
+                reason: RepairSupportRejectReason::UnaffectedLinkNotSingleCycle { vertex: 10 }
+            }
+        ));
+    }
+
+    #[test]
+    fn target_degree_anchor_has_no_ear_support() {
+        let (lower, upper, mut contracts, anchors) = fixture(5, Some(10));
+        contracts.insert(10, contract(10, 8, RingAnchorKind::Ordinary));
+        let preflight = repair_support_preflight(&lower, &upper, &contracts, &anchors, false);
+        assert!(preflight.potential_ear_vertices.is_empty());
+        assert!(matches!(
+            preflight.outcome,
+            RepairSupportPreflightOutcome::ExactReject {
+                reason: RepairSupportRejectReason::UnaffectedOrdinaryDegree {
+                    vertex: 10,
+                    degree: 8
+                }
+            }
+        ));
+    }
+
+    fn fixture(
+        anchor_degree: usize,
+        support: Option<usize>,
+    ) -> (
+        CellTopologyMergeSignature,
+        CellTopologyMergeSignature,
+        BTreeMap<usize, VertexLinkContract>,
+        BTreeSet<usize>,
+    ) {
+        let mut lower = empty_signature(1);
+        if let Some(support) = support {
+            lower
+                .anchor_star_triangles
+                .insert(1, vec![[1, support, support]]);
+        }
+        let upper = empty_signature(2);
+        let anchors = BTreeSet::from([1]);
+        let contracts = BTreeMap::from([(
+            1,
+            contract(
+                1,
+                anchor_degree,
+                RingAnchorKind::IcosahedronPentagon { base_vertex: 0 },
+            ),
+        )]);
+        (lower, upper, contracts, anchors)
+    }
+
+    fn empty_signature(cell_id: u64) -> CellTopologyMergeSignature {
+        CellTopologyMergeSignature {
+            cell_id,
+            topology_key: TransitionCellTopologyKey {
+                cell_id,
+                triangles: Vec::new(),
+            },
+            vertex_incidences: Vec::new(),
+            vertex_link_edges: BTreeMap::new(),
+            edge_counts: Vec::new(),
+            triangle_keys: Vec::new(),
+            anchor_incidence: Vec::new(),
+            anchor_star_triangles: BTreeMap::new(),
+            geometry_key: FullPolygonGeometryKey::default(),
+        }
+    }
+
+    fn contract(slot: usize, degree: usize, anchor_kind: RingAnchorKind) -> VertexLinkContract {
+        let nodes = (100..100 + degree).collect::<Vec<_>>();
+        let fixed_link_edges = nodes
+            .iter()
+            .copied()
+            .zip(nodes.iter().copied().cycle().skip(1))
+            .take(nodes.len())
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect::<BTreeSet<_>>();
+        VertexLinkContract {
+            source_slot: slot,
+            fixed_link_nodes: fixed_link_edges.iter().flat_map(|&(a, b)| [a, b]).collect(),
+            fixed_link_edges,
+            target_degree_min: 5,
+            target_degree_max: if matches!(anchor_kind, RingAnchorKind::Ordinary) {
+                7
+            } else {
+                5
+            },
+            anchor_kind,
+        }
+    }
 }

@@ -109,6 +109,10 @@ fn fair_pair_audit_matches_frozen_n6_identity_closure() {
     );
     assert_eq!(audit.zero_ear_pairs, 1);
     assert_eq!(audit.direct_zero_ear_closures, 1);
+    assert_eq!(audit.anchor_repair_portfolio.pair_total, 1);
+    assert_eq!(audit.anchor_repair_portfolio.direct_no_ear_candidates, 1);
+    assert_eq!(audit.anchor_repair_portfolio.permanent_impossible, 0);
+    assert_eq!(audit.anchor_repair_portfolio.outside_r2, 0);
     assert_eq!(audit.first_pair_rank_by_repair_score, 1);
     assert_eq!(audit.first_pair_ear_outcome.as_deref(), Some("Closed"));
     let telemetry = audit.first_pair_ear_telemetry.unwrap();

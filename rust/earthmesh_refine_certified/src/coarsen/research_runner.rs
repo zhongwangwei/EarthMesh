@@ -7,16 +7,17 @@ use super::{
     enumerate_balanced_annular_strips, face_band_evidence_json, find_one_essential_cycle,
     n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
     solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
-    solve_transition_cell_find_one, AnnularEnumerationError, AnnularReachabilityLimits,
-    AnnularReachabilityOutcome, AnnularTransitionCellFamily, BandBoundaryAudit,
-    BandBoundaryAuditSummary, CertifiedResearchFixture, DownstreamEvaluationCache,
-    DownstreamPreflightOutcome, DownstreamRejectStage, EssentialCycleFindOneEvidence,
-    EssentialCycleFindOneLimits, EssentialCycleFindOneOutcome, EssentialCycleKey,
-    ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence, FaceBandLimits, FaceBandPlan,
-    FaceBandPlanEvaluator, FaceBandSolveOutcome, FullPolygonMergeEvidence, FullPolygonMergeLimits,
-    FullPolygonMergeOutcome, FullPolygonMergeTrial, FullPolygonPlanEvaluator, PlanBandTopologyKind,
-    PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId,
-    TopologyPairClass, TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
+    solve_transition_cell_find_one, AnchorRepairPortfolioEvidence, AnnularEnumerationError,
+    AnnularReachabilityLimits, AnnularReachabilityOutcome, AnnularTransitionCellFamily,
+    BandBoundaryAudit, BandBoundaryAuditSummary, CertifiedResearchFixture,
+    DownstreamEvaluationCache, DownstreamPreflightOutcome, DownstreamRejectStage,
+    EssentialCycleFindOneEvidence, EssentialCycleFindOneLimits, EssentialCycleFindOneOutcome,
+    EssentialCycleKey, ExactFaceBandV2Outcome, FaceBandAdapterVersion, FaceBandEvidence,
+    FaceBandLimits, FaceBandPlan, FaceBandPlanEvaluator, FaceBandSolveOutcome,
+    FullPolygonMergeEvidence, FullPolygonMergeLimits, FullPolygonMergeOutcome,
+    FullPolygonMergeTrial, FullPolygonPlanEvaluator, PlanBandTopologyKind, PlanEvaluation,
+    RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId, TopologyPairClass,
+    TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
     TransitionCellMergeOutcome, TransitionCellMergeTrial,
 };
 use crate::certificate::Certificate;
@@ -1007,34 +1008,11 @@ pub fn n12_lifted_fair_pair_audit_json(limits: ResearchV3FindOneLimits) -> Resul
         fixture.component.core_parents.iter().copied(),
         RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
     )?;
-    let mut evaluator = FairPairAuditingEvaluator {
-        source: &fixture.source,
-        component: &fixture.component,
-        topology_limit: limits.balanced_topologies_per_cell,
-        cycles_audited: 0,
-        domains_built: 0,
-        cell_topologies: 0,
-        pair_product: 0,
-        zero_ear_pairs: 0,
-        direct_zero_ear_closures: 0,
-        repairable_pairs: 0,
-        impossible_pairs: 0,
-        low_ear_pairs: BTreeMap::new(),
-        anchor_degree_histogram: BTreeMap::new(),
-        impossible_reasons: BTreeMap::new(),
-        zero_ear_final_rejects: BTreeMap::new(),
-        first_pair_rank_min: usize::MAX,
-        first_pair_rank_max: 0,
-        first_pair_rank_sum: 0,
-        first_pair_classes: BTreeMap::new(),
-        best_pair_classes: BTreeMap::new(),
-        first_pair_ordinary_defects: BTreeMap::new(),
-        first_pair_unmatched_edges: BTreeMap::new(),
-        first_pair_broken_links: BTreeMap::new(),
-        first_ear_outcome: None,
-        first_ear_telemetry: None,
-        errors: BTreeMap::new(),
-    };
+    let mut evaluator = FairPairAuditingEvaluator::new(
+        &fixture.source,
+        &fixture.component,
+        limits.balanced_topologies_per_cell,
+    );
     let outcome = prove_essential_cycle_family(
         &fixture.source,
         &face_problem,
@@ -1139,6 +1117,123 @@ pub fn n12_lifted_fair_pair_audit_json(limits: ResearchV3FindOneLimits) -> Resul
     ))
 }
 
+pub fn n12_lifted_r2_repair_support_audit_json(
+    limits: ResearchV3FindOneLimits,
+) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = FairPairAuditingEvaluator::new(
+        &fixture.source,
+        &fixture.component,
+        limits.balanced_topologies_per_cell,
+    );
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let portfolio = &evaluator.anchor_repair_portfolio;
+    let preflight_rejected = portfolio
+        .r2_anchor_necessary_candidates
+        .saturating_sub(portfolio.r2_preflight_passed);
+    let pair_accounting_complete = portfolio.pair_total
+        == portfolio.direct_no_ear_candidates
+            + portfolio.permanent_impossible
+            + portfolio.outside_r2
+            + portfolio.r2_preflight_passed;
+    let r2_candidate_accounting_complete = portfolio.r2_anchor_necessary_candidates
+        == portfolio.r2_preflight_passed + preflight_rejected;
+    let k_tier_accounting_complete =
+        portfolio.k_tiers.values().sum::<usize>() == portfolio.r2_anchor_necessary_candidates;
+    let cycle_accounting_complete = evaluator.cycles_audited == evidence.essential_cycles
+        && evaluator.domains_built == evaluator.cycles_audited;
+    let audit_gate_passed = pair_accounting_complete
+        && r2_candidate_accounting_complete
+        && k_tier_accounting_complete
+        && cycle_accounting_complete
+        && evaluator.errors.is_empty();
+    let go_no_go = if !audit_gate_passed {
+        "AuditInvalid"
+    } else if portfolio.r2_preflight_passed > 0 {
+        "GoAsveR2"
+    } else if portfolio.r2_anchor_necessary_candidates > 0 {
+        "GoSignatureDirectedConcreteExtraction"
+    } else if portfolio.outside_r2 > 0 {
+        "GoR3FeasibilityAudit"
+    } else {
+        "GoSignatureDirectedConcreteExtraction"
+    };
+    let k_tiers = portfolio
+        .k_tiers
+        .iter()
+        .map(|(ears, count)| format!("\"{ears}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let preflight_passed_by_k = portfolio
+        .preflight_passed_by_k
+        .iter()
+        .map(|(ears, count)| format!("\"{ears}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let preflight_rejected_by_k = portfolio
+        .preflight_rejected_by_k
+        .iter()
+        .map(|(ears, count)| format!("\"{ears}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"387311a0c1b2ed52f43515766c9fa785e6849ad819aa05e9c4b78efb65492c24\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+BalancedAnnularPairR2Preflight\",\"scope_conclusion\":\"BalancedSubsetEvidenceOnly\",\"limits\":{{\"cycle_unique_states\":{},\"balanced_topologies_per_cell\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_audited\":{},\"domains_built\":{},\"cell_topologies\":{},\"global_pair_product\":{},\"direct_no_ear_candidates\":{},\"permanent_impossible\":{},\"outside_repair_depth_r2\":{},\"r2_anchor_necessary_candidates\":{},\"r2_preflight_passed\":{},\"r2_preflight_rejected\":{},\"unaffected_degree_rejects\":{},\"affected_total_capacity_rejects\":{},\"fixed_link_rejects\":{},\"k_tiers\":{{{}}},\"preflight_passed_by_k\":{{{}}},\"preflight_rejected_by_k\":{{{}}},\"permanent_reasons\":{{{}}},\"pair_accounting_complete\":{},\"r2_candidate_accounting_complete\":{},\"k_tier_accounting_complete\":{},\"cycle_accounting_complete\":{},\"errors\":{{{}}},\"audit_gate_passed\":{},\"go_no_go\":\"{}\",\"remaining_cec_shards\":{},\"cec_shards_resumed\":false,\"new_repair_solver_run\":false,\"search_result_changed\":false,\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.balanced_topologies_per_cell,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_audited,
+        evaluator.domains_built,
+        evaluator.cell_topologies,
+        portfolio.pair_total,
+        portfolio.direct_no_ear_candidates,
+        portfolio.permanent_impossible,
+        portfolio.outside_r2,
+        portfolio.r2_anchor_necessary_candidates,
+        portfolio.r2_preflight_passed,
+        preflight_rejected,
+        portfolio.unaffected_degree_rejects,
+        portfolio.total_capacity_rejects,
+        portfolio.fixed_link_rejects,
+        k_tiers,
+        preflight_passed_by_k,
+        preflight_rejected_by_k,
+        json_string_count_map_usize(&portfolio.permanent_reasons),
+        pair_accounting_complete,
+        r2_candidate_accounting_complete,
+        k_tier_accounting_complete,
+        cycle_accounting_complete,
+        json_string_count_map(&evaluator.errors),
+        audit_gate_passed,
+        go_no_go,
+        evidence.checkpoint_shards_created,
+    ))
+}
+
 struct FairPairAuditingEvaluator<'a> {
     source: &'a crate::MotherGrid,
     component: &'a super::HierarchyComponent,
@@ -1165,7 +1260,46 @@ struct FairPairAuditingEvaluator<'a> {
     first_pair_broken_links: BTreeMap<usize, u64>,
     first_ear_outcome: Option<String>,
     first_ear_telemetry: Option<super::AnchorEarSearchTelemetry>,
+    anchor_repair_portfolio: AnchorRepairPortfolioEvidence,
     errors: BTreeMap<String, u64>,
+}
+
+impl<'a> FairPairAuditingEvaluator<'a> {
+    fn new(
+        source: &'a crate::MotherGrid,
+        component: &'a super::HierarchyComponent,
+        topology_limit: usize,
+    ) -> Self {
+        Self {
+            source,
+            component,
+            topology_limit,
+            cycles_audited: 0,
+            domains_built: 0,
+            cell_topologies: 0,
+            pair_product: 0,
+            zero_ear_pairs: 0,
+            direct_zero_ear_closures: 0,
+            repairable_pairs: 0,
+            impossible_pairs: 0,
+            low_ear_pairs: BTreeMap::new(),
+            anchor_degree_histogram: BTreeMap::new(),
+            impossible_reasons: BTreeMap::new(),
+            zero_ear_final_rejects: BTreeMap::new(),
+            first_pair_rank_min: usize::MAX,
+            first_pair_rank_max: 0,
+            first_pair_rank_sum: 0,
+            first_pair_classes: BTreeMap::new(),
+            best_pair_classes: BTreeMap::new(),
+            first_pair_ordinary_defects: BTreeMap::new(),
+            first_pair_unmatched_edges: BTreeMap::new(),
+            first_pair_broken_links: BTreeMap::new(),
+            first_ear_outcome: None,
+            first_ear_telemetry: None,
+            anchor_repair_portfolio: AnchorRepairPortfolioEvidence::default(),
+            errors: BTreeMap::new(),
+        }
+    }
 }
 
 impl FaceBandPlanEvaluator for FairPairAuditingEvaluator<'_> {
@@ -1236,6 +1370,10 @@ impl FaceBandPlanEvaluator for FairPairAuditingEvaluator<'_> {
             &mut self.zero_ear_final_rejects,
             &audit.zero_ear_final_rejects,
         );
+        merge_anchor_repair_portfolio(
+            &mut self.anchor_repair_portfolio,
+            &audit.anchor_repair_portfolio,
+        );
         self.first_pair_rank_min = self
             .first_pair_rank_min
             .min(audit.first_pair_rank_by_repair_score);
@@ -1302,6 +1440,33 @@ fn merge_usize_counts(target: &mut BTreeMap<usize, u64>, source: &BTreeMap<usize
 fn merge_string_counts(target: &mut BTreeMap<String, u64>, source: &BTreeMap<String, usize>) {
     for (key, &count) in source {
         *target.entry(key.clone()).or_default() += count as u64;
+    }
+}
+
+fn merge_anchor_repair_portfolio(
+    target: &mut AnchorRepairPortfolioEvidence,
+    source: &AnchorRepairPortfolioEvidence,
+) {
+    target.pair_total += source.pair_total;
+    target.direct_no_ear_candidates += source.direct_no_ear_candidates;
+    target.permanent_impossible += source.permanent_impossible;
+    target.outside_r2 += source.outside_r2;
+    target.r2_anchor_necessary_candidates += source.r2_anchor_necessary_candidates;
+    target.r2_preflight_passed += source.r2_preflight_passed;
+    target.unaffected_degree_rejects += source.unaffected_degree_rejects;
+    target.total_capacity_rejects += source.total_capacity_rejects;
+    target.fixed_link_rejects += source.fixed_link_rejects;
+    for (&key, &count) in &source.k_tiers {
+        *target.k_tiers.entry(key).or_default() += count;
+    }
+    for (&key, &count) in &source.preflight_passed_by_k {
+        *target.preflight_passed_by_k.entry(key).or_default() += count;
+    }
+    for (&key, &count) in &source.preflight_rejected_by_k {
+        *target.preflight_rejected_by_k.entry(key).or_default() += count;
+    }
+    for (key, &count) in &source.permanent_reasons {
+        *target.permanent_reasons.entry(key.clone()).or_default() += count;
     }
 }
 
