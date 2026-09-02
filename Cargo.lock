@@ -250,6 +250,7 @@ dependencies = [
  "earthmesh_boundary",
  "earthmesh_geometry",
  "earthmesh_mesh",
+ "earthmesh_quality",
  "rayon",
 ]
 

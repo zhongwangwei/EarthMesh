@@ -15,6 +15,18 @@ pub enum QualityZone {
     GlobalNeutral,
 }
 
+impl QualityZone {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetCore => "target_core",
+            Self::BoundaryProtection => "boundary_protection",
+            Self::ExportCorridor => "export_corridor",
+            Self::DeepExterior => "deep_exterior",
+            Self::GlobalNeutral => "global_neutral",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct QualityPrioritySample {
     pub zone: QualityZone,

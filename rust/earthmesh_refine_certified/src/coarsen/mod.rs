@@ -58,8 +58,10 @@ pub use anchor_ear::{
     AnchorEarRejectReason, AnchorEarReport, OwnedTopologyTriangle,
 };
 pub use angle_atlas::{
-    build_worst_angle_atlas, classify_angle_blockers, worst_angle_atlas_json,
-    AngleBlockerClassification, AngleWitness, EdgeClass, WorstAngleAtlas,
+    build_spatial_angle_atlas, build_worst_angle_atlas, classify_angle_blockers,
+    spatial_angle_atlas_json, worst_angle_atlas_json, AngleBlockerClassification, AngleWitness,
+    EdgeClass, SpatialAngleAtlas, SpatialAngleWitness, SpatialAtlasConclusion, SpatialFaceContext,
+    SpatialZoneAngleMetrics, WorstAngleAtlas,
 };
 pub use annular_enumerator::{
     annular_small_exact_oracle_json, brute_force_flip_annulus_keys, certify_annular_topology,

@@ -5,10 +5,14 @@ use super::{
     ElasticPatch, FullPolygonTopologyKey, GlobalExactSelectedEar, HierarchyLeafMesh,
     RingAnchorKind, StratifiedAnnulus, TraceRole,
 };
-use crate::{certificate::spherical_triangle_angles, mother_grid::MotherGrid};
+use crate::{
+    certificate::{spherical_triangle_angles, AngleContract, AngleContractId, AngleWindow},
+    mother_grid::{MotherGrid, TriangleAddress, TriangleOrientation},
+};
 use earthmesh_mesh::arc_length_unit_sphere;
+use earthmesh_quality::domain::{QualityPrioritySample, QualityZone};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Write as _,
 };
 
@@ -83,6 +87,422 @@ pub struct WorstAngleAtlas {
     pub adjacent_pentagon_or_junction_fraction: f64,
     pub long_full_polygon_diagonal_fraction: f64,
     pub fixed_guard_neighbourhood_fraction: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpatialFaceContext {
+    pub quality: QualityPrioritySample,
+    pub transition_owner: Option<u64>,
+    pub distance_to_pentagon_anchor: Option<usize>,
+    pub distance_to_seam: Option<usize>,
+    pub edge_classes: [EdgeClass; 3],
+}
+
+impl Default for SpatialFaceContext {
+    fn default() -> Self {
+        Self {
+            quality: QualityPrioritySample {
+                zone: QualityZone::GlobalNeutral,
+                maximum_priority: 1.0,
+                mean_priority: 1.0,
+                minimum_distance_to_target: f64::INFINITY,
+                minimum_distance_to_boundary: f64::INFINITY,
+            },
+            transition_owner: None,
+            distance_to_pentagon_anchor: None,
+            distance_to_seam: None,
+            edge_classes: [EdgeClass::MotherGridEdge; 3],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SpatialZoneAngleMetrics {
+    pub angle_count: usize,
+    pub minimum_angle_degrees: Option<f64>,
+    pub maximum_angle_degrees: Option<f64>,
+    pub global_hard_violation_count: usize,
+    pub preferred_violation_count: usize,
+    pub transition_face_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialAtlasConclusion {
+    NoGlobalTopologySearchRequired,
+    DomainRepairRequired,
+}
+
+impl SpatialAtlasConclusion {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoGlobalTopologySearchRequired => "NoGlobalTopologySearchRequired",
+            Self::DomainRepairRequired => "DomainRepairRequired",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpatialAngleWitness {
+    pub face: usize,
+    pub corner: usize,
+    pub angle_degrees: f64,
+    pub global_hard_violation: f64,
+    pub preferred_violation: f64,
+    pub zone: QualityZone,
+    pub maximum_priority: f64,
+    pub distance_to_target: f64,
+    pub distance_to_boundary: f64,
+    pub is_transition_face: bool,
+    pub transition_owner: Option<u64>,
+    pub component_id: Option<u64>,
+    pub hierarchy_address: Option<TriangleAddress>,
+    pub movable_vertex_count: usize,
+    pub fixed_vertex_count: usize,
+    pub distance_to_pentagon_anchor: Option<usize>,
+    pub distance_to_seam: Option<usize>,
+    pub edge_classes: [EdgeClass; 3],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpatialAngleAtlas {
+    pub contract_id: AngleContractId,
+    pub global: SpatialZoneAngleMetrics,
+    pub target: SpatialZoneAngleMetrics,
+    pub boundary: SpatialZoneAngleMetrics,
+    pub export: SpatialZoneAngleMetrics,
+    pub deep_exterior: SpatialZoneAngleMetrics,
+    pub global_neutral: SpatialZoneAngleMetrics,
+    pub worst_angle_distance_to_target: Option<f64>,
+    pub bad_angle_component_count: usize,
+    pub conclusion: SpatialAtlasConclusion,
+    pub witnesses: Vec<SpatialAngleWitness>,
+}
+
+pub fn build_spatial_angle_atlas(
+    mesh: &HierarchyLeafMesh,
+    face_context: &BTreeMap<usize, SpatialFaceContext>,
+    fixed_vertices: &BTreeSet<usize>,
+    contract: AngleContract,
+) -> Result<SpatialAngleAtlas, String> {
+    let active_faces = mesh.mesh.active_triangle_slots().collect::<Vec<_>>();
+    let mut face_angles = BTreeMap::new();
+    let mut bad_faces = BTreeSet::new();
+    for &face in &active_faces {
+        let context = face_context
+            .get(&face)
+            .ok_or_else(|| format!("spatial angle atlas is missing context for face {face}"))?;
+        validate_spatial_context(face, context)?;
+        let triangle = mesh.mesh.triangles()[face];
+        let angles = spherical_triangle_angles(triangle.map(|site| mesh.mesh.vertices()[site]))
+            .ok_or_else(|| format!("spatial angle atlas failed on face {face}"))?;
+        if angles.into_iter().any(|angle| {
+            window_violation(angle, contract.final_delivery) > 0.0
+                || preferred_violation(angle, contract.preferred) > 0.0
+        }) {
+            bad_faces.insert(face);
+        }
+        face_angles.insert(face, angles);
+    }
+    let components = bad_face_components(&mesh.mesh, &bad_faces);
+    let mut global = SpatialZoneAngleMetrics::default();
+    let mut target = SpatialZoneAngleMetrics::default();
+    let mut boundary = SpatialZoneAngleMetrics::default();
+    let mut export = SpatialZoneAngleMetrics::default();
+    let mut deep_exterior = SpatialZoneAngleMetrics::default();
+    let mut global_neutral = SpatialZoneAngleMetrics::default();
+    let mut witnesses = Vec::with_capacity(active_faces.len().saturating_mul(3));
+
+    for face in active_faces {
+        let context = &face_context[&face];
+        if context.transition_owner.is_some() {
+            global.transition_face_count += 1;
+            zone_metrics_mut(
+                context.quality.zone,
+                &mut target,
+                &mut boundary,
+                &mut export,
+                &mut deep_exterior,
+                &mut global_neutral,
+            )
+            .transition_face_count += 1;
+        }
+        let triangle = mesh.mesh.triangles()[face];
+        let fixed_vertex_count = triangle
+            .into_iter()
+            .filter(|site| fixed_vertices.contains(site))
+            .count();
+        for (corner, angle_degrees) in face_angles[&face].into_iter().enumerate() {
+            let global_hard_violation = window_violation(angle_degrees, contract.final_delivery);
+            let preferred_violation = preferred_violation(angle_degrees, contract.preferred);
+            update_spatial_metrics(
+                &mut global,
+                angle_degrees,
+                global_hard_violation,
+                preferred_violation,
+            );
+            update_spatial_metrics(
+                zone_metrics_mut(
+                    context.quality.zone,
+                    &mut target,
+                    &mut boundary,
+                    &mut export,
+                    &mut deep_exterior,
+                    &mut global_neutral,
+                ),
+                angle_degrees,
+                global_hard_violation,
+                preferred_violation,
+            );
+            witnesses.push(SpatialAngleWitness {
+                face,
+                corner,
+                angle_degrees,
+                global_hard_violation,
+                preferred_violation,
+                zone: context.quality.zone,
+                maximum_priority: context.quality.maximum_priority,
+                distance_to_target: context.quality.minimum_distance_to_target,
+                distance_to_boundary: context.quality.minimum_distance_to_boundary,
+                is_transition_face: context.transition_owner.is_some(),
+                transition_owner: context.transition_owner,
+                component_id: components.get(&face).copied(),
+                hierarchy_address: mesh.triangle_addresses.get(face).copied().flatten(),
+                movable_vertex_count: 3 - fixed_vertex_count,
+                fixed_vertex_count,
+                distance_to_pentagon_anchor: context.distance_to_pentagon_anchor,
+                distance_to_seam: context.distance_to_seam,
+                edge_classes: context.edge_classes,
+            });
+        }
+    }
+
+    let worst_angle_distance_to_target = witnesses
+        .iter()
+        .filter(|witness| witness.global_hard_violation > 0.0 || witness.preferred_violation > 0.0)
+        .max_by(|left, right| {
+            left.global_hard_violation
+                .total_cmp(&right.global_hard_violation)
+                .then_with(|| {
+                    left.preferred_violation
+                        .total_cmp(&right.preferred_violation)
+                })
+                .then_with(|| right.face.cmp(&left.face))
+                .then_with(|| right.corner.cmp(&left.corner))
+        })
+        .map(|witness| witness.distance_to_target);
+    let conclusion = if witnesses
+        .iter()
+        .all(|witness| witness.global_hard_violation == 0.0)
+        && witnesses
+            .iter()
+            .filter(|witness| witness.preferred_violation > 0.0)
+            .all(|witness| witness.zone == QualityZone::DeepExterior)
+    {
+        SpatialAtlasConclusion::NoGlobalTopologySearchRequired
+    } else {
+        SpatialAtlasConclusion::DomainRepairRequired
+    };
+
+    Ok(SpatialAngleAtlas {
+        contract_id: contract.id,
+        global,
+        target,
+        boundary,
+        export,
+        deep_exterior,
+        global_neutral,
+        worst_angle_distance_to_target,
+        bad_angle_component_count: components.values().copied().collect::<BTreeSet<_>>().len(),
+        conclusion,
+        witnesses,
+    })
+}
+
+pub fn spatial_angle_atlas_json(atlas: &SpatialAngleAtlas) -> String {
+    let witnesses = atlas
+        .witnesses
+        .iter()
+        .map(spatial_angle_witness_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema_version\":1,\"contract_id\":\"{}\",\"conclusion\":\"{}\",\"global\":{},\"target\":{},\"boundary\":{},\"export\":{},\"deep_exterior\":{},\"global_neutral\":{},\"worst_angle_distance_to_target\":{},\"bad_angle_component_count\":{},\"witnesses\":[{}]}}",
+        atlas.contract_id.as_str(),
+        atlas.conclusion.as_str(),
+        spatial_metrics_json(&atlas.global),
+        spatial_metrics_json(&atlas.target),
+        spatial_metrics_json(&atlas.boundary),
+        spatial_metrics_json(&atlas.export),
+        spatial_metrics_json(&atlas.deep_exterior),
+        spatial_metrics_json(&atlas.global_neutral),
+        option_f64(atlas.worst_angle_distance_to_target),
+        atlas.bad_angle_component_count,
+        witnesses,
+    )
+}
+
+fn validate_spatial_context(face: usize, context: &SpatialFaceContext) -> Result<(), String> {
+    let quality = context.quality;
+    if !quality.maximum_priority.is_finite()
+        || !(0.0..=1.0).contains(&quality.maximum_priority)
+        || !quality.mean_priority.is_finite()
+        || !(0.0..=1.0).contains(&quality.mean_priority)
+        || quality.minimum_distance_to_target.is_nan()
+        || quality.minimum_distance_to_target < 0.0
+        || quality.minimum_distance_to_boundary.is_nan()
+        || quality.minimum_distance_to_boundary < 0.0
+    {
+        return Err(format!(
+            "spatial angle atlas has invalid quality context for face {face}"
+        ));
+    }
+    Ok(())
+}
+
+fn window_violation(angle: f64, window: AngleWindow) -> f64 {
+    (window.minimum_degrees - angle)
+        .max(angle - window.maximum_degrees)
+        .max(0.0)
+}
+
+fn preferred_violation(angle: f64, preferred: Option<AngleWindow>) -> f64 {
+    preferred.map_or(0.0, |window| window_violation(angle, window))
+}
+
+fn update_spatial_metrics(
+    metrics: &mut SpatialZoneAngleMetrics,
+    angle: f64,
+    global_hard_violation: f64,
+    preferred_violation: f64,
+) {
+    metrics.angle_count += 1;
+    metrics.minimum_angle_degrees = Some(
+        metrics
+            .minimum_angle_degrees
+            .map_or(angle, |current| current.min(angle)),
+    );
+    metrics.maximum_angle_degrees = Some(
+        metrics
+            .maximum_angle_degrees
+            .map_or(angle, |current| current.max(angle)),
+    );
+    metrics.global_hard_violation_count += usize::from(global_hard_violation > 0.0);
+    metrics.preferred_violation_count += usize::from(preferred_violation > 0.0);
+}
+
+fn zone_metrics_mut<'a>(
+    zone: QualityZone,
+    target: &'a mut SpatialZoneAngleMetrics,
+    boundary: &'a mut SpatialZoneAngleMetrics,
+    export: &'a mut SpatialZoneAngleMetrics,
+    deep_exterior: &'a mut SpatialZoneAngleMetrics,
+    global_neutral: &'a mut SpatialZoneAngleMetrics,
+) -> &'a mut SpatialZoneAngleMetrics {
+    match zone {
+        QualityZone::TargetCore => target,
+        QualityZone::BoundaryProtection => boundary,
+        QualityZone::ExportCorridor => export,
+        QualityZone::DeepExterior => deep_exterior,
+        QualityZone::GlobalNeutral => global_neutral,
+    }
+}
+
+fn bad_face_components(
+    mesh: &earthmesh_mesh::MeshState,
+    bad_faces: &BTreeSet<usize>,
+) -> BTreeMap<usize, u64> {
+    let mut components = BTreeMap::new();
+    let mut next_component = 0_u64;
+    for &start in bad_faces {
+        if components.contains_key(&start) {
+            continue;
+        }
+        let mut queue = VecDeque::from([start]);
+        components.insert(start, next_component);
+        while let Some(face) = queue.pop_front() {
+            for &neighbor in &mesh.neighbours()[face] {
+                if bad_faces.contains(&neighbor) && !components.contains_key(&neighbor) {
+                    components.insert(neighbor, next_component);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        next_component = next_component.saturating_add(1);
+    }
+    components
+}
+
+fn spatial_metrics_json(metrics: &SpatialZoneAngleMetrics) -> String {
+    format!(
+        "{{\"angle_count\":{},\"minimum_angle_degrees\":{},\"maximum_angle_degrees\":{},\"global_hard_violation_count\":{},\"preferred_violation_count\":{},\"transition_face_count\":{}}}",
+        metrics.angle_count,
+        option_f64(metrics.minimum_angle_degrees),
+        option_f64(metrics.maximum_angle_degrees),
+        metrics.global_hard_violation_count,
+        metrics.preferred_violation_count,
+        metrics.transition_face_count,
+    )
+}
+
+fn spatial_angle_witness_json(witness: &SpatialAngleWitness) -> String {
+    let edge_classes = witness
+        .edge_classes
+        .iter()
+        .map(|class| format!("\"{}\"", class.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"face\":{},\"corner\":{},\"angle_degrees\":{:.12},\"global_hard_violation\":{:.12},\"preferred_violation\":{:.12},\"zone\":\"{}\",\"maximum_priority\":{:.12},\"distance_to_target\":{},\"distance_to_boundary\":{},\"is_transition_face\":{},\"transition_owner\":{},\"component_id\":{},\"hierarchy_address\":{},\"movable_vertex_count\":{},\"fixed_vertex_count\":{},\"distance_to_pentagon_anchor\":{},\"distance_to_seam\":{},\"edge_classes\":[{}]}}",
+        witness.face,
+        witness.corner,
+        witness.angle_degrees,
+        witness.global_hard_violation,
+        witness.preferred_violation,
+        witness.zone.as_str(),
+        witness.maximum_priority,
+        finite_f64(witness.distance_to_target),
+        finite_f64(witness.distance_to_boundary),
+        witness.is_transition_face,
+        option_u64(witness.transition_owner),
+        option_u64(witness.component_id),
+        triangle_address_json(witness.hierarchy_address),
+        witness.movable_vertex_count,
+        witness.fixed_vertex_count,
+        option_usize(witness.distance_to_pentagon_anchor),
+        option_usize(witness.distance_to_seam),
+        edge_classes,
+    )
+}
+
+fn option_f64(value: Option<f64>) -> String {
+    value.map_or_else(|| "null".into(), finite_f64)
+}
+
+fn finite_f64(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.12}")
+    } else {
+        "null".into()
+    }
+}
+
+fn triangle_address_json(address: Option<TriangleAddress>) -> String {
+    address.map_or_else(
+        || "null".into(),
+        |address| {
+            format!(
+                "{{\"base_face\":{},\"i\":{},\"j\":{},\"n\":{},\"orientation\":\"{}\"}}",
+                address.base_face,
+                address.i,
+                address.j,
+                address.n,
+                match address.orientation {
+                    TriangleOrientation::Up => "up",
+                    TriangleOrientation::Down => "down",
+                }
+            )
+        },
+    )
 }
 
 pub fn build_worst_angle_atlas(
@@ -594,6 +1014,48 @@ fn topology_key_json(key: &FullPolygonTopologyKey) -> String {
 mod tests {
     use super::*;
 
+    fn leaf_grid(n: usize) -> HierarchyLeafMesh {
+        let grid = MotherGrid::generate(n).unwrap();
+        let vertex_slots = grid.mesh.vertices().len();
+        HierarchyLeafMesh {
+            mesh: grid.mesh,
+            triangle_addresses: grid.triangle_addresses,
+            source_vertex_slots: vec![None; vertex_slots],
+        }
+    }
+
+    fn spatial_context(
+        mesh: &HierarchyLeafMesh,
+        zone: QualityZone,
+    ) -> BTreeMap<usize, SpatialFaceContext> {
+        mesh.mesh
+            .active_triangle_slots()
+            .map(|face| {
+                (
+                    face,
+                    SpatialFaceContext {
+                        quality: QualityPrioritySample {
+                            zone,
+                            maximum_priority: if zone == QualityZone::DeepExterior {
+                                0.0
+                            } else {
+                                1.0
+                            },
+                            mean_priority: if zone == QualityZone::DeepExterior {
+                                0.0
+                            } else {
+                                1.0
+                            },
+                            minimum_distance_to_target: 4.0,
+                            minimum_distance_to_boundary: 3.0,
+                        },
+                        ..SpatialFaceContext::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn atlas(width: f64, diagonal: f64, boundary: f64) -> WorstAngleAtlas {
         WorstAngleAtlas {
             total_angles: 0,
@@ -631,5 +1093,93 @@ mod tests {
             worst_angle_atlas_json(&atlas),
             worst_angle_atlas_json(&atlas)
         );
+    }
+
+    #[test]
+    fn spatial_atlas_localizes_n6_without_global_search() {
+        let mesh = leaf_grid(6);
+        let fixed = BTreeSet::new();
+        let mut context = spatial_context(&mesh, QualityZone::DeepExterior);
+        let contract = AngleContract::for_id(AngleContractId::DomainQuality38To82V1);
+        let atlas = build_spatial_angle_atlas(&mesh, &context, &fixed, contract).unwrap();
+
+        assert!(
+            (atlas.global.minimum_angle_degrees.unwrap() - 54.361673298250).abs() < 1.0e-9,
+            "actual minimum {:?}",
+            atlas.global.minimum_angle_degrees
+        );
+        assert!(
+            (atlas.global.maximum_angle_degrees.unwrap() - 72.0).abs() < 1.0e-9,
+            "actual maximum {:?}",
+            atlas.global.maximum_angle_degrees
+        );
+        assert_eq!(
+            atlas.conclusion,
+            SpatialAtlasConclusion::NoGlobalTopologySearchRequired
+        );
+        assert_eq!(atlas.target.angle_count, 0);
+        assert_eq!(atlas.deep_exterior.preferred_violation_count, 0);
+        assert_eq!(atlas.bad_angle_component_count, 0);
+
+        let diagnostic_contract = AngleContract {
+            preferred: Some(AngleWindow {
+                minimum_degrees: 60.0,
+                maximum_degrees: 60.0,
+            }),
+            ..contract
+        };
+        let atlas =
+            build_spatial_angle_atlas(&mesh, &context, &fixed, diagnostic_contract).unwrap();
+        assert_eq!(
+            atlas.conclusion,
+            SpatialAtlasConclusion::NoGlobalTopologySearchRequired
+        );
+        assert!(atlas.deep_exterior.preferred_violation_count > 0);
+        assert!(atlas.bad_angle_component_count > 0);
+
+        let control_face = atlas
+            .witnesses
+            .iter()
+            .find(|witness| witness.preferred_violation > 0.0)
+            .unwrap()
+            .face;
+        let control = context.get_mut(&control_face).unwrap();
+        control.quality.zone = QualityZone::ExportCorridor;
+        control.quality.maximum_priority = 1.0;
+        control.quality.mean_priority = 1.0;
+        control.quality.minimum_distance_to_boundary = 0.0;
+        let atlas =
+            build_spatial_angle_atlas(&mesh, &context, &fixed, diagnostic_contract).unwrap();
+        assert_eq!(
+            atlas.conclusion,
+            SpatialAtlasConclusion::DomainRepairRequired
+        );
+
+        let control = context.get_mut(&control_face).unwrap();
+        control.quality.zone = QualityZone::TargetCore;
+        control.quality.maximum_priority = 1.0;
+        control.quality.mean_priority = 1.0;
+        control.quality.minimum_distance_to_target = 0.0;
+        control.transition_owner = Some(7);
+        let atlas =
+            build_spatial_angle_atlas(&mesh, &context, &fixed, diagnostic_contract).unwrap();
+        assert_eq!(
+            atlas.conclusion,
+            SpatialAtlasConclusion::DomainRepairRequired
+        );
+        assert!(atlas.target.preferred_violation_count > 0);
+        assert_eq!(atlas.target.transition_face_count, 1);
+        assert!(atlas
+            .witnesses
+            .iter()
+            .filter(|witness| witness.face == control_face)
+            .all(|witness| witness.component_id.is_some()));
+
+        let json = spatial_angle_atlas_json(&atlas);
+        assert!(json.starts_with("{\"schema_version\":1,"));
+        assert!(json.contains("\"conclusion\":\"DomainRepairRequired\""));
+        assert!(json.contains("\"contract_id\":\"domain_quality_38_to_82_v1\""));
+        assert!(!json.contains("NaN"));
+        assert!(!json.contains("inf"));
     }
 }
