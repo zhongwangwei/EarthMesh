@@ -2,8 +2,8 @@
 
 use super::{
     analyze_stratified_annular_degree_reachability, audit_face_band_boundaries,
-    audit_legacy_downstream_preflight, build_essential_cycle_problem, build_face_band_problem,
-    build_plan_band_domains, build_stratified_transition_domain_v3,
+    audit_legacy_downstream_preflight, audit_transition_cell_pairs, build_essential_cycle_problem,
+    build_face_band_problem, build_plan_band_domains, build_stratified_transition_domain_v3,
     enumerate_balanced_annular_strips, face_band_evidence_json, find_one_essential_cycle,
     n12_interior_control_fixture, n12_lifted_n6_fixture, prove_essential_cycle_family,
     solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
@@ -16,7 +16,7 @@ use super::{
     FaceBandPlanEvaluator, FaceBandSolveOutcome, FullPolygonMergeEvidence, FullPolygonMergeLimits,
     FullPolygonMergeOutcome, FullPolygonMergeTrial, FullPolygonPlanEvaluator, PlanBandTopologyKind,
     PlanEvaluation, RetainedCoreCorridorFamily, TopologyBoundary, TopologyFamilyId,
-    TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
+    TopologyPairClass, TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
     TransitionCellMergeOutcome, TransitionCellMergeTrial,
 };
 use crate::certificate::Certificate;
@@ -998,6 +998,341 @@ pub fn n12_lifted_v3_find_one_json(limits: ResearchV3FindOneLimits) -> Result<St
     ))
 }
 
+pub fn n12_lifted_fair_pair_audit_json(limits: ResearchV3FindOneLimits) -> Result<String, String> {
+    let fixture = n12_lifted_n6_fixture()?;
+    let face_problem = build_face_band_problem(&fixture.source, &fixture.component, 2)?;
+    let cycle_problem = build_essential_cycle_problem(
+        &fixture.source,
+        &face_problem,
+        fixture.component.core_parents.iter().copied(),
+        RetainedCoreCorridorFamily::F0CurrentSourceFaceCorridor,
+    )?;
+    let mut evaluator = FairPairAuditingEvaluator {
+        source: &fixture.source,
+        component: &fixture.component,
+        topology_limit: limits.balanced_topologies_per_cell,
+        cycles_audited: 0,
+        domains_built: 0,
+        cell_topologies: 0,
+        pair_product: 0,
+        zero_ear_pairs: 0,
+        direct_zero_ear_closures: 0,
+        repairable_pairs: 0,
+        impossible_pairs: 0,
+        low_ear_pairs: BTreeMap::new(),
+        anchor_degree_histogram: BTreeMap::new(),
+        impossible_reasons: BTreeMap::new(),
+        zero_ear_final_rejects: BTreeMap::new(),
+        first_pair_rank_min: usize::MAX,
+        first_pair_rank_max: 0,
+        first_pair_rank_sum: 0,
+        first_pair_classes: BTreeMap::new(),
+        best_pair_classes: BTreeMap::new(),
+        first_pair_ordinary_defects: BTreeMap::new(),
+        first_pair_unmatched_edges: BTreeMap::new(),
+        first_pair_broken_links: BTreeMap::new(),
+        first_ear_outcome: None,
+        first_ear_telemetry: None,
+        errors: BTreeMap::new(),
+    };
+    let outcome = prove_essential_cycle_family(
+        &fixture.source,
+        &face_problem,
+        &cycle_problem,
+        EssentialCycleFindOneLimits {
+            maximum_unique_states: limits.cycle_unique_states,
+        },
+        None,
+        &mut evaluator,
+        &mut DownstreamEvaluationCache::new(),
+    );
+    let evidence = match outcome {
+        ExactFaceBandV2Outcome::Closed { evidence, .. }
+        | ExactFaceBandV2Outcome::ExactNoSolution { evidence, .. }
+        | ExactFaceBandV2Outcome::CycleSearchIncomplete { evidence, .. }
+        | ExactFaceBandV2Outcome::DownstreamSearchIncomplete { evidence } => evidence,
+        ExactFaceBandV2Outcome::InvalidInput { reason } => return Err(reason),
+    };
+    let low_ear_pairs = evaluator
+        .low_ear_pairs
+        .iter()
+        .map(|(ears, count)| format!("\"{ears}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let anchor_degrees = evaluator
+        .anchor_degree_histogram
+        .iter()
+        .map(|(degree, count)| format!("\"{degree}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let first_rank_mean = if evaluator.cycles_audited == 0 {
+        0.0
+    } else {
+        evaluator.first_pair_rank_sum as f64 / evaluator.cycles_audited as f64
+    };
+    let pair_accounting_complete = evaluator.pair_product
+        == evaluator.zero_ear_pairs + evaluator.repairable_pairs + evaluator.impossible_pairs;
+    let cycle_accounting_complete = evaluator.cycles_audited == evidence.essential_cycles
+        && evaluator.domains_built == evaluator.cycles_audited;
+    let audit_gate_passed =
+        pair_accounting_complete && cycle_accounting_complete && evaluator.errors.is_empty();
+    let go_no_go = if !audit_gate_passed {
+        "AuditInvalid"
+    } else if evaluator.direct_zero_ear_closures > 0 {
+        "GoZeroEarFastPath"
+    } else if evaluator
+        .low_ear_pairs
+        .iter()
+        .any(|(&ears, &count)| ears <= 2 && count > 0)
+    {
+        "GoFairLowEarScheduler"
+    } else if evaluator.repairable_pairs > 0 {
+        "GoAnchorRepairVariants"
+    } else {
+        "GoSignatureDirectedConcreteExtraction"
+    };
+    let telemetry = evaluator
+        .first_ear_telemetry
+        .as_ref()
+        .map_or_else(|| "null".into(), anchor_ear_telemetry_json);
+    Ok(format!(
+        "{{\"schema_version\":1,\"taskbook_sha256\":\"deb33122775ef6086b4fe8a146324a2729be8f298ed2283ac25391197eef94a8\",\"fixture\":\"N12-Lifted-N6\",\"declared_topology_family\":\"W2CanonicalEssentialCycle+TransitionCellV3+BalancedAnnularPairAudit\",\"limits\":{{\"cycle_unique_states\":{},\"balanced_topologies_per_cell\":{}}},\"unique_states\":{},\"essential_cycles\":{},\"cycles_audited\":{},\"domains_built\":{},\"cell_topologies\":{},\"global_pair_product\":{},\"zero_ear_pairs\":{},\"direct_zero_ear_closures\":{},\"repairable_pairs\":{},\"impossible_pairs\":{},\"pair_accounting_complete\":{},\"cycle_accounting_complete\":{},\"low_ear_pairs\":{{{}}},\"anchor_degree_histogram\":{{{}}},\"impossible_reasons\":{{{}}},\"zero_ear_final_rejects\":{{{}}},\"first_pair_rank\":{{\"min\":{},\"max\":{},\"mean\":{:.6}}},\"first_pair_classes\":{{{}}},\"best_pair_classes\":{{{}}},\"first_pair_ordinary_defects\":{{{}}},\"first_pair_unmatched_edges\":{{{}}},\"first_pair_broken_links\":{{{}}},\"first_pair_ear_outcome\":{},\"first_pair_ear_trace\":{},\"errors\":{{{}}},\"audit_gate_passed\":{},\"go_no_go\":\"{}\",\"remaining_cec_shards\":{},\"cec_shards_resumed\":false,\"search_result_changed\":false,\"geometry_attempted\":false,\"product_gate_changed\":false}}",
+        limits.cycle_unique_states,
+        limits.balanced_topologies_per_cell,
+        evidence.unique_states,
+        evidence.essential_cycles,
+        evaluator.cycles_audited,
+        evaluator.domains_built,
+        evaluator.cell_topologies,
+        evaluator.pair_product,
+        evaluator.zero_ear_pairs,
+        evaluator.direct_zero_ear_closures,
+        evaluator.repairable_pairs,
+        evaluator.impossible_pairs,
+        pair_accounting_complete,
+        cycle_accounting_complete,
+        low_ear_pairs,
+        anchor_degrees,
+        json_string_count_map(&evaluator.impossible_reasons),
+        json_string_count_map(&evaluator.zero_ear_final_rejects),
+        if evaluator.first_pair_rank_min == usize::MAX {
+            0
+        } else {
+            evaluator.first_pair_rank_min
+        },
+        evaluator.first_pair_rank_max,
+        first_rank_mean,
+        json_string_count_map(&evaluator.first_pair_classes),
+        json_string_count_map(&evaluator.best_pair_classes),
+        json_usize_count_map(&evaluator.first_pair_ordinary_defects),
+        json_usize_count_map(&evaluator.first_pair_unmatched_edges),
+        json_usize_count_map(&evaluator.first_pair_broken_links),
+        evaluator
+            .first_ear_outcome
+            .as_deref()
+            .map_or_else(|| "null".into(), json_string),
+        telemetry,
+        json_string_count_map(&evaluator.errors),
+        audit_gate_passed,
+        go_no_go,
+        evidence.checkpoint_shards_created,
+    ))
+}
+
+struct FairPairAuditingEvaluator<'a> {
+    source: &'a crate::MotherGrid,
+    component: &'a super::HierarchyComponent,
+    topology_limit: usize,
+    cycles_audited: u64,
+    domains_built: u64,
+    cell_topologies: u64,
+    pair_product: u64,
+    zero_ear_pairs: u64,
+    direct_zero_ear_closures: u64,
+    repairable_pairs: u64,
+    impossible_pairs: u64,
+    low_ear_pairs: BTreeMap<u8, u64>,
+    anchor_degree_histogram: BTreeMap<usize, u64>,
+    impossible_reasons: BTreeMap<String, u64>,
+    zero_ear_final_rejects: BTreeMap<String, u64>,
+    first_pair_rank_min: usize,
+    first_pair_rank_max: usize,
+    first_pair_rank_sum: u64,
+    first_pair_classes: BTreeMap<String, u64>,
+    best_pair_classes: BTreeMap<String, u64>,
+    first_pair_ordinary_defects: BTreeMap<usize, u64>,
+    first_pair_unmatched_edges: BTreeMap<usize, u64>,
+    first_pair_broken_links: BTreeMap<usize, u64>,
+    first_ear_outcome: Option<String>,
+    first_ear_telemetry: Option<super::AnchorEarSearchTelemetry>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl FaceBandPlanEvaluator for FairPairAuditingEvaluator<'_> {
+    fn observe_cycle(&mut self, _: &EssentialCycleKey, plan: &FaceBandPlan) {
+        let trace_ears = self.cycles_audited == 0;
+        self.cycles_audited += 1;
+        let domain = match build_stratified_transition_domain_v3(self.source, self.component, plan)
+        {
+            Ok(domain) => domain,
+            Err(error) => {
+                *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                return;
+            }
+        };
+        self.domains_built += 1;
+        let mut families = Vec::with_capacity(domain.cells.len());
+        for cell in &domain.cells {
+            let TransitionCellDomain::Annulus(cell) = cell else {
+                *self
+                    .errors
+                    .entry("PairAuditDoesNotSupportDiskCell".into())
+                    .or_default() += 1;
+                return;
+            };
+            let search = match enumerate_balanced_annular_strips(
+                &cell.lower_cycle,
+                &cell.upper_cycle,
+                &cell.forbidden_global_edges,
+                self.topology_limit,
+            ) {
+                Ok(search) => search,
+                Err(error) => {
+                    *self.errors.entry(format!("{error:?}")).or_default() += 1;
+                    return;
+                }
+            };
+            self.cell_topologies += search.family.topologies.len() as u64;
+            families.push(TransitionCellFamily::Annulus(AnnularTransitionCellFamily {
+                cell_id: cell.cell_id,
+                family: search.family,
+            }));
+        }
+        let audit = match audit_transition_cell_pairs(
+            self.source,
+            self.component,
+            &domain,
+            &families,
+            trace_ears,
+        ) {
+            Ok(audit) => audit,
+            Err(error) => {
+                *self.errors.entry(error).or_default() += 1;
+                return;
+            }
+        };
+        self.pair_product += audit.total_pair_product as u64;
+        self.zero_ear_pairs += audit.zero_ear_pairs as u64;
+        self.direct_zero_ear_closures += audit.direct_zero_ear_closures as u64;
+        self.repairable_pairs += audit.repairable_pairs as u64;
+        self.impossible_pairs += audit.impossible_pairs as u64;
+        merge_u8_counts(&mut self.low_ear_pairs, &audit.low_ear_pairs);
+        merge_usize_counts(
+            &mut self.anchor_degree_histogram,
+            &audit.anchor_degree_histogram,
+        );
+        merge_string_counts(&mut self.impossible_reasons, &audit.impossible_reasons);
+        merge_string_counts(
+            &mut self.zero_ear_final_rejects,
+            &audit.zero_ear_final_rejects,
+        );
+        self.first_pair_rank_min = self
+            .first_pair_rank_min
+            .min(audit.first_pair_rank_by_repair_score);
+        self.first_pair_rank_max = self
+            .first_pair_rank_max
+            .max(audit.first_pair_rank_by_repair_score);
+        self.first_pair_rank_sum += audit.first_pair_rank_by_repair_score as u64;
+        if let Some(first) = audit.first_pair {
+            *self
+                .first_pair_classes
+                .entry(pair_class_name(&first.pair_class).into())
+                .or_default() += 1;
+            *self
+                .first_pair_ordinary_defects
+                .entry(first.ordinary_degree_defect_lower_bound)
+                .or_default() += 1;
+            *self
+                .first_pair_unmatched_edges
+                .entry(first.unmatched_edge_count)
+                .or_default() += 1;
+            *self
+                .first_pair_broken_links
+                .entry(first.nonrepairable_link_count)
+                .or_default() += 1;
+        }
+        if let Some(best) = audit.best_ranked_pair {
+            *self
+                .best_pair_classes
+                .entry(pair_class_name(&best.pair_class).into())
+                .or_default() += 1;
+        }
+        if self.first_ear_telemetry.is_none() {
+            self.first_ear_outcome = audit.first_pair_ear_outcome;
+            self.first_ear_telemetry = audit.first_pair_ear_telemetry;
+        }
+    }
+
+    fn evaluate(&mut self, _: &FaceBandPlan) -> PlanEvaluation {
+        PlanEvaluation::AuditOnly
+    }
+}
+
+fn pair_class_name(class: &TopologyPairClass) -> &'static str {
+    match class {
+        TopologyPairClass::DirectlyClosedWithoutEar => "DirectlyClosedWithoutEar",
+        TopologyPairClass::NoEarFinalGateCandidate => "NoEarFinalGateCandidate",
+        TopologyPairClass::EarRepairCandidate { .. } => "EarRepairCandidate",
+        TopologyPairClass::ImpossibleBeforeEar { .. } => "ImpossibleBeforeEar",
+    }
+}
+
+fn merge_u8_counts(target: &mut BTreeMap<u8, u64>, source: &BTreeMap<u8, usize>) {
+    for (&key, &count) in source {
+        *target.entry(key).or_default() += count as u64;
+    }
+}
+
+fn merge_usize_counts(target: &mut BTreeMap<usize, u64>, source: &BTreeMap<usize, usize>) {
+    for (&key, &count) in source {
+        *target.entry(key).or_default() += count as u64;
+    }
+}
+
+fn merge_string_counts(target: &mut BTreeMap<String, u64>, source: &BTreeMap<String, usize>) {
+    for (key, &count) in source {
+        *target.entry(key.clone()).or_default() += count as u64;
+    }
+}
+
+fn anchor_ear_telemetry_json(telemetry: &super::AnchorEarSearchTelemetry) -> String {
+    let anchor_degrees = telemetry
+        .initial_anchor_degrees
+        .iter()
+        .map(|(anchor, degree)| format!("\"{anchor}\":{degree}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let candidates = telemetry
+        .initial_candidates_by_anchor
+        .iter()
+        .map(|(anchor, count)| format!("\"{anchor}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"states_examined\":{},\"maximum_depth\":{},\"duplicate_seen_states\":{},\"nodes_by_depth\":{{{}}},\"candidates_by_depth\":{{{}}},\"initial_anchor_degrees\":{{{}}},\"initial_candidates_by_anchor\":{{{}}},\"interacting_anchor_pairs\":{},\"apply_rejects\":{{{}}},\"final_gate_rejects\":{{{}}}}}",
+        telemetry.states_examined,
+        telemetry.maximum_depth,
+        telemetry.duplicate_seen_states,
+        json_usize_count_map(&telemetry.nodes_by_depth),
+        json_usize_count_map(&telemetry.candidates_by_depth),
+        anchor_degrees,
+        candidates,
+        telemetry.interacting_anchor_pairs.len(),
+        json_string_count_map_usize(&telemetry.apply_rejects),
+        json_string_count_map_usize(&telemetry.final_gate_rejects),
+    )
+}
+
 struct V3BalancedFindOneEvaluator<'a> {
     source: &'a crate::MotherGrid,
     component: &'a super::HierarchyComponent,
@@ -1685,4 +2020,28 @@ fn json_usize_map(values: &BTreeMap<usize, usize>) -> String {
             .collect::<Vec<_>>()
             .join(",")
     )
+}
+
+fn json_usize_count_map(values: &BTreeMap<usize, impl ToString>) -> String {
+    values
+        .iter()
+        .map(|(key, value)| format!("\"{key}\":{}", value.to_string()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn json_string_count_map(values: &BTreeMap<String, u64>) -> String {
+    values
+        .iter()
+        .map(|(key, value)| format!("{}:{value}", json_string(key)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn json_string_count_map_usize(values: &BTreeMap<String, usize>) -> String {
+    values
+        .iter()
+        .map(|(key, value)| format!("{}:{value}", json_string(key)))
+        .collect::<Vec<_>>()
+        .join(",")
 }

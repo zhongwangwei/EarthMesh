@@ -1,10 +1,11 @@
 use earthmesh_refine_certified::coarsen::{
-    build_face_band_problem, build_stratified_transition_domain_v3, certify_annular_topology,
-    enumerate_balanced_annular_strips, n6_legacy_mixed_fixture, solve_exact_face_bands,
-    solve_full_polygon_merge_from_face_bands, solve_transition_cell_find_one,
-    AnnularEnumerationEvidence, AnnularTransitionCellFamily, FaceBandLimits, FaceBandSolveOutcome,
-    FullAnnularFamily, FullPolygonMergeLimits, FullPolygonMergeOutcome, TransitionCellDomain,
-    TransitionCellFamily, TransitionCellMergeLimits, TransitionCellMergeOutcome,
+    audit_transition_cell_pairs, build_face_band_problem, build_stratified_transition_domain_v3,
+    certify_annular_topology, enumerate_balanced_annular_strips, n6_legacy_mixed_fixture,
+    solve_exact_face_bands, solve_full_polygon_merge_from_face_bands,
+    solve_transition_cell_find_one, AnnularEnumerationEvidence, AnnularTransitionCellFamily,
+    FaceBandLimits, FaceBandSolveOutcome, FullAnnularFamily, FullPolygonMergeLimits,
+    FullPolygonMergeOutcome, TransitionCellDomain, TransitionCellFamily, TransitionCellMergeLimits,
+    TransitionCellMergeOutcome,
 };
 use std::collections::BTreeSet;
 
@@ -78,8 +79,47 @@ fn zero_global_states_is_typed_incomplete() {
 #[test]
 fn balanced_annular_subset_finds_frozen_n6_topology() {
     let (source, component, v3, _, _) = frozen_n6_v3_families();
-    let families = v3
-        .cells
+    let families = balanced_families(&v3);
+    assert!(matches!(
+        solve_transition_cell_find_one(
+            &source,
+            &component,
+            &v3,
+            &families,
+            TransitionCellMergeLimits {
+                topology_states: 4_096,
+                ear_states_per_topology: 256,
+            },
+        ),
+        TransitionCellMergeOutcome::Closed(_)
+    ));
+}
+
+#[test]
+fn fair_pair_audit_matches_frozen_n6_identity_closure() {
+    let (source, component, v3, _, families) = frozen_n6_v3_families();
+    let audit = audit_transition_cell_pairs(&source, &component, &v3, &families, true).unwrap();
+    assert_eq!(
+        audit.total_pair_product,
+        audit.cell_family_counts.iter().product()
+    );
+    assert_eq!(
+        audit.total_pair_product,
+        audit.zero_ear_pairs + audit.repairable_pairs + audit.impossible_pairs
+    );
+    assert_eq!(audit.zero_ear_pairs, 1);
+    assert_eq!(audit.direct_zero_ear_closures, 1);
+    assert_eq!(audit.first_pair_rank_by_repair_score, 1);
+    assert_eq!(audit.first_pair_ear_outcome.as_deref(), Some("Closed"));
+    let telemetry = audit.first_pair_ear_telemetry.unwrap();
+    assert_eq!(telemetry.states_examined, 0);
+    assert_eq!(telemetry.nodes_by_depth.get(&0), Some(&1));
+}
+
+fn balanced_families(
+    v3: &earthmesh_refine_certified::coarsen::StratifiedTransitionDomainV3,
+) -> Vec<TransitionCellFamily> {
+    v3.cells
         .iter()
         .map(|cell| {
             let TransitionCellDomain::Annulus(cell) = cell else {
@@ -97,20 +137,7 @@ fn balanced_annular_subset_finds_frozen_n6_topology() {
                 family: search.family,
             })
         })
-        .collect::<Vec<_>>();
-    assert!(matches!(
-        solve_transition_cell_find_one(
-            &source,
-            &component,
-            &v3,
-            &families,
-            TransitionCellMergeLimits {
-                topology_states: 4_096,
-                ear_states_per_topology: 256,
-            },
-        ),
-        TransitionCellMergeOutcome::Closed(_)
-    ));
+        .collect()
 }
 
 fn frozen_n6_v3_families() -> (

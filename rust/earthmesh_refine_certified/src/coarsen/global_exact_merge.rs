@@ -742,6 +742,20 @@ struct EarSearchContext<'a> {
 
 type EarSearchKey = (Vec<OwnedTopologyTriangle>, Vec<(usize, usize)>);
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AnchorEarSearchTelemetry {
+    pub states_examined: usize,
+    pub maximum_depth: usize,
+    pub duplicate_seen_states: usize,
+    pub nodes_by_depth: BTreeMap<usize, usize>,
+    pub candidates_by_depth: BTreeMap<usize, usize>,
+    pub initial_anchor_degrees: BTreeMap<usize, usize>,
+    pub initial_candidates_by_anchor: BTreeMap<usize, usize>,
+    pub interacting_anchor_pairs: BTreeSet<(usize, usize)>,
+    pub apply_rejects: BTreeMap<String, usize>,
+    pub final_gate_rejects: BTreeMap<String, usize>,
+}
+
 pub(super) fn solve_ears(
     source: &MotherGrid,
     stratified: &StratifiedAnnulus,
@@ -794,6 +808,56 @@ pub(super) fn solve_ears_with_contracts_limited(
     states: &mut usize,
     maximum_states: usize,
 ) -> EarSolve {
+    solve_ears_with_contracts_limited_inner(
+        source,
+        link_contracts,
+        fixed_mesh_edges,
+        fixed_final_triangles,
+        triangles,
+        evidence,
+        states,
+        maximum_states,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn solve_ears_with_contracts_limited_and_telemetry(
+    source: &MotherGrid,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+    fixed_final_triangles: &[[usize; 3]],
+    triangles: Vec<OwnedTopologyTriangle>,
+    evidence: &mut GlobalExactMergeEvidence,
+    states: &mut usize,
+    maximum_states: usize,
+    telemetry: &mut AnchorEarSearchTelemetry,
+) -> EarSolve {
+    solve_ears_with_contracts_limited_inner(
+        source,
+        link_contracts,
+        fixed_mesh_edges,
+        fixed_final_triangles,
+        triangles,
+        evidence,
+        states,
+        maximum_states,
+        Some(telemetry),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_ears_with_contracts_limited_inner(
+    source: &MotherGrid,
+    link_contracts: &BTreeMap<usize, VertexLinkContract>,
+    fixed_mesh_edges: &BTreeSet<(usize, usize)>,
+    fixed_final_triangles: &[[usize; 3]],
+    triangles: Vec<OwnedTopologyTriangle>,
+    evidence: &mut GlobalExactMergeEvidence,
+    states: &mut usize,
+    maximum_states: usize,
+    mut telemetry: Option<&mut AnchorEarSearchTelemetry>,
+) -> EarSolve {
     let vertex_sector_contributions = vertex_sector_contributions(&triangles);
     let context = EarSearchContext {
         source,
@@ -810,6 +874,7 @@ pub(super) fn solve_ears_with_contracts_limited(
         evidence,
         states,
         maximum_states,
+        &mut telemetry,
         &mut BTreeSet::new(),
     )
 }
@@ -823,8 +888,13 @@ fn solve_ears_inner(
     evidence: &mut GlobalExactMergeEvidence,
     states: &mut usize,
     maximum_states: usize,
+    telemetry: &mut Option<&mut AnchorEarSearchTelemetry>,
     seen: &mut BTreeSet<EarSearchKey>,
 ) -> EarSolve {
+    if let Some(telemetry) = telemetry.as_deref_mut() {
+        telemetry.maximum_depth = telemetry.maximum_depth.max(depth);
+        *telemetry.nodes_by_depth.entry(depth).or_default() += 1;
+    }
     if depth
         > context
             .link_contracts
@@ -844,6 +914,9 @@ fn solve_ears_inner(
         .into_iter()
         .collect();
     if !seen.insert((triangle_key, ear_counts)) {
+        if let Some(telemetry) = telemetry.as_deref_mut() {
+            telemetry.duplicate_seen_states += 1;
+        }
         return EarSolve::NoSolution;
     }
     let overfull = overfull_anchors(context.link_contracts, &triangles);
@@ -855,13 +928,19 @@ fn solve_ears_inner(
         candidate_evidence.vertex_sector_contributions =
             context.vertex_sector_contributions.clone();
         candidate_evidence.vertex_ear_deltas = vertex_ear_deltas(&ears);
-        let closed = final_gate_with_contracts(
+        let gate = final_gate_with_contracts(
             context.source,
             context.link_contracts,
             &final_source_triangles,
             &mut candidate_evidence,
-        )
-        .is_ok();
+        );
+        if let (Some(telemetry), Err(reason)) = (telemetry.as_deref_mut(), &gate) {
+            *telemetry
+                .final_gate_rejects
+                .entry(reason.clone())
+                .or_default() += 1;
+        }
+        let closed = gate.is_ok();
         if closed || evidence_is_better(&candidate_evidence, evidence) {
             *evidence = candidate_evidence;
         }
@@ -893,6 +972,33 @@ fn solve_ears_inner(
             ))
         }
     };
+    if depth == 0 {
+        if let Some(telemetry) = telemetry.as_deref_mut() {
+            telemetry.initial_anchor_degrees = report.initial_anchor_degrees.clone();
+            for candidate in &report.candidates {
+                *telemetry
+                    .initial_candidates_by_anchor
+                    .entry(candidate.anchor_slot)
+                    .or_default() += 1;
+                for &(vertex, _) in &candidate.degree_delta {
+                    if vertex != candidate.anchor_slot && overfull.contains(&vertex) {
+                        telemetry
+                            .interacting_anchor_pairs
+                            .insert(sorted(candidate.anchor_slot, vertex));
+                    }
+                }
+            }
+            for &(left, right) in &report.conflict_graph.conflicts {
+                let left = report.conflict_graph.candidate_keys[left].anchor_slot;
+                let right = report.conflict_graph.candidate_keys[right].anchor_slot;
+                if left != right {
+                    telemetry
+                        .interacting_anchor_pairs
+                        .insert(sorted(left, right));
+                }
+            }
+        }
+    }
     let candidates = report
         .candidates
         .into_iter()
@@ -904,6 +1010,9 @@ fn solve_ears_inner(
                 < MAX_EARS_PER_ANCHOR
         })
         .collect::<Vec<_>>();
+    if let Some(telemetry) = telemetry.as_deref_mut() {
+        *telemetry.candidates_by_depth.entry(depth).or_default() += candidates.len();
+    }
     if candidates.is_empty() {
         return EarSolve::NoSolution;
     }
@@ -912,10 +1021,19 @@ fn solve_ears_inner(
             return EarSolve::SearchIncomplete;
         }
         *states += 1;
+        if let Some(telemetry) = telemetry.as_deref_mut() {
+            telemetry.states_examined += 1;
+        }
         let next = match apply_anchor_ear(&triangles, &candidate) {
             Ok(next) => next,
             Err(error) => {
-                return EarSolve::Invalid(format!("anchor ear apply rejected: {:?}", error.reason))
+                if let Some(telemetry) = telemetry.as_deref_mut() {
+                    *telemetry
+                        .apply_rejects
+                        .entry(format!("{:?}", error.reason))
+                        .or_default() += 1;
+                }
+                return EarSolve::Invalid(format!("anchor ear apply rejected: {:?}", error.reason));
             }
         };
         let mut next_ears = ears.clone();
@@ -934,6 +1052,7 @@ fn solve_ears_inner(
             evidence,
             states,
             maximum_states,
+            telemetry,
             seen,
         ) {
             EarSolve::NoSolution => {}
@@ -1533,7 +1652,7 @@ fn final_link_edges(anchor_slot: usize, triangles: &[[usize; 3]]) -> BTreeSet<(u
         .collect()
 }
 
-fn edge_counts(triangles: &[[usize; 3]]) -> BTreeMap<(usize, usize), usize> {
+pub(super) fn edge_counts(triangles: &[[usize; 3]]) -> BTreeMap<(usize, usize), usize> {
     let mut out = BTreeMap::new();
     for [a, b, c] in triangles.iter().copied() {
         for edge in [sorted(a, b), sorted(b, c), sorted(c, a)] {
@@ -1551,7 +1670,7 @@ pub(super) fn mesh_edges(triangles: &[[usize; 3]]) -> BTreeSet<(usize, usize)> {
     edge_counts(triangles).into_keys().collect()
 }
 
-fn vertex_degrees(triangles: &[[usize; 3]]) -> BTreeMap<usize, usize> {
+pub(super) fn vertex_degrees(triangles: &[[usize; 3]]) -> BTreeMap<usize, usize> {
     let mut links = BTreeMap::<usize, BTreeSet<(usize, usize)>>::new();
     for [a, b, c] in triangles.iter().copied() {
         links.entry(a).or_default().insert(sorted(b, c));
@@ -1564,7 +1683,7 @@ fn vertex_degrees(triangles: &[[usize; 3]]) -> BTreeMap<usize, usize> {
         .collect()
 }
 
-fn single_cycle_link(vertex: usize, triangles: &[[usize; 3]]) -> bool {
+pub(super) fn single_cycle_link(vertex: usize, triangles: &[[usize; 3]]) -> bool {
     let edges = triangles
         .iter()
         .filter(|triangle| triangle.contains(&vertex))
