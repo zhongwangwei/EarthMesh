@@ -99,6 +99,21 @@ pub enum ComponentOutcomeKind {
     PromotedToFine,
 }
 
+impl ComponentOutcomeKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Certified => "certified",
+            Self::RejectedForQuality => "rejected_for_quality",
+            Self::NoTopology => "no_topology",
+            Self::ElasticNoImprovement => "elastic_no_improvement",
+            Self::SearchBudgetExhausted => "search_budget_exhausted",
+            Self::RequiresWiderHalo => "requires_wider_halo",
+            Self::NotCertifiable => "not_certifiable",
+            Self::PromotedToFine => "promoted_to_fine",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElasticComponentRecord {
     pub component_id: u64,
@@ -1263,6 +1278,10 @@ mod tests {
         assert_eq!(
             result.report.components[0].outcome,
             ComponentOutcomeKind::RejectedForQuality
+        );
+        assert_eq!(
+            result.report.components[0].outcome.as_str(),
+            "rejected_for_quality"
         );
         assert_eq!(result.state.mesh().mesh, source.mesh);
     }

@@ -1724,25 +1724,7 @@ fn build_mixed_certified_construction(
 fn elastic_outcome_name(
     outcome: earthmesh_refine_certified::coarsen::ComponentOutcomeKind,
 ) -> &'static str {
-    match outcome {
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::Certified => "certified",
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::NoTopology => "no_topology",
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::ElasticNoImprovement => {
-            "elastic_no_improvement"
-        }
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::SearchBudgetExhausted => {
-            "search_budget_exhausted"
-        }
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::RequiresWiderHalo => {
-            "requires_wider_halo"
-        }
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::NotCertifiable => {
-            "not_certifiable"
-        }
-        earthmesh_refine_certified::coarsen::ComponentOutcomeKind::PromotedToFine => {
-            "promoted_to_fine"
-        }
-    }
+    outcome.as_str()
 }
 
 fn elastic_report_json(
