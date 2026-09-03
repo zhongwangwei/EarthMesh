@@ -303,13 +303,7 @@ pub(super) fn solve_component_transaction_at_level(
         return fail!(NotCertifiable, ComponentTransactionStage::Physical, reason);
     }
 
-    let pre_sources = state
-        .mesh
-        .source_vertex_slots
-        .iter()
-        .flatten()
-        .copied()
-        .collect::<BTreeSet<_>>();
+    let pre_sources = active_source_mask(&state.mesh, source.mesh.vertices().len());
     let mut topology_cursor = 0usize;
     let mut saw_candidate = false;
     let mut last_retry: Option<(ComponentTransactionStage, String)> = None;
@@ -571,7 +565,7 @@ fn certify_candidate(
     before_fingerprint: u64,
     pre_vertices: usize,
     pre_faces: usize,
-    pre_sources: &BTreeSet<usize>,
+    pre_sources: &[bool],
 ) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
     let candidate = transition.candidate.clone();
     install_delta(source, state, &candidate).map_err(|reason| {
@@ -581,10 +575,17 @@ fn certify_candidate(
 
     let mut elastic_iterations = 0usize;
     let mut elastic_report = None;
-    if Certificate::internal()
-        .verify_geometry(&state.mesh.mesh)
-        .is_err()
-    {
+    let guard_faces = affected_faces(source, &state.mesh, &candidate);
+    let interval_boxes = guard_faces.len().saturating_mul(3);
+    if interval_boxes > remaining_interval_boxes {
+        let mut failure = CandidateAttemptFailure::budget(
+            ComponentTransactionStage::LocalGeometry,
+            "local geometry interval-box budget exhausted".to_string(),
+        );
+        failure.interval_boxes = interval_boxes;
+        return Err(failure);
+    }
+    if !Certificate::internal().geometry_region_passes(&state.mesh.mesh, &guard_faces) {
         if transition.candidate.custom_transition_triangles.is_empty() {
             return Err(CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
@@ -667,16 +668,6 @@ fn certify_candidate(
         &transition.boundary,
         coarse_level,
     );
-    let guard_faces = affected_faces(source, &state.mesh, &candidate);
-    let interval_boxes = guard_faces.len().saturating_mul(3);
-    if interval_boxes > remaining_interval_boxes {
-        let mut failure = CandidateAttemptFailure::budget(
-            ComponentTransactionStage::LocalGeometry,
-            "local geometry interval-box budget exhausted".to_string(),
-        );
-        failure.interval_boxes = interval_boxes;
-        return Err(failure);
-    }
     let local_geometry = Certificate::internal()
         .verify_geometry_region(&state.mesh.mesh, &guard_faces)
         .map_err(|error| {
@@ -790,17 +781,13 @@ fn certify_candidate(
     state
         .claimed_parents
         .extend(component.parents.iter().copied());
-    let post_sources = state
-        .mesh
-        .source_vertex_slots
-        .iter()
-        .flatten()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let core_sources = source_sites_for_parents(source, candidate.core_parents.iter().copied());
+    let post_sources = active_source_mask(&state.mesh, source.mesh.vertices().len());
+    let core_sources = source_site_mask_for_parents(source, candidate.core_parents.iter().copied());
     let core_vertices_removed = pre_sources
         .iter()
-        .filter(|source| !post_sources.contains(source) && core_sources.contains(source))
+        .zip(&post_sources)
+        .zip(&core_sources)
+        .filter(|&((&before, &after), &core)| before && !after && core)
         .count();
 
     Ok(ComponentCommitReport {
@@ -1225,18 +1212,38 @@ fn lower_covered_source_levels(
         .iter()
         .flat_map(|cycle| cycle.iter().copied())
         .collect::<BTreeSet<_>>();
-    for source_site in candidate_source_sites(source, candidate)
-        .into_iter()
-        .filter(|site| !fixed_fine.contains(site))
+    for parent in candidate
+        .core_parents
+        .iter()
+        .copied()
+        .chain(candidate.custom_transition_triangles.keys().copied())
     {
-        if let Some(level) = state
-            .source_delivered_levels
-            .get_mut(source_site)
-            .and_then(Option::as_mut)
-        {
-            *level = (*level).min(coarse_level);
+        let _ = visit_source_descendant_faces(source, parent, &mut |face| {
+            for source_site in source.mesh.triangles()[face] {
+                if fixed_fine.contains(&source_site) {
+                    continue;
+                }
+                if let Some(level) = state
+                    .source_delivered_levels
+                    .get_mut(source_site)
+                    .and_then(Option::as_mut)
+                {
+                    *level = (*level).min(coarse_level);
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+fn active_source_mask(mesh: &HierarchyLeafMesh, source_slots: usize) -> Vec<bool> {
+    let mut active = vec![false; source_slots];
+    for source in mesh.source_vertex_slots.iter().flatten().copied() {
+        if let Some(slot) = active.get_mut(source) {
+            *slot = true;
         }
     }
+    active
 }
 
 fn affected_faces(
@@ -1244,12 +1251,17 @@ fn affected_faces(
     mesh: &HierarchyLeafMesh,
     candidate: &TransitionTopologyCandidate,
 ) -> BTreeSet<usize> {
-    let sources = candidate_source_sites(source, candidate);
+    let sources = if candidate.source_active_vertices.is_empty() {
+        candidate_source_sites(source, candidate)
+    } else {
+        candidate.source_active_vertices.iter().copied().collect()
+    };
     mesh.mesh
         .active_triangle_slots()
         .filter(|&face| {
             mesh.mesh.triangles()[face].iter().any(|&compact| {
-                mesh.source_vertex_slots[compact].is_some_and(|source| sources.contains(&source))
+                mesh.source_vertex_slots[compact]
+                    .is_some_and(|source_site| sources.contains(&source_site))
             })
         })
         .collect()
@@ -1283,6 +1295,22 @@ fn source_sites_for_parents(
     sources
 }
 
+fn source_site_mask_for_parents(
+    source: &MotherGrid,
+    parents: impl IntoIterator<Item = TriangleAddress>,
+) -> Vec<bool> {
+    let mut sources = vec![false; source.mesh.vertices().len()];
+    for parent in parents {
+        let _ = visit_source_descendant_faces(source, parent, &mut |face| {
+            for site in source.mesh.triangles()[face] {
+                sources[site] = true;
+            }
+            Ok(())
+        });
+    }
+    sources
+}
+
 fn target_levels_for(
     mesh: &MeshState,
     source_slots: &[Option<usize>],
@@ -1307,6 +1335,64 @@ fn target_levels_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixed_component_certifies_only_its_transition_neighbourhood() {
+        let source = MotherGrid::generate(4).unwrap();
+        let face = source.mesh.active_triangle_slots().next().unwrap();
+        let transition_sources = source.mesh.triangles()[face].to_vec();
+        let core_parents = source
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .filter_map(|address| address.parent_2_to_1())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mut mesh = HierarchyLeafMesh {
+            mesh: source.mesh.clone(),
+            triangle_addresses: source.triangle_addresses.clone(),
+            source_vertex_slots: source
+                .mesh
+                .vertices()
+                .iter()
+                .enumerate()
+                .map(|(site, _)| source.mesh.is_vertex_live(site).then_some(site))
+                .collect(),
+        };
+        let remote = mesh
+            .mesh
+            .active_vertex_slots()
+            .find(|site| !transition_sources.contains(site))
+            .unwrap();
+        let position = mesh.mesh.vertices()[remote];
+        mesh.mesh.move_vertex(
+            remote,
+            CartesianPoint::new(position.x + f64::EPSILON, position.y, position.z),
+        );
+        let candidate = TransitionTopologyCandidate {
+            component_id: 1,
+            topology_id: 1,
+            core_parents,
+            custom_transition_triangles: BTreeMap::new(),
+            source_triangles: vec![source.mesh.triangles()[face]],
+            source_active_vertices: transition_sources.clone(),
+            source_degree_forecast: BTreeMap::new(),
+        };
+
+        let affected = affected_faces(&source, &mesh, &candidate);
+        let expected = source
+            .mesh
+            .active_triangle_slots()
+            .filter(|&candidate_face| {
+                source.mesh.triangles()[candidate_face]
+                    .iter()
+                    .any(|site| transition_sources.contains(site))
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(affected, expected);
+        assert!(affected.len() < source.mesh.triangle_count());
+    }
 
     #[test]
     fn failed_face_maps_to_the_nearest_core_face_across_the_transition() {

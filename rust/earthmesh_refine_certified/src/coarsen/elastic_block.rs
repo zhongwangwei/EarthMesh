@@ -16,7 +16,7 @@ use crate::{
 };
 use earthmesh_mesh::{
     arc_length_unit_sphere, cross, in_circle_on_sphere, magnitude, orientation_on_sphere,
-    CartesianPoint, MeshState, Sign,
+    spherical_circumcenter_from_barycenter, CartesianPoint, MeshState, Sign, VoronoiCell,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -294,7 +294,7 @@ pub enum ElasticBlockPhase {
 }
 
 struct EnergyContext {
-    degrees: Vec<usize>,
+    degrees: BTreeMap<usize, usize>,
     guard_edges: Vec<(usize, usize)>,
     guard_faces: Vec<usize>,
     guard_seeds: Vec<(usize, usize)>,
@@ -2420,20 +2420,28 @@ fn validate_patch(mesh: &HierarchyLeafMesh, patch: &ElasticPatch) -> Result<(), 
     {
         return Err("elastic patch has duplicate or inactive guard faces".into());
     }
-    if movable.iter().any(|site| {
-        !guard
-            .iter()
-            .any(|&face| mesh.mesh.triangles()[face].contains(site))
-    }) {
+    let mut seed_by_movable = BTreeMap::new();
+    for &face in &guard {
+        for site in mesh.mesh.triangles()[face] {
+            if movable.contains(&site) {
+                seed_by_movable.entry(site).or_insert(face);
+            }
+        }
+    }
+    if movable
+        .iter()
+        .any(|site| !seed_by_movable.contains_key(site))
+    {
         return Err("elastic movable vertex lies outside the guard faces".into());
     }
-    if mesh.mesh.active_triangle_slots().any(|face| {
-        mesh.mesh.triangles()[face]
-            .iter()
-            .any(|site| movable.contains(site))
-            && !guard.contains(&face)
-    }) {
-        return Err("elastic guard omits a face incident to a movable vertex".into());
+    for (&site, &seed) in &seed_by_movable {
+        let incident = mesh
+            .mesh
+            .triangle_fan_from(site, seed)
+            .map_err(|error| error.to_string())?;
+        if incident.iter().any(|face| !guard.contains(face)) {
+            return Err("elastic guard omits a face incident to a movable vertex".into());
+        }
     }
     let expected_fixed = guard
         .iter()
@@ -2513,18 +2521,10 @@ impl EnergyContext {
                 guard_edges.insert((edge.0.min(edge.1), edge.0.max(edge.1)));
             }
         }
-        let reference =
-            MeshState::from_parts(patch.reference_positions.clone(), mesh.triangles().to_vec())
-                .ok();
         let mut reference_dual_areas = BTreeMap::new();
         for (&site, &seed) in &guard_seeds {
-            let area = reference.as_ref().and_then(|reference| {
-                reference
-                    .voronoi_cell_from(site, seed)
-                    .ok()
-                    .and_then(|cell| cell.area_on_unit_sphere())
-                    .filter(|area| area.is_finite() && *area > 0.0)
-            });
+            let area = reference_voronoi_area(mesh, &patch.reference_positions, site, seed)
+                .filter(|area| area.is_finite() && *area > 0.0);
             let area = patch
                 .target_field
                 .target_cell_areas
@@ -2536,49 +2536,79 @@ impl EnergyContext {
                 .or(area);
             reference_dual_areas.insert(site, area);
         }
+        let degrees = guard_seeds
+            .iter()
+            .map(|(&site, &seed)| {
+                mesh.triangle_fan_from(site, seed)
+                    .map(|fan| (site, fan.len()))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let guard_faces = patch.guard_faces.clone();
         let guard_edges = guard_edges.into_iter().collect::<Vec<_>>();
         let guard_seeds = guard_seeds.into_iter().collect::<Vec<_>>();
         let dual_pairs = collect_dual_pairs(mesh, &guard_faces)?;
-        let derivatives = patch
+        let movable = patch
             .movable_compact_vertices
             .iter()
             .copied()
+            .collect::<BTreeSet<_>>();
+        let mut derivative_faces = BTreeMap::<usize, Vec<usize>>::new();
+        let mut derivative_sites = BTreeMap::<usize, BTreeSet<usize>>::new();
+        for &face in &guard_faces {
+            let triangle = mesh.triangles()[face];
+            for site in triangle.into_iter().filter(|site| movable.contains(site)) {
+                derivative_faces.entry(site).or_default().push(face);
+                derivative_sites.entry(site).or_default().extend(triangle);
+            }
+        }
+        let mut derivative_edges = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+        for &edge in &guard_edges {
+            for site in [edge.0, edge.1] {
+                if movable.contains(&site) {
+                    derivative_edges.entry(site).or_default().push(edge);
+                }
+            }
+        }
+        let mut derivative_pairs = BTreeMap::<usize, Vec<DualPair>>::new();
+        for &pair in &dual_pairs {
+            for site in mesh.triangles()[pair.face]
+                .into_iter()
+                .chain(std::iter::once(pair.opposite))
+            {
+                if movable.contains(&site) {
+                    derivative_pairs.entry(site).or_default().push(pair);
+                }
+            }
+        }
+        let seed_by_site = guard_seeds.iter().copied().collect::<BTreeMap<_, _>>();
+        let derivatives = movable
+            .into_iter()
             .map(|site| {
-                let faces = guard_faces
-                    .iter()
-                    .copied()
-                    .filter(|&face| mesh.triangles()[face].contains(&site))
-                    .collect::<Vec<_>>();
-                let affected_sites = faces
-                    .iter()
-                    .flat_map(|&face| mesh.triangles()[face])
-                    .collect::<BTreeSet<_>>();
-                let derivative = DerivativeContext {
-                    guard_edges: guard_edges
-                        .iter()
-                        .copied()
-                        .filter(|&(left, right)| left == site || right == site)
-                        .collect(),
-                    guard_faces: faces,
-                    guard_seeds: guard_seeds
-                        .iter()
-                        .copied()
-                        .filter(|(candidate, _)| affected_sites.contains(candidate))
-                        .collect(),
-                    dual_pairs: dual_pairs
-                        .iter()
-                        .copied()
-                        .filter(|pair| {
-                            pair.opposite == site || mesh.triangles()[pair.face].contains(&site)
-                        })
-                        .collect(),
-                };
-                (site, derivative)
+                let guard_seeds = derivative_sites
+                    .remove(&site)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|candidate| {
+                        seed_by_site
+                            .get(&candidate)
+                            .copied()
+                            .map(|seed| (candidate, seed))
+                    })
+                    .collect();
+                (
+                    site,
+                    DerivativeContext {
+                        guard_edges: derivative_edges.remove(&site).unwrap_or_default(),
+                        guard_faces: derivative_faces.remove(&site).unwrap_or_default(),
+                        guard_seeds,
+                        dual_pairs: derivative_pairs.remove(&site).unwrap_or_default(),
+                    },
+                )
             })
             .collect();
         Ok(Self {
-            degrees: vertex_degrees(mesh),
+            degrees,
             guard_edges,
             guard_faces,
             guard_seeds,
@@ -2587,6 +2617,42 @@ impl EnergyContext {
             reference_dual_areas,
         })
     }
+}
+
+fn reference_voronoi_area(
+    mesh: &MeshState,
+    positions: &[CartesianPoint],
+    site: usize,
+    seed: usize,
+) -> Option<f64> {
+    if positions.len() != mesh.vertices().len() {
+        return None;
+    }
+    let mut triangles = mesh.triangle_fan_from(site, seed).ok()?;
+    let start = triangles
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, triangle)| *triangle)?
+        .0;
+    triangles.rotate_left(start);
+    let corners = triangles
+        .iter()
+        .map(|&face| {
+            let vertices = mesh.triangles()[face].map(|corner| positions[corner]);
+            let barycenter = CartesianPoint::new(
+                (vertices[0].x + vertices[1].x + vertices[2].x) / 3.0,
+                (vertices[0].y + vertices[1].y + vertices[2].y) / 3.0,
+                (vertices[0].z + vertices[1].z + vertices[2].z) / 3.0,
+            );
+            spherical_circumcenter_from_barycenter(barycenter, vertices)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    VoronoiCell {
+        site,
+        triangles,
+        corners,
+    }
+    .area_on_unit_sphere()
 }
 
 fn collect_dual_pairs(mesh: &MeshState, guard_faces: &[usize]) -> Result<Vec<DualPair>, String> {
@@ -2685,7 +2751,12 @@ fn elastic_energy_in(
                 .target_angles
                 .get(&site)
                 .copied()
-                .unwrap_or(std::f64::consts::TAU / context.degrees[site] as f64);
+                .or_else(|| {
+                    context
+                        .degrees
+                        .get(&site)
+                        .map(|degree| std::f64::consts::TAU / *degree as f64)
+                })?;
             let below = (minimum_angle - angle).max(0.0);
             let above = (angle - maximum_angle).max(0.0);
             energy += 100.0 * (below * below + above * above);
@@ -3975,6 +4046,75 @@ mod tests {
     }
 
     #[test]
+    fn energy_context_matches_full_reference_without_global_rebuild() {
+        let (mesh, patch, _, context) = single_movable_patch();
+        let reference =
+            MeshState::from_parts(patch.reference_positions.clone(), mesh.triangles().to_vec())
+                .unwrap();
+        let all_degrees = vertex_degrees(&mesh);
+        for &(site, seed) in &context.guard_seeds {
+            assert_eq!(context.degrees[&site], all_degrees[site]);
+            assert_eq!(
+                context.reference_dual_areas[&site],
+                reference
+                    .voronoi_cell_from(site, seed)
+                    .unwrap()
+                    .area_on_unit_sphere()
+            );
+        }
+        for &site in &patch.movable_compact_vertices {
+            let local = &context.derivatives[&site];
+            assert_eq!(
+                local.guard_faces,
+                context
+                    .guard_faces
+                    .iter()
+                    .copied()
+                    .filter(|&face| mesh.triangles()[face].contains(&site))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                local.guard_edges,
+                context
+                    .guard_edges
+                    .iter()
+                    .copied()
+                    .filter(|&(left, right)| left == site || right == site)
+                    .collect::<Vec<_>>()
+            );
+            let affected = local
+                .guard_faces
+                .iter()
+                .flat_map(|&face| mesh.triangles()[face])
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                local.guard_seeds,
+                context
+                    .guard_seeds
+                    .iter()
+                    .copied()
+                    .filter(|(candidate, _)| affected.contains(candidate))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                local
+                    .dual_pairs
+                    .iter()
+                    .map(|pair| (pair.face, pair.opposite))
+                    .collect::<Vec<_>>(),
+                context
+                    .dual_pairs
+                    .iter()
+                    .filter(|pair| {
+                        pair.opposite == site || mesh.triangles()[pair.face].contains(&site)
+                    })
+                    .map(|pair| (pair.face, pair.opposite))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn dual9_matches_finite_difference() {
         let grid = MotherGrid::generate(4).unwrap();
         let face = grid.mesh.active_triangle_slots().next().unwrap();
@@ -4811,7 +4951,7 @@ mod tests {
             target_field: ElasticTargetField::default(),
         };
         let context = EnergyContext {
-            degrees: vertex_degrees(&grid.mesh),
+            degrees: vertex_degrees(&grid.mesh).into_iter().enumerate().collect(),
             guard_edges: vec![(triangle[0], triangle[1]), (triangle[1], triangle[2])],
             guard_faces: vec![face],
             guard_seeds: vec![(usize::MAX, usize::MAX)],

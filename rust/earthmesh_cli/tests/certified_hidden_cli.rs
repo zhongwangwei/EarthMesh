@@ -256,7 +256,8 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
     let path = root.join("cmrc.nml");
     fs::write(
         &path,
-        landtype_namelist(&root, "landtype_requirement", &landtype),
+        landtype_namelist(&root, "landtype_requirement", &landtype)
+            .replace("landmesh", "earthmesh"),
     )
     .unwrap();
 
@@ -269,7 +270,8 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
     let missing_case = "missing_landtype";
     fs::write(
         &path,
-        landtype_namelist(&root, missing_case, &root.join("missing.nc")),
+        landtype_namelist(&root, missing_case, &root.join("missing.nc"))
+            .replace("landmesh", "earthmesh"),
     )
     .unwrap();
     assert!(earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err());
@@ -277,6 +279,27 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
         .join(missing_case)
         .join("result/gridfile_NXP0003_hex.nc4")
         .exists());
+}
+
+#[test]
+fn certified_ocean_output_does_not_publish_an_unmasked_global_sphere() {
+    let root = temp_root("ocean_mask_gate");
+    let landtype = root.join("landtype.nc");
+    write_landtype(&landtype);
+    let path = root.join("cmrc.nml");
+    let case = "ocean_mask_gate";
+    let namelist = landtype_namelist(&root, case, &landtype)
+        .replace("landmesh", "oceanmesh")
+        .replace("mode_grid='hex'", "mode_grid='tri'")
+        .replace("output_format='CoLM'", "output_format='FVCOM'");
+    fs::write(&path, namelist).unwrap();
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect_err("closed-sphere certification must not masquerade as an ocean mask");
+    assert!(error
+        .to_string()
+        .contains("certified land/ocean mask publication is not implemented"));
+    assert!(!root.join(case).join("result").exists());
 }
 
 #[test]

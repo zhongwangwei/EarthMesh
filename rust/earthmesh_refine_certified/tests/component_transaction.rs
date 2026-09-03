@@ -204,6 +204,37 @@ fn interval_budget_failure_restores_the_exact_installed_snapshot() {
 }
 
 #[test]
+fn impossible_local_certificate_budget_is_rejected_before_elastic_work() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = mixed_component(&source);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+    let snapshot = state.clone();
+
+    let outcome = solve_component_transaction(
+        &source,
+        &levels,
+        &mut state,
+        &component,
+        2,
+        1,
+        ComponentTransactionLimits {
+            interval_boxes: 0,
+            ..FULL_LIMITS
+        },
+    );
+    let ComponentTransactionOutcome::SearchBudgetExhausted(report) = outcome else {
+        panic!("zero local-certificate budget must fail before CBER: {outcome:?}")
+    };
+
+    assert_eq!(report.stage, ComponentTransactionStage::LocalGeometry);
+    assert_eq!(report.elastic_iterations, 0);
+    assert!(report.interval_boxes > 0);
+    assert_eq!(report.before_fingerprint, report.restored_fingerprint);
+    assert_eq!(state, snapshot);
+}
+
+#[test]
 fn physical_failure_never_reaches_topology_or_elastic_search() {
     let source = MotherGrid::generate(8).unwrap();
     let levels = source_levels(&source, 3);

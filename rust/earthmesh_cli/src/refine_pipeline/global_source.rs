@@ -1795,6 +1795,12 @@ fn run_certified_pipeline(
             "CMRC UnsupportedBoundaryConstraint: the current strict path requires a closed global sphere",
         ));
     }
+    if matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CMRC UnsupportedBoundaryConstraint: IGBP can drive certified refinement demand, but certified land/ocean mask publication is not implemented; the current strict certificate covers only the closed global sphere",
+        ));
+    }
     let requested_view = config.mode_grid.trim();
     if !matches!(requested_view, "tri" | "hex") {
         return Err(io::Error::new(
