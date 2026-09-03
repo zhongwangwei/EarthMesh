@@ -4,7 +4,7 @@ use earthmesh_refine_certified::{
     coarsen::{
         run_elastic_component_epochs, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
     },
-    MotherGrid, SourceLevelField, TriangleAddress,
+    AngleContractId, MotherGrid, SourceLevelField, TriangleAddress,
 };
 
 fn source_levels(grid: &MotherGrid, levels_by_site: &[usize]) -> SourceLevelField {
@@ -20,6 +20,7 @@ fn source_levels(grid: &MotherGrid, levels_by_site: &[usize]) -> SourceLevelFiel
 
 fn full_config(max_level: usize) -> ElasticCmrcConfig {
     ElasticCmrcConfig {
+        angle_contract: AngleContractId::LegacyStrict40To80,
         max_level,
         max_adjacent_level_delta: 1,
         initial_transition_rings: 1,

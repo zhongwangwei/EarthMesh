@@ -258,6 +258,34 @@ fn solve_transition_topology_from_cursor_with_promotion(
                 halo_expansions += expansion_cost;
             }
             TransitionTopologyOutcome::InvalidBoundary { reason, .. } => {
+                if reason.starts_with("coarse inner boundary:")
+                    && halo_expansions < limits.maximum_halo_expansions
+                {
+                    match promote_pinched_core(source, &mut core, &mut transition) {
+                        Ok(true) => {
+                            halo_expansions += 1;
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(repair_reason) => {
+                            return invalid(states_examined, halo_expansions, repair_reason)
+                        }
+                    }
+                }
+                if reason.starts_with("fine outer boundary:")
+                    && halo_expansions < limits.maximum_halo_expansions
+                {
+                    match retain_fine_at_pinches(source, &core, &mut transition) {
+                        Ok(true) => {
+                            halo_expansions += 1;
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(repair_reason) => {
+                            return invalid(states_examined, halo_expansions, repair_reason)
+                        }
+                    }
+                }
                 return invalid(states_examined, halo_expansions, reason);
             }
             TransitionTopologyOutcome::ProvenInfeasible {
@@ -431,6 +459,75 @@ fn core_boundary(
         .collect()
 }
 
+fn promote_pinched_core(
+    source: &MotherGrid,
+    core: &mut BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+) -> Result<bool, String> {
+    let pinches = branched_boundary_vertices(coarse_boundary_edges(source, core, transition)?);
+    if pinches.is_empty() {
+        return Ok(false);
+    }
+    let promoted = core
+        .iter()
+        .copied()
+        .filter(|parent| {
+            parent_patch(source, *parent)
+                .is_ok_and(|patch| patch.corners.iter().any(|corner| pinches.contains(corner)))
+        })
+        .collect::<BTreeSet<_>>();
+    if promoted.is_empty() || promoted.len() == core.len() {
+        return Ok(false);
+    }
+    promote_to_transition(core, transition, promoted);
+    Ok(true)
+}
+
+fn retain_fine_at_pinches(
+    source: &MotherGrid,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &mut BTreeSet<TriangleAddress>,
+) -> Result<bool, String> {
+    let pinches = branched_boundary_vertices(fine_boundary_edges(source, core, transition)?);
+    if pinches.is_empty() {
+        return Ok(false);
+    }
+    let retained = transition
+        .iter()
+        .copied()
+        .filter(|parent| {
+            parent_patch(source, *parent).is_ok_and(|patch| {
+                patch
+                    .corners
+                    .iter()
+                    .chain(&patch.midpoints)
+                    .any(|vertex| pinches.contains(vertex))
+            })
+        })
+        .collect::<Vec<_>>();
+    if retained.is_empty() {
+        return Ok(false);
+    }
+    for parent in retained {
+        transition.remove(&parent);
+    }
+    Ok(true)
+}
+
+fn branched_boundary_vertices(edges: Vec<(usize, usize)>) -> BTreeSet<usize> {
+    let mut outgoing = BTreeMap::<usize, usize>::new();
+    let mut incoming = BTreeMap::<usize, usize>::new();
+    for (from, to) in edges {
+        *outgoing.entry(from).or_default() += 1;
+        *incoming.entry(to).or_default() += 1;
+    }
+    outgoing
+        .into_iter()
+        .chain(incoming)
+        .filter_map(|(vertex, degree)| (degree > 1).then_some(vertex))
+        .collect()
+}
+
 fn pure_core(
     source: &MotherGrid,
     component_id: u64,
@@ -448,7 +545,7 @@ fn pure_core(
         Ok(mesh) => mesh,
         Err(reason) => return invalid(0, halo_expansions, reason),
     };
-    if let Err(reason) = hard_gate(&mesh.mesh) {
+    if let Err(reason) = hard_gate(source, &mesh) {
         return TransitionTopologyOutcome::ProvenInfeasible {
             states_examined: 0,
             halo_expansions,
@@ -882,7 +979,7 @@ fn retirement_hit(
         &custom_parents,
         &triangles,
     )?;
-    hard_gate(&mesh.mesh)?;
+    hard_gate(source, &mesh)?;
 
     let mut triangles_by_parent = BTreeMap::new();
     let first = *affected.first().expect("affected is non-empty");
@@ -1101,6 +1198,12 @@ impl ProductSearch<'_> {
         let mut indices = vec![0usize; variables.len()];
         let mut position = 0usize;
         let mut feasible_ordinal = 0usize;
+        // ponytail: bound pruned prefix work at 64x the public topology budget;
+        // raise only if a certified fixture proves that valid states need more.
+        let mut remaining_work = self
+            .budget
+            .saturating_sub(self.start_index)
+            .saturating_mul(64);
 
         loop {
             if position == variables.len() {
@@ -1129,7 +1232,7 @@ impl ProductSearch<'_> {
                             &chosen_triangles,
                         )
                     {
-                        if let Ok(()) = hard_gate(&mesh.mesh) {
+                        if let Ok(()) = hard_gate(self.source, &mesh) {
                             let hit = SearchHit {
                                 mesh,
                                 triangles_by_parent: chosen_by_parent,
@@ -1186,6 +1289,11 @@ impl ProductSearch<'_> {
 
             let choice_index = indices[position];
             indices[position] += 1;
+            if remaining_work == 0 {
+                *self.states = self.budget;
+                return;
+            }
+            remaining_work -= 1;
             let variable = &variables[position];
             let choice = &variable.variants[choice_index];
             forecast.apply_delta(&choice.delta, 1);
@@ -1858,31 +1966,12 @@ fn boundary(
     core: &BTreeSet<TriangleAddress>,
     transition: &BTreeSet<TriangleAddress>,
 ) -> Result<TransitionBoundary, String> {
-    let mut coarse_edges = Vec::new();
-    for &parent in core {
-        let patch = parent_patch(source, parent)?;
-        for side in 0..3 {
-            if transition.contains(&patch.neighbours[side]) {
-                coarse_edges.push((patch.corners[(side + 1) % 3], patch.corners[side]));
-            }
-        }
-    }
-    let mut fine_edges = Vec::new();
-    for &parent in transition {
-        let patch = parent_patch(source, parent)?;
-        for side in 0..3 {
-            if !core.contains(&patch.neighbours[side])
-                && !transition.contains(&patch.neighbours[side])
-            {
-                fine_edges.extend([
-                    (patch.corners[side], patch.midpoints[side]),
-                    (patch.midpoints[side], patch.corners[(side + 1) % 3]),
-                ]);
-            }
-        }
-    }
-    let coarse = cycles_from_edges(coarse_edges)?;
-    let fine = cycles_from_edges(fine_edges)?;
+    let coarse_edges = coarse_boundary_edges(source, core, transition)?;
+    let fine_edges = fine_boundary_edges(source, core, transition)?;
+    let coarse = cycles_from_edges(coarse_edges)
+        .map_err(|reason| format!("coarse inner boundary: {reason}"))?;
+    let fine =
+        cycles_from_edges(fine_edges).map_err(|reason| format!("fine outer boundary: {reason}"))?;
     let boundary_sites = coarse
         .iter()
         .chain(&fine)
@@ -1914,6 +2003,45 @@ fn boundary(
         seam,
         pentagon,
     })
+}
+
+fn coarse_boundary_edges(
+    source: &MotherGrid,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+) -> Result<Vec<(usize, usize)>, String> {
+    let mut edges = Vec::new();
+    for &parent in core {
+        let patch = parent_patch(source, parent)?;
+        for side in 0..3 {
+            if transition.contains(&patch.neighbours[side]) {
+                edges.push((patch.corners[(side + 1) % 3], patch.corners[side]));
+            }
+        }
+    }
+    Ok(edges)
+}
+
+fn fine_boundary_edges(
+    source: &MotherGrid,
+    core: &BTreeSet<TriangleAddress>,
+    transition: &BTreeSet<TriangleAddress>,
+) -> Result<Vec<(usize, usize)>, String> {
+    let mut edges = Vec::new();
+    for &parent in transition {
+        let patch = parent_patch(source, parent)?;
+        for side in 0..3 {
+            if !core.contains(&patch.neighbours[side])
+                && !transition.contains(&patch.neighbours[side])
+            {
+                edges.extend([
+                    (patch.corners[side], patch.midpoints[side]),
+                    (patch.midpoints[side], patch.corners[(side + 1) % 3]),
+                ]);
+            }
+        }
+    }
+    Ok(edges)
 }
 
 pub(super) fn cycles_from_edges(edges: Vec<(usize, usize)>) -> Result<Vec<Vec<usize>>, String> {
@@ -1961,27 +2089,28 @@ pub(super) fn cycles_from_edges(edges: Vec<(usize, usize)>) -> Result<Vec<Vec<us
     Ok(cycles)
 }
 
-fn hard_gate(mesh: &MeshState) -> Result<(), String> {
-    mesh.validate().map_err(|errors| {
+fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String> {
+    let state = &mesh.mesh;
+    state.validate().map_err(|errors| {
         errors
             .into_iter()
             .map(|e| e.to_string())
             .collect::<Vec<_>>()
             .join("; ")
     })?;
-    if mesh.open_edge_count() != 0 {
-        return Err(format!("mesh has {} open edges", mesh.open_edge_count()));
+    if state.open_edge_count() != 0 {
+        return Err(format!("mesh has {} open edges", state.open_edge_count()));
     }
     let mut edges = BTreeSet::new();
-    let mut degrees = vec![0usize; mesh.vertices().len()];
-    let mut seeds = vec![0usize; mesh.vertices().len()];
+    let mut degrees = vec![0usize; state.vertices().len()];
+    let mut seeds = vec![0usize; state.vertices().len()];
     let mut triangles = BTreeSet::new();
-    for face in mesh.active_triangle_slots() {
-        let tri = mesh.triangles()[face];
+    for face in state.active_triangle_slots() {
+        let tri = state.triangles()[face];
         if orientation_on_sphere(
-            mesh.vertices()[tri[0]],
-            mesh.vertices()[tri[1]],
-            mesh.vertices()[tri[2]],
+            state.vertices()[tri[0]],
+            state.vertices()[tri[1]],
+            state.vertices()[tri[2]],
         )
         .map_err(|e| e.to_string())?
             != Sign::Positive
@@ -2004,7 +2133,7 @@ fn hard_gate(mesh: &MeshState) -> Result<(), String> {
         }
     }
     let euler =
-        mesh.vertex_count() as isize - edges.len() as isize + mesh.triangle_count() as isize;
+        state.vertex_count() as isize - edges.len() as isize + state.triangle_count() as isize;
     if euler != 2 {
         return Err(format!("Euler characteristic is {euler}, expected 2"));
     }
@@ -2016,8 +2145,22 @@ fn hard_gate(mesh: &MeshState) -> Result<(), String> {
     {
         return Err(format!("vertex {vertex} degree {degree} outside 5..=7"));
     }
-    for vertex in mesh.active_vertex_slots() {
-        let fan = mesh
+    for (vertex, source_slot) in mesh.source_vertex_slots.iter().copied().enumerate() {
+        if source_slot.is_some_and(|source_slot| {
+            matches!(
+                source.addresses.get(source_slot).and_then(Option::as_ref),
+                Some(VertexAddress::IcosahedronVertex(_))
+            )
+        }) && degrees[vertex] != 5
+        {
+            return Err(format!(
+                "protected icosahedron vertex {vertex} has degree {}, expected 5",
+                degrees[vertex]
+            ));
+        }
+    }
+    for vertex in state.active_vertex_slots() {
+        let fan = state
             .triangle_fan_from(vertex, seeds[vertex])
             .map_err(|error| error.to_string())?;
         if fan.len() != degrees[vertex] {
@@ -2282,7 +2425,7 @@ mod tests {
             .keys()
             .all(|parent| transition.contains(parent)));
         ElasticPatch::from_transition(&trial).unwrap();
-        hard_gate(&trial.mesh.mesh).unwrap();
+        hard_gate(&source, &trial.mesh).unwrap();
 
         assert!(matches!(
             solve_retirement_family(

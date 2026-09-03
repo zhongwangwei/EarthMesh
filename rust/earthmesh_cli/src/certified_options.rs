@@ -3,6 +3,7 @@
 use std::io;
 
 use crate::namelist_reader::{namelist_assignments, namelist_has_section};
+use earthmesh_refine_certified::AngleContractId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CertifiedMode {
@@ -23,6 +24,7 @@ pub enum CertifiedDelivery {
 pub struct CertifiedRunOptions {
     pub mode: CertifiedMode,
     pub delivery: CertifiedDelivery,
+    pub angle_contract: AngleContractId,
     pub maximum_level: usize,
     pub maximum_cells: usize,
     pub gradation_rings_per_level: usize,
@@ -34,6 +36,7 @@ impl Default for CertifiedRunOptions {
         Self {
             mode: CertifiedMode::SafeMotherOnly,
             delivery: CertifiedDelivery::Coupled,
+            angle_contract: AngleContractId::LegacyStrict40To80,
             maximum_level: 8,
             maximum_cells: 10_000_000,
             gradation_rings_per_level: 3,
@@ -84,6 +87,17 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
                     }
                 }
             }
+            "angle_contract" => {
+                options.angle_contract = match assignment.value.to_ascii_lowercase().as_str() {
+                    "legacy_strict_40_to_80" => AngleContractId::LegacyStrict40To80,
+                    "domain_quality_38_to_82_v1" => AngleContractId::DomainQuality38To82V1,
+                    other => {
+                        return Err(invalid(format!(
+                            "certified angle_contract must be legacy_strict_40_to_80 or domain_quality_38_to_82_v1, got {other}"
+                        )))
+                    }
+                }
+            }
             "maximum_level" => {
                 options.maximum_level = parse_usize(&assignment.field, &assignment.value)?
             }
@@ -120,17 +134,23 @@ mod tests {
         let options = read_certified_options(
             "&certified\n NL%mode='reverse_coarsening'\n NL%delivery='tri'\n \
              NL%maximum_level=5\n NL%maximum_cells=9000\n \
+             NL%angle_contract='domain_quality_38_to_82_v1'\n \
              NL%gradation_rings_per_level=4\n NL%search_budget=700\n/",
         )
         .unwrap();
         assert_eq!(options.mode, CertifiedMode::ReverseCoarsening);
         assert_eq!(options.delivery, CertifiedDelivery::Tri);
+        assert_eq!(
+            options.angle_contract,
+            AngleContractId::DomainQuality38To82V1
+        );
         assert_eq!(options.maximum_level, 5);
         assert_eq!(options.maximum_cells, 9000);
         assert_eq!(options.gradation_rings_per_level, 4);
         assert_eq!(options.search_budget, 700);
 
         assert!(read_certified_options("&certified\n NL%mode='typo'\n/").is_err());
+        assert!(read_certified_options("&certified\n NL%angle_contract='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%maximum_cells=0\n/").is_err());
         assert!(read_certified_options("&certified\n NL%extra=1\n/").is_err());
     }

@@ -35,6 +35,19 @@ fn write_landtype(path: &std::path::Path) {
         .unwrap();
 }
 
+fn write_land_and_ocean(path: &std::path::Path) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
+    file.add_dimension("longitude", 360).unwrap();
+    file.add_dimension("latitude", 180).unwrap();
+    let values = (0..360 * 180)
+        .map(|index| if index % 2 == 0 { 0_i8 } else { 1_i8 })
+        .collect::<Vec<_>>();
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+}
+
 fn landtype_namelist(root: &std::path::Path, case: &str, landtype: &std::path::Path) -> String {
     format!(
         "&mkgrd\n  NL%EXPNME='{case}'\n  NL%base_dir='{}/'\n  NL%NXP=3\n  \
@@ -282,10 +295,10 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
 }
 
 #[test]
-fn certified_ocean_output_does_not_publish_an_unmasked_global_sphere() {
+fn certified_ocean_output_is_masked_and_boundary_checked() {
     let root = temp_root("ocean_mask_gate");
     let landtype = root.join("landtype.nc");
-    write_landtype(&landtype);
+    write_land_and_ocean(&landtype);
     let path = root.join("cmrc.nml");
     let case = "ocean_mask_gate";
     let namelist = landtype_namelist(&root, case, &landtype)
@@ -294,17 +307,30 @@ fn certified_ocean_output_does_not_publish_an_unmasked_global_sphere() {
         .replace("output_format='CoLM'", "output_format='FVCOM'");
     fs::write(&path, namelist).unwrap();
 
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("closed-sphere certification must not masquerade as an ocean mask");
-    assert!(error
-        .to_string()
-        .contains("certified land/ocean mask publication is not implemented"));
-    assert!(!root.join(case).join("result").exists());
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let kept = run.landtype_masked_cells.expect("masked ocean cell count");
+    assert!(kept > 0);
+    assert!(kept < run.certified_run.as_ref().unwrap().mother_cells);
+    assert_eq!(
+        run.output.output.file_name().unwrap().to_str().unwrap(),
+        "gridfile_NXP0003_tri_oceanmesh.nc4"
+    );
+    let certified = run.certified_run.unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+    assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    assert_eq!(resources["landtype_masked_cells"], kept);
+    assert_eq!(
+        resources["published_domain_topology"]["violations"],
+        serde_json::json!([])
+    );
 }
 
 #[test]
-#[ignore = "full raster-to-mixed-Voronoi publication acceptance"]
-fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
+fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
     let root = temp_root("mixed_reverse");
     let sources = root.join("sources");
     fs::create_dir_all(&sources).unwrap();
@@ -321,6 +347,10 @@ fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
     let path = root.join("cmrc.nml");
     let namelist = specified_circle_namelist(&root, "mixed_reverse", &prefix)
         .replace("safe_mother_only", "reverse_coarsening")
+        .replace(
+            "NL%delivery='coupled'",
+            "NL%delivery='coupled'\n  NL%angle_contract='domain_quality_38_to_82_v1'",
+        )
         .replace("NL%search_budget=100", "NL%search_budget=4000");
     fs::write(&path, namelist).unwrap();
 
@@ -345,6 +375,13 @@ fn reverse_mode_publishes_a_strict_mixed_level_mesh() {
         certificate["coarsening_strategy"],
         "elastic_component_epochs"
     );
+    assert_eq!(certificate["angle_contract"], "domain_quality_38_to_82_v1");
+    assert!(certificate["geometry"]["minimum_angle_deg"]
+        .as_f64()
+        .is_some_and(|angle| angle >= 38.0));
+    assert!(certificate["geometry"]["maximum_angle_deg"]
+        .as_f64()
+        .is_some_and(|angle| angle <= 82.0));
     assert_eq!(certificate["delivered_level_min"], 0);
     assert_eq!(certificate["delivered_level_max"], 1);
     assert!(

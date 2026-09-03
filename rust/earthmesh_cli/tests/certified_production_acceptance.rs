@@ -37,6 +37,7 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
              RL%mask_refine_cal_fprefix='none'\n  RL%refine_num_landtypes=.true.\n  \
              RL%th_num_landtypes=12\n/\n\
              &certified\n  NL%mode='reverse_coarsening'\n  NL%delivery='tri'\n  \
+             NL%angle_contract='domain_quality_38_to_82_v1'\n  \
              NL%maximum_level=8\n  NL%maximum_cells=10000000\n  \
              NL%gradation_rings_per_level=3\n  NL%search_budget=100000\n/\n",
             root.display(),
@@ -68,6 +69,7 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
         certificate["coarsening_strategy"],
         "elastic_component_epochs"
     );
+    assert_eq!(certificate["angle_contract"], "domain_quality_38_to_82_v1");
     assert_eq!(certificate["physical_residuals"], 0);
     assert_eq!(certificate["balance_residuals"], 0);
     assert_eq!(certificate["remap_closure_errors"], 0);

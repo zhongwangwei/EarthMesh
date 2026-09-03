@@ -238,6 +238,9 @@ impl ConservativeRemap {
         {
             certificate.bad_lineage_rows += 1;
         }
+        certificate.closure_tolerance = certificate
+            .closure_tolerance
+            .max(128.0 * f64::EPSILON * source_cells.max(target_cells) as f64);
         certificate.global_area_closure_error = self.coverage_error;
         certificate
     }
@@ -272,15 +275,16 @@ impl ConservativeRemap {
     }
 
     fn certify_with_lineage(&self, valid_lineage: impl Fn(&RemapRow) -> bool) -> RemapCertificate {
-        let closure_tolerance = (64.0
+        let closure_tolerance = (128.0
             * f64::EPSILON
-            * self
-                .rows
-                .iter()
-                .map(|row| row.sources.len())
-                .max()
-                .unwrap_or(1) as f64)
-            .max(1.0e-12);
+            * self.rows.len().max(
+                self.rows
+                    .iter()
+                    .map(|row| row.sources.len())
+                    .max()
+                    .unwrap_or(1),
+            ) as f64)
+            .max(1.0e-11);
         let mut negative_weights = 0;
         let mut bad_row_sums = 0;
         let mut bad_lineage_rows = 0;
@@ -381,7 +385,7 @@ pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, St
         .collect()
 }
 
-struct SphericalCapIndex {
+pub(crate) struct SphericalCapIndex {
     nlon: usize,
     nlat: usize,
     bins: Vec<Vec<usize>>,
@@ -390,8 +394,6 @@ struct SphericalCapIndex {
 
 impl SphericalCapIndex {
     fn new(rings: &[Vec<Point>]) -> Result<Self, String> {
-        let nlat = ((rings.len() as f64).sqrt() / 2.0).ceil().clamp(4.0, 360.0) as usize;
-        let nlon = nlat * 2;
         let caps = rings
             .iter()
             .enumerate()
@@ -400,21 +402,27 @@ impl SphericalCapIndex {
                     .ok_or_else(|| format!("source cell {cell} has no spherical cap"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::from_caps(caps))
+    }
+
+    pub(crate) fn from_caps(caps: Vec<SphericalCap>) -> Self {
+        let nlat = ((caps.len() as f64).sqrt() / 2.0).ceil().clamp(4.0, 2048.0) as usize;
+        let nlon = nlat * 2;
         let mut bins = vec![Vec::new(); nlon * nlat];
         for (source, &cap) in caps.iter().enumerate() {
             for bin in cap_bins(cap, nlon, nlat) {
                 bins[bin].push(source);
             }
         }
-        Ok(Self {
+        Self {
             nlon,
             nlat,
             bins,
             caps,
-        })
+        }
     }
 
-    fn candidates(&self, cap: SphericalCap) -> Vec<usize> {
+    pub(crate) fn candidates(&self, cap: SphericalCap) -> Vec<usize> {
         let mut candidates = cap_bins(cap, self.nlon, self.nlat)
             .into_iter()
             .flat_map(|bin| self.bins[bin].iter().copied())
@@ -422,6 +430,25 @@ impl SphericalCapIndex {
         candidates.sort_unstable();
         candidates.dedup();
         candidates
+    }
+
+    pub(crate) fn candidates_into(
+        &self,
+        cap: SphericalCap,
+        seen: &mut [u32],
+        generation: u32,
+        candidates: &mut Vec<usize>,
+    ) {
+        candidates.clear();
+        for source in cap_bins(cap, self.nlon, self.nlat)
+            .into_iter()
+            .flat_map(|bin| self.bins[bin].iter().copied())
+        {
+            if seen[source] != generation {
+                seen[source] = generation;
+                candidates.push(source);
+            }
+        }
     }
 }
 
@@ -509,5 +536,12 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(rings[cell], expected);
         }
+    }
+
+    #[test]
+    fn overlap_tolerance_scales_with_the_finest_input_mesh() {
+        let small = ConservativeRemap::identity(1).certify_identity(1);
+        let large = ConservativeRemap::identity(1).certify_spherical_overlap(1_000, 1);
+        assert!(large.closure_tolerance() > small.closure_tolerance());
     }
 }

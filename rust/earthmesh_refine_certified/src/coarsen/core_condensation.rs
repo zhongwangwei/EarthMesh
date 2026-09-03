@@ -290,7 +290,7 @@ fn source_descendants(
     Ok(frontier)
 }
 
-fn source_corner_site(
+pub(super) fn source_corner_site(
     source: &MotherGrid,
     mut leaf: TriangleAddress,
     corner: usize,

@@ -8,16 +8,21 @@ use super::{
 };
 use crate::{
     certificate::{
-        spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, Certificate,
-        CertificateError, GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
+        spherical_triangle_angles, voronoi_cell_is_convex_and_contains_site, AngleContractId,
+        Certificate, CertificateError, GeometryCertificateReport, GEOMETRY_INTERIOR_MARGIN_DEGREES,
     },
     coarsen::TransitionTopologyTrial,
     mother_grid::{MotherGrid, VertexAddress},
+    remap::SphericalCapIndex,
 };
+use earthmesh_boundary::SphericalCap;
+use earthmesh_geometry::Point;
 use earthmesh_mesh::{
     arc_length_unit_sphere, cross, in_circle_on_sphere, magnitude, orientation_on_sphere,
     spherical_circumcenter_from_barycenter, CartesianPoint, MeshState, Sign, VoronoiCell,
 };
+use rayon::prelude::*;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,6 +330,13 @@ struct DualEnergy {
 
 impl ElasticPatch {
     pub fn from_transition(trial: &TransitionTopologyTrial) -> Result<Self, String> {
+        Self::from_transition_with_domain(trial, GeometryDomainId::CurrentAnnulus)
+    }
+
+    pub(crate) fn from_transition_with_domain(
+        trial: &TransitionTopologyTrial,
+        domain_id: GeometryDomainId,
+    ) -> Result<Self, String> {
         let mesh = &trial.mesh.mesh;
         if trial.mesh.source_vertex_slots.len() != mesh.vertices().len() {
             return Err("transition source-slot map does not match compact vertices".into());
@@ -373,13 +385,26 @@ impl ElasticPatch {
                 transition_compact_vertices.extend(mesh.triangles()[face]);
             }
         }
-        let movable_compact_vertices = transition_compact_vertices
+        let base_movable = transition_compact_vertices
             .into_iter()
             .filter(|&compact| {
                 trial.mesh.source_vertex_slots[compact]
                     .is_some_and(|source| !fixed_sources.contains(&source))
             })
             .collect::<BTreeSet<_>>();
+        let permanent_fixed = trial
+            .boundary
+            .pentagon
+            .iter()
+            .filter_map(|source| source_to_compact.get(source).copied())
+            .collect::<BTreeSet<_>>();
+        let movable_compact_vertices = expand_movable_domain(
+            mesh,
+            &trial.mesh.source_vertex_slots,
+            &base_movable,
+            &permanent_fixed,
+            domain_id,
+        );
         if movable_compact_vertices.is_empty() {
             return Err("closed transition topology has no movable interior vertex".into());
         }
@@ -402,7 +427,7 @@ impl ElasticPatch {
             .collect::<BTreeSet<_>>();
 
         Ok(Self {
-            domain_id: GeometryDomainId::CurrentAnnulus,
+            domain_id,
             topology: trial.candidate.clone(),
             reference_positions: mesh.vertices().to_vec(),
             fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
@@ -1194,6 +1219,15 @@ pub fn solve_elastic_patch(
     patch: ElasticPatch,
     limits: ElasticBlockLimits,
 ) -> ElasticBlockOutcome {
+    solve_elastic_patch_with_contract(source, patch, limits, AngleContractId::default())
+}
+
+pub(super) fn solve_elastic_patch_with_contract(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    angle_contract: AngleContractId,
+) -> ElasticBlockOutcome {
     solve_elastic_patch_impl(
         source,
         patch,
@@ -1201,6 +1235,7 @@ pub fn solve_elastic_patch(
         GeometryStartId::MaterializedSource,
         ElasticSolverMode::FiniteDifferenceElastic,
         1.0,
+        angle_contract,
     )
 }
 
@@ -1217,6 +1252,7 @@ pub fn solve_elastic_patch_with_start(
         start_id,
         ElasticSolverMode::FiniteDifferenceElastic,
         1.0,
+        AngleContractId::default(),
     )
 }
 
@@ -1233,6 +1269,7 @@ pub fn solve_elastic_patch_with_margin_start(
         start_id,
         ElasticSolverMode::MarginFiniteDifferenceLexicographic,
         1.0,
+        AngleContractId::default(),
     )
 }
 
@@ -1249,6 +1286,7 @@ pub fn solve_elastic_patch_with_active_trust_start(
         start_id,
         ElasticSolverMode::ActiveTangentTrust,
         1.0,
+        AngleContractId::default(),
     )
 }
 
@@ -1266,6 +1304,7 @@ pub fn solve_elastic_patch_with_active_trust_start_and_scale(
         start_id,
         ElasticSolverMode::ActiveTangentTrust,
         trust_fraction,
+        AngleContractId::default(),
     )
 }
 
@@ -1282,6 +1321,7 @@ pub fn solve_elastic_patch_with_max_min_trust_start(
         start_id,
         ElasticSolverMode::MaxMinTangentTrust,
         1.0,
+        AngleContractId::default(),
     )
 }
 
@@ -1292,6 +1332,7 @@ fn solve_elastic_patch_impl(
     start_id: GeometryStartId,
     solver_mode: ElasticSolverMode,
     trust_fraction: f64,
+    angle_contract: AngleContractId,
 ) -> ElasticBlockOutcome {
     if !trust_fraction.is_finite()
         || !(0.0..=1.0).contains(&trust_fraction)
@@ -1304,7 +1345,7 @@ fn solve_elastic_patch_impl(
     if let Err(reason) = validate_patch(source, &patch) {
         return ElasticBlockOutcome::InvalidPatch { reason };
     }
-    let certificate = Certificate::internal();
+    let certificate = Certificate::internal_for(angle_contract);
     let mut current = source.clone();
     if let Err(reason) = apply_geometry_start(&mut current.mesh, &patch, start_id) {
         return ElasticBlockOutcome::InvalidPatch { reason };
@@ -2705,6 +2746,7 @@ fn elastic_energy(
         &context.guard_edges,
         &context.guard_seeds,
         &context.dual_pairs,
+        None,
     )
 }
 
@@ -2718,6 +2760,7 @@ fn elastic_energy_in(
     guard_edges: &[(usize, usize)],
     guard_seeds: &[(usize, usize)],
     dual_pairs: &[DualPair],
+    crossing_index: Option<&EdgeCrossingIndex>,
 ) -> Option<f64> {
     let mut energy = 0.0;
     let minimum_angle = (40.2 + GEOMETRY_INTERIOR_MARGIN_DEGREES).to_radians();
@@ -2808,7 +2851,11 @@ fn elastic_energy_in(
         energy += edge_weight * (length / reference).ln().powi(2);
     }
     if matches!(phase, ElasticBlockPhase::Untangle) {
-        energy += 10_000.0 * edge_crossing_penalty(mesh, guard_edges);
+        energy += 10_000.0
+            * crossing_index.map_or_else(
+                || edge_crossing_penalty(mesh, guard_edges),
+                |index| index.penalty_against(mesh, guard_edges, &context.guard_edges),
+            );
         return energy.is_finite().then_some(energy);
     }
     if matches!(phase, ElasticBlockPhase::AngleFeasibility) {
@@ -2834,6 +2881,13 @@ fn all_faces_positive(mesh: &MeshState, faces: &BTreeSet<usize>) -> bool {
 }
 
 fn edge_crossing_penalty(mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
+    let Some(index) = EdgeCrossingIndex::new(mesh, edges) else {
+        return edge_crossing_penalty_quadratic(mesh, edges);
+    };
+    index.total_penalty(mesh, edges)
+}
+
+fn edge_crossing_penalty_quadratic(mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
     let mut penalty = 0.0;
     for (i, &(a, b)) in edges.iter().enumerate() {
         for &(c, d) in &edges[i + 1..] {
@@ -2849,6 +2903,149 @@ fn edge_crossing_penalty(mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
         }
     }
     penalty
+}
+
+struct EdgeCrossingIndex {
+    caps: Vec<SphericalCap>,
+    index: SphericalCapIndex,
+    query: RefCell<EdgeCrossingQuery>,
+}
+
+struct EdgeCrossingQuery {
+    seen: Vec<u32>,
+    generation: u32,
+    candidates: Vec<usize>,
+}
+
+impl EdgeCrossingIndex {
+    fn new(mesh: &MeshState, edges: &[(usize, usize)]) -> Option<Self> {
+        let caps = edges
+            .iter()
+            .copied()
+            .map(|edge| edge_cap(mesh, edge))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            index: SphericalCapIndex::from_caps(caps.clone()),
+            query: RefCell::new(EdgeCrossingQuery::new(caps.len())),
+            caps,
+        })
+    }
+
+    fn total_penalty(&self, mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
+        let index = &self.index;
+        let caps = &self.caps;
+        edges
+            .par_iter()
+            .enumerate()
+            .map_init(
+                || EdgeCrossingQuery::new(edges.len()),
+                |query, (left, &(a, b))| {
+                    query.fill(index, caps[left]);
+                    query
+                        .candidates
+                        .iter()
+                        .copied()
+                        .filter(|&right| right > left && caps[left].overlaps(caps[right]))
+                        .filter_map(|right| {
+                            let (c, d) = edges[right];
+                            (a != c && a != d && b != c && b != d).then(|| {
+                                minor_arc_crossing_strength(
+                                    mesh.vertices()[a],
+                                    mesh.vertices()[b],
+                                    mesh.vertices()[c],
+                                    mesh.vertices()[d],
+                                )
+                            })
+                        })
+                        .sum::<f64>()
+                },
+            )
+            .sum()
+    }
+
+    fn penalty_against(
+        &self,
+        mesh: &MeshState,
+        moving_edges: &[(usize, usize)],
+        all_edges: &[(usize, usize)],
+    ) -> f64 {
+        let mut penalty = 0.0;
+        let mut query = self.query.borrow_mut();
+        for &(a, b) in moving_edges {
+            let Some(cap) = edge_cap(mesh, (a, b)) else {
+                return edge_crossing_penalty_against_quadratic(mesh, moving_edges, all_edges);
+            };
+            query.fill(&self.index, cap);
+            for &right in &query.candidates {
+                if !cap.overlaps(self.caps[right]) {
+                    continue;
+                }
+                let (c, d) = all_edges[right];
+                if a == c || a == d || b == c || b == d {
+                    continue;
+                }
+                penalty += minor_arc_crossing_strength(
+                    mesh.vertices()[a],
+                    mesh.vertices()[b],
+                    mesh.vertices()[c],
+                    mesh.vertices()[d],
+                );
+            }
+        }
+        penalty
+    }
+}
+
+impl EdgeCrossingQuery {
+    fn new(item_count: usize) -> Self {
+        Self {
+            seen: vec![0; item_count],
+            generation: 0,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn fill(&mut self, index: &SphericalCapIndex, cap: SphericalCap) {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.seen.fill(0);
+            self.generation = 1;
+        }
+        index.candidates_into(cap, &mut self.seen, self.generation, &mut self.candidates);
+    }
+}
+
+fn edge_crossing_penalty_against_quadratic(
+    mesh: &MeshState,
+    moving_edges: &[(usize, usize)],
+    all_edges: &[(usize, usize)],
+) -> f64 {
+    let mut penalty = 0.0;
+    for &(a, b) in moving_edges {
+        for &(c, d) in all_edges {
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            penalty += minor_arc_crossing_strength(
+                mesh.vertices()[a],
+                mesh.vertices()[b],
+                mesh.vertices()[c],
+                mesh.vertices()[d],
+            );
+        }
+    }
+    penalty
+}
+
+fn edge_cap(mesh: &MeshState, (left, right): (usize, usize)) -> Option<SphericalCap> {
+    let point = |site| {
+        let point = normalized_point(mesh.vertices()[site])?;
+        Some(Point::new(
+            point.y.atan2(point.x).to_degrees(),
+            point.z.clamp(-1.0, 1.0).asin().to_degrees(),
+        ))
+    };
+    SphericalCap::for_rings(&[vec![point(left)?, point(right)?]])
 }
 
 fn dual_energy(
@@ -3862,26 +4059,28 @@ fn finite_difference_gradient(
     // ponytail: finite differences keep PR29 auditable; replace with analytic
     // patch derivatives only if transition-local profiling shows this dominates.
     let epsilon = (initial_step * 1.0e-3).clamp(1.0e-7, 1.0e-5);
+    let crossing_index = if matches!(phase, ElasticBlockPhase::Untangle) {
+        Some(EdgeCrossingIndex::new(mesh, &context.guard_edges)?)
+    } else {
+        None
+    };
     let mut gradient = Vec::with_capacity(patch.movable_compact_vertices.len());
     for &site in &patch.movable_compact_vertices {
         let local = context.derivatives.get(&site)?;
         let point = mesh.vertices()[site];
         let [first, second] = tangent_basis(point)?;
         let energy_at_current = |mesh: &MeshState| {
-            if matches!(phase, ElasticBlockPhase::Untangle) {
-                elastic_energy(mesh, patch, phase, context)
-            } else {
-                elastic_energy_in(
-                    mesh,
-                    patch,
-                    phase,
-                    context,
-                    &local.guard_faces,
-                    &local.guard_edges,
-                    &local.guard_seeds,
-                    &local.dual_pairs,
-                )
-            }
+            elastic_energy_in(
+                mesh,
+                patch,
+                phase,
+                context,
+                &local.guard_faces,
+                &local.guard_edges,
+                &local.guard_seeds,
+                &local.dual_pairs,
+                crossing_index.as_ref(),
+            )
         };
         let base_energy = energy_at_current(mesh)?;
         let mut derivative = |direction: CartesianPoint| {
@@ -4402,28 +4601,23 @@ mod tests {
             .unwrap(),
         );
         let context = EnergyContext::new(&mesh, &patch).unwrap();
-        let local = finite_difference_gradient(
-            &mut mesh.clone(),
-            &patch,
+        for phase in [
+            ElasticBlockPhase::Untangle,
             ElasticBlockPhase::AngleFeasibility,
-            0.01,
-            &context,
-        )
-        .unwrap();
-        let full = full_finite_difference_gradient(
-            &mut mesh,
-            &patch,
-            ElasticBlockPhase::AngleFeasibility,
-            0.01,
-            &context,
-        )
-        .unwrap();
+        ] {
+            let local =
+                finite_difference_gradient(&mut mesh.clone(), &patch, phase, 0.01, &context)
+                    .unwrap();
+            let full =
+                full_finite_difference_gradient(&mut mesh.clone(), &patch, phase, 0.01, &context)
+                    .unwrap();
 
-        assert_eq!(local.len(), full.len());
-        for ((local_site, local), (full_site, full)) in local.into_iter().zip(full) {
-            assert_eq!(local_site, full_site);
-            for (local, full) in [(local.x, full.x), (local.y, full.y), (local.z, full.z)] {
-                assert!((local - full).abs() <= 1.0e-5 * full.abs().max(1.0));
+            assert_eq!(local.len(), full.len());
+            for ((local_site, local), (full_site, full)) in local.into_iter().zip(full) {
+                assert_eq!(local_site, full_site);
+                for (local, full) in [(local.x, full.x), (local.y, full.y), (local.z, full.z)] {
+                    assert!((local - full).abs() <= 1.0e-5 * full.abs().max(1.0));
+                }
             }
         }
     }
@@ -5053,7 +5247,12 @@ mod tests {
             vec![[0, 0, 0], [0, 0, 0], [2, 3, 4], [2, 3, 5]],
         )
         .unwrap();
-        assert!(edge_crossing_penalty(&mesh, &[(2, 3), (4, 5)]) > 0.0);
+        let edges = [(2, 3), (4, 5)];
+        assert_eq!(
+            edge_crossing_penalty(&mesh, &edges),
+            edge_crossing_penalty_quadratic(&mesh, &edges)
+        );
+        assert!(edge_crossing_penalty(&mesh, &edges) > 0.0);
     }
 
     fn inverted_elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {

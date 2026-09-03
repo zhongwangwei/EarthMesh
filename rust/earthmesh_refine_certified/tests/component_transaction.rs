@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 
 use earthmesh_refine_certified::{
     coarsen::{
-        solve_component_transaction, ComponentTransactionLimits, ComponentTransactionOutcome,
-        ComponentTransactionStage, ComponentTransactionState, HierarchyComponent,
+        solve_component_transaction, solve_component_transaction_with_contract,
+        ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionStage,
+        ComponentTransactionState, HierarchyComponent,
     },
-    MotherGrid, SourceLevelField, TriangleAddress, TriangleOrientation,
+    AngleContractId, MotherGrid, SourceLevelField, TriangleAddress, TriangleOrientation,
 };
 
 const FULL_LIMITS: ComponentTransactionLimits = ComponentTransactionLimits {
@@ -339,6 +340,40 @@ fn mixed_component_exhausts_all_uncertifiable_topologies_before_rollback() {
     assert!(report.elastic_iterations > 0);
     assert_eq!(report.before_fingerprint, report.restored_fingerprint);
     assert_eq!(state, snapshot);
+}
+
+#[test]
+fn dqx_mixed_component_uses_the_expanded_geometry_domain() {
+    let source = MotherGrid::generate(8).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = mixed_component(&source);
+    let mut state = ComponentTransactionState::new(&source, 3).unwrap();
+
+    let outcome = solve_component_transaction_with_contract(
+        &source,
+        &levels,
+        &mut state,
+        &component,
+        2,
+        1,
+        ComponentTransactionLimits {
+            elastic_iterations: 1_024,
+            ..FULL_LIMITS
+        },
+        AngleContractId::DomainQuality38To82V1,
+    );
+    let ComponentTransactionOutcome::Certified(report) = outcome else {
+        panic!("the DQX geometry domain should certify the mixed component: {outcome:?}")
+    };
+    assert_eq!(
+        report.global_geometry.angle_contract_id,
+        AngleContractId::DomainQuality38To82V1
+    );
+    assert!(report.global_geometry.min_angle_degrees >= 38.0);
+    assert!(report.global_geometry.max_angle_degrees <= 82.0);
+    assert!(report.elastic.as_ref().is_some_and(|elastic| {
+        elastic.moved_compact_vertices.len() > component.transition_parents.len()
+    }));
 }
 
 #[test]

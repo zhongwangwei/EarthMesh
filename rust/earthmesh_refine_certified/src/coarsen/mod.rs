@@ -135,9 +135,9 @@ pub use combined_recovery::{
     WorkingMeshCandidate, WorkingMeshHardGates, WorkingMeshRejectReason, WorkingMeshStep,
 };
 pub use component_transaction::{
-    solve_component_transaction, ComponentCommitReport, ComponentRollbackReport,
-    ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionStage,
-    ComponentTransactionState,
+    solve_component_transaction, solve_component_transaction_with_contract, ComponentCommitReport,
+    ComponentRollbackReport, ComponentTransactionLimits, ComponentTransactionOutcome,
+    ComponentTransactionStage, ComponentTransactionState,
 };
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,

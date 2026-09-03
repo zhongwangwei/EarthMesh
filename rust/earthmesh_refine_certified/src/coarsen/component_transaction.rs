@@ -4,17 +4,18 @@
 //! only transition coordinates, then the normal geometry/final-cell/remap gates
 //! decide whether the cloned state is committed.
 
+use super::elastic_block::solve_elastic_patch_with_contract;
 use super::transition_topology::hierarchy_parent_neighbours;
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
-    core_condensation::source_face_slot, solve_elastic_patch, ElasticBlockLimits,
-    ElasticBlockOutcome, ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField,
-    ElasticTargetMode, GeometryDomainId, HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet,
+    core_condensation::source_face_slot, ElasticBlockLimits, ElasticBlockOutcome,
+    ElasticBlockReport, ElasticBlockTrial, ElasticPatch, ElasticTargetField, ElasticTargetMode,
+    GeometryDomainId, HierarchyComponent, HierarchyLeafMesh, HierarchyLeafSet,
     TransitionTopologyCandidate, TransitionTopologyLimits, TransitionTopologyOutcome,
 };
 use crate::{
     certificate::{
-        Certificate, FinalCertificateReport, GeometryCertificateReport,
+        AngleContractId, Certificate, FinalCertificateReport, GeometryCertificateReport,
         GeometryRegionCertificateReport,
     },
     fingerprint::mesh_fingerprint,
@@ -100,6 +101,7 @@ impl ComponentTransactionState {
 
     pub(super) fn level_source_slots(
         &self,
+        source: &MotherGrid,
         level_grid: &MotherGrid,
     ) -> Result<Vec<Option<usize>>, String> {
         if level_grid.subdivision > self.source_subdivision
@@ -114,23 +116,25 @@ impl ComponentTransactionState {
             ));
         }
         let mut slots = vec![None; level_grid.mesh.vertices().len()];
-        for face in self.mesh.mesh.active_triangle_slots() {
-            let Some(address) = self.mesh.triangle_addresses[face] else {
-                continue;
-            };
-            if address.n != level_grid.subdivision {
-                continue;
-            }
-            let level_face = address
-                .dense_index(level_grid.subdivision)?
-                .checked_add(2)
-                .ok_or_else(|| format!("level face slot overflow for {address:?}"))?;
-            let level_triangle = level_grid.mesh.triangles()[level_face];
-            let live_triangle = self.mesh.mesh.triangles()[face];
-            for (level_site, compact_site) in level_triangle.into_iter().zip(live_triangle) {
-                let source_site = self.mesh.source_vertex_slots[compact_site].ok_or_else(|| {
-                    format!("live hierarchy site {compact_site} has no source slot")
-                })?;
+        let live_sources = self
+            .mesh
+            .source_vertex_slots
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for level_face in level_grid.mesh.active_triangle_slots() {
+            let address = level_grid.triangle_addresses[level_face]
+                .ok_or_else(|| format!("level face {level_face} has no hierarchy address"))?;
+            for (corner, level_site) in level_grid.mesh.triangles()[level_face]
+                .into_iter()
+                .enumerate()
+            {
+                let source_site =
+                    super::core_condensation::source_corner_site(source, address, corner)?;
+                if !live_sources.contains(&source_site) {
+                    continue;
+                }
                 match slots[level_site] {
                     Some(existing) if existing != source_site => {
                         return Err(format!(
@@ -228,6 +232,29 @@ pub fn solve_component_transaction(
     max_adjacent_level_delta: usize,
     limits: ComponentTransactionLimits,
 ) -> ComponentTransactionOutcome {
+    solve_component_transaction_with_contract(
+        source,
+        source_levels,
+        state,
+        component,
+        coarse_level,
+        max_adjacent_level_delta,
+        limits,
+        AngleContractId::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn solve_component_transaction_with_contract(
+    source: &MotherGrid,
+    source_levels: &SourceLevelField,
+    state: &mut ComponentTransactionState,
+    component: &HierarchyComponent,
+    coarse_level: usize,
+    max_adjacent_level_delta: usize,
+    limits: ComponentTransactionLimits,
+    angle_contract: AngleContractId,
+) -> ComponentTransactionOutcome {
     let level_source_slots = source
         .mesh
         .vertices()
@@ -245,6 +272,7 @@ pub fn solve_component_transaction(
         coarse_level,
         max_adjacent_level_delta,
         limits,
+        angle_contract,
     )
 }
 
@@ -259,6 +287,7 @@ pub(super) fn solve_component_transaction_at_level(
     coarse_level: usize,
     max_adjacent_level_delta: usize,
     limits: ComponentTransactionLimits,
+    angle_contract: AngleContractId,
 ) -> ComponentTransactionOutcome {
     let before_fingerprint = state.fingerprint();
     let pre_vertices = state.mesh.mesh.vertex_count();
@@ -452,6 +481,7 @@ pub(super) fn solve_component_transaction_at_level(
             pre_vertices,
             pre_faces,
             &pre_sources,
+            angle_contract,
         ) {
             Ok(mut report) => {
                 counters.elastic_iterations += report.elastic_iterations;
@@ -566,6 +596,7 @@ fn certify_candidate(
     pre_vertices: usize,
     pre_faces: usize,
     pre_sources: &[bool],
+    angle_contract: AngleContractId,
 ) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
     let candidate = transition.candidate.clone();
     install_delta(source, state, &candidate).map_err(|reason| {
@@ -585,22 +616,26 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         return Err(failure);
     }
-    if !Certificate::internal().geometry_region_passes(&state.mesh.mesh, &guard_faces) {
+    if !Certificate::internal_for(angle_contract)
+        .geometry_region_passes(&state.mesh.mesh, &guard_faces)
+    {
         if transition.candidate.custom_transition_triangles.is_empty() {
             return Err(CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
                 "exact coarse core failed internal geometry certification".to_string(),
             ));
         }
-        let patch = elastic_patch_for_state(transition, &state.mesh).map_err(|reason| {
-            CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
-        })?;
-        let elastic = match solve_elastic_patch(
+        let patch =
+            elastic_patch_for_state(transition, &state.mesh, angle_contract).map_err(|reason| {
+                CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
+            })?;
+        let elastic = match solve_elastic_patch_with_contract(
             &state.mesh,
             patch,
             ElasticBlockLimits {
                 elastic_iterations: remaining_elastic_iterations,
             },
+            angle_contract,
         ) {
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {
@@ -609,6 +644,7 @@ fn certify_candidate(
                 final_energy,
                 reason,
                 failed_guard_face,
+                global_angle_degrees,
                 ..
             }
             | ElasticBlockOutcome::RequiresDifferentTopology {
@@ -617,13 +653,15 @@ fn certify_candidate(
                 final_energy,
                 reason,
                 failed_guard_face,
+                global_angle_degrees,
                 ..
             } => {
                 let mut failure = CandidateAttemptFailure::retry(
                     ComponentTransactionStage::Elastic,
                     format!(
-                        "{reason}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
-                        guard_face_suffix(failed_guard_face)
+                        "{reason}{}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
+                        guard_face_suffix(failed_guard_face),
+                        angle_range_suffix(global_angle_degrees)
                     ),
                 );
                 failure.elastic_iterations = iterations;
@@ -636,13 +674,15 @@ fn certify_candidate(
                 final_energy,
                 reason,
                 failed_guard_face,
+                global_angle_degrees,
                 ..
             } => {
                 let mut failure = CandidateAttemptFailure::budget(
                     ComponentTransactionStage::Elastic,
                     format!(
-                        "elastic iteration budget exhausted: {reason}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
-                        guard_face_suffix(failed_guard_face)
+                        "elastic iteration budget exhausted: {reason}{}{} (energy {initial_energy:.6e} -> {final_energy:.6e})",
+                        guard_face_suffix(failed_guard_face),
+                        angle_range_suffix(global_angle_degrees)
                     ),
                 );
                 failure.elastic_iterations = iterations;
@@ -668,7 +708,7 @@ fn certify_candidate(
         &transition.boundary,
         coarse_level,
     );
-    let local_geometry = Certificate::internal()
+    let local_geometry = Certificate::internal_for(angle_contract)
         .verify_geometry_region(&state.mesh.mesh, &guard_faces)
         .map_err(|error| {
             let mut failure = CandidateAttemptFailure::retry(
@@ -680,7 +720,7 @@ fn certify_candidate(
         })?;
     debug_assert_eq!(interval_boxes, local_geometry.interval_boxes);
 
-    let global_geometry = Certificate::internal()
+    let global_geometry = Certificate::internal_for(angle_contract)
         .verify_geometry(&state.mesh.mesh)
         .map_err(|error| {
             let mut failure = CandidateAttemptFailure::retry(
@@ -690,7 +730,7 @@ fn certify_candidate(
             failure.interval_boxes = interval_boxes;
             failure
         })?;
-    let final_geometry = Certificate::final_delivery()
+    let final_geometry = Certificate::final_delivery_for(angle_contract)
         .verify_geometry(&state.mesh.mesh)
         .map_err(|error| {
             let mut failure = CandidateAttemptFailure::retry(
@@ -780,7 +820,10 @@ fn certify_candidate(
     }
     state
         .claimed_parents
-        .extend(component.parents.iter().copied());
+        .extend(candidate.core_parents.iter().copied());
+    state
+        .claimed_parents
+        .extend(candidate.custom_transition_triangles.keys().copied());
     let post_sources = active_source_mask(&state.mesh, source.mesh.vertices().len());
     let core_sources = source_site_mask_for_parents(source, candidate.core_parents.iter().copied());
     let core_vertices_removed = pre_sources
@@ -900,6 +943,12 @@ fn remap_transition_trial(
 fn guard_face_suffix(failed_guard_face: Option<usize>) -> String {
     failed_guard_face
         .map(|face| format!("; failed guard face {face}"))
+        .unwrap_or_default()
+}
+
+fn angle_range_suffix(range: Option<(f64, f64)>) -> String {
+    range
+        .map(|(minimum, maximum)| format!("; global angles {minimum:.12}..{maximum:.12} deg"))
         .unwrap_or_default()
 }
 
@@ -1131,8 +1180,13 @@ fn install_delta(
 fn elastic_patch_for_state(
     transition: &super::TransitionTopologyTrial,
     mesh: &HierarchyLeafMesh,
+    angle_contract: AngleContractId,
 ) -> Result<ElasticPatch, String> {
-    let base = ElasticPatch::from_transition(transition)?;
+    let domain = match angle_contract {
+        AngleContractId::LegacyStrict40To80 => GeometryDomainId::CurrentAnnulus,
+        AngleContractId::DomainQuality38To82V1 => GeometryDomainId::PlusTwoOrdinaryRings,
+    };
+    let base = ElasticPatch::from_transition_with_domain(transition, domain)?;
     let source_to_compact = mesh
         .source_vertex_slots
         .iter()
@@ -1172,7 +1226,7 @@ fn elastic_patch_for_state(
         .filter(|site| !movable_compact_vertices.contains(site))
         .collect::<BTreeSet<_>>();
     Ok(ElasticPatch {
-        domain_id: GeometryDomainId::CurrentAnnulus,
+        domain_id: domain,
         topology: base.topology,
         reference_positions: mesh.mesh.vertices().to_vec(),
         fixed_compact_vertices: fixed_compact_vertices.into_iter().collect(),
@@ -1392,6 +1446,18 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(affected, expected);
         assert!(affected.len() < source.mesh.triangle_count());
+    }
+
+    #[test]
+    fn level_mapping_uses_live_vertices_from_finer_faces() {
+        let source = MotherGrid::generate(8).unwrap();
+        let state = ComponentTransactionState::new(&source, 3).unwrap();
+        let level = MotherGrid::generate(4).unwrap();
+        let slots = state.level_source_slots(&source, &level).unwrap();
+        assert!(level
+            .mesh
+            .active_vertex_slots()
+            .all(|site| slots[site].is_some()));
     }
 
     #[test]

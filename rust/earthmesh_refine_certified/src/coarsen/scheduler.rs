@@ -6,7 +6,7 @@ use super::{
     DomainQualityRejectReason, ExplicitParentRequirement, HierarchyComponent, SpatialFaceContext,
 };
 use crate::{
-    certificate::Certificate,
+    certificate::{AngleContractId, Certificate},
     fingerprint::mesh_fingerprint,
     mother_grid::{mother_cell_count, MotherGrid, TriangleAddress},
     outcome::FinalCertificationEvidence,
@@ -76,6 +76,7 @@ impl CoarseningScheduleStats {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElasticCmrcConfig {
+    pub angle_contract: AngleContractId,
     pub max_level: usize,
     pub max_adjacent_level_delta: usize,
     pub initial_transition_rings: usize,
@@ -458,7 +459,7 @@ fn run_elastic_component_epochs_impl(
             };
             &owned_level_grid
         };
-        let level_source_slots = match state.level_source_slots(level_grid) {
+        let level_source_slots = match state.level_source_slots(&grid, level_grid) {
             Ok(slots) => slots,
             Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
         };
@@ -533,6 +534,7 @@ fn run_elastic_component_epochs_impl(
                 target_level,
                 config.max_adjacent_level_delta,
                 limits,
+                config.angle_contract,
             );
             let component_record = match outcome {
                 ComponentTransactionOutcome::Certified(commit) => {
@@ -663,6 +665,7 @@ fn run_elastic_component_epochs_impl(
             source_levels,
             &state,
             config.max_adjacent_level_delta,
+            config.angle_contract,
         ) {
             return ElasticCmrcOutcome::NotCertifiable {
                 reason: format!("stage {source_level}->{target_level}: {reason}"),
@@ -884,11 +887,12 @@ fn certify_stage(
     source_levels: &SourceLevelField,
     state: &ComponentTransactionState,
     max_adjacent_level_delta: usize,
+    angle_contract: AngleContractId,
 ) -> Result<(), String> {
-    Certificate::internal()
+    Certificate::internal_for(angle_contract)
         .verify_geometry(&state.mesh().mesh)
         .map_err(|error| format!("internal geometry: {error:?}"))?;
-    Certificate::final_delivery()
+    Certificate::final_delivery_for(angle_contract)
         .verify_geometry(&state.mesh().mesh)
         .map_err(|error| format!("final geometry: {error:?}"))?;
     let target_levels = state.target_levels()?;
@@ -1166,6 +1170,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let config = ElasticCmrcConfig {
+            angle_contract: AngleContractId::LegacyStrict40To80,
             max_level: 3,
             max_adjacent_level_delta: 1,
             initial_transition_rings: 1,
@@ -1247,6 +1252,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let config = ElasticCmrcConfig {
+            angle_contract: AngleContractId::LegacyStrict40To80,
             max_level: 1,
             max_adjacent_level_delta: 1,
             initial_transition_rings: 1,

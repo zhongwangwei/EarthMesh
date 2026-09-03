@@ -1322,6 +1322,7 @@ fn build_certified_construction(
     if options.mode == CertifiedMode::SafeMotherOnly {
         let subdivision = certified_subdivision(base_nxp, chosen_level)?;
         let mut config = earthmesh_refine_certified::CertifiedConfig::mother_only(subdivision);
+        config.angle_contract = options.angle_contract;
         config.max_cells = Some(budget);
         config.grading_ring_width = options.gradation_rings_per_level;
         config.delivery = match options.delivery {
@@ -1415,7 +1416,7 @@ fn build_certified_construction(
     }
     let fine = earthmesh_refine_certified::MotherGrid::generate(initial_subdivision)
         .map_err(io::Error::other)?;
-    earthmesh_refine_certified::Certificate::final_delivery()
+    earthmesh_refine_certified::Certificate::final_delivery_for(options.angle_contract)
         .verify_mother_grid(&fine)
         .map_err(|error| {
             io::Error::new(
@@ -1561,8 +1562,8 @@ fn build_mixed_certified_construction(
     }
     let fine = earthmesh_refine_certified::MotherGrid::generate(initial_subdivision)
         .map_err(io::Error::other)?;
-    let pentagons = certified_icosahedron_vertices(&fine.addresses)?;
-    earthmesh_refine_certified::Certificate::internal()
+    let source_pentagons = certified_icosahedron_vertices(&fine.addresses)?;
+    earthmesh_refine_certified::Certificate::internal_for(options.angle_contract)
         .verify_mother_grid(&fine)
         .map_err(|error| {
             io::Error::new(
@@ -1622,13 +1623,14 @@ fn build_mixed_certified_construction(
         &source_levels,
         &graded_by_site,
         &earthmesh_refine_certified::coarsen::ElasticCmrcConfig {
+            angle_contract: options.angle_contract,
             max_level: chosen_level,
             max_adjacent_level_delta: 1,
             initial_transition_rings: 1,
-            maximum_transition_rings: 3,
+            maximum_transition_rings: 4,
             topology_states_per_component: options.search_budget.clamp(1, 10_000),
             elastic_iterations_per_topology: 256,
-            interval_boxes_per_component: 100_000,
+            interval_boxes_per_component: initial_faces.saturating_mul(3),
             total_transition_states: options.search_budget,
             allow_safe_fallback: false,
         },
@@ -1645,7 +1647,25 @@ fn build_mixed_certified_construction(
             return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
         }
     };
-    let mesh = result.state.mesh().mesh.clone();
+    let leaf_mesh = result.state.mesh();
+    let pentagons = source_pentagons
+        .into_iter()
+        .map(|source| {
+            leaf_mesh
+                .source_vertex_slots
+                .iter()
+                .position(|slot| *slot == Some(source))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC removed protected icosahedron vertex {source}"),
+                    )
+                })
+        })
+        .collect::<io::Result<Vec<_>>>()?
+        .try_into()
+        .expect("twelve source pentagons map to twelve compact sites");
+    let mesh = leaf_mesh.mesh.clone();
     let delivered_levels = result
         .state
         .target_levels()
@@ -1691,7 +1711,10 @@ fn build_mixed_certified_construction(
     };
     let remap_certificate =
         remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
-    let geometry = match earthmesh_refine_certified::certify_geometry(mesh) {
+    let geometry = match earthmesh_refine_certified::certify_geometry_with_contract(
+        mesh,
+        options.angle_contract,
+    ) {
         earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
         other => return Err(certified_outcome_error(other)),
     };
@@ -1795,10 +1818,13 @@ fn run_certified_pipeline(
             "CMRC UnsupportedBoundaryConstraint: the current strict path requires a closed global sphere",
         ));
     }
-    if matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh") {
+    if matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh")
+        && !(crate::namelist_sets_landtype_file(contents)
+            && crate::landtype_file_is_real(&config.landtype_file))
+    {
         return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "CMRC UnsupportedBoundaryConstraint: IGBP can drive certified refinement demand, but certified land/ocean mask publication is not implemented; the current strict certificate covers only the closed global sphere",
+            io::ErrorKind::InvalidInput,
+            "CMRC certified land/ocean publication requires a real NL%landtype_file",
         ));
     }
     let requested_view = config.mode_grid.trim();
@@ -1987,21 +2013,27 @@ fn run_certified_pipeline(
                 ..
             } => {
                 let error = certified_outcome_error(incomplete);
-                let component = elastic_report
-                    .as_ref()
-                    .and_then(|report| report.components.last())
-                    .map(|component| {
-                        format!(
-                            "; last_component=id:{} outcome:{} topology_states:{} elastic_iterations:{} halo_width:{} reason:{}",
-                            component.component_id,
-                            elastic_outcome_name(component.outcome),
-                            component.topology_states,
-                            component.elastic_iterations,
-                            component.transition_ring_width,
-                            component.reason.as_deref().unwrap_or("none")
-                        )
-                    })
-                    .unwrap_or_default();
+                let component = elastic_report.as_ref().map_or_else(String::new, |report| {
+                    let start = report.components.len().saturating_sub(8);
+                    let records = report.components[start..]
+                        .iter()
+                        .map(|component| {
+                            format!(
+                                "id:{} {}->{} outcome:{} topology_states:{} elastic_iterations:{} halo_width:{} reason:{}",
+                                component.component_id,
+                                component.source_level,
+                                component.target_level,
+                                elastic_outcome_name(component.outcome),
+                                component.topology_states,
+                                component.elastic_iterations,
+                                component.transition_ring_width,
+                                component.reason.as_deref().unwrap_or("none")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    format!("; recent_components=[{records}]")
+                });
                 return Err(io::Error::new(error.kind(), format!("{error}{component}")));
             }
             other => return Err(certified_outcome_error(other)),
@@ -2024,13 +2056,19 @@ fn run_certified_pipeline(
     } else {
         ""
     };
+    let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
+    let domain_suffix = if is_domain_export {
+        format!("_{}", config.mesh_type.trim())
+    } else {
+        String::new()
+    };
     let artifact_stem = if safe_fallback {
         "certified_safe_fallback"
     } else {
         "certified"
     };
     let output_path = result_dir.join(format!(
-        "gridfile_NXP{base_nxp:04}_{}{gridfile_suffix}.nc4",
+        "gridfile_NXP{base_nxp:04}_{}{domain_suffix}{gridfile_suffix}.nc4",
         config.mode_grid.trim(),
     ));
     let temporary_path = result_dir.join(format!(
@@ -2039,6 +2077,10 @@ fn run_certified_pipeline(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("gridfile.nc4"),
+        std::process::id()
+    ));
+    let temporary_source_path = result_dir.join(format!(
+        ".certified_source_grid.cmrc-tmp-{}",
         std::process::id()
     ));
     let remap_path = result_dir.join(format!("{artifact_stem}_remap.csv"));
@@ -2078,10 +2120,13 @@ fn run_certified_pipeline(
     let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
     let certificate_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
+        "angle_contract": options.angle_contract.as_str(),
         "mode": mode_name,
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
+        "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
+        "published_grid_is_certified_face_subset": is_domain_export,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
         "chosen_level": chosen_level,
@@ -2142,9 +2187,11 @@ fn run_certified_pipeline(
     .map_err(io::Error::other)?;
     let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
+        "angle_contract": options.angle_contract.as_str(),
         "mode": mode_name,
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
+        "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
         "delivery": match options.delivery {
             CertifiedDelivery::Tri => "tri",
             CertifiedDelivery::Hex => "hex",
@@ -2167,6 +2214,7 @@ fn run_certified_pipeline(
     }
     let temporary_paths = [
         &temporary_path,
+        &temporary_source_path,
         &temporary_remap_path,
         &temporary_certificate_path,
         &temporary_manifest_path,
@@ -2176,12 +2224,52 @@ fn run_certified_pipeline(
     for path in temporary_paths {
         let _ = fs::remove_file(path);
     }
-    let staged = (|| -> io::Result<crate::UnstructuredMeshWriteReport> {
+    let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
         fs::write(&temporary_remap_path, remap_csv)?;
         fs::write(&temporary_certificate_path, certificate_json)?;
         fs::write(&temporary_manifest_path, manifest_json)?;
         fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
-        let report = crate::write_unstructured_mesh_netcdf(&temporary_path, &output_mesh)?;
+        let (report, landtype_masked_cells, topology) = if is_domain_export {
+            crate::write_unstructured_mesh_netcdf(&temporary_source_path, &output_mesh)?;
+            let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
+                Path::new(config.landtype_file.trim()),
+            )?;
+            let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+                &temporary_source_path,
+                &temporary_path,
+                &config.landtype_file,
+                gridnum_perdegree,
+                config.mode_grid.trim(),
+                config.mesh_type.trim(),
+                None,
+                None,
+                config.isolated_ocean,
+                None,
+            )?;
+            let published = crate::read_unstructured_mesh_netcdf(&temporary_path)?;
+            let topology =
+                crate::unstructured_mesh_support::check_unstructured_mesh_topology(&published);
+            if !topology.is_consistent() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "CMRC published domain topology failed: {}",
+                        topology.violations.join("; ")
+                    ),
+                ));
+            }
+            (
+                crate::unstructured_mesh_write_report_from_file(&temporary_path)?,
+                Some(kept),
+                Some(topology),
+            )
+        } else {
+            (
+                crate::write_unstructured_mesh_netcdf(&temporary_path, &output_mesh)?,
+                None,
+                None,
+            )
+        };
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
             "requirement_raster_cells": required_levels.len(),
@@ -2196,13 +2284,21 @@ fn run_certified_pipeline(
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
+            "landtype_masked_cells": landtype_masked_cells,
+            "published_domain_topology": topology.as_ref().map(|report| serde_json::json!({
+                "boundary_loops": report.boundary_loop_count,
+                "boundary_vertex_degree_violations": report.boundary_vertex_degree_violation_count,
+                "euler": report.euler_characteristic,
+                "expected_euler": report.expected_euler_characteristic,
+                "violations": report.violations,
+            })),
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
         fs::write(&temporary_resources_path, resource_json)?;
-        Ok(report)
+        Ok((report, landtype_masked_cells))
     })();
-    let temporary = match staged {
+    let (temporary, landtype_masked_cells) = match staged {
         Ok(report) => report,
         Err(error) => {
             for path in temporary_paths {
@@ -2211,6 +2307,7 @@ fn run_certified_pipeline(
             return Err(error);
         }
     };
+    let _ = fs::remove_file(&temporary_source_path);
     if let Err(error) = publish_certified_artifacts(&[
         (&temporary_certificate_path, &certificate_path),
         (&temporary_remap_path, &remap_path),
@@ -2296,7 +2393,7 @@ fn run_certified_pipeline(
         lepp_post_quality: None,
         spring_nest_iterations: 0,
         raw_output: None,
-        landtype_masked_cells: None,
+        landtype_masked_cells,
         coupled_outputs: None,
         output,
         runtime_state,
