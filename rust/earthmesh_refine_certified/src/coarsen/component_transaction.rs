@@ -28,7 +28,20 @@ use crate::{
     },
 };
 use earthmesh_mesh::{CartesianPoint, MeshState};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Instant,
+};
+
+fn log_component_phase(enabled: bool, component: u64, phase: &str, started: &mut Instant) {
+    if enabled {
+        eprintln!(
+            "earthmesh_cli: cmrc_timing phase=component_{phase} component={component} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        *started = Instant::now();
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTransactionLimits {
@@ -255,6 +268,7 @@ pub fn solve_component_transaction_with_contract(
     limits: ComponentTransactionLimits,
     angle_contract: AngleContractId,
 ) -> ComponentTransactionOutcome {
+    let source_active_sites = source.mesh.active_vertex_slots().collect::<Vec<_>>();
     let level_source_slots = source
         .mesh
         .vertices()
@@ -267,6 +281,7 @@ pub fn solve_component_transaction_with_contract(
         source_levels,
         state,
         source,
+        &source_active_sites,
         &level_source_slots,
         component,
         coarse_level,
@@ -282,6 +297,7 @@ pub(super) fn solve_component_transaction_at_level(
     source_levels: &SourceLevelField,
     state: &mut ComponentTransactionState,
     level_grid: &MotherGrid,
+    source_active_sites: &[usize],
     level_source_slots: &[Option<usize>],
     component: &HierarchyComponent,
     coarse_level: usize,
@@ -289,6 +305,8 @@ pub(super) fn solve_component_transaction_at_level(
     limits: ComponentTransactionLimits,
     angle_contract: AngleContractId,
 ) -> ComponentTransactionOutcome {
+    let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+    let mut phase_started = Instant::now();
     let before_fingerprint = state.fingerprint();
     let pre_vertices = state.mesh.mesh.vertex_count();
     let pre_faces = state.mesh.mesh.triangle_count();
@@ -320,7 +338,9 @@ pub(super) fn solve_component_transaction_at_level(
         );
     };
 
-    if let Err(reason) = validate_preflight(source, source_levels, state, component) {
+    if let Err(reason) =
+        validate_preflight(source, source_levels, state, component, source_active_sites)
+    {
         return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason);
     }
     if let Err(reason) = validate_level_mapping(source, level_grid, level_source_slots, component) {
@@ -363,6 +383,12 @@ pub(super) fn solve_component_transaction_at_level(
             preferred_promotion_with_cost,
         ) {
             TransitionTopologyOutcome::Closed(trial) => {
+                log_component_phase(
+                    timing_enabled,
+                    component.id,
+                    "topology_search",
+                    &mut phase_started,
+                );
                 counters.topology_states =
                     topology_state_offset.saturating_add(trial.report.topology_states);
                 counters.halo_expansions =
@@ -464,6 +490,12 @@ pub(super) fn solve_component_transaction_at_level(
         }
         let exact_core_candidate = transition.candidate.custom_transition_triangles.is_empty();
         let mut candidate_state = state.clone();
+        log_component_phase(
+            timing_enabled,
+            component.id,
+            "state_clone",
+            &mut phase_started,
+        );
         candidate_state.prepare_parent_level(parent_subdivision);
         match certify_candidate(
             source,
@@ -598,6 +630,8 @@ fn certify_candidate(
     pre_sources: &[bool],
     angle_contract: AngleContractId,
 ) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
+    let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+    let mut phase_started = Instant::now();
     let candidate = transition.candidate.clone();
     install_delta(source, state, &candidate).map_err(|reason| {
         CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
@@ -700,6 +734,12 @@ fn certify_candidate(
         apply_elastic(state, &elastic);
         elastic_report = Some(elastic.report.clone());
     }
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "prepare_and_elastic",
+        &mut phase_started,
+    );
 
     lower_covered_source_levels(
         source,
@@ -719,6 +759,12 @@ fn certify_candidate(
             failure
         })?;
     debug_assert_eq!(interval_boxes, local_geometry.interval_boxes);
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "local_geometry",
+        &mut phase_started,
+    );
 
     let global_geometry = Certificate::internal_for(angle_contract)
         .verify_geometry(&state.mesh.mesh)
@@ -730,6 +776,12 @@ fn certify_candidate(
             failure.interval_boxes = interval_boxes;
             failure
         })?;
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "internal_geometry",
+        &mut phase_started,
+    );
     let final_geometry = Certificate::final_delivery_for(angle_contract)
         .verify_geometry(&state.mesh.mesh)
         .map_err(|error| {
@@ -740,6 +792,12 @@ fn certify_candidate(
             failure.interval_boxes = interval_boxes;
             failure
         })?;
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "final_geometry",
+        &mut phase_started,
+    );
 
     let target_levels = state.target_levels().map_err(|reason| {
         let mut failure =
@@ -757,6 +815,7 @@ fn certify_candidate(
     )?;
     let remap_certificate =
         remap.certify_spherical_overlap(source_levels.levels().len(), target_levels.levels().len());
+    log_component_phase(timing_enabled, component.id, "remap", &mut phase_started);
     let final_cells = match certify_final_cell_requirements_with_remap(
         &source.mesh,
         source_levels,
@@ -785,6 +844,12 @@ fn certify_candidate(
             return Err(failure);
         }
     };
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "final_cells",
+        &mut phase_started,
+    );
     let final_evidence =
         FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate.clone())
             .map_err(|reason| {
@@ -807,6 +872,7 @@ fn certify_candidate(
         failure
     })?;
     let final_certificate = final_mesh.certificate().clone();
+    log_component_phase(timing_enabled, component.id, "finalize", &mut phase_started);
 
     let post_vertices = state.mesh.mesh.vertex_count();
     let post_faces = state.mesh.mesh.triangle_count();
@@ -1053,14 +1119,14 @@ fn validate_preflight(
     source_levels: &SourceLevelField,
     state: &ComponentTransactionState,
     component: &HierarchyComponent,
+    source_active_sites: &[usize],
 ) -> Result<(), String> {
     if state.source_fingerprint != mesh_fingerprint(&source.mesh)
         || state.source_subdivision != source.subdivision
     {
         return Err("transaction state belongs to a different source mesh".into());
     }
-    let active_source_sites = source.mesh.active_vertex_slots().collect::<Vec<_>>();
-    if source_levels.active_sites() != active_source_sites.as_slice() {
+    if source_levels.active_sites() != source_active_sites {
         return Err("source level field active sites do not match source mesh".into());
     }
     let parents = component.parents.iter().copied().collect::<BTreeSet<_>>();

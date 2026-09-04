@@ -43,7 +43,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, QualityNamelist, RefineConfig};
 use earthmesh_mesh::{
@@ -56,6 +56,20 @@ use rayon::prelude::*;
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
+
+fn cmrc_timing_enabled() -> bool {
+    std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1")
+}
+
+fn log_cmrc_phase(enabled: bool, phase: &str, started: &mut Instant) {
+    if enabled {
+        eprintln!(
+            "earthmesh_cli: cmrc_timing phase={phase} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        *started = Instant::now();
+    }
+}
 
 fn format_remap_csv_row(row: &earthmesh_refine_certified::remap::RemapRow) -> String {
     let mut output = String::with_capacity(row.sources.len().saturating_mul(32));
@@ -1647,6 +1661,8 @@ fn build_mixed_certified_construction(
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
 ) -> io::Result<CertifiedConstruction> {
+    let timing_enabled = cmrc_timing_enabled();
+    let mut phase_started = Instant::now();
     let initial_subdivision = certified_subdivision(base_nxp, chosen_level)?;
     let required_cells =
         earthmesh_refine_certified::mother_grid::mother_cell_count(initial_subdivision)
@@ -1666,6 +1682,7 @@ fn build_mixed_certified_construction(
     }
     let fine = earthmesh_refine_certified::MotherGrid::generate(initial_subdivision)
         .map_err(io::Error::other)?;
+    log_cmrc_phase(timing_enabled, "mother_grid", &mut phase_started);
     let source_pentagons = certified_icosahedron_vertices(&fine.addresses)?;
     earthmesh_refine_certified::Certificate::internal_for(options.angle_contract)
         .verify_mother_grid(&fine)
@@ -1675,6 +1692,11 @@ fn build_mixed_certified_construction(
                 format!("CMRC initial mixed mother certification failed: {error}"),
             )
         })?;
+    log_cmrc_phase(
+        timing_enabled,
+        "initial_geometry_certificate",
+        &mut phase_started,
+    );
     let initial_mesh = fine.mesh.clone();
     let initial_vertices = initial_mesh.vertex_count();
     let initial_faces = initial_mesh.triangle_count();
@@ -1695,6 +1717,11 @@ fn build_mixed_certified_construction(
             format!("CMRC initial raster projection failed: {error}"),
         )
     })?;
+    log_cmrc_phase(
+        timing_enabled,
+        "initial_requirement_projection",
+        &mut phase_started,
+    );
     let source_levels = earthmesh_refine_certified::SourceLevelField::from_active_voronoi_cells(
         &initial_mesh,
         projected.required_levels().to_vec(),
@@ -1721,6 +1748,7 @@ fn build_mixed_certified_construction(
     for (&site, level) in active_sites.iter().zip(graded) {
         graded_by_site[site] = level;
     }
+    log_cmrc_phase(timing_enabled, "graded_envelope", &mut phase_started);
     let epoch = earthmesh_refine_certified::coarsen::run_elastic_component_epochs(
         fine,
         &initial_mesh,
@@ -1738,6 +1766,11 @@ fn build_mixed_certified_construction(
             total_transition_states: options.search_budget,
             allow_safe_fallback: false,
         },
+    );
+    log_cmrc_phase(
+        timing_enabled,
+        "elastic_component_epochs",
+        &mut phase_started,
     );
     let result = match epoch {
         earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::Completed(result) => result,
@@ -1799,6 +1832,11 @@ fn build_mixed_certified_construction(
             )
         })?
     };
+    log_cmrc_phase(
+        timing_enabled,
+        "final_requirement_projection",
+        &mut phase_started,
+    );
     let remap = if initial_mesh == mesh {
         earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(&mesh)
     } else {
@@ -1813,6 +1851,7 @@ fn build_mixed_certified_construction(
             )
         })?
     };
+    log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
     let remap_certificate =
         remap.certify_spherical_overlap(initial_mesh.vertex_count(), mesh.vertex_count());
     let geometry = match earthmesh_refine_certified::certify_geometry_with_contract(
@@ -1822,6 +1861,11 @@ fn build_mixed_certified_construction(
         earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
         other => return Err(certified_outcome_error(other)),
     };
+    log_cmrc_phase(
+        timing_enabled,
+        "final_geometry_certificate",
+        &mut phase_started,
+    );
     Ok(CertifiedConstruction {
         delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
         delivered_levels,
@@ -1909,7 +1953,9 @@ fn run_certified_pipeline(
     workdir: &Path,
     max_tris: usize,
 ) -> io::Result<RefinePipelineRunReport> {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
+    let timing_enabled = cmrc_timing_enabled();
+    let mut phase_started = Instant::now();
     if !config.refine {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2011,6 +2057,7 @@ fn run_certified_pipeline(
         required_levels.clone(),
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    log_cmrc_phase(timing_enabled, "requirement_planning", &mut phase_started);
     let CertifiedConstruction {
         geometry,
         pentagons,
@@ -2041,6 +2088,7 @@ fn run_certified_pipeline(
         &raster_requirements,
         max_tris,
     )?;
+    log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
         geometry.primal(),
         delivered_levels,
@@ -2146,6 +2194,11 @@ fn run_certified_pipeline(
     let state = spherical_voronoi_state(&triangular)?;
     certify_cmrc_published_dual(final_mesh.primal(), &state)?;
     let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+    log_cmrc_phase(
+        timing_enabled,
+        "final_certification_and_dual",
+        &mut phase_started,
+    );
 
     let configured_dir = PathBuf::from(config.file_dir());
     let file_dir = if configured_dir.is_absolute() {
@@ -2343,12 +2396,14 @@ fn run_certified_pipeline(
     for path in temporary_paths {
         let _ = fs::remove_file(path);
     }
+    log_cmrc_phase(timing_enabled, "artifact_assembly", &mut phase_started);
     let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
         {
             let mut writer = BufWriter::new(fs::File::create(&temporary_remap_path)?);
             write_remap_csv(&mut writer, remap.rows())?;
             writer.flush()?;
         }
+        log_cmrc_phase(timing_enabled, "remap_csv", &mut phase_started);
         fs::write(&temporary_manifest_path, manifest_json)?;
         fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
         let (report, landtype_masked_cells, topology, domain_quality, published_geometry) =
@@ -2473,6 +2528,11 @@ fn run_certified_pipeline(
                     None,
                 )
             };
+        log_cmrc_phase(
+            timing_enabled,
+            "domain_export_and_audit",
+            &mut phase_started,
+        );
         if let Some(published_geometry) = &published_geometry {
             certificate_document
                 .as_object_mut()
@@ -2520,6 +2580,7 @@ fn run_certified_pipeline(
         }))
         .map_err(io::Error::other)?;
         fs::write(&temporary_resources_path, resource_json)?;
+        log_cmrc_phase(timing_enabled, "artifact_staging", &mut phase_started);
         Ok((report, landtype_masked_cells))
     })();
     let (temporary, landtype_masked_cells) = match staged {
@@ -2551,6 +2612,7 @@ fn run_certified_pipeline(
             format!("CMRC atomic artifact publication failed: {error}"),
         ));
     }
+    log_cmrc_phase(timing_enabled, "artifact_publish", &mut phase_started);
     let output = crate::UnstructuredMeshWriteReport {
         output: output_path.clone(),
         sjx_points: temporary.sjx_points,

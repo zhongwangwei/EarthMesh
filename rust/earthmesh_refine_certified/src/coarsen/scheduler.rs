@@ -18,6 +18,7 @@ use earthmesh_quality::domain::QualityZone;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write,
+    time::Instant,
 };
 
 type ComponentQualityGate<'a> = dyn FnMut(&HierarchyComponent, &ComponentTransactionState) -> Option<DomainQualityRejectReason>
@@ -419,6 +420,7 @@ fn run_elastic_component_epochs_impl(
     let initial_vertices = grid.mesh.vertex_count();
     let mut remaining_topology_states = config.total_transition_states;
     let mut next_component_id = 0u64;
+    let source_active_sites = grid.mesh.active_vertex_slots().collect::<Vec<_>>();
     let mut report = ElasticCmrcReport {
         initial_faces,
         final_faces: initial_faces,
@@ -446,6 +448,8 @@ fn run_elastic_component_epochs_impl(
     };
 
     for source_level in (1..=config.max_level).rev() {
+        let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+        let level_started = Instant::now();
         let target_level = source_level - 1;
         let shift = config.max_level - source_level;
         let fine_n = grid.subdivision >> shift;
@@ -499,7 +503,10 @@ fn run_elastic_component_epochs_impl(
         let mut committed = 0usize;
         let mut promoted = 0usize;
         let mut exhausted = 0usize;
+        let mut certified_state_fingerprint = None;
         let mut quality_stats = CoarseningScheduleStats::default();
+        let planning_elapsed = level_started.elapsed();
+        let components_started = Instant::now();
 
         for mut component in plan.components {
             component.id = next_component_id;
@@ -529,6 +536,7 @@ fn run_elastic_component_epochs_impl(
                 source_levels,
                 &mut state,
                 level_grid,
+                &source_active_sites,
                 &level_source_slots,
                 &component,
                 target_level,
@@ -570,6 +578,7 @@ fn run_elastic_component_epochs_impl(
                         report.total_topology_states += commit.topology_states;
                         report.total_elastic_iterations += commit.elastic_iterations;
                         report.total_interval_boxes += commit.interval_boxes;
+                        certified_state_fingerprint = Some(commit.after_fingerprint);
                         remaining_topology_states =
                             remaining_topology_states.saturating_sub(commit.topology_states);
                         ElasticComponentRecord {
@@ -655,21 +664,36 @@ fn run_elastic_component_epochs_impl(
             }
             report.components.push(component_record);
         }
+        let components_elapsed = components_started.elapsed();
+        let certification_started = Instant::now();
         report.components_total += components_total;
         report.components_rejected_for_global_hard +=
             quality_stats.components_rejected_for_global_hard;
         report.components_rejected_for_target_quality +=
             quality_stats.components_rejected_for_target_quality;
-        if let Err(reason) = certify_stage(
-            &grid,
-            source_levels,
-            &state,
-            config.max_adjacent_level_delta,
-            config.angle_contract,
-        ) {
-            return ElasticCmrcOutcome::NotCertifiable {
-                reason: format!("stage {source_level}->{target_level}: {reason}"),
-            };
+        let reused_component_certificate = certified_state_fingerprint == Some(state.fingerprint());
+        if !reused_component_certificate {
+            if let Err(reason) = certify_stage(
+                &grid,
+                source_levels,
+                &state,
+                config.max_adjacent_level_delta,
+                config.angle_contract,
+            ) {
+                return ElasticCmrcOutcome::NotCertifiable {
+                    reason: format!("stage {source_level}->{target_level}: {reason}"),
+                };
+            }
+        }
+        let certification_elapsed = certification_started.elapsed();
+        if timing_enabled {
+            eprintln!(
+                "earthmesh_cli: cmrc_timing phase=elastic_level source_level={source_level} target_level={target_level} planning_ms={} components_ms={} certification_ms={} reused_component_certificate={reused_component_certificate} total_ms={}",
+                planning_elapsed.as_millis(),
+                components_elapsed.as_millis(),
+                certification_elapsed.as_millis(),
+                level_started.elapsed().as_millis()
+            );
         }
         let delivered_histogram = match state.target_levels() {
             Ok(levels) => histogram(levels.levels().iter().copied()),
