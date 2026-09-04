@@ -41,7 +41,24 @@ pub fn gridfile_cell_polygons_geojson_page_with_report(
     cell_offset: usize,
     max_cells: Option<usize>,
 ) -> io::Result<(String, GridfileCellExportReport)> {
+    gridfile_cell_polygons_geojson_strided_with_report(mesh, kind, bbox, cell_offset, max_cells, 1)
+}
+
+pub fn gridfile_cell_polygons_geojson_strided_with_report(
+    mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    cell_offset: usize,
+    max_cells: Option<usize>,
+    cell_stride: usize,
+) -> io::Result<(String, GridfileCellExportReport)> {
     validate_gridfile_cell_arrays(mesh, kind, bbox)?;
+    if cell_stride == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "gridfile cell stride must be positive",
+        ));
+    }
     let norm_lon = |lon: f64| ((lon + 180.0).rem_euclid(360.0)) - 180.0;
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
@@ -119,6 +136,9 @@ pub fn gridfile_cell_polygons_geojson_page_with_report(
                     continue;
                 }
                 eligible_cells_seen += 1;
+                if !(eligible_cells_seen - cell_offset - 1).is_multiple_of(cell_stride) {
+                    continue;
+                }
                 features.push(make_feature(ci, canonical_id, &ring, clon, clat));
                 if max_cells.is_some_and(|mc| features.len() >= mc) {
                     break;
@@ -198,6 +218,9 @@ pub fn gridfile_cell_polygons_geojson_page_with_report(
                         continue;
                     }
                     eligible_cells_seen += 1;
+                    if !(eligible_cells_seen - cell_offset - 1).is_multiple_of(cell_stride) {
+                        continue;
+                    }
                     features.push(make_feature(wi, canonical_id, &ring, clon, clat));
                     if max_cells.is_some_and(|mc| features.len() >= mc) {
                         break;
@@ -380,6 +403,29 @@ pub fn write_gridfile_cell_polygons_geojson_page(
     let mesh = read_gridfile_mesh_points(gridfile)?;
     let (json, report) =
         gridfile_cell_polygons_geojson_page_with_report(&mesh, kind, bbox, cell_offset, max_cells)?;
+    crate::ensure_parent_dir(output.as_ref())?;
+    fs::write(output.as_ref(), json.as_bytes())?;
+    Ok(report.emitted_cells)
+}
+
+pub fn write_gridfile_cell_polygons_geojson_strided(
+    gridfile: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    kind: GridfileCellKind,
+    bbox: Option<[f64; 4]>,
+    cell_offset: usize,
+    max_cells: Option<usize>,
+    cell_stride: usize,
+) -> io::Result<usize> {
+    let mesh = read_gridfile_mesh_points(gridfile)?;
+    let (json, report) = gridfile_cell_polygons_geojson_strided_with_report(
+        &mesh,
+        kind,
+        bbox,
+        cell_offset,
+        max_cells,
+        cell_stride,
+    )?;
     crate::ensure_parent_dir(output.as_ref())?;
     fs::write(output.as_ref(), json.as_bytes())?;
     Ok(report.emitted_cells)

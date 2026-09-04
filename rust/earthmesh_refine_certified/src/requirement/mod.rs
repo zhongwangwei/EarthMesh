@@ -1,6 +1,7 @@
 use crate::fingerprint::mesh_fingerprint;
 use crate::remap::{voronoi_rings, ConservativeRemap};
 use earthmesh_mesh::MeshState;
+use rayon::prelude::*;
 use std::collections::BinaryHeap;
 
 mod sealed {
@@ -400,23 +401,38 @@ fn maximum_overlapping_levels(
     source_levels: &[usize],
     target_cells: usize,
 ) -> Result<(Vec<usize>, Vec<Option<usize>>), String> {
+    let row_maxima = remap
+        .rows()
+        .par_iter()
+        .map(|row| {
+            if row.target >= target_cells {
+                return Err("remap target row is outside target level field");
+            }
+            let mut required = 0;
+            let mut source_for_row = None;
+            for &(source, weight) in &row.sources {
+                if weight <= 0.0 {
+                    continue;
+                }
+                let level = *source_levels
+                    .get(source)
+                    .ok_or("remap source row is outside source level field")?;
+                if level > required {
+                    required = level;
+                    source_for_row = Some(source);
+                }
+            }
+            Ok((row.target, required, source_for_row))
+        })
+        .collect::<Vec<_>>();
+
     let mut required_levels = vec![0; target_cells];
     let mut source_for_target = vec![None; target_cells];
-    for row in remap.rows() {
-        if row.target >= required_levels.len() {
-            return Err("remap target row is outside target level field".into());
-        }
-        for &(source, weight) in &row.sources {
-            if weight <= 0.0 {
-                continue;
-            }
-            let level = *source_levels
-                .get(source)
-                .ok_or("remap source row is outside source level field")?;
-            if level > required_levels[row.target] {
-                required_levels[row.target] = level;
-                source_for_target[row.target] = Some(source);
-            }
+    for row in row_maxima {
+        let (target, required, source) = row.map_err(str::to_owned)?;
+        if required > required_levels[target] {
+            required_levels[target] = required;
+            source_for_target[target] = source;
         }
     }
     Ok((required_levels, source_for_target))
@@ -625,6 +641,42 @@ mod tests {
         b.reverse();
         assert_eq!(merge_sources(5, &a), vec![0, 5, 0, 4, 0]);
         assert_eq!(merge_sources(5, &a), merge_sources(5, &b));
+    }
+
+    #[test]
+    fn maximum_overlapping_levels_keeps_serial_ties_and_errors() {
+        let remap = ConservativeRemap::from_rows_for_test(vec![
+            crate::remap::RemapRow {
+                target: 1,
+                sources: vec![(0, 0.0), (2, 1.0), (1, 1.0)],
+            },
+            crate::remap::RemapRow {
+                target: 1,
+                sources: vec![(3, 1.0)],
+            },
+            crate::remap::RemapRow {
+                target: 0,
+                sources: vec![(1, -1.0), (0, 1.0)],
+            },
+        ]);
+        let (levels, sources) = maximum_overlapping_levels(&remap, &[2, 7, 7, 5], 2).unwrap();
+        assert_eq!(levels, vec![2, 7]);
+        assert_eq!(sources, vec![Some(0), Some(2)]);
+
+        let bad = ConservativeRemap::from_rows_for_test(vec![
+            crate::remap::RemapRow {
+                target: 1,
+                sources: vec![(99, 1.0)],
+            },
+            crate::remap::RemapRow {
+                target: 99,
+                sources: vec![],
+            },
+        ]);
+        assert_eq!(
+            maximum_overlapping_levels(&bad, &[0], 2).unwrap_err(),
+            "remap source row is outside source level field"
+        );
     }
 
     #[test]

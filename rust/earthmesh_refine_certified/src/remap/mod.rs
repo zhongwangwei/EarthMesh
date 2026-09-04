@@ -65,6 +65,15 @@ impl ConservativeRemap {
         &self.rows
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_rows_for_test(rows: Vec<RemapRow>) -> Self {
+        Self {
+            rows,
+            coverage_error: 0.0,
+            target_fingerprint: None,
+        }
+    }
+
     pub fn identity(cell_count: usize) -> Self {
         Self {
             rows: (0..cell_count)
@@ -274,47 +283,53 @@ impl ConservativeRemap {
         certificate
     }
 
-    fn certify_with_lineage(&self, valid_lineage: impl Fn(&RemapRow) -> bool) -> RemapCertificate {
+    fn certify_with_lineage(
+        &self,
+        valid_lineage: impl Fn(&RemapRow) -> bool + Sync,
+    ) -> RemapCertificate {
         let closure_tolerance = (128.0
             * f64::EPSILON
             * self.rows.len().max(
                 self.rows
-                    .iter()
+                    .par_iter()
                     .map(|row| row.sources.len())
                     .max()
                     .unwrap_or(1),
             ) as f64)
             .max(1.0e-11);
-        let mut negative_weights = 0;
-        let mut bad_row_sums = 0;
-        let mut bad_lineage_rows = 0;
-        let mut constant_closure_error = 0.0_f64;
-        for row in &self.rows {
-            if !valid_lineage(row) {
-                bad_lineage_rows += 1;
-            }
-            let sum: f64 = row
-                .sources
-                .iter()
-                .map(|&(_, weight)| {
-                    if weight < 0.0 {
-                        negative_weights += 1;
-                    }
-                    weight
-                })
-                .sum();
-            let error = (sum - 1.0).abs();
-            constant_closure_error = constant_closure_error.max(error);
-            if error > closure_tolerance {
-                bad_row_sums += 1;
-            }
-        }
+        let stats = self
+            .rows
+            .par_iter()
+            .map(|row| {
+                let mut negative_weights = 0;
+                let sum: f64 = row
+                    .sources
+                    .iter()
+                    .map(|&(_, weight)| {
+                        if weight < 0.0 {
+                            negative_weights += 1;
+                        }
+                        weight
+                    })
+                    .sum();
+                let error = (sum - 1.0).abs();
+                (
+                    negative_weights,
+                    usize::from(error > closure_tolerance),
+                    usize::from(!valid_lineage(row)),
+                    error,
+                )
+            })
+            .reduce(
+                || (0, 0, 0, 0.0_f64),
+                |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3.max(b.3)),
+            );
         RemapCertificate {
             rows: self.rows.len(),
-            negative_weights,
-            bad_row_sums,
-            bad_lineage_rows,
-            constant_closure_error,
+            negative_weights: stats.0,
+            bad_row_sums: stats.1,
+            bad_lineage_rows: stats.2,
+            constant_closure_error: stats.3,
             global_area_closure_error: 0.0,
             closure_tolerance,
             target_fingerprint: self.target_fingerprint,
@@ -536,6 +551,99 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(rings[cell], expected);
         }
+    }
+
+    #[test]
+    fn remap_certification_is_thread_count_independent() {
+        fn serial_certify(
+            remap: &ConservativeRemap,
+            valid_lineage: impl Fn(&RemapRow) -> bool,
+        ) -> RemapCertificate {
+            let closure_tolerance = (128.0
+                * f64::EPSILON
+                * remap.rows.len().max(
+                    remap
+                        .rows
+                        .iter()
+                        .map(|row| row.sources.len())
+                        .max()
+                        .unwrap_or(1),
+                ) as f64)
+                .max(1.0e-11);
+            let mut negative_weights = 0;
+            let mut bad_row_sums = 0;
+            let mut bad_lineage_rows = 0;
+            let mut constant_closure_error = 0.0_f64;
+            for row in &remap.rows {
+                if !valid_lineage(row) {
+                    bad_lineage_rows += 1;
+                }
+                let sum: f64 = row
+                    .sources
+                    .iter()
+                    .map(|&(_, weight)| {
+                        if weight < 0.0 {
+                            negative_weights += 1;
+                        }
+                        weight
+                    })
+                    .sum();
+                let error = (sum - 1.0).abs();
+                constant_closure_error = constant_closure_error.max(error);
+                if error > closure_tolerance {
+                    bad_row_sums += 1;
+                }
+            }
+            RemapCertificate {
+                rows: remap.rows.len(),
+                negative_weights,
+                bad_row_sums,
+                bad_lineage_rows,
+                constant_closure_error,
+                global_area_closure_error: 0.0,
+                closure_tolerance,
+                target_fingerprint: remap.target_fingerprint,
+            }
+        }
+
+        let remap = ConservativeRemap {
+            rows: vec![
+                RemapRow {
+                    target: 0,
+                    sources: vec![(0, 0.25), (1, 0.75)],
+                },
+                RemapRow {
+                    target: 1,
+                    sources: vec![(2, 0.4), (3, 0.4)],
+                },
+                RemapRow {
+                    target: 6,
+                    sources: vec![(4, 1.0)],
+                },
+                RemapRow {
+                    target: 3,
+                    sources: vec![(0, -0.5), (1, 1.5)],
+                },
+            ],
+            coverage_error: 0.0,
+            target_fingerprint: Some(7),
+        };
+        let valid_lineage =
+            |row: &RemapRow| row.target < 4 && row.sources.iter().all(|&(source, _)| source < 4);
+        let expected = serial_certify(&remap, valid_lineage);
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| remap.certify_with_lineage(valid_lineage));
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| remap.certify_with_lineage(valid_lineage));
+
+        assert_eq!(one_thread, expected);
+        assert_eq!(four_threads, expected);
     }
 
     #[test]

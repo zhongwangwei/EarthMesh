@@ -573,7 +573,7 @@ const STATIC_BROWSER_CAPABILITIES={
   default_hfield_g:0.2,
   method_c_defaults:{max_cycles:8,target_size_tolerance:1.2,maximum_neighbor_size_ratio:1.75,maximum_vertices:5000000,maximum_insertions_per_cycle:500000,maximum_path_length:100000,stop_at_source_resolution:true,minimum_triangle_angle_deg:0},
   harp_dv_defaults:{max_cycles:60,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:0,criterion_minimum_angle_deg:0},
-  certified_defaults:{mode:"safe_mother_only",delivery:"coupled",angle_contract:"legacy_strict_40_to_80",maximum_level:8,maximum_cells:10000000,gradation_rings_per_level:3,search_budget:100000},
+  certified_defaults:{mode:"reverse_coarsening",delivery:"coupled",angle_contract:"domain_quality_38_to_82_v1",maximum_level:8,maximum_cells:10000000,gradation_rings_per_level:3,search_budget:100000},
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
@@ -980,6 +980,11 @@ function meshFeatureLabel(p){
   return `${primary}${river}${frac?` (${(frac*100).toFixed(1)}%)`:""}`;
 }
 let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
+let _meshPreview=null;  // current gridfile-backed, viewport-loaded mesh preview
+let _meshPreviewToken=0;
+let _meshPreviewTimer=0;
+const MESH_VIEW_CELLS=50000;
+let scheduleMeshViewportPreview=()=>{};
 let _domainGeojson=null; // watershed/domain outline overlay
 let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
 let _hydroThresholds={r2WidthM:50,r2UpaKm2:5000,r3WidthM:300,r3UpaKm2:50000,coastBufferKm:50,coastLandEnabled:true,coastOceanEnabled:true};
@@ -991,13 +996,13 @@ function updateExistingOlMaps(doFit){
   if(modal&&modal.style.display!=="none") maps.push(existingOlMap("mapsvgModal"));
   maps.forEach((map)=>{ if(map) updateOlMap(map,doFit); });
 }
-function applyMesh(geojson){
+function applyMesh(geojson,doFit=true){
   const changed=_meshGeojson!==geojson;
   if(!changed) return;
   _coastalGeojson=null;
   _meshGeojson=geojson;
-  updateExistingOlMaps(true);
-  syncMapWindow(["mesh","coastal"],true);
+  updateExistingOlMaps(!!doFit);
+  syncMapWindow(["mesh","coastal"],!!doFit);
 }
 function applyCoastal(geojson,doFit=false){
   const changed=_coastalGeojson!==geojson;
@@ -1619,6 +1624,7 @@ function bindOlMapTools(map){
     const token=++map._inspectToken;
     map._meshLayer.getFeatures(event.pixel).then((features)=>{ if(token===map._inspectToken) showOlCellInspector(map,features[0]||null); }).catch(()=>{});
   });
+  map.on("moveend",()=>scheduleMeshViewportPreview(map));
 }
 function ensureOlMap(elId){
   const el=document.getElementById(elId);
@@ -1930,9 +1936,24 @@ if(MAP_WINDOW_MODE){
   const tauriEvent = window.__TAURI__.event;
   const WebviewWindow = window.__TAURI__.webviewWindow.WebviewWindow;
 
+  scheduleMeshViewportPreview = function (map, force=false) {
+    if (!_meshPreview || !map || map._globeActive) return;
+    clearTimeout(_meshPreviewTimer);
+    _meshPreviewTimer = setTimeout(()=>{
+      const bbox = meshViewportBbox(map);
+      const key = bbox ? bbox.map((value)=>value.toFixed(3)).join(",") : "global";
+      if (!_meshPreview || (!force && _meshPreview.key === key)) return;
+      _meshPreview.key = key;
+      loadMeshPreview(_meshPreview.gridfile,_meshPreview.kind,_meshPreview.totalCells,bbox,false,true)
+        .catch((e)=>logLine((zh()?"网格视野加载失败：":"mesh viewport load failed: ")+e));
+    },force?0:250);
+  };
+
   if (MAP_WINDOW_MODE) {
     tauriEvent.listen("earthmesh-map-state", ({ payload }) => {
+      const previewChanged = "meshPreview" in payload;
       if ("mesh" in payload) _meshGeojson = payload.mesh;
+      if ("meshPreview" in payload) _meshPreview = payload.meshPreview;
       if ("domain" in payload) _domainGeojson = payload.domain;
       if ("coastal" in payload) _coastalGeojson = payload.coastal;
       if ("hydroThresholds" in payload) _hydroThresholds = payload.hydroThresholds;
@@ -1944,6 +1965,7 @@ if(MAP_WINDOW_MODE){
       const map = ensureOlMap("mapsvgModal");
       if (!map) return;
       updateOlMap(map, !!payload.fit);
+      if (previewChanged && _meshPreview) scheduleMeshViewportPreview(map, true);
       scheduleMapResize();
     }).then(() => tauriEvent.emitTo("main", "earthmesh-map-ready"));
     return;
@@ -1952,7 +1974,10 @@ if(MAP_WINDOW_MODE){
   const ALL_MAP_STATE=["mesh","domain","coastal","settings"];
   const mapState = (parts=ALL_MAP_STATE,fit=false) => {
     const selected=new Set(parts), payload={fit};
-    if(selected.has("mesh")) payload.mesh=_meshGeojson;
+    if(selected.has("mesh")) {
+      payload.meshPreview=_meshPreview&&{gridfile:_meshPreview.gridfile,kind:_meshPreview.kind,totalCells:_meshPreview.totalCells,key:null};
+      payload.mesh=_meshPreview?null:_meshGeojson;
+    }
     if(selected.has("domain")) payload.domain=_domainGeojson;
     if(selected.has("coastal")) payload.coastal=_coastalGeojson;
     if(selected.has("settings")) Object.assign(payload,{
@@ -2421,6 +2446,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     hasRun = false;
     runInfo = null;
     _lastQuality = null;
+    _meshPreview = null;
+    _meshPreviewToken++;
+    clearTimeout(_meshPreviewTimer);
     if (typeof applyMesh === "function") applyMesh(null);
     if (typeof applyCoastal === "function") applyCoastal(null, false);
     document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b')
@@ -2985,7 +3013,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
       <div class="grid2">
-        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格":"Safe mother only"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option></select>`)}
+        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option></select>`)}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
         ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
         ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
@@ -4042,13 +4070,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
     }
     setRunControls(false);
-    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
+    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
+      try { renderStep(6); }
+      catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
+    }
     if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
     else if (runInfo && runInfo.ok) {
       logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
       renderMissingGridfile();
     }
   }
+
+  const openButton = (label, path) => {
+    if (!path) return null;
+    const button = document.createElement("span");
+    button.className = "btn-ghost";
+    button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
+    button.textContent = label;
+    button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
+    return button;
+  };
 
   function renderCertifiedRun(bundle) {
     const card = document.getElementById("certifiedCard");
@@ -4080,6 +4121,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     summary.className = "grid2";
     const rows = [
       [zh()?"结果":"Outcome", c.product_outcome],
+      [zh()?"运行模式":"Mode", c.mode],
       [zh()?"角度合同":"Angle contract", c.angle_contract],
       [zh()?"DQX 执行状态":"DQX execution", c.dqx_execution_status],
       [zh()?(publishedAngle?"掩膜前角度":"认证角度"):(publishedAngle?"Pre-mask angles":"Certified angles"), angle],
@@ -4100,6 +4142,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       box.append(name, data); summary.appendChild(box);
     });
     card.appendChild(summary);
+    if (c.product_outcome === "certified_safe_fallback" && fulfillment.mixed_levels_requested && !fulfillment.mixed_levels_delivered) {
+      const warning = document.createElement("div");
+      warning.style.cssText = "margin-top:10px;padding:9px;border-radius:7px;background:rgba(220,150,60,.14);color:var(--warn);font-size:12px;font-weight:650";
+      warning.textContent = zh()
+        ? "未交付自适应粗细网格：当前为统一最细层安全母网格。要执行 3→2→1→0 粗化，请选择“认证反向粗化”。"
+        : "No adaptive mixed-level mesh was delivered: this is a uniform finest-level safety grid. Select Certified reverse coarsening for 3→2→1→0.";
+      card.appendChild(warning);
+    }
     const levels = c.elastic_component_epochs && c.elastic_component_epochs.per_level_histograms;
     if (Array.isArray(levels) && levels.length) {
       const subtitle = document.createElement("div");
@@ -4171,16 +4221,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (preference === "higher") return "越高越好";
       return preference || "N/A";
     };
-    const openButton = (label, path) => {
-      if (!path) return null;
-      const button = document.createElement("span");
-      button.className = "btn-ghost";
-      button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
-      button.textContent = label;
-      button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
-      return button;
-    };
-
     decisions.forEach((decision) => {
       const outcome = String(decision.decision || "").toLowerCase();
       const accepted = outcome === "accepted";
@@ -4311,31 +4351,60 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       })
       .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
   }
-  async function loadCompleteMeshPolygons(gridfile, kind) {
-    const pageSize = 50000;
-    const features = [];
-    for (let startCell = 0;; startCell += pageSize) {
-      const text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell, maxCells: pageSize });
-      const page = JSON.parse(text);
-      const batch = Array.isArray(page.features) ? page.features : [];
-      for (const feature of batch) features.push(feature);
-      if (batch.length < pageSize) break;
-      logLine((zh() ? "… 已载入网格单元 " : "… loaded mesh cells ") + features.length.toLocaleString());
+  function certifiedPreviewCellCount(kind) {
+    const resources = runInfo && runInfo.certified && runInfo.certified.resources;
+    const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
+    const geometry = certificate && certificate.geometry;
+    return Number(resources && resources.landtype_kept_cells)
+      || Number(geometry && (kind === "tri" ? geometry.faces : geometry.vertices))
+      || Number(resources && resources.target_voronoi_cells)
+      || 0;
+  }
+  function meshViewportBbox(map) {
+    if (!map || !map.getSize()) return null;
+    const extent = ol.proj.transformExtent(map.getView().calculateExtent(map.getSize()), olProjectionCode(map), "EPSG:4326");
+    const west = Math.max(-180, extent[0]), south = Math.max(-90, extent[1]);
+    const east = Math.min(180, extent[2]), north = Math.min(90, extent[3]);
+    if (![west,south,east,north].every(Number.isFinite) || west >= east || south >= north || east-west >= 350) return null;
+    return [west,south,east,north];
+  }
+  function meshPreviewStride(totalCells, bbox) {
+    if (!(totalCells > MESH_VIEW_CELLS)) return 1;
+    let estimated = totalCells;
+    if (bbox) {
+      const [west,south,east,north] = bbox;
+      const lonFraction = Math.max(0, Math.min(1, (east-west)/360));
+      const latFraction = Math.max(0, Math.min(1, (Math.sin(north*Math.PI/180)-Math.sin(south*Math.PI/180))/2));
+      estimated *= lonFraction*latFraction;
     }
-    return { type: "FeatureCollection", features };
+    return Math.max(1, Math.ceil(estimated/MESH_VIEW_CELLS));
+  }
+  async function loadMeshPreview(gridfile,kind,totalCells,bbox,doFit,quiet=false) {
+    const token = ++_meshPreviewToken;
+    const stride = meshPreviewStride(totalCells,bbox);
+    const text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell:0, maxCells:MESH_VIEW_CELLS, cellStride:stride, bbox });
+    if (token !== _meshPreviewToken) return;
+    const mesh = JSON.parse(text);
+    applyMesh(mesh,doFit);
+    if (!quiet) {
+      const shown = Array.isArray(mesh.features) ? mesh.features.length : 0;
+      const scope = bbox ? (zh()?"当前视野":"current view") : (zh()?"全域":"global extent");
+      logLine((zh()?"✓ 网格已叠加（":"✓ mesh overlaid (") + scope + ` LOD): ${shown.toLocaleString()} / ${totalCells.toLocaleString()}`);
+    }
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
     const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
-    (knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile))
-      .then((q) => { _lastQuality = q; renderQualityCard(q); })
+    const quality = knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile);
+    quality.then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
-    loadCompleteMeshPolygons(gridfile, kind)
-      .then((mesh) => {
-        applyMesh(mesh);
-        logLine((zh() ? "✓ 完整网格预览已叠加到地图：" : "✓ complete mesh preview overlaid: ") + mesh.features.length.toLocaleString());
-        if (!(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind);
-      })
+    const knownCells = Number(knownQuality && knownQuality.cell_count) || certifiedPreviewCellCount(kind);
+    const startPreview = (totalCells) => {
+      _meshPreview = {gridfile,kind,totalCells,key:"global"};
+      return loadMeshPreview(gridfile,kind,totalCells,null,true);
+    };
+    (knownCells > 0 ? startPreview(knownCells) : quality.then((q)=>startPreview(Number(q.cell_count)||MESH_VIEW_CELLS)))
+      .then(() => { if (!(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind); })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
   }
 
