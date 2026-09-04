@@ -35,4 +35,5 @@ instead of hiding it.
 
 `n12_research_fixture_report_json()` emits the complete manifests and the
 dimensionless curvature, band-width, pentagon-distance, area, boundary, and
-fixed/movable ratios.
+fixed/movable ratios. Manifest area fields are rounded to stable scientific
+notation before hashing so libm-level ULP drift does not change fixture IDs.
