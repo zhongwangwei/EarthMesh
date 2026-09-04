@@ -55,7 +55,10 @@ use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
-fn publish_certified_artifacts(publications: &[(&Path, &Path)]) -> io::Result<()> {
+fn publish_certified_artifacts(
+    publications: &[(&Path, &Path)],
+    obsolete_paths: &[&Path],
+) -> io::Result<()> {
     let ready = publications.len().checked_sub(1).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "no CMRC artifacts to publish")
     })?;
@@ -71,16 +74,22 @@ fn publish_certified_artifacts(publications: &[(&Path, &Path)]) -> io::Result<()
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         path.with_file_name(format!(".{name}.cmrc-backup-{publication_id}-{index}"))
     };
+    let backup_targets = std::iter::once((publications[ready].1, true))
+        .chain(
+            publications[..ready]
+                .iter()
+                .map(|(_, final_path)| (*final_path, false)),
+        )
+        .chain(obsolete_paths.iter().map(|path| (*path, false)));
     let mut backups = Vec::new();
-    for index in std::iter::once(ready).chain(0..ready) {
-        let final_path = publications[index].1;
+    for (index, (final_path, is_ready)) in backup_targets.enumerate() {
         if final_path.exists() {
             let backup = backup_path(final_path, index);
             if let Err(error) = fs::rename(final_path, &backup) {
-                restore_certified_backups(publications, ready, &backups);
+                restore_certified_backups(&backups);
                 return Err(error);
             }
-            backups.push((index, backup));
+            backups.push((final_path.to_path_buf(), backup, is_ready));
         }
     }
 
@@ -90,12 +99,12 @@ fn publish_certified_artifacts(publications: &[(&Path, &Path)]) -> io::Result<()
             for &published_index in published.iter().rev() {
                 let _ = fs::remove_file(publications[published_index].1);
             }
-            restore_certified_backups(publications, ready, &backups);
+            restore_certified_backups(&backups);
             return Err(error);
         }
         published.push(index);
     }
-    for (_, backup) in backups {
+    for (_, backup, _) in backups {
         let _ = fs::remove_file(backup);
     }
     Ok(())
@@ -169,16 +178,12 @@ fn certified_gridfile_refine_levels(
     Ok((m_levels, w_levels))
 }
 
-fn restore_certified_backups(
-    publications: &[(&Path, &Path)],
-    ready: usize,
-    backups: &[(usize, PathBuf)],
-) {
-    for (index, backup) in backups.iter().filter(|(index, _)| *index != ready) {
-        let _ = fs::rename(backup, publications[*index].1);
+fn restore_certified_backups(backups: &[(PathBuf, PathBuf, bool)]) {
+    for (original, backup, _) in backups.iter().filter(|(_, _, is_ready)| !is_ready) {
+        let _ = fs::rename(backup, original);
     }
-    if let Some((_, backup)) = backups.iter().find(|(index, _)| *index == ready) {
-        let _ = fs::rename(backup, publications[ready].1);
+    if let Some((original, backup, _)) = backups.iter().find(|(_, _, is_ready)| *is_ready) {
+        let _ = fs::rename(backup, original);
     }
 }
 
@@ -2157,6 +2162,14 @@ fn run_certified_pipeline(
         "remap"
     };
     let remap_path = result_dir.join(format!("{artifact_stem}_{remap_role}.csv"));
+    let obsolete_remap_path = result_dir.join(format!(
+        "{artifact_stem}_{}.csv",
+        if is_domain_export {
+            "remap"
+        } else {
+            "pre_export_remap"
+        }
+    ));
     let temporary_remap_path = result_dir.join(format!(
         ".certified_remap.csv.cmrc-tmp-{}",
         std::process::id()
@@ -2493,14 +2506,17 @@ fn run_certified_pipeline(
         }
     };
     let _ = fs::remove_file(&temporary_source_path);
-    if let Err(error) = publish_certified_artifacts(&[
-        (&temporary_certificate_path, &certificate_path),
-        (&temporary_remap_path, &remap_path),
-        (&temporary_path, &output_path),
-        (&temporary_resources_path, &resources_path),
-        (&temporary_manifest_path, &manifest_path),
-        (&temporary_ready_marker, &ready_marker),
-    ]) {
+    if let Err(error) = publish_certified_artifacts(
+        &[
+            (&temporary_certificate_path, &certificate_path),
+            (&temporary_remap_path, &remap_path),
+            (&temporary_path, &output_path),
+            (&temporary_resources_path, &resources_path),
+            (&temporary_manifest_path, &manifest_path),
+            (&temporary_ready_marker, &ready_marker),
+        ],
+        &[&obsolete_remap_path],
+    ) {
         for path in temporary_paths {
             let _ = fs::remove_file(path);
         }
@@ -2568,7 +2584,8 @@ fn run_certified_pipeline(
             dual_errors: geometry_report.voronoi_invalid_cells
                 + geometry_report.voronoi_reciprocal_errors,
             remap_closure_errors: certificate.remap_closure_errors,
-            remap: remap_path,
+            remap: (!is_domain_export).then(|| remap_path.clone()),
+            pre_export_remap: is_domain_export.then_some(remap_path),
             certificate: certificate_path,
             manifest: manifest_path,
             resources: resources_path,
@@ -5582,13 +5599,20 @@ mod tests {
             .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
             .collect::<Vec<_>>();
 
-        assert!(publish_certified_artifacts(&publications).is_err());
+        let obsolete = directory.join("obsolete-remap");
+        fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
+
+        assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
         for (name, (_, final_path)) in names.iter().zip(&paths) {
             assert_eq!(
                 fs::read_to_string(final_path).expect("restored old artifact"),
                 format!("old-{name}")
             );
         }
+        assert_eq!(
+            fs::read_to_string(&obsolete).expect("restored obsolete remap"),
+            "old-obsolete-remap"
+        );
         assert!(fs::read_dir(&directory)
             .expect("read test directory")
             .all(|entry| !entry

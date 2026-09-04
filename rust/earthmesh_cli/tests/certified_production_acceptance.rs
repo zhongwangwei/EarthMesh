@@ -91,9 +91,11 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
     assert!(manifest["remap"].is_null());
+    assert!(certified.remap.is_none());
+    let pre_export_remap = certified.pre_export_remap.as_ref().unwrap();
     assert_eq!(
         manifest["pre_export_remap"],
-        certified.remap.display().to_string()
+        pre_export_remap.display().to_string()
     );
     let gridfile =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
@@ -116,7 +118,7 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     );
     for path in [
         run.output.output,
-        certified.remap,
+        certified.pre_export_remap.unwrap(),
         certified.certificate,
         certified.manifest,
         certified.resources,

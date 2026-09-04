@@ -24,9 +24,10 @@ fn n6_legacy_transition_family_emits_honest_machine_readable_evidence() {
     assert_eq!(proof.transition_parent_count, 22);
     assert!(proof.family_topology_count > 0);
     assert!(proof.best_numerical_margin_degrees.is_some());
-    assert_eq!(proof.family_topology_count, 493);
+    // The family count is after hard topology gates prune invalid candidates.
+    assert_eq!(proof.family_topology_count, 188);
     assert!(proof.topology_family_closed);
-    assert_eq!(proof.interval_boxes, 493);
+    assert_eq!(proof.interval_boxes, 188);
     assert_eq!(proof.interval_upper_margin_degrees, Some(19.8));
     assert!(proof
         .best_numerical_margin_degrees

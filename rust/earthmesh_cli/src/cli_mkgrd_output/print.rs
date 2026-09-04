@@ -485,7 +485,16 @@ pub(crate) fn print_refine_pipeline_report(
             "certified_remap_closure_errors={}",
             certified.remap_closure_errors
         );
-        println!("certified_remap={}", certified.remap.display());
+        println!(
+            "certified_published_grid_remap_available={}",
+            certified.remap.is_some()
+        );
+        if let Some(remap) = &certified.remap {
+            println!("certified_remap={}", remap.display());
+        }
+        if let Some(remap) = &certified.pre_export_remap {
+            println!("certified_pre_export_remap={}", remap.display());
+        }
         println!("certified_certificate={}", certified.certificate.display());
         println!("certified_manifest={}", certified.manifest.display());
         println!("certified_resources={}", certified.resources.display());

@@ -55,6 +55,12 @@ interval upper margin = 19.8 degrees
 outcome = UnknownBudgetExhausted
 ```
 
+That `493` count is the historical PR #34 snapshot. The Alpha7 topology gate
+also enforces the protected-icosahedron degree contract before emitting a
+candidate, so the current regression retains 188 hard-gate-clean topologies
+and spends 188 one-box interval checks while preserving the same
+`UnknownBudgetExhausted` conclusion.
+
 The numerical margin above is the best emitted source-geometry sample, not a
 replacement for PR #33's independently optimized CBER diagnostic. The outward
 interval proof starts from `[-1,1]^3` per movable vertex, a conservative

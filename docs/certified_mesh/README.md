@@ -47,6 +47,14 @@ The DQX project schema also has a fail-closed `domain_export` policy and a
 content-addressed quality-domain IR. It records multipart/hole/dateline/pole
 facts and rejects regional work domains whose halo cannot contain both boundary
 protection and the export corridor; it does not yet activate DQX coarsening.
+`dqx_execution_status: geometry_contract_only` describes that missing
+DQX-specific coarsening/physics extension; the shared CMRC topology,
+physical/balance, conservative-remap, and publication gates still run.
+
+The bundled Studio GUI and CLI are a lockstep pair. Studio accepts an engine
+only when its `--studio-protocol` value matches exactly, so older or custom
+engine binaries must be upgraded together with the GUI rather than silently
+running against a different publication contract.
 
 The backend starts from a radially projected integer subdivision of a regular
 icosahedron and turns every requirement into a conservative minimum level. The
