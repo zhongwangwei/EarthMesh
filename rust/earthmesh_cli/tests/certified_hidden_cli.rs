@@ -109,7 +109,8 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     assert_eq!(certified.dual_errors, 0);
     assert_eq!(certified.remap_closure_errors, 0);
     assert!(run.output.output.exists());
-    assert!(certified.remap.exists());
+    assert!(certified.remap.as_ref().is_some_and(|path| path.exists()));
+    assert!(certified.pre_export_remap.is_none());
     assert!(certified.certificate.exists());
     assert!(certified.manifest.exists());
     assert!(certified.resources.exists());
@@ -180,7 +181,7 @@ fn unsupported_mother_fails_and_reverse_mode_is_bounded_and_certified() {
     assert_eq!(completed.attempted_patches, 180);
     assert_eq!(completed.accepted_patches, 180);
     assert!(completed.removed_vertices > 0);
-    let remap = fs::read_to_string(&completed.remap).unwrap();
+    let remap = fs::read_to_string(completed.remap.as_ref().unwrap()).unwrap();
     let targets = remap
         .lines()
         .skip(1)
@@ -306,6 +307,10 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
         .replace("mode_grid='hex'", "mode_grid='tri'")
         .replace("output_format='CoLM'", "output_format='FVCOM'");
     fs::write(&path, namelist).unwrap();
+    let result_dir = root.join(case).join("result");
+    fs::create_dir_all(&result_dir).unwrap();
+    let stale_remap = result_dir.join("certified_remap.csv");
+    fs::write(&stale_remap, "stale final-domain remap").unwrap();
 
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let kept = run.landtype_masked_cells.expect("masked ocean cell count");
@@ -320,9 +325,63 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
         serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
     assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
     assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+    assert_eq!(certificate["published_grid_remap_available"], false);
+    assert_eq!(
+        certificate["published_domain_geometry"]["contract_pass"],
+        true
+    );
+    assert!(
+        certificate["published_domain_geometry"]["minimum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle >= 40.0)
+    );
+    assert!(
+        certificate["published_domain_geometry"]["maximum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle <= 80.0)
+    );
+    assert_eq!(
+        certificate["remap_scope"],
+        "pre_export_closed_sphere_voronoi"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert!(manifest["remap"].is_null());
+    assert!(certified.remap.is_none());
+    let pre_export_remap = certified.pre_export_remap.as_ref().unwrap();
+    assert_eq!(
+        manifest["pre_export_remap"],
+        pre_export_remap.display().to_string()
+    );
+    assert!(pre_export_remap.exists());
+    assert!(!stale_remap.exists());
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    let quality_input =
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&gridfile).unwrap();
+    let hard_issues = earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input)
+        .validate_all()
+        .into_iter()
+        .filter(|issue| issue.severity == earthmesh_quality::topology::Severity::Fail)
+        .collect::<Vec<_>>();
+    assert!(
+        hard_issues.is_empty(),
+        "published CMRC ocean topology issues: {hard_issues:?}"
+    );
     let resources: serde_json::Value =
         serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
     assert_eq!(resources["landtype_masked_cells"], kept);
+    assert_eq!(
+        resources["published_domain_quality_topology"]["connected_components"],
+        1
+    );
+    assert_eq!(
+        resources["published_domain_geometry"]["contract_pass"],
+        true
+    );
     assert_eq!(
         resources["published_domain_topology"]["violations"],
         serde_json::json!([])
@@ -376,6 +435,10 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
         "elastic_component_epochs"
     );
     assert_eq!(certificate["angle_contract"], "domain_quality_38_to_82_v1");
+    assert_eq!(
+        certificate["dqx_execution_status"],
+        "geometry_contract_only"
+    );
     assert!(certificate["geometry"]["minimum_angle_deg"]
         .as_f64()
         .is_some_and(|angle| angle >= 38.0));
@@ -397,6 +460,13 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
         certificate["physical_balance_scope"],
         "final_voronoi_cells_exact_raster_overlap"
     );
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    assert!(gridfile.w_refine_level.contains(&0));
+    assert!(gridfile.w_refine_level.contains(&1));
 }
 
 #[test]
@@ -468,7 +538,7 @@ fn tri_hex_and_coupled_delivery_share_one_certified_primal_dual_mesh() {
         assert_eq!(manifest["delivery"], delivery);
         artifacts.push((
             fs::read(certified.certificate).unwrap(),
-            fs::read(certified.remap).unwrap(),
+            fs::read(certified.remap.unwrap()).unwrap(),
         ));
     }
     assert!(artifacts

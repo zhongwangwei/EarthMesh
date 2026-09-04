@@ -382,6 +382,16 @@ pub enum CertifiedDeliveryMode {
     Coupled,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertifiedAngleContract {
+    #[default]
+    #[serde(rename = "legacy_strict_40_to_80")]
+    LegacyStrict40To80,
+    #[serde(rename = "domain_quality_38_to_82_v1")]
+    DomainQuality38To82V1,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CertifiedRefinementRecipe {
@@ -389,6 +399,8 @@ pub struct CertifiedRefinementRecipe {
     pub mode: CertifiedMode,
     #[serde(default)]
     pub delivery: CertifiedDeliveryMode,
+    #[serde(default)]
+    pub angle_contract: CertifiedAngleContract,
     #[serde(default = "default_certified_maximum_level")]
     pub maximum_level: u8,
     #[serde(default = "default_certified_maximum_cells")]
@@ -404,6 +416,7 @@ impl Default for CertifiedRefinementRecipe {
         Self {
             mode: CertifiedMode::SafeMotherOnly,
             delivery: CertifiedDeliveryMode::Coupled,
+            angle_contract: CertifiedAngleContract::LegacyStrict40To80,
             maximum_level: default_certified_maximum_level(),
             maximum_cells: default_certified_maximum_cells(),
             gradation_rings_per_level: default_certified_gradation_rings_per_level(),

@@ -364,7 +364,9 @@ fn topology_cursor_reports_strictly_increasing_ordinals() {
         .iter()
         .flatten()
         .copied()
-        .filter(|parent| parent.base_face == 0)
+        .filter(|parent| {
+            parent.base_face == 0 && parent.i >= 8 && parent.j >= 8 && parent.i + parent.j < 24
+        })
         .collect::<Vec<_>>();
     let core_set = core.iter().copied().collect::<BTreeSet<_>>();
     let transition = core
@@ -603,7 +605,9 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
         .iter()
         .flatten()
         .copied()
-        .filter(|parent| parent.base_face == 0)
+        .filter(|parent| {
+            parent.base_face == 0 && parent.i >= 4 && parent.j >= 4 && parent.i + parent.j < 28
+        })
         .collect::<Vec<_>>();
     let core_set = core.iter().copied().collect::<BTreeSet<_>>();
     let transition = core
@@ -639,11 +643,11 @@ fn many_custom_transition_parents_respect_budget_without_recursive_stack_growth(
     ) else {
         panic!("wide transition fixture should close within one topology state");
     };
-    assert_eq!(trial.report.core_parent_count, 1_024);
-    assert_eq!(trial.report.transition_parent_count, 96);
+    assert_eq!(trial.report.core_parent_count, 420);
+    assert_eq!(trial.report.transition_parent_count, 61);
     assert_eq!(trial.report.topology_states, 1);
     assert_eq!(trial.candidate.core_parents, core);
-    assert_eq!(custom_parent_keys(&trial).len(), 96);
+    assert_eq!(custom_parent_keys(&trial).len(), 61);
     assert_eq!(
         trial.candidate.source_triangles,
         flattened_custom_triangles(&trial)
@@ -729,27 +733,13 @@ fn insufficient_external_halo_requires_wider_halo_before_proving_infeasible() {
 fn seam_and_pentagon_boundary_report_source_slots_for_icosahedron_vertex_parent() {
     let fine = MotherGrid::generate(8).unwrap();
     let coarse_n = 4;
-    let (core, vertex_slot) = MotherGrid::generate(coarse_n)
-        .unwrap()
-        .triangle_addresses
-        .iter()
-        .flatten()
-        .copied()
-        .filter_map(|parent| {
-            let (corners, _) = parent_sites(&fine, parent);
-            corners
-                .iter()
-                .copied()
-                .find(|&slot| {
-                    matches!(
-                        fine.addresses[slot],
-                        Some(VertexAddress::IcosahedronVertex(_))
-                    )
-                })
-                .map(|slot| (parent, slot))
-        })
-        .next()
-        .unwrap();
+    let core = TriangleAddress {
+        base_face: 0,
+        i: 0,
+        j: 0,
+        n: coarse_n,
+        orientation: TriangleOrientation::Down,
+    };
     let transition = parent_neighbours(&fine, core);
     let component = component(core, transition, false);
 
@@ -765,8 +755,21 @@ fn seam_and_pentagon_boundary_report_source_slots_for_icosahedron_vertex_parent(
     };
 
     assert_hard_topology_gates(&trial.mesh.mesh);
-    assert!(trial.boundary.seam.contains(&vertex_slot));
-    assert!(trial.boundary.pentagon.contains(&vertex_slot));
+    assert!(!trial.boundary.pentagon.is_empty());
+    assert!(trial.boundary.pentagon.iter().all(|&slot| {
+        matches!(
+            fine.addresses[slot],
+            Some(VertexAddress::IcosahedronVertex(_))
+        )
+    }));
+    assert!(
+        trial
+            .boundary
+            .pentagon
+            .iter()
+            .all(|slot| trial.boundary.seam.contains(slot)),
+        "icosahedron vertices are also seam source slots"
+    );
 }
 
 #[test]

@@ -132,8 +132,8 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' '{}'\n",
-            env!("CARGO_PKG_VERSION")
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            env!("CARGO_PKG_VERSION"),
         ),
     )
     .unwrap();
@@ -228,6 +228,52 @@ fn successful_project_runs_require_an_existing_reported_gridfile() {
     assert_eq!(
         PathBuf::from(resolved),
         root.join("grid.nc4").canonicalize().unwrap()
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn gui_loads_the_certificate_matching_the_reported_gridfile_outcome() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_certificate_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("certified_certificate.json"),
+        br#"{"product_outcome":"certified_adaptive"}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("certified_safe_fallback_certificate.json"),
+        br#"{"product_outcome":"certified_safe_fallback"}"#,
+    )
+    .unwrap();
+
+    let adaptive = mesh_runner::read_certified_bundle_for_gridfile(
+        root.join("gridfile_NXP0080_tri_oceanmesh.nc4")
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let fallback = mesh_runner::read_certified_bundle_for_gridfile(
+        root.join("gridfile_NXP0080_tri_oceanmesh_certified_safe_fallback.nc4")
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        adaptive["certificate"]["product_outcome"],
+        "certified_adaptive"
+    );
+    assert_eq!(
+        fallback["certificate"]["product_outcome"],
+        "certified_safe_fallback"
     );
     let _ = fs::remove_dir_all(root);
 }
@@ -873,7 +919,7 @@ fn mesh_kind_rejects_invalid_values() {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_quality kind should fail"),
     }
-    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None) {
+    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None, None) {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_cell_polygons kind should fail"),
     }
@@ -3253,6 +3299,7 @@ fn certified_controls_round_trip_through_the_gui_commands() {
         yaml,
         "reverse_coarsening".to_string(),
         "coupled".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
         4,
         900_000,
         5,
@@ -3263,6 +3310,10 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.refinement_algorithm, "certified");
     assert_eq!(summary.certified_mode, "reverse_coarsening");
     assert_eq!(summary.certified_delivery, "coupled");
+    assert_eq!(
+        summary.certified_angle_contract,
+        "domain_quality_38_to_82_v1"
+    );
     assert_eq!(summary.certified_maximum_level, 4);
     assert_eq!(summary.certified_maximum_cells, 900_000);
     assert_eq!(summary.certified_gradation_rings_per_level, 5);

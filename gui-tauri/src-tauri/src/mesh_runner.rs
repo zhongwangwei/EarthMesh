@@ -99,9 +99,36 @@ async fn run_project_cli(
         ok,
         code,
         outdir: run_dir.to_string_lossy().into_owned(),
+        certified: gridfile
+            .as_deref()
+            .and_then(read_certified_bundle_for_gridfile),
         gridfile,
         auto_refine_decisions: scan.decisions,
     })
+}
+
+fn read_json_if_present(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+pub(crate) fn read_certified_bundle_for_gridfile(gridfile: &str) -> Option<serde_json::Value> {
+    let directory = Path::new(gridfile).parent()?;
+    let stem = if Path::new(gridfile)
+        .file_name()
+        .and_then(|name| name.to_str())?
+        .contains("_certified_safe_fallback")
+    {
+        "certified_safe_fallback"
+    } else {
+        "certified"
+    };
+    let certificate_path = directory.join(format!("{stem}_certificate.json"));
+    Some(json!({
+        "certificate_path": certificate_path,
+        "certificate": read_json_if_present(&certificate_path)?,
+        "manifest": read_json_if_present(&directory.join(format!("{stem}_manifest.json"))),
+        "resources": read_json_if_present(&directory.join(format!("{stem}_resources.json"))),
+    }))
 }
 
 pub(crate) fn require_project_gridfile(

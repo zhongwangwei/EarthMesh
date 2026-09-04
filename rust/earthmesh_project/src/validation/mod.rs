@@ -227,6 +227,13 @@ impl ProjectConfig {
             return Ok(());
         }
         let wants_hfield = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
+        let wants_adaptive = matches!(&self.refinement.adaptive, Some(recipe) if recipe.enabled);
+        if self.refinement.backend == crate::RefinementBackend::Certified && wants_adaptive {
+            return Err(
+                "refinement.backend certified does not consume the &adaptive point-and-radius route; use threshold or named requirement sources, or turn refinement.adaptive off"
+                    .to_string(),
+            );
+        }
         if !wants_hfield {
             return Ok(());
         }

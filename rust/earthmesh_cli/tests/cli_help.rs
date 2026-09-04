@@ -47,6 +47,26 @@ fn first_argument_version_reports_package_version() {
 }
 
 #[test]
+fn studio_protocol_probe_is_stable_and_side_effect_free() {
+    let cwd = std::env::temp_dir().join(format!("earthmesh_cli_protocol_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cwd);
+    std::fs::create_dir_all(&cwd).expect("create isolated protocol cwd");
+    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .arg("--studio-protocol")
+        .current_dir(&cwd)
+        .output()
+        .expect("run earthmesh_cli --studio-protocol");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "earthmesh-studio-engine/2"
+    );
+    assert!(!cwd.join("run_manifest.json").exists());
+    let _ = std::fs::remove_dir_all(cwd);
+}
+
+#[test]
 fn mkgrd_rejects_nonpositive_openmp_before_mesh_work() {
     let cwd = std::env::temp_dir().join(format!("earthmesh_cli_openmp_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&cwd);

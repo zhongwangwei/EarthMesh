@@ -530,7 +530,7 @@ fn guard_set(
 
 fn manifest_json_without_key(manifest: &CertifiedResearchFixtureManifest) -> String {
     format!(
-        "{{\"name\":\"{}\",\"schema_version\":{},\"source_n\":{},\"parent_n\":{},\"parents\":{},\"core_parents\":{},\"transition_parents\":{},\"expected_source_vertices\":{},\"expected_source_edges\":{},\"expected_source_faces\":{},\"original_anchor_vertices\":{},\"physical_region_area\":{:.17e},\"coarse_core_area\":{:.17e},\"transition_area\":{:.17e}}}",
+        "{{\"name\":\"{}\",\"schema_version\":{},\"source_n\":{},\"parent_n\":{},\"parents\":{},\"core_parents\":{},\"transition_parents\":{},\"expected_source_vertices\":{},\"expected_source_edges\":{},\"expected_source_faces\":{},\"original_anchor_vertices\":{},\"physical_region_area\":{},\"coarse_core_area\":{},\"transition_area\":{}}}",
         manifest.name,
         manifest.schema_version,
         manifest.source_n,
@@ -542,10 +542,14 @@ fn manifest_json_without_key(manifest: &CertifiedResearchFixtureManifest) -> Str
         manifest.expected_source_edges,
         manifest.expected_source_faces,
         vertex_list_json(&manifest.original_anchor_vertices),
-        manifest.physical_region_area,
-        manifest.coarse_core_area,
-        manifest.transition_area,
+        stable_manifest_f64(manifest.physical_region_area),
+        stable_manifest_f64(manifest.coarse_core_area),
+        stable_manifest_f64(manifest.transition_area),
     )
+}
+
+fn stable_manifest_f64(value: f64) -> String {
+    format!("{value:.13e}")
 }
 
 fn address_list_json(values: &[TriangleAddress]) -> String {
@@ -605,5 +609,29 @@ fn sorted_pair(left: usize, right: usize) -> (usize, usize) {
         (left, right)
     } else {
         (right, left)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::stable_manifest_f64;
+
+    #[test]
+    fn manifest_area_format_masks_libm_ulp_drift() {
+        let values = [
+            2.212_424_007_752_269_f64,
+            0.687_332_983_397_496_5_f64,
+            1.525_091_024_354_772_8_f64,
+        ];
+        for value in values {
+            let expected = stable_manifest_f64(value);
+            assert_eq!(
+                stable_manifest_f64(f64::from_bits(value.to_bits() - 2)),
+                expected
+            );
+            assert_eq!(
+                stable_manifest_f64(f64::from_bits(value.to_bits() + 2)),
+                expected
+            );
+        }
     }
 }

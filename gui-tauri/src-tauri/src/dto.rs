@@ -154,6 +154,7 @@ pub(crate) struct ProjectSummary {
     pub(crate) harp_dv_criterion_minimum_angle_deg: f64,
     pub(crate) certified_mode: String,
     pub(crate) certified_delivery: String,
+    pub(crate) certified_angle_contract: String,
     pub(crate) certified_maximum_level: u8,
     pub(crate) certified_maximum_cells: usize,
     pub(crate) certified_gradation_rings_per_level: u8,
@@ -223,6 +224,9 @@ pub(crate) struct RunResult {
     /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
+    /// CMRC certificate, manifest, and resource evidence from the reported
+    /// gridfile's result directory. None for non-CMRC runs.
+    pub(crate) certified: Option<serde_json::Value>,
     /// Every candidate-selection decision produced by the shared AutoRefine
     /// loop, ordered by pass and artifact path. Empty for non-AutoRefine runs.
     pub(crate) auto_refine_decisions: Vec<AutoRefineDecision>,

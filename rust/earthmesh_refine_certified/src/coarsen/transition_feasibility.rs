@@ -1768,8 +1768,12 @@ mod tests {
     fn zero_budget_cannot_be_infeasible() {
         let (source, component) = n6_legacy_mixed_fixture().unwrap();
         let trial = match (TransitionTopologyLimits {
-            topology_states: 1,
-            maximum_halo_expansions: 0,
+            // This test is about the continuous interval budget below. Keep the
+            // discrete topology search large enough to reach its first closed
+            // halo-1 witness so that a zero box budget is not misreported as a
+            // topology failure.
+            topology_states: 2,
+            maximum_halo_expansions: 1,
         })
         .solve_from_cursor(&source, &component, 0)
         {

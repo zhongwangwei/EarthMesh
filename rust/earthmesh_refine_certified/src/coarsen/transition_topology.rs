@@ -1198,11 +1198,11 @@ impl ProductSearch<'_> {
         let mut indices = vec![0usize; variables.len()];
         let mut position = 0usize;
         let mut feasible_ordinal = 0usize;
-        // ponytail: bound pruned prefix work at 64x the public topology budget;
-        // raise only if a certified fixture proves that valid states need more.
+        // ponytail: bound pruned prefix work at 64 tries per variable per
+        // public topology ordinal; cursors still need to traverse skipped ordinals.
         let mut remaining_work = self
             .budget
-            .saturating_sub(self.start_index)
+            .saturating_mul(variables.len().max(1))
             .saturating_mul(64);
 
         loop {

@@ -73,6 +73,43 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     assert_eq!(certificate["physical_residuals"], 0);
     assert_eq!(certificate["balance_residuals"], 0);
     assert_eq!(certificate["remap_closure_errors"], 0);
+    assert_eq!(certificate["published_grid_remap_available"], false);
+    assert_eq!(
+        certificate["published_domain_geometry"]["contract_pass"],
+        true
+    );
+    assert!(
+        certificate["published_domain_geometry"]["minimum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle >= 38.0)
+    );
+    assert!(
+        certificate["published_domain_geometry"]["maximum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle <= 82.0)
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert!(manifest["remap"].is_null());
+    assert!(certified.remap.is_none());
+    let pre_export_remap = certified.pre_export_remap.as_ref().unwrap();
+    assert_eq!(
+        manifest["pre_export_remap"],
+        pre_export_remap.display().to_string()
+    );
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    let quality_input =
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&gridfile).unwrap();
+    let hard_issues = earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input)
+        .validate_all()
+        .into_iter()
+        .filter(|issue| issue.severity == earthmesh_quality::topology::Severity::Fail)
+        .collect::<Vec<_>>();
+    assert!(hard_issues.is_empty(), "{hard_issues:?}");
     assert!(
         certificate["elastic_component_epochs"]["aggregate"]["components_committed"]
             .as_u64()
@@ -81,7 +118,7 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     );
     for path in [
         run.output.output,
-        certified.remap,
+        certified.pre_export_remap.unwrap(),
         certified.certificate,
         certified.manifest,
         certified.resources,

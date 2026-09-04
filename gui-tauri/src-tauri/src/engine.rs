@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const ENGINE_PROTOCOL: &str = "earthmesh-studio-engine/2";
 
 /// Locate the mesh-generator binary, in priority order:
 ///   1. `$EARTHMESH_MKGRD` (explicit override),
@@ -251,9 +252,24 @@ pub(crate) fn inspect_engine_candidate(path: &Path) -> EngineCandidate {
         return EngineCandidate::Unusable(format!("--version exited {}", output.status));
     }
     match String::from_utf8(output.stdout) {
-        Ok(version) if version.trim() == env!("CARGO_PKG_VERSION") => EngineCandidate::Compatible,
-        Ok(version) => EngineCandidate::WrongVersion(version.trim().to_string()),
-        Err(_) => EngineCandidate::Unusable("--version was not text".to_string()),
+        Ok(version) if version.trim() == env!("CARGO_PKG_VERSION") => {}
+        Ok(version) => return EngineCandidate::WrongVersion(version.trim().to_string()),
+        Err(_) => return EngineCandidate::Unusable("--version was not text".to_string()),
+    }
+    let output = match Command::new(path).arg("--studio-protocol").output() {
+        Ok(output) => output,
+        Err(error) => return EngineCandidate::Unusable(error.to_string()),
+    };
+    if !output.status.success() {
+        return EngineCandidate::Unusable(format!("--studio-protocol exited {}", output.status));
+    }
+    match String::from_utf8(output.stdout) {
+        Ok(protocol) if protocol.trim() == ENGINE_PROTOCOL => EngineCandidate::Compatible,
+        Ok(protocol) => EngineCandidate::Unusable(format!(
+            "reports studio protocol {:?}, expected {ENGINE_PROTOCOL}",
+            protocol.trim()
+        )),
+        Err(_) => EngineCandidate::Unusable("--studio-protocol was not text".to_string()),
     }
 }
 

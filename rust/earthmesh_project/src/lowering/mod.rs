@@ -120,7 +120,7 @@ impl LoweredProject {
         let certified = if self.mkgrd.refine && self.backend == crate::RefinementBackend::Certified
         {
             format!(
-                    "&certified\n   NL%mode = '{}'\n   NL%delivery = '{}'\n   NL%maximum_level = {}\n   NL%maximum_cells = {}\n   NL%gradation_rings_per_level = {}\n   NL%search_budget = {}\n/\n\n",
+                    "&certified\n   NL%mode = '{}'\n   NL%delivery = '{}'\n   NL%angle_contract = '{}'\n   NL%maximum_level = {}\n   NL%maximum_cells = {}\n   NL%gradation_rings_per_level = {}\n   NL%search_budget = {}\n/\n\n",
                     match self.certified.mode {
                         crate::CertifiedMode::SafeMotherOnly => "safe_mother_only",
                         crate::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
@@ -129,6 +129,10 @@ impl LoweredProject {
                         crate::CertifiedDeliveryMode::Tri => "tri",
                         crate::CertifiedDeliveryMode::Hex => "hex",
                         crate::CertifiedDeliveryMode::Coupled => "coupled",
+                    },
+                    match self.certified.angle_contract {
+                        crate::CertifiedAngleContract::LegacyStrict40To80 => "legacy_strict_40_to_80",
+                        crate::CertifiedAngleContract::DomainQuality38To82V1 => "domain_quality_38_to_82_v1",
                     },
                     self.certified.maximum_level,
                     self.certified.maximum_cells,

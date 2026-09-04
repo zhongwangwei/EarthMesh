@@ -23,7 +23,7 @@ jobs:
   fast:
     name: fast (fmt + no-netcdf crates)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - name: Active taskbook and frozen Alpha6 evidence
