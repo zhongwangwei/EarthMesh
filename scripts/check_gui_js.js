@@ -245,6 +245,17 @@ check(
 );
 log("algorithm-specific parameter panels are conditional and wired to Rust");
 
+check(
+  html.includes('certified_defaults:{mode:"reverse_coarsening"') &&
+    html.includes('angle_contract:"domain_quality_38_to_82_v1"') &&
+    html.includes('function meshPreviewStride(totalCells, bbox)') &&
+    html.includes('cellStride:stride, bbox') &&
+    html.includes('map.on("moveend",()=>scheduleMeshViewportPreview(map))') &&
+    !html.includes('function loadCompleteMeshPolygons('),
+  "CMRC must default to adaptive reverse coarsening and large meshes must use full-extent viewport LOD",
+);
+log("CMRC defaults to reverse coarsening and large meshes use viewport LOD");
+
 {
   const canonical = section(html, /const canonicalMethodCOptions = `([\s\S]*?)`;\n    const leppOptions/, "Canonical Method-C options");
   const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const harpOptions/, "Red-Green options");
@@ -342,7 +353,7 @@ check(
     html.includes('if(selected.has("mesh")) payload.mesh=_meshGeojson') &&
     html.includes('if ("mesh" in payload) _meshGeojson = payload.mesh') &&
     html.includes('syncMapWindow(["settings"])') &&
-    html.includes('syncMapWindow(["mesh","coastal"],true)') &&
+    html.includes('syncMapWindow(["mesh","coastal"],!!doFit)') &&
     html.includes('publishMapState(["settings"],false)'),
   "map-window IPC must patch only changed fields instead of repeatedly cloning all GeoJSON",
 );

@@ -7,6 +7,7 @@ use earthmesh_cli::{
     hydro_delivery_cells::{
         gridfile_cell_polygons_geojson as try_gridfile_cell_polygons_geojson,
         gridfile_cell_polygons_geojson_page_with_report as try_gridfile_cell_polygons_geojson_page_with_report,
+        gridfile_cell_polygons_geojson_strided_with_report as try_gridfile_cell_polygons_geojson_strided_with_report,
         gridfile_cell_polygons_geojson_with_report as try_gridfile_cell_polygons_geojson_with_report,
     },
     unstructured_mesh_support::GridfileCellKind,
@@ -323,6 +324,37 @@ fn pages_continue_after_the_previous_eligible_cell() {
     assert_eq!(report.emitted_cells, 1);
     assert!(json.contains("\"cell_index\": 2"), "{json}");
     assert!(!json.contains("\"cell_index\": 1"), "{json}");
+}
+
+#[test]
+fn stride_samples_across_the_full_cell_order() {
+    let mut mesh = empty_mesh();
+    for cell in 0..4 {
+        let lon = 100.0 + f64::from(cell);
+        mesh.w_lon.extend([lon, lon + 0.4, lon]);
+        mesh.w_lat.extend([20.0, 20.0, 20.4]);
+        mesh.m_lon.push(lon + 0.13);
+        mesh.m_lat.push(20.13);
+        let first = cell * 3 + 1;
+        mesh.m_to_w
+            .extend([first as i32, first as i32 + 1, first as i32 + 2]);
+    }
+
+    let (json, report) = try_gridfile_cell_polygons_geojson_strided_with_report(
+        &mesh,
+        GridfileCellKind::Tri,
+        None,
+        0,
+        Some(2),
+        2,
+    )
+    .expect("strided overview");
+
+    assert_eq!(report.emitted_cells, 2);
+    assert!(json.contains("\"cell_index\": 1"), "{json}");
+    assert!(json.contains("\"cell_index\": 3"), "{json}");
+    assert!(!json.contains("\"cell_index\": 2"), "{json}");
+    assert!(!json.contains("\"cell_index\": 4"), "{json}");
 }
 
 #[test]

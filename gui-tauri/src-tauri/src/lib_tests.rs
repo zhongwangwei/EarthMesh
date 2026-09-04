@@ -845,6 +845,14 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(capabilities.certified_defaults, Default::default());
     assert_eq!(
+        capabilities.certified_defaults.mode,
+        earthmesh_project::CertifiedMode::ReverseCoarsening
+    );
+    assert_eq!(
+        capabilities.certified_defaults.angle_contract,
+        earthmesh_project::CertifiedAngleContract::DomainQuality38To82V1
+    );
+    assert_eq!(
         capabilities.method_c_spring_nxp1_km,
         earthmesh_project::METHOD_C_SPRING_NXP1_KM
     );
@@ -919,7 +927,14 @@ fn mesh_kind_rejects_invalid_values() {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_quality kind should fail"),
     }
-    match mesh_cell_polygons("missing.nc".to_string(), "square".to_string(), None, None) {
+    match mesh_cell_polygons(
+        "missing.nc".to_string(),
+        "square".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ) {
         Err(e) => assert!(e.contains("mesh kind must be tri or hex")),
         Ok(_) => panic!("invalid mesh_cell_polygons kind should fail"),
     }
@@ -3295,6 +3310,12 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     let base = circle_project("CMRC controls").to_yaml().expect("yaml");
     let yaml = crate::project_edits::set_refinement_backend(base, "certified".to_string())
         .expect("CMRC backend");
+    let defaults = project_summary(yaml.clone()).expect("default CMRC summary");
+    assert_eq!(defaults.certified_mode, "reverse_coarsening");
+    assert_eq!(
+        defaults.certified_angle_contract,
+        "domain_quality_38_to_82_v1"
+    );
     let yaml = crate::project_edits::set_certified_options(
         yaml,
         "reverse_coarsening".to_string(),
