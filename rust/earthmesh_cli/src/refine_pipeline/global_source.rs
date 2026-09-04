@@ -55,6 +55,37 @@ use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
+const REMAP_CSV_CHUNK_ROWS: usize = 4096;
+
+fn format_remap_csv_row(row: &earthmesh_refine_certified::remap::RemapRow) -> String {
+    let mut output = String::with_capacity(row.sources.len().saturating_mul(32));
+    for &(source, weight) in &row.sources {
+        std::fmt::Write::write_fmt(
+            &mut output,
+            format_args!("{},{},{weight:.17}\n", row.target, source),
+        )
+        .expect("writing remap CSV to String cannot fail");
+    }
+    output
+}
+
+fn write_remap_csv<W: Write>(
+    writer: &mut W,
+    rows: &[earthmesh_refine_certified::remap::RemapRow],
+) -> io::Result<()> {
+    writer.write_all(b"target,source,weight\n")?;
+    for chunk in rows.chunks(REMAP_CSV_CHUNK_ROWS) {
+        let formatted = chunk
+            .par_iter()
+            .map(format_remap_csv_row)
+            .collect::<Vec<_>>();
+        for row in formatted {
+            writer.write_all(row.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
 fn publish_certified_artifacts(
     publications: &[(&Path, &Path)],
     obsolete_paths: &[&Path],
@@ -2315,12 +2346,7 @@ fn run_certified_pipeline(
     let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
         {
             let mut writer = BufWriter::new(fs::File::create(&temporary_remap_path)?);
-            writeln!(writer, "target,source,weight")?;
-            for row in remap.rows() {
-                for &(source, weight) in &row.sources {
-                    writeln!(writer, "{},{},{weight:.17}", row.target, source)?;
-                }
-            }
+            write_remap_csv(&mut writer, remap.rows())?;
             writer.flush()?;
         }
         fs::write(&temporary_manifest_path, manifest_json)?;
@@ -5563,6 +5589,59 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_remap_csv(rows: &[earthmesh_refine_certified::remap::RemapRow]) -> Vec<u8> {
+        let mut output = Vec::new();
+        writeln!(output, "target,source,weight").expect("header");
+        for row in rows {
+            for &(source, weight) in &row.sources {
+                writeln!(output, "{},{},{weight:.17}", row.target, source).expect("row");
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn remap_csv_parallel_writer_matches_legacy_bytes() {
+        let mut rows = vec![
+            earthmesh_refine_certified::remap::RemapRow {
+                target: 0,
+                sources: vec![(2, 1.0), (5, 1.0 / 3.0)],
+            },
+            earthmesh_refine_certified::remap::RemapRow {
+                target: 3,
+                sources: vec![(4, 1.0e-14), (7, 0.99999999999999)],
+            },
+            earthmesh_refine_certified::remap::RemapRow {
+                target: 8,
+                sources: Vec::new(),
+            },
+        ];
+        rows.extend((3..REMAP_CSV_CHUNK_ROWS + 5).map(|target| {
+            earthmesh_refine_certified::remap::RemapRow {
+                target,
+                sources: vec![(target + 1, 0.5)],
+            }
+        }));
+        let write = || {
+            let mut output = Vec::new();
+            write_remap_csv(&mut output, &rows).expect("parallel remap csv");
+            output
+        };
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(write);
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(write);
+
+        assert_eq!(one_thread, four_threads);
+        assert_eq!(four_threads, legacy_remap_csv(&rows));
+    }
 
     #[test]
     fn failed_certified_publication_restores_the_previous_generation() {

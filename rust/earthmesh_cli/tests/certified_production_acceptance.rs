@@ -14,6 +14,11 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     let repository = repository_root();
     let landtype = repository.join("input/landtype_igbp_update.nc");
     assert!(landtype.exists(), "missing {}", landtype.display());
+    let openmp = std::env::var("EARTHMESH_NXP80_OPENMP")
+        .map(|value| value.parse::<usize>().expect("positive thread count"))
+        .unwrap_or(16);
+    assert!(openmp > 0, "positive thread count");
+    earthmesh_mesh::configure_global_thread_pool(openmp).expect("configure NXP80 worker count");
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cmrc_real_igbp_nxp80_{}",
         std::process::id()
@@ -26,7 +31,7 @@ fn real_igbp_nxp80_ocean_tri_reverse_coarsening_passes_every_hard_gate() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='real_igbp_nxp80'\n  NL%base_dir='{}/'\n  NL%NXP=80\n  \
+            "&mkgrd\n  NL%EXPNME='real_igbp_nxp80'\n  NL%base_dir='{}/'\n  NL%NXP=80\n  NL%openmp={openmp}\n  \
              NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%output_format='FVCOM'\n  \
              NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  \
              NL%refine_backend='certified'\n  NL%mask_domain_global=.true.\n  \
