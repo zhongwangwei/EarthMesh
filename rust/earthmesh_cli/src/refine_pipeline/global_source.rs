@@ -3626,22 +3626,7 @@ fn refine_with_redgreen(
             ));
         }
         split_triangles += outcome.refined_triangle_count;
-        // What this level refined, in the numbering the *next* level will ask
-        // about. Not the array just handed in: that one indexes the triangles
-        // of the mesh this round consumed, and a round renumbers them. The
-        // outcome's `cell_renumbering` cannot carry it either -- it maps cells,
-        // and a marking is per triangle.
-        //
-        // Asking the regions again on the new mesh is the same question in the
-        // right numbering, and where it differs it errs the safe way: the judge
-        // chain grew this level's region past what was asked, so the recomputed
-        // interior is the smaller of the two and the next level is held further
-        // inside the transition band, never further out.
-        previous_marks = Some(crate::redgreen_bridge::redgreen_marking_from_regions(
-            &outcome.mesh,
-            &level_regions,
-            level,
-        ));
+        previous_marks = Some(outcome.interior_marks.clone());
         passes.push(crate::refinement_demand::nest::NestPassReport {
             level,
             cell_meters: adaptive
@@ -3677,6 +3662,15 @@ fn refine_with_redgreen(
                 }
             ),
         ));
+    }
+    if preserve_locality {
+        let flips = crate::redgreen_bridge::legalize_redgreen_mesh(&mut redgreen)?;
+        if flips > 0 {
+            eprintln!(
+                "earthmesh_cli: Red-Green final spherical Delaunay legalization flipped {flips} edges"
+            );
+            output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
+        }
     }
     let (output_mesh, spring_nest_passes) =
         spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;

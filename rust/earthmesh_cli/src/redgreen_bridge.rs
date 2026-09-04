@@ -63,6 +63,74 @@ pub fn unstructured_mesh_from_redgreen(mesh: &RedGreenMesh) -> io::Result<Unstru
     })
 }
 
+/// Restore the final Red-Green point set to a spherical Delaunay triangulation.
+///
+/// The ported transition LOP only visits its boundary-segment candidates. A
+/// multi-component adaptive run can leave other illegal diagonals behind, so
+/// the shared Lawson implementation must finish the job before publication.
+pub fn legalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<usize> {
+    let vertices = mesh
+        .cell_points
+        .iter()
+        .copied()
+        .map(earthmesh_mesh::lonlat_degrees_to_unit_xyz)
+        .collect();
+    let mut state = earthmesh_mesh::MeshState::from_parts(vertices, mesh.cells_on_triangle.clone())
+        .map_err(|errors| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                errors
+                    .into_iter()
+                    .take(4)
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+    let faces = state.active_triangle_slots().collect::<BTreeSet<_>>();
+    let flips = state
+        .legalize_around(&faces)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if flips == 0 {
+        return Ok(0);
+    }
+
+    mesh.cells_on_triangle = state.triangles().to_vec();
+    mesh.triangle_points.resize(
+        mesh.cells_on_triangle.len(),
+        earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+    );
+    for triangle in 2..mesh.cells_on_triangle.len() {
+        let corners = mesh.cells_on_triangle[triangle];
+        mesh.triangle_points[triangle] = earthmesh_mesh::spherical_centroid_degrees(&[
+            mesh.cell_points[corners[0]],
+            mesh.cell_points[corners[1]],
+            mesh.cell_points[corners[2]],
+        ])
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("legalized Red-Green triangle {triangle} has no centroid"),
+            )
+        })?;
+    }
+    mesh.triangles_on_cell = vec![Vec::new(); mesh.cell_points.len()];
+    for (triangle, corners) in mesh.cells_on_triangle.iter().enumerate().skip(2) {
+        for &cell in corners {
+            mesh.triangles_on_cell[cell].push(triangle);
+        }
+    }
+    mesh.n_triangles_on_cell = mesh.triangles_on_cell.iter().map(Vec::len).collect();
+    earthmesh_refine_redgreen::get_sort_new_one_based(
+        mesh.cell_count(),
+        &mesh.n_triangles_on_cell,
+        &mesh.cells_on_triangle,
+        &mesh.triangle_points,
+        &mut mesh.triangles_on_cell,
+    )?;
+    Ok(flips)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +184,34 @@ mod tests {
             "{error}"
         );
     }
+
+    #[test]
+    fn final_legalization_replaces_an_illegal_diagonal() {
+        let mut mesh = RedGreenMesh {
+            num_vertex: 1,
+            num_center: 1,
+            triangle_points: vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); 4],
+            cell_points: vec![
+                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(3.0, 0.0),
+                earthmesh_mesh::LonLatDegrees::new(4.0, 1.0),
+                earthmesh_mesh::LonLatDegrees::new(0.0, 3.0),
+            ],
+            cells_on_triangle: vec![[1, 1, 1], [1, 1, 1], [2, 3, 4], [2, 4, 5]],
+            triangles_on_cell: vec![Vec::new(); 6],
+            n_triangles_on_cell: vec![0; 6],
+        };
+
+        let flips = legalize_redgreen_mesh(&mut mesh).expect("legalize final point set");
+
+        assert_eq!(flips, 1);
+        assert!(mesh.cells_on_triangle[2].contains(&3));
+        assert!(mesh.cells_on_triangle[2].contains(&5));
+        assert!(mesh.cells_on_triangle[3].contains(&3));
+        assert!(mesh.cells_on_triangle[3].contains(&5));
+    }
 }
 
 /// The engine's refinement settings, as this level's red-green run reads them.
@@ -129,26 +225,27 @@ pub fn redgreen_settings_for_level(
     refine: &earthmesh_core::RefineConfig,
     level: usize,
 ) -> earthmesh_refine_redgreen::RedGreenSettings {
-    let at_level = |values: &[i32; 10]| -> usize {
-        let index = level.max(1).min(values.len()) - 1;
-        let chosen = values[index..]
-            .iter()
-            .rev()
-            .find(|&&value| value > 0)
-            .copied()
-            .unwrap_or(values[index]);
-        let value = if values[index] > 0 {
-            values[index]
-        } else {
-            chosen
-        };
-        value.max(0) as usize
+    let defaults = earthmesh_refine_redgreen::RedGreenSettings::default();
+    let at_level = |values: &[i32; 10], fallback: usize| -> usize {
+        let index = level.max(1).min(values.len() - 1);
+        (values[index] > 0)
+            .then_some(values[index])
+            .or_else(|| {
+                values[1..index]
+                    .iter()
+                    .rev()
+                    .find(|&&value| value > 0)
+                    .copied()
+            })
+            .map(|value| value as usize)
+            .unwrap_or(fallback)
     };
     earthmesh_refine_redgreen::RedGreenSettings {
-        max_transition_row: at_level(&refine.max_transition_row).max(1),
+        max_transition_row: at_level(&refine.max_transition_row, defaults.max_transition_row),
         build_transition_rows: refine.is_transition,
         eliminate_weak_concavity: refine.weak_concav_eliminate,
-        halo: at_level(&refine.halo),
+        halo: at_level(&refine.halo, defaults.halo),
+        protect_triangle_quality: false,
     }
 }
 
@@ -162,8 +259,8 @@ mod settings_tests {
         // three-level run that narrows the band as it deepens has to be read
         // that way, not collapsed to one number.
         let refine = earthmesh_core::RefineConfig {
-            halo: [4, 3, 2, 0, 0, 0, 0, 0, 0, 0],
-            max_transition_row: [3, 2, 1, 0, 0, 0, 0, 0, 0, 0],
+            halo: [0, 4, 3, 2, 0, 0, 0, 0, 0, 0],
+            max_transition_row: [0, 3, 2, 1, 0, 0, 0, 0, 0, 0],
             ..earthmesh_core::RefineConfig::default()
         };
 
@@ -177,12 +274,24 @@ mod settings_tests {
     }
 
     #[test]
-    fn a_transition_width_of_zero_still_leaves_one_row() {
-        // Zero rows is not a mesh this path can build -- the driver rejects it
-        // -- and the namelist's zeros are "levels not configured", not "no
-        // transition". Clamping here keeps that from reading as a request.
+    fn omitted_redgreen_bands_use_the_algorithm_defaults() {
         let refine = earthmesh_core::RefineConfig::default();
-        assert!(redgreen_settings_for_level(&refine, 9).max_transition_row >= 1);
+        let settings = redgreen_settings_for_level(&refine, 1);
+        assert_eq!(settings.halo, 3);
+        assert_eq!(settings.max_transition_row, 3);
+    }
+
+    #[test]
+    fn levels_past_the_configured_prefix_reuse_the_last_value() {
+        let refine = earthmesh_core::RefineConfig {
+            halo: [0, 4, 2, 0, 0, 0, 0, 0, 0, 0],
+            max_transition_row: [0, 5, 3, 0, 0, 0, 0, 0, 0, 0],
+            ..earthmesh_core::RefineConfig::default()
+        };
+
+        let settings = redgreen_settings_for_level(&refine, 4);
+        assert_eq!(settings.halo, 2);
+        assert_eq!(settings.max_transition_row, 3);
     }
 }
 
@@ -223,6 +332,20 @@ pub fn redgreen_marking_from_regions(
 /// rows meet. Filling an arbitrary boundary would hide a broken mesh, so this
 /// accepts only edge-disjoint three-edge cycles and leaves every other shape as
 /// an error for the caller's topology gate.
+fn is_hanging_edge_cycle(cycle: [usize; 3], points: &[earthmesh_mesh::LonLatDegrees]) -> bool {
+    if cycle.iter().any(|&cell| cell >= points.len()) {
+        return false;
+    }
+    let xyz = cycle.map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(points[cell]));
+    let mut edges = [
+        earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[1]),
+        earthmesh_mesh::arc_length_unit_sphere(xyz[1], xyz[2]),
+        earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[2]),
+    ];
+    edges.sort_by(f64::total_cmp);
+    (edges[2] - edges[0] - edges[1]).abs() <= 1.0e-10 * edges[2].max(1.0)
+}
+
 fn close_triangular_transition_holes(mesh: &mut RedGreenMesh) -> io::Result<usize> {
     let edge_counts = |mesh: &RedGreenMesh| -> io::Result<BTreeMap<(usize, usize), usize>> {
         let mut counts = BTreeMap::new();
@@ -277,14 +400,17 @@ fn close_triangular_transition_holes(mesh: &mut RedGreenMesh) -> io::Result<usiz
         let common = graph[&a]
             .intersection(&graph[&b])
             .copied()
+            .filter(|&middle| is_hanging_edge_cycle([a, b, middle], &mesh.cell_points))
             .collect::<Vec<_>>();
         if common.len() != 1 {
+            let reason = if common.is_empty() {
+                "contains a true missing face, not a hanging edge".to_string()
+            } else {
+                format!("belongs to {} hanging-edge cycles", common.len())
+            };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "red-green transition boundary edge {a}/{b} belongs to {} triangular cycles",
-                    common.len()
-                ),
+                format!("red-green transition boundary edge {a}/{b} {reason}"),
             ));
         }
         let mut face = [a, b, common[0]];
@@ -359,18 +485,10 @@ fn close_triangular_transition_holes(mesh: &mut RedGreenMesh) -> io::Result<usiz
                 1,
             ),
         ];
-        let &(longest, left, right, middle) = edges
+        let &(_, left, right, middle) = edges
             .iter()
             .max_by(|a, b| a.0.total_cmp(&b.0))
             .expect("three edges");
-        let split_length = earthmesh_mesh::arc_length_unit_sphere(xyz[left], xyz[middle])
-            + earthmesh_mesh::arc_length_unit_sphere(xyz[middle], xyz[right]);
-        if (longest - split_length).abs() > 1.0e-10 * longest.max(1.0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "red-green transition boundary contains a true missing face, not a hanging edge",
-            ));
-        }
         let a = cycle[left];
         let b = cycle[right];
         let midpoint = cycle[middle];
@@ -506,6 +624,14 @@ mod transition_hole_tests {
     }
 
     #[test]
+    fn hanging_edge_geometry_disambiguates_graph_candidates() {
+        let mesh = tetrahedron_with_one_hanging_midpoint();
+
+        assert!(is_hanging_edge_cycle([2, 4, 6], &mesh.cell_points));
+        assert!(!is_hanging_edge_cycle([2, 4, 3], &mesh.cell_points));
+    }
+
+    #[test]
     fn a_true_missing_face_is_not_hidden_as_a_transition_repair() {
         let mut mesh = tetrahedron_with_one_hanging_midpoint();
         close_triangular_transition_holes(&mut mesh).unwrap();
@@ -607,11 +733,9 @@ mod marking_tests {
 /// One red-green level, from the regions that asked for it to a mesh the
 /// gridfile writer takes.
 ///
-/// `previous_level_marks` is the level above's marking **in this mesh's
-/// numbering**. A round renumbers, so a caller chaining levels has to carry it
-/// through `RefineNgrRenewCore::vertex_mapping` rather than reusing the array
-/// it built last time -- which is why this takes one level and returns, instead
-/// of looping internally over a mapping it would have to guess at.
+/// `previous_level_marks` is the level above's settled red interior **in this
+/// mesh's numbering**. Transition children are deliberately excluded so a
+/// deeper round cannot split them again.
 pub fn refine_redgreen_level(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
     regions: &[earthmesh_mesh::RefinementRegion],
@@ -622,6 +746,7 @@ pub fn refine_redgreen_level(
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking_from_regions(mesh, regions, level);
     let mut settings = redgreen_settings_for_level(refine, level);
+    settings.protect_triangle_quality = preserve_locality;
     let primary = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,
@@ -666,6 +791,9 @@ pub fn refine_redgreen_level(
     } else {
         0
     };
+    outcome
+        .interior_marks
+        .resize(outcome.mesh.triangle_count() + 1, 0);
     if let Some(reason) = fallback_reason {
         eprintln!(
             "earthmesh_cli: Red-Green {reason}; carrying the boundary concavities instead{}",
@@ -775,15 +903,9 @@ mod level_tests {
         );
     }
 
-    /// How a caller chains levels, and why the previous marking is asked for
-    /// again rather than carried.
-    ///
-    /// A round renumbers *triangles*, so the array handed to level 1 indexes a
-    /// mesh that no longer exists by level 2 -- it is not even the right
-    /// length. `RedGreenOutcome::cell_renumbering` cannot bridge that: it maps
-    /// cells, and a marking is per triangle. Asking the regions again on the
-    /// refined mesh is the same question in the numbering the next level will
-    /// be asked about.
+    /// A deeper level must stay inside the red children actually produced by
+    /// its parent. Re-testing region geometry would also include green
+    /// transition children and let later levels split them into slivers.
     #[test]
     fn a_deeper_level_is_held_inside_the_one_above_it() {
         let base =
@@ -818,11 +940,11 @@ mod level_tests {
 
         let (_, first) =
             refine_redgreen_level(&mesh, &regions, &refine, 1, None, false).expect("level one");
-        let previous = redgreen_marking_from_regions(&first.mesh, &regions, 1);
+        let previous = first.interior_marks.clone();
         assert_eq!(
             previous.len(),
             first.mesh.triangle_count() + 1,
-            "the marking a level reads must be sized to the mesh that level sees"
+            "the carried interior must use the mesh numbering the next level sees"
         );
         assert_ne!(
             previous.len(),

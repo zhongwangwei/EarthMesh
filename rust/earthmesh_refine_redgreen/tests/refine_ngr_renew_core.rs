@@ -51,6 +51,9 @@ fn ngr_renew_core_deduplicates_new_vertices_compacts_triangles_and_maps_boundari
     assert_eq!(renewed.vertex_mapping[6], 5);
     assert_eq!(renewed.vertex_mapping[7], 6);
     assert_eq!(renewed.num_sjx, 5);
+    assert_eq!(renewed.triangle_mapping[4], 4);
+    assert_eq!(renewed.triangle_mapping[5], 0);
+    assert_eq!(renewed.triangle_mapping[6], 5);
     assert_eq!(renewed.cells_on_triangle[4], [2, 5, 4]);
     assert_eq!(renewed.cells_on_triangle[5], [4, 5, 6]);
     assert_eq!(renewed.triangle_points[5], ll(6.0, 6.0));

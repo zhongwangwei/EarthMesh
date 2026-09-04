@@ -118,6 +118,8 @@ pub struct RedGreenSettings {
     /// protection, which is right for a first level -- there is nothing to
     /// stay inside of.
     pub halo: usize,
+    /// Keep optional transition flips from worsening triangle angles.
+    pub protect_triangle_quality: bool,
 }
 
 impl Default for RedGreenSettings {
@@ -127,6 +129,7 @@ impl Default for RedGreenSettings {
             build_transition_rows: true,
             eliminate_weak_concavity: false,
             halo: 3,
+            protect_triangle_quality: false,
         }
     }
 }
@@ -135,6 +138,10 @@ impl Default for RedGreenSettings {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedGreenOutcome {
     pub mesh: RedGreenMesh,
+    /// Final triangles descended directly from this round's red 1-to-4 splits.
+    /// Transition children and boundary flips remain zero so a deeper level can
+    /// erode the actual settled interior instead of guessing it from regions.
+    pub interior_marks: Vec<i32>,
     /// Triangles the round split into four.
     pub refined_triangle_count: usize,
     /// Triangles the marking gained from the judge chain, over what was asked.
@@ -382,6 +389,7 @@ pub fn refine_redgreen_round_inside(
     if asked_for == 0 {
         return Ok(RedGreenOutcome {
             mesh: mesh.clone(),
+            interior_marks: vec![0; mesh.triangle_count() + 1],
             refined_triangle_count: 0,
             grown_triangle_count: 0,
             isolated_dropped_count,
@@ -657,6 +665,15 @@ pub fn refine_redgreen_round_inside(
 
     let mut cells_on_triangle = renewed.cells_on_triangle;
     orient_triangles_outward(&renewed.cell_points, &mut cells_on_triangle)?;
+    let mut interior_marks = vec![0i32; renewed.num_sjx + 1];
+    let first_red_child = sjx_points + 1;
+    let last_red_child = sjx_points + 4 * refined_triangle_count;
+    for source_triangle in first_red_child..=last_red_child {
+        let output_triangle = renewed.triangle_mapping[source_triangle];
+        if output_triangle > 0 {
+            interior_marks[output_triangle] = 1;
+        }
+    }
     Ok(RedGreenOutcome {
         mesh: RedGreenMesh {
             num_vertex: mesh.num_vertex,
@@ -667,6 +684,7 @@ pub fn refine_redgreen_round_inside(
             triangles_on_cell: renewed.triangles_on_cell,
             n_triangles_on_cell: renewed.n_triangles_on_cell,
         },
+        interior_marks,
         refined_triangle_count,
         grown_triangle_count,
         isolated_dropped_count,
@@ -956,7 +974,7 @@ fn close_transition_rows(
             let last_wp = *num_wp.last().expect("seeded");
             num_mp.push(last_mp + flips);
             num_wp.push(last_wp);
-            refine_delaunay_lop_one_based(
+            let accepted = refine_delaunay_lop_one_based(
                 num_mp.len() - 1,
                 flips,
                 num_mp,
@@ -965,8 +983,9 @@ fn close_transition_rows(
                 cell_points,
                 cells_on_triangle_new,
                 &lop_candidates,
+                settings.protect_triangle_quality,
             )?;
-            flipped += flips;
+            flipped += accepted;
         }
         sjx_child.iter_mut().for_each(|row| *row = [0, 0]);
     }
@@ -1188,6 +1207,18 @@ mod tests {
         assert!(
             refined.cell_renumbering.len() > 1,
             "a refined round must carry a mapping, not an empty one"
+        );
+        assert_eq!(
+            refined.interior_marks.len(),
+            refined.mesh.triangle_count() + 1
+        );
+        assert!(
+            refined.interior_marks.contains(&1),
+            "surviving red children must be carried to the next level"
+        );
+        assert!(
+            refined.interior_marks.contains(&0),
+            "green transition children must stay outside the settled interior"
         );
     }
 
