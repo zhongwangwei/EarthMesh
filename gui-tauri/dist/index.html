@@ -983,6 +983,8 @@ let _meshGeojson=null;  // last mesh overlay (re-applied when a map (re)opens)
 let _meshPreview=null;  // current gridfile-backed, viewport-loaded mesh preview
 let _meshPreviewToken=0;
 let _meshPreviewTimer=0;
+const MESH_VIEW_CELLS=50000;
+let scheduleMeshViewportPreview=()=>{};
 let _domainGeojson=null; // watershed/domain outline overlay
 let _coastalGeojson=null; // real MERIT-Hydro land/coast/ocean overlay
 let _hydroThresholds={r2WidthM:50,r2UpaKm2:5000,r3WidthM:300,r3UpaKm2:50000,coastBufferKm:50,coastLandEnabled:true,coastOceanEnabled:true};
@@ -1934,9 +1936,24 @@ if(MAP_WINDOW_MODE){
   const tauriEvent = window.__TAURI__.event;
   const WebviewWindow = window.__TAURI__.webviewWindow.WebviewWindow;
 
+  scheduleMeshViewportPreview = function (map, force=false) {
+    if (!_meshPreview || !map || map._globeActive) return;
+    clearTimeout(_meshPreviewTimer);
+    _meshPreviewTimer = setTimeout(()=>{
+      const bbox = meshViewportBbox(map);
+      const key = bbox ? bbox.map((value)=>value.toFixed(3)).join(",") : "global";
+      if (!_meshPreview || (!force && _meshPreview.key === key)) return;
+      _meshPreview.key = key;
+      loadMeshPreview(_meshPreview.gridfile,_meshPreview.kind,_meshPreview.totalCells,bbox,false,true)
+        .catch((e)=>logLine((zh()?"网格视野加载失败：":"mesh viewport load failed: ")+e));
+    },force?0:250);
+  };
+
   if (MAP_WINDOW_MODE) {
     tauriEvent.listen("earthmesh-map-state", ({ payload }) => {
+      const previewChanged = "meshPreview" in payload;
       if ("mesh" in payload) _meshGeojson = payload.mesh;
+      if ("meshPreview" in payload) _meshPreview = payload.meshPreview;
       if ("domain" in payload) _domainGeojson = payload.domain;
       if ("coastal" in payload) _coastalGeojson = payload.coastal;
       if ("hydroThresholds" in payload) _hydroThresholds = payload.hydroThresholds;
@@ -1948,6 +1965,7 @@ if(MAP_WINDOW_MODE){
       const map = ensureOlMap("mapsvgModal");
       if (!map) return;
       updateOlMap(map, !!payload.fit);
+      if (previewChanged && _meshPreview) scheduleMeshViewportPreview(map, true);
       scheduleMapResize();
     }).then(() => tauriEvent.emitTo("main", "earthmesh-map-ready"));
     return;
@@ -1956,7 +1974,10 @@ if(MAP_WINDOW_MODE){
   const ALL_MAP_STATE=["mesh","domain","coastal","settings"];
   const mapState = (parts=ALL_MAP_STATE,fit=false) => {
     const selected=new Set(parts), payload={fit};
-    if(selected.has("mesh")) payload.mesh=_meshGeojson;
+    if(selected.has("mesh")) {
+      payload.meshPreview=_meshPreview&&{gridfile:_meshPreview.gridfile,kind:_meshPreview.kind,totalCells:_meshPreview.totalCells,key:null};
+      payload.mesh=_meshPreview?null:_meshGeojson;
+    }
     if(selected.has("domain")) payload.domain=_domainGeojson;
     if(selected.has("coastal")) payload.coastal=_coastalGeojson;
     if(selected.has("settings")) Object.assign(payload,{
@@ -4049,13 +4070,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
     }
     setRunControls(false);
-    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") renderStep(6);
+    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
+      try { renderStep(6); }
+      catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
+    }
     if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
     else if (runInfo && runInfo.ok) {
       logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
       renderMissingGridfile();
     }
   }
+
+  const openButton = (label, path) => {
+    if (!path) return null;
+    const button = document.createElement("span");
+    button.className = "btn-ghost";
+    button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
+    button.textContent = label;
+    button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
+    return button;
+  };
 
   function renderCertifiedRun(bundle) {
     const card = document.getElementById("certifiedCard");
@@ -4187,16 +4221,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (preference === "higher") return "越高越好";
       return preference || "N/A";
     };
-    const openButton = (label, path) => {
-      if (!path) return null;
-      const button = document.createElement("span");
-      button.className = "btn-ghost";
-      button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
-      button.textContent = label;
-      button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
-      return button;
-    };
-
     decisions.forEach((decision) => {
       const outcome = String(decision.decision || "").toLowerCase();
       const accepted = outcome === "accepted";
@@ -4327,7 +4351,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       })
       .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
   }
-  const MESH_VIEW_CELLS = 50000;
   function certifiedPreviewCellCount(kind) {
     const resources = runInfo && runInfo.certified && runInfo.certified.resources;
     const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
@@ -4368,18 +4391,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const scope = bbox ? (zh()?"当前视野":"current view") : (zh()?"全域":"global extent");
       logLine((zh()?"✓ 网格已叠加（":"✓ mesh overlaid (") + scope + ` LOD): ${shown.toLocaleString()} / ${totalCells.toLocaleString()}`);
     }
-  }
-  function scheduleMeshViewportPreview(map) {
-    if (!_meshPreview || !map || map._globeActive) return;
-    clearTimeout(_meshPreviewTimer);
-    _meshPreviewTimer = setTimeout(()=>{
-      const bbox = meshViewportBbox(map);
-      const key = bbox ? bbox.map((value)=>value.toFixed(3)).join(",") : "global";
-      if (!_meshPreview || _meshPreview.key === key) return;
-      _meshPreview.key = key;
-      loadMeshPreview(_meshPreview.gridfile,_meshPreview.kind,_meshPreview.totalCells,bbox,false,true)
-        .catch((e)=>logLine((zh()?"网格视野加载失败：":"mesh viewport load failed: ")+e));
-    },250);
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
