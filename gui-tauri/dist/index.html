@@ -573,7 +573,7 @@ const STATIC_BROWSER_CAPABILITIES={
   default_hfield_g:0.2,
   method_c_defaults:{max_cycles:8,target_size_tolerance:1.2,maximum_neighbor_size_ratio:1.75,maximum_vertices:5000000,maximum_insertions_per_cycle:500000,maximum_path_length:100000,stop_at_source_resolution:true,minimum_triangle_angle_deg:0},
   harp_dv_defaults:{max_cycles:60,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:0,criterion_minimum_angle_deg:0},
-  certified_defaults:{mode:"safe_mother_only",delivery:"coupled",maximum_level:8,maximum_cells:10000000,gradation_rings_per_level:3,search_budget:100000},
+  certified_defaults:{mode:"safe_mother_only",delivery:"coupled",angle_contract:"legacy_strict_40_to_80",maximum_level:8,maximum_cells:10000000,gradation_rings_per_level:3,search_budget:100000},
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
 };
@@ -874,6 +874,7 @@ function renderStep(i){
         <div><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
         <div class="vs" id="runOutputSummary"></div></div></div>
         ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
+        <div class="card" id="certifiedCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="autoRefineCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="qualityCard" style="margin-top:16px"><h3>${lang?"质量指标":"Quality metrics"}</h3>
           <div class="ch">${lang?"运行后自动解析（quality_summary.json）。":"Parsed automatically after a run (quality_summary.json)."}</div></div>`;
@@ -2089,6 +2090,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     harpCriterionMinimumAngleDeg: HARP_DV_DEFAULTS.criterion_minimum_angle_deg,
     certifiedMode: CERTIFIED_DEFAULTS.mode,
     certifiedDelivery: CERTIFIED_DEFAULTS.delivery,
+    certifiedAngleContract: CERTIFIED_DEFAULTS.angle_contract,
     certifiedMaximumLevel: CERTIFIED_DEFAULTS.maximum_level,
     certifiedMaximumCells: CERTIFIED_DEFAULTS.maximum_cells,
     certifiedGradationRingsPerLevel: CERTIFIED_DEFAULTS.gradation_rings_per_level,
@@ -2279,12 +2281,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       maxPasses: refinementPasses
     });
     yaml = await invoke("set_adaptive_refinement", {
-      yaml, enabled: (specifiedRefine.route || "adaptive") === "adaptive",
+      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "adaptive",
       maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
       coastline: specifiedRefine.adaptiveCoastline !== false
     });
     yaml = await invoke("set_hfield_refinement", {
-      yaml, enabled: (specifiedRefine.route || "adaptive") === "hfield",
+      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "hfield",
       g: specifiedRefine.hfieldG ?? null,
       maxLevel: specifiedRefine.hfieldMaxLevel ?? null,
       baseM: specifiedRefine.hfieldBaseM ?? null
@@ -2324,6 +2326,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         yaml,
         mode: specifiedRefine.certifiedMode,
         delivery: specifiedRefine.certifiedDelivery,
+        angleContract: specifiedRefine.certifiedAngleContract,
         maximumLevel: specifiedRefine.certifiedMaximumLevel,
         maximumCells: specifiedRefine.certifiedMaximumCells,
         gradationRingsPerLevel: specifiedRefine.certifiedGradationRingsPerLevel,
@@ -2984,11 +2987,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div class="grid2">
         ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格":"Safe mother only"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option></select>`)}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
+        ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
         ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
         ${field(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="certifiedMaximumCells" min="1" step="1" value="${specifiedRefine.certifiedMaximumCells}">`)}
         ${field(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
         ${field(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
-        ${field(z?"硬门":"Hard gate",`<input class="input" value="40°–80° · Euler 2 · charge 12 · primal/dual/physical/balance/remap" disabled>`,z?"任一失败都不写正式 gridfile":"no formal gridfile is written if any certificate fails")}
+        ${field(z?"认证内容":"Certificate",`<input class="input" value="Euler 2 · charge 12 · primal/dual/requirement/balance/remap" disabled>`,z?"角度硬门以上方所选合同为准；任一认证失败都不写正式 gridfile":"The selected contract defines the angle gate; no formal gridfile is written if certification fails")}
       </div>
     </div>`;
     const algorithmOptionsBlock = {
@@ -3148,6 +3152,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
           if (backendSel) backendSel.value = "adaptive";
           syncBackend();
         }
+        if (specifiedRefine.algorithm === "certified") {
+          specifiedRefine.route = "discrete";
+          if (backendSel) backendSel.value = "discrete";
+          syncBackend();
+        }
         expertEdit.enabled = expertEnabled();
         clearRunArtifacts();
         enhanceRefinementStep();
@@ -3212,6 +3221,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const certifiedDelivery = document.getElementById("certifiedDelivery");
       if (certifiedDelivery) certifiedDelivery.onchange = () => {
         specifiedRefine.certifiedDelivery = certifiedDelivery.value;
+        clearRunArtifacts();
+      };
+      const certifiedAngleContract = document.getElementById("certifiedAngleContract");
+      if (certifiedAngleContract) certifiedAngleContract.onchange = () => {
+        specifiedRefine.certifiedAngleContract = certifiedAngleContract.value;
         clearRunArtifacts();
       };
     }
@@ -3393,6 +3407,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (runInfo && runInfo.outdir) invoke("open_path", { path: runInfo.outdir }).catch((e) => logLine("✗ " + e));
     };
     if (runInfo) renderAutoRefineDecisions(runInfo.autoRefineDecisions || []);
+    if (runInfo) renderCertifiedRun(runInfo.certified);
     // Re-render the cached quality result when step 6 rebuilds its DOM.
     if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
   }
@@ -3548,6 +3563,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         harpCriterionMinimumAngleDeg: sum.harp_dv_criterion_minimum_angle_deg ?? algorithmDefaults.harpCriterionMinimumAngleDeg,
         certifiedMode: sum.certified_mode ?? algorithmDefaults.certifiedMode,
         certifiedDelivery: sum.certified_delivery ?? algorithmDefaults.certifiedDelivery,
+        certifiedAngleContract: sum.certified_angle_contract ?? algorithmDefaults.certifiedAngleContract,
         certifiedMaximumLevel: sum.certified_maximum_level ?? algorithmDefaults.certifiedMaximumLevel,
         certifiedMaximumCells: sum.certified_maximum_cells ?? algorithmDefaults.certifiedMaximumCells,
         certifiedGradationRingsPerLevel: sum.certified_gradation_rings_per_level ?? algorithmDefaults.certifiedGradationRingsPerLevel,
@@ -4016,7 +4032,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
                      : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
         setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
         const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, autoRefineDecisions: decisions };
+        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, certified: r.certified || null, autoRefineDecisions: decisions };
         if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
         break;
       }
@@ -4032,6 +4048,75 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
       renderMissingGridfile();
     }
+  }
+
+  function renderCertifiedRun(bundle) {
+    const card = document.getElementById("certifiedCard");
+    if (!card) return;
+    if (!bundle || !bundle.certificate) {
+      card.style.display = "none";
+      card.textContent = "";
+      return;
+    }
+    const c = bundle.certificate;
+    const geometry = c.geometry || {};
+    const fulfillment = c.adaptivity_fulfillment || {};
+    const resources = bundle.resources || {};
+    const topology = resources.published_domain_quality_topology || {};
+    const publishedGeometry = c.published_domain_geometry || resources.published_domain_geometry || {};
+    const fmt = (value) => value == null ? "—" : (typeof value === "number" ? value.toLocaleString() : String(value));
+    const angle = Number.isFinite(geometry.minimum_angle_deg) && Number.isFinite(geometry.maximum_angle_deg)
+      ? geometry.minimum_angle_deg.toFixed(3) + "°–" + geometry.maximum_angle_deg.toFixed(3) + "°"
+      : "—";
+    const publishedAngle = Number.isFinite(publishedGeometry.minimum_angle_deg) && Number.isFinite(publishedGeometry.maximum_angle_deg)
+      ? publishedGeometry.minimum_angle_deg.toFixed(3) + "°–" + publishedGeometry.maximum_angle_deg.toFixed(3) + "°"
+      : null;
+    card.style.display = "";
+    card.textContent = "";
+    const title = document.createElement("h3");
+    title.textContent = zh() ? "CMRC 认证记录" : "CMRC certificate";
+    card.appendChild(title);
+    const summary = document.createElement("div");
+    summary.className = "grid2";
+    const rows = [
+      [zh()?"结果":"Outcome", c.product_outcome],
+      [zh()?"角度合同":"Angle contract", c.angle_contract],
+      [zh()?"DQX 执行状态":"DQX execution", c.dqx_execution_status],
+      [zh()?(publishedAngle?"掩膜前角度":"认证角度"):(publishedAngle?"Pre-mask angles":"Certified angles"), angle],
+      ...(publishedAngle ? [[zh()?"最终海洋角度":"Published-domain angles", publishedAngle]] : []),
+      [zh()?"交付层级":"Delivered levels", fmt(c.delivered_level_min) + " → " + fmt(c.delivered_level_max)],
+      [zh()?"三角形":"Triangles", fmt(fulfillment.initial_faces) + " → " + fmt(fulfillment.final_faces)],
+      [zh()?"需求 / 平衡残差":"Requirement / balance residuals", fmt(c.physical_residuals) + " / " + fmt(c.balance_residuals)],
+      [zh()?"海洋保留单元":"Masked cells kept", fmt(resources.landtype_kept_cells)],
+      [zh()?"发布连通分量":"Published components", fmt(topology.connected_components)],
+      [zh()?"重映射范围":"Remap scope", c.remap_scope || "—"],
+      [zh()?"最终海洋 remap":"Published-domain remap", c.published_grid_remap_available ? (zh()?"已认证":"certified") : (zh()?"未发布（现有文件仅对应掩膜前闭球面）":"not published (pre-export sphere only)")],
+    ];
+    rows.forEach(([label, value]) => {
+      const box = document.createElement("div");
+      box.className = "field";
+      const name = document.createElement("label"); name.textContent = label;
+      const data = document.createElement("b"); data.style.fontSize = "13px"; data.textContent = value == null ? "—" : String(value);
+      box.append(name, data); summary.appendChild(box);
+    });
+    card.appendChild(summary);
+    const levels = c.elastic_component_epochs && c.elastic_component_epochs.per_level_histograms;
+    if (Array.isArray(levels) && levels.length) {
+      const subtitle = document.createElement("div");
+      subtitle.className = "ch"; subtitle.style.marginTop = "10px";
+      subtitle.textContent = zh() ? "逐级反向粗化" : "Reverse-coarsening stages";
+      card.appendChild(subtitle);
+      levels.forEach((level) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;justify-content:space-between;padding:4px 2px;border-bottom:1px solid var(--border-soft);font-size:12px";
+        const stage = document.createElement("span"); stage.textContent = `${level.source_level} → ${level.target_level}`;
+        const counts = document.createElement("span");
+        counts.textContent = `${zh()?"提交":"committed"} ${fmt(level.components_committed)} · ${zh()?"保留细网格":"promoted"} ${fmt(level.components_promoted)} · ${zh()?"耗尽":"exhausted"} ${fmt(level.components_exhausted)}`;
+        row.append(stage, counts); card.appendChild(row);
+      });
+    }
+    const certificateButton = openButton(zh()?"🧾 打开证书":"🧾 Open certificate", bundle.certificate_path);
+    if (certificateButton) card.appendChild(certificateButton);
   }
 
   function renderQualityNote(text) {
@@ -4185,13 +4270,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
   }
   function readMeshQuality(gridfile) {
-    const minAngleDeg = lastSummary && Number(lastSummary.min_angle_deg);
-    const onViolation = lastSummary && lastSummary.on_violation;
+    const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
+    const certifiedMinimum = certificate && certificate.angle_contract === "legacy_strict_40_to_80" ? 40
+      : (certificate && certificate.angle_contract === "domain_quality_38_to_82_v1" ? 38 : NaN);
+    const projectMinimum = lastSummary && Number(lastSummary.min_angle_deg);
     return invoke("mesh_quality", {
       gridfile,
       kind: meshViewKind(),
-      minAngleDeg: Number.isFinite(minAngleDeg) ? minAngleDeg : DEFAULT_MIN_ANGLE_DEG,
-      onViolation: onViolation || "warn"
+      minAngleDeg: Number.isFinite(certifiedMinimum) ? certifiedMinimum : (Number.isFinite(projectMinimum) ? projectMinimum : DEFAULT_MIN_ANGLE_DEG),
+      onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((lastSummary && lastSummary.on_violation) || "warn")
     });
   }
   function loadMeshMeritCells(gridfile, kind) {
@@ -4211,10 +4298,31 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
-        applyCoastal(JSON.parse(txt), false);
+        const classified = JSON.parse(txt);
+        const fullCount = _meshGeojson && Array.isArray(_meshGeojson.features) ? _meshGeojson.features.length : 0;
+        const classifiedCount = Array.isArray(classified.features) ? classified.features.length : 0;
+        if (classifiedCount < fullCount) {
+          clearCoastalOverlay();
+          logLine(zh() ? `⚠ MERIT 分类仅覆盖 ${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} 个单元；保留完整未分类网格。` : `⚠ MERIT classification covers only ${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} cells; keeping the complete unclassified mesh.`);
+          return;
+        }
+        applyCoastal(classified, false);
         logLine(zh() ? "✓ 最终网格预览已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh preview classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
       .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+  }
+  async function loadCompleteMeshPolygons(gridfile, kind) {
+    const pageSize = 50000;
+    const features = [];
+    for (let startCell = 0;; startCell += pageSize) {
+      const text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell, maxCells: pageSize });
+      const page = JSON.parse(text);
+      const batch = Array.isArray(page.features) ? page.features : [];
+      for (const feature of batch) features.push(feature);
+      if (batch.length < pageSize) break;
+      logLine((zh() ? "… 已载入网格单元 " : "… loaded mesh cells ") + features.length.toLocaleString());
+    }
+    return { type: "FeatureCollection", features };
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
@@ -4222,8 +4330,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     (knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile))
       .then((q) => { _lastQuality = q; renderQualityCard(q); })
       .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
-    invoke("mesh_cell_polygons", { gridfile, kind, maxCells: null })
-      .then((txt) => { applyMesh(JSON.parse(txt)); logLine(zh() ? "✓ 网格预览已叠加到地图" : "✓ mesh preview overlaid on map"); loadMeshMeritCells(gridfile, kind); })
+    loadCompleteMeshPolygons(gridfile, kind)
+      .then((mesh) => {
+        applyMesh(mesh);
+        logLine((zh() ? "✓ 完整网格预览已叠加到地图：" : "✓ complete mesh preview overlaid: ") + mesh.features.length.toLocaleString());
+        if (!(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind);
+      })
       .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
   }
 

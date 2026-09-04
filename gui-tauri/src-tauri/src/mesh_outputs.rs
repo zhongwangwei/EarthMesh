@@ -15,14 +15,14 @@ use crate::quality::{parse_quality_summary, MeshQuality};
 
 const MERIT_SURFACE_PREVIEW_STRIDE: u32 = 50;
 const MERIT_RIVER_CELL_MIN_FRACTION: f64 = 0.001;
-const MAP_PREVIEW_CELL_LIMIT: u32 = 50_000;
+const MAP_PREVIEW_PAGE_LIMIT: u32 = 50_000;
 const MAP_PREVIEW_IPC_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 static ANALYSIS_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn map_preview_cell_limit(requested: Option<u32>) -> u32 {
     requested
-        .unwrap_or(MAP_PREVIEW_CELL_LIMIT)
-        .min(MAP_PREVIEW_CELL_LIMIT)
+        .unwrap_or(MAP_PREVIEW_PAGE_LIMIT)
+        .min(MAP_PREVIEW_PAGE_LIMIT)
 }
 
 pub(crate) fn read_preview_geojson(path: &Path, limit_bytes: u64) -> Result<String, String> {
@@ -200,6 +200,7 @@ pub(crate) fn quality_namelist_for_gui(
 pub(crate) fn mesh_cell_polygons(
     gridfile: String,
     kind: String,
+    start_cell: Option<u32>,
     max_cells: Option<u32>,
 ) -> Result<String, String> {
     let kind = checked_mesh_kind(Some(&kind))?;
@@ -214,6 +215,8 @@ pub(crate) fn mesh_cell_polygons(
             .arg(&out_geojson)
             .arg("--kind")
             .arg(kind);
+        cmd.arg("--start-cell")
+            .arg(start_cell.unwrap_or(0).to_string());
         cmd.arg("--max-cells").arg(max_cells.to_string());
         let res = cmd
             .output()
@@ -280,7 +283,7 @@ pub(crate) fn mesh_merit_cells(
             .arg("--kind")
             .arg(kind)
             .arg("--max-cells")
-            .arg(MAP_PREVIEW_CELL_LIMIT.to_string())
+            .arg(MAP_PREVIEW_PAGE_LIMIT.to_string())
             .output()
             .map_err(|e| format!("run --gridfile-cell-polygons ({bin}): {e}"))?;
         if !res.status.success() {

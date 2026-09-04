@@ -346,6 +346,15 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             earthmesh_project::CertifiedDeliveryMode::Coupled => "coupled",
         }
         .to_string(),
+        certified_angle_contract: match cfg.refinement.certified.angle_contract {
+            earthmesh_project::CertifiedAngleContract::LegacyStrict40To80 => {
+                "legacy_strict_40_to_80"
+            }
+            earthmesh_project::CertifiedAngleContract::DomainQuality38To82V1 => {
+                "domain_quality_38_to_82_v1"
+            }
+        }
+        .to_string(),
         certified_maximum_level: cfg.refinement.certified.maximum_level,
         certified_maximum_cells: cfg.refinement.certified.maximum_cells,
         certified_gradation_rings_per_level: cfg.refinement.certified.gradation_rings_per_level,

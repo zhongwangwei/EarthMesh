@@ -57,7 +57,7 @@ pub(crate) fn run_mpas_cell_polygons(args: impl Iterator<Item = String>) -> Resu
 }
 
 /// `--gridfile-cell-polygons <gridfile.nc4> <out.geojson> [--kind hex|tri] [--bbox W S E N]
-/// [--max-cells N]`: read an EarthMesh gridfile (GLONM/GLONW + itab connectivity) and write
+/// [--start-cell N] [--max-cells N]`: read an EarthMesh gridfile (GLONM/GLONW + itab connectivity) and write
 /// cell-polygon GeoJSON in degrees. `hex` (default) draws W cells from their M corners;
 /// `tri` draws one triangle per M cell. For map overlay of either mesh type.
 pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> Result<(), String> {
@@ -65,6 +65,7 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
     let mut positional: Vec<PathBuf> = Vec::new();
     let mut bbox: Option<[f64; 4]> = None;
     let mut max_cells: Option<usize> = None;
+    let mut start_cell = 0usize;
     let mut kind = earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex;
     let mut i = 0usize;
     while i < rest.len() {
@@ -96,6 +97,13 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
                         .ok_or_else(|| usage("--max-cells requires an integer"))?,
                 );
             }
+            "--start-cell" => {
+                i += 1;
+                start_cell = rest
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| usage("--start-cell requires an integer"))?;
+            }
             other if other.starts_with("--") => {
                 return Err(usage(&format!(
                     "unknown --gridfile-cell-polygons option: {other}"
@@ -110,11 +118,12 @@ pub(crate) fn run_gridfile_cell_polygons(args: impl Iterator<Item = String>) -> 
             "--gridfile-cell-polygons needs <gridfile.nc4> <out.geojson> [--kind hex|tri]",
         ));
     }
-    let count = earthmesh_cli::hydro_delivery_cells::write_gridfile_cell_polygons_geojson(
+    let count = earthmesh_cli::hydro_delivery_cells::write_gridfile_cell_polygons_geojson_page(
         &positional[0],
         &positional[1],
         kind,
         bbox,
+        start_cell,
         max_cells,
     )
     .map_err(|err| format!("gridfile cell polygons: {err}"))?;

@@ -24,7 +24,11 @@ fn main() -> ExitCode {
     // the caller's working directory.
     let is_informational = matches!(
         argv.get(1).map(String::as_str),
-        None | Some("-h") | Some("--help") | Some("-V") | Some("--version")
+        None | Some("-h")
+            | Some("--help")
+            | Some("-V")
+            | Some("--version")
+            | Some("--studio-protocol")
     );
     let result = run_cli_command();
     if !is_informational {

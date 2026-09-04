@@ -27,6 +27,10 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if first == "--studio-protocol" {
+        println!("earthmesh-studio-engine/2");
+        return Ok(());
+    }
     if first == "-h" || first == "--help" {
         println!("{}", usage(""));
         return Ok(());

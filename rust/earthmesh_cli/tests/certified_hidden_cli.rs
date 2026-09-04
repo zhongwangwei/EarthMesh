@@ -320,9 +320,59 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
         serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
     assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
     assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+    assert_eq!(certificate["published_grid_remap_available"], false);
+    assert_eq!(
+        certificate["published_domain_geometry"]["contract_pass"],
+        true
+    );
+    assert!(
+        certificate["published_domain_geometry"]["minimum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle >= 40.0)
+    );
+    assert!(
+        certificate["published_domain_geometry"]["maximum_angle_deg"]
+            .as_f64()
+            .is_some_and(|angle| angle <= 80.0)
+    );
+    assert_eq!(
+        certificate["remap_scope"],
+        "pre_export_closed_sphere_voronoi"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert!(manifest["remap"].is_null());
+    assert_eq!(
+        manifest["pre_export_remap"],
+        certified.remap.display().to_string()
+    );
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    let quality_input =
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile(&gridfile).unwrap();
+    let hard_issues = earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input)
+        .validate_all()
+        .into_iter()
+        .filter(|issue| issue.severity == earthmesh_quality::topology::Severity::Fail)
+        .collect::<Vec<_>>();
+    assert!(
+        hard_issues.is_empty(),
+        "published CMRC ocean topology issues: {hard_issues:?}"
+    );
     let resources: serde_json::Value =
         serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
     assert_eq!(resources["landtype_masked_cells"], kept);
+    assert_eq!(
+        resources["published_domain_quality_topology"]["connected_components"],
+        1
+    );
+    assert_eq!(
+        resources["published_domain_geometry"]["contract_pass"],
+        true
+    );
     assert_eq!(
         resources["published_domain_topology"]["violations"],
         serde_json::json!([])
@@ -376,6 +426,10 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
         "elastic_component_epochs"
     );
     assert_eq!(certificate["angle_contract"], "domain_quality_38_to_82_v1");
+    assert_eq!(
+        certificate["dqx_execution_status"],
+        "geometry_contract_only"
+    );
     assert!(certificate["geometry"]["minimum_angle_deg"]
         .as_f64()
         .is_some_and(|angle| angle >= 38.0));
@@ -397,6 +451,13 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
         certificate["physical_balance_scope"],
         "final_voronoi_cells_exact_raster_overlap"
     );
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    assert!(gridfile.w_refine_level.contains(&0));
+    assert!(gridfile.w_refine_level.contains(&1));
 }
 
 #[test]

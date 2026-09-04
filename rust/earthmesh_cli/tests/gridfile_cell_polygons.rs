@@ -6,6 +6,7 @@
 use earthmesh_cli::{
     hydro_delivery_cells::{
         gridfile_cell_polygons_geojson as try_gridfile_cell_polygons_geojson,
+        gridfile_cell_polygons_geojson_page_with_report as try_gridfile_cell_polygons_geojson_page_with_report,
         gridfile_cell_polygons_geojson_with_report as try_gridfile_cell_polygons_geojson_with_report,
     },
     unstructured_mesh_support::GridfileCellKind,
@@ -299,6 +300,29 @@ fn max_cells_caps_feature_count() {
     let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Tri, None, Some(1));
 
     assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+}
+
+#[test]
+fn pages_continue_after_the_previous_eligible_cell() {
+    let mut mesh = empty_mesh();
+    mesh.w_lon = vec![100.0, 101.0, 101.0, 100.0];
+    mesh.w_lat = vec![20.0, 20.0, 21.0, 21.0];
+    mesh.m_lon = vec![100.6, 100.4];
+    mesh.m_lat = vec![20.4, 20.6];
+    mesh.m_to_w = vec![1, 2, 3, 1, 3, 4];
+
+    let (json, report) = try_gridfile_cell_polygons_geojson_page_with_report(
+        &mesh,
+        GridfileCellKind::Tri,
+        None,
+        1,
+        Some(1),
+    )
+    .expect("second page");
+
+    assert_eq!(report.emitted_cells, 1);
+    assert!(json.contains("\"cell_index\": 2"), "{json}");
+    assert!(!json.contains("\"cell_index\": 1"), "{json}");
 }
 
 #[test]

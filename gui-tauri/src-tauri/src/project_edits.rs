@@ -723,6 +723,8 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
         "certified" => {
             cfg.quality.lepp_post_quality = None;
             cfg.refinement.method_c = Default::default();
+            cfg.refinement.adaptive = None;
+            cfg.refinement.hfield = None;
             earthmesh_project::RefinementBackend::Certified
         }
         other => {
@@ -735,10 +737,12 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn set_certified_options(
     yaml: String,
     mode: String,
     delivery: String,
+    angle_contract: String,
     maximum_level: u8,
     maximum_cells: usize,
     gradation_rings_per_level: u8,
@@ -762,6 +766,19 @@ pub(crate) fn set_certified_options(
             other => {
                 return Err(format!(
                     "unknown certified delivery {other}: expected tri, hex, or coupled"
+                ))
+            }
+        },
+        angle_contract: match angle_contract.as_str() {
+            "legacy_strict_40_to_80" => {
+                earthmesh_project::CertifiedAngleContract::LegacyStrict40To80
+            }
+            "domain_quality_38_to_82_v1" => {
+                earthmesh_project::CertifiedAngleContract::DomainQuality38To82V1
+            }
+            other => {
+                return Err(format!(
+                    "unknown certified angle contract {other}: expected legacy_strict_40_to_80 or domain_quality_38_to_82_v1"
                 ))
             }
         },

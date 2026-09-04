@@ -183,6 +183,7 @@ pub mod unstructured_mesh_io;
 use unstructured_mesh_io::{
     gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
     write_unstructured_mesh_netcdf_with_method_c_metadata,
+    write_unstructured_mesh_netcdf_with_refine_levels,
 };
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{

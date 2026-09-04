@@ -41,7 +41,7 @@ use earthmesh_refine_method_c::{
 };
 use std::collections::BTreeSet;
 use std::fs;
-use std::io;
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -99,6 +99,74 @@ fn publish_certified_artifacts(publications: &[(&Path, &Path)]) -> io::Result<()
         let _ = fs::remove_file(backup);
     }
     Ok(())
+}
+
+fn certified_gridfile_refine_levels(
+    mesh: &crate::UnstructuredMesh,
+    delivered_levels: &[usize],
+) -> io::Result<(Vec<i32>, Vec<i32>)> {
+    let w_has_placeholders =
+        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let mut source_levels = delivered_levels.iter().copied();
+    let mut w_levels = vec![0; mesh.w_points.len()];
+    for (row, level) in w_levels.iter_mut().enumerate() {
+        let Some(id) =
+            crate::unstructured_mesh_support::mesh_canonical_id_for_row(row, w_has_placeholders)
+        else {
+            continue;
+        };
+        if id <= 1 {
+            continue;
+        }
+        *level = i32::try_from(source_levels.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CMRC delivered levels do not cover every published W cell",
+            )
+        })?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "CMRC level exceeds i32"))?;
+    }
+    if source_levels.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CMRC delivered levels exceed the published W-cell count",
+        ));
+    }
+
+    let m_has_placeholders =
+        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.m_points);
+    let mut m_levels = vec![0; mesh.m_points.len()];
+    for (row, triangle) in mesh.m_to_w.iter().enumerate() {
+        let Some(id) =
+            crate::unstructured_mesh_support::mesh_canonical_id_for_row(row, m_has_placeholders)
+        else {
+            continue;
+        };
+        if id <= 1 {
+            continue;
+        }
+        m_levels[row] = triangle
+            .iter()
+            .map(|&w_id| {
+                crate::unstructured_mesh_support::mesh_row_for_canonical_id(
+                    w_id,
+                    mesh.w_points.len(),
+                    w_has_placeholders,
+                )
+                .and_then(|w_row| w_levels.get(w_row).copied())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("CMRC triangle row {row} has invalid W id {w_id}"),
+                    )
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+    }
+    Ok((m_levels, w_levels))
 }
 
 fn restore_certified_backups(
@@ -2083,7 +2151,12 @@ fn run_certified_pipeline(
         ".certified_source_grid.cmrc-tmp-{}",
         std::process::id()
     ));
-    let remap_path = result_dir.join(format!("{artifact_stem}_remap.csv"));
+    let remap_role = if is_domain_export {
+        "pre_export_remap"
+    } else {
+        "remap"
+    };
+    let remap_path = result_dir.join(format!("{artifact_stem}_{remap_role}.csv"));
     let temporary_remap_path = result_dir.join(format!(
         ".certified_remap.csv.cmrc-tmp-{}",
         std::process::id()
@@ -2118,17 +2191,22 @@ fn run_certified_pipeline(
         "final_voronoi_cells_global_raster_max_bound"
     };
     let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
-    let certificate_json = serde_json::to_vec_pretty(&serde_json::json!({
+    let mut certificate_document = serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
+        "dqx_execution_status": if options.angle_contract.as_str() == "domain_quality_38_to_82_v1" { "geometry_contract_only" } else { "not_applicable" },
         "mode": mode_name,
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
         "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
         "published_grid_is_certified_face_subset": is_domain_export,
+        "requirement_balance_scope": physical_balance_scope,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
+        "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+        "published_grid_remap_available": !is_domain_export,
+        "published_grid_refinement_metadata": true,
         "chosen_level": chosen_level,
         "delivered_level": delivered_level,
         "delivered_level_min": delivered_levels.levels().iter().copied().min().unwrap_or(0),
@@ -2183,11 +2261,11 @@ fn run_certified_pipeline(
         "balance_residuals": certificate.balance_residuals,
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
-    }))
-    .map_err(io::Error::other)?;
+    });
     let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
+        "dqx_execution_status": if options.angle_contract.as_str() == "domain_quality_38_to_82_v1" { "geometry_contract_only" } else { "not_applicable" },
         "mode": mode_name,
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
@@ -2198,20 +2276,17 @@ fn run_certified_pipeline(
             CertifiedDelivery::Coupled => "coupled",
         },
         "gridfile": output_path.display().to_string(),
-        "remap": remap_path.display().to_string(),
+        "remap": if is_domain_export { serde_json::Value::Null } else { serde_json::Value::String(remap_path.display().to_string()) },
+        "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
+        "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+        "published_grid_remap_status": if is_domain_export { "not_available_after_landtype_subset" } else { "certified" },
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
     }))
     .map_err(io::Error::other)?;
-    let mut remap_csv = String::from("target,source,weight\n");
-    for row in remap.rows() {
-        for &(source, weight) in &row.sources {
-            use std::fmt::Write as _;
-            writeln!(&mut remap_csv, "{},{},{weight:.17}", row.target, source)
-                .map_err(io::Error::other)?;
-        }
-    }
+    let (m_refine_levels, w_refine_levels) =
+        certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
     let temporary_paths = [
         &temporary_path,
         &temporary_source_path,
@@ -2225,51 +2300,153 @@ fn run_certified_pipeline(
         let _ = fs::remove_file(path);
     }
     let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
-        fs::write(&temporary_remap_path, remap_csv)?;
-        fs::write(&temporary_certificate_path, certificate_json)?;
+        {
+            let mut writer = BufWriter::new(fs::File::create(&temporary_remap_path)?);
+            writeln!(writer, "target,source,weight")?;
+            for row in remap.rows() {
+                for &(source, weight) in &row.sources {
+                    writeln!(writer, "{},{},{weight:.17}", row.target, source)?;
+                }
+            }
+            writer.flush()?;
+        }
         fs::write(&temporary_manifest_path, manifest_json)?;
         fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
-        let (report, landtype_masked_cells, topology) = if is_domain_export {
-            crate::write_unstructured_mesh_netcdf(&temporary_source_path, &output_mesh)?;
-            let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
-                Path::new(config.landtype_file.trim()),
-            )?;
-            let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
-                &temporary_source_path,
-                &temporary_path,
-                &config.landtype_file,
-                gridnum_perdegree,
-                config.mode_grid.trim(),
-                config.mesh_type.trim(),
-                None,
-                None,
-                config.isolated_ocean,
-                None,
-            )?;
-            let published = crate::read_unstructured_mesh_netcdf(&temporary_path)?;
-            let topology =
-                crate::unstructured_mesh_support::check_unstructured_mesh_topology(&published);
-            if !topology.is_consistent() {
-                return Err(io::Error::new(
+        let (report, landtype_masked_cells, topology, domain_quality, published_geometry) =
+            if is_domain_export {
+                crate::write_unstructured_mesh_netcdf_with_refine_levels(
+                    &temporary_source_path,
+                    &output_mesh,
+                    Some(&m_refine_levels),
+                    Some(&w_refine_levels),
+                )?;
+                let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
+                    Path::new(config.landtype_file.trim()),
+                )?;
+                let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+                    &temporary_source_path,
+                    &temporary_path,
+                    &config.landtype_file,
+                    gridnum_perdegree,
+                    config.mode_grid.trim(),
+                    config.mesh_type.trim(),
+                    None,
+                    None,
+                    config.isolated_ocean || config.mesh_type.trim() == "oceanmesh",
+                    None,
+                )?;
+                let published = crate::read_unstructured_mesh_netcdf(&temporary_path)?;
+                let topology =
+                    crate::unstructured_mesh_support::check_unstructured_mesh_topology(&published);
+                if !topology.is_consistent() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "CMRC published domain topology failed: {}",
+                            topology.violations.join("; ")
+                        ),
+                    ));
+                }
+                let quality_mesh = crate::read_gridfile_mesh_points(&temporary_path)?;
+                let quality_input =
+                    crate::grid_quality_pipeline::quality_input_from_gridfile(&quality_mesh)?;
+                let quality_report = earthmesh_quality::compute(
+                    &quality_input,
+                    &earthmesh_quality::QualityThresholds::default(),
+                );
+                let published_minimum = quality_report.geometry.min_angle_deg;
+                let published_maximum = quality_report.geometry.max_angle_deg;
+                let delivery_window =
+                    earthmesh_refine_certified::AngleContract::for_id(options.angle_contract)
+                        .final_delivery;
+                if !published_minimum.is_finite()
+                    || !published_maximum.is_finite()
+                    || !delivery_window.contains_range(published_minimum, published_maximum)
+                {
+                    return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "CMRC published domain topology failed: {}",
-                        topology.violations.join("; ")
+                        "CMRC published domain angle contract failed: [{published_minimum}, {published_maximum}] is outside [{}, {}]",
+                        delivery_window.minimum_degrees, delivery_window.maximum_degrees
                     ),
                 ));
-            }
-            (
-                crate::unstructured_mesh_write_report_from_file(&temporary_path)?,
-                Some(kept),
-                Some(topology),
-            )
-        } else {
-            (
-                crate::write_unstructured_mesh_netcdf(&temporary_path, &output_mesh)?,
-                None,
-                None,
-            )
-        };
+                }
+                let component_count =
+                    earthmesh_quality::topology::connected_component_count(&quality_input);
+                let mut quality_issues =
+                    earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input)
+                        .validate_all();
+                if config.mesh_type.trim() == "landmesh" {
+                    quality_issues.retain(|issue| {
+                        issue.issue_type
+                            != earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
+                    });
+                }
+                let hard_issues = quality_issues
+                    .iter()
+                    .filter(|issue| issue.severity == earthmesh_quality::topology::Severity::Fail)
+                    .map(|issue| format!("{}: {}", issue.issue_type.as_str(), issue.message))
+                    .collect::<Vec<_>>();
+                if !hard_issues.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "CMRC published domain quality topology failed: {}",
+                            hard_issues.join("; ")
+                        ),
+                    ));
+                }
+                let quality_issue_json = quality_issues
+                    .iter()
+                    .map(|issue| {
+                        serde_json::json!({
+                            "type": issue.issue_type.as_str(),
+                            "severity": issue.severity.as_str(),
+                            "message": issue.message,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    crate::unstructured_mesh_write_report_from_file(&temporary_path)?,
+                    Some(kept),
+                    Some(topology),
+                    Some((component_count, quality_issue_json)),
+                    Some(serde_json::json!({
+                        "cells": quality_report.geometry.cell_count,
+                        "minimum_angle_deg": published_minimum,
+                        "maximum_angle_deg": published_maximum,
+                        "contract_minimum_deg": delivery_window.minimum_degrees,
+                        "contract_maximum_deg": delivery_window.maximum_degrees,
+                        "contract_pass": true,
+                    })),
+                )
+            } else {
+                (
+                    crate::write_unstructured_mesh_netcdf_with_refine_levels(
+                        &temporary_path,
+                        &output_mesh,
+                        Some(&m_refine_levels),
+                        Some(&w_refine_levels),
+                    )?,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+        if let Some(published_geometry) = &published_geometry {
+            certificate_document
+                .as_object_mut()
+                .expect("CMRC certificate document is an object")
+                .insert(
+                    "published_domain_geometry".to_string(),
+                    published_geometry.clone(),
+                );
+        }
+        fs::write(
+            &temporary_certificate_path,
+            serde_json::to_vec_pretty(&certificate_document).map_err(io::Error::other)?,
+        )?;
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
             "requirement_raster_cells": required_levels.len(),
@@ -2285,6 +2462,9 @@ fn run_certified_pipeline(
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
             "landtype_masked_cells": landtype_masked_cells,
+            "landtype_kept_cells": landtype_masked_cells,
+            "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+            "published_grid_remap_available": !is_domain_export,
             "published_domain_topology": topology.as_ref().map(|report| serde_json::json!({
                 "boundary_loops": report.boundary_loop_count,
                 "boundary_vertex_degree_violations": report.boundary_vertex_degree_violation_count,
@@ -2292,6 +2472,11 @@ fn run_certified_pipeline(
                 "expected_euler": report.expected_euler_characteristic,
                 "violations": report.violations,
             })),
+            "published_domain_quality_topology": domain_quality.as_ref().map(|(component_count, issues)| serde_json::json!({
+                "connected_components": component_count,
+                "issues": issues,
+            })),
+            "published_domain_geometry": published_geometry,
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;

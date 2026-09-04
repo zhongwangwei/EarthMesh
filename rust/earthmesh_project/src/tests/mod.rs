@@ -2741,6 +2741,7 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     project.refinement.certified = crate::CertifiedRefinementRecipe {
         mode: crate::CertifiedMode::ReverseCoarsening,
         delivery: crate::CertifiedDeliveryMode::Coupled,
+        angle_contract: crate::CertifiedAngleContract::DomainQuality38To82V1,
         maximum_level: 4,
         maximum_cells: 900_000,
         gradation_rings_per_level: 5,
@@ -2759,10 +2760,25 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     assert!(namelist.contains("&certified"));
     assert!(namelist.contains("NL%mode = 'reverse_coarsening'"));
     assert!(namelist.contains("NL%delivery = 'coupled'"));
+    assert!(namelist.contains("NL%angle_contract = 'domain_quality_38_to_82_v1'"));
     assert!(namelist.contains("NL%maximum_level = 4"));
     assert!(namelist.contains("NL%maximum_cells = 900000"));
     assert!(namelist.contains("NL%gradation_rings_per_level = 5"));
     assert!(namelist.contains("NL%search_budget = 12000"));
     assert!(!namelist.contains("&adaptive"));
     assert!(!namelist.contains("legacy"));
+}
+
+#[test]
+fn certified_rejects_the_unsupported_adaptive_route_before_runtime() {
+    let mut project = sample();
+    project.refinement.backend = crate::RefinementBackend::Certified;
+    project.refinement.adaptive = Some(crate::AdaptiveRefinementRecipe {
+        enabled: true,
+        ..Default::default()
+    });
+    let error = project
+        .validate()
+        .expect_err("CMRC cannot consume &adaptive");
+    assert!(error.contains("does not consume the &adaptive"));
 }
