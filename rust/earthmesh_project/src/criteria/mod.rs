@@ -3,7 +3,9 @@ use crate::{MeshDomainKind, ProjectConfig, ProjectDataLayer, ProjectLayerRole, T
 /// Single categorical land-cover refinement criterion. The LandType data layer
 /// remains independently usable as the land/sea mask when this criterion is off.
 pub const LANDCOVER_CRITERION_ID: &str = "landcover";
+pub const SEA_RATIO_CRITERION_ID: &str = "sea_ratio";
 pub const DEFAULT_LANDCOVER_CLASS_THRESHOLD: f64 = 12.0;
+pub const DEFAULT_SEA_RATIO_THRESHOLD: f64 = 0.05;
 
 /// How the GUI renders a criterion's control (self-describing, so new criteria
 /// automatically get GUI metadata from this schema.
@@ -73,9 +75,9 @@ pub struct EffectiveThresholdCriterion {
     pub value: f64,
 }
 
-/// Project-specific categorical land-cover criterion. Unlike continuous
-/// sources, LandType has one engine switch (`refine_num_landtypes`), not
-/// separate mean/std axes.
+/// Project-specific LandType-derived scalar criterion. Unlike continuous
+/// threshold sources, these share the LandType layer used by masks while each
+/// criterion owns its own engine switch/value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectiveLandcoverCriterion {
     pub id: &'static str,
@@ -362,6 +364,24 @@ impl ProjectConfig {
                 |criterion| criterion.value.unwrap_or(DEFAULT_LANDCOVER_CLASS_THRESHOLD),
             ),
         })
+    }
+
+    /// Resolve the independent land/sea-distribution criterion from the same
+    /// LandType source selection as landcover, without inheriting its switch or
+    /// legacy threshold fallback.
+    pub fn effective_sea_ratio_criterion(&self) -> Option<EffectiveLandcoverCriterion> {
+        let mut criterion = self.effective_landcover_criterion()?;
+        let explicit = self
+            .refinement
+            .threshold_criteria
+            .iter()
+            .find(|criterion| criterion.id == SEA_RATIO_CRITERION_ID);
+        criterion.id = SEA_RATIO_CRITERION_ID;
+        criterion.enabled = explicit.is_some_and(|criterion| criterion.enabled);
+        criterion.value = explicit
+            .and_then(|criterion| criterion.value)
+            .unwrap_or(DEFAULT_SEA_RATIO_THRESHOLD);
+        Some(criterion)
     }
 
     /// Resolve one mean/std criterion without duplicating its data-source path.

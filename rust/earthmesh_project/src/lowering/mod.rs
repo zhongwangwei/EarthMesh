@@ -168,9 +168,15 @@ impl ProjectConfig {
         let landcover_criterion_enabled = self
             .effective_landcover_criterion()
             .is_some_and(|criterion| criterion.enabled);
-        let categorical_refinement_enabled =
-            self.refinement.threshold_enabled && landcover_criterion_enabled;
-        let landtype_refinement_active = self.refinement.enabled && categorical_refinement_enabled;
+        let sea_ratio_criterion_enabled = self
+            .effective_sea_ratio_criterion()
+            .is_some_and(|criterion| criterion.enabled);
+        let landtype_refinement_active = self.refinement.enabled
+            && self.refinement.threshold_enabled
+            && (landcover_criterion_enabled || sea_ratio_criterion_enabled);
+        let categorical_refinement_enabled = self.refinement.enabled
+            && self.refinement.threshold_enabled
+            && landcover_criterion_enabled;
         let layers = self
             .data_layers
             .iter()
@@ -312,7 +318,7 @@ impl ProjectConfig {
             }
         };
         lowering_layers.lower_into(&mut mkgrd, &mut refine);
-        if self.refinement.threshold_enabled {
+        if self.refinement.enabled && self.refinement.threshold_enabled {
             apply_threshold_values(&mut refine, self);
         }
         // Refinement runs only when a real source supplies data. LandType mask
@@ -542,15 +548,20 @@ fn apply_threshold_values(refine: &mut RefineConfig, project: &ProjectConfig) {
             continue;
         }
         if matches!(layer.role, ProjectLayerRole::LandType) {
-            let Some(criterion) = project.effective_landcover_criterion() else {
-                continue;
-            };
-            if !criterion.enabled {
-                continue;
+            if let Some(criterion) = project.effective_landcover_criterion() {
+                if criterion.enabled {
+                    refine.refine_num_landtypes = true;
+                    refine.refine_cal = true;
+                    refine.th_num_landtypes = criterion.value.round() as i32;
+                }
             }
-            refine.refine_num_landtypes = true;
-            refine.refine_cal = true;
-            refine.th_num_landtypes = criterion.value.round() as i32;
+            if let Some(criterion) = project.effective_sea_ratio_criterion() {
+                if criterion.enabled {
+                    refine.refine_sea_ratio = true;
+                    refine.refine_cal = true;
+                    refine.th_sea_ratio = [criterion.value, 1.0 - criterion.value];
+                }
+            }
             continue;
         }
         let ProjectLayerRole::Threshold(field) = layer.role else {

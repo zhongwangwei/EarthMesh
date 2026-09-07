@@ -1013,6 +1013,223 @@ fn landtype_mask_and_landcover_criterion_are_independent_with_legacy_fallback() 
 }
 
 #[test]
+fn sea_ratio_criterion_is_off_by_default_without_legacy_landcover_leakage() {
+    let mut p = sample();
+    p.data_layers[0].threshold_value = Some(9.0);
+
+    let criterion = p
+        .effective_sea_ratio_criterion()
+        .expect("LandType source resolves sea-ratio criterion");
+    assert_eq!(criterion.id, SEA_RATIO_CRITERION_ID);
+    assert!(criterion.source_enabled);
+    assert!(!criterion.enabled);
+    assert_eq!(criterion.value, DEFAULT_SEA_RATIO_THRESHOLD);
+
+    let lowered = p.lower();
+    assert!(
+        lowered.refine.refine_num_landtypes,
+        "legacy landcover remains separate"
+    );
+    assert!(!lowered.refine.refine_sea_ratio);
+}
+
+#[test]
+fn sea_ratio_and_landcover_criteria_lower_independently() {
+    let mut p = sample();
+    p.refinement.threshold_criteria.extend([
+        ThresholdCriterionConfig {
+            id: LANDCOVER_CRITERION_ID.into(),
+            enabled: false,
+            value: Some(9.0),
+        },
+        ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(0.1),
+        },
+    ]);
+
+    let sea = p
+        .effective_sea_ratio_criterion()
+        .expect("explicit sea-ratio criterion");
+    assert_eq!(sea.source_layer_id, "lc");
+    assert!(sea.enabled);
+    assert_eq!(sea.value, 0.1);
+
+    let lowered = p.lower();
+    assert!(!lowered.refine.refine_num_landtypes);
+    assert!(lowered.refine.refine_sea_ratio);
+    assert_eq!(lowered.refine.th_sea_ratio, [0.1, 0.9]);
+    assert!(lowered.refine.refine_cal);
+}
+
+#[test]
+fn sea_ratio_criterion_respects_master_gates_and_source_enabled() {
+    let mut p = sample();
+    p.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(0.1),
+        });
+
+    let mut threshold_off = p.clone();
+    threshold_off.refinement.threshold_enabled = false;
+    threshold_off.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.5,
+            radius_km: 100.0,
+        }));
+    assert!(!threshold_off.lower().refine.refine_sea_ratio);
+
+    let mut refinement_off = p.clone();
+    refinement_off.refinement.enabled = false;
+    assert!(!refinement_off.lower().refine.refine_sea_ratio);
+
+    let mut source_off = p;
+    source_off.data_layers[0].enabled = false;
+    source_off.data_layers[1].enabled = false;
+    let err = source_off
+        .try_lower()
+        .expect_err("disabled LandType cannot drive sea-ratio refinement");
+    assert!(err.contains("no refinement source"), "{err}");
+}
+
+#[test]
+fn sea_ratio_criterion_uses_arbitrary_landtype_source_id() {
+    let mut p = sample();
+    p.data_layers[0].id = "my-land-sea-source".into();
+    p.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: None,
+        });
+
+    let criterion = p.effective_sea_ratio_criterion().expect("sea ratio source");
+    assert_eq!(criterion.source_layer_id, "my-land-sea-source");
+    assert_eq!(criterion.value, DEFAULT_SEA_RATIO_THRESHOLD);
+    assert_eq!(p.lower().mkgrd.landtype_file, "./in/landtype.nc");
+}
+
+#[test]
+fn sea_ratio_criterion_serializes_and_roundtrips_through_namelists() {
+    let mut p = sample();
+    p.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(0.2),
+        });
+
+    let p = yaml_round_trip(&p);
+    let lowered = p.lower();
+    let nml = lowered.to_namelist();
+    let reparsed = earthmesh_core::RefineConfig::from_mkrefine_namelist(
+        &nml,
+        &lowered.mkgrd.mesh_type,
+        &lowered.mkgrd.mode_grid,
+    )
+    .expect("sea-ratio criterion should emit parseable mkrefine");
+    assert!(reparsed.refine_sea_ratio);
+    assert_eq!(reparsed.th_sea_ratio, [0.2, 0.8]);
+    assert!(
+        earthmesh_core::DataLayersNamelist::from_datalayers_namelist(&nml)
+            .layers
+            .iter()
+            .any(
+                |layer| matches!(layer.role, earthmesh_core::DataLayerRole::LandType)
+                    && layer.enabled
+            )
+    );
+}
+
+#[test]
+fn sea_ratio_criterion_validation_rejects_missing_source_ranges_and_nonfinite() {
+    let mut missing = sample();
+    missing.data_layers.remove(0);
+    missing
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(0.1),
+        });
+    let err = yaml_err(&missing);
+    assert!(
+        err.contains("sea_ratio") && err.contains("LandType"),
+        "{err}"
+    );
+
+    for value in [-0.1, 0.5] {
+        let mut p = sample();
+        p.refinement
+            .threshold_criteria
+            .push(ThresholdCriterionConfig {
+                id: SEA_RATIO_CRITERION_ID.into(),
+                enabled: true,
+                value: Some(value),
+            });
+        let err = yaml_err(&p);
+        assert!(err.contains(">= 0 and < 0.5"), "{value}: {err}");
+    }
+
+    let mut nonfinite = sample();
+    nonfinite
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(f64::INFINITY),
+        });
+    let err = nonfinite
+        .try_lower()
+        .expect_err("nonfinite sea-ratio threshold");
+    assert!(err.contains("value must be finite"), "{err}");
+}
+
+#[test]
+fn sea_ratio_criterion_keeps_landtype_active_for_atmosphere() {
+    let mut p = sample();
+    p.target.kind = MeshDomainKind::Atmosphere;
+    p.target.model_format = ModelFormat::Mpas;
+    p.data_layers[1].enabled = false;
+    p.refinement.threshold_criteria.extend([
+        ThresholdCriterionConfig {
+            id: LANDCOVER_CRITERION_ID.into(),
+            enabled: false,
+            value: None,
+        },
+        ThresholdCriterionConfig {
+            id: SEA_RATIO_CRITERION_ID.into(),
+            enabled: true,
+            value: Some(0.1),
+        },
+    ]);
+
+    let lowered = p
+        .try_lower()
+        .expect("sea ratio keeps atmosphere LandType input");
+    assert_eq!(lowered.mkgrd.landtype_file, "./in/landtype.nc");
+    assert!(lowered.refine.refine_sea_ratio);
+    assert!(!lowered.refine.refine_num_landtypes);
+    let layer = lowered
+        .data_layers
+        .layers
+        .iter()
+        .find(|layer| matches!(layer.role, earthmesh_core::DataLayerRole::LandType))
+        .expect("LandType layer");
+    assert!(layer.enabled);
+    assert!(!layer.categorical_enabled);
+}
+
+#[test]
 fn threshold_master_switch_keeps_landtype_available_without_calculated_refinement() {
     let mut project = sample();
     project.refinement.threshold_enabled = false;

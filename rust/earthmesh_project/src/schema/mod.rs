@@ -271,11 +271,12 @@ pub struct ProjectDataLayer {
 /// Optional mean/std criterion override for one continuous threshold data source.
 ///
 /// Continuous criterion ids are the source field stem plus `_mean` or `_std`
-/// (for example `lai_mean`, `lai_std`, `k_s_mean`). The categorical LandType
-/// criterion uses the single id `landcover`. Source paths remain owned by the
-/// matching [`ProjectDataLayer`]. Omitted continuous entries retain legacy
-/// mean+std behavior; omitted `landcover` is disabled unless the legacy
-/// LandType layer explicitly supplies `threshold_value`.
+/// (for example `lai_mean`, `lai_std`, `k_s_mean`). LandType-derived criteria
+/// use `landcover` for class count and `sea_ratio` for minimum minority share
+/// (fraction, default 0.05). Source paths remain owned by the matching
+/// [`ProjectDataLayer`]. Omitted continuous entries retain legacy mean+std
+/// behavior; omitted LandType-derived criteria are disabled unless `landcover`
+/// uses the legacy LandType `threshold_value` fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdCriterionConfig {
