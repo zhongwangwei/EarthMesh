@@ -336,8 +336,7 @@ fn stride_samples_across_the_full_cell_order() {
         mesh.m_lon.push(lon + 0.13);
         mesh.m_lat.push(20.13);
         let first = cell * 3 + 1;
-        mesh.m_to_w
-            .extend([first as i32, first as i32 + 1, first as i32 + 2]);
+        mesh.m_to_w.extend([first, first + 1, first + 2]);
     }
 
     let (json, report) = try_gridfile_cell_polygons_geojson_strided_with_report(
