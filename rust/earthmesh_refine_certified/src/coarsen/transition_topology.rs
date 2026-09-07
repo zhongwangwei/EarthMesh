@@ -10,7 +10,7 @@ use crate::mother_grid::{MotherGrid, TriangleAddress, VertexAddress};
 use earthmesh_mesh::{
     orientation_on_sphere, MeshState, RetirementPostconditionOutcome, RetirementSearchOutcome, Sign,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransitionTopologyLimits {
@@ -793,10 +793,10 @@ fn solve_retirement_family(
         });
     }
     let fixed_sources = fixed_boundary_sources(&boundary);
-    let eligible = retirement_vertices(&base_hit.mesh, &boundary, transition);
+    let eligible = retirement_candidates(&base_hit.mesh, &boundary, transition);
     let mut offset = 0usize;
-    for vertex in eligible {
-        let block = retirement_block_size(mesh_degree(&base_hit.mesh.mesh, vertex)?)?;
+    for (vertex, degree) in eligible {
+        let block = retirement_block_size(degree)?;
         let local_start = start_index.saturating_sub(offset);
         if local_start >= block {
             offset += block;
@@ -1033,19 +1033,11 @@ fn compact_triangle_to_source(
     ])
 }
 
-fn mesh_degree(mesh: &MeshState, vertex: usize) -> Option<usize> {
-    mesh.is_vertex_live(vertex).then(|| {
-        mesh.active_triangle_slots()
-            .filter(|&face| mesh.triangles()[face].contains(&vertex))
-            .count()
-    })
-}
-
-fn retirement_vertices(
+fn retirement_candidates(
     mesh: &HierarchyLeafMesh,
     boundary: &TransitionBoundary,
     transition: &BTreeSet<TriangleAddress>,
-) -> Vec<usize> {
+) -> Vec<(usize, usize)> {
     let blocked = boundary
         .fine_outer_cycles
         .iter()
@@ -1054,33 +1046,43 @@ fn retirement_vertices(
         .chain(boundary.seam.iter().copied())
         .chain(boundary.pentagon.iter().copied())
         .collect::<BTreeSet<_>>();
+    // Collect degree and first incident face once, as in hard_gate. Scanning all
+    // faces separately for each vertex makes global candidate selection quadratic.
+    let mut incidence = vec![(0usize, 0usize); mesh.mesh.vertices().len()];
+    for face in mesh.mesh.active_triangle_slots() {
+        for vertex in mesh.mesh.triangles()[face] {
+            let (degree, seed) = &mut incidence[vertex];
+            *degree += 1;
+            if *seed == 0 {
+                *seed = face;
+            }
+        }
+    }
     let mut vertices = mesh
         .mesh
         .active_vertex_slots()
         .filter_map(|vertex| {
             let source = mesh.source_vertex_slots.get(vertex).copied().flatten()?;
+            let (degree, seed) = incidence[vertex];
             (!blocked.contains(&source)
-                && mesh_degree(&mesh.mesh, vertex).is_some_and(|degree| (3..=7).contains(&degree))
-                && retirement_fan_is_internal(mesh, vertex, transition))
-            .then_some((source, vertex))
+                && (3..=7).contains(&degree)
+                && retirement_fan_is_internal(mesh, vertex, seed, transition))
+            .then_some((source, vertex, degree))
         })
         .collect::<Vec<_>>();
     vertices.sort_unstable();
-    vertices.into_iter().map(|(_, vertex)| vertex).collect()
+    vertices
+        .into_iter()
+        .map(|(_, vertex, degree)| (vertex, degree))
+        .collect()
 }
 
 fn retirement_fan_is_internal(
     mesh: &HierarchyLeafMesh,
     vertex: usize,
+    seed: usize,
     transition: &BTreeSet<TriangleAddress>,
 ) -> bool {
-    let Some(seed) = mesh
-        .mesh
-        .active_triangle_slots()
-        .find(|&face| mesh.mesh.triangles()[face].contains(&vertex))
-    else {
-        return false;
-    };
     let Ok(fan) = mesh.mesh.triangle_fan_from(vertex, seed) else {
         return false;
     };
@@ -2101,10 +2103,12 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
     if state.open_edge_count() != 0 {
         return Err(format!("mesh has {} open edges", state.open_edge_count()));
     }
-    let mut edges = BTreeSet::new();
+    // These sets are only queried for membership/count, never traversed;
+    // triangle-order validation and first-error reporting remain deterministic.
+    let mut edges = HashSet::new();
     let mut degrees = vec![0usize; state.vertices().len()];
     let mut seeds = vec![0usize; state.vertices().len()];
-    let mut triangles = BTreeSet::new();
+    let mut triangles = HashSet::new();
     for face in state.active_triangle_slots() {
         let tri = state.triangles()[face];
         if orientation_on_sphere(
@@ -2178,6 +2182,206 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
 mod tests {
     use super::*;
     use crate::coarsen::ElasticPatch;
+
+    #[test]
+    fn hard_gate_preserves_topology_checks_and_first_failure() {
+        let source = MotherGrid::generate(2).unwrap();
+        let with_triangles = |triangles: Vec<[usize; 3]>| HierarchyLeafMesh {
+            triangle_addresses: vec![None; triangles.len()],
+            source_vertex_slots: (0..source.mesh.vertices().len()).map(Some).collect(),
+            mesh: MeshState::from_parts(source.mesh.vertices().to_vec(), triangles).unwrap(),
+        };
+        let valid = with_triangles(source.mesh.triangles().to_vec());
+        assert_eq!(hard_gate(&source, &valid), Ok(()));
+
+        let mut open = source.mesh.triangles().to_vec();
+        open.pop();
+        assert_eq!(
+            hard_gate(&source, &with_triangles(open)),
+            Err("mesh has 3 open edges".into())
+        );
+
+        let triangle = source.mesh.triangles()[2];
+        let mut reversed = source.mesh.triangles().to_vec();
+        reversed[2].swap(0, 1);
+        assert_eq!(
+            hard_gate(&source, &with_triangles(reversed)),
+            Err("triangle 2 is not positively oriented".into())
+        );
+
+        // Each pair closes its own three edges. The first face-level error
+        // must win, independent of how membership sets are implemented.
+        let mut other = source
+            .mesh
+            .active_triangle_slots()
+            .map(|face| source.mesh.triangles()[face])
+            .find(|candidate| candidate.iter().all(|site| !triangle.contains(site)))
+            .unwrap();
+        other.swap(0, 1);
+        let mut canonical = triangle;
+        canonical.sort_unstable();
+        assert_eq!(
+            hard_gate(
+                &source,
+                &with_triangles(vec![[1; 3], [1; 3], triangle, triangle, other, other])
+            ),
+            Err(format!("duplicate triangle {canonical:?}"))
+        );
+        assert_eq!(
+            hard_gate(
+                &source,
+                &with_triangles(vec![[1; 3], [1; 3], other, other, triangle, triangle])
+            ),
+            Err("triangle 2 is not positively oriented".into())
+        );
+    }
+
+    // Reference the original full scans, independently of the optimized path.
+    fn scan_retirement_candidates(
+        mesh: &HierarchyLeafMesh,
+        boundary: &TransitionBoundary,
+        transition: &BTreeSet<TriangleAddress>,
+    ) -> Vec<(usize, usize)> {
+        let blocked = boundary
+            .fine_outer_cycles
+            .iter()
+            .chain(&boundary.coarse_inner_cycles)
+            .flat_map(|cycle| cycle.iter().copied())
+            .chain(boundary.seam.iter().copied())
+            .chain(boundary.pentagon.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let mut candidates = Vec::new();
+        for vertex in mesh.mesh.active_vertex_slots() {
+            let Some(source) = mesh.source_vertex_slots.get(vertex).copied().flatten() else {
+                continue;
+            };
+            if blocked.contains(&source) {
+                continue;
+            }
+            let degree = mesh
+                .mesh
+                .active_triangle_slots()
+                .filter(|&face| mesh.mesh.triangles()[face].contains(&vertex))
+                .count();
+            if !(3..=7).contains(&degree) {
+                continue;
+            }
+            let seed = mesh
+                .mesh
+                .active_triangle_slots()
+                .find(|&face| mesh.mesh.triangles()[face].contains(&vertex))
+                .unwrap();
+            let Ok(fan) = mesh.mesh.triangle_fan_from(vertex, seed) else {
+                continue;
+            };
+            if fan.iter().all(
+                |&face| match mesh.triangle_addresses.get(face).copied().flatten() {
+                    None => true,
+                    Some(address) => address
+                        .parent_2_to_1()
+                        .is_some_and(|parent| transition.contains(&parent)),
+                },
+            ) {
+                candidates.push((source, vertex, degree));
+            }
+        }
+        candidates.sort_unstable();
+        candidates
+            .into_iter()
+            .map(|(_, vertex, degree)| (vertex, degree))
+            .collect()
+    }
+
+    fn assert_retirement_candidates_match_scan(
+        mesh: &HierarchyLeafMesh,
+        boundary: &TransitionBoundary,
+        transition: &BTreeSet<TriangleAddress>,
+    ) {
+        let actual = retirement_candidates(mesh, boundary, transition);
+        assert_eq!(
+            actual,
+            scan_retirement_candidates(mesh, boundary, transition)
+        );
+    }
+
+    #[test]
+    fn retirement_candidates_preserve_scan_semantics() {
+        let (_, transition, _, hit, boundary) = retirement_family_fixture();
+        assert!(!scan_retirement_candidates(&hit.mesh, &boundary, &transition).is_empty());
+        assert_retirement_candidates_match_scan(&hit.mesh, &boundary, &transition);
+        assert_retirement_candidates_match_scan(&hit.mesh, &boundary, &BTreeSet::new());
+
+        let mut mesh = hit.mesh;
+        // Custom faces are eligible even without a hierarchy transition address.
+        mesh.triangle_addresses.fill(None);
+        // Sorting and boundary protection use source IDs, not compact slots.
+        let slots = mesh.source_vertex_slots.len();
+        for (vertex, source) in mesh.source_vertex_slots.iter_mut().enumerate() {
+            *source = Some(slots - vertex);
+        }
+        let candidates = scan_retirement_candidates(&mesh, &boundary, &transition);
+        assert!(candidates.len() > 5);
+        assert!(candidates.windows(2).all(|pair| pair[0].0 > pair[1].0));
+        let sources = candidates
+            .iter()
+            .take(5)
+            .map(|&(vertex, _)| mesh.source_vertex_slots[vertex].unwrap())
+            .collect::<Vec<_>>();
+        let blocked = TransitionBoundary {
+            fine_outer_cycles: vec![vec![sources[0]]],
+            coarse_inner_cycles: vec![vec![sources[1]]],
+            seam: vec![sources[2]],
+            pentagon: vec![sources[3]],
+            ..TransitionBoundary::default()
+        };
+        mesh.source_vertex_slots[candidates[4].0] = None;
+        assert_retirement_candidates_match_scan(&mesh, &blocked, &transition);
+        let filtered = scan_retirement_candidates(&mesh, &blocked, &transition);
+        assert_eq!(filtered.len(), candidates.len() - 5);
+        mesh.source_vertex_slots.truncate(slots / 2);
+        assert_retirement_candidates_match_scan(&mesh, &blocked, &transition);
+
+        // Missing incident faces create open fans; an unused vertex has degree 0.
+        let mut vertices = mesh.mesh.vertices().to_vec();
+        vertices.push(vertices[2]);
+        let mut triangles = mesh.mesh.triangles().to_vec();
+        triangles.pop();
+        mesh.mesh = MeshState::from_parts(vertices, triangles).unwrap();
+        mesh.source_vertex_slots = (0..mesh.mesh.vertices().len()).map(Some).collect();
+        assert_retirement_candidates_match_scan(&mesh, &boundary, &transition);
+    }
+
+    #[test]
+    #[ignore = "manual release-mode timing of candidate enumeration, not full mesh construction"]
+    fn retirement_candidate_selection_scaling() {
+        for n in [16, 32, 64] {
+            let source = MotherGrid::generate(n).unwrap();
+            let source_vertex_slots = (0..source.mesh.vertices().len()).map(Some).collect();
+            let mesh = HierarchyLeafMesh {
+                mesh: source.mesh,
+                triangle_addresses: source.triangle_addresses,
+                source_vertex_slots,
+            };
+            let boundary = TransitionBoundary::default();
+            let transition = mesh
+                .triangle_addresses
+                .iter()
+                .flatten()
+                .filter_map(|address| address.parent_2_to_1())
+                .collect();
+            let start = std::time::Instant::now();
+            let expected = scan_retirement_candidates(&mesh, &boundary, &transition);
+            let scan = start.elapsed();
+            let start = std::time::Instant::now();
+            let actual = retirement_candidates(&mesh, &boundary, &transition);
+            let elapsed = start.elapsed();
+            assert_eq!(actual, expected);
+            eprintln!("retirement_candidates n={n} vertices={} triangles={} scan_ms={:.3} candidate_ms={:.3} speedup={:.1}x",
+                mesh.mesh.vertex_count(), mesh.mesh.triangle_count(),
+                scan.as_secs_f64() * 1000., elapsed.as_secs_f64() * 1000.,
+                scan.as_secs_f64() / elapsed.as_secs_f64());
+        }
+    }
 
     #[test]
     fn finite_polygon_enumeration_has_the_catalan_counts() {
@@ -2426,6 +2630,7 @@ mod tests {
             .all(|parent| transition.contains(parent)));
         ElasticPatch::from_transition(&trial).unwrap();
         hard_gate(&source, &trial.mesh).unwrap();
+        assert_retirement_candidates_match_scan(&trial.mesh, &boundary, &transition);
 
         assert!(matches!(
             solve_retirement_family(
@@ -2466,9 +2671,8 @@ mod tests {
         let (source, transition, _, hit, boundary) = retirement_family_fixture();
         let core = BTreeSet::new();
         let base_states = 7;
-        let first_vertex = retirement_vertices(&hit.mesh, &boundary, &transition)[0];
-        let block =
-            retirement_block_size(mesh_degree(&hit.mesh.mesh, first_vertex).unwrap()).unwrap();
+        let (_, degree) = retirement_candidates(&hit.mesh, &boundary, &transition)[0];
+        let block = retirement_block_size(degree).unwrap();
         let bad_leaf_set = HierarchyLeafSet {
             leaves: BTreeSet::new(),
         };
