@@ -5,7 +5,7 @@ use crate::{
     ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementRecipe, RegionShape,
     ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ThresholdStatistic, LANDCOVER_CRITERION_ID,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION, SEA_RATIO_CRITERION_ID,
 };
 use std::collections::HashSet;
 
@@ -147,16 +147,16 @@ impl ProjectConfig {
                 if matches!(criterion.value, Some(value) if value <= 0.0) {
                     return Err("landcover class threshold must be > 0".to_string());
                 }
-                if !self
-                    .data_layers
-                    .iter()
-                    .any(|layer| layer.role == ProjectLayerRole::LandType)
-                {
-                    return Err(
-                        "threshold criterion 'landcover' has no matching LandType data source"
-                            .to_string(),
-                    );
+                self.validate_landtype_criterion_source(LANDCOVER_CRITERION_ID)?;
+                continue;
+            }
+            if criterion.id == SEA_RATIO_CRITERION_ID {
+                if let Some(value) = criterion.value {
+                    if !(0.0..0.5).contains(&value) {
+                        return Err("sea_ratio threshold must be >= 0 and < 0.5".to_string());
+                    }
                 }
+                self.validate_landtype_criterion_source(SEA_RATIO_CRITERION_ID)?;
                 continue;
             }
             let spec = threshold_criterion_by_id(&criterion.id)
@@ -174,6 +174,20 @@ impl ProjectConfig {
             }
         }
         Ok(())
+    }
+
+    fn validate_landtype_criterion_source(&self, id: &str) -> Result<(), String> {
+        if self
+            .data_layers
+            .iter()
+            .any(|layer| layer.role == ProjectLayerRole::LandType)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "threshold criterion '{id}' has no matching LandType data source"
+            ))
+        }
     }
 
     fn validate_landtype_requirements(&self) -> Result<(), String> {
@@ -278,9 +292,13 @@ impl ProjectConfig {
                     return false;
                 }
                 match layer.role {
-                    ProjectLayerRole::LandType => self
-                        .effective_landcover_criterion()
-                        .is_some_and(|criterion| criterion.enabled),
+                    ProjectLayerRole::LandType => {
+                        self.effective_landcover_criterion()
+                            .is_some_and(|criterion| criterion.enabled)
+                            || self
+                                .effective_sea_ratio_criterion()
+                                .is_some_and(|criterion| criterion.enabled)
+                    }
                     ProjectLayerRole::Threshold(field) => {
                         self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
                             || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)

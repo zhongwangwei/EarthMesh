@@ -1,9 +1,7 @@
 use crate::fingerprint::mesh_fingerprint;
 use crate::mother_grid::{MotherGrid, TriangleAddress};
 use earthmesh_boundary::SphericalCap;
-use earthmesh_geometry::{
-    spherical_convex_overlap_fraction, try_spherical_polygon_excess, Point, SphericalAreaBranch,
-};
+use earthmesh_geometry::{Point, PreparedSphericalPolygon};
 use earthmesh_mesh::{spherical_triangle_area_unit, MeshState};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -63,6 +61,15 @@ impl RemapCertificate {
 impl ConservativeRemap {
     pub fn rows(&self) -> &[RemapRow] {
         &self.rows
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_rows_for_test(rows: Vec<RemapRow>) -> Self {
+        Self {
+            rows,
+            coverage_error: 0.0,
+            target_fingerprint: None,
+        }
     }
 
     pub fn identity(cell_count: usize) -> Self {
@@ -132,7 +139,7 @@ impl ConservativeRemap {
         if source_cells.is_empty() || target_cells.is_empty() {
             return Err("spherical remap needs non-empty source and target cells".into());
         }
-        let to_points = |cells: &[Vec<(f64, f64)>]| -> Result<Vec<Vec<Point>>, String> {
+        let prepare = |cells: &[Vec<(f64, f64)>]| -> Result<Vec<_>, String> {
             cells
                 .iter()
                 .enumerate()
@@ -141,27 +148,31 @@ impl ConservativeRemap {
                         .iter()
                         .map(|&(lon, lat)| Point::new(lon, lat))
                         .collect::<Vec<_>>();
-                    try_spherical_polygon_excess(&points, SphericalAreaBranch::Minor)
+                    let polygon = PreparedSphericalPolygon::new(&points)
                         .map_err(|error| format!("invalid spherical cell {cell}: {error}"))?;
-                    Ok(points)
+                    Ok((points, polygon))
                 })
                 .collect()
         };
-        let sources = to_points(source_cells)?;
-        let targets = to_points(target_cells)?;
-        let index = SphericalCapIndex::new(&sources)?;
+        let sources = prepare(source_cells)?;
+        let targets = prepare(target_cells)?;
+        let (source_rings, sources): (Vec<_>, Vec<_>) = sources.into_iter().unzip();
+        let index = SphericalCapIndex::new(&source_rings)?;
+        drop(source_rings);
         let rows = targets
-            .par_iter()
+            // Consume each target after its row: its lazily prepared clipping
+            // planes need not accumulate across the entire global mesh.
+            .into_par_iter()
             .enumerate()
-            .map(|(target, target_ring)| {
-                let target_cap = SphericalCap::for_rings(std::slice::from_ref(target_ring))
+            .map(|(target, (target_ring, polygon))| {
+                let target_cap = SphericalCap::for_rings(std::slice::from_ref(&target_ring))
                     .ok_or_else(|| format!("target cell {target} has no spherical cap"))?;
                 let mut overlaps = Vec::new();
                 for source in index.candidates(target_cap) {
                     if !target_cap.overlaps(index.caps[source]) {
                         continue;
                     }
-                    let fraction = spherical_convex_overlap_fraction(target_ring, &sources[source])
+                    let fraction = polygon.overlap_fraction(&sources[source])
                         .map_err(|error| {
                             format!(
                                 "source {source} {:?} and target {target} {:?} overlap failed: {error}",
@@ -274,47 +285,53 @@ impl ConservativeRemap {
         certificate
     }
 
-    fn certify_with_lineage(&self, valid_lineage: impl Fn(&RemapRow) -> bool) -> RemapCertificate {
+    fn certify_with_lineage(
+        &self,
+        valid_lineage: impl Fn(&RemapRow) -> bool + Sync,
+    ) -> RemapCertificate {
         let closure_tolerance = (128.0
             * f64::EPSILON
             * self.rows.len().max(
                 self.rows
-                    .iter()
+                    .par_iter()
                     .map(|row| row.sources.len())
                     .max()
                     .unwrap_or(1),
             ) as f64)
             .max(1.0e-11);
-        let mut negative_weights = 0;
-        let mut bad_row_sums = 0;
-        let mut bad_lineage_rows = 0;
-        let mut constant_closure_error = 0.0_f64;
-        for row in &self.rows {
-            if !valid_lineage(row) {
-                bad_lineage_rows += 1;
-            }
-            let sum: f64 = row
-                .sources
-                .iter()
-                .map(|&(_, weight)| {
-                    if weight < 0.0 {
-                        negative_weights += 1;
-                    }
-                    weight
-                })
-                .sum();
-            let error = (sum - 1.0).abs();
-            constant_closure_error = constant_closure_error.max(error);
-            if error > closure_tolerance {
-                bad_row_sums += 1;
-            }
-        }
+        let stats = self
+            .rows
+            .par_iter()
+            .map(|row| {
+                let mut negative_weights = 0;
+                let sum: f64 = row
+                    .sources
+                    .iter()
+                    .map(|&(_, weight)| {
+                        if weight < 0.0 {
+                            negative_weights += 1;
+                        }
+                        weight
+                    })
+                    .sum();
+                let error = (sum - 1.0).abs();
+                (
+                    negative_weights,
+                    usize::from(error > closure_tolerance),
+                    usize::from(!valid_lineage(row)),
+                    error,
+                )
+            })
+            .reduce(
+                || (0, 0, 0, 0.0_f64),
+                |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3.max(b.3)),
+            );
         RemapCertificate {
             rows: self.rows.len(),
-            negative_weights,
-            bad_row_sums,
-            bad_lineage_rows,
-            constant_closure_error,
+            negative_weights: stats.0,
+            bad_row_sums: stats.1,
+            bad_lineage_rows: stats.2,
+            constant_closure_error: stats.3,
             global_area_closure_error: 0.0,
             closure_tolerance,
             target_fingerprint: self.target_fingerprint,
@@ -515,6 +532,156 @@ fn active_faces(grid: &MotherGrid) -> Option<Vec<(usize, TriangleAddress, f64)>>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use earthmesh_geometry::{try_spherical_polygon_excess, SphericalAreaBranch};
+
+    // Original remap data flow: prepare neither side across overlap pairs.
+    fn scalar_overlap_reference(
+        source_cells: &[Vec<(f64, f64)>],
+        target_cells: &[Vec<(f64, f64)>],
+    ) -> Result<ConservativeRemap, String> {
+        let points = |cells: &[Vec<(f64, f64)>]| -> Result<Vec<Vec<Point>>, String> {
+            cells
+                .iter()
+                .enumerate()
+                .map(|(cell, ring)| {
+                    let points = ring
+                        .iter()
+                        .map(|&(lon, lat)| Point::new(lon, lat))
+                        .collect::<Vec<_>>();
+                    try_spherical_polygon_excess(&points, SphericalAreaBranch::Minor)
+                        .map_err(|error| format!("invalid spherical cell {cell}: {error}"))?;
+                    Ok(points)
+                })
+                .collect()
+        };
+        let sources = points(source_cells)?;
+        let targets = points(target_cells)?;
+        let index = SphericalCapIndex::new(&sources)?;
+        let rows = targets
+            .par_iter()
+            .enumerate()
+            .map(|(target, ring)| {
+                let cap = SphericalCap::for_rings(std::slice::from_ref(ring)).unwrap();
+                let mut overlaps = Vec::new();
+                for source in index.candidates(cap) {
+                    if !cap.overlaps(index.caps[source]) {
+                        continue;
+                    }
+                    let weight = earthmesh_geometry::spherical_convex_overlap_fraction(
+                        ring,
+                        &sources[source],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if weight > 1.0e-14 {
+                        overlaps.push((source, weight));
+                    }
+                }
+                let covered = compensated_sum(overlaps.iter().map(|(_, weight)| *weight));
+                if !covered.is_finite() || covered <= 0.0 {
+                    return Err(format!("target cell {target} has no source overlap"));
+                }
+                for (_, weight) in &mut overlaps {
+                    *weight /= covered;
+                }
+                Ok((
+                    RemapRow {
+                        target,
+                        sources: overlaps,
+                    },
+                    (covered - 1.0).abs(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let coverage_error = rows.iter().map(|(_, error)| *error).fold(0.0_f64, f64::max);
+        Ok(ConservativeRemap {
+            rows: rows.into_iter().map(|(row, _)| row).collect(),
+            coverage_error,
+            target_fingerprint: None,
+        })
+    }
+
+    #[test]
+    fn prepared_overlap_preserves_scalar_rows_and_certificates() {
+        let source = MotherGrid::generate(2).unwrap();
+        let target = MotherGrid::generate(3).unwrap();
+        let sources = voronoi_rings(&source.mesh).unwrap();
+        let mut targets = voronoi_rings(&target.mesh).unwrap();
+        for reversed in [false, true] {
+            if reversed {
+                targets.iter_mut().for_each(|ring| ring.reverse());
+            }
+            let expected = scalar_overlap_reference(&sources, &targets).unwrap();
+            for threads in [1, 4] {
+                let actual = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+                    .install(|| ConservativeRemap::spherical_overlap(&sources, &targets))
+                    .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(
+                    actual.certify_spherical_overlap(sources.len(), targets.len()),
+                    expected.certify_spherical_overlap(sources.len(), targets.len())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_overlap_preserves_validation_and_unused_nonconvex_sources() {
+        let valid = vec![(0., 0.), (2., 0.), (2., 2.), (0., 2.)];
+        let concave = vec![(100., 0.), (102., 0.), (101., 0.5), (102., 2.), (100., 2.)];
+        let sources = vec![valid.clone(), concave.clone()];
+        let targets = vec![valid.clone()];
+        assert_eq!(
+            ConservativeRemap::spherical_overlap(&sources, &targets).unwrap(),
+            scalar_overlap_reference(&sources, &targets).unwrap()
+        );
+        assert!(ConservativeRemap::spherical_overlap(&sources, &[concave])
+            .unwrap_err()
+            .contains("changes great-circle half-space"));
+
+        let crossing = vec![(100., 0.), (102., 2.), (100., 2.), (102., 0.)];
+        let invalid_sources = vec![valid.clone(), crossing];
+        assert_eq!(
+            ConservativeRemap::spherical_overlap(&invalid_sources, &targets).unwrap_err(),
+            scalar_overlap_reference(&invalid_sources, &targets).unwrap_err()
+        );
+        assert!(ConservativeRemap::spherical_overlap(&[], &targets).is_err());
+        assert!(ConservativeRemap::spherical_overlap(&sources, &[]).is_err());
+        let mut invalid = valid;
+        invalid[0].0 = f64::NAN;
+        assert!(ConservativeRemap::spherical_overlap(&sources, &[invalid])
+            .unwrap_err()
+            .contains("invalid spherical cell 0"));
+    }
+
+    #[test]
+    #[ignore = "manual release timing including input preparation, index and weight normalization"]
+    fn prepared_overlap_benchmark() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        for n in [8, 16] {
+            let sources = voronoi_rings(&MotherGrid::generate(n).unwrap().mesh).unwrap();
+            let targets = voronoi_rings(&MotherGrid::generate(n + n / 2).unwrap().mesh).unwrap();
+            let start = std::time::Instant::now();
+            let expected = pool
+                .install(|| scalar_overlap_reference(&sources, &targets))
+                .unwrap();
+            let scalar = start.elapsed();
+            let start = std::time::Instant::now();
+            let actual = pool
+                .install(|| ConservativeRemap::spherical_overlap(&sources, &targets))
+                .unwrap();
+            let prepared = start.elapsed();
+            assert_eq!(actual, expected);
+            eprintln!("prepared_remap sources={} targets={} scalar_ms={:.3} prepared_ms={:.3} speedup={:.2}x",
+                sources.len(), targets.len(), scalar.as_secs_f64()*1000., prepared.as_secs_f64()*1000.,
+                scalar.as_secs_f64()/prepared.as_secs_f64());
+        }
+    }
 
     #[test]
     fn voronoi_ring_order_matches_the_scanned_cell_path() {
@@ -536,6 +703,99 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(rings[cell], expected);
         }
+    }
+
+    #[test]
+    fn remap_certification_is_thread_count_independent() {
+        fn serial_certify(
+            remap: &ConservativeRemap,
+            valid_lineage: impl Fn(&RemapRow) -> bool,
+        ) -> RemapCertificate {
+            let closure_tolerance = (128.0
+                * f64::EPSILON
+                * remap.rows.len().max(
+                    remap
+                        .rows
+                        .iter()
+                        .map(|row| row.sources.len())
+                        .max()
+                        .unwrap_or(1),
+                ) as f64)
+                .max(1.0e-11);
+            let mut negative_weights = 0;
+            let mut bad_row_sums = 0;
+            let mut bad_lineage_rows = 0;
+            let mut constant_closure_error = 0.0_f64;
+            for row in &remap.rows {
+                if !valid_lineage(row) {
+                    bad_lineage_rows += 1;
+                }
+                let sum: f64 = row
+                    .sources
+                    .iter()
+                    .map(|&(_, weight)| {
+                        if weight < 0.0 {
+                            negative_weights += 1;
+                        }
+                        weight
+                    })
+                    .sum();
+                let error = (sum - 1.0).abs();
+                constant_closure_error = constant_closure_error.max(error);
+                if error > closure_tolerance {
+                    bad_row_sums += 1;
+                }
+            }
+            RemapCertificate {
+                rows: remap.rows.len(),
+                negative_weights,
+                bad_row_sums,
+                bad_lineage_rows,
+                constant_closure_error,
+                global_area_closure_error: 0.0,
+                closure_tolerance,
+                target_fingerprint: remap.target_fingerprint,
+            }
+        }
+
+        let remap = ConservativeRemap {
+            rows: vec![
+                RemapRow {
+                    target: 0,
+                    sources: vec![(0, 0.25), (1, 0.75)],
+                },
+                RemapRow {
+                    target: 1,
+                    sources: vec![(2, 0.4), (3, 0.4)],
+                },
+                RemapRow {
+                    target: 6,
+                    sources: vec![(4, 1.0)],
+                },
+                RemapRow {
+                    target: 3,
+                    sources: vec![(0, -0.5), (1, 1.5)],
+                },
+            ],
+            coverage_error: 0.0,
+            target_fingerprint: Some(7),
+        };
+        let valid_lineage =
+            |row: &RemapRow| row.target < 4 && row.sources.iter().all(|&(source, _)| source < 4);
+        let expected = serial_certify(&remap, valid_lineage);
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| remap.certify_with_lineage(valid_lineage));
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| remap.certify_with_lineage(valid_lineage));
+
+        assert_eq!(one_thread, expected);
+        assert_eq!(four_threads, expected);
     }
 
     #[test]

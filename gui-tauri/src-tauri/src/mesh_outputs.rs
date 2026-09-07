@@ -202,6 +202,8 @@ pub(crate) fn mesh_cell_polygons(
     kind: String,
     start_cell: Option<u32>,
     max_cells: Option<u32>,
+    cell_stride: Option<u32>,
+    bbox: Option<[f64; 4]>,
 ) -> Result<String, String> {
     let kind = checked_mesh_kind(Some(&kind))?;
     let max_cells = map_preview_cell_limit(max_cells);
@@ -218,6 +220,12 @@ pub(crate) fn mesh_cell_polygons(
         cmd.arg("--start-cell")
             .arg(start_cell.unwrap_or(0).to_string());
         cmd.arg("--max-cells").arg(max_cells.to_string());
+        cmd.arg("--cell-stride")
+            .arg(cell_stride.unwrap_or(1).max(1).to_string());
+        if let Some([west, south, east, north]) = bbox {
+            cmd.arg("--bbox")
+                .args([west, south, east, north].map(|value| value.to_string()));
+        }
         let res = cmd
             .output()
             .map_err(|e| format!("run --gridfile-cell-polygons ({bin}): {e}"))?;

@@ -135,13 +135,34 @@ check(
 log("continuous thresholds expose independent mean/std criteria over one source path");
 
 check(
-  html.includes("const state = criterionStates.landcover;") &&
-    html.includes('const criterion = cat.find((candidate) => candidate.id === "landcover");') &&
-    html.includes("sourceEnabled: l.enabled, enabled: state.enabled, value: state.value") &&
+  html.includes('if (l.role_kind === "landcover" || l.role_kind === "threshold") {') &&
+    html.includes("criterionStates[criterion.id].source_id === l.id") &&
+    html.includes("isCriterion: true, sourceEnabled: l.enabled") &&
     !html.includes('if (l.role_kind === "landcover") return true;'),
   "landcover refinement must be an independent categorical criterion, not the mask source toggle",
 );
 log("landcover criterion is independent from the mask source toggle");
+
+{
+  // Execute the actual source-to-row mapping, including custom LandType ids.
+  const body = section(html, /const refinementCriteria = sum.layers.flatMap\(\(l\) => \{([\s\S]*?)\n    \}\);/, "refinement row mapping");
+  const rowsFor = new Function("sum", "cat", "criterionStates", "hydroCriteria", `return sum.layers.flatMap((l) => {${body}\n});`);
+  const cat = [{ id: "landcover" }, { id: "sea_ratio" }, { id: "lai_mean" }];
+  const criterionStates = {
+    landcover: { source_id: "custom_mask", enabled: false, value: 12 },
+    sea_ratio: { source_id: "custom_mask", enabled: true, value: 0.05 },
+    lai_mean: { source_id: "lai", enabled: true, value: 1 },
+  };
+  const source = { id: "custom_mask", role_kind: "landcover", path: "/data/mask.nc", enabled: true };
+  const sum = { layers: [{ ...source, id: "unused_mask", enabled: false }, source, { id: "merit", role_kind: "merit" }] };
+  const rows = rowsFor(sum, cat, criterionStates, [{ id: "hydroCoastDistance" }]);
+  check(JSON.stringify(rows.map((row) => row.id)) === JSON.stringify(["landcover", "sea_ratio", "hydroCoastDistance"]), "LandType must render both criteria once and keep MERIT separate");
+  check(!rows[0].enabled && rows[1].enabled && rows[1].value === 0.05 && rows[1].path === source.path, "land/sea criterion must preserve its independent state on the shared source");
+  source.enabled = false;
+  check(rowsFor(sum, cat, criterionStates, [])[1].sourceEnabled === false, "disabling LandType must disable availability, not the sea-ratio criterion state");
+  check(html.includes('"海陆分布"') && html.includes('"aria-checked", String(on)') && html.includes('tog.disabled = !hasData || !thresholdRefine.enabled;'), "land/sea row must be localized and keyboard accessible");
+  log("land/sea and landcover rows share one source with independent state");
+}
 
 check(
   html.includes('id: "hydroRiverWidth"') &&
@@ -152,9 +173,7 @@ check(
     html.includes('physical_process: z ? "上游汇水面积 ≥"') &&
     html.includes('physical_process: z ? "距海岸线 ≤"') &&
     html.includes("const refinementCriteria = sum.layers.flatMap") &&
-    html.includes('if (l.role_kind === "landcover") {') &&
-    html.includes("const state = criterionStates.landcover;") &&
-    html.includes('if (l.role_kind === "threshold") {') &&
+    html.includes('if (l.role_kind === "landcover" || l.role_kind === "threshold") {') &&
     html.includes('if (l.role_kind === "merit") return hydroCriteria;') &&
     html.includes("refinementCriteria.forEach") &&
     !html.includes("[...crits, ...hydroCriteria]") &&
@@ -244,6 +263,21 @@ check(
   "the selected algorithm must be the only one whose complete production controls are rendered and saved",
 );
 log("algorithm-specific parameter panels are conditional and wired to Rust");
+
+check(
+  html.includes('certified_defaults:{mode:"reverse_coarsening"') &&
+    html.includes('angle_contract:"domain_quality_38_to_82_v1"') &&
+    html.includes('function meshPreviewStride(totalCells, bbox)') &&
+    html.includes('cellStride:stride, bbox') &&
+    html.includes('map.on("moveend",()=>scheduleMeshViewportPreview(map))') &&
+    html.includes('scheduleMeshViewportPreview = function (map, force=false)') &&
+    html.includes('if (previewChanged && _meshPreview) scheduleMeshViewportPreview(map, true)') &&
+    html.indexOf('const openButton = (label, path) =>') < html.indexOf('function renderCertifiedRun(bundle)') &&
+    (html.match(/const openButton =/g) || []).length === 1 &&
+    !html.includes('function loadCompleteMeshPolygons('),
+  "CMRC must default to adaptive reverse coarsening and large meshes must use full-extent viewport LOD",
+);
+log("CMRC defaults to reverse coarsening and large meshes use viewport LOD");
 
 {
   const canonical = section(html, /const canonicalMethodCOptions = `([\s\S]*?)`;\n    const leppOptions/, "Canonical Method-C options");
@@ -339,10 +373,12 @@ log("globe rendering preserves raw GeoJSON identities and updates existing MapLi
 
 check(
   html.includes('const ALL_MAP_STATE=["mesh","domain","coastal","settings"]') &&
-    html.includes('if(selected.has("mesh")) payload.mesh=_meshGeojson') &&
+    html.includes('payload.meshPreview=_meshPreview&&{gridfile:_meshPreview.gridfile') &&
+    html.includes('payload.mesh=_meshPreview?null:_meshGeojson') &&
     html.includes('if ("mesh" in payload) _meshGeojson = payload.mesh') &&
+    html.includes('if ("meshPreview" in payload) _meshPreview = payload.meshPreview') &&
     html.includes('syncMapWindow(["settings"])') &&
-    html.includes('syncMapWindow(["mesh","coastal"],true)') &&
+    html.includes('syncMapWindow(["mesh","coastal"],!!doFit)') &&
     html.includes('publishMapState(["settings"],false)'),
   "map-window IPC must patch only changed fields instead of repeatedly cloning all GeoJSON",
 );
@@ -971,7 +1007,8 @@ log("GUI README documents quality view selection");
       body.includes("preferenceText(regression.preferred)") &&
       body.includes('outcome === "complete"') &&
       body.includes('outcome === "kept"') &&
-      body.includes('invoke("open_path", { path })') &&
+      body.includes("openButton(") &&
+      html.includes('invoke("open_path", { path })') &&
       !body.includes("innerHTML"),
     "AutoRefine decisions must be returned and rendered as safe text",
   );
@@ -1121,7 +1158,7 @@ log("Method-C refinement controls share the engine level cap");
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
   check(
-    body.includes("label.textContent = isCriterion && z") &&
+    body.includes('label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : isCriterion && z') &&
       body.includes('help.textContent = (c.physical_process || c.help || "") + (c.unit ? " \u00b7 " + c.unit : "");') &&
       !body.includes("const rows = crits.map") &&
       !body.includes("${c.label}") &&

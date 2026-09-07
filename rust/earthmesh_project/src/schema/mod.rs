@@ -271,11 +271,12 @@ pub struct ProjectDataLayer {
 /// Optional mean/std criterion override for one continuous threshold data source.
 ///
 /// Continuous criterion ids are the source field stem plus `_mean` or `_std`
-/// (for example `lai_mean`, `lai_std`, `k_s_mean`). The categorical LandType
-/// criterion uses the single id `landcover`. Source paths remain owned by the
-/// matching [`ProjectDataLayer`]. Omitted continuous entries retain legacy
-/// mean+std behavior; omitted `landcover` is disabled unless the legacy
-/// LandType layer explicitly supplies `threshold_value`.
+/// (for example `lai_mean`, `lai_std`, `k_s_mean`). LandType-derived criteria
+/// use `landcover` for class count and `sea_ratio` for minimum minority share
+/// (fraction, default 0.05). Source paths remain owned by the matching
+/// [`ProjectDataLayer`]. Omitted continuous entries retain legacy mean+std
+/// behavior; omitted LandType-derived criteria are disabled unless `landcover`
+/// uses the legacy LandType `threshold_value` fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThresholdCriterionConfig {
@@ -368,8 +369,8 @@ pub struct RefinementRecipe {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CertifiedMode {
-    #[default]
     SafeMotherOnly,
+    #[default]
     ReverseCoarsening,
 }
 
@@ -385,9 +386,9 @@ pub enum CertifiedDeliveryMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CertifiedAngleContract {
-    #[default]
     #[serde(rename = "legacy_strict_40_to_80")]
     LegacyStrict40To80,
+    #[default]
     #[serde(rename = "domain_quality_38_to_82_v1")]
     DomainQuality38To82V1,
 }
@@ -414,9 +415,9 @@ pub struct CertifiedRefinementRecipe {
 impl Default for CertifiedRefinementRecipe {
     fn default() -> Self {
         Self {
-            mode: CertifiedMode::SafeMotherOnly,
+            mode: CertifiedMode::ReverseCoarsening,
             delivery: CertifiedDeliveryMode::Coupled,
-            angle_contract: CertifiedAngleContract::LegacyStrict40To80,
+            angle_contract: CertifiedAngleContract::DomainQuality38To82V1,
             maximum_level: default_certified_maximum_level(),
             maximum_cells: default_certified_maximum_cells(),
             gradation_rings_per_level: default_certified_gradation_rings_per_level(),

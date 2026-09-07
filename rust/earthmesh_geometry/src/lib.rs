@@ -406,9 +406,7 @@ fn normalize3(vector: [f64; 3]) -> Option<[f64; 3]> {
     (norm > 64.0 * f64::EPSILON).then(|| [vector[0] / norm, vector[1] / norm, vector[2] / norm])
 }
 
-fn convex_clip_planes(
-    vertices: &[[f64; 3]],
-) -> Result<Vec<([f64; 3], f64)>, SphericalPolygonError> {
+fn convex_clip_planes(vertices: &[[f64; 3]]) -> Result<ConvexClipPlanes, SphericalPolygonError> {
     let center = normalize3(vertices.iter().fold([0.0; 3], |sum, point| {
         [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
     }))
@@ -430,6 +428,69 @@ fn convex_clip_planes(
         planes.push((normal, sign));
     }
     Ok(planes)
+}
+
+type ConvexClipPlane = ([f64; 3], f64);
+type ConvexClipPlanes = Vec<ConvexClipPlane>;
+
+/// Spherical polygon with validation and per-ring geometry cached for repeated
+/// overlap tests.
+#[derive(Debug)]
+pub struct PreparedSphericalPolygon {
+    vertices: Vec<[f64; 3]>,
+    minor_area_sr: f64,
+    convex_planes: std::sync::OnceLock<Result<ConvexClipPlanes, SphericalPolygonError>>,
+}
+
+impl PreparedSphericalPolygon {
+    /// Validate untrusted lon/lat vertices and cache the expensive unit-vector
+    /// conversion and minor area.
+    ///
+    /// Convexity errors are stored and reported by intersection/overlap calls,
+    /// matching the scalar API's historical error order.
+    pub fn new(ring: &[Point]) -> Result<Self, SphericalPolygonError> {
+        let vertices = checked_spherical_polygon_units(ring, |point| (point.x, point.y))?;
+        if let Some((first_edge, second_edge)) = ring_has_self_intersection(&vertices) {
+            return Err(SphericalPolygonError::SelfIntersection {
+                first_edge,
+                second_edge,
+            });
+        }
+        let signed_area =
+            normalized_signed_minor_excess(raw_spherical_polygon_excess_from_units(&vertices)?)?;
+        Ok(Self {
+            vertices,
+            minor_area_sr: signed_area.abs(),
+            convex_planes: std::sync::OnceLock::new(),
+        })
+    }
+
+    fn convex_planes(&self) -> Result<&[ConvexClipPlane], SphericalPolygonError> {
+        self.convex_planes
+            .get_or_init(|| convex_clip_planes(&self.vertices))
+            .as_deref()
+            .map_err(|error| *error)
+    }
+
+    /// Fraction of this compact convex cell covered by another prepared convex
+    /// cell.
+    pub fn overlap_fraction(
+        &self,
+        clip: &PreparedSphericalPolygon,
+    ) -> Result<f64, SphericalPolygonError> {
+        let intersection = spherical_convex_intersection_prepared_units(self, clip)?;
+        if intersection.len() < 3 {
+            return Ok(0.0);
+        }
+        let area = match raw_spherical_polygon_excess_from_units(&intersection)
+            .and_then(normalized_signed_minor_excess)
+        {
+            Ok(area) => area.abs(),
+            Err(SphericalPolygonError::DegenerateArea) => return Ok(0.0),
+            Err(error) => return Err(error),
+        };
+        Ok((area / self.minor_area_sr).clamp(0.0, 1.0))
+    }
 }
 
 fn great_circle_boundary_intersection(
@@ -471,17 +532,14 @@ fn deduplicate_spherical_vertices(vertices: &mut Vec<[f64; 3]>) {
     }
 }
 
-fn spherical_convex_intersection_units(
-    subject: &[Point],
-    clip: &[Point],
+fn spherical_convex_intersection_prepared_units(
+    subject: &PreparedSphericalPolygon,
+    clip: &PreparedSphericalPolygon,
 ) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
-    try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
-    try_spherical_polygon_excess(clip, SphericalAreaBranch::Minor)?;
-    let mut output = checked_spherical_polygon_units(subject, |point| (point.x, point.y))?;
-    let subject_planes = convex_clip_planes(&output)?;
-    let clip_vertices = checked_spherical_polygon_units(clip, |point| (point.x, point.y))?;
-    let planes = convex_clip_planes(&clip_vertices)?;
-    for (normal, sign) in planes {
+    let mut output = subject.vertices.clone();
+    let subject_planes = subject.convex_planes()?;
+    let planes = clip.convex_planes()?;
+    for &(normal, sign) in planes {
         let input = output;
         output = Vec::new();
         let Some(mut previous) = input.last().copied() else {
@@ -508,7 +566,7 @@ fn spherical_convex_intersection_units(
             return Ok(Vec::new());
         }
     }
-    for clip_vertex in clip_vertices {
+    for &clip_vertex in &clip.vertices {
         if subject_planes
             .iter()
             .all(|(normal, sign)| sign * dot3(*normal, clip_vertex) >= 0.0)
@@ -526,6 +584,15 @@ fn spherical_convex_intersection_units(
     }
     deduplicate_spherical_vertices(&mut output);
     Ok(output)
+}
+
+fn spherical_convex_intersection_units(
+    subject: &[Point],
+    clip: &[Point],
+) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
+    let subject = PreparedSphericalPolygon::new(subject)?;
+    let clip = PreparedSphericalPolygon::new(clip)?;
+    spherical_convex_intersection_prepared_units(&subject, &clip)
 }
 
 /// Exact great-circle half-space clipping for compact convex spherical cells.
@@ -549,19 +616,9 @@ pub fn spherical_convex_overlap_fraction(
     subject: &[Point],
     clip: &[Point],
 ) -> Result<f64, SphericalPolygonError> {
-    let subject_area = try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
-    let intersection = spherical_convex_intersection_units(subject, clip)?;
-    if intersection.len() < 3 {
-        return Ok(0.0);
-    }
-    let area = match raw_spherical_polygon_excess_from_units(&intersection)
-        .and_then(normalized_signed_minor_excess)
-    {
-        Ok(area) => area.abs(),
-        Err(SphericalPolygonError::DegenerateArea) => return Ok(0.0),
-        Err(error) => return Err(error),
-    };
-    Ok((area / subject_area).clamp(0.0, 1.0))
+    let subject = PreparedSphericalPolygon::new(subject)?;
+    let clip = PreparedSphericalPolygon::new(clip)?;
+    subject.overlap_fraction(&clip)
 }
 
 /// Validated spherical lon/lat polygon area in km².
@@ -1247,9 +1304,10 @@ mod tests {
         polygon_triple_intersection_area_even_odd, polygon_union_area,
         signed_spherical_polygon_excess, spherical_convex_overlap_fraction,
         spherical_polygon_area_km2, try_spherical_polygon_area, try_spherical_polygon_excess,
-        try_spherical_polygon_signed_minor_excess_fast, Point, SphericalAreaBranch,
-        SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
+        try_spherical_polygon_signed_minor_excess_fast, Point, PreparedSphericalPolygon,
+        SphericalAreaBranch, SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
     };
+    use std::time::Instant;
 
     #[test]
     fn longitude_delta_normalization_handles_multiple_turns() {
@@ -1267,6 +1325,85 @@ mod tests {
             Point::new(x1, y1),
             Point::new(x0, y1),
         ]
+    }
+
+    fn legacy_spherical_convex_intersection_units(
+        subject: &[Point],
+        clip: &[Point],
+    ) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
+        super::try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
+        super::try_spherical_polygon_excess(clip, SphericalAreaBranch::Minor)?;
+        let mut output =
+            super::checked_spherical_polygon_units(subject, |point| (point.x, point.y))?;
+        let subject_planes = super::convex_clip_planes(&output)?;
+        let clip_vertices =
+            super::checked_spherical_polygon_units(clip, |point| (point.x, point.y))?;
+        let planes = super::convex_clip_planes(&clip_vertices)?;
+        for (normal, sign) in planes {
+            let input = output;
+            output = Vec::new();
+            let Some(mut previous) = input.last().copied() else {
+                break;
+            };
+            let mut previous_inside = sign * super::dot3(normal, previous) >= -1.0e-14;
+            for current in input {
+                let current_inside = sign * super::dot3(normal, current) >= -1.0e-14;
+                if current_inside != previous_inside {
+                    if let Some(intersection) =
+                        super::great_circle_boundary_intersection(previous, current, normal, sign)
+                    {
+                        output.push(intersection);
+                    }
+                }
+                if current_inside {
+                    output.push(current);
+                }
+                previous = current;
+                previous_inside = current_inside;
+            }
+            super::deduplicate_spherical_vertices(&mut output);
+            if output.len() < 3 {
+                return Ok(Vec::new());
+            }
+        }
+        for clip_vertex in clip_vertices {
+            if subject_planes
+                .iter()
+                .all(|(normal, sign)| sign * super::dot3(*normal, clip_vertex) >= 0.0)
+            {
+                for point in &mut output {
+                    if point
+                        .iter()
+                        .zip(clip_vertex)
+                        .all(|(point, vertex)| (*point - vertex).abs() <= 1.0e-12)
+                    {
+                        *point = clip_vertex;
+                    }
+                }
+            }
+        }
+        super::deduplicate_spherical_vertices(&mut output);
+        Ok(output)
+    }
+
+    fn legacy_spherical_convex_overlap_fraction(
+        subject: &[Point],
+        clip: &[Point],
+    ) -> Result<f64, SphericalPolygonError> {
+        let subject_area =
+            super::try_spherical_polygon_excess(subject, SphericalAreaBranch::Minor)?;
+        let intersection = legacy_spherical_convex_intersection_units(subject, clip)?;
+        if intersection.len() < 3 {
+            return Ok(0.0);
+        }
+        let area = match super::raw_spherical_polygon_excess_from_units(&intersection)
+            .and_then(super::normalized_signed_minor_excess)
+        {
+            Ok(area) => area.abs(),
+            Err(SphericalPolygonError::DegenerateArea) => return Ok(0.0),
+            Err(error) => return Err(error),
+        };
+        Ok((area / subject_area).clamp(0.0, 1.0))
     }
 
     #[test]
@@ -1585,6 +1722,133 @@ mod tests {
             Err(SphericalPolygonError::DegenerateArea)
         );
         assert_eq!(signed_spherical_polygon_excess(&degenerate), 0.0);
+    }
+
+    #[test]
+    fn prepared_spherical_overlap_matches_legacy_scalar_oracle() {
+        let subjects = [
+            vec![
+                Point::new(-0.05814442925492627, -23.500064666250225),
+                Point::new(-0.031464771249952686, -23.534108783683095),
+                Point::new(0.03146477124995411, -23.534108783683095),
+                Point::new(0.058144429254925564, -23.50006466625022),
+                Point::new(0.031436741222662275, -23.441027570664808),
+                Point::new(-0.03143674122266298, -23.441027570664804),
+            ],
+            vec![
+                Point::new(179.25, -0.25),
+                Point::new(-179.25, -0.25),
+                Point::new(-179.25, 0.25),
+                Point::new(179.25, 0.25),
+            ],
+            vec![
+                Point::new(116.595651054282, 89.9381235342476),
+                Point::new(180.0, 89.93810311936484),
+                Point::new(-116.595651054282, 89.9381235342476),
+                Point::new(-63.40434894571801, 89.9381235342476),
+                Point::new(-0.0, 89.93810311936484),
+                Point::new(63.40434894571801, 89.9381235342476),
+            ],
+        ];
+        let clips = [
+            rect(-0.5, -24.0, 0.0, -23.5),
+            rect(0.0, -23.5, 0.5, -23.0),
+            rect(179.0, -0.5, 180.0, 0.5),
+            vec![
+                Point::new(-180.0, 89.5),
+                Point::new(-179.5, 89.5),
+                Point::new(0.0, 90.0),
+            ],
+        ];
+
+        for subject in &subjects {
+            let prepared_subject = PreparedSphericalPolygon::new(subject).unwrap();
+            for clip in &clips {
+                let legacy = legacy_spherical_convex_overlap_fraction(subject, clip);
+                let scalar = spherical_convex_overlap_fraction(subject, clip);
+                assert_eq!(scalar, legacy, "scalar changed for {subject:?} / {clip:?}");
+                if let Ok(prepared_clip) = PreparedSphericalPolygon::new(clip) {
+                    assert_eq!(
+                        prepared_subject.overlap_fraction(&prepared_clip),
+                        legacy,
+                        "prepared changed for {subject:?} / {clip:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_spherical_polygon_preserves_validation_order() {
+        let concave = vec![
+            Point::new(0.0, 0.0),
+            Point::new(2.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 2.0),
+            Point::new(0.0, 2.0),
+        ];
+        let valid = rect(0.0, 0.0, 1.0, 1.0);
+        let invalid_clip = vec![
+            Point::new(0.0, 0.0),
+            Point::new(f64::NAN, 0.0),
+            Point::new(0.0, 1.0),
+        ];
+
+        let prepared_concave = PreparedSphericalPolygon::new(&concave).unwrap();
+        let prepared_valid = PreparedSphericalPolygon::new(&valid).unwrap();
+        assert_eq!(
+            prepared_concave.overlap_fraction(&prepared_valid),
+            Err(SphericalPolygonError::NonConvex { vertex: 1 })
+        );
+        assert_eq!(
+            spherical_convex_overlap_fraction(&concave, &invalid_clip),
+            Err(SphericalPolygonError::NonFiniteCoordinate { vertex: 1 })
+        );
+        assert_eq!(
+            spherical_convex_overlap_fraction(&concave, &valid),
+            Err(SphericalPolygonError::NonConvex { vertex: 1 })
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only smoke benchmark for reused prepared spherical polygons"]
+    fn prepared_spherical_overlap_reuse_benchmark() {
+        let subject_points = vec![
+            Point::new(-0.05814442925492627, -23.500064666250225),
+            Point::new(-0.031464771249952686, -23.534108783683095),
+            Point::new(0.03146477124995411, -23.534108783683095),
+            Point::new(0.058144429254925564, -23.50006466625022),
+            Point::new(0.031436741222662275, -23.441027570664808),
+            Point::new(-0.03143674122266298, -23.441027570664804),
+        ];
+        let subject = PreparedSphericalPolygon::new(&subject_points).unwrap();
+        let clips: Vec<Vec<Point>> = (0..200)
+            .map(|index| {
+                let lon = -0.5 + index as f64 * 0.005;
+                rect(lon, -24.0, lon + 0.25, -23.25)
+            })
+            .collect();
+
+        let scalar_started = Instant::now();
+        let scalar_sum = clips
+            .iter()
+            .map(|clip| legacy_spherical_convex_overlap_fraction(&subject_points, clip).unwrap())
+            .sum::<f64>();
+        let scalar_elapsed = scalar_started.elapsed();
+
+        let prepared_clips = clips
+            .iter()
+            .map(|clip| PreparedSphericalPolygon::new(clip).unwrap())
+            .collect::<Vec<_>>();
+        let prepared_started = Instant::now();
+        let prepared_sum = prepared_clips
+            .iter()
+            .map(|clip| subject.overlap_fraction(clip).unwrap())
+            .sum::<f64>();
+        let prepared_elapsed = prepared_started.elapsed();
+
+        assert!((scalar_sum - prepared_sum).abs() < 1.0e-12);
+        eprintln!("scalar={scalar_elapsed:?} prepared_reused={prepared_elapsed:?}");
     }
 
     #[test]

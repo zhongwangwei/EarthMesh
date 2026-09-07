@@ -24,6 +24,7 @@ pub struct RefineNgrRenewCore {
     pub boundary_refine: Vec<usize>,
     pub boundary_refine_transition: Vec<usize>,
     pub vertex_mapping: Vec<usize>,
+    pub triangle_mapping: Vec<usize>,
 }
 
 /// Pure Rust core for `MOD_refine.F90:NGR_RENEW` before `GetSortNew` and file IO.
@@ -130,8 +131,12 @@ pub fn refine_ngr_renew_core_one_based(
     let num_sjx = final_mp - deleted_triangles;
     let mut triangle_points = vec![LonLatDegrees::new(0.0, 0.0); num_sjx + 1];
     let mut cells_on_triangle = vec![[1_usize, 1, 1]; num_sjx + 1];
+    let mut triangle_mapping = vec![0usize; final_mp + 1];
     triangle_points[1..=num_vertex].copy_from_slice(&triangle_points_new[1..=num_vertex]);
     cells_on_triangle[1..=num_vertex].copy_from_slice(&cells_on_triangle_new[1..=num_vertex]);
+    for (triangle, mapping) in triangle_mapping.iter_mut().enumerate().take(num_vertex + 1) {
+        *mapping = triangle;
+    }
 
     let mut out_triangle = num_vertex;
     for source_triangle in (num_vertex + 1)..=final_mp {
@@ -139,6 +144,7 @@ pub fn refine_ngr_renew_core_one_based(
             continue;
         }
         out_triangle += 1;
+        triangle_mapping[source_triangle] = out_triangle;
         triangle_points[out_triangle] = triangle_points_new[source_triangle];
         cells_on_triangle[out_triangle] = cells_on_triangle_new[source_triangle];
     }
@@ -218,5 +224,6 @@ pub fn refine_ngr_renew_core_one_based(
         boundary_refine: remap_boundary(boundary_refine, &vertex_mapping)?,
         boundary_refine_transition: remap_boundary(boundary_refine_transition, &vertex_mapping)?,
         vertex_mapping,
+        triangle_mapping,
     })
 }

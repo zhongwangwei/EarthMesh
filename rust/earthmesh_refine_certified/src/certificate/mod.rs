@@ -5,10 +5,12 @@ use earthmesh_mesh::{
     in_circle_on_sphere, magnitude, orientation_on_sphere, CartesianPoint, MeshState, Sign,
 };
 use interval::{next_down, next_up, Interval};
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const GEOMETRY_INTERIOR_MARGIN_DEGREES: f64 = 0.2;
 pub const CERTIFICATE_SCHEMA_VERSION: u32 = 2;
+const PARALLEL_AUDIT_CHUNK_SIZE: usize = 4096;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AngleContractId {
@@ -394,7 +396,28 @@ fn prove_angle_window_with_outward_intervals(
     mesh: &MeshState,
     certificate: &Certificate,
 ) -> Result<(), CertificateError> {
-    prove_angle_window_for_triangles(mesh, certificate, mesh.active_triangle_slots()).map(|_| ())
+    let bounds = interval_angle_bounds(certificate)?;
+    let chunks: Vec<Result<(), CertificateError>> = mesh
+        .triangles()
+        .par_chunks(PARALLEL_AUDIT_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk, triangles)| {
+            let start = chunk * PARALLEL_AUDIT_CHUNK_SIZE;
+            for offset in 0..triangles.len() {
+                let triangle = start + offset;
+                if mesh.is_triangle_live(triangle) {
+                    prove_triangle_angle_window(mesh, triangle, certificate, bounds)?;
+                }
+            }
+            Ok(())
+        })
+        .collect();
+    // Indexed collection plus ordered error propagation preserves the serial
+    // contract: the lowest failing triangle/corner is still reported.
+    for chunk in chunks {
+        chunk?;
+    }
+    Ok(())
 }
 
 fn prove_angle_window_for_triangles(
@@ -406,43 +429,67 @@ fn prove_angle_window_for_triangles(
     // values, respectively. This avoids relying on libm trigonometric
     // rounding inside the proof; only IEEE-754 +,-,* and nextafter widening
     // participate in the interval comparisons.
-    let (min_angle_cos_lower, max_angle_cos_upper) = outward_interval_thresholds(certificate)?;
-    let min_cos_sq_lower = next_down(min_angle_cos_lower * min_angle_cos_lower);
-    let max_cos_sq_upper = next_up(max_angle_cos_upper * max_angle_cos_upper);
+    let bounds = interval_angle_bounds(certificate)?;
     let mut interval_boxes = 0;
     for triangle in triangles {
-        let corners = mesh.triangles()[triangle];
-        for corner in 0..3 {
-            let a = IntervalPoint::exact(mesh.vertices()[corners[corner]]);
-            let b = IntervalPoint::exact(mesh.vertices()[corners[(corner + 1) % 3]]);
-            let c = IntervalPoint::exact(mesh.vertices()[corners[(corner + 2) % 3]]);
-            let aa = a.dot(a);
-            let tangent_b = b.scaled(aa).sub(a.scaled(a.dot(b)));
-            let tangent_c = c.scaled(aa).sub(a.scaled(a.dot(c)));
-            let dot = tangent_b.dot(tangent_c);
-            let norm_b_sq = tangent_b.dot(tangent_b);
-            let norm_c_sq = tangent_c.dot(tangent_c);
-            interval_boxes += 1;
-            if dot.lo <= 0.0 || norm_b_sq.lo <= 0.0 || norm_c_sq.lo <= 0.0 {
-                return Err(CertificateError::CriterionNotCertifiable(format!(
-                    "triangle {triangle} corner {corner} has an interval crossing a degenerate or non-acute angle"
-                )));
-            }
-            let dot_sq_lower = next_down(dot.lo * dot.lo);
-            let dot_sq_upper = next_up(dot.hi * dot.hi);
-            let norms_lower = next_down(norm_b_sq.lo * norm_c_sq.lo);
-            let norms_upper = next_up(norm_b_sq.hi * norm_c_sq.hi);
-            let minimum_angle_rhs = next_down(min_cos_sq_lower * norms_lower);
-            let maximum_angle_rhs = next_up(max_cos_sq_upper * norms_upper);
-            if dot_sq_upper > minimum_angle_rhs || dot_sq_lower < maximum_angle_rhs {
-                return Err(CertificateError::CriterionNotCertifiable(format!(
-                    "triangle {triangle} corner {corner} interval cannot prove the [{}, {}] degree window",
-                    certificate.min_angle_degrees, certificate.max_angle_degrees
-                )));
-            }
-        }
+        prove_triangle_angle_window(mesh, triangle, certificate, bounds)?;
+        interval_boxes += 3;
     }
     Ok(interval_boxes)
+}
+
+#[derive(Clone, Copy)]
+struct IntervalAngleBounds {
+    min_cos_sq_lower: f64,
+    max_cos_sq_upper: f64,
+}
+
+fn interval_angle_bounds(
+    certificate: &Certificate,
+) -> Result<IntervalAngleBounds, CertificateError> {
+    let (min_angle_cos_lower, max_angle_cos_upper) = outward_interval_thresholds(certificate)?;
+    Ok(IntervalAngleBounds {
+        min_cos_sq_lower: next_down(min_angle_cos_lower * min_angle_cos_lower),
+        max_cos_sq_upper: next_up(max_angle_cos_upper * max_angle_cos_upper),
+    })
+}
+
+fn prove_triangle_angle_window(
+    mesh: &MeshState,
+    triangle: usize,
+    certificate: &Certificate,
+    bounds: IntervalAngleBounds,
+) -> Result<(), CertificateError> {
+    let corners = mesh.triangles()[triangle];
+    for corner in 0..3 {
+        let a = IntervalPoint::exact(mesh.vertices()[corners[corner]]);
+        let b = IntervalPoint::exact(mesh.vertices()[corners[(corner + 1) % 3]]);
+        let c = IntervalPoint::exact(mesh.vertices()[corners[(corner + 2) % 3]]);
+        let aa = a.dot(a);
+        let tangent_b = b.scaled(aa).sub(a.scaled(a.dot(b)));
+        let tangent_c = c.scaled(aa).sub(a.scaled(a.dot(c)));
+        let dot = tangent_b.dot(tangent_c);
+        let norm_b_sq = tangent_b.dot(tangent_b);
+        let norm_c_sq = tangent_c.dot(tangent_c);
+        if dot.lo <= 0.0 || norm_b_sq.lo <= 0.0 || norm_c_sq.lo <= 0.0 {
+            return Err(CertificateError::CriterionNotCertifiable(format!(
+                "triangle {triangle} corner {corner} has an interval crossing a degenerate or non-acute angle"
+            )));
+        }
+        let dot_sq_lower = next_down(dot.lo * dot.lo);
+        let dot_sq_upper = next_up(dot.hi * dot.hi);
+        let norms_lower = next_down(norm_b_sq.lo * norm_c_sq.lo);
+        let norms_upper = next_up(norm_b_sq.hi * norm_c_sq.hi);
+        let minimum_angle_rhs = next_down(bounds.min_cos_sq_lower * norms_lower);
+        let maximum_angle_rhs = next_up(bounds.max_cos_sq_upper * norms_upper);
+        if dot_sq_upper > minimum_angle_rhs || dot_sq_lower < maximum_angle_rhs {
+            return Err(CertificateError::CriterionNotCertifiable(format!(
+                "triangle {triangle} corner {corner} interval cannot prove the [{}, {}] degree window",
+                certificate.min_angle_degrees, certificate.max_angle_degrees
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn outward_interval_thresholds(certificate: &Certificate) -> Result<(f64, f64), CertificateError> {
@@ -775,15 +822,42 @@ fn topology(mesh: &MeshState) -> Topology {
     }
 }
 
+#[derive(Clone, Copy)]
 struct AngleSummary {
     min: f64,
     max: f64,
 }
 
 fn fast_angle_filter(mesh: &MeshState) -> Result<AngleSummary, CertificateError> {
+    let chunks: Vec<Result<AngleSummary, CertificateError>> = mesh
+        .triangles()
+        .par_chunks(PARALLEL_AUDIT_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk, triangles)| {
+            angle_summary_for_range(mesh, chunk * PARALLEL_AUDIT_CHUNK_SIZE, triangles.len())
+        })
+        .collect();
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for triangle in mesh.active_triangle_slots() {
+    for chunk in chunks {
+        let chunk = chunk?;
+        min = min.min(chunk.min);
+        max = max.max(chunk.max);
+    }
+    Ok(AngleSummary { min, max })
+}
+
+fn angle_summary_for_range(
+    mesh: &MeshState,
+    start: usize,
+    len: usize,
+) -> Result<AngleSummary, CertificateError> {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for triangle in start..start + len {
+        if !mesh.is_triangle_live(triangle) {
+            continue;
+        }
         let corners = mesh.triangles()[triangle];
         let angles = spherical_triangle_angles(corners.map(|v| mesh.vertices()[v]))
             .ok_or(CertificateError::DegenerateTriangle { triangle })?;
@@ -949,8 +1023,31 @@ fn verify_dual_sites(
 }
 
 fn delaunay_violations(mesh: &MeshState) -> Result<usize, CertificateError> {
+    let chunks: Vec<Result<usize, CertificateError>> = mesh
+        .triangles()
+        .par_chunks(PARALLEL_AUDIT_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk, triangles)| {
+            delaunay_violations_for_range(mesh, chunk * PARALLEL_AUDIT_CHUNK_SIZE, triangles.len())
+        })
+        .collect();
     let mut violations = 0;
-    for triangle in mesh.active_triangle_slots() {
+    for chunk in chunks {
+        violations += chunk?;
+    }
+    Ok(violations)
+}
+
+fn delaunay_violations_for_range(
+    mesh: &MeshState,
+    start: usize,
+    len: usize,
+) -> Result<usize, CertificateError> {
+    let mut violations = 0;
+    for triangle in start..start + len {
+        if !mesh.is_triangle_live(triangle) {
+            continue;
+        }
         let tri = mesh.triangles()[triangle];
         for corner in 0..3 {
             let other = mesh.neighbours()[triangle][corner];
@@ -979,6 +1076,7 @@ fn delaunay_violations(mesh: &MeshState) -> Result<usize, CertificateError> {
     Ok(violations)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct DualReport {
     cells: usize,
     invalid_cells: usize,
@@ -993,25 +1091,61 @@ fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
         }
     }
 
-    let mut invalid_cells = 0;
-    let mut reciprocal_errors = 0;
-    let mut cells = 0;
-    for site in mesh.active_vertex_slots() {
-        let seed = seeds[site]
-            .ok_or_else(|| CertificateError::Dual(format!("site {site} is in no triangle")))?;
+    let chunks: Vec<Result<DualReport, CertificateError>> = mesh
+        .vertices()
+        .par_chunks(PARALLEL_AUDIT_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk, vertices)| {
+            dual_report_for_range(
+                mesh,
+                &seeds,
+                chunk * PARALLEL_AUDIT_CHUNK_SIZE,
+                vertices.len(),
+            )
+        })
+        .collect();
+    let mut report = DualReport::default();
+    for chunk in chunks {
+        let chunk = chunk?;
+        report.cells += chunk.cells;
+        report.invalid_cells += chunk.invalid_cells;
+        report.reciprocal_errors += chunk.reciprocal_errors;
+    }
+    if report.invalid_cells != 0 || report.reciprocal_errors != 0 {
+        return Err(CertificateError::Dual(format!(
+            "invalid Voronoi cells={}, reciprocal errors={}",
+            report.invalid_cells, report.reciprocal_errors
+        )));
+    }
+    Ok(report)
+}
+
+fn dual_report_for_range(
+    mesh: &MeshState,
+    seeds: &[Option<usize>],
+    start: usize,
+    len: usize,
+) -> Result<DualReport, CertificateError> {
+    let mut report = DualReport::default();
+    for (site, &seed) in seeds.iter().enumerate().skip(start).take(len) {
+        if !mesh.is_vertex_live(site) {
+            continue;
+        }
+        let seed =
+            seed.ok_or_else(|| CertificateError::Dual(format!("site {site} is in no triangle")))?;
         let cell = mesh
             .voronoi_cell_from(site, seed)
             .map_err(|e| CertificateError::Dual(e.to_string()))?;
-        cells += 1;
+        report.cells += 1;
         if !(5..=7).contains(&cell.degree())
             || cell.area_on_unit_sphere().unwrap_or(0.0) <= 0.0
             || !voronoi_cell_is_convex_and_contains_site(mesh, &cell)
         {
-            invalid_cells += 1;
+            report.invalid_cells += 1;
         }
         for (&triangle, &center) in cell.triangles.iter().zip(&cell.corners) {
             if !mesh.triangles()[triangle].contains(&site) {
-                reciprocal_errors += 1;
+                report.reciprocal_errors += 1;
             }
             let corners = mesh.triangles()[triangle].map(|v| mesh.vertices()[v]);
             let ds = corners.map(|p| chord(center, p));
@@ -1020,20 +1154,11 @@ fn verify_dual(mesh: &MeshState) -> Result<DualReport, CertificateError> {
                 || (ds[0] - ds[2]).abs() > 1.0e-10 * scale
                 || ds[0] <= 0.0
             {
-                reciprocal_errors += 1;
+                report.reciprocal_errors += 1;
             }
         }
     }
-    if invalid_cells != 0 || reciprocal_errors != 0 {
-        return Err(CertificateError::Dual(format!(
-            "invalid Voronoi cells={invalid_cells}, reciprocal errors={reciprocal_errors}"
-        )));
-    }
-    Ok(DualReport {
-        cells,
-        invalid_cells,
-        reciprocal_errors,
-    })
+    Ok(report)
 }
 
 pub(crate) fn voronoi_cell_is_convex_and_contains_site(
@@ -1292,6 +1417,61 @@ mod tests {
         assert_eq!(report.delaunay_violations, 0);
         assert_eq!(report.voronoi_cells, report.vertices);
         assert_eq!(report.topology_errors + report.degree_outside_window, 0);
+    }
+
+    #[test]
+    fn parallel_global_audits_match_serial_ordered_reference() {
+        let grid = MotherGrid::generate(12).unwrap();
+        let mesh = &grid.mesh;
+        let certificate = Certificate::internal();
+
+        let audit = || {
+            prove_angle_window_with_outward_intervals(mesh, &certificate).unwrap();
+            let angles = fast_angle_filter(mesh).unwrap();
+            (
+                angles.min.to_bits(),
+                angles.max.to_bits(),
+                delaunay_violations(mesh).unwrap(),
+                verify_dual(mesh).unwrap(),
+            )
+        };
+        let one_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(audit);
+        let four_threads = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(audit);
+        assert_eq!(one_thread, four_threads);
+
+        assert_eq!(
+            prove_angle_window_for_triangles(mesh, &certificate, mesh.active_triangle_slots())
+                .unwrap(),
+            mesh.triangle_count() * 3
+        );
+
+        let parallel_angles = fast_angle_filter(mesh).unwrap();
+        let serial_angles = angle_filter_for_triangles(mesh, mesh.active_triangle_slots()).unwrap();
+        assert_eq!(parallel_angles.min.to_bits(), serial_angles.min.to_bits());
+        assert_eq!(parallel_angles.max.to_bits(), serial_angles.max.to_bits());
+        assert_eq!(
+            delaunay_violations(mesh).unwrap(),
+            delaunay_violations_for_range(mesh, 0, mesh.triangles().len()).unwrap()
+        );
+
+        let mut seeds = vec![None; mesh.vertices().len()];
+        for triangle in mesh.active_triangle_slots() {
+            for site in mesh.triangles()[triangle] {
+                seeds[site].get_or_insert(triangle);
+            }
+        }
+        assert_eq!(
+            verify_dual(mesh).unwrap(),
+            dual_report_for_range(mesh, &seeds, 0, mesh.vertices().len()).unwrap()
+        );
     }
 
     #[test]

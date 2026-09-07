@@ -151,6 +151,32 @@ fn valid_vertex_slot(slot: usize, vertices_len: usize) -> bool {
     (MESH_STATE_FIRST_ID..vertices_len).contains(&slot)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct EdgeClaim {
+    edge: (usize, usize),
+    triangle: usize,
+    corner: usize,
+}
+
+fn push_triangle_edge_claims(claims: &mut Vec<EdgeClaim>, triangle: usize, corners: [usize; 3]) {
+    for corner in 0..3 {
+        claims.push(EdgeClaim {
+            edge: edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]),
+            triangle,
+            corner,
+        });
+    }
+}
+
+fn push_triangle_edge_keys(claims: &mut Vec<(usize, usize)>, corners: [usize; 3]) {
+    for corner in 0..3 {
+        claims.push(edge_key(
+            corners[(corner + 1) % 3],
+            corners[(corner + 2) % 3],
+        ));
+    }
+}
+
 impl MeshState {
     /// Build from vertices and triangles, deriving adjacency.
     ///
@@ -182,19 +208,20 @@ impl MeshState {
             return Err(errors);
         }
 
-        // One pass to collect who claims each edge, one to write the opposites.
-        let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+        // One pass to collect who claims each edge, one sorted pass to write
+        // opposites. This keeps the BTreeMap ordering contract without paying
+        // tree allocation/lookup costs for every edge.
+        let mut claims =
+            Vec::with_capacity(triangles.len().saturating_sub(MESH_STATE_FIRST_ID) * 3);
         for (triangle, corners) in triangles.iter().enumerate().skip(MESH_STATE_FIRST_ID) {
-            for corner in 0..3 {
-                let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
-                claims.entry(key).or_default().push(triangle);
-            }
+            push_triangle_edge_claims(&mut claims, triangle, *corners);
         }
-        for (vertices_of_edge, claimants) in &claims {
-            if claimants.len() > 2 {
+        claims.sort_unstable();
+        for group in claims.chunk_by(|left, right| left.edge == right.edge) {
+            if group.len() > 2 {
                 errors.push(MeshStateError::NonManifoldEdge {
-                    vertices: *vertices_of_edge,
-                    triangles: claimants.len(),
+                    vertices: group[0].edge,
+                    triangles: group.len(),
                 });
             }
         }
@@ -203,16 +230,10 @@ impl MeshState {
         }
 
         let mut neighbours = vec![[0usize; 3]; triangles.len()];
-        for (triangle, corners) in triangles.iter().enumerate().skip(MESH_STATE_FIRST_ID) {
-            for corner in 0..3 {
-                let key = edge_key(corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
-                let opposite = claims
-                    .get(&key)
-                    .and_then(|claimants| {
-                        claimants.iter().copied().find(|&other| other != triangle)
-                    })
-                    .unwrap_or(0);
-                neighbours[triangle][corner] = opposite;
+        for group in claims.chunk_by(|left, right| left.edge == right.edge) {
+            if group.len() == 2 {
+                neighbours[group[0].triangle][group[0].corner] = group[1].triangle;
+                neighbours[group[1].triangle][group[1].corner] = group[0].triangle;
             }
         }
 
@@ -626,7 +647,7 @@ impl MeshState {
     /// canonical edge.
     pub fn validate(&self) -> Result<(), Vec<MeshStateError>> {
         let mut errors = Vec::new();
-        let mut claims: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+        let mut claims = Vec::with_capacity(self.triangle_count() * 3);
         for triangle in self.active_triangle_slots() {
             self.validate_triangle_row(triangle, &mut errors);
             let corners = self.triangles[triangle];
@@ -635,23 +656,16 @@ impl MeshState {
                 && corners[1] != corners[2]
                 && corners[0] != corners[2]
             {
-                for corner in 0..3 {
-                    claims
-                        .entry(edge_key(
-                            corners[(corner + 1) % 3],
-                            corners[(corner + 2) % 3],
-                        ))
-                        .or_default()
-                        .push(triangle);
-                }
+                push_triangle_edge_keys(&mut claims, corners);
             }
             self.validate_neighbour_edges_for_triangle(triangle, &mut errors);
         }
-        for (vertices, claimants) in claims {
-            if claimants.len() > 2 {
+        claims.sort_unstable();
+        for group in claims.chunk_by(|left, right| left == right) {
+            if group.len() > 2 {
                 errors.push(MeshStateError::NonManifoldEdge {
-                    vertices,
-                    triangles: claimants.len(),
+                    vertices: group[0],
+                    triangles: group.len(),
                 });
             }
         }

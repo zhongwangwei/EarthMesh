@@ -49,6 +49,7 @@ fn delaunay_lop_flips_adjacent_triangle_diagonal_and_clears_old_triangles() {
         &mut cell_points,
         &mut cells_on_triangle,
         &ref_segment,
+        false,
     )
     .expect("Delaunay LOP diagonal flip");
 
@@ -93,6 +94,7 @@ fn delaunay_lop_skips_zero_pairs_without_advancing_output_child_counter() {
         &mut cell_points,
         &mut cells_on_triangle,
         &ref_segment,
+        false,
     )
     .expect("Delaunay LOP skips zero pair");
 
@@ -108,8 +110,8 @@ fn delaunay_lop_applies_canonical_dateline_shift_before_centroid_cleanup() {
     let mut cell_points = vec![ll(0.0, 0.0); 14];
     cell_points[10] = ll(170.0, 0.0);
     cell_points[11] = ll(-170.0, 0.0);
-    cell_points[12] = ll(180.0, 6.0);
-    cell_points[13] = ll(-175.0, 6.0);
+    cell_points[12] = ll(171.0, 3.0);
+    cell_points[13] = ll(-179.0, 3.0);
     let expected_a =
         spherical_centroid_degrees(&[cell_points[10], cell_points[11], cell_points[13]])
             .expect("first dateline spherical centroid");
@@ -130,6 +132,7 @@ fn delaunay_lop_applies_canonical_dateline_shift_before_centroid_cleanup() {
         &mut cell_points,
         &mut cells_on_triangle,
         &ref_segment,
+        false,
     )
     .expect("Delaunay LOP dateline correction");
 
@@ -143,6 +146,38 @@ fn delaunay_lop_applies_canonical_dateline_shift_before_centroid_cleanup() {
         expected_b.lon_degrees,
         expected_b.lat_degrees,
     );
+}
+
+#[test]
+fn delaunay_lop_keeps_the_better_existing_diagonal() {
+    let num_mp = vec![0, 3, 5];
+    let num_wp = vec![0, 13, 13];
+    let mut triangle_points = vec![ll(0.0, 0.0); 6];
+    let mut cell_points = vec![ll(0.0, 0.0); 14];
+    cell_points[10] = ll(0.0, 0.0);
+    cell_points[11] = ll(3.0, 0.0);
+    cell_points[12] = ll(0.0, 3.0);
+    cell_points[13] = ll(4.0, 1.0);
+    let mut cells_on_triangle = vec![[1, 1, 1]; 6];
+    cells_on_triangle[2] = [10, 11, 12];
+    cells_on_triangle[3] = [11, 12, 13];
+
+    let accepted = refine_delaunay_lop_one_based(
+        2,
+        2,
+        &num_mp,
+        &num_wp,
+        &mut triangle_points,
+        &mut cell_points,
+        &mut cells_on_triangle,
+        &[2, 3],
+        true,
+    )
+    .expect("a non-improving LOP proposal is safely ignored");
+
+    assert_eq!(accepted, 0);
+    assert_eq!(cells_on_triangle[2], [10, 11, 12]);
+    assert_eq!(cells_on_triangle[3], [11, 12, 13]);
 }
 
 #[test]

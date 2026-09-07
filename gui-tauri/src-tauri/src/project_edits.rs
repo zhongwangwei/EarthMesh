@@ -6,7 +6,7 @@ use earthmesh_project::{
     MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
     SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
     SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
-    LANDCOVER_CRITERION_ID,
+    LANDCOVER_CRITERION_ID, SEA_RATIO_CRITERION_ID,
 };
 use std::path::{Path, PathBuf};
 
@@ -124,8 +124,8 @@ pub(crate) fn set_threshold_value(
     validated_yaml(cfg)
 }
 
-/// Set one mean/std criterion without changing its shared source-layer path or
-/// the sibling statistic. A blank explicit value restores this criterion's
+/// Set one criterion without changing its shared source-layer path or sibling
+/// criteria. A blank explicit value restores this criterion's
 /// catalog default instead of falling back to a legacy shared threshold.
 #[tauri::command]
 pub(crate) fn set_threshold_criterion(
@@ -135,8 +135,7 @@ pub(crate) fn set_threshold_criterion(
     value: Option<f64>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    let is_landcover = id == LANDCOVER_CRITERION_ID;
-    let source_role = if is_landcover {
+    let source_role = if id == LANDCOVER_CRITERION_ID || id == SEA_RATIO_CRITERION_ID {
         ProjectLayerRole::LandType
     } else {
         let criterion = threshold_criterion_by_id(&id)

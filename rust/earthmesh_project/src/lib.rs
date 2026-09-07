@@ -49,7 +49,8 @@ pub use criteria::{
     criteria_for_domain, criterion_by_id, criterion_catalog, threshold_criterion_by_id,
     threshold_criterion_catalog, CriterionGuiSpec, CriterionSpec, EffectiveLandcoverCriterion,
     EffectiveThresholdCriterion, ThresholdCriterionSpec, ThresholdStatistic,
-    DEFAULT_LANDCOVER_CLASS_THRESHOLD, LANDCOVER_CRITERION_ID,
+    DEFAULT_LANDCOVER_CLASS_THRESHOLD, DEFAULT_SEA_RATIO_THRESHOLD, LANDCOVER_CRITERION_ID,
+    SEA_RATIO_CRITERION_ID,
 };
 mod close_boundary;
 pub use close_boundary::{
