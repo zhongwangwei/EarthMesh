@@ -28,7 +28,8 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
         return Ok(());
     }
     if first == "--studio-protocol" {
-        println!("earthmesh-studio-engine/2");
+        // v3 adds the independent LandType-derived `sea_ratio` project criterion.
+        println!("earthmesh-studio-engine/3");
         return Ok(());
     }
     if first == "-h" || first == "--help" {

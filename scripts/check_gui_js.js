@@ -135,13 +135,34 @@ check(
 log("continuous thresholds expose independent mean/std criteria over one source path");
 
 check(
-  html.includes("const state = criterionStates.landcover;") &&
-    html.includes('const criterion = cat.find((candidate) => candidate.id === "landcover");') &&
-    html.includes("sourceEnabled: l.enabled, enabled: state.enabled, value: state.value") &&
+  html.includes('if (l.role_kind === "landcover" || l.role_kind === "threshold") {') &&
+    html.includes("criterionStates[criterion.id].source_id === l.id") &&
+    html.includes("isCriterion: true, sourceEnabled: l.enabled") &&
     !html.includes('if (l.role_kind === "landcover") return true;'),
   "landcover refinement must be an independent categorical criterion, not the mask source toggle",
 );
 log("landcover criterion is independent from the mask source toggle");
+
+{
+  // Execute the actual source-to-row mapping, including custom LandType ids.
+  const body = section(html, /const refinementCriteria = sum.layers.flatMap\(\(l\) => \{([\s\S]*?)\n    \}\);/, "refinement row mapping");
+  const rowsFor = new Function("sum", "cat", "criterionStates", "hydroCriteria", `return sum.layers.flatMap((l) => {${body}\n});`);
+  const cat = [{ id: "landcover" }, { id: "sea_ratio" }, { id: "lai_mean" }];
+  const criterionStates = {
+    landcover: { source_id: "custom_mask", enabled: false, value: 12 },
+    sea_ratio: { source_id: "custom_mask", enabled: true, value: 0.05 },
+    lai_mean: { source_id: "lai", enabled: true, value: 1 },
+  };
+  const source = { id: "custom_mask", role_kind: "landcover", path: "/data/mask.nc", enabled: true };
+  const sum = { layers: [{ ...source, id: "unused_mask", enabled: false }, source, { id: "merit", role_kind: "merit" }] };
+  const rows = rowsFor(sum, cat, criterionStates, [{ id: "hydroCoastDistance" }]);
+  check(JSON.stringify(rows.map((row) => row.id)) === JSON.stringify(["landcover", "sea_ratio", "hydroCoastDistance"]), "LandType must render both criteria once and keep MERIT separate");
+  check(!rows[0].enabled && rows[1].enabled && rows[1].value === 0.05 && rows[1].path === source.path, "land/sea criterion must preserve its independent state on the shared source");
+  source.enabled = false;
+  check(rowsFor(sum, cat, criterionStates, [])[1].sourceEnabled === false, "disabling LandType must disable availability, not the sea-ratio criterion state");
+  check(html.includes('"海陆分布"') && html.includes('"aria-checked", String(on)') && html.includes('tog.disabled = !hasData || !thresholdRefine.enabled;'), "land/sea row must be localized and keyboard accessible");
+  log("land/sea and landcover rows share one source with independent state");
+}
 
 check(
   html.includes('id: "hydroRiverWidth"') &&
@@ -152,9 +173,7 @@ check(
     html.includes('physical_process: z ? "上游汇水面积 ≥"') &&
     html.includes('physical_process: z ? "距海岸线 ≤"') &&
     html.includes("const refinementCriteria = sum.layers.flatMap") &&
-    html.includes('if (l.role_kind === "landcover") {') &&
-    html.includes("const state = criterionStates.landcover;") &&
-    html.includes('if (l.role_kind === "threshold") {') &&
+    html.includes('if (l.role_kind === "landcover" || l.role_kind === "threshold") {') &&
     html.includes('if (l.role_kind === "merit") return hydroCriteria;') &&
     html.includes("refinementCriteria.forEach") &&
     !html.includes("[...crits, ...hydroCriteria]") &&
@@ -1139,7 +1158,7 @@ log("Method-C refinement controls share the engine level cap");
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
   check(
-    body.includes("label.textContent = isCriterion && z") &&
+    body.includes('label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : isCriterion && z') &&
       body.includes('help.textContent = (c.physical_process || c.help || "") + (c.unit ? " \u00b7 " + c.unit : "");') &&
       !body.includes("const rows = crits.map") &&
       !body.includes("${c.label}") &&

@@ -2849,9 +2849,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       row.dataset.hydroThresholdKey = l.hydroThresholdKey || "";
       row.dataset.hydroSides = l.hydroSides ? "1" : "0";
       row.style.cssText = "display:flex;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;margin-bottom:10px;opacity:" + (hasData ? "1" : "0.55");
-      const tog = document.createElement("div");
+      const tog = document.createElement("button");
+      tog.type = "button";
+      tog.setAttribute("role", "switch");
+      tog.setAttribute("aria-checked", String(on));
+      tog.disabled = !hasData || !thresholdRefine.enabled;
       tog.className = "em-tog";
-      tog.style.cssText = "width:38px;height:22px;border-radius:999px;flex:none;position:relative;background:" + (on ? "var(--accent)" : "var(--border)") + ";cursor:" + (hasData && thresholdRefine.enabled ? "pointer" : "not-allowed");
+      tog.style.cssText = "width:38px;height:22px;border:0;padding:0;border-radius:999px;flex:none;position:relative;background:" + (on ? "var(--accent)" : "var(--border)") + ";cursor:" + (hasData && thresholdRefine.enabled ? "pointer" : "not-allowed");
       const knob = document.createElement("div");
       knob.style.cssText = "position:absolute;top:2px;left:" + (on ? "18px" : "2px") + ";width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .15s";
       tog.appendChild(knob);
@@ -2859,12 +2863,16 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       text.style.cssText = "flex:1;min-width:0";
       const label = document.createElement("div");
       label.style.cssText = "font-weight:650;font-size:14px";
-      label.textContent = isCriterion && z
+      label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : isCriterion && z
         ? c.label.replace(/ mean$/, " · 平均").replace(/ std$/, " · 标准差")
         : c.label;
       const help = document.createElement("div");
       help.style.cssText = "color:var(--muted);font-size:11.5px;margin-top:1px";
       help.textContent = (c.physical_process || c.help || "") + (c.unit ? " · " + c.unit : "");
+      if (l.id === "sea_ratio") help.textContent = z
+        ? "海洋占比在 t 与 1−t 之间时细化；0 ≤ t < 0.5（0.05 表示 5%～95%）"
+        : c.help;
+      tog.setAttribute("aria-label", label.textContent);
       text.append(label, help);
       const badge = document.createElement("span");
       badge.style.cssText = "font-size:11px;padding:3px 9px;border-radius:999px;font-weight:600;flex:none;background:" + (hasData ? "color-mix(in srgb,var(--pass) 18%,transparent)" : "var(--border)") + ";color:" + (hasData ? "var(--pass)" : "var(--muted)");
@@ -2879,6 +2887,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (Number.isFinite(c.range_max)) th.max = c.range_max;
       if (thValue != null) th.value = thValue;
       th.title = z ? "判据阈值；留空恢复默认值" : "criterion threshold; blank restores default";
+      th.setAttribute("aria-label", label.textContent + (z ? "阈值" : " threshold"));
       row.append(tog, text, th);
       if (l.hydroSides) {
         const sides = document.createElement("select");
@@ -3086,14 +3095,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     ];
     const criterionStates = Object.fromEntries((sum.threshold_criteria || []).map((criterion) => [criterion.id, criterion]));
     const refinementCriteria = sum.layers.flatMap((l) => {
-      if (l.role_kind === "landcover") {
-        const state = criterionStates.landcover;
-        const criterion = cat.find((candidate) => candidate.id === "landcover");
-        if (!state || !criterion || state.source_id !== l.id) return [];
-        return [{ ...l, id: criterion.id, sourceId: l.id, criterion, isCriterion: true,
-          sourceEnabled: l.enabled, enabled: state.enabled, value: state.value }];
-      }
-      if (l.role_kind === "threshold") {
+      if (l.role_kind === "landcover" || l.role_kind === "threshold") {
         const sourceCriteria = cat.filter((criterion) => criterionStates[criterion.id] && criterionStates[criterion.id].source_id === l.id);
         return sourceCriteria.map((criterion) => ({ ...l, id: criterion.id, sourceId: l.id, criterion,
           isCriterion: true, sourceEnabled: l.enabled,

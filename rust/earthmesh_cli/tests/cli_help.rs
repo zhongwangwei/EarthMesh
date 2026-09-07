@@ -60,7 +60,7 @@ fn studio_protocol_probe_is_stable_and_side_effect_free() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "earthmesh-studio-engine/2"
+        "earthmesh-studio-engine/3"
     );
     assert!(!cwd.join("run_manifest.json").exists());
     let _ = std::fs::remove_dir_all(cwd);
@@ -91,4 +91,57 @@ fn mkgrd_rejects_nonpositive_openmp_before_mesh_work() {
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = std::fs::remove_dir_all(cwd);
+}
+
+#[test]
+fn studio_engine_accepts_sea_ratio_projects_before_mesh_execution() {
+    use earthmesh_project::{
+        DomainConfig, MeshIntentPreset, ProjectConfig, ProjectLayerRole, ResolutionSpec,
+        ThresholdCriterionConfig,
+    };
+
+    let root = std::env::temp_dir().join(format!("earthmesh_cli_sea_ratio_{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut project = ProjectConfig::scaffold(
+        "sea_ratio",
+        MeshIntentPreset::CoastalOcean,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    // Only project compilation is under test; no raster or mesh generation is needed.
+    project
+        .data_layers
+        .iter_mut()
+        .find(|l| l.role == ProjectLayerRole::LandType)
+        .unwrap()
+        .path = root.join("landtype.nc").to_string_lossy().into_owned();
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = true;
+    project.refinement.max_passes = 1;
+    project
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "sea_ratio".into(),
+            enabled: true,
+            value: Some(0.05),
+        });
+    let path = root.join("project.yaml");
+    std::fs::write(&path, project.to_yaml().unwrap()).unwrap();
+    // Arguments are checked after project lowering; this sentinel stops before mesh work.
+    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .arg("--project")
+        .arg(&path)
+        .arg("--stop-after-project-compilation")
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("unknown argument --stop-after-project-compilation"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unknown threshold criterion"), "{stderr}");
+    std::fs::remove_dir_all(root).unwrap();
 }

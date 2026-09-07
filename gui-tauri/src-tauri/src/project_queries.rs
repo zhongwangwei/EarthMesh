@@ -9,9 +9,9 @@ use earthmesh_project::{
     DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshIntentPreset,
     ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
     DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS, DEFAULT_LANDCOVER_CLASS_THRESHOLD,
-    DEFAULT_MIN_ANGLE_DEG, DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS, INTENT_PRESETS,
-    KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
-    METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM,
+    DEFAULT_MIN_ANGLE_DEG, DEFAULT_SEA_RATIO_THRESHOLD, DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS,
+    INTENT_PRESETS, KM_PER_DEGREE_EQUATOR, LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL,
+    METHOD_C_MIN_BASE_NXP, METHOD_C_SPRING_NXP1_KM, SEA_RATIO_CRITERION_ID,
 };
 
 /// List every registered refinement criterion (self-describing GUI specs).
@@ -29,6 +29,18 @@ pub(crate) fn list_criteria() -> Vec<CriterionInfo> {
         range_max: 32.0,
         default_value: DEFAULT_LANDCOVER_CLASS_THRESHOLD,
     }];
+    criteria.push(CriterionInfo {
+        id: SEA_RATIO_CRITERION_ID.to_string(),
+        source_stem: "landcover".to_string(),
+        statistic: "fraction".to_string(),
+        physical_process: "land/sea mixing".to_string(),
+        label: "Land/sea distribution".to_string(),
+        help: "Refine where ocean share is strictly between t and 1−t; 0 ≤ t < 0.5 (0.05 means 5%–95%)".to_string(),
+        unit: "fraction".to_string(),
+        range_min: 0.0,
+        range_max: 0.5,
+        default_value: DEFAULT_SEA_RATIO_THRESHOLD,
+    });
     criteria.extend(threshold_criterion_catalog().into_iter().map(|criterion| {
         let source = criterion_catalog()
             .iter()
@@ -231,6 +243,16 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             id: effective.id.to_string(),
             source_id: effective.source_layer_id,
             statistic: "categorical".to_string(),
+            source_enabled: effective.source_enabled,
+            enabled: effective.enabled,
+            value: effective.value,
+        });
+    }
+    if let Some(effective) = cfg.effective_sea_ratio_criterion() {
+        threshold_criteria.push(ThresholdCriterionSummary {
+            id: effective.id.to_string(),
+            source_id: effective.source_layer_id,
+            statistic: "fraction".to_string(),
             source_enabled: effective.source_enabled,
             enabled: effective.enabled,
             value: effective.value,

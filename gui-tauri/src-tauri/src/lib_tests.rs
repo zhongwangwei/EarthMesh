@@ -132,7 +132,7 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
@@ -142,6 +142,23 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
 
     assert!(!engine::engine_candidate_is_compatible(&stub));
     assert!(engine::engine_candidate_is_compatible(&compatible));
+    // Matching package versions are insufficient: the old sidecar cannot parse
+    // sea_ratio even though it reports the same alpha version as the new GUI.
+    fs::write(
+        &compatible,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            env!("CARGO_PKG_VERSION"),
+        ),
+    )
+    .unwrap();
+    match engine::inspect_engine_candidate(&compatible) {
+        engine::EngineCandidate::Unusable(reason) => {
+            assert!(reason.contains("earthmesh-studio-engine/2"));
+            assert!(reason.contains("earthmesh-studio-engine/3"));
+        }
+        _ => panic!("same-version sidecar without sea_ratio support must be rejected"),
+    }
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1098,7 +1115,7 @@ fn new_gui_projects_enable_auto_refine_by_default() {
 fn every_gui_intent_exposes_the_full_disabled_threshold_catalog() {
     let mut expected_thresholds = list_criteria()
         .into_iter()
-        .filter(|criterion| criterion.statistic != "categorical")
+        .filter(|criterion| matches!(criterion.statistic.as_str(), "mean" | "std"))
         .map(|criterion| criterion.source_stem)
         .collect::<Vec<_>>();
     expected_thresholds.sort_unstable();
@@ -2814,7 +2831,7 @@ fn gui_threshold_catalog_expands_each_continuous_source_into_mean_and_std_rows()
     let criteria = list_criteria();
     assert_eq!(
         criteria.len(),
-        earthmesh_project::criterion_catalog().len() * 2 + 1
+        earthmesh_project::criterion_catalog().len() * 2 + 2
     );
     let landcover = criteria
         .iter()
@@ -2822,6 +2839,15 @@ fn gui_threshold_catalog_expands_each_continuous_source_into_mean_and_std_rows()
         .expect("single categorical landcover criterion");
     assert_eq!(landcover.source_stem, "landcover");
     assert_eq!(landcover.statistic, "categorical");
+    let sea_ratio = criteria
+        .iter()
+        .find(|criterion| criterion.id == "sea_ratio")
+        .unwrap();
+    assert_eq!(sea_ratio.source_stem, landcover.source_stem);
+    assert_eq!(sea_ratio.statistic, "fraction");
+    assert_eq!(sea_ratio.label, "Land/sea distribution");
+    assert_eq!(sea_ratio.default_value, 0.05);
+    assert_eq!((sea_ratio.range_min, sea_ratio.range_max), (0.0, 0.5));
     let mean = criteria
         .iter()
         .find(|criterion| criterion.id == "lai_mean")
@@ -2997,6 +3023,63 @@ fn landcover_refinement_toggle_is_independent_from_the_mask_source() {
             .threshold_criteria
             .iter()
             .find(|criterion| criterion.id == "landcover")
+            .unwrap()
+            .enabled
+    );
+}
+
+#[test]
+fn sea_ratio_criterion_roundtrips_independently_through_gui_commands() {
+    let yaml = hydrology_yaml("sea_ratio_criterion");
+    let initial = project_summary(yaml.clone()).unwrap();
+    let criterion = initial
+        .threshold_criteria
+        .iter()
+        .find(|c| c.id == "sea_ratio")
+        .unwrap();
+    assert!(!criterion.enabled);
+    assert_eq!(criterion.value, 0.05);
+    assert_eq!(criterion.source_id, "landcover");
+    for invalid in [-0.01, 0.5, 1.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            set_threshold_criterion(yaml.clone(), "sea_ratio".into(), true, Some(invalid)).is_err()
+        );
+    }
+    let yaml = set_threshold_criterion(yaml, "landcover".into(), false, Some(9.0)).unwrap();
+    let yaml = set_threshold_criterion(yaml, "sea_ratio".into(), true, Some(0.1)).unwrap();
+    let yaml = set_refinement(yaml, true, true, 1).unwrap();
+    let saved = validate_project(yaml).unwrap();
+    let cfg = ProjectConfig::from_yaml(&saved).unwrap();
+    let lowered = cfg.try_lower().unwrap();
+    assert!(lowered.refine.refine_cal && lowered.refine.refine_sea_ratio);
+    assert!(!lowered.refine.refine_num_landtypes);
+    assert_eq!(lowered.refine.th_sea_ratio, [0.1, 0.9]);
+    let summary = project_summary(saved.clone()).unwrap();
+    let criterion = summary
+        .threshold_criteria
+        .iter()
+        .find(|c| c.id == "sea_ratio")
+        .unwrap();
+    assert!(criterion.enabled && criterion.source_enabled);
+    assert_eq!(criterion.value, 0.1);
+    let reset = set_threshold_criterion(saved.clone(), "sea_ratio".into(), true, None).unwrap();
+    assert_eq!(
+        ProjectConfig::from_yaml(&reset)
+            .unwrap()
+            .lower()
+            .refine
+            .th_sea_ratio,
+        [0.05, 0.95]
+    );
+    let saved = set_refinement(saved, false, true, 0).unwrap();
+    let disabled = set_threshold_criterion(saved, "sea_ratio".into(), false, Some(0.1)).unwrap();
+    let disabled = ProjectConfig::from_yaml(&disabled).unwrap();
+    assert!(!disabled.lower().refine.refine_sea_ratio);
+    assert!(
+        disabled
+            .data_layers
+            .iter()
+            .find(|l| l.id == "landcover")
             .unwrap()
             .enabled
     );
