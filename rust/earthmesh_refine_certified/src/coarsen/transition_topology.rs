@@ -2103,9 +2103,7 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
     if state.open_edge_count() != 0 {
         return Err(format!("mesh has {} open edges", state.open_edge_count()));
     }
-    // These sets are only queried for membership/count, never traversed;
-    // triangle-order validation and first-error reporting remain deterministic.
-    let mut edges = HashSet::new();
+    // Membership only; triangle-order first-error reporting stays deterministic.
     let mut degrees = vec![0usize; state.vertices().len()];
     let mut seeds = vec![0usize; state.vertices().len()];
     let mut triangles = HashSet::new();
@@ -2126,9 +2124,6 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
         if !triangles.insert(canonical) {
             return Err(format!("duplicate triangle {canonical:?}"));
         }
-        for [u, v] in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
-            edges.insert(edge(u, v));
-        }
         for vertex in tri {
             degrees[vertex] += 1;
             if seeds[vertex] == 0 {
@@ -2136,8 +2131,12 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
             }
         }
     }
-    let euler =
-        state.vertex_count() as isize - edges.len() as isize + state.triangle_count() as isize;
+    // All callers rebuild adjacency from canonical edge claims. After validation
+    // and the closed-edge check above, each edge has exactly two face claims:
+    // 3F = 2E. Reuse that invariant instead of hashing every edge again.
+    let faces = state.triangle_count();
+    let edges = faces * 3 / 2;
+    let euler = state.vertex_count() as isize - edges as isize + faces as isize;
     if euler != 2 {
         return Err(format!("Euler characteristic is {euler}, expected 2"));
     }
@@ -2233,6 +2232,70 @@ mod tests {
                 &with_triangles(vec![[1; 3], [1; 3], other, other, triangle, triangle])
             ),
             Err("triangle 2 is not positively oriented".into())
+        );
+    }
+
+    #[test]
+    fn closed_topology_euler_count_matches_unique_edges() {
+        let assert_edge_count = |mesh: &MeshState| {
+            mesh.validate().unwrap();
+            assert_eq!(mesh.open_edge_count(), 0);
+            let edges = mesh
+                .active_triangle_slots()
+                .flat_map(|face| {
+                    let [a, b, c] = mesh.triangles()[face];
+                    [edge(a, b), edge(b, c), edge(c, a)]
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(mesh.triangle_count() * 3, edges.len() * 2);
+        };
+        for n in [2, 4, 8] {
+            let source = MotherGrid::generate(n).unwrap();
+            assert_edge_count(&source.mesh);
+            let mut sparse = source.mesh.clone();
+            assert!(matches!(
+                sparse.retire_vertex_from_cursor_with_budget_transactionally_repairing(
+                    2,
+                    0,
+                    100,
+                    |_, _, _| RetirementPostconditionOutcome::Accepted { states_examined: 0 },
+                ),
+                RetirementSearchOutcome::Committed { .. }
+            ));
+            assert!(sparse.triangle_count() + 2 < sparse.triangles().len());
+            assert_edge_count(&sparse);
+            let mut flipped = 0;
+            for face in source.mesh.active_triangle_slots().take(12) {
+                let mut changed = source.mesh.clone();
+                if changed.flip_edge(face, 0).is_ok() {
+                    flipped += 1;
+                    assert_edge_count(&changed);
+                }
+            }
+            assert!(flipped > 0);
+        }
+
+        // Two closed components still satisfy 3F = 2E, but must fail Euler.
+        let source = MotherGrid::generate(2).unwrap();
+        let mut vertices = source.mesh.vertices().to_vec();
+        let offset = vertices.len() - 2;
+        vertices.extend_from_slice(&source.mesh.vertices()[2..]);
+        let mut triangles = source.mesh.triangles().to_vec();
+        triangles.extend(
+            source
+                .mesh
+                .active_triangle_slots()
+                .map(|face| source.mesh.triangles()[face].map(|site| site + offset)),
+        );
+        let mesh = HierarchyLeafMesh {
+            source_vertex_slots: vec![None; vertices.len()],
+            triangle_addresses: vec![None; triangles.len()],
+            mesh: MeshState::from_parts(vertices, triangles).unwrap(),
+        };
+        assert_edge_count(&mesh.mesh);
+        assert_eq!(
+            hard_gate(&source, &mesh),
+            Err("Euler characteristic is 4, expected 2".into())
         );
     }
 
