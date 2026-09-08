@@ -443,3 +443,48 @@ Full provenance and comparisons are stored in
 is in `.omx/artifacts/elastic-angle-hotspot/`. The associated PR records the final
 full-run outcome, including observational timing limits. Downloadable release
 installers are outside this change.
+
+## Edge-crossing scratch reuse (2026-09-08)
+
+On alpha7 `534c5038`, the edge-crossing broad-phase query allocated a full
+`seen` array for each Rayon `map_init` leaf, not just once per worker. A regular
+NXP120 probe (432,000 edges) observed 5,930–7,655 arrays per 16-thread query:
+10.25–13.23 GB of cumulative requested array storage. This is **not peak RSS**;
+allocation timing also excludes delayed page faults and destruction.
+
+`EdgeCrossingIndex::total_penalty` now keeps lazy, per-call worker scratch in
+standard-library mutexes. Each leaf acquires its worker's scratch once; candidate
+traversal, geometric predicates, and the existing Rayon iterator/reduction
+adaptors are unchanged. Scratch is dropped at the end of the call. The locked
+leaf must not introduce nested Rayon work. No global cache or dependency is added.
+
+Eight alternating same-process A/B pairs per workload, with uninstrumented timed
+methods, measured the following query medians (index construction excluded):
+
+| Threads | NXP | Before (ms) | After (ms) | Query-time reduction |
+|---|---|---:|---:|---:|
+| 1 | 8 | 6.287 | 6.343 | −0.9% |
+| 1 | 120 | 1447.274 | 1416.983 | 2.1% |
+| 4 | 8 | 1.904 | 1.911 | −0.3% |
+| 4 | 120 | 522.723 | 515.985 | 1.3% |
+| 16 | 8 | 1.977 | 1.813 | 8.3% |
+| 16 | 120 | 275.708 | 260.729 | 5.4% |
+
+The 16-thread large case improved in seven of eight pairs. Separately counted
+allocations fell from 6,071 to 16 (10,490,688,000 to 27,648,000 requested bytes).
+Small 1/4-thread differences and low-thread benefits are near measurement noise;
+these are query microbenchmarks, not a whole-run speedup or memory-peak claim.
+
+Ordered per-edge subtotal bits matched for regular and displaced/inverted meshes;
+single-thread nonzero totals and all zero totals also matched. The regression
+passed before and after the production edit, covering candidate order, scratch
+reuse, generation rollover, empty inputs, nonzero crossings, and nested calls
+in 1/2/4-worker pools. Benchmark helpers and diagnostics remain artifact-only. All **324 related tests**,
+all-target Clippy, formatting, GUI JavaScript and active-taskbook checks passed.
+
+Unchanged full Tri/Hex grid, certificate, remap, quality and construction-result
+comparisons, related tests, lint and CI are publication gates. Evidence is in
+`.omx/artifacts/crossing-workspace-hotspot/` and
+`.omx/artifacts/crossing-workspace-full-validation/`. The associated PR records
+the final full-run outcome; historical run times are observational, not controlled
+A/B. Downloadable release installers are outside this change.
