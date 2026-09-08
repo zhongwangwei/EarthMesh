@@ -345,3 +345,52 @@ paths and timings. Build provenance and full-run comparisons are preserved under
 `.omx/artifacts/elastic-reference-full-validation/`; profiling and bounded A/B
 checks are under `.omx/artifacts/elastic-hot-component/`. The associated PR records
 final full-run results. Downloadable release installers are outside this change.
+
+
+## Parallel edge-claim ordering (2026-09-08)
+
+The previous full runs exposed 72 global mesh rebuilds across component 11's
+14 topology-solver calls. Nested `rebuild_mesh_state` time was 63.767 s (Tri)
+and 71.849 s (Hex), inside topology-search totals of 197.879 s and 225.914 s.
+These nested times must not be added to their parent topology time.
+
+`MeshState::from_parts` and `validate` now use the already-installed Rayon's
+in-place parallel unstable sort for integer edge claims when the current pool
+has more than one thread. One-thread calls retain stdlib `sort_unstable`, which
+was faster than single-thread Rayon in the probe. The existing contract still
+requires configuring the global worker pool before starting mesh work.
+
+Construction orders `(edge, triangle, corner)` by the same total integer order;
+validation orders edge pairs. Equal validation keys are identical values.
+Adjacency, first-error ordering, live-slot checks and every topology/geometry
+gate are preserved. No cache, solver budget change, floating-point reorder or
+new dependency is involved.
+
+Six same-process alternating pairs per pool size used a 2,048,000-triangle
+mother grid and compared complete `MeshState` values exactly:
+
+| Threads | Constructor median before → after | Validator median before → after |
+| --- | ---: | ---: |
+| 1 | 203.324 → 203.657 ms | 129.617 → 128.910 ms |
+| 8 | 202.618 → 44.324 ms | 129.747 → 49.636 ms |
+| 16 | 203.612 → 41.010 ms | 129.097 → 48.114 ms |
+
+At 16 threads these kernels used 79.9% and 62.7% less wall time respectively;
+these are not whole-run percentages. Twelve n320 mixed-component transactions
+also certified with identical fingerprints (`6408096227490205345`) and phase
+counts. Separate-process topology medians were 0.7815 → 0.5340 s per transaction;
+those timings are observational, not a controlled full adaptive-run speedup.
+
+The regression checks large reversed face sequences, more than 2,000 duplicate
+claims on a canonical edge, non-manifold diagnostics, inactive faces and dead
+vertices against existing ordered-map oracles in 1/2/4-thread pools. **632 mesh
+and related certified tests**, all-target Clippy for both affected crates,
+formatting, GUI JavaScript contracts and active-taskbook checks passed.
+
+Full unchanged Tri/Hex outputs remain the publication gate: grid, certificate,
+remap, quality, readiness and all search counters must match the previous release,
+apart from verified paths and timing metadata. Local comparisons are preserved
+under `.omx/artifacts/topology-component11/`; build provenance and full-run checks
+are under `.omx/artifacts/parallel-edge-full-validation/`. The associated PR
+records the final full-run outcome. Downloadable installers are outside this
+change.
