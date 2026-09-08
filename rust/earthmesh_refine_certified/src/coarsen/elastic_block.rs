@@ -23,7 +23,7 @@ use earthmesh_mesh::{
 };
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElasticBlockLimits {
@@ -299,6 +299,7 @@ pub enum ElasticBlockPhase {
 }
 
 struct EnergyContext {
+    reference_edge_lengths: HashMap<(usize, usize), f64>,
     degrees: BTreeMap<usize, usize>,
     guard_edges: Vec<(usize, usize)>,
     guard_faces: Vec<usize>,
@@ -2600,6 +2601,24 @@ impl EnergyContext {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let guard_faces = patch.guard_faces.clone();
         let guard_edges = guard_edges.into_iter().collect::<Vec<_>>();
+        // Coordinates move during the solve; reference positions and targets do not.
+        let reference_edge_lengths = guard_edges
+            .iter()
+            .map(|&(left, right)| {
+                let length = patch
+                    .target_field
+                    .target_edge_lengths
+                    .get(&(left, right))
+                    .copied()
+                    .unwrap_or_else(|| {
+                        arc_length_unit_sphere(
+                            patch.reference_positions[left],
+                            patch.reference_positions[right],
+                        )
+                    });
+                ((left, right), length)
+            })
+            .collect();
         let guard_seeds = guard_seeds.into_iter().collect::<Vec<_>>();
         let dual_pairs = collect_dual_pairs(mesh, &guard_faces)?;
         let movable = patch
@@ -2662,6 +2681,7 @@ impl EnergyContext {
             })
             .collect();
         Ok(Self {
+            reference_edge_lengths,
             degrees,
             guard_edges,
             guard_faces,
@@ -2847,17 +2867,7 @@ fn elastic_energy_in(
     for &(left, right) in guard_edges {
         let length = arc_length_unit_sphere(mesh.vertices()[left], mesh.vertices()[right]);
         let edge = (left.min(right), left.max(right));
-        let reference = patch
-            .target_field
-            .target_edge_lengths
-            .get(&edge)
-            .copied()
-            .unwrap_or_else(|| {
-                arc_length_unit_sphere(
-                    patch.reference_positions[left],
-                    patch.reference_positions[right],
-                )
-            });
+        let reference = *context.reference_edge_lengths.get(&edge)?;
         if length <= 0.0 || reference <= 0.0 || !length.is_finite() || !reference.is_finite() {
             return None;
         }
@@ -4258,6 +4268,80 @@ mod tests {
     }
 
     #[test]
+    fn prepared_reference_edges_preserve_energy_and_local_gradient() {
+        let (mesh, base, _, base_context) = single_movable_patch();
+        for mode in [
+            ElasticTargetMode::TrialReference,
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+        ] {
+            for case in 0..4 {
+                let mut patch = base.clone();
+                patch.target_mode = mode;
+                let edge = base_context.guard_edges[0];
+                if case == 1 || case == 2 {
+                    patch
+                        .target_field
+                        .target_edge_lengths
+                        .insert(edge, if case == 2 { f64::NAN } else { 0.25 });
+                }
+                if case == 3 {
+                    patch.reference_positions[edge.0] = patch.reference_positions[edge.1];
+                }
+                let mut prepared = patch.clone();
+                for &(a, b) in &base_context.guard_edges {
+                    prepared
+                        .target_field
+                        .target_edge_lengths
+                        .entry((a, b))
+                        .or_insert_with(|| {
+                            arc_length_unit_sphere(
+                                patch.reference_positions[a],
+                                patch.reference_positions[b],
+                            )
+                        });
+                }
+                let context = EnergyContext::new(&mesh, &patch).unwrap();
+                let prepared_context = EnergyContext::new(&mesh, &prepared).unwrap();
+                let mut moved = mesh.clone();
+                let site = patch.movable_compact_vertices[0];
+                let point = exponential_map(
+                    mesh.vertices()[site],
+                    scale_point(tangent_basis(mesh.vertices()[site]).unwrap()[0], 0.001),
+                )
+                .unwrap();
+                moved.move_vertex(site, point);
+                for phase in [
+                    ElasticBlockPhase::Untangle,
+                    ElasticBlockPhase::AngleFeasibility,
+                    ElasticBlockPhase::DelaunayVoronoiFeasibility,
+                    ElasticBlockPhase::Interior,
+                ] {
+                    let expected = elastic_energy(&moved, &prepared, phase, &prepared_context);
+                    assert_eq!(elastic_energy(&moved, &patch, phase, &context), expected);
+                    if case >= 2 {
+                        assert!(expected.is_none());
+                    } else if matches!(phase, ElasticBlockPhase::AngleFeasibility) {
+                        assert!(expected.is_some());
+                    }
+                    let expected_gradient = finite_difference_gradient(
+                        &mut moved.clone(),
+                        &prepared,
+                        phase,
+                        0.01,
+                        &prepared_context,
+                    );
+                    let mut trial = moved.clone();
+                    assert_eq!(
+                        finite_difference_gradient(&mut trial, &patch, phase, 0.01, &context),
+                        expected_gradient
+                    );
+                    assert_eq!(trial, moved);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn energy_context_matches_full_reference_without_global_rebuild() {
         let (mesh, patch, _, context) = single_movable_patch();
         let reference =
@@ -5226,6 +5310,15 @@ mod tests {
             target_field: ElasticTargetField::default(),
         };
         let context = EnergyContext {
+            reference_edge_lengths: [(triangle[0], triangle[1]), (triangle[1], triangle[2])]
+                .into_iter()
+                .map(|(a, b)| {
+                    (
+                        (a.min(b), a.max(b)),
+                        arc_length_unit_sphere(grid.mesh.vertices()[a], grid.mesh.vertices()[b]),
+                    )
+                })
+                .collect(),
             degrees: vertex_degrees(&grid.mesh).into_iter().enumerate().collect(),
             guard_edges: vec![(triangle[0], triangle[1]), (triangle[1], triangle[2])],
             guard_faces: vec![face],

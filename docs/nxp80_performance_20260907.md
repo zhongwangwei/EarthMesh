@@ -304,3 +304,44 @@ Downloadable release installers were not rebuilt. Bounded profiling/comparison
 evidence is in `.omx/artifacts/topology-hot-component/`; full build provenance,
 source hashes, outputs and comparisons are in
 `.omx/artifacts/topology-gate-full-validation/`.
+
+
+## Elastic reference-edge reuse (2026-09-08)
+
+A bounded diagnostic of the real Tri component 0 measured 169.422 s of elastic
+solve: 78.120 s in gradients, 51.027 s in whole-patch energy, 29.516 s in phase
+classification, and only 0.487 s in full geometry certificates. It had 92,492
+movable vertices, 218,717 guard faces, and 172 iterations. The diagnostic process
+was deliberately stopped after this phase; it was not a completed grid run.
+A certificate early-rejection experiment was not adopted: its isolated gain did
+not establish a gain in the component fixture, and certificates were not this
+large component's bottleneck.
+
+`EnergyContext` now resolves reference edge lengths once per patch, using the
+same explicit-target-over-reference-position precedence. Its lookup-only stdlib
+HashMap is never used to order energy accumulation. Coordinate updates, angle
+calculations, invalid-value checks, finite differences, and all certification
+gates are unchanged. Rebuild the context if targets or reference positions ever
+become mutable during a solve.
+
+A same-process n80 fixture with 64,002 movable vertices and 128,000 guard faces
+ran eight alternating A/B pairs in the angle-feasibility phase. Energy medians
+were **26.045 -> 22.529 ms (13.5% less)**; gradient medians were
+**293.653 -> 250.299 ms (14.8% less)**. Every energy and gradient matched exactly,
+and mesh coordinates were restored after each derivative call. These are kernel
+measurements, not whole-run percentages. Twelve separate n320 mixed-component
+transactions also certified with identical fingerprints and phase counts; that
+small fixture is certificate-dominated and did not demonstrate a timing gain.
+
+The before/after regression covers pre-resolved targets, fallback lengths,
+custom target mode, NaN/zero references, all four phases, movement after context
+creation, local derivatives and mesh restoration. **322 related tests**,
+all-target Clippy, and formatting passed. No dependency, solver, or quality-policy
+change was introduced.
+
+Full saved Tri/Hex runs remain the release gate: the grid, certificate, remap,
+quality and search results must match their previous baselines, apart from verified
+paths and timings. Build provenance and full-run comparisons are preserved under
+`.omx/artifacts/elastic-reference-full-validation/`; profiling and bounded A/B
+checks are under `.omx/artifacts/elastic-hot-component/`. The associated PR records
+final full-run results. Downloadable release installers are outside this change.
