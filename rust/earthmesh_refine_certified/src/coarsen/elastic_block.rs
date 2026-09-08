@@ -24,6 +24,7 @@ use earthmesh_mesh::{
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElasticBlockLimits {
@@ -2956,12 +2957,23 @@ impl EdgeCrossingIndex {
     fn total_penalty(&self, mesh: &MeshState, edges: &[(usize, usize)]) -> f64 {
         let index = &self.index;
         let caps = &self.caps;
+        let queries = (0..rayon::current_num_threads())
+            .map(|_| Mutex::new(None))
+            .collect::<Vec<_>>();
         edges
             .par_iter()
             .enumerate()
             .map_init(
-                || EdgeCrossingQuery::new(edges.len()),
+                || {
+                    // Reuse scratch across leaves without changing the reduction tree.
+                    // The leaf body must not yield to nested Rayon work while locked.
+                    let worker = rayon::current_thread_index().unwrap_or(0);
+                    let mut query = queries[worker].lock().unwrap();
+                    query.get_or_insert_with(|| EdgeCrossingQuery::new(edges.len()));
+                    query
+                },
                 |query, (left, &(a, b))| {
+                    let query = query.as_mut().unwrap();
                     query.fill(index, caps[left]);
                     query
                         .candidates
@@ -5513,6 +5525,48 @@ mod tests {
             edge_crossing_penalty_quadratic(&mesh, &edges)
         );
         assert!(edge_crossing_penalty(&mesh, &edges) > 0.0);
+    }
+
+    #[test]
+    fn crossing_queries_preserve_order_after_reuse_and_rollover() {
+        let grid = MotherGrid::generate(8).unwrap();
+        let edges = guard_edges_for_faces(
+            &grid.mesh,
+            &grid.mesh.active_triangle_slots().collect::<Vec<_>>(),
+        );
+        let index = EdgeCrossingIndex::new(&grid.mesh, &edges).unwrap();
+        let mut reused = EdgeCrossingQuery::new(edges.len());
+        // Nonzero prior marks must never hide candidates, including at rollover.
+        for generation in [0, 17, u32::MAX - 1] {
+            reused.generation = generation;
+            reused.seen.fill(generation);
+            for &cap in index.caps.iter().step_by(7) {
+                let mut fresh = EdgeCrossingQuery::new(edges.len());
+                fresh.fill(&index.index, cap);
+                reused.fill(&index.index, cap);
+                assert_eq!(reused.candidates, fresh.candidates);
+            }
+        }
+        for threads in [1, 2, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                let check = || {
+                    let index = EdgeCrossingIndex::new(&grid.mesh, &edges).unwrap();
+                    for _ in 0..3 {
+                        assert_eq!(
+                            index.total_penalty(&grid.mesh, &edges).to_bits(),
+                            0.0_f64.to_bits()
+                        );
+                    }
+                    assert_eq!(edge_crossing_penalty(&grid.mesh, &[]), 0.0);
+                    untangle_energy_penalizes_crossing_edges();
+                };
+                rayon::join(check, check);
+            });
+        }
     }
 
     fn inverted_elastic_fixture() -> (HierarchyLeafMesh, ElasticPatch) {
