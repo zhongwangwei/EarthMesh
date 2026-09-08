@@ -10,7 +10,7 @@ use crate::{
     fingerprint::mesh_fingerprint,
     mother_grid::{mother_cell_count, MotherGrid, TriangleAddress},
     outcome::FinalCertificationEvidence,
-    remap::ConservativeRemap,
+    remap::VoronoiRemapSource,
     requirement::{certify_final_cell_requirements_with_remap, SourceLevelField},
 };
 use earthmesh_mesh::MeshState;
@@ -416,6 +416,7 @@ fn run_elastic_component_epochs_impl(
         Ok(state) => state,
         Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
     };
+    let source_remap = VoronoiRemapSource::new(&grid.mesh);
     let initial_faces = grid.mesh.triangle_count();
     let initial_vertices = grid.mesh.vertex_count();
     let mut remaining_topology_states = config.total_transition_states;
@@ -533,6 +534,7 @@ fn run_elastic_component_epochs_impl(
             let before_quality_state = quality_gate.is_some().then(|| state.clone());
             let outcome = solve_component_transaction_at_level(
                 &grid,
+                &source_remap,
                 source_levels,
                 &mut state,
                 level_grid,
@@ -675,6 +677,7 @@ fn run_elastic_component_epochs_impl(
         if !reused_component_certificate {
             if let Err(reason) = certify_stage(
                 &grid,
+                &source_remap,
                 source_levels,
                 &state,
                 config.max_adjacent_level_delta,
@@ -908,6 +911,7 @@ fn rollback_record(
 
 fn certify_stage(
     source: &MotherGrid,
+    source_remap: &VoronoiRemapSource<'_>,
     source_levels: &SourceLevelField,
     state: &ComponentTransactionState,
     max_adjacent_level_delta: usize,
@@ -920,7 +924,7 @@ fn certify_stage(
         .verify_geometry(&state.mesh().mesh)
         .map_err(|error| format!("final geometry: {error:?}"))?;
     let target_levels = state.target_levels()?;
-    let remap = ConservativeRemap::between_voronoi_meshes(&source.mesh, &state.mesh().mesh)?;
+    let remap = source_remap.remap_to(&state.mesh().mesh)?;
     let final_cells = certify_final_cell_requirements_with_remap(
         &source.mesh,
         source_levels,

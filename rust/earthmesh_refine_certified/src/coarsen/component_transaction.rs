@@ -21,7 +21,7 @@ use crate::{
     fingerprint::mesh_fingerprint,
     mother_grid::{MotherGrid, TriangleAddress},
     outcome::{FinalCertificationEvidence, GeometryCertifiedMotherGrid},
-    remap::{ConservativeRemap, RemapCertificate},
+    remap::{RemapCertificate, VoronoiRemapSource},
     requirement::{
         certify_final_cell_requirements_with_remap, FinalCellRequirementError,
         FinalCellRequirementReport, SourceLevelField, TargetLevelField,
@@ -37,6 +37,21 @@ fn log_component_phase(enabled: bool, component: u64, phase: &str, started: &mut
     if enabled {
         eprintln!(
             "earthmesh_cli: cmrc_timing phase=component_{phase} component={component} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        *started = Instant::now();
+    }
+}
+
+fn log_failed_candidate_tail(
+    enabled: bool,
+    component: u64,
+    stage: &ComponentTransactionStage,
+    started: &mut Instant,
+) {
+    if enabled {
+        eprintln!(
+            "earthmesh_cli: cmrc_timing phase=component_failed_candidate_tail component={component} stage={stage:?} elapsed_ms={}",
             started.elapsed().as_millis()
         );
         *started = Instant::now();
@@ -276,8 +291,10 @@ pub fn solve_component_transaction_with_contract(
         .enumerate()
         .map(|(site, _)| source.mesh.is_vertex_live(site).then_some(site))
         .collect::<Vec<_>>();
+    let source_remap = VoronoiRemapSource::new(&source.mesh);
     solve_component_transaction_at_level(
         source,
+        &source_remap,
         source_levels,
         state,
         source,
@@ -294,6 +311,7 @@ pub fn solve_component_transaction_with_contract(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn solve_component_transaction_at_level(
     source: &MotherGrid,
+    source_remap: &VoronoiRemapSource<'_>,
     source_levels: &SourceLevelField,
     state: &mut ComponentTransactionState,
     level_grid: &MotherGrid,
@@ -306,7 +324,6 @@ pub(super) fn solve_component_transaction_at_level(
     angle_contract: AngleContractId,
 ) -> ComponentTransactionOutcome {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
-    let mut phase_started = Instant::now();
     let before_fingerprint = state.fingerprint();
     let pre_vertices = state.mesh.mesh.vertex_count();
     let pre_faces = state.mesh.mesh.triangle_count();
@@ -372,7 +389,10 @@ pub(super) fn solve_component_transaction_at_level(
             (depth <= limits.halo_expansions)
                 .then_some((parent, depth.saturating_sub(halo_expansion_offset)))
         });
-        let transition = match (TransitionTopologyLimits {
+        // Start topology timing exactly at the solver call; failed-candidate
+        // bookkeeping from the previous iteration is deliberately uncharged.
+        let mut phase_started = Instant::now();
+        let outcome = (TransitionTopologyLimits {
             topology_states: limits.topology_states.saturating_sub(topology_state_offset),
             maximum_halo_expansions: limits.halo_expansions.saturating_sub(halo_expansion_offset),
         })
@@ -381,14 +401,15 @@ pub(super) fn solve_component_transaction_at_level(
             &search_component,
             topology_cursor,
             preferred_promotion_with_cost,
-        ) {
+        );
+        log_component_phase(
+            timing_enabled,
+            component.id,
+            "topology_search",
+            &mut phase_started,
+        );
+        let transition = match outcome {
             TransitionTopologyOutcome::Closed(trial) => {
-                log_component_phase(
-                    timing_enabled,
-                    component.id,
-                    "topology_search",
-                    &mut phase_started,
-                );
                 counters.topology_states =
                     topology_state_offset.saturating_add(trial.report.topology_states);
                 counters.halo_expansions =
@@ -499,6 +520,7 @@ pub(super) fn solve_component_transaction_at_level(
         candidate_state.prepare_parent_level(parent_subdivision);
         match certify_candidate(
             source,
+            source_remap,
             source_levels,
             &mut candidate_state,
             component,
@@ -514,6 +536,7 @@ pub(super) fn solve_component_transaction_at_level(
             pre_faces,
             &pre_sources,
             angle_contract,
+            &mut phase_started,
         ) {
             Ok(mut report) => {
                 counters.elastic_iterations += report.elastic_iterations;
@@ -526,6 +549,14 @@ pub(super) fn solve_component_transaction_at_level(
                 return ComponentTransactionOutcome::Certified(Box::new(report));
             }
             Err(failure) => {
+                // certify_candidate uses this same timer for completed phases;
+                // only the unlogged tail since its last phase boundary is charged here.
+                log_failed_candidate_tail(
+                    timing_enabled,
+                    component.id,
+                    &failure.stage,
+                    &mut phase_started,
+                );
                 counters.elastic_iterations += failure.elastic_iterations;
                 counters.interval_boxes += failure.interval_boxes;
                 preferred_core_promotion = failure.failed_guard_face.and_then(|face| {
@@ -616,6 +647,7 @@ impl CandidateAttemptFailure {
 #[allow(clippy::too_many_arguments)]
 fn certify_candidate(
     source: &MotherGrid,
+    source_remap: &VoronoiRemapSource<'_>,
     source_levels: &SourceLevelField,
     state: &mut ComponentTransactionState,
     component: &HierarchyComponent,
@@ -629,19 +661,21 @@ fn certify_candidate(
     pre_faces: usize,
     pre_sources: &[bool],
     angle_contract: AngleContractId,
+    phase_started: &mut Instant,
 ) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
-    let mut phase_started = Instant::now();
     let candidate = transition.candidate.clone();
     install_delta(source, state, &candidate).map_err(|reason| {
         CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
     })?;
     apply_source_positions(&mut state.mesh, &state.source_positions);
+    log_component_phase(timing_enabled, component.id, "install_delta", phase_started);
 
     let mut elastic_iterations = 0usize;
     let mut elastic_report = None;
     let guard_faces = affected_faces(source, &state.mesh, &candidate);
     let interval_boxes = guard_faces.len().saturating_mul(3);
+    log_component_phase(timing_enabled, component.id, "prepare_guard", phase_started);
     if interval_boxes > remaining_interval_boxes {
         let mut failure = CandidateAttemptFailure::budget(
             ComponentTransactionStage::LocalGeometry,
@@ -650,9 +684,15 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         return Err(failure);
     }
-    if !Certificate::internal_for(angle_contract)
-        .geometry_region_passes(&state.mesh.mesh, &guard_faces)
-    {
+    let geometry_passes = Certificate::internal_for(angle_contract)
+        .geometry_region_passes(&state.mesh.mesh, &guard_faces);
+    log_component_phase(
+        timing_enabled,
+        component.id,
+        "geometry_screen",
+        phase_started,
+    );
+    if !geometry_passes {
         if transition.candidate.custom_transition_triangles.is_empty() {
             return Err(CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
@@ -663,14 +703,18 @@ fn certify_candidate(
             elastic_patch_for_state(transition, &state.mesh, angle_contract).map_err(|reason| {
                 CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
             })?;
-        let elastic = match solve_elastic_patch_with_contract(
+        log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
+        let outcome = solve_elastic_patch_with_contract(
             &state.mesh,
             patch,
             ElasticBlockLimits {
                 elastic_iterations: remaining_elastic_iterations,
             },
             angle_contract,
-        ) {
+        );
+        // Include rejected candidates in solve timing, not in a generic failure tail.
+        log_component_phase(timing_enabled, component.id, "elastic_solve", phase_started);
+        let elastic = match outcome {
             ElasticBlockOutcome::Certified(trial) => trial,
             ElasticBlockOutcome::ElasticNoImprovement {
                 elastic_iterations: iterations,
@@ -733,13 +777,8 @@ fn certify_candidate(
         elastic_iterations = elastic.report.elastic_iterations;
         apply_elastic(state, &elastic);
         elastic_report = Some(elastic.report.clone());
+        log_component_phase(timing_enabled, component.id, "elastic_apply", phase_started);
     }
-    log_component_phase(
-        timing_enabled,
-        component.id,
-        "prepare_and_elastic",
-        &mut phase_started,
-    );
 
     lower_covered_source_levels(
         source,
@@ -763,7 +802,7 @@ fn certify_candidate(
         timing_enabled,
         component.id,
         "local_geometry",
-        &mut phase_started,
+        phase_started,
     );
 
     let global_geometry = Certificate::internal_for(angle_contract)
@@ -780,7 +819,7 @@ fn certify_candidate(
         timing_enabled,
         component.id,
         "internal_geometry",
-        &mut phase_started,
+        phase_started,
     );
     let final_geometry = Certificate::final_delivery_for(angle_contract)
         .verify_geometry(&state.mesh.mesh)
@@ -796,7 +835,7 @@ fn certify_candidate(
         timing_enabled,
         component.id,
         "final_geometry",
-        &mut phase_started,
+        phase_started,
     );
 
     let target_levels = state.target_levels().map_err(|reason| {
@@ -805,17 +844,14 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         failure
     })?;
-    let remap = ConservativeRemap::between_voronoi_meshes(&source.mesh, &state.mesh.mesh).map_err(
-        |reason| {
-            let mut failure =
-                CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
-            failure.interval_boxes = interval_boxes;
-            failure
-        },
-    )?;
+    let remap = source_remap.remap_to(&state.mesh.mesh).map_err(|reason| {
+        let mut failure = CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
+        failure.interval_boxes = interval_boxes;
+        failure
+    })?;
     let remap_certificate =
         remap.certify_spherical_overlap(source_levels.levels().len(), target_levels.levels().len());
-    log_component_phase(timing_enabled, component.id, "remap", &mut phase_started);
+    log_component_phase(timing_enabled, component.id, "remap", phase_started);
     let final_cells = match certify_final_cell_requirements_with_remap(
         &source.mesh,
         source_levels,
@@ -844,12 +880,7 @@ fn certify_candidate(
             return Err(failure);
         }
     };
-    log_component_phase(
-        timing_enabled,
-        component.id,
-        "final_cells",
-        &mut phase_started,
-    );
+    log_component_phase(timing_enabled, component.id, "final_cells", phase_started);
     let final_evidence =
         FinalCertificationEvidence::from_final_cells(&final_cells, remap_certificate.clone())
             .map_err(|reason| {
@@ -872,7 +903,7 @@ fn certify_candidate(
         failure
     })?;
     let final_certificate = final_mesh.certificate().clone();
-    log_component_phase(timing_enabled, component.id, "finalize", &mut phase_started);
+    log_component_phase(timing_enabled, component.id, "finalize", phase_started);
 
     let post_vertices = state.mesh.mesh.vertex_count();
     let post_faces = state.mesh.mesh.triangle_count();

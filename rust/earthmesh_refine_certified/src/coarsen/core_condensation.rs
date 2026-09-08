@@ -1,6 +1,7 @@
 use crate::mother_grid::{push_oriented, MotherGrid, TriangleAddress, VertexAddress};
 use earthmesh_mesh::{CartesianPoint, MeshState};
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 /// Exact hierarchy leaves. Each leaf is a source face or one of its ancestors.
 pub type HierarchyFaceKey = TriangleAddress;
@@ -116,6 +117,18 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
     custom_face_slots: &BTreeSet<usize>,
     custom_triangles: &[[usize; 3]],
 ) -> Result<HierarchyLeafMesh, String> {
+    let timing = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
+    let mut started = Instant::now();
+    // Nested materialization detail: never add these durations to component totals.
+    let mut log_detail = |phase: &str| {
+        if timing {
+            eprintln!(
+                "earthmesh_cli: cmrc_detail phase=rebuild_{phase} elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+            started = Instant::now();
+        }
+    };
     let source_n = source.subdivision;
     if source_n == 0 {
         return Err("source mother subdivision must be positive".into());
@@ -190,6 +203,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
             ));
         }
     }
+    log_detail("coverage");
 
     let mut used_sites = vec![false; source.mesh.vertices().len()];
     for site in leaf_triangles
@@ -211,6 +225,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
             source_vertex_slots.push(Some(old));
         }
     }
+    log_detail("compact");
 
     let mut triangles = vec![[1usize; 3]; 2];
     let mut triangle_addresses = vec![None, None];
@@ -219,6 +234,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
         push_oriented(&mut triangles, &vertices, tri)?;
         triangle_addresses.push(address);
     }
+    log_detail("orient");
 
     let mesh = MeshState::from_parts(vertices, triangles).map_err(|errors| {
         errors
@@ -227,6 +243,7 @@ pub(super) fn rebuild_from_leaf_set_with_custom_face_slots(
             .collect::<Vec<_>>()
             .join("; ")
     })?;
+    log_detail("mesh_state");
     Ok(HierarchyLeafMesh {
         mesh,
         triangle_addresses,

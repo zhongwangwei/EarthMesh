@@ -2402,6 +2402,15 @@ fn expand_movable_domain_by_rings(
         .filter(|site| !permanent_fixed.contains(site))
         .filter(|&site| source_slots.get(site).and_then(|slot| *slot).is_some())
         .collect::<BTreeSet<_>>();
+    if expansion_rings == 0 || movable.is_empty() {
+        return movable;
+    }
+    // ponytail: keep the full face scan, but use dense membership instead of
+    // six tree lookups per face; add adjacency only if scans remain a bottleneck.
+    let mut movable_mask = vec![false; source_slots.len()];
+    for &site in &movable {
+        movable_mask[site] = true;
+    }
     for _ in 0..expansion_rings {
         let mut next = movable.clone();
         for edge in mesh
@@ -2409,7 +2418,7 @@ fn expand_movable_domain_by_rings(
             .flat_map(|face| local_triangle_edges(mesh.triangles()[face]))
         {
             for (left, right) in [(edge.0, edge.1), (edge.1, edge.0)] {
-                if movable.contains(&left)
+                if movable_mask.get(left).copied().unwrap_or(false)
                     && !permanent_fixed.contains(&right)
                     && source_slots.get(right).and_then(|slot| *slot).is_some()
                 {
@@ -2419,6 +2428,10 @@ fn expand_movable_domain_by_rings(
         }
         if next == movable {
             break;
+        }
+        // New sites participate only in the next ring, never this scan.
+        for &site in next.difference(&movable) {
+            movable_mask[site] = true;
         }
         movable = next;
     }
@@ -4831,6 +4844,74 @@ mod tests {
         )
         .unwrap();
         (source, *trial, patch)
+    }
+
+    fn expand_movable_domain_by_rings_reference(
+        mesh: &MeshState,
+        source_slots: &[Option<usize>],
+        base_movable: &BTreeSet<usize>,
+        permanent_fixed: &BTreeSet<usize>,
+        expansion_rings: usize,
+    ) -> BTreeSet<usize> {
+        let mut movable = base_movable
+            .iter()
+            .copied()
+            .filter(|site| !permanent_fixed.contains(site))
+            .filter(|&site| source_slots.get(site).and_then(|slot| *slot).is_some())
+            .collect::<BTreeSet<_>>();
+        for _ in 0..expansion_rings {
+            let mut next = movable.clone();
+            for edge in mesh
+                .active_triangle_slots()
+                .flat_map(|face| local_triangle_edges(mesh.triangles()[face]))
+            {
+                for (left, right) in [(edge.0, edge.1), (edge.1, edge.0)] {
+                    if movable.contains(&left)
+                        && !permanent_fixed.contains(&right)
+                        && source_slots.get(right).and_then(|slot| *slot).is_some()
+                    {
+                        next.insert(right);
+                    }
+                }
+            }
+            if next == movable {
+                break;
+            }
+            movable = next;
+        }
+        movable
+    }
+
+    #[test]
+    fn dense_ring_membership_matches_tree_scan() {
+        for subdivision in [2, 4, 8] {
+            let source = MotherGrid::generate(subdivision).unwrap();
+            let mesh = &source.mesh;
+            let mut slots = (0..mesh.vertices().len())
+                .map(|site| mesh.is_vertex_live(site).then_some(site))
+                .collect::<Vec<_>>();
+            // Missing source mappings and out-of-mesh source slots keep their old semantics.
+            slots[3] = None;
+            slots.push(Some(usize::MAX));
+            for base in [
+                BTreeSet::new(),
+                BTreeSet::from([2, 3, 7]),
+                BTreeSet::from([mesh.vertices().len(), usize::MAX]),
+                mesh.active_vertex_slots().collect(),
+            ] {
+                for fixed in [BTreeSet::new(), BTreeSet::from([2, 4, 9])] {
+                    for rings in 0..=3 {
+                        assert_eq!(
+                            expand_movable_domain_by_rings(mesh, &slots, &base, &fixed, rings),
+                            expand_movable_domain_by_rings_reference(
+                                mesh, &slots, &base, &fixed, rings
+                            ),
+                            "subdivision={subdivision}, rings={rings}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
