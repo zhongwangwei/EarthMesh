@@ -300,7 +300,7 @@ pub enum ElasticBlockPhase {
 
 struct EnergyContext {
     reference_edge_lengths: HashMap<(usize, usize), f64>,
-    degrees: BTreeMap<usize, usize>,
+    target_angles: HashMap<usize, f64>,
     guard_edges: Vec<(usize, usize)>,
     guard_faces: Vec<usize>,
     guard_seeds: Vec<(usize, usize)>,
@@ -2591,14 +2591,23 @@ impl EnergyContext {
                 .or(area);
             reference_dual_areas.insert(site, area);
         }
-        let degrees = guard_seeds
+        // Topology and targets stay fixed while coordinates move during the solve.
+        let target_angles = guard_seeds
             .iter()
             .map(|(&site, &seed)| {
                 mesh.triangle_fan_from(site, seed)
-                    .map(|fan| (site, fan.len()))
+                    .map(|fan| {
+                        let angle = patch
+                            .target_field
+                            .target_angles
+                            .get(&site)
+                            .copied()
+                            .unwrap_or_else(|| std::f64::consts::TAU / fan.len() as f64);
+                        (site, angle)
+                    })
                     .map_err(|error| error.to_string())
             })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+            .collect::<Result<HashMap<_, _>, _>>()?;
         let guard_faces = patch.guard_faces.clone();
         let guard_edges = guard_edges.into_iter().collect::<Vec<_>>();
         // Coordinates move during the solve; reference positions and targets do not.
@@ -2682,7 +2691,7 @@ impl EnergyContext {
             .collect();
         Ok(Self {
             reference_edge_lengths,
-            degrees,
+            target_angles,
             guard_edges,
             guard_faces,
             guard_seeds,
@@ -2822,17 +2831,7 @@ fn elastic_energy_in(
         for corner in 0..3 {
             let angle = angles[corner];
             let site = triangle[corner];
-            let target = patch
-                .target_field
-                .target_angles
-                .get(&site)
-                .copied()
-                .or_else(|| {
-                    context
-                        .degrees
-                        .get(&site)
-                        .map(|degree| std::f64::consts::TAU / *degree as f64)
-                })?;
+            let target = *context.target_angles.get(&site)?;
             let below = (minimum_angle - angle).max(0.0);
             let above = (angle - maximum_angle).max(0.0);
             energy += 100.0 * (below * below + above * above);
@@ -4342,6 +4341,86 @@ mod tests {
     }
 
     #[test]
+    fn prepared_target_angles_preserve_energy_and_local_gradient() {
+        let (mesh, base, _, base_context) = single_movable_patch();
+        let degrees = vertex_degrees(&mesh);
+        let site = base.movable_compact_vertices[0];
+        for mode in [
+            ElasticTargetMode::TrialReference,
+            ElasticTargetMode::HierarchyEdgeAreaDegree,
+        ] {
+            for target in [
+                None,
+                Some(0.75),
+                Some(-0.0),
+                Some(f64::INFINITY),
+                Some(f64::NEG_INFINITY),
+                Some(f64::from_bits(0x7ff8_0000_0000_0123)),
+            ] {
+                let mut patch = base.clone();
+                patch.target_mode = mode;
+                if let Some(target) = target {
+                    patch.target_field.target_angles.insert(site, target);
+                }
+                let mut prepared = patch.clone();
+                for &(vertex, _) in &base_context.guard_seeds {
+                    prepared
+                        .target_field
+                        .target_angles
+                        .entry(vertex)
+                        .or_insert(std::f64::consts::TAU / degrees[vertex] as f64);
+                }
+                let context = EnergyContext::new(&mesh, &patch).unwrap();
+                let prepared_context = EnergyContext::new(&mesh, &prepared).unwrap();
+                for &(vertex, _) in &base_context.guard_seeds {
+                    assert_eq!(
+                        context.target_angles[&vertex].to_bits(),
+                        prepared.target_field.target_angles[&vertex].to_bits()
+                    );
+                }
+                let mut moved = mesh.clone();
+                moved.move_vertex(
+                    site,
+                    exponential_map(
+                        mesh.vertices()[site],
+                        scale_point(tangent_basis(mesh.vertices()[site]).unwrap()[0], 0.001),
+                    )
+                    .unwrap(),
+                );
+                for phase in [
+                    ElasticBlockPhase::Untangle,
+                    ElasticBlockPhase::AngleFeasibility,
+                    ElasticBlockPhase::DelaunayVoronoiFeasibility,
+                    ElasticBlockPhase::Interior,
+                ] {
+                    let expected = elastic_energy(&moved, &prepared, phase, &prepared_context);
+                    assert_eq!(elastic_energy(&moved, &patch, phase, &context), expected);
+                    if matches!(phase, ElasticBlockPhase::AngleFeasibility) {
+                        assert_eq!(
+                            expected.is_none(),
+                            mode.uses_hierarchy_area_degree()
+                                && target.is_some_and(|value| !value.is_finite())
+                        );
+                    }
+                    let expected_gradient = finite_difference_gradient(
+                        &mut moved.clone(),
+                        &prepared,
+                        phase,
+                        0.01,
+                        &prepared_context,
+                    );
+                    let mut trial = moved.clone();
+                    assert_eq!(
+                        finite_difference_gradient(&mut trial, &patch, phase, 0.01, &context),
+                        expected_gradient
+                    );
+                    assert_eq!(trial, moved);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn energy_context_matches_full_reference_without_global_rebuild() {
         let (mesh, patch, _, context) = single_movable_patch();
         let reference =
@@ -4349,7 +4428,10 @@ mod tests {
                 .unwrap();
         let all_degrees = vertex_degrees(&mesh);
         for &(site, seed) in &context.guard_seeds {
-            assert_eq!(context.degrees[&site], all_degrees[site]);
+            assert_eq!(
+                context.target_angles[&site],
+                std::f64::consts::TAU / all_degrees[site] as f64
+            );
             assert_eq!(
                 context.reference_dual_areas[&site],
                 reference
@@ -5319,7 +5401,11 @@ mod tests {
                     )
                 })
                 .collect(),
-            degrees: vertex_degrees(&grid.mesh).into_iter().enumerate().collect(),
+            target_angles: vertex_degrees(&grid.mesh)
+                .into_iter()
+                .enumerate()
+                .map(|(site, degree)| (site, std::f64::consts::TAU / degree as f64))
+                .collect(),
             guard_edges: vec![(triangle[0], triangle[1]), (triangle[1], triangle[2])],
             guard_faces: vec![face],
             guard_seeds: vec![(usize::MAX, usize::MAX)],

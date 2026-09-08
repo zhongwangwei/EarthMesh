@@ -394,3 +394,52 @@ under `.omx/artifacts/topology-component11/`; build provenance and full-run chec
 are under `.omx/artifacts/parallel-edge-full-validation/`. The associated PR
 records the final full-run outcome. Downloadable installers are outside this
 change.
+
+
+## Pre-resolved elastic target angles (2026-09-08)
+
+A fresh diagnostic on the real Tri component 0 measured 167.581 s of elastic
+solve: 71.476 s in gradients, 52.965 s in whole-patch energy, 31.926 s in phase
+classification and 0.458 s in context construction. Its patch had 92,492 movable
+vertices and 218,717 guard faces, with 172 gradient calls and 908 whole-energy
+calls. The owned diagnostic was deliberately terminated after that elastic
+phase; it was not a completed grid generation. A bounded native sample also
+captured the repeated target-angle lookup path inside energy evaluation.
+
+The private `EnergyContext` now stores resolved target angles **instead of** its
+old degree map. It still validates every guard-site triangle fan in the same
+order, then resolves the explicit target or the identical `TAU / degree`
+fallback. The lookup-only stdlib HashMap is not iterated for energy accumulation.
+No sanitization was added: explicit signed zero, infinities and NaN payloads
+retain their previous behavior. Rebuild the context if topology or target fields
+change; coordinate movement alone does not change these targets.
+
+A same-process n80 fixture with 64,002 movable sites and 128,000 guard faces
+ran eight alternating A/B pairs for each target configuration (16 pairs total):
+
+| Targets | Context median before → after | Energy median before → after | Gradient median before → after |
+| --- | ---: | ---: | ---: |
+| Degree fallback | 250.603 → 253.182 ms | 25.489 → 19.256 ms | 260.384 → 206.237 ms |
+| Explicit hierarchy | 250.831 → 254.469 ms | 25.382 → 19.234 ms | 259.366 → 206.501 ms |
+
+Energy used 24.2–24.5% less wall time and gradients 20.4–20.8% less; context
+construction cost 2.6–3.6 ms more once per solve. These are kernel measurements,
+not a whole-run percentage. Energy and gradients matched exactly, and each
+derivative restored the mesh. Twelve n320 component transactions also certified
+with identical fingerprints (`6408096227490205345`) and phase counts; their
+certificate-dominated total times did not establish an additional speedup.
+
+The regression was run before the source change, then extended to assert
+resolved-angle bits. It covers explicit and fallback targets, finite values,
+signed zero, infinities, NaN payloads, all four phases, both target-term branches,
+coordinate movement after context creation and gradient restoration. **323
+related tests**, all-target Clippy, formatting, GUI JavaScript contracts and
+active-taskbook checks passed. No dependency, search policy, quality threshold,
+energy accumulation order or finite-difference algorithm changed.
+
+Unchanged saved Tri/Hex output comparisons and CI remain the publication gate.
+Full provenance and comparisons are stored in
+`.omx/artifacts/elastic-angle-full-validation/`; diagnostic and local A/B evidence
+is in `.omx/artifacts/elastic-angle-hotspot/`. The associated PR records the final
+full-run outcome, including observational timing limits. Downloadable release
+installers are outside this change.
