@@ -226,3 +226,81 @@ Protocol is `earthmesh-studio-engine/3`; NetCDF is statically linked. Source-che
 GUI runs select this sidecar and refresh their temporary copy on the next launch.
 Build provenance, source hashes, logs, memory samples and per-file comparison
 results are retained in `.omx/artifacts/ring-full-validation/`.
+
+
+## 2026-09-08 follow-up: avoid redundant edge hashing in topology checks
+
+The preceding full-run logs localize about half of topology-search time to
+component 11: **331.521 s / 48.6%** for Tri and **355.530 s / 52.2%** for Hex,
+with 14 search calls in each case. Nested rebuild details account for only part
+of that cost; this is not evidence that candidate enumeration alone is expensive.
+A source-size isolated profile identified face checks and hashing as the largest
+part of the existing `hard_gate` on that regular fixture.
+
+The change in `coarsen/transition_topology.rs` removes only the edge `HashSet`
+previously rebuilt to count Euler edges. Every current caller rebuilds adjacency
+from canonical edge claims; after the unchanged validation and zero-open-edge
+checks, each edge has two face claims, so **3F = 2E**. Counting live faces therefore
+provides the same edge count without another full edge hash table. This argument
+is tied to those rebuilt inputs, not arbitrary corrupted neighbour tables.
+Triangle duplicate detection keeps its own `HashSet`. Orientation, first-error
+ordering, Euler, degrees, protected vertices, connected fans, search budgets and
+candidate ordering are unchanged. No persistent cache or dependency was added.
+
+### Isolated validation and timing
+
+An exact extracted pre-change/current function comparison checked 46 cases,
+including open, reversed, duplicate, disconnected, retired/sparse and flipped
+meshes plus an actual closed transition trial. Results, including error strings,
+matched. Six same-process pairs then alternated call order on a subdivision-640
+mother grid (4,096,002 cells / 8,192,000 faces), with all hard checks included:
+
+| Complete hard-gate call | Median |
+| --- | ---: |
+| Rebuild edge hash table | 3.937950 s |
+| Count edges from validated closed incidence | 2.530931 s |
+
+That is **35.7% less hard-gate time**, not 35.7% less topology-search or whole-run
+time. Twelve clean, subdivision-160 mixed-component transactions also certified
+with identical mesh fingerprints and phase counts. Separate-process component
+timings are observational and are not used as a causal speedup claim.
+
+The edge-count regression passed before production edits and after them, covering
+closed grids, actual sparse slots after retirement, successful flips and rejection
+of disconnected closed components. Existing first-error regressions remain in
+place. **295 related tests** passed, as did the final strengthened flip-coverage
+assertion, all-target Clippy and formatting.
+
+### Full clean Tri/Hex verification
+
+A clean checkout of alpha7 `884183547e82d8cf639afbd6ffa7bbe979717c12`, with only
+this certified-backend source/test change, built the static-NetCDF release CLI.
+The original saved Tri and Hex projects ran sequentially with unchanged source
+bytes, requirements and gates:
+
+| Case | Previous clean run | Current run | Current peak RSS |
+| --- | ---: | ---: | ---: |
+| Tri | 2,110.404 s (35m10s) | 1,713.878 s (28m34s) | 21.632 GiB |
+| Hex | 1,945.157 s (32m25s) | 1,895.592 s (31m36s) | 25.540 GiB |
+
+Both cases match their respective prior gridfile, certificate, remap CSV, quality
+CSV, repair artifacts, worst cells and readiness marker **byte-for-byte**.
+Quality JSON/Markdown, auto-refine decisions, manifests and resources also match
+after the same verified path/time/manifest-length normalization described above.
+All construction/search counters and existing quality warnings are unchanged.
+Neither memory guard triggered, and neither run observed new system swap-outs.
+
+**The whole-run differences remain observational.** Background workload and source
+cache conditions were not controlled: for example, untouched Tri requirement
+planning fell from 110.262 s to 27.969 s, while untouched Hex component remapping
+rose from 309.081 s to 391.265 s. Do not attribute those changes to edge counting.
+Current disjoint topology-search totals were 542.946 s (Tri) and 555.954 s (Hex);
+elastic solve remained 482.842 s and 468.696 s respectively.
+
+The verified engine was atomically staged for the local GUI with its predecessor
+backed up. SHA-256:
+`4e257091cc4a4ca2d903fe1b88bfe047643dcfaf38ccf3cf8b63b5d547f3330c`.
+Downloadable release installers were not rebuilt. Bounded profiling/comparison
+evidence is in `.omx/artifacts/topology-hot-component/`; full build provenance,
+source hashes, outputs and comparisons are in
+`.omx/artifacts/topology-gate-full-validation/`.
