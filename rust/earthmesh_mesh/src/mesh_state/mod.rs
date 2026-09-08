@@ -21,6 +21,8 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use rayon::slice::ParallelSliceMut;
+
 use crate::{CartesianPoint, TriangularMesh};
 
 /// The first id that names a real entity. Slot 0 is unused and slot 1 is the
@@ -216,7 +218,11 @@ impl MeshState {
         for (triangle, corners) in triangles.iter().enumerate().skip(MESH_STATE_FIRST_ID) {
             push_triangle_edge_claims(&mut claims, triangle, *corners);
         }
-        claims.sort_unstable();
+        if rayon::current_num_threads() > 1 {
+            claims.par_sort_unstable();
+        } else {
+            claims.sort_unstable();
+        }
         for group in claims.chunk_by(|left, right| left.edge == right.edge) {
             if group.len() > 2 {
                 errors.push(MeshStateError::NonManifoldEdge {
@@ -660,7 +666,11 @@ impl MeshState {
             }
             self.validate_neighbour_edges_for_triangle(triangle, &mut errors);
         }
-        claims.sort_unstable();
+        if rayon::current_num_threads() > 1 {
+            claims.par_sort_unstable();
+        } else {
+            claims.sort_unstable();
+        }
         for group in claims.chunk_by(|left, right| left == right) {
             if group.len() > 2 {
                 errors.push(MeshStateError::NonManifoldEdge {

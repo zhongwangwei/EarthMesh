@@ -194,6 +194,54 @@ fn from_parts_error_order_matches_ordered_map_reference() {
     );
 }
 
+#[test]
+fn large_edge_claims_match_ordered_references_across_thread_counts() {
+    let (tetra_vertices, tetra_triangles) = tetrahedron();
+    let mut vertices = tetra_vertices[..MESH_STATE_FIRST_ID].to_vec();
+    let mut triangles = tetra_triangles[..MESH_STATE_FIRST_ID].to_vec();
+    for index in 0..4096 {
+        vertices.extend_from_slice(&tetra_vertices[MESH_STATE_FIRST_ID..]);
+        triangles.extend(
+            tetra_triangles[MESH_STATE_FIRST_ID..]
+                .iter()
+                .map(|corners| corners.map(|vertex| vertex + index * 4)),
+        );
+    }
+    triangles[MESH_STATE_FIRST_ID..].reverse();
+    let expected = ordered_map_from_parts_reference(vertices.clone(), triangles.clone()).unwrap();
+    let mut nonmanifold = triangles.clone();
+    nonmanifold.extend_from_within(2..10);
+    nonmanifold.extend(std::iter::repeat_n(triangles[2], 4096));
+    let expected_errors =
+        ordered_map_from_parts_reference(vertices.clone(), nonmanifold.clone()).unwrap_err();
+
+    for threads in [1, 2, 4] {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| {
+                let mut state = MeshState::from_parts(vertices.clone(), triangles.clone()).unwrap();
+                assert_eq!(state.neighbours, expected);
+                assert_eq!(state.validate(), Ok(()));
+                assert_eq!(
+                    MeshState::from_parts(vertices.clone(), nonmanifold.clone()).unwrap_err(),
+                    expected_errors
+                );
+
+                state.triangles[2] = [2, 2, usize::MAX];
+                let repeated = state.triangles[10];
+                state.triangles[3..4099].fill(repeated);
+                state.triangle_live[11] = false;
+                *state.vertex_live.last_mut().unwrap() = false;
+                assert_eq!(
+                    state.validate().unwrap_err(),
+                    ordered_map_validate_reference(&state).unwrap_err()
+                );
+            });
+    }
+}
+
 /// One triangle alone has three edges and nothing across any of them.
 #[test]
 fn a_single_triangle_is_open_on_every_edge() {
