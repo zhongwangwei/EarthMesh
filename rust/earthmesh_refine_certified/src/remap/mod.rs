@@ -4,7 +4,7 @@ use earthmesh_boundary::SphericalCap;
 use earthmesh_geometry::{Point, PreparedSphericalPolygon};
 use earthmesh_mesh::{spherical_triangle_area_unit, MeshState};
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemapRow {
@@ -139,26 +139,21 @@ impl ConservativeRemap {
         if source_cells.is_empty() || target_cells.is_empty() {
             return Err("spherical remap needs non-empty source and target cells".into());
         }
-        let prepare = |cells: &[Vec<(f64, f64)>]| -> Result<Vec<_>, String> {
-            cells
-                .iter()
-                .enumerate()
-                .map(|(cell, ring)| {
-                    let points = ring
-                        .iter()
-                        .map(|&(lon, lat)| Point::new(lon, lat))
-                        .collect::<Vec<_>>();
-                    let polygon = PreparedSphericalPolygon::new(&points)
-                        .map_err(|error| format!("invalid spherical cell {cell}: {error}"))?;
-                    Ok((points, polygon))
-                })
-                .collect()
-        };
-        let sources = prepare(source_cells)?;
-        let targets = prepare(target_cells)?;
+        let sources = prepare_cells(source_cells)?;
+        let targets = prepare_cells(target_cells)?;
         let (source_rings, sources): (Vec<_>, Vec<_>) = sources.into_iter().unzip();
         let index = SphericalCapIndex::new(&source_rings)?;
         drop(source_rings);
+        Self::overlap_prepared(source_cells, &sources, &index, target_cells, targets)
+    }
+
+    fn overlap_prepared(
+        source_cells: &[Vec<(f64, f64)>],
+        sources: &[PreparedSphericalPolygon],
+        index: &SphericalCapIndex,
+        target_cells: &[Vec<(f64, f64)>],
+        targets: Vec<(Vec<Point>, PreparedSphericalPolygon)>,
+    ) -> Result<Self, String> {
         let rows = targets
             // Consume each target after its row: its lazily prepared clipping
             // planes need not accumulate across the entire global mesh.
@@ -349,6 +344,81 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
         sum = next;
     }
     sum
+}
+
+// One immutable source per scheduler invocation, deliberately outside cloned
+// transaction state. The borrow prevents stale geometry; targets are never cached.
+pub(crate) struct VoronoiRemapSource<'a> {
+    mesh: &'a MeshState,
+    prepared: OnceLock<Result<PreparedRemapSource, String>>,
+}
+
+struct PreparedRemapSource {
+    cells: Vec<Vec<(f64, f64)>>,
+    polygons: Vec<PreparedSphericalPolygon>,
+    index: SphericalCapIndex,
+}
+
+impl<'a> VoronoiRemapSource<'a> {
+    pub(crate) fn new(mesh: &'a MeshState) -> Self {
+        Self {
+            mesh,
+            prepared: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn remap_to(&self, target: &MeshState) -> Result<ConservativeRemap, String> {
+        let source = self
+            .prepared
+            .get_or_init(|| {
+                let cells = voronoi_rings(self.mesh)?;
+                if cells.is_empty() {
+                    return Err("spherical remap needs non-empty source and target cells".into());
+                }
+                let (rings, polygons): (Vec<_>, Vec<_>) =
+                    prepare_cells(&cells)?.into_iter().unzip();
+                let index = SphericalCapIndex::new(&rings)?;
+                Ok(PreparedRemapSource {
+                    cells,
+                    polygons,
+                    index,
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let target_cells = voronoi_rings(target)?;
+        if target_cells.is_empty() {
+            return Err("spherical remap needs non-empty source and target cells".into());
+        }
+        let targets = prepare_cells(&target_cells)?;
+        let mut remap = ConservativeRemap::overlap_prepared(
+            &source.cells,
+            &source.polygons,
+            &source.index,
+            &target_cells,
+            targets,
+        )?;
+        remap.target_fingerprint = Some(mesh_fingerprint(target));
+        Ok(remap)
+    }
+}
+
+fn prepare_cells(
+    cells: &[Vec<(f64, f64)>],
+) -> Result<Vec<(Vec<Point>, PreparedSphericalPolygon)>, String> {
+    cells
+        .iter()
+        .enumerate()
+        .map(|(cell, ring)| {
+            let points = ring
+                .iter()
+                .map(|&(lon, lat)| Point::new(lon, lat))
+                .collect::<Vec<_>>();
+            let polygon = PreparedSphericalPolygon::new(&points)
+                .map_err(|error| format!("invalid spherical cell {cell}: {error}"))?;
+            Ok((points, polygon))
+        })
+        .collect()
 }
 
 pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, String> {
@@ -598,6 +668,113 @@ mod tests {
             coverage_error,
             target_fingerprint: None,
         })
+    }
+
+    #[test]
+    fn repeated_voronoi_remaps_preserve_rows_certificates_and_target_binding() {
+        let source = MotherGrid::generate(2).unwrap();
+        let sources = voronoi_rings(&source.mesh).unwrap();
+        let cached = VoronoiRemapSource::new(&source.mesh);
+        assert!(cached.prepared.get().is_none());
+        for n in [2, 3, 2] {
+            let target = MotherGrid::generate(n).unwrap();
+            let targets = voronoi_rings(&target.mesh).unwrap();
+            let mut expected = scalar_overlap_reference(&sources, &targets).unwrap();
+            expected.target_fingerprint = Some(mesh_fingerprint(&target.mesh));
+            for threads in [1, 4] {
+                let actual = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build()
+                    .unwrap()
+                    .install(|| cached.remap_to(&target.mesh))
+                    .unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(
+                    actual,
+                    ConservativeRemap::between_voronoi_meshes(&source.mesh, &target.mesh).unwrap()
+                );
+                assert_eq!(
+                    actual.certify_spherical_overlap(sources.len(), targets.len()),
+                    expected.certify_spherical_overlap(sources.len(), targets.len())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_voronoi_source_preserves_errors_and_rebuilds_moved_targets() {
+        let source = MotherGrid::generate(2).unwrap();
+        let mut vertices = source.mesh.vertices().to_vec();
+        vertices.push(vertices[0]); // One orphan site gives a deterministic input error.
+        let invalid = MeshState::from_parts(vertices, source.mesh.triangles().to_vec()).unwrap();
+        let invalid_source = VoronoiRemapSource::new(&invalid);
+        let cached = VoronoiRemapSource::new(&source.mesh);
+        for _ in 0..2 {
+            assert_eq!(
+                invalid_source.remap_to(&source.mesh).unwrap_err(),
+                ConservativeRemap::between_voronoi_meshes(&invalid, &source.mesh).unwrap_err()
+            );
+            assert_eq!(
+                cached.remap_to(&invalid).unwrap_err(),
+                ConservativeRemap::between_voronoi_meshes(&source.mesh, &invalid).unwrap_err()
+            );
+        }
+        let mut target = source.mesh.clone();
+        let before = cached.remap_to(&target).unwrap();
+        let prepared = cached.prepared.get().unwrap() as *const _;
+        let site = target.active_vertex_slots().next().unwrap();
+        let mut point = target.vertices()[site];
+        point.x += 0.001;
+        target.move_vertex(site, point);
+        let after = cached.remap_to(&target).unwrap();
+        assert_ne!(before, after);
+        assert_eq!(
+            after,
+            ConservativeRemap::between_voronoi_meshes(&source.mesh, &target).unwrap()
+        );
+        assert_eq!(prepared, cached.prepared.get().unwrap() as *const _);
+    }
+
+    #[test]
+    #[ignore = "manual release comparison, including lazy source preparation on first remap"]
+    fn cached_voronoi_source_benchmark() {
+        let subdivision = std::env::var("EARTHMESH_REMAP_BENCH_SUBDIVISION")
+            .map(|value| {
+                value
+                    .parse::<usize>()
+                    .expect("benchmark subdivision must be an integer")
+            })
+            .unwrap_or(80);
+        let source = MotherGrid::generate(subdivision).unwrap();
+        let target = MotherGrid::generate(subdivision / 2).unwrap();
+        let cached = VoronoiRemapSource::new(&source.mesh);
+        let mut fresh_seconds = 0.0;
+        let mut cached_seconds = 0.0;
+        for iteration in 0..6 {
+            let mut measure = |reuse| {
+                let started = std::time::Instant::now();
+                let remap = if reuse {
+                    cached.remap_to(&target.mesh).unwrap()
+                } else {
+                    ConservativeRemap::between_voronoi_meshes(&source.mesh, &target.mesh).unwrap()
+                };
+                let seconds = started.elapsed().as_secs_f64();
+                if reuse {
+                    cached_seconds += seconds;
+                } else {
+                    fresh_seconds += seconds;
+                }
+                eprintln!(
+                    "source_remap_pair iteration={iteration} reused={reuse} seconds={seconds:.6}"
+                );
+                remap
+            };
+            let first_reuses = iteration % 2 != 0;
+            let first = measure(first_reuses);
+            let second = measure(!first_reuses);
+            assert!(first == second, "cached remap or target binding changed");
+        }
+        eprintln!("source_remap_reuse repeats=6 source_cells={} target_cells={} fresh_seconds={fresh_seconds:.6} cached_seconds={cached_seconds:.6}", source.mesh.vertex_count(), target.mesh.vertex_count());
     }
 
     #[test]

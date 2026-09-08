@@ -65,11 +65,15 @@ fn parent_neighbours(grid: &MotherGrid, parent: TriangleAddress) -> Vec<Triangle
 }
 
 fn mixed_component(grid: &MotherGrid) -> HierarchyComponent {
+    mixed_component_at(grid, 4)
+}
+
+fn mixed_component_at(grid: &MotherGrid, coarse_n: usize) -> HierarchyComponent {
     let core = TriangleAddress {
         base_face: 0,
         i: 1,
         j: 1,
-        n: 4,
+        n: coarse_n,
         orientation: TriangleOrientation::Down,
     };
     let first_ring = parent_neighbours(grid, core);
@@ -92,6 +96,46 @@ fn mixed_component(grid: &MotherGrid) -> HierarchyComponent {
         boundary_edges: Vec::new(),
         core_parents: vec![core],
         transition_parents: transition,
+    }
+}
+
+#[test]
+#[ignore = "bounded release profile of one mixed component; not a full coastal benchmark"]
+fn mixed_component_cost_profile() {
+    let subdivision = std::env::var("EARTHMESH_COMPONENT_BENCH_SUBDIVISION")
+        .map(|value| value.parse::<usize>().expect("positive even subdivision"))
+        .unwrap_or(80);
+    assert!(subdivision >= 8 && subdivision.is_multiple_of(2));
+    let source = MotherGrid::generate(subdivision).unwrap();
+    let levels = source_levels(&source, 2);
+    let component = mixed_component_at(&source, subdivision / 2);
+    let initial = ComponentTransactionState::new(&source, 3).unwrap();
+    let mut expected = None;
+    for iteration in 0..2 {
+        let mut state = initial.clone();
+        let started = std::time::Instant::now();
+        let outcome = solve_component_transaction_with_contract(
+            &source,
+            &levels,
+            &mut state,
+            &component,
+            2,
+            1,
+            ComponentTransactionLimits {
+                elastic_iterations: 1_024,
+                ..FULL_LIMITS
+            },
+            AngleContractId::DomainQuality38To82V1,
+        );
+        let elapsed = started.elapsed().as_secs_f64();
+        // Compare the entire deterministic report as well as the installed state.
+        let report = format!("{outcome:?}");
+        if let Some((expected_state, expected_report)) = &expected {
+            assert_eq!(&state, expected_state);
+            assert_eq!(&report, expected_report);
+        }
+        eprintln!("component_profile subdivision={subdivision} iteration={iteration} elapsed_s={elapsed:.6} fingerprint={}", state.fingerprint());
+        expected = Some((state, report));
     }
 }
 
