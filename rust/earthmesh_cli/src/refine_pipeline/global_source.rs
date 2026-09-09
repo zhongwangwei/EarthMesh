@@ -1987,8 +1987,6 @@ fn publish_certified_domain_gridfile(
     config: &EarthmeshConfig,
     base_nxp: usize,
     workdir: &Path,
-    m_refine_levels: &[i32],
-    w_refine_levels: &[i32],
     domain_region: Option<&GridRegion>,
     angle_contract: earthmesh_refine_certified::AngleContractId,
     fvcom_output: Option<&Path>,
@@ -2003,7 +2001,7 @@ fn publish_certified_domain_gridfile(
         _ => None,
     };
 
-    let fvcom_2dm = if let Some(close_points) = clean_close {
+    let (kept_cells, fvcom_2dm) = if let Some(close_points) = clean_close {
         let plan = write_clean_regional_ocean_gridfile(
             source_gridfile,
             close_points,
@@ -2019,37 +2017,15 @@ fn publish_certified_domain_gridfile(
             Some(path) if path.exists() => read_obc_order_netcdf(path)?,
             _ => Vec::new(),
         };
-        if let Some(output) = fvcom_output {
+        let fvcom = if let Some(output) = fvcom_output {
             Some(write_fvcom_2dm_from_carved(&carved, &obc_order, output)?)
         } else {
             None
-        }
-    } else {
-        let landtype_input = if let Some(region) = domain_region {
-            let domain_path = workdir
-                .join("result")
-                .join(format!("certified_domain_NXP{base_nxp:04}_{mode_grid}.nc4"));
-            crate::ensure_parent_dir(&domain_path)?;
-            let kept = crate::write_regional_gridfile_with_refine_levels(
-                source_gridfile,
-                &domain_path,
-                region,
-                mode_grid,
-                Some(m_refine_levels),
-                Some(w_refine_levels),
-            )?;
-            if kept == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "CMRC regional domain mask kept no cells",
-                ));
-            }
-            domain_path
-        } else {
-            source_gridfile.to_path_buf()
         };
-        let _kept = crate::write_landtype_masked_gridfile_with_refine_levels(
-            &landtype_input,
+        (None, fvcom)
+    } else {
+        let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+            source_gridfile,
             output_gridfile,
             &config.landtype_file,
             gridnum_perdegree,
@@ -2060,12 +2036,13 @@ fn publish_certified_domain_gridfile(
             config.isolated_ocean || mesh_type == "oceanmesh",
             None,
         )?;
-        if let Some(output) = fvcom_output {
+        let fvcom = if let Some(output) = fvcom_output {
             let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
             Some(write_fvcom_2dm_from_carved(&carved, &[], output)?)
         } else {
             None
-        }
+        };
+        (Some(kept), fvcom)
     };
 
     let published = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
@@ -2133,12 +2110,19 @@ fn publish_certified_domain_gridfile(
             })
         })
         .collect::<Vec<_>>();
+    if fvcom_2dm
+        .as_ref()
+        .is_some_and(|report| report.boundary_segments == 0)
+    {
+        eprintln!("earthmesh_cli: FVCOM has no explicit open-boundary chains; model boundary classification and forcing must be supplied separately");
+    }
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output_gridfile)?,
-        kept_cells: quality_report.geometry.cell_count,
+        kept_cells: kept_cells.unwrap_or(quality_report.geometry.cell_count),
         topology,
         quality_topology: (component_count, quality_issue_json),
         geometry: serde_json::json!({
+            "cell_view": "tri",
             "cells": quality_report.geometry.cell_count,
             "minimum_angle_deg": published_minimum,
             "maximum_angle_deg": published_maximum,
@@ -2173,10 +2157,19 @@ fn run_certified_pipeline(
         .transpose()?
         .flatten();
     let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
-    if regional_domain.is_some() && !is_domain_export {
+    if regional_domain.is_some()
+        && !matches!(
+            (
+                config.mesh_type.trim(),
+                config.mode_grid.trim(),
+                regional_domain.as_ref()
+            ),
+            ("oceanmesh", "tri", Some(GridRegion::Close { .. }))
+        )
+    {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "CMRC regional publication currently supports landmesh/oceanmesh domain exports only",
+            "CMRC regional publication currently supports oceanmesh/tri with a single close polygon only; regional dual and other boundary adapters are not implemented",
         ));
     }
     if is_domain_export
@@ -2664,8 +2657,6 @@ fn run_certified_pipeline(
                 config,
                 base_nxp,
                 &domain_workdir,
-                &m_refine_levels,
-                &w_refine_levels,
                 regional_domain.as_ref(),
                 options.angle_contract,
                 fvcom_output_path
