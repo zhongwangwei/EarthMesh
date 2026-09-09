@@ -133,6 +133,16 @@ fn publish_certified_artifacts(
     let mut backups = Vec::new();
     for (index, (final_path, is_ready)) in backup_targets.enumerate() {
         if final_path.exists() {
+            if !final_path.is_file() {
+                restore_certified_backups(&backups);
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "CMRC artifact target is not a regular file: {}",
+                        final_path.display()
+                    ),
+                ));
+            }
             let backup = backup_path(final_path, index);
             if let Err(error) = fs::rename(final_path, &backup) {
                 restore_certified_backups(&backups);
@@ -1980,6 +1990,79 @@ struct CertifiedDomainPublication {
     fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
 }
 
+struct CertifiedMpasPublication {
+    report: crate::MpasFullMeshPipelineReport,
+    mesh_density_min: f64,
+    mesh_density_max: f64,
+    step: usize,
+}
+
+fn certified_mpas_cellwidth(base_nxp: usize, w_refine_levels: &[i32]) -> io::Result<Vec<f64>> {
+    if base_nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC MPAS export requires positive NXP",
+        ));
+    }
+    let base_width = 7680.0 / base_nxp as f64;
+    w_refine_levels
+        .iter()
+        .map(|&level| {
+            if level < 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CMRC MPAS export requires non-negative W refinement levels",
+                ));
+            }
+            Ok(base_width / 2_f64.powi(level))
+        })
+        .collect()
+}
+
+fn publish_certified_atmos_mpas(
+    mesh: &crate::UnstructuredMesh,
+    w_refine_levels: &[i32],
+    mesh_output: &Path,
+    graph_output: &Path,
+    base_nxp: usize,
+    delivered_level: usize,
+) -> io::Result<CertifiedMpasPublication> {
+    let cellwidth = certified_mpas_cellwidth(base_nxp, w_refine_levels)?;
+    let step = delivered_level.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC MPAS delivered level overflowed",
+        )
+    })?;
+    let mpas =
+        crate::build_mpas_mesh_from_unstructured_one_based(mesh, &cellwidth, base_nxp, step)?;
+    let mesh_density_min = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let mesh_density_max = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mesh_report = crate::write_mpas_mesh_netcdf(mesh_output, &mpas)?;
+    let graph_info = crate::write_mpas_graph_info(
+        graph_output,
+        10,
+        &mpas.cells_on_cell,
+        &mpas.cells_on_edge,
+        &mpas.n_edges_on_cell,
+    )?;
+    Ok(CertifiedMpasPublication {
+        report: crate::MpasFullMeshPipelineReport {
+            mesh: mesh_report,
+            graph_info,
+        },
+        mesh_density_min,
+        mesh_density_max,
+        step,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn publish_certified_domain_gridfile(
     source_gridfile: &Path,
@@ -2579,6 +2662,31 @@ fn run_certified_pipeline(
     .then(|| fvcom_mesh_2dm_output_path(&file_dir));
     let temporary_fvcom_path =
         result_dir.join(format!(".fvcom.2dm.cmrc-tmp-{}", std::process::id()));
+    let mpas_suffix = if safe_fallback {
+        "_certified_safe_fallback"
+    } else {
+        ""
+    };
+    let mpas_output_paths = (!is_domain_export
+        && matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        && config.mode_grid.trim() == "hex"
+        && config.output_format.trim().eq_ignore_ascii_case("MPAS"))
+    .then(|| {
+        (
+            result_dir.join(format!("MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.nc4")),
+            result_dir.join(format!(
+                "MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.graph.info"
+            )),
+        )
+    });
+    let temporary_mpas_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.nc4.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let temporary_mpas_graph_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.graph.info.cmrc-tmp-{}",
+        std::process::id()
+    ));
     let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
@@ -2601,21 +2709,26 @@ fn run_certified_pipeline(
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
+        "mpas": mpas_output_paths.as_ref().map(|(mesh, _)| mesh.display().to_string()),
+        "mpas_graph_info": mpas_output_paths.as_ref().map(|(_, graph)| graph.display().to_string()),
+        "mpas_sphere_radius": mpas_output_paths.as_ref().map(|_| 1.0),
     }))
     .map_err(io::Error::other)?;
     let (m_refine_levels, w_refine_levels) =
         certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
     let temporary_paths = [
-        &temporary_path,
-        &temporary_source_path,
-        &temporary_remap_path,
-        &temporary_certificate_path,
-        &temporary_manifest_path,
-        &temporary_resources_path,
-        &temporary_ready_marker,
-        &temporary_fvcom_path,
+        temporary_path.as_path(),
+        temporary_source_path.as_path(),
+        temporary_remap_path.as_path(),
+        temporary_certificate_path.as_path(),
+        temporary_manifest_path.as_path(),
+        temporary_resources_path.as_path(),
+        temporary_ready_marker.as_path(),
+        temporary_fvcom_path.as_path(),
+        temporary_mpas_path.as_path(),
+        temporary_mpas_graph_path.as_path(),
     ];
-    for path in temporary_paths {
+    for path in &temporary_paths {
         let _ = fs::remove_file(path);
     }
     log_cmrc_phase(timing_enabled, "artifact_assembly", &mut phase_started);
@@ -2688,6 +2801,18 @@ fn run_certified_pipeline(
                 None,
             )
         };
+        let mpas = if mpas_output_paths.is_some() {
+            Some(publish_certified_atmos_mpas(
+                &output_mesh,
+                &w_refine_levels,
+                &temporary_mpas_path,
+                &temporary_mpas_graph_path,
+                base_nxp,
+                delivered_level,
+            )?)
+        } else {
+            None
+        };
         log_cmrc_phase(
             timing_enabled,
             "domain_export_and_audit",
@@ -2718,6 +2843,8 @@ fn run_certified_pipeline(
                 "certificate": fs::metadata(&temporary_certificate_path)?.len(),
                 "manifest": fs::metadata(&temporary_manifest_path)?.len(),
                 "fvcom_2dm": if temporary_fvcom_path.exists() { serde_json::Value::from(fs::metadata(&temporary_fvcom_path)?.len()) } else { serde_json::Value::Null },
+                "mpas": if temporary_mpas_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_path)?.len()) } else { serde_json::Value::Null },
+                "mpas_graph_info": if temporary_mpas_graph_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_graph_path)?.len()) } else { serde_json::Value::Null },
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
@@ -2746,6 +2873,23 @@ fn run_certified_pipeline(
                     "boundary_segments": report.boundary_segments,
                 })
             }),
+            "mpas": mpas.as_ref().map(|report| {
+                let (mesh, graph) = mpas_output_paths.as_ref().expect("MPAS paths");
+                serde_json::json!({
+                    "mesh": mesh.display().to_string(),
+                    "graph_info": graph.display().to_string(),
+                    "n_cells": report.report.mesh.n_cells,
+                    "n_vertices": report.report.mesh.n_vertices,
+                    "n_edges": report.report.mesh.n_edges,
+                    "graph_interior_edges": report.report.graph_info.interior_edges,
+                    "mesh_density_min": report.mesh_density_min,
+                    "mesh_density_max": report.mesh_density_max,
+                    "base_nxp": base_nxp,
+                    "step": report.step,
+                    "sphere_radius": 1.0,
+                    "unit_convention": "unit_sphere",
+                })
+            }),
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
@@ -2756,7 +2900,7 @@ fn run_certified_pipeline(
     let (temporary, landtype_masked_cells) = match staged {
         Ok(report) => report,
         Err(error) => {
-            for path in temporary_paths {
+            for path in &temporary_paths {
                 let _ = fs::remove_file(path);
             }
             return Err(error);
@@ -2776,9 +2920,13 @@ fn run_certified_pipeline(
     if let Some(fvcom_path) = &fvcom_output_path {
         publications.push((temporary_fvcom_path.as_path(), fvcom_path.as_path()));
     }
+    if let Some((mpas_path, graph_path)) = &mpas_output_paths {
+        publications.push((temporary_mpas_path.as_path(), mpas_path.as_path()));
+        publications.push((temporary_mpas_graph_path.as_path(), graph_path.as_path()));
+    }
     publications.push((temporary_ready_marker.as_path(), ready_marker.as_path()));
     if let Err(error) = publish_certified_artifacts(&publications, &[&obsolete_remap_path]) {
-        for path in temporary_paths {
+        for path in &temporary_paths {
             let _ = fs::remove_file(path);
         }
         return Err(io::Error::new(
@@ -5875,61 +6023,78 @@ mod tests {
 
     #[test]
     fn failed_certified_publication_restores_the_previous_generation() {
-        let directory = std::env::temp_dir().join(format!(
-            "earthmesh-cmrc-publication-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).expect("create publication test directory");
         let names = [
             "certificate",
             "remap",
             "grid",
             "resources",
             "manifest",
+            "mpas",
+            "mpas-graph",
             "ready",
         ];
-        let paths = names
-            .iter()
-            .map(|name| {
-                let temporary = directory.join(format!("new-{name}"));
-                let final_path = directory.join(name);
-                fs::write(&temporary, format!("new-{name}")).expect("stage new artifact");
-                fs::write(&final_path, format!("old-{name}")).expect("write old artifact");
-                (temporary, final_path)
-            })
-            .collect::<Vec<_>>();
-        fs::remove_file(&paths[4].0).expect("remove staged manifest to force failure");
-        let publications = paths
-            .iter()
-            .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
-            .collect::<Vec<_>>();
+        for previous_generation in [false, true] {
+            for missing in [4, 5, 6, 7] {
+                let directory = std::env::temp_dir().join(format!(
+                    "earthmesh-cmrc-publication-{}-{}-{missing}-{previous_generation}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                fs::create_dir_all(&directory).expect("create publication test directory");
+                let paths = names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        let temporary = directory.join(format!(".{name}.cmrc-tmp-test"));
+                        let final_path = directory.join(name);
+                        if index != missing {
+                            fs::write(&temporary, format!("new-{name}"))
+                                .expect("stage new artifact");
+                        }
+                        if previous_generation {
+                            fs::write(&final_path, format!("old-{name}"))
+                                .expect("write old artifact");
+                        }
+                        (temporary, final_path)
+                    })
+                    .collect::<Vec<_>>();
+                let publications = paths
+                    .iter()
+                    .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
+                    .collect::<Vec<_>>();
+                let obsolete = directory.join("obsolete-remap");
+                fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
 
-        let obsolete = directory.join("obsolete-remap");
-        fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
-
-        assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
-        for (name, (_, final_path)) in names.iter().zip(&paths) {
-            assert_eq!(
-                fs::read_to_string(final_path).expect("restored old artifact"),
-                format!("old-{name}")
-            );
+                assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
+                for (name, (temporary, final_path)) in names.iter().zip(&paths) {
+                    if previous_generation {
+                        assert_eq!(
+                            fs::read_to_string(final_path).expect("restored old artifact"),
+                            format!("old-{name}")
+                        );
+                    } else {
+                        assert!(!final_path.exists(), "partial new artifact {name}");
+                    }
+                    // The caller owns cleanup of staged files not consumed by publication.
+                    let _ = fs::remove_file(temporary);
+                }
+                assert_eq!(
+                    fs::read_to_string(&obsolete).expect("restored obsolete remap"),
+                    "old-obsolete-remap"
+                );
+                assert!(fs::read_dir(&directory)
+                    .expect("read test directory")
+                    .all(|entry| {
+                        let name = entry.expect("directory entry").file_name();
+                        let name = name.to_string_lossy();
+                        !name.contains("cmrc-backup") && !name.contains("cmrc-tmp")
+                    }));
+                fs::remove_dir_all(directory).expect("clean publication test directory");
+            }
         }
-        assert_eq!(
-            fs::read_to_string(&obsolete).expect("restored obsolete remap"),
-            "old-obsolete-remap"
-        );
-        assert!(fs::read_dir(&directory)
-            .expect("read test directory")
-            .all(|entry| !entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .contains("cmrc-backup")));
-        fs::remove_dir_all(directory).expect("clean publication test directory");
     }
 
     #[test]
