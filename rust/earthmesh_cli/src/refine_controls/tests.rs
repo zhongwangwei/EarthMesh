@@ -18,6 +18,41 @@ use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_project::CloseBoundaryMode;
 
 #[test]
+fn certified_uniform_dispatches_without_activating_refinement() {
+    for backend in ["certified", "CERTIFIED"] {
+        let config = EarthmeshConfig {
+            mesh_type: "oceanmesh".into(),
+            refine_backend: backend.into(),
+            refine: false,
+            ..Default::default()
+        };
+        assert!(super::refine_pipeline_refine_dispatch_requested(
+            &config.to_mkgrd_namelist(),
+            &config,
+        )
+        .unwrap());
+        assert!(!config.refine);
+    }
+}
+
+#[test]
+fn other_backends_keep_the_existing_disabled_refinement_dispatch() {
+    for backend in ["method_c", "red_green", "harp_dv"] {
+        let config = EarthmeshConfig {
+            mesh_type: "oceanmesh".into(),
+            refine_backend: backend.into(),
+            refine: false,
+            ..Default::default()
+        };
+        assert!(!super::refine_pipeline_refine_dispatch_requested(
+            &config.to_mkgrd_namelist(),
+            &config,
+        )
+        .unwrap());
+    }
+}
+
+#[test]
 fn method_c_uses_canonical_spring_defaults_when_niter_refine_is_unspecified() {
     let refine = RefineConfig {
         spring_global_type: 1,
