@@ -48,6 +48,102 @@ fn write_land_and_ocean(path: &std::path::Path) {
         .unwrap();
 }
 
+fn write_all_ocean(path: &std::path::Path) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
+    file.add_dimension("longitude", 360).unwrap();
+    file.add_dimension("latitude", 180).unwrap();
+    let values = vec![0_i8; 360 * 180];
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+}
+
+fn write_close_domain(path: &std::path::Path) {
+    fs::write(
+        path,
+        "close_num = 4\nclose_refine = 0\n100.0 0.0\n160.0 0.0\n160.0 50.0\n100.0 50.0\n",
+    )
+    .unwrap();
+}
+
+fn has_two_placeholders(points: &[earthmesh_cli::coordinate_types::LonLatPoint]) -> bool {
+    points.len() > 1
+        && points[0].lon == 0.0
+        && points[0].lat == 0.0
+        && points[1].lon == 0.0
+        && points[1].lat == 0.0
+}
+
+fn row_for_canonical_id(canonical_id: i64, rows: usize, two_placeholders: bool) -> Option<usize> {
+    if canonical_id <= 0 {
+        return None;
+    }
+    let row = if two_placeholders {
+        canonical_id as usize
+    } else {
+        canonical_id as usize - 1
+    };
+    (row < rows).then_some(row)
+}
+
+fn assert_regional_triangles_are_whole_global_subset(
+    regional: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+    lineages: &earthmesh_cli::unstructured_mesh_support::MethodCGridfileLineages,
+    global: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+) {
+    let global_m_two = has_two_placeholders(&global.m_points);
+    let global_w_two = has_two_placeholders(&global.w_points);
+    let regional_w_two = has_two_placeholders(&regional.w_points);
+    let first_m = if has_two_placeholders(&regional.m_points) {
+        2
+    } else {
+        1
+    };
+    assert_eq!(lineages.m.len(), regional.m_points.len());
+    assert_eq!(lineages.w.len(), regional.w_points.len());
+    let mut checked = 0usize;
+    for (m_row, triangle) in regional.m_to_w.iter().enumerate().skip(first_m) {
+        let source_m_id = lineages.m[m_row];
+        assert!(
+            source_m_id >= 2,
+            "physical triangle {m_row} lost its lineage"
+        );
+        let global_m_row = row_for_canonical_id(source_m_id, global.m_points.len(), global_m_two)
+            .expect("every physical triangle has a valid global source");
+        let source_triangle = global.m_to_w[global_m_row];
+        let mapped_vertices = triangle.map(|w_id| {
+            let row = row_for_canonical_id(w_id as i64, regional.w_points.len(), regional_w_two)
+                .expect("regional vertex row");
+            assert!(
+                lineages.w[row] >= 2,
+                "physical vertex {row} lost its lineage"
+            );
+            i32::try_from(lineages.w[row]).expect("global vertex ID fits canonical format")
+        });
+        assert_eq!(mapped_vertices, source_triangle);
+        assert_eq!(regional.m_points[m_row], global.m_points[global_m_row]);
+        for (&regional_w_id, &global_w_id) in triangle.iter().zip(source_triangle.iter()) {
+            let regional_w_row = row_for_canonical_id(
+                regional_w_id as i64,
+                regional.w_points.len(),
+                regional_w_two,
+            )
+            .expect("regional W row");
+            let global_w_row =
+                row_for_canonical_id(global_w_id as i64, global.w_points.len(), global_w_two)
+                    .expect("global W row");
+            assert_eq!(
+                regional.w_points[regional_w_row],
+                global.w_points[global_w_row]
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
+    assert_eq!(checked, regional.m_to_w.len() - first_m);
+}
+
 fn landtype_namelist(root: &std::path::Path, case: &str, landtype: &std::path::Path) -> String {
     format!(
         "&mkgrd\n  NL%EXPNME='{case}'\n  NL%base_dir='{}/'\n  NL%NXP=3\n  \
@@ -386,6 +482,166 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
         resources["published_domain_topology"]["violations"],
         serde_json::json!([])
     );
+    assert!(
+        resources["published_domain_topology"]["boundary_loops"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
+fn certified_refine_false_uses_uniform_level_zero_safe_mother() {
+    let root = temp_root("refine_false_uniform");
+    let path = root.join("cmrc.nml");
+    let contents = format!(
+        "{}\n&mkrefine\n  RL%refine_cal=.true.\n  RL%mask_refine_cal_type='not_a_real_criterion'\n/\n&hfield\n  NL%hfield_gr=0.15\n/\n",
+        namelist(&root, "refine_false_uniform", 3, 1_000)
+            .replace("NL%refine=.true.", "NL%refine=.false.")
+            .replace("NL%mode='safe_mother_only'", "NL%mode='reverse_coarsening'")
+    );
+    fs::write(&path, contents).unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    assert_eq!(certified.mode, "safe_mother_only");
+    assert_eq!(certified.chosen_level, 0);
+    assert_eq!(certified.delivered_level, 0);
+    assert_eq!(certified.initial_mother_subdivision, 3);
+    assert_eq!(certified.mother_subdivision, 3);
+    assert_eq!(certified.attempted_patches, 0);
+    assert_eq!(certified.removed_faces, 0);
+}
+
+#[test]
+fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
+    let root = temp_root("regional_ocean");
+    let landtype = root.join("landtype.nc");
+    write_all_ocean(&landtype);
+    let close = root.join("domain.nml");
+    write_close_domain(&close);
+    let path = root.join("cmrc.nml");
+    let regional_namelist = landtype_namelist(&root, "regional_ocean", &landtype)
+        .replace("landmesh", "oceanmesh")
+        .replace("mode_grid='hex'", "mode_grid='tri'")
+        .replace("output_format='CoLM'", "output_format='FVCOM'")
+        .replace(
+            "NL%mask_domain_global=.true.",
+            "NL%mask_domain_global=.false.",
+        )
+        .replace(
+            "NL%landtype_file=",
+            &format!(
+                "NL%mask_domain_type='close'\n  NL%mask_domain_fprefix='{}'\n  NL%landtype_file=",
+                close.display()
+            ),
+        );
+    fs::write(&path, regional_namelist).unwrap();
+    let global_path = root.join("global_tri.nml");
+    let global_contents = namelist(&root, "regional_ocean_global_ref", 3, 1_000)
+        .replace("NL%mode_grid='hex'", "NL%mode_grid='tri'")
+        .replace("NL%delivery='coupled'", "NL%delivery='tri'");
+    fs::write(&global_path, global_contents).unwrap();
+    let global_run =
+        earthmesh_cli::run_refine_pipeline_namelist(&global_path, &root, 1_000, None).unwrap();
+    let global_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        &global_run.output.output,
+    )
+    .unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    assert_eq!(gridfile.m_refine_level.len(), gridfile.m_lon.len());
+    assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
+    assert!(gridfile.m_refine_level.iter().all(|level| *level >= 0));
+    assert!(gridfile.w_refine_level.iter().all(|level| *level >= 0));
+    let lineages =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&run.output.output)
+            .unwrap();
+    assert_eq!(lineages.m.len(), gridfile.m_lon.len());
+    assert_eq!(lineages.w.len(), gridfile.w_lon.len());
+    assert!(lineages.m.iter().any(|lineage| *lineage > 1));
+    assert!(lineages.w.iter().any(|lineage| *lineage > 1));
+    assert!(lineages.m.iter().all(|lineage| *lineage >= 0));
+    assert!(lineages.w.iter().all(|lineage| *lineage >= 0));
+    let regional_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
+            .unwrap();
+    assert_regional_triangles_are_whole_global_subset(&regional_mesh, &lineages, &global_mesh);
+    let certified = run.certified_run.unwrap();
+    assert_eq!(certified.topology_errors, 0);
+    assert!(certified.remap.is_none());
+    assert!(certified
+        .pre_export_remap
+        .as_ref()
+        .is_some_and(|p| p.exists()));
+    assert_eq!(
+        run.output.output.file_name().unwrap().to_str().unwrap(),
+        "gridfile_NXP0003_tri_oceanmesh.nc4"
+    );
+    let fvcom = root.join("regional_ocean/result/fvcom.2dm");
+    assert!(fvcom.exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["fvcom_2dm"], fvcom.display().to_string());
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+    assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+    assert_eq!(
+        certificate["published_grid_lineage_scope"],
+        "pre_export_closed_sphere_canonical_ids"
+    );
+    assert!(
+        certificate["published_domain_geometry"]["cells"]
+            .as_u64()
+            .unwrap()
+            < certified.mother_cells as u64
+    );
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    assert_eq!(
+        resources["published_domain_topology"]["violations"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        resources["fvcom_2dm"]["output"],
+        fvcom.display().to_string()
+    );
+    assert!(resources["fvcom_2dm"]["triangles"].as_u64().unwrap() > 0);
+    assert!(
+        resources["published_domain_topology"]["boundary_loops"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        resources["landtype_masked_cells"],
+        certificate["published_domain_geometry"]["cells"]
+    );
+}
+
+#[test]
+fn certified_regional_earthmesh_is_rejected_instead_of_published_global() {
+    let root = temp_root("regional_earthmesh_reject");
+    let path = root.join("cmrc.nml");
+    let contents = namelist(&root, "regional_earthmesh_reject", 3, 1_000)
+        .replace(
+            "NL%mask_domain_global=.true.",
+            "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  NL%mask_domain_fprefix='inline:bbox:w=100,e=160,s=0,n=50'",
+        );
+    fs::write(&path, contents).unwrap();
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect_err("regional earthmesh would otherwise ignore the selector");
+    assert!(error
+        .to_string()
+        .contains("supports oceanmesh/tri with a single close polygon only"));
+    assert!(!root
+        .join("regional_earthmesh_reject/result/gridfile_NXP0003_hex.nc4")
+        .exists());
 }
 
 #[test]
@@ -545,4 +801,38 @@ fn tri_hex_and_coupled_delivery_share_one_certified_primal_dual_mesh() {
         .windows(2)
         .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1));
     assert!(mesh_counts.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[test]
+fn certified_regional_unimplemented_views_and_boundaries_fail_closed() {
+    let root = temp_root("regional_unsupported");
+    let landtype = root.join("ocean.nc");
+    write_all_ocean(&landtype);
+    let close = root.join("domain.nml");
+    write_close_domain(&close);
+    for (case, view, kind, source) in [
+        ("hex_close", "hex", "close", close.display().to_string()),
+        (
+            "tri_bbox",
+            "tri",
+            "bbox",
+            "inline:bbox:w=100,e=160,s=0,n=50".to_string(),
+        ),
+    ] {
+        let path = root.join(format!("{case}.nml"));
+        let contents = namelist(&root, case, 3, 1_000)
+            .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='oceanmesh'")
+            .replace("NL%mode_grid='hex'", &format!("NL%mode_grid='{view}'"))
+            .replace("NL%output_format='CoLM'", "NL%output_format='FVCOM'")
+            .replace("NL%mask_domain_global=.true.", &format!("NL%mask_domain_global=.false.\nNL%mask_domain_type='{kind}'\nNL%mask_domain_fprefix='{source}'"))
+            .replace("NL%landtype_file='none'", &format!("NL%landtype_file='{}'", landtype.display()));
+        fs::write(&path, contents).unwrap();
+        let error =
+            earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error
+            .to_string()
+            .contains("supports oceanmesh/tri with a single close polygon only"));
+        assert!(!root.join(case).join("result/certified_ready").exists());
+    }
 }

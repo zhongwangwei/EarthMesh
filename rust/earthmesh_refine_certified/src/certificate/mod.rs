@@ -330,7 +330,9 @@ pub struct AngleGateReport {
 struct SupportedMotherAngleGate;
 
 impl SupportedMotherAngleGate {
-    const SUPPORTED: [usize; 13] = [1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160, 320, 640];
+    const SUPPORTED: [usize; 16] = [
+        1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160, 192, 320, 384, 640, 768,
+    ];
 
     fn verify(
         n: usize,
@@ -1240,7 +1242,7 @@ fn tangent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mother_grid::MotherGrid;
+    use crate::mother_grid::{analytic_counts, MotherGrid};
 
     #[test]
     fn legacy_40_80_unchanged() {
@@ -1475,8 +1477,48 @@ mod tests {
     }
 
     #[test]
-    fn support_table_reaches_the_default_cell_budget_ceiling() {
-        assert_eq!(SupportedMotherAngleGate::SUPPORTED.last(), Some(&640));
+    fn support_table_reaches_the_largest_master_case_subdivision() {
+        assert_eq!(SupportedMotherAngleGate::SUPPORTED.last(), Some(&768));
+    }
+
+    #[test]
+    fn support_table_includes_master_case_hierarchy_levels() {
+        for n in [192, 384, 768] {
+            assert!(
+                SupportedMotherAngleGate::SUPPORTED.contains(&n),
+                "master ocean case hierarchy level n={n} must be explicitly supported"
+            );
+        }
+    }
+
+    #[test]
+    fn n192_master_case_level_satisfies_domain_quality_certificate() {
+        let n = 192;
+        let grid = MotherGrid::generate(n).unwrap();
+        let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
+            .verify_mother_grid(&grid)
+            .unwrap();
+        assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+        assert_eq!(
+            analytic_counts(n).unwrap(),
+            (report.vertices, report.edges, report.faces)
+        );
+    }
+
+    #[test]
+    #[ignore = "release-scale proof; run explicitly before enabling large master ocean cases"]
+    fn n384_and_n768_master_case_levels_satisfy_domain_quality_certificate() {
+        for n in [384, 768] {
+            let grid = MotherGrid::generate(n).unwrap();
+            let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
+                .verify_mother_grid(&grid)
+                .unwrap();
+            assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+            assert_eq!(
+                analytic_counts(n).unwrap(),
+                (report.vertices, report.edges, report.faces)
+            );
+        }
     }
 
     #[test]

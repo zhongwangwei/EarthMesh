@@ -132,7 +132,7 @@ pub(crate) fn write_fvcom_ns_records(
                 "obc_order contains zero boundary vertex id",
             ));
         }
-        if position_in_record.is_multiple_of(10) {
+        if position_in_record == 0 {
             write!(file, "NS ")?;
         }
         if order[idx + 1] == 1 {
@@ -143,6 +143,10 @@ pub(crate) fn write_fvcom_ns_records(
         } else {
             write!(file, "{} ", current - 1)?;
             position_in_record += 1;
+            if position_in_record == 10 {
+                writeln!(file)?;
+                position_in_record = 0;
+            }
         }
     }
 

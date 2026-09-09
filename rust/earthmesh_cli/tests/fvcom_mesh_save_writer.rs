@@ -83,6 +83,38 @@ fn fvcom_mesh_save_wrapper_reads_patch_obc_and_writes_compatibility_result_path(
 }
 
 #[test]
+fn fvcom_ns_records_wrap_long_boundaries_without_repeated_tokens_on_one_line() {
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_fvcom_2dm_long_ns_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+
+    let output = root.join("fvcom.2dm");
+    let mesh = sample_mesh_with_nodes(13);
+    let report = earthmesh_cli::fvcom_mesh_writer::write_fvcom_mesh_2dm(
+        &output,
+        &mesh,
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1],
+    )
+    .expect("write fvcom 2dm");
+
+    assert_eq!(report.boundary_segments, 1);
+    let content = fs::read_to_string(&report.output).expect("read 2dm");
+    let ns_lines = content
+        .lines()
+        .filter(|line| line.starts_with("NS "))
+        .collect::<Vec<_>>();
+    assert_eq!(ns_lines.len(), 2);
+    assert!(ns_lines.iter().all(|line| line.matches("NS").count() == 1));
+    assert_eq!(ns_lines[0], "NS 1 2 3 4 5 6 7 8 9 10 ");
+    assert_eq!(ns_lines[1], "NS -11 1");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn fvcom_2dm_writer_rejects_connectivity_without_canonical_vertex_offset() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_fvcom_2dm_invalid_{}",
@@ -138,4 +170,17 @@ fn sample_mesh() -> UnstructuredMesh {
         w_to_m: vec![vec![1], vec![1, 2], vec![1], vec![1, 2], vec![2]],
         n_w_to_m: vec![0, 2, 1, 2, 1],
     }
+}
+
+fn sample_mesh_with_nodes(nodes: usize) -> UnstructuredMesh {
+    let mut mesh = sample_mesh();
+    mesh.w_points = (0..=nodes)
+        .map(|idx| LonLatPoint {
+            lon: idx as f64,
+            lat: 0.0,
+        })
+        .collect();
+    mesh.w_to_m = vec![vec![]; nodes + 1];
+    mesh.n_w_to_m = vec![0; nodes + 1];
+    mesh
 }
