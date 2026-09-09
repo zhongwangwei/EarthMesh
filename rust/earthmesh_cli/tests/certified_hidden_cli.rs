@@ -292,6 +292,18 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     assert!(certified.ready_marker.exists());
     let resources: serde_json::Value =
         serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+    assert_eq!(
+        resources["requirement_layers"]["policy"],
+        "effective_raster_remains_hard"
+    );
+    assert_eq!(
+        resources["requirement_layers"]["raw_source_raster"]["histogram"],
+        serde_json::json!({"0": 8})
+    );
+    assert_eq!(
+        resources["requirement_layers"]["graph_scheduling_target"]["status"],
+        "not_applied"
+    );
     assert_eq!(resources["remap_rows"], 92);
     assert_eq!(resources["remap_entries"], 92);
     assert!(resources["artifact_bytes"]["gridfile"].as_u64().unwrap() > 0);
@@ -632,6 +644,16 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
         .join(missing_case)
         .join("result/gridfile_NXP0003_hex.nc4")
         .exists());
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(
+        layers["raw_source_raster"]["status"],
+        "unavailable_threshold_or_hydro"
+    );
+    assert!(layers["raw_source_raster"]["histogram"].is_null());
+    assert!(layers["effective_source_raster"]["raised_samples_over_raw"].is_null());
+    assert_eq!(layers["policy"], "effective_raster_remains_hard");
 }
 
 #[test]
@@ -944,6 +966,37 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
     assert!(certificate["geometry"]["maximum_angle_deg"]
         .as_f64()
         .is_some_and(|angle| angle <= 82.0));
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(*layers, resources["requirement_layers"]);
+    assert_eq!(layers["raw_source_raster"]["status"], "available");
+    assert_eq!(
+        layers["graph_scheduling_target"]["histogram"],
+        certificate["elastic_component_epochs"]["requested_histogram"]
+    );
+    assert_eq!(
+        layers["graph_scheduling_target"]["gradation_rings_per_level"],
+        3
+    );
+    let count = |hist: &serde_json::Value| {
+        hist.as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(
+        count(&layers["effective_source_raster"]["histogram"]),
+        720 * 360
+    );
+    assert_eq!(count(&layers["raw_source_raster"]["histogram"]), 720 * 360);
+    assert_eq!(
+        count(&layers["graph_scheduling_target"]["histogram"]),
+        certificate["elastic_component_epochs"]["aggregate"]["initial_vertices"]
+            .as_u64()
+            .unwrap()
+    );
     assert_eq!(certificate["delivered_level_min"], 0);
     assert_eq!(certificate["delivered_level_max"], 1);
     assert!(
@@ -1078,4 +1131,100 @@ fn certified_regional_unimplemented_views_and_boundaries_fail_closed() {
             .contains("supports oceanmesh/tri with a single close polygon only"));
         assert!(!root.join(case).join("result/certified_ready").exists());
     }
+}
+
+#[test]
+fn certified_subraster_requirement_reports_the_conservative_bound_separately() {
+    let root = temp_root("subraster_layers");
+    let prefix = root.join("tiny");
+    let landtype = root.join("ocean.nc");
+    write_all_ocean(&landtype);
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        root.join("tiny_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![0.001],
+        },
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    // Exercise both region loaders; neither may call the fallback an expanded footprint.
+    for calculated in [false, true] {
+        let mut text = specified_circle_namelist(&root, "subraster_layers", &prefix);
+        if calculated {
+            text = text
+                .replace("RL%refine_cal=.false.", "")
+                .replace("refine_spc", "refine_cal")
+                .replace("max_iter_spc", "max_iter_cal")
+                .replace(
+                    "RL%max_iter_cal=1",
+                    "RL%max_iter_cal=1\n RL%refine_num_landtypes=.true.\n RL%th_num_landtypes=100",
+                )
+                .replace(
+                    "NL%landtype_file='none'",
+                    &format!("NL%landtype_file='{}'", landtype.display()),
+                );
+        }
+        fs::write(&path, text).unwrap();
+        let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+        let certified = run.certified_run.unwrap();
+        let certificate: serde_json::Value =
+            serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+        let layers = &certificate["requirement_layers"];
+        assert_eq!(
+            layers["raw_source_raster"]["histogram"],
+            if calculated {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({"0": 259200})
+            }
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["histogram"],
+            serde_json::json!({"1": 259200})
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["conservative_global_bound"],
+            true
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["raised_samples_over_raw"],
+            if calculated {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(259200)
+            }
+        );
+        assert_eq!(certified.physical_residuals, 0);
+        assert_eq!(certified.chosen_level, 1);
+    }
+}
+
+#[test]
+fn certified_hydro_requirement_does_not_publish_partial_raw_provenance() {
+    let root = temp_root("hydro_layers");
+    let cells = root.join("cells.geojson");
+    let levels = root.join("levels.json");
+    fs::write(&cells, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"center_lon":0,"center_lat":0},"geometry":{"type":"Polygon","coordinates":[[[-2,-2],[2,-2],[2,2],[-2,2],[-2,-2]]]}}]}"#).unwrap();
+    fs::write(&levels, r#"{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{"cell":0,"target_level":1}]}"#).unwrap();
+    let path = root.join("cmrc.nml");
+    fs::write(&path, format!(
+        "{}\n&hfield\n NL%hfield_nlon=36\n NL%hfield_nlat=18\n NL%hfield_target_cells_geojson='{}'\n NL%hfield_target_levels_json='{}'\n/\n",
+        namelist(&root, "hydro_layers", 3, 1_000), cells.display(), levels.display(),
+    )).unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(
+        layers["raw_source_raster"]["status"],
+        "unavailable_threshold_or_hydro"
+    );
+    assert!(layers["raw_source_raster"]["histogram"].is_null());
+    assert!(layers["effective_source_raster"]["raised_samples_over_raw"].is_null());
+    assert_eq!(layers["policy"], "effective_raster_remains_hard");
+    assert_eq!(certified.physical_residuals, 0);
+    assert_eq!(certified.chosen_level, 1);
 }

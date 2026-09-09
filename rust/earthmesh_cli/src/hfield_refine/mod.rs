@@ -305,6 +305,20 @@ fn build_hfield_from_regions_in_domain(
     nlat: usize,
     domain: Option<&HfieldDomainMask>,
 ) -> io::Result<HField> {
+    let mut field = build_raw_region_hfield(regions, base_m, nlon, nlat, domain)?;
+    field.limit_gradient(g)?;
+    Ok(field)
+}
+
+/// Sample canonical region footprints before any gradient expansion.
+/// This is a raster source, not an exact analytic-region coverage certificate.
+pub(crate) fn build_raw_region_hfield(
+    regions: &[RefinementRegion],
+    base_m: f64,
+    nlon: usize,
+    nlat: usize,
+    domain: Option<&HfieldDomainMask>,
+) -> io::Result<HField> {
     if !base_m.is_finite() || base_m <= 0.0 {
         return Err(invalid(format!(
             "h-field base cell size must be positive, got {base_m}"
@@ -336,7 +350,6 @@ fn build_hfield_from_regions_in_domain(
             }
         });
     }
-    field.limit_gradient(g)?;
     Ok(field)
 }
 
@@ -2230,6 +2243,51 @@ mod tests {
         let error = build_hfield_from_regions(&regions, 100_000.0, 0.2, 36, 18)
             .expect_err("geographic HField must reject invalid latitude");
         assert!(error.to_string().contains("latitude"));
+    }
+
+    #[test]
+    fn region_hfield_a3_smoothing_baseline() {
+        let base =
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * 64.0);
+        let regions = [RefinementRegion::Circle {
+            center: LonLatDegrees::new(120.0, 40.0),
+            radius_meters: 2_000_000.0,
+            level: 2,
+        }];
+        let field = build_hfield_from_regions(&regions, base, 0.2, 720, 360).unwrap();
+        let levels = field.level_map(base, 2).unwrap();
+        let mut histogram = [0; 3];
+        for &level in &levels {
+            histogram[usize::from(level)] += 1;
+        }
+        assert_eq!(histogram, [249_832, 2_920, 6_448]);
+        let raw = build_raw_region_hfield(&regions, base, 720, 360, None).unwrap();
+        let raw_levels = raw.level_map(base, 2).unwrap();
+        assert_eq!(
+            raw_levels.iter().filter(|&&level| level == 2).count(),
+            5_298
+        );
+        assert!(raw_levels.iter().all(|&level| level == 0 || level == 2));
+        assert!(raw_levels
+            .iter()
+            .zip(&levels)
+            .all(|(raw, effective)| raw <= effective));
+        let mut expanded = raw;
+        expanded.limit_gradient(0.2).unwrap();
+        let mut fingerprint = 0xcbf29ce484222325_u64;
+        let mut millimeter_fingerprint = fingerprint;
+        for j in 0..360 {
+            for i in 0..720 {
+                let h = field.get(i, j);
+                assert_eq!(h.to_bits(), expanded.get(i, j).to_bits());
+                fingerprint = (fingerprint ^ h.to_bits()).wrapping_mul(0x100000001b3);
+                millimeter_fingerprint = (millimeter_fingerprint ^ (h * 1000.0).round() as u64)
+                    .wrapping_mul(0x100000001b3);
+            }
+        }
+        // Lock the pre-extraction continuous baseline without platform-libm bit sensitivity.
+        assert_eq!(millimeter_fingerprint, 0xe006c5f3927c9101);
+        eprintln!("A3_HFIELD_FINGERPRINT={fingerprint:016x}");
     }
 
     #[test]

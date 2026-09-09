@@ -2320,8 +2320,8 @@ fn run_certified_pipeline(
             "CMRC NXP must be positive",
         ));
     }
-    let (regions, requirement_nlon, requirement_nlat, required_levels) = if config.refine {
-        certified_requirement_levels(
+    let requirements = if config.refine {
+        certified_requirement_plan(
             contents,
             config,
             &refine,
@@ -2330,8 +2330,11 @@ fn run_certified_pipeline(
             calculated_level,
         )?
     } else {
-        (Vec::new(), 4, 2, vec![0; 8])
+        CertifiedRequirementPlan::uniform()
     };
+    let requirement_nlon = requirements.nlon;
+    let requirement_nlat = requirements.nlat;
+    let required_levels = &requirements.effective_levels;
     let chosen_level = required_levels.iter().copied().max().unwrap_or(0);
     if chosen_level > options.maximum_level {
         return Err(io::Error::new(
@@ -2577,6 +2580,8 @@ fn run_certified_pipeline(
     } else {
         "final_voronoi_cells_global_raster_max_bound"
     };
+    let requirement_layers =
+        requirements.layer_report(elastic_report.as_ref(), options.gradation_rings_per_level);
     let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
     let mut certificate_document = serde_json::json!({
         "backend": "certified",
@@ -2649,6 +2654,7 @@ fn run_certified_pipeline(
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
     });
+    certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
             "pre_export_closed_sphere_canonical_ids"
@@ -2833,6 +2839,7 @@ fn run_certified_pipeline(
         )?;
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
+            "requirement_layers": requirement_layers,
             "requirement_raster_cells": required_levels.len(),
             "target_voronoi_cells": geometry_report.voronoi_cells,
             "remap_rows": remap.rows().len(),
@@ -2960,7 +2967,7 @@ fn run_certified_pipeline(
     Ok(RefinePipelineRunReport {
         gridinit: None,
         refine,
-        regions,
+        regions: requirements.regions,
         max_level: chosen_level,
         realized_max_level: delivered_level,
         finest_cell_km: 0.0,
@@ -3139,14 +3146,75 @@ fn certify_cmrc_published_dual(
     Ok(())
 }
 
-fn certified_requirement_levels(
+/// Separate source provenance from the effective raster that is still hard-certified.
+struct CertifiedRequirementPlan {
+    regions: Vec<RefinementRegion>,
+    nlon: usize,
+    nlat: usize,
+    effective_levels: Vec<usize>,
+    // None for threshold/hydro sources: partial raw provenance would be misleading.
+    raw_region_levels: Option<Vec<usize>>,
+    conservative_global_bound: bool,
+}
+
+impl CertifiedRequirementPlan {
+    fn uniform() -> Self {
+        Self {
+            regions: Vec::new(),
+            nlon: 4,
+            nlat: 2,
+            effective_levels: vec![0; 8],
+            raw_region_levels: Some(vec![0; 8]),
+            conservative_global_bound: false,
+        }
+    }
+
+    fn layer_report(
+        &self,
+        elastic: Option<&earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+        rings: usize,
+    ) -> serde_json::Value {
+        let histogram = |levels: &[usize]| {
+            let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+            for &level in levels {
+                *counts.entry(level).or_default() += 1;
+            }
+            counts
+        };
+        serde_json::json!({
+            "policy": "effective_raster_remains_hard",
+            "raw_source_raster": {
+                "status": if self.raw_region_levels.is_some() { "available" } else { "unavailable_threshold_or_hydro" },
+                "scope": "canonical_region_sample_centers_quantized_not_analytic_coverage",
+                "histogram": self.raw_region_levels.as_deref().map(histogram),
+            },
+            "effective_source_raster": {
+                "scope": "gradient_limited_composed_sources_with_conservative_bounds",
+                "histogram": histogram(&self.effective_levels),
+                "conservative_global_bound": self.conservative_global_bound,
+                "raised_samples_over_raw": self.raw_region_levels.as_ref().map(|raw| {
+                    raw.iter().zip(&self.effective_levels).filter(|(r, e)| e > r).count()
+                }),
+            },
+            "raster_grid": { "nlon": self.nlon, "nlat": self.nlat },
+            "graph_scheduling_target": {
+                "status": if elastic.is_some() { "applied" } else { "not_applied" },
+                "scope": "initial_mother_voronoi_cells_after_raster_overlap_and_graph_gradation",
+                "histogram": elastic.map(|report| &report.requested_histogram),
+                "gradation_rings_per_level": elastic.map(|_| rings),
+            },
+        })
+    }
+}
+
+fn certified_requirement_plan(
     contents: &str,
     config: &EarthmeshConfig,
     refine: &RefineConfig,
     base_nxp: usize,
     specified_level: usize,
     calculated_level: usize,
-) -> io::Result<(Vec<RefinementRegion>, usize, usize, Vec<usize>)> {
+) -> io::Result<CertifiedRequirementPlan> {
     if crate::adaptive_refine::read_adaptive_refine_options(contents)?.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -3202,7 +3270,7 @@ fn certified_requirement_levels(
     let mut regions = specified_regions;
     regions.extend(calculated_regions);
     if regions.is_empty() && !has_threshold_sources && hydro_level == 0 {
-        return Ok((regions, 4, 2, vec![0; 8]));
+        return Ok(CertifiedRequirementPlan::uniform());
     }
 
     let source_max_level = specified_level
@@ -3237,16 +3305,44 @@ fn certified_requirement_levels(
         .into_iter()
         .map(usize::from)
         .collect::<Vec<_>>();
+    // Do not mistake a region-only subset for the raw demand of a mixed-source run.
+    let raw_region_levels = if !has_threshold_sources && hfield.hydro_target_paths().is_none() {
+        Some(
+            crate::hfield_refine::build_raw_region_hfield(
+                &regions,
+                base_m,
+                field.nlon(),
+                field.nlat(),
+                None,
+            )?
+            .level_map(base_m, quantized_max_level)?
+            .into_iter()
+            .map(usize::from)
+            .collect(),
+        )
+    } else {
+        None
+    };
+    let mut conservative_global_bound = false;
     // A sub-raster specified region can fall between HField sample centers.
     // The safe-mother path is global, so retaining its declared level is the
     // conservative bound and costs no additional geometric machinery.
     if specified_present && levels.iter().copied().max().unwrap_or(0) < specified_level {
         levels.fill(specified_level);
+        conservative_global_bound = true;
     }
     if calculated_present && levels.iter().copied().max().unwrap_or(0) < calculated_level {
         levels.fill(calculated_level);
+        conservative_global_bound = true;
     }
-    Ok((regions, field.nlon(), field.nlat(), levels))
+    Ok(CertifiedRequirementPlan {
+        regions,
+        nlon: field.nlon(),
+        nlat: field.nlat(),
+        effective_levels: levels,
+        raw_region_levels,
+        conservative_global_bound,
+    })
 }
 
 fn certified_outcome_error(outcome: earthmesh_refine_certified::CertifiedMeshOutcome) -> io::Error {
