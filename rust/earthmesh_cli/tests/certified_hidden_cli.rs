@@ -218,7 +218,9 @@ fn assert_graph_header_matches_mesh(graph: &std::path::Path, mesh: &std::path::P
         .get_values::<i32, _>(..)
         .expect("read cellsOnEdge");
     let interior_edges = cells_on_edge
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .filter(|edge| edge[0] > 0 && edge[1] > 0)
         .count();
     let graph_text = fs::read_to_string(graph).expect("read graph.info");
