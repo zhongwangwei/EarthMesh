@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 fn temp_root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("earthmesh_cmrc_{name}_{}", std::process::id()));
@@ -187,6 +187,87 @@ fn specified_circle_namelist(
     )
 }
 
+fn read_f64(file: &netcdf::File, name: &str) -> Vec<f64> {
+    file.variable(name)
+        .unwrap_or_else(|| panic!("missing variable {name}"))
+        .get_values::<f64, _>(..)
+        .unwrap_or_else(|err| panic!("read {name}: {err}"))
+}
+
+fn assert_mpas_unit_sphere(path: &std::path::Path) {
+    let file = netcdf::open(path).expect("open MPAS mesh");
+    let radius: f64 = file
+        .attribute("sphere_radius")
+        .expect("sphere_radius")
+        .value()
+        .expect("read sphere_radius")
+        .try_into()
+        .expect("f64 attr");
+    assert_eq!(radius, 1.0);
+    assert!(read_f64(&file, "xCell")
+        .iter()
+        .all(|value| value.abs() <= 1.0 + 1.0e-12));
+}
+
+fn assert_graph_header_matches_mesh(graph: &std::path::Path, mesh: &std::path::Path) {
+    let file = netcdf::open(mesh).expect("open MPAS mesh");
+    let n_cells = file.dimension("nCells").expect("nCells").len();
+    let cells_on_edge = file
+        .variable("cellsOnEdge")
+        .expect("cellsOnEdge")
+        .get_values::<i32, _>(..)
+        .expect("read cellsOnEdge");
+    let interior_edges = cells_on_edge
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter(|edge| edge[0] > 0 && edge[1] > 0)
+        .count();
+    let graph_text = fs::read_to_string(graph).expect("read graph.info");
+    let header = graph_text.lines().next().expect("graph header");
+    let values = header
+        .split_whitespace()
+        .map(|value| value.parse::<usize>().expect("graph header usize"))
+        .collect::<Vec<_>>();
+    assert_eq!(values, vec![n_cells, interior_edges]);
+}
+
+fn artifact_bytes(paths: &[&std::path::Path]) -> BTreeMap<PathBuf, Vec<u8>> {
+    paths
+        .iter()
+        .map(|path| {
+            (
+                (*path).to_path_buf(),
+                fs::read(path).expect("read artifact"),
+            )
+        })
+        .collect()
+}
+
+fn assert_artifacts_unchanged(before: &BTreeMap<PathBuf, Vec<u8>>) {
+    for (path, bytes) in before {
+        assert_eq!(
+            &fs::read(path).expect("read restored artifact"),
+            bytes,
+            "{path:?}"
+        );
+    }
+}
+
+fn assert_no_cmrc_temporaries(result: &std::path::Path) {
+    for entry in fs::read_dir(result).expect("read result dir") {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .to_string();
+        assert!(
+            !name.contains("cmrc-tmp") && !name.contains("cmrc-backup"),
+            "left temporary artifact {name}"
+        );
+    }
+}
+
 #[test]
 fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     let root = temp_root("success");
@@ -213,6 +294,18 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     assert!(certified.ready_marker.exists());
     let resources: serde_json::Value =
         serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+    assert_eq!(
+        resources["requirement_layers"]["policy"],
+        "effective_raster_remains_hard"
+    );
+    assert_eq!(
+        resources["requirement_layers"]["raw_source_raster"]["histogram"],
+        serde_json::json!({"0": 8})
+    );
+    assert_eq!(
+        resources["requirement_layers"]["graph_scheduling_target"]["status"],
+        "not_applied"
+    );
     assert_eq!(resources["remap_rows"], 92);
     assert_eq!(resources["remap_entries"], 92);
     assert!(resources["artifact_bytes"]["gridfile"].as_u64().unwrap() > 0);
@@ -221,6 +314,159 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
         fs::read_to_string(&certified.ready_marker).unwrap(),
         "certified_adaptive\n"
     );
+}
+
+#[test]
+fn certified_atmos_mpas_safe_mother_publishes_mesh_and_graph_atomically() {
+    let root = temp_root("atmos_mpas_safe");
+    let case = "atmos_mpas_safe";
+    let path = root.join("cmrc.nml");
+    let contents = namelist(&root, case, 3, 1_000)
+        .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='atmosmesh'")
+        .replace("NL%output_format='CoLM'", "NL%output_format='MPAS'")
+        .replace("NL%delivery='coupled'", "NL%delivery='hex'");
+    fs::write(&path, contents).unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    let result = root.join(case).join("result");
+    let mpas = result.join("MPASOUT_NXP0003_global.nc4");
+    let graph = result.join("MPASOUT_NXP0003_global.graph.info");
+    assert!(mpas.exists());
+    assert!(graph.exists());
+    assert_mpas_unit_sphere(&mpas);
+    assert_graph_header_matches_mesh(&graph, &mpas);
+    let file = netcdf::open(&mpas).expect("open MPAS mesh");
+    let density = read_f64(&file, "meshDensity");
+    assert_eq!(density.len(), file.dimension("nCells").unwrap().len());
+    assert!(density.iter().all(|value| *value == 1.0));
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["mpas"], mpas.display().to_string());
+    assert_eq!(manifest["mpas_graph_info"], graph.display().to_string());
+    assert_eq!(manifest["mpas_sphere_radius"], 1.0);
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    assert_eq!(resources["mpas"]["mesh"], mpas.display().to_string());
+    assert_eq!(resources["mpas"]["graph_info"], graph.display().to_string());
+    assert!(resources["artifact_bytes"]["mpas"].as_u64().unwrap() > 0);
+    assert!(
+        resources["artifact_bytes"]["mpas_graph_info"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
+fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
+    let root = temp_root("atmos_mpas_adaptive");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![800.0],
+        },
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    let namelist = specified_circle_namelist(&root, "atmos_mpas_adaptive", &prefix)
+        .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='atmosmesh'")
+        .replace("NL%output_format='CoLM'", "NL%output_format='MPAS'")
+        .replace("safe_mother_only", "reverse_coarsening")
+        .replace("NL%delivery='coupled'", "NL%delivery='hex'")
+        .replace(
+            "NL%delivery='hex'",
+            "NL%delivery='hex'\n  NL%angle_contract='domain_quality_38_to_82_v1'",
+        )
+        .replace("NL%search_budget=100", "NL%search_budget=4000");
+    fs::write(&path, namelist).unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    assert!(certified.fulfillment.mixed_levels_delivered);
+    let mpas = root
+        .join("atmos_mpas_adaptive")
+        .join("result/MPASOUT_NXP0003_global.nc4");
+    let file = netcdf::open(&mpas).expect("open MPAS mesh");
+    let density = read_f64(&file, "meshDensity");
+    assert!(density
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0));
+    assert!(density.iter().any(|value| (*value - 1.0).abs() < 1.0e-12));
+    assert!(density
+        .iter()
+        .any(|value| (*value - 0.0625).abs() < 1.0e-12));
+    assert!(
+        density
+            .iter()
+            .any(|value| (*value - density[0]).abs() > 1.0e-12),
+        "adaptive CMRC MPAS must not synthesize all-one meshDensity"
+    );
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    assert_eq!(resources["mpas"]["mesh_density_min"], 0.0625);
+    assert_eq!(resources["mpas"]["mesh_density_max"], 1.0);
+    assert_eq!(resources["mpas"]["step"], 2);
+    let gridfile =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+            .unwrap();
+    let placeholder_rows = gridfile.w_refine_level.len() - density.len();
+    assert!(placeholder_rows <= 2);
+    for (level, actual) in gridfile.w_refine_level[placeholder_rows..]
+        .iter()
+        .zip(density)
+    {
+        let expected = 0.0625_f64.powi(1 - level);
+        assert!(
+            (actual - expected).abs() < 1.0e-12,
+            "level {level} density {actual} expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn certified_atmos_mpas_publication_failure_restores_prior_complete_bundle() {
+    let root = temp_root("atmos_mpas_rollback");
+    let case = "atmos_mpas_rollback";
+    let path = root.join("cmrc.nml");
+    let contents = namelist(&root, case, 3, 1_000)
+        .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='atmosmesh'")
+        .replace("NL%output_format='CoLM'", "NL%output_format='MPAS'")
+        .replace("NL%delivery='coupled'", "NL%delivery='hex'");
+    fs::write(&path, contents).unwrap();
+
+    let first = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect("initial complete MPAS bundle");
+    let certified = first.certified_run.unwrap();
+    let result = root.join(case).join("result");
+    let grid = first.output.output;
+    let mpas = result.join("MPASOUT_NXP0003_global.nc4");
+    let graph = result.join("MPASOUT_NXP0003_global.graph.info");
+    let ready = certified.ready_marker;
+    let before = artifact_bytes(&[
+        grid.as_path(),
+        mpas.as_path(),
+        certified.certificate.as_path(),
+        certified.manifest.as_path(),
+        certified.resources.as_path(),
+        ready.as_path(),
+    ]);
+
+    fs::remove_file(&graph).unwrap();
+    fs::create_dir(&graph).unwrap();
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect_err("directory at graph path must make publication fail");
+    assert!(error
+        .to_string()
+        .contains("CMRC atomic artifact publication failed"));
+    fs::remove_dir(&graph).unwrap();
+    assert_artifacts_unchanged(&before);
+    assert_no_cmrc_temporaries(&result);
 }
 
 #[test]
@@ -324,7 +570,10 @@ fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback
 
     fs::write(
         &path,
-        specified_circle_namelist(&root, "mixed_safe_fallback", &prefix),
+        specified_circle_namelist(&root, "mixed_safe_fallback", &prefix)
+            .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='atmosmesh'")
+            .replace("NL%output_format='CoLM'", "NL%output_format='MPAS'")
+            .replace("NL%delivery='coupled'", "NL%delivery='hex'"),
     )
     .unwrap();
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
@@ -342,6 +591,14 @@ fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback
         run.output.output.file_name().unwrap().to_str().unwrap(),
         "gridfile_NXP0003_hex_certified_safe_fallback.nc4"
     );
+    assert!(root
+        .join("mixed_safe_fallback/result/MPASOUT_NXP0003_global_certified_safe_fallback.nc4")
+        .exists());
+    assert!(root
+        .join(
+            "mixed_safe_fallback/result/MPASOUT_NXP0003_global_certified_safe_fallback.graph.info"
+        )
+        .exists());
     assert_eq!(
         fs::read_to_string(&certified.ready_marker).unwrap(),
         "certified_safe_fallback\n"
@@ -389,6 +646,16 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
         .join(missing_case)
         .join("result/gridfile_NXP0003_hex.nc4")
         .exists());
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(
+        layers["raw_source_raster"]["status"],
+        "unavailable_threshold_or_hydro"
+    );
+    assert!(layers["raw_source_raster"]["histogram"].is_null());
+    assert!(layers["effective_source_raster"]["raised_samples_over_raw"].is_null());
+    assert_eq!(layers["policy"], "effective_raster_remains_hard");
 }
 
 #[test]
@@ -701,6 +968,37 @@ fn reverse_mode_publishes_a_dqx_mixed_level_mesh() {
     assert!(certificate["geometry"]["maximum_angle_deg"]
         .as_f64()
         .is_some_and(|angle| angle <= 82.0));
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(*layers, resources["requirement_layers"]);
+    assert_eq!(layers["raw_source_raster"]["status"], "available");
+    assert_eq!(
+        layers["graph_scheduling_target"]["histogram"],
+        certificate["elastic_component_epochs"]["requested_histogram"]
+    );
+    assert_eq!(
+        layers["graph_scheduling_target"]["gradation_rings_per_level"],
+        3
+    );
+    let count = |hist: &serde_json::Value| {
+        hist.as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(
+        count(&layers["effective_source_raster"]["histogram"]),
+        720 * 360
+    );
+    assert_eq!(count(&layers["raw_source_raster"]["histogram"]), 720 * 360);
+    assert_eq!(
+        count(&layers["graph_scheduling_target"]["histogram"]),
+        certificate["elastic_component_epochs"]["aggregate"]["initial_vertices"]
+            .as_u64()
+            .unwrap()
+    );
     assert_eq!(certificate["delivered_level_min"], 0);
     assert_eq!(certificate["delivered_level_max"], 1);
     assert!(
@@ -835,4 +1133,100 @@ fn certified_regional_unimplemented_views_and_boundaries_fail_closed() {
             .contains("supports oceanmesh/tri with a single close polygon only"));
         assert!(!root.join(case).join("result/certified_ready").exists());
     }
+}
+
+#[test]
+fn certified_subraster_requirement_reports_the_conservative_bound_separately() {
+    let root = temp_root("subraster_layers");
+    let prefix = root.join("tiny");
+    let landtype = root.join("ocean.nc");
+    write_all_ocean(&landtype);
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        root.join("tiny_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![0.001],
+        },
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    // Exercise both region loaders; neither may call the fallback an expanded footprint.
+    for calculated in [false, true] {
+        let mut text = specified_circle_namelist(&root, "subraster_layers", &prefix);
+        if calculated {
+            text = text
+                .replace("RL%refine_cal=.false.", "")
+                .replace("refine_spc", "refine_cal")
+                .replace("max_iter_spc", "max_iter_cal")
+                .replace(
+                    "RL%max_iter_cal=1",
+                    "RL%max_iter_cal=1\n RL%refine_num_landtypes=.true.\n RL%th_num_landtypes=100",
+                )
+                .replace(
+                    "NL%landtype_file='none'",
+                    &format!("NL%landtype_file='{}'", landtype.display()),
+                );
+        }
+        fs::write(&path, text).unwrap();
+        let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+        let certified = run.certified_run.unwrap();
+        let certificate: serde_json::Value =
+            serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+        let layers = &certificate["requirement_layers"];
+        assert_eq!(
+            layers["raw_source_raster"]["histogram"],
+            if calculated {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!({"0": 259200})
+            }
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["histogram"],
+            serde_json::json!({"1": 259200})
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["conservative_global_bound"],
+            true
+        );
+        assert_eq!(
+            layers["effective_source_raster"]["raised_samples_over_raw"],
+            if calculated {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(259200)
+            }
+        );
+        assert_eq!(certified.physical_residuals, 0);
+        assert_eq!(certified.chosen_level, 1);
+    }
+}
+
+#[test]
+fn certified_hydro_requirement_does_not_publish_partial_raw_provenance() {
+    let root = temp_root("hydro_layers");
+    let cells = root.join("cells.geojson");
+    let levels = root.join("levels.json");
+    fs::write(&cells, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"center_lon":0,"center_lat":0},"geometry":{"type":"Polygon","coordinates":[[[-2,-2],[2,-2],[2,2],[-2,2],[-2,-2]]]}}]}"#).unwrap();
+    fs::write(&levels, r#"{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{"cell":0,"target_level":1}]}"#).unwrap();
+    let path = root.join("cmrc.nml");
+    fs::write(&path, format!(
+        "{}\n&hfield\n NL%hfield_nlon=36\n NL%hfield_nlat=18\n NL%hfield_target_cells_geojson='{}'\n NL%hfield_target_levels_json='{}'\n/\n",
+        namelist(&root, "hydro_layers", 3, 1_000), cells.display(), levels.display(),
+    )).unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
+    let layers = &certificate["requirement_layers"];
+    assert_eq!(
+        layers["raw_source_raster"]["status"],
+        "unavailable_threshold_or_hydro"
+    );
+    assert!(layers["raw_source_raster"]["histogram"].is_null());
+    assert!(layers["effective_source_raster"]["raised_samples_over_raw"].is_null());
+    assert_eq!(layers["policy"], "effective_raster_remains_hard");
+    assert_eq!(certified.physical_residuals, 0);
+    assert_eq!(certified.chosen_level, 1);
 }

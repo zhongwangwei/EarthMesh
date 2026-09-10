@@ -330,8 +330,8 @@ pub struct AngleGateReport {
 struct SupportedMotherAngleGate;
 
 impl SupportedMotherAngleGate {
-    const SUPPORTED: [usize; 16] = [
-        1, 2, 3, 4, 6, 8, 12, 20, 40, 80, 160, 192, 320, 384, 640, 768,
+    const SUPPORTED: [usize; 19] = [
+        1, 2, 3, 4, 6, 8, 12, 20, 40, 64, 80, 128, 160, 192, 256, 320, 384, 640, 768,
     ];
 
     fn verify(
@@ -1488,6 +1488,38 @@ mod tests {
                 SupportedMotherAngleGate::SUPPORTED.contains(&n),
                 "master ocean case hierarchy level n={n} must be explicitly supported"
             );
+        }
+    }
+
+    #[test]
+    fn support_table_includes_original_atmospheric_hierarchy_levels() {
+        for n in [64, 128, 256] {
+            assert!(
+                SupportedMotherAngleGate::SUPPORTED.contains(&n),
+                "original atmospheric case hierarchy level n={n} must be explicitly supported"
+            );
+        }
+    }
+
+    #[test]
+    fn original_atmospheric_hierarchy_satisfies_domain_quality_certificate() {
+        for n in [64, 128, 256] {
+            let grid = MotherGrid::generate(n).unwrap();
+            let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
+                .verify_mother_grid(&grid)
+                .unwrap();
+            assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+            assert_eq!(
+                analytic_counts(n).unwrap(),
+                (report.vertices, report.edges, report.faces)
+            );
+            assert_eq!(report.euler, 2);
+            assert_eq!(report.open_edges, 0);
+            assert_eq!(report.topology_errors, 0);
+            assert_eq!(report.degree_outside_window, 0);
+            assert_eq!(report.delaunay_violations, 0);
+            assert_eq!(report.voronoi_invalid_cells, 0);
+            assert_eq!(report.voronoi_reciprocal_errors, 0);
         }
     }
 

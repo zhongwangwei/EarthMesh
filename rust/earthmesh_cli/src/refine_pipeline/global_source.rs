@@ -133,6 +133,16 @@ fn publish_certified_artifacts(
     let mut backups = Vec::new();
     for (index, (final_path, is_ready)) in backup_targets.enumerate() {
         if final_path.exists() {
+            if !final_path.is_file() {
+                restore_certified_backups(&backups);
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!(
+                        "CMRC artifact target is not a regular file: {}",
+                        final_path.display()
+                    ),
+                ));
+            }
             let backup = backup_path(final_path, index);
             if let Err(error) = fs::rename(final_path, &backup) {
                 restore_certified_backups(&backups);
@@ -270,6 +280,14 @@ pub fn run_refine_pipeline_namelist(
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
+    if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
+        && backend != RefineBackend::Certified
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local updates require the certified backend",
+        ));
+    }
     if backend == RefineBackend::Certified {
         return run_certified_pipeline(
             &contents,
@@ -1437,6 +1455,7 @@ struct CertifiedConstruction {
     components_exhausted: usize,
     search_complete: bool,
     elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+    local_update: Option<serde_json::Value>,
 }
 
 fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -1460,6 +1479,7 @@ fn build_certified_construction(
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     max_tris: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
     if options.mode == CertifiedMode::SafeMotherOnly {
@@ -1507,6 +1527,7 @@ fn build_certified_construction(
             components_exhausted: 0,
             search_complete: true,
             elastic_report: None,
+            local_update: None,
         });
     }
 
@@ -1522,6 +1543,7 @@ fn build_certified_construction(
             options,
             raster_requirements,
             budget,
+            local_update_path,
         );
     }
 
@@ -1621,6 +1643,7 @@ fn build_certified_construction(
                 components_exhausted: 0,
                 search_complete: true,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -1667,6 +1690,7 @@ fn build_certified_construction(
                 components_exhausted: 1,
                 search_complete: false,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -1685,6 +1709,7 @@ fn build_mixed_certified_construction(
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1827,13 +1852,39 @@ fn build_mixed_certified_construction(
         .collect::<io::Result<Vec<_>>>()?
         .try_into()
         .expect("twelve source pentagons map to twelve compact sites");
-    let mesh = leaf_mesh.mesh.clone();
+    let mut mesh = leaf_mesh.mesh.clone();
     let delivered_levels = result
         .state
         .target_levels()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         .levels()
         .to_vec();
+    // Trial updates precede every final source/remap/geometry gate.
+    // Invalid input aborts; a rejected trial cannot mutate the retained control.
+    let local_update = local_update_path
+        .map(|path| {
+            let mut candidate = mesh.clone();
+            match super::cmrc_local_updates::apply(
+                &mut candidate,
+                &delivered_levels,
+                &pentagons,
+                path,
+                options.angle_contract,
+            ) {
+                Ok(report) => {
+                    mesh = candidate;
+                    Ok(serde_json::json!({"decision": "candidate", "proposal_validation": report}))
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    Ok(serde_json::json!({"decision": "control", "reason": error.to_string()}))
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .transpose()?;
+    if let Some(report) = &local_update {
+        eprintln!("earthmesh_cli: experimental_local_update {report}");
+    }
     let final_cell_requirements = if mesh == initial_mesh
         && delivered_levels.iter().all(|&level| level == chosen_level)
     {
@@ -1914,6 +1965,7 @@ fn build_mixed_certified_construction(
         remap_certificate,
         final_cell_requirements: Some(final_cell_requirements),
         elastic_report: Some(result.report.clone()),
+        local_update,
     })
 }
 
@@ -1978,6 +2030,79 @@ struct CertifiedDomainPublication {
     quality_topology: (usize, Vec<serde_json::Value>),
     geometry: serde_json::Value,
     fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
+}
+
+struct CertifiedMpasPublication {
+    report: crate::MpasFullMeshPipelineReport,
+    mesh_density_min: f64,
+    mesh_density_max: f64,
+    step: usize,
+}
+
+fn certified_mpas_cellwidth(base_nxp: usize, w_refine_levels: &[i32]) -> io::Result<Vec<f64>> {
+    if base_nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC MPAS export requires positive NXP",
+        ));
+    }
+    let base_width = 7680.0 / base_nxp as f64;
+    w_refine_levels
+        .iter()
+        .map(|&level| {
+            if level < 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CMRC MPAS export requires non-negative W refinement levels",
+                ));
+            }
+            Ok(base_width / 2_f64.powi(level))
+        })
+        .collect()
+}
+
+fn publish_certified_atmos_mpas(
+    mesh: &crate::UnstructuredMesh,
+    w_refine_levels: &[i32],
+    mesh_output: &Path,
+    graph_output: &Path,
+    base_nxp: usize,
+    delivered_level: usize,
+) -> io::Result<CertifiedMpasPublication> {
+    let cellwidth = certified_mpas_cellwidth(base_nxp, w_refine_levels)?;
+    let step = delivered_level.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC MPAS delivered level overflowed",
+        )
+    })?;
+    let mpas =
+        crate::build_mpas_mesh_from_unstructured_one_based(mesh, &cellwidth, base_nxp, step)?;
+    let mesh_density_min = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let mesh_density_max = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mesh_report = crate::write_mpas_mesh_netcdf(mesh_output, &mpas)?;
+    let graph_info = crate::write_mpas_graph_info(
+        graph_output,
+        10,
+        &mpas.cells_on_cell,
+        &mpas.cells_on_edge,
+        &mpas.n_edges_on_cell,
+    )?;
+    Ok(CertifiedMpasPublication {
+        report: crate::MpasFullMeshPipelineReport {
+            mesh: mesh_report,
+            graph_info,
+        },
+        mesh_density_min,
+        mesh_density_max,
+        step,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2134,6 +2259,30 @@ fn publish_certified_domain_gridfile(
     })
 }
 
+fn validate_local_update_mode(
+    config: &EarthmeshConfig,
+    options: &CertifiedRunOptions,
+    required_levels: &[usize],
+) -> io::Result<()> {
+    let maximum = required_levels.iter().copied().max().unwrap_or(0);
+    if !config.refine
+        || !config.mask_domain_global
+        || !matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        || config.mode_grid.trim() != "hex"
+        || !config.output_format.trim().eq_ignore_ascii_case("MPAS")
+        || options.mode != CertifiedMode::ReverseCoarsening
+        || options.delivery != CertifiedDelivery::Coupled
+        || options.angle_contract.as_str() != "domain_quality_38_to_82_v1"
+        || maximum == 0
+        || maximum > 2
+        || !required_levels.iter().any(|&level| level < maximum)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "local updates require global coupled atmosmesh/hex MPAS mixed reverse coarsening with the 38..82 angle contract"));
+    }
+    Ok(())
+}
+
 fn run_certified_pipeline(
     contents: &str,
     config: &EarthmeshConfig,
@@ -2237,8 +2386,8 @@ fn run_certified_pipeline(
             "CMRC NXP must be positive",
         ));
     }
-    let (regions, requirement_nlon, requirement_nlat, required_levels) = if config.refine {
-        certified_requirement_levels(
+    let requirements = if config.refine {
+        certified_requirement_plan(
             contents,
             config,
             &refine,
@@ -2247,8 +2396,11 @@ fn run_certified_pipeline(
             calculated_level,
         )?
     } else {
-        (Vec::new(), 4, 2, vec![0; 8])
+        CertifiedRequirementPlan::uniform()
     };
+    let requirement_nlon = requirements.nlon;
+    let requirement_nlat = requirements.nlat;
+    let required_levels = &requirements.effective_levels;
     let chosen_level = required_levels.iter().copied().max().unwrap_or(0);
     if chosen_level > options.maximum_level {
         return Err(io::Error::new(
@@ -2265,6 +2417,29 @@ fn run_certified_pipeline(
         required_levels.clone(),
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let local_update_path = std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").map(PathBuf::from);
+    if let Some(path) = &local_update_path {
+        if !path.is_absolute() || !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local update request must be an existing absolute file",
+            ));
+        }
+        validate_local_update_mode(config, &options, required_levels)?;
+        if [
+            "EARTHMESH_CMRC_SELECT",
+            "EARTHMESH_CMRC_TRIM",
+            "EARTHMESH_CMRC_CHECKPOINT",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local updates cannot be combined with another experimental CMRC mode",
+            ));
+        }
+    }
     log_cmrc_phase(timing_enabled, "requirement_planning", &mut phase_started);
     let CertifiedConstruction {
         geometry,
@@ -2289,12 +2464,14 @@ fn run_certified_pipeline(
         components_exhausted,
         search_complete,
         elastic_report,
+        local_update,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
         &options,
         &raster_requirements,
         max_tris,
+        local_update_path.as_deref(),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
@@ -2494,6 +2671,8 @@ fn run_certified_pipeline(
     } else {
         "final_voronoi_cells_global_raster_max_bound"
     };
+    let requirement_layers =
+        requirements.layer_report(elastic_report.as_ref(), options.gradation_rings_per_level);
     let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
     let mut certificate_document = serde_json::json!({
         "backend": "certified",
@@ -2566,6 +2745,7 @@ fn run_certified_pipeline(
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
     });
+    certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
             "pre_export_closed_sphere_canonical_ids"
@@ -2579,7 +2759,32 @@ fn run_certified_pipeline(
     .then(|| fvcom_mesh_2dm_output_path(&file_dir));
     let temporary_fvcom_path =
         result_dir.join(format!(".fvcom.2dm.cmrc-tmp-{}", std::process::id()));
-    let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
+    let mpas_suffix = if safe_fallback {
+        "_certified_safe_fallback"
+    } else {
+        ""
+    };
+    let mpas_output_paths = (!is_domain_export
+        && matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        && config.mode_grid.trim() == "hex"
+        && config.output_format.trim().eq_ignore_ascii_case("MPAS"))
+    .then(|| {
+        (
+            result_dir.join(format!("MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.nc4")),
+            result_dir.join(format!(
+                "MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.graph.info"
+            )),
+        )
+    });
+    let temporary_mpas_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.nc4.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let temporary_mpas_graph_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.graph.info.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let mut manifest = serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
         "dqx_execution_status": if options.angle_contract.as_str() == "domain_quality_38_to_82_v1" { "geometry_contract_only" } else { "not_applicable" },
@@ -2601,21 +2806,32 @@ fn run_certified_pipeline(
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
-    }))
-    .map_err(io::Error::other)?;
+        "mpas": mpas_output_paths.as_ref().map(|(mesh, _)| mesh.display().to_string()),
+        "mpas_graph_info": mpas_output_paths.as_ref().map(|(_, graph)| graph.display().to_string()),
+        "mpas_sphere_radius": mpas_output_paths.as_ref().map(|_| 1.0),
+    });
+    if let Some(mut report) = local_update {
+        report["full_delivery_recertified"] = serde_json::json!(true);
+        report["angle_guard"] =
+            serde_json::json!("global_extrema_and_preferred_distribution_not_per_element");
+        manifest["experimental_local_update"] = report;
+    }
+    let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
     let (m_refine_levels, w_refine_levels) =
         certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
     let temporary_paths = [
-        &temporary_path,
-        &temporary_source_path,
-        &temporary_remap_path,
-        &temporary_certificate_path,
-        &temporary_manifest_path,
-        &temporary_resources_path,
-        &temporary_ready_marker,
-        &temporary_fvcom_path,
+        temporary_path.as_path(),
+        temporary_source_path.as_path(),
+        temporary_remap_path.as_path(),
+        temporary_certificate_path.as_path(),
+        temporary_manifest_path.as_path(),
+        temporary_resources_path.as_path(),
+        temporary_ready_marker.as_path(),
+        temporary_fvcom_path.as_path(),
+        temporary_mpas_path.as_path(),
+        temporary_mpas_graph_path.as_path(),
     ];
-    for path in temporary_paths {
+    for path in &temporary_paths {
         let _ = fs::remove_file(path);
     }
     log_cmrc_phase(timing_enabled, "artifact_assembly", &mut phase_started);
@@ -2688,6 +2904,18 @@ fn run_certified_pipeline(
                 None,
             )
         };
+        let mpas = if mpas_output_paths.is_some() {
+            Some(publish_certified_atmos_mpas(
+                &output_mesh,
+                &w_refine_levels,
+                &temporary_mpas_path,
+                &temporary_mpas_graph_path,
+                base_nxp,
+                delivered_level,
+            )?)
+        } else {
+            None
+        };
         log_cmrc_phase(
             timing_enabled,
             "domain_export_and_audit",
@@ -2708,6 +2936,7 @@ fn run_certified_pipeline(
         )?;
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
+            "requirement_layers": requirement_layers,
             "requirement_raster_cells": required_levels.len(),
             "target_voronoi_cells": geometry_report.voronoi_cells,
             "remap_rows": remap.rows().len(),
@@ -2718,6 +2947,8 @@ fn run_certified_pipeline(
                 "certificate": fs::metadata(&temporary_certificate_path)?.len(),
                 "manifest": fs::metadata(&temporary_manifest_path)?.len(),
                 "fvcom_2dm": if temporary_fvcom_path.exists() { serde_json::Value::from(fs::metadata(&temporary_fvcom_path)?.len()) } else { serde_json::Value::Null },
+                "mpas": if temporary_mpas_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_path)?.len()) } else { serde_json::Value::Null },
+                "mpas_graph_info": if temporary_mpas_graph_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_graph_path)?.len()) } else { serde_json::Value::Null },
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
@@ -2746,6 +2977,23 @@ fn run_certified_pipeline(
                     "boundary_segments": report.boundary_segments,
                 })
             }),
+            "mpas": mpas.as_ref().map(|report| {
+                let (mesh, graph) = mpas_output_paths.as_ref().expect("MPAS paths");
+                serde_json::json!({
+                    "mesh": mesh.display().to_string(),
+                    "graph_info": graph.display().to_string(),
+                    "n_cells": report.report.mesh.n_cells,
+                    "n_vertices": report.report.mesh.n_vertices,
+                    "n_edges": report.report.mesh.n_edges,
+                    "graph_interior_edges": report.report.graph_info.interior_edges,
+                    "mesh_density_min": report.mesh_density_min,
+                    "mesh_density_max": report.mesh_density_max,
+                    "base_nxp": base_nxp,
+                    "step": report.step,
+                    "sphere_radius": 1.0,
+                    "unit_convention": "unit_sphere",
+                })
+            }),
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
@@ -2756,7 +3004,7 @@ fn run_certified_pipeline(
     let (temporary, landtype_masked_cells) = match staged {
         Ok(report) => report,
         Err(error) => {
-            for path in temporary_paths {
+            for path in &temporary_paths {
                 let _ = fs::remove_file(path);
             }
             return Err(error);
@@ -2776,9 +3024,13 @@ fn run_certified_pipeline(
     if let Some(fvcom_path) = &fvcom_output_path {
         publications.push((temporary_fvcom_path.as_path(), fvcom_path.as_path()));
     }
+    if let Some((mpas_path, graph_path)) = &mpas_output_paths {
+        publications.push((temporary_mpas_path.as_path(), mpas_path.as_path()));
+        publications.push((temporary_mpas_graph_path.as_path(), graph_path.as_path()));
+    }
     publications.push((temporary_ready_marker.as_path(), ready_marker.as_path()));
     if let Err(error) = publish_certified_artifacts(&publications, &[&obsolete_remap_path]) {
-        for path in temporary_paths {
+        for path in &temporary_paths {
             let _ = fs::remove_file(path);
         }
         return Err(io::Error::new(
@@ -2812,7 +3064,7 @@ fn run_certified_pipeline(
     Ok(RefinePipelineRunReport {
         gridinit: None,
         refine,
-        regions,
+        regions: requirements.regions,
         max_level: chosen_level,
         realized_max_level: delivered_level,
         finest_cell_km: 0.0,
@@ -2991,14 +3243,75 @@ fn certify_cmrc_published_dual(
     Ok(())
 }
 
-fn certified_requirement_levels(
+/// Separate source provenance from the effective raster that is still hard-certified.
+struct CertifiedRequirementPlan {
+    regions: Vec<RefinementRegion>,
+    nlon: usize,
+    nlat: usize,
+    effective_levels: Vec<usize>,
+    // None for threshold/hydro sources: partial raw provenance would be misleading.
+    raw_region_levels: Option<Vec<usize>>,
+    conservative_global_bound: bool,
+}
+
+impl CertifiedRequirementPlan {
+    fn uniform() -> Self {
+        Self {
+            regions: Vec::new(),
+            nlon: 4,
+            nlat: 2,
+            effective_levels: vec![0; 8],
+            raw_region_levels: Some(vec![0; 8]),
+            conservative_global_bound: false,
+        }
+    }
+
+    fn layer_report(
+        &self,
+        elastic: Option<&earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+        rings: usize,
+    ) -> serde_json::Value {
+        let histogram = |levels: &[usize]| {
+            let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+            for &level in levels {
+                *counts.entry(level).or_default() += 1;
+            }
+            counts
+        };
+        serde_json::json!({
+            "policy": "effective_raster_remains_hard",
+            "raw_source_raster": {
+                "status": if self.raw_region_levels.is_some() { "available" } else { "unavailable_threshold_or_hydro" },
+                "scope": "canonical_region_sample_centers_quantized_not_analytic_coverage",
+                "histogram": self.raw_region_levels.as_deref().map(histogram),
+            },
+            "effective_source_raster": {
+                "scope": "gradient_limited_composed_sources_with_conservative_bounds",
+                "histogram": histogram(&self.effective_levels),
+                "conservative_global_bound": self.conservative_global_bound,
+                "raised_samples_over_raw": self.raw_region_levels.as_ref().map(|raw| {
+                    raw.iter().zip(&self.effective_levels).filter(|(r, e)| e > r).count()
+                }),
+            },
+            "raster_grid": { "nlon": self.nlon, "nlat": self.nlat },
+            "graph_scheduling_target": {
+                "status": if elastic.is_some() { "applied" } else { "not_applied" },
+                "scope": "initial_mother_voronoi_cells_after_raster_overlap_and_graph_gradation",
+                "histogram": elastic.map(|report| &report.requested_histogram),
+                "gradation_rings_per_level": elastic.map(|_| rings),
+            },
+        })
+    }
+}
+
+fn certified_requirement_plan(
     contents: &str,
     config: &EarthmeshConfig,
     refine: &RefineConfig,
     base_nxp: usize,
     specified_level: usize,
     calculated_level: usize,
-) -> io::Result<(Vec<RefinementRegion>, usize, usize, Vec<usize>)> {
+) -> io::Result<CertifiedRequirementPlan> {
     if crate::adaptive_refine::read_adaptive_refine_options(contents)?.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -3054,7 +3367,7 @@ fn certified_requirement_levels(
     let mut regions = specified_regions;
     regions.extend(calculated_regions);
     if regions.is_empty() && !has_threshold_sources && hydro_level == 0 {
-        return Ok((regions, 4, 2, vec![0; 8]));
+        return Ok(CertifiedRequirementPlan::uniform());
     }
 
     let source_max_level = specified_level
@@ -3089,16 +3402,44 @@ fn certified_requirement_levels(
         .into_iter()
         .map(usize::from)
         .collect::<Vec<_>>();
+    // Do not mistake a region-only subset for the raw demand of a mixed-source run.
+    let raw_region_levels = if !has_threshold_sources && hfield.hydro_target_paths().is_none() {
+        Some(
+            crate::hfield_refine::build_raw_region_hfield(
+                &regions,
+                base_m,
+                field.nlon(),
+                field.nlat(),
+                None,
+            )?
+            .level_map(base_m, quantized_max_level)?
+            .into_iter()
+            .map(usize::from)
+            .collect(),
+        )
+    } else {
+        None
+    };
+    let mut conservative_global_bound = false;
     // A sub-raster specified region can fall between HField sample centers.
     // The safe-mother path is global, so retaining its declared level is the
     // conservative bound and costs no additional geometric machinery.
     if specified_present && levels.iter().copied().max().unwrap_or(0) < specified_level {
         levels.fill(specified_level);
+        conservative_global_bound = true;
     }
     if calculated_present && levels.iter().copied().max().unwrap_or(0) < calculated_level {
         levels.fill(calculated_level);
+        conservative_global_bound = true;
     }
-    Ok((regions, field.nlon(), field.nlat(), levels))
+    Ok(CertifiedRequirementPlan {
+        regions,
+        nlon: field.nlon(),
+        nlat: field.nlat(),
+        effective_levels: levels,
+        raw_region_levels,
+        conservative_global_bound,
+    })
 }
 
 fn certified_outcome_error(outcome: earthmesh_refine_certified::CertifiedMeshOutcome) -> io::Error {
@@ -5820,6 +6161,70 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_update_admission_is_explicit_and_mixed_coupled_only() {
+        let config = EarthmeshConfig {
+            refine: true,
+            mask_domain_global: true,
+            mesh_type: "atmosmesh".into(),
+            mode_grid: "hex".into(),
+            output_format: "MPAS".into(),
+            ..EarthmeshConfig::default()
+        };
+        let options = CertifiedRunOptions {
+            mode: CertifiedMode::ReverseCoarsening,
+            delivery: CertifiedDelivery::Coupled,
+            angle_contract: earthmesh_refine_certified::AngleContractId::DomainQuality38To82V1,
+            ..CertifiedRunOptions::default()
+        };
+        for levels in [vec![0, 1], vec![0, 1, 2]] {
+            validate_local_update_mode(&config, &options, &levels).expect("mixed scope");
+        }
+        for levels in [vec![], vec![0], vec![1, 1], vec![0, 3]] {
+            assert!(validate_local_update_mode(&config, &options, &levels).is_err());
+        }
+        for rejected in [
+            EarthmeshConfig {
+                mask_domain_global: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                refine: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mesh_type: "oceanmesh".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mode_grid: "tri".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                output_format: "FVCOM".into(),
+                ..config.clone()
+            },
+        ] {
+            assert!(validate_local_update_mode(&rejected, &options, &[0, 1]).is_err());
+        }
+        for rejected in [
+            CertifiedRunOptions {
+                mode: CertifiedMode::SafeMotherOnly,
+                ..options
+            },
+            CertifiedRunOptions {
+                delivery: CertifiedDelivery::Hex,
+                ..options
+            },
+            CertifiedRunOptions {
+                angle_contract: earthmesh_refine_certified::AngleContractId::LegacyStrict40To80,
+                ..options
+            },
+        ] {
+            assert!(validate_local_update_mode(&config, &rejected, &[0, 1]).is_err());
+        }
+    }
+
     fn legacy_remap_csv(rows: &[earthmesh_refine_certified::remap::RemapRow]) -> Vec<u8> {
         let mut output = Vec::new();
         writeln!(output, "target,source,weight").expect("header");
@@ -5875,61 +6280,78 @@ mod tests {
 
     #[test]
     fn failed_certified_publication_restores_the_previous_generation() {
-        let directory = std::env::temp_dir().join(format!(
-            "earthmesh-cmrc-publication-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).expect("create publication test directory");
         let names = [
             "certificate",
             "remap",
             "grid",
             "resources",
             "manifest",
+            "mpas",
+            "mpas-graph",
             "ready",
         ];
-        let paths = names
-            .iter()
-            .map(|name| {
-                let temporary = directory.join(format!("new-{name}"));
-                let final_path = directory.join(name);
-                fs::write(&temporary, format!("new-{name}")).expect("stage new artifact");
-                fs::write(&final_path, format!("old-{name}")).expect("write old artifact");
-                (temporary, final_path)
-            })
-            .collect::<Vec<_>>();
-        fs::remove_file(&paths[4].0).expect("remove staged manifest to force failure");
-        let publications = paths
-            .iter()
-            .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
-            .collect::<Vec<_>>();
+        for previous_generation in [false, true] {
+            for missing in [4, 5, 6, 7] {
+                let directory = std::env::temp_dir().join(format!(
+                    "earthmesh-cmrc-publication-{}-{}-{missing}-{previous_generation}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                fs::create_dir_all(&directory).expect("create publication test directory");
+                let paths = names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        let temporary = directory.join(format!(".{name}.cmrc-tmp-test"));
+                        let final_path = directory.join(name);
+                        if index != missing {
+                            fs::write(&temporary, format!("new-{name}"))
+                                .expect("stage new artifact");
+                        }
+                        if previous_generation {
+                            fs::write(&final_path, format!("old-{name}"))
+                                .expect("write old artifact");
+                        }
+                        (temporary, final_path)
+                    })
+                    .collect::<Vec<_>>();
+                let publications = paths
+                    .iter()
+                    .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
+                    .collect::<Vec<_>>();
+                let obsolete = directory.join("obsolete-remap");
+                fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
 
-        let obsolete = directory.join("obsolete-remap");
-        fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
-
-        assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
-        for (name, (_, final_path)) in names.iter().zip(&paths) {
-            assert_eq!(
-                fs::read_to_string(final_path).expect("restored old artifact"),
-                format!("old-{name}")
-            );
+                assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
+                for (name, (temporary, final_path)) in names.iter().zip(&paths) {
+                    if previous_generation {
+                        assert_eq!(
+                            fs::read_to_string(final_path).expect("restored old artifact"),
+                            format!("old-{name}")
+                        );
+                    } else {
+                        assert!(!final_path.exists(), "partial new artifact {name}");
+                    }
+                    // The caller owns cleanup of staged files not consumed by publication.
+                    let _ = fs::remove_file(temporary);
+                }
+                assert_eq!(
+                    fs::read_to_string(&obsolete).expect("restored obsolete remap"),
+                    "old-obsolete-remap"
+                );
+                assert!(fs::read_dir(&directory)
+                    .expect("read test directory")
+                    .all(|entry| {
+                        let name = entry.expect("directory entry").file_name();
+                        let name = name.to_string_lossy();
+                        !name.contains("cmrc-backup") && !name.contains("cmrc-tmp")
+                    }));
+                fs::remove_dir_all(directory).expect("clean publication test directory");
+            }
         }
-        assert_eq!(
-            fs::read_to_string(&obsolete).expect("restored obsolete remap"),
-            "old-obsolete-remap"
-        );
-        assert!(fs::read_dir(&directory)
-            .expect("read test directory")
-            .all(|entry| !entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .contains("cmrc-backup")));
-        fs::remove_dir_all(directory).expect("clean publication test directory");
     }
 
     #[test]
