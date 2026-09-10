@@ -280,6 +280,14 @@ pub fn run_refine_pipeline_namelist(
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
+    if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
+        && backend != RefineBackend::Certified
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local updates require the certified backend",
+        ));
+    }
     if backend == RefineBackend::Certified {
         return run_certified_pipeline(
             &contents,
@@ -1447,6 +1455,7 @@ struct CertifiedConstruction {
     components_exhausted: usize,
     search_complete: bool,
     elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+    local_update: Option<serde_json::Value>,
 }
 
 fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -1470,6 +1479,7 @@ fn build_certified_construction(
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     max_tris: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
     if options.mode == CertifiedMode::SafeMotherOnly {
@@ -1517,6 +1527,7 @@ fn build_certified_construction(
             components_exhausted: 0,
             search_complete: true,
             elastic_report: None,
+            local_update: None,
         });
     }
 
@@ -1532,6 +1543,7 @@ fn build_certified_construction(
             options,
             raster_requirements,
             budget,
+            local_update_path,
         );
     }
 
@@ -1631,6 +1643,7 @@ fn build_certified_construction(
                 components_exhausted: 0,
                 search_complete: true,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -1677,6 +1690,7 @@ fn build_certified_construction(
                 components_exhausted: 1,
                 search_complete: false,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -1695,6 +1709,7 @@ fn build_mixed_certified_construction(
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1837,13 +1852,39 @@ fn build_mixed_certified_construction(
         .collect::<io::Result<Vec<_>>>()?
         .try_into()
         .expect("twelve source pentagons map to twelve compact sites");
-    let mesh = leaf_mesh.mesh.clone();
+    let mut mesh = leaf_mesh.mesh.clone();
     let delivered_levels = result
         .state
         .target_levels()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         .levels()
         .to_vec();
+    // Trial updates precede every final source/remap/geometry gate.
+    // Invalid input aborts; a rejected trial cannot mutate the retained control.
+    let local_update = local_update_path
+        .map(|path| {
+            let mut candidate = mesh.clone();
+            match super::cmrc_local_updates::apply(
+                &mut candidate,
+                &delivered_levels,
+                &pentagons,
+                path,
+                options.angle_contract,
+            ) {
+                Ok(report) => {
+                    mesh = candidate;
+                    Ok(serde_json::json!({"decision": "candidate", "proposal_validation": report}))
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    Ok(serde_json::json!({"decision": "control", "reason": error.to_string()}))
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .transpose()?;
+    if let Some(report) = &local_update {
+        eprintln!("earthmesh_cli: experimental_local_update {report}");
+    }
     let final_cell_requirements = if mesh == initial_mesh
         && delivered_levels.iter().all(|&level| level == chosen_level)
     {
@@ -1924,6 +1965,7 @@ fn build_mixed_certified_construction(
         remap_certificate,
         final_cell_requirements: Some(final_cell_requirements),
         elastic_report: Some(result.report.clone()),
+        local_update,
     })
 }
 
@@ -2217,6 +2259,30 @@ fn publish_certified_domain_gridfile(
     })
 }
 
+fn validate_local_update_mode(
+    config: &EarthmeshConfig,
+    options: &CertifiedRunOptions,
+    required_levels: &[usize],
+) -> io::Result<()> {
+    let maximum = required_levels.iter().copied().max().unwrap_or(0);
+    if !config.refine
+        || !config.mask_domain_global
+        || !matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        || config.mode_grid.trim() != "hex"
+        || !config.output_format.trim().eq_ignore_ascii_case("MPAS")
+        || options.mode != CertifiedMode::ReverseCoarsening
+        || options.delivery != CertifiedDelivery::Coupled
+        || options.angle_contract.as_str() != "domain_quality_38_to_82_v1"
+        || maximum == 0
+        || maximum > 2
+        || !required_levels.iter().any(|&level| level < maximum)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "local updates require global coupled atmosmesh/hex MPAS mixed reverse coarsening with the 38..82 angle contract"));
+    }
+    Ok(())
+}
+
 fn run_certified_pipeline(
     contents: &str,
     config: &EarthmeshConfig,
@@ -2351,6 +2417,29 @@ fn run_certified_pipeline(
         required_levels.clone(),
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let local_update_path = std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").map(PathBuf::from);
+    if let Some(path) = &local_update_path {
+        if !path.is_absolute() || !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local update request must be an existing absolute file",
+            ));
+        }
+        validate_local_update_mode(config, &options, required_levels)?;
+        if [
+            "EARTHMESH_CMRC_SELECT",
+            "EARTHMESH_CMRC_TRIM",
+            "EARTHMESH_CMRC_CHECKPOINT",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local updates cannot be combined with another experimental CMRC mode",
+            ));
+        }
+    }
     log_cmrc_phase(timing_enabled, "requirement_planning", &mut phase_started);
     let CertifiedConstruction {
         geometry,
@@ -2375,12 +2464,14 @@ fn run_certified_pipeline(
         components_exhausted,
         search_complete,
         elastic_report,
+        local_update,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
         &options,
         &raster_requirements,
         max_tris,
+        local_update_path.as_deref(),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
@@ -2693,7 +2784,7 @@ fn run_certified_pipeline(
         ".MPASOUT_NXP{base_nxp:04}_global.graph.info.cmrc-tmp-{}",
         std::process::id()
     ));
-    let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
+    let mut manifest = serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
         "dqx_execution_status": if options.angle_contract.as_str() == "domain_quality_38_to_82_v1" { "geometry_contract_only" } else { "not_applicable" },
@@ -2718,8 +2809,14 @@ fn run_certified_pipeline(
         "mpas": mpas_output_paths.as_ref().map(|(mesh, _)| mesh.display().to_string()),
         "mpas_graph_info": mpas_output_paths.as_ref().map(|(_, graph)| graph.display().to_string()),
         "mpas_sphere_radius": mpas_output_paths.as_ref().map(|_| 1.0),
-    }))
-    .map_err(io::Error::other)?;
+    });
+    if let Some(mut report) = local_update {
+        report["full_delivery_recertified"] = serde_json::json!(true);
+        report["angle_guard"] =
+            serde_json::json!("global_extrema_and_preferred_distribution_not_per_element");
+        manifest["experimental_local_update"] = report;
+    }
+    let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
     let (m_refine_levels, w_refine_levels) =
         certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
     let temporary_paths = [
@@ -6063,6 +6160,70 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_update_admission_is_explicit_and_mixed_coupled_only() {
+        let config = EarthmeshConfig {
+            refine: true,
+            mask_domain_global: true,
+            mesh_type: "atmosmesh".into(),
+            mode_grid: "hex".into(),
+            output_format: "MPAS".into(),
+            ..EarthmeshConfig::default()
+        };
+        let options = CertifiedRunOptions {
+            mode: CertifiedMode::ReverseCoarsening,
+            delivery: CertifiedDelivery::Coupled,
+            angle_contract: earthmesh_refine_certified::AngleContractId::DomainQuality38To82V1,
+            ..CertifiedRunOptions::default()
+        };
+        for levels in [vec![0, 1], vec![0, 1, 2]] {
+            validate_local_update_mode(&config, &options, &levels).expect("mixed scope");
+        }
+        for levels in [vec![], vec![0], vec![1, 1], vec![0, 3]] {
+            assert!(validate_local_update_mode(&config, &options, &levels).is_err());
+        }
+        for rejected in [
+            EarthmeshConfig {
+                mask_domain_global: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                refine: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mesh_type: "oceanmesh".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mode_grid: "tri".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                output_format: "FVCOM".into(),
+                ..config.clone()
+            },
+        ] {
+            assert!(validate_local_update_mode(&rejected, &options, &[0, 1]).is_err());
+        }
+        for rejected in [
+            CertifiedRunOptions {
+                mode: CertifiedMode::SafeMotherOnly,
+                ..options
+            },
+            CertifiedRunOptions {
+                delivery: CertifiedDelivery::Hex,
+                ..options
+            },
+            CertifiedRunOptions {
+                angle_contract: earthmesh_refine_certified::AngleContractId::LegacyStrict40To80,
+                ..options
+            },
+        ] {
+            assert!(validate_local_update_mode(&config, &rejected, &[0, 1]).is_err());
+        }
+    }
 
     fn legacy_remap_csv(rows: &[earthmesh_refine_certified::remap::RemapRow]) -> Vec<u8> {
         let mut output = Vec::new();
