@@ -302,6 +302,7 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
         resources["requirement_layers"]["raw_source_raster"]["histogram"],
         serde_json::json!({"0": 8})
     );
+    assert!(resources["requirement_layers"]["threshold_sources"].is_null());
     assert_eq!(
         resources["requirement_layers"]["graph_scheduling_target"]["status"],
         "not_applied"
@@ -656,6 +657,19 @@ fn safe_mother_consumes_landtype_requirements_before_certifying() {
     assert!(layers["raw_source_raster"]["histogram"].is_null());
     assert!(layers["effective_source_raster"]["raised_samples_over_raw"].is_null());
     assert_eq!(layers["policy"], "effective_raster_remains_hard");
+    assert_eq!(
+        layers["threshold_sources"]["scope"],
+        "threshold_only_before_gradient"
+    );
+    assert!(layers["threshold_sources"]["criteria"].is_array());
+    assert!(layers["threshold_sources"]["raw_threshold_histogram"].is_object());
+    assert!(layers["threshold_sources"]["composition_timing_ms"].is_null());
+    assert!(!layers["threshold_sources"]
+        .to_string()
+        .contains("composition_timing_ms"));
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+    assert_eq!(layers, &resources["requirement_layers"]);
 }
 
 #[test]
@@ -891,6 +905,83 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
 }
 
 #[test]
+fn certified_close_land_publishes_whole_dual_cells_for_colm() {
+    let root = temp_root("regional_land_colm");
+    let landtype = root.join("landtype.nc");
+    write_landtype(&landtype);
+    let close = root.join("domain.nml");
+    write_close_domain(&close);
+    let path = root.join("cmrc.nml");
+    let contents = namelist(&root, "regional_land_colm", 6, 1_000)
+        .replace("mesh_type='earthmesh'", "mesh_type='landmesh'")
+        .replace("NL%landtype_file='none'", &format!("NL%landtype_file='{}'", landtype.display()))
+        .replace("NL%mask_domain_global=.true.", &format!(
+            "NL%mask_domain_global=.false.\n  NL%mask_domain_type='close'\n  NL%mask_domain_fprefix='{}'", close.display()));
+    fs::write(&path, contents).unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let grid = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+        .unwrap();
+    let input = earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&grid)
+        .unwrap();
+    assert!(!input.cells.is_empty());
+    assert!(input.cells.len() < 362);
+    for ((&lon, &lat), &count) in grid.w_lon.iter().zip(&grid.w_lat).zip(&grid.n_w) {
+        if count >= 3 {
+            // The northern close edge is a great-circle arc, not a latitude parallel.
+            assert!((100.0..=160.0).contains(&lon) && (0.0..=55.0).contains(&lat));
+        }
+    }
+    let geometry = earthmesh_quality::compute(&input, &Default::default()).geometry;
+    assert_eq!(geometry.negative_area_cell_count, 0);
+    assert_eq!(geometry.invalid_polygon_count, 0);
+    assert!(geometry.min_angle_deg.is_finite() && geometry.max_angle_deg.is_finite());
+    let run = run.certified_run.unwrap();
+    let cert: serde_json::Value =
+        serde_json::from_slice(&fs::read(run.certificate).unwrap()).unwrap();
+    assert_eq!(cert["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(cert["published_grid_is_certified_face_subset"], false);
+    assert_eq!(cert["published_grid_is_certified_dual_cell_subset"], true);
+    assert_eq!(
+        cert["published_domain_geometry"]["whole_cell_lineage_verified"],
+        true
+    );
+    assert_eq!(cert["published_domain_geometry"]["cell_view"], "hex");
+    assert_eq!(cert["published_grid_remap_available"], false);
+    assert!(run.remap.is_none());
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(run.resources).unwrap()).unwrap();
+    assert_eq!(
+        resources["published_domain_topology"]["violations"],
+        serde_json::json!([])
+    );
+    assert!(
+        resources["published_domain_topology"]["boundary_loops"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(run.manifest).unwrap()).unwrap();
+    assert!(std::path::Path::new(manifest["ready"].as_str().unwrap()).exists());
+    // A subsequent empty land selection must not damage the previous ready bundle.
+    let result_dir = root.join("regional_land_colm/result");
+    let before = fs::read_dir(&result_dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect::<Vec<_>>();
+    write_all_ocean(&landtype);
+    assert!(earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err());
+    for (path, bytes) in &before {
+        assert_eq!(fs::read(path).unwrap(), *bytes);
+    }
+    assert_eq!(fs::read_dir(&result_dir).unwrap().count(), before.len());
+}
+
+#[test]
 fn certified_regional_earthmesh_is_rejected_instead_of_published_global() {
     let root = temp_root("regional_earthmesh_reject");
     let path = root.join("cmrc.nml");
@@ -905,7 +996,7 @@ fn certified_regional_earthmesh_is_rejected_instead_of_published_global() {
         .expect_err("regional earthmesh would otherwise ignore the selector");
     assert!(error
         .to_string()
-        .contains("supports oceanmesh/tri with a single close polygon only"));
+        .contains("supports oceanmesh/tri or landmesh/hex/CoLM with a single close polygon only"));
     assert!(!root
         .join("regional_earthmesh_reject/result/gridfile_NXP0003_hex.nc4")
         .exists());
@@ -1128,9 +1219,9 @@ fn certified_regional_unimplemented_views_and_boundaries_fail_closed() {
         let error =
             earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        assert!(error
-            .to_string()
-            .contains("supports oceanmesh/tri with a single close polygon only"));
+        assert!(error.to_string().contains(
+            "supports oceanmesh/tri or landmesh/hex/CoLM with a single close polygon only"
+        ));
         assert!(!root.join(case).join("result/certified_ready").exists());
     }
 }
@@ -1229,4 +1320,27 @@ fn certified_hydro_requirement_does_not_publish_partial_raw_provenance() {
     assert_eq!(layers["policy"], "effective_raster_remains_hard");
     assert_eq!(certified.physical_residuals, 0);
     assert_eq!(certified.chosen_level, 1);
+}
+
+#[test]
+fn unsupported_mother_family_rejects_before_reading_threshold_data() {
+    let root = temp_root("unsupported_before_thresholds");
+    let landtype = root.join("not_a_netcdf.nc");
+    fs::write(&landtype, "invalid threshold payload must never be opened").unwrap();
+    let path = root.join("cmrc.nml");
+    fs::write(
+        &path,
+        landtype_namelist(&root, "unsupported_before_thresholds", &landtype)
+            .replace("NL%NXP=3", "NL%NXP=7"),
+    )
+    .unwrap();
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        error
+            .to_string()
+            .contains("no certified mother subdivision"),
+        "{error}"
+    );
+    assert!(!root.join("unsupported_before_thresholds/result").exists());
 }

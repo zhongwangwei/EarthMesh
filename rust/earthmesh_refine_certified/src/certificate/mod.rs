@@ -329,9 +329,15 @@ pub struct AngleGateReport {
 
 struct SupportedMotherAngleGate;
 
+/// Returns whether `n` is in the curated mother-subdivision admission table.
+/// This is not a proof for a generated mesh; runtime certification is still required.
+pub fn is_supported_mother_subdivision(n: usize) -> bool {
+    SupportedMotherAngleGate::SUPPORTED.contains(&n)
+}
+
 impl SupportedMotherAngleGate {
-    const SUPPORTED: [usize; 19] = [
-        1, 2, 3, 4, 6, 8, 12, 20, 40, 64, 80, 128, 160, 192, 256, 320, 384, 640, 768,
+    const SUPPORTED: [usize; 22] = [
+        1, 2, 3, 4, 6, 8, 12, 20, 40, 64, 80, 128, 144, 160, 192, 256, 288, 320, 384, 576, 640, 768,
     ];
 
     fn verify(
@@ -1502,6 +1508,17 @@ mod tests {
     }
 
     #[test]
+    fn support_table_includes_original_land_hierarchy_levels() {
+        for n in [144, 288, 576] {
+            assert!(
+                is_supported_mother_subdivision(n),
+                "original land case hierarchy level n={n} must be explicitly supported"
+            );
+        }
+        assert!(!is_supported_mother_subdivision(145));
+    }
+
+    #[test]
     fn original_atmospheric_hierarchy_satisfies_domain_quality_certificate() {
         for n in [64, 128, 256] {
             let grid = MotherGrid::generate(n).unwrap();
@@ -1550,6 +1567,41 @@ mod tests {
                 analytic_counts(n).unwrap(),
                 (report.vertices, report.edges, report.faces)
             );
+        }
+    }
+
+    #[test]
+    #[ignore = "release-scale proof; run explicitly before enabling original land hierarchy"]
+    fn n144_n288_and_n576_land_case_levels_satisfy_domain_quality_certificate() {
+        for n in [144, 288, 576] {
+            let started = std::time::Instant::now();
+            let grid = MotherGrid::generate(n).unwrap();
+            let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
+                .verify_mother_grid(&grid)
+                .unwrap();
+            let gate = report.angle_gate.as_ref().unwrap();
+            eprintln!(
+                "land_mother_proof n={n} vertices={} edges={} faces={} min_angle={:.12} max_angle={:.12} proof={} elapsed_s={:.3}",
+                report.vertices,
+                report.edges,
+                report.faces,
+                gate.observed_min_degrees,
+                gate.observed_max_degrees,
+                gate.proof_method,
+                started.elapsed().as_secs_f64()
+            );
+            assert_eq!(gate.supported_subdivision, n);
+            assert_eq!(
+                analytic_counts(n).unwrap(),
+                (report.vertices, report.edges, report.faces)
+            );
+            assert_eq!(report.euler, 2);
+            assert_eq!(report.open_edges, 0);
+            assert_eq!(report.topology_errors, 0);
+            assert_eq!(report.degree_outside_window, 0);
+            assert_eq!(report.delaunay_violations, 0);
+            assert_eq!(report.voronoi_invalid_cells, 0);
+            assert_eq!(report.voronoi_reciprocal_errors, 0);
         }
     }
 

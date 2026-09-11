@@ -17,7 +17,7 @@ pub fn quality_input_from_gridfile(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<earthmesh_quality::QualityMeshInput> {
     use earthmesh_geometry::Point;
-    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    use earthmesh_quality::QualityCell;
     validate_coordinate_pairs(mesh)?;
     let vertices: Vec<Point> = mesh
         .w_lon
@@ -38,7 +38,7 @@ pub fn quality_input_from_gridfile(
     }
     let mut cells = cells;
     derive_shared_edge_neighbors(&mut cells);
-    Ok(QualityMeshInput { vertices, cells })
+    Ok(earthmesh_quality::QualityMeshInput { vertices, cells })
 }
 
 /// Build quality input from the HEXAGON (W-cell) view.
@@ -46,7 +46,7 @@ pub fn quality_input_from_gridfile_hex(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<earthmesh_quality::QualityMeshInput> {
     use earthmesh_geometry::Point;
-    use earthmesh_quality::{QualityCell, QualityMeshInput};
+    use earthmesh_quality::QualityCell;
     validate_coordinate_pairs(mesh)?;
     let vertices: Vec<Point> = mesh
         .m_lon
@@ -62,12 +62,47 @@ pub fn quality_input_from_gridfile_hex(
             neighbors: Vec::new(),
         })
         .collect::<Vec<_>>();
+    quality_input_from_hex_cells(vertices, cells)
+}
+
+/// Build hex quality input from the gridfile's native W-cell rings.
+///
+/// This is for publication/admission checks that must audit the stored ring
+/// order exactly. It requires `itab_w%im` + `n_ngrwm` and deliberately does not
+/// normalize, rotate, sort, reverse, or infer W cells from partial M triangles.
+#[allow(dead_code)]
+pub fn quality_input_from_gridfile_hex_native(
+    mesh: &GridfileMeshPoints,
+) -> io::Result<earthmesh_quality::QualityMeshInput> {
+    use earthmesh_geometry::Point;
+    use earthmesh_quality::QualityCell;
+    validate_coordinate_pairs(mesh)?;
+    let vertices: Vec<Point> = mesh
+        .m_lon
+        .iter()
+        .zip(&mesh.m_lat)
+        .map(|(&lon, &lat)| Point::new(lon, lat))
+        .collect();
+    let cells = hex_native_quality_cells_from_gridfile(mesh)?
+        .into_iter()
+        .map(|(wi, vertices)| QualityCell {
+            vertices,
+            refine_level: refine_level_at(&mesh.w_refine_level, wi),
+            neighbors: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    quality_input_from_hex_cells(vertices, cells)
+}
+
+fn quality_input_from_hex_cells(
+    vertices: Vec<earthmesh_geometry::Point>,
+    mut cells: Vec<earthmesh_quality::QualityCell>,
+) -> io::Result<earthmesh_quality::QualityMeshInput> {
     if cells.is_empty() {
         return Err(invalid("hex quality input contains no physical cells"));
     }
-    let mut cells = cells;
     derive_shared_edge_neighbors(&mut cells);
-    Ok(QualityMeshInput { vertices, cells })
+    Ok(earthmesh_quality::QualityMeshInput { vertices, cells })
 }
 
 pub(crate) fn tri_quality_cells_from_gridfile(
@@ -108,6 +143,35 @@ pub(crate) fn tri_quality_cells_from_gridfile(
             )));
         }
         cells.push((mi, idx));
+    }
+    Ok(cells)
+}
+
+#[allow(dead_code)]
+pub(crate) fn hex_native_quality_cells_from_gridfile(
+    mesh: &GridfileMeshPoints,
+) -> io::Result<Vec<(usize, Vec<usize>)>> {
+    validate_coordinate_pairs(mesh)?;
+    if mesh.w_to_m_width == 0 || mesh.w_to_m.is_empty() || mesh.n_w.is_empty() {
+        return Err(invalid(
+            "native hex quality input requires itab_w%im and n_ngrwm",
+        ));
+    }
+    validate_authoritative_w_connectivity_shape(mesh)?;
+    let mn = mesh.m_lon.len();
+    let m_layout = gridfile_m_row_layout(mesh);
+    let w_layout = gridfile_w_row_layout(mesh);
+    let mut cells = Vec::new();
+    for wi in 0..mesh.w_lon.len() {
+        if !w_layout.is_physical_row(wi) {
+            continue;
+        }
+        let Some(corners) = authoritative_w_corners(mesh, wi, mn, m_layout)? else {
+            return Err(invalid(
+                "native hex quality input requires authoritative W connectivity",
+            ));
+        };
+        cells.push((wi, corners));
     }
     Ok(cells)
 }
@@ -191,22 +255,7 @@ fn authoritative_w_corners(
     if width == 0 && mesh.w_to_m.is_empty() && mesh.n_w.is_empty() {
         return Ok(None);
     }
-    if width == 0 {
-        return Err(invalid("authoritative W connectivity has zero row width"));
-    }
-    let expected = mesh
-        .w_lon
-        .len()
-        .checked_mul(width)
-        .ok_or_else(|| invalid("W connectivity size overflow"))?;
-    if mesh.w_to_m.len() != expected || mesh.n_w.len() != mesh.w_lon.len() {
-        return Err(invalid(format!(
-            "authoritative W connectivity requires {expected} values and {} counts, found {} values and {} counts",
-            mesh.w_lon.len(),
-            mesh.w_to_m.len(),
-            mesh.n_w.len()
-        )));
-    }
+    validate_authoritative_w_connectivity_shape(mesh)?;
     let count = usize::try_from(mesh.n_w[wi]).map_err(|_| {
         invalid(format!(
             "W cell row {wi} has negative corner count {}",
@@ -239,6 +288,27 @@ fn authoritative_w_corners(
         corners.push(corner);
     }
     Ok(Some(corners))
+}
+
+fn validate_authoritative_w_connectivity_shape(mesh: &GridfileMeshPoints) -> io::Result<()> {
+    let width = mesh.w_to_m_width;
+    if width == 0 {
+        return Err(invalid("authoritative W connectivity has zero row width"));
+    }
+    let expected = mesh
+        .w_lon
+        .len()
+        .checked_mul(width)
+        .ok_or_else(|| invalid("W connectivity size overflow"))?;
+    if mesh.w_to_m.len() != expected || mesh.n_w.len() != mesh.w_lon.len() {
+        return Err(invalid(format!(
+            "authoritative W connectivity requires {expected} values and {} counts, found {} values and {} counts",
+            mesh.w_lon.len(),
+            mesh.w_to_m.len(),
+            mesh.n_w.len()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_coordinate_pairs(mesh: &GridfileMeshPoints) -> io::Result<()> {
@@ -841,6 +911,142 @@ mod tests {
         assert!(error
             .to_string()
             .contains("corner count 1 must be between 3 and 3"));
+    }
+
+    #[test]
+    fn hex_native_quality_preserves_authoritative_regional_rings_and_neighbors() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0],
+            m_lat: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            w_lon: vec![0.5, 1.5],
+            w_lat: vec![0.5, 0.5],
+            // Regional delivery may carry clipped/boundary M connectivity that is
+            // not a complete triangle table for every M point. Native W-cell
+            // quality must not interpret it as fallback faces.
+            m_to_w: vec![1, 1, 2, 2, 3, 3],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 2, 5, 4, 2, 3, 6, 5],
+            w_to_m_width: 4,
+            n_w: vec![4, 4],
+            w_refine_level: vec![7, 8],
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let input = quality_input_from_gridfile_hex_native(&mesh).unwrap();
+
+        assert_eq!(input.cells.len(), 2);
+        assert_eq!(input.cells[0].vertices, vec![0, 1, 4, 3]);
+        assert_eq!(input.cells[1].vertices, vec![1, 2, 5, 4]);
+        assert_eq!(input.cells[0].neighbors, vec![1]);
+        assert_eq!(input.cells[1].neighbors, vec![0]);
+        assert_eq!(input.cells[0].refine_level, Some(7));
+    }
+
+    #[test]
+    fn hex_native_quality_keeps_reversed_ring_for_orientation_audit() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![10.0, 11.0, 11.0, 10.0],
+            m_lat: vec![0.0, 0.0, 1.0, 1.0],
+            w_lon: vec![10.5],
+            w_lat: vec![0.5],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![4, 3, 2, 1],
+            w_to_m_width: 4,
+            n_w: vec![4],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let input = quality_input_from_gridfile_hex_native(&mesh).unwrap();
+        assert_eq!(input.cells[0].vertices, vec![3, 2, 1, 0]);
+
+        let report =
+            earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
+        assert_eq!(report.geometry.negative_area_cell_count, 1);
+    }
+
+    #[test]
+    fn hex_native_quality_requires_authoritative_connectivity() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 1.0, 1.0],
+            m_lat: vec![0.0, 0.0, 1.0],
+            w_lon: vec![0.5],
+            w_lat: vec![0.5],
+            m_to_w: vec![1, 2, 3],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: Vec::new(),
+            w_to_m_width: 0,
+            n_w: Vec::new(),
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let error = quality_input_from_gridfile_hex_native(&mesh).unwrap_err();
+        assert!(error.to_string().contains("requires itab_w%im and n_ngrwm"));
+    }
+
+    #[test]
+    fn hex_native_quality_rejects_bad_index_and_duplicate_corner() {
+        let bad_index = GridfileMeshPoints {
+            m_lon: vec![0.0, 1.0, 1.0],
+            m_lat: vec![0.0, 0.0, 1.0],
+            w_lon: vec![0.5],
+            w_lat: vec![0.5],
+            m_to_w: Vec::new(),
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 2, 99],
+            w_to_m_width: 3,
+            n_w: vec![3],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+        let error = quality_input_from_gridfile_hex_native(&bad_index).unwrap_err();
+        assert!(error.to_string().contains("invalid M corner id 99"));
+
+        let duplicate = GridfileMeshPoints {
+            w_to_m: vec![1, 2, 2],
+            ..bad_index
+        };
+        let error = quality_input_from_gridfile_hex_native(&duplicate).unwrap_err();
+        assert!(error.to_string().contains("duplicate M corner id 2"));
+    }
+
+    #[test]
+    fn hex_native_quality_supports_two_placeholder_rows() {
+        let mesh = GridfileMeshPoints {
+            m_lon: vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+            m_lat: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+            w_lon: vec![0.0, 0.0, 0.5],
+            w_lat: vec![0.0, 0.0, 0.5],
+            m_to_w: vec![1, 1, 1, 1, 1, 1],
+            m_refine_level: Vec::new(),
+            m_refine_level_orig: Vec::new(),
+            m_ngr: Vec::new(),
+            w_to_m: vec![1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 5],
+            w_to_m_width: 4,
+            n_w: vec![1, 1, 4],
+            w_refine_level: Vec::new(),
+            w_refine_level_orig: Vec::new(),
+            w_ngr: Vec::new(),
+        };
+
+        let input = quality_input_from_gridfile_hex_native(&mesh).unwrap();
+
+        assert_eq!(input.cells.len(), 1);
+        assert_eq!(input.cells[0].vertices, vec![2, 3, 4, 5]);
     }
 
     #[test]

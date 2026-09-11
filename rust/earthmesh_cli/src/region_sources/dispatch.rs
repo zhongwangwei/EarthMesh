@@ -150,6 +150,7 @@ pub(crate) fn read_method_c_specified_refinement_regions(
 pub(crate) fn read_method_c_calculated_refinement_regions(
     refine: &RefineConfig,
     max_level: usize,
+    zero_is_threshold_domain: bool,
 ) -> io::Result<Vec<RefinementRegion>> {
     let discovery = discover_mask_sources(&refine.mask_refine_cal_fprefix)?;
     let mut regions = Vec::new();
@@ -158,14 +159,21 @@ pub(crate) fn read_method_c_calculated_refinement_regions(
             "circle" => read_method_c_calculated_circle_refinement_regions(
                 &source,
                 max_level,
+                zero_is_threshold_domain,
                 &mut regions,
             )?,
-            "bbox" => {
-                read_method_c_calculated_bbox_refinement_regions(&source, max_level, &mut regions)?
-            }
-            "close" => {
-                read_method_c_calculated_close_refinement_regions(&source, max_level, &mut regions)?
-            }
+            "bbox" => read_method_c_calculated_bbox_refinement_regions(
+                &source,
+                max_level,
+                zero_is_threshold_domain,
+                &mut regions,
+            )?,
+            "close" => read_method_c_calculated_close_refinement_regions(
+                &source,
+                max_level,
+                zero_is_threshold_domain,
+                &mut regions,
+            )?,
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,

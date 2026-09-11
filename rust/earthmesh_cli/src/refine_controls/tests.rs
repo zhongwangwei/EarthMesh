@@ -118,11 +118,41 @@ fn method_c_skips_spring_when_no_spring_type_is_enabled() {
 }
 
 #[test]
+fn calculated_mask_reader_separates_zero_footprints_from_positive_demands() {
+    let root = std::env::temp_dir().join(format!("cal_mask_levels_{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("mask_zero.nml"),
+        "bbox_num = 1\nbbox_refine = 0\n0 90 90 0\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("mask_positive.nml"),
+        "bbox_num = 1\nbbox_refine = 2\n-90 0 90 0\n",
+    )
+    .unwrap();
+    let refine = RefineConfig {
+        mask_refine_cal_type: "bbox".into(),
+        mask_refine_cal_fprefix: root.join("mask_").display().to_string(),
+        ..RefineConfig::default()
+    };
+    let hard = crate::read_method_c_calculated_refinement_regions(&refine, 3, true).unwrap();
+    assert_eq!(hard.len(), 1);
+    assert_eq!(hard[0].level(), 2);
+    let footprints = crate::read_method_c_calculated_refinement_regions(&refine, 0, false).unwrap();
+    assert_eq!(footprints.len(), 1);
+    assert_eq!(footprints[0].level(), 0);
+    let named = crate::read_method_c_calculated_refinement_regions(&refine, 3, false).unwrap();
+    assert_eq!(named.iter().map(RefinementRegion::level).sum::<usize>(), 5);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn method_c_calculated_refine_level_promotes_zero_and_filters_above_active_max() {
-    assert_eq!(method_c_calculated_region_level(0, 3), Some(3));
-    assert_eq!(method_c_calculated_region_level(1, 3), Some(1));
-    assert_eq!(method_c_calculated_region_level(3, 3), Some(3));
-    assert_eq!(method_c_calculated_region_level(4, 3), None);
+    assert_eq!(method_c_calculated_region_level(0, 3, false), Some(3));
+    assert_eq!(method_c_calculated_region_level(1, 3, false), Some(1));
+    assert_eq!(method_c_calculated_region_level(3, 3, false), Some(3));
+    assert_eq!(method_c_calculated_region_level(4, 3, false), None);
 }
 
 #[test]
@@ -334,7 +364,7 @@ fn method_c_calculated_multipoint_circle_reader_uses_canonical_corridor() {
     .expect("write calculated circle mask source");
 
     let mut regions = Vec::new();
-    read_method_c_calculated_circle_refinement_regions(&source, 3, &mut regions)
+    read_method_c_calculated_circle_refinement_regions(&source, 3, false, &mut regions)
         .expect("read calculated circle refinement regions");
 
     assert_eq!(regions.len(), 1);

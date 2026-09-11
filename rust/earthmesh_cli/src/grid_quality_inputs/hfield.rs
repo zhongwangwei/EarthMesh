@@ -114,6 +114,7 @@ pub fn attach_hfield_diagnostics_from_namelist(
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,
             max_cal_level,
+            has_threshold_hfield_sources,
         )?);
     }
     if regions.is_empty() && !has_threshold_hfield_sources && !has_hydro_target {

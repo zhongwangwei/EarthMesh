@@ -56,7 +56,6 @@ use earthmesh_mesh::{
 use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
-use crate::unstructured_mesh_support::UnstructuredMeshTopologyReport;
 use crate::{write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved};
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
@@ -604,6 +603,7 @@ pub fn run_refine_pipeline_namelist(
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,
             max_cal_level,
+            has_threshold_hfield_sources,
         )?);
     }
     if regions.is_empty()
@@ -1473,6 +1473,20 @@ fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
     })
 }
 
+// Before scanning threshold rasters, reject only families with no possible
+// supported mother. The actual chosen level still passes full certification.
+fn validate_certified_mother_family(base_nxp: usize, maximum_level: usize) -> io::Result<()> {
+    let possible = (0..=maximum_level.min(usize::BITS as usize - 1))
+        .filter_map(|level| certified_subdivision(base_nxp, level).ok())
+        .any(earthmesh_refine_certified::certificate::is_supported_mother_subdivision);
+    if !possible {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
+            "CMRC NXP={base_nxp} has no certified mother subdivision at levels 0..={maximum_level}; rejected before threshold preparation"
+        )));
+    }
+    Ok(())
+}
+
 fn build_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
@@ -2023,13 +2037,13 @@ fn elastic_report_json(
     })
 }
 
-struct CertifiedDomainPublication {
-    report: crate::UnstructuredMeshWriteReport,
-    kept_cells: usize,
-    topology: UnstructuredMeshTopologyReport,
-    quality_topology: (usize, Vec<serde_json::Value>),
-    geometry: serde_json::Value,
-    fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
+pub(super) struct CertifiedDomainPublication {
+    pub(super) report: crate::UnstructuredMeshWriteReport,
+    pub(super) kept_cells: usize,
+    pub(super) topology: serde_json::Value,
+    pub(super) quality_topology: (usize, Vec<serde_json::Value>),
+    pub(super) geometry: serde_json::Value,
+    pub(super) fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
 }
 
 struct CertifiedMpasPublication {
@@ -2121,6 +2135,18 @@ fn publish_certified_domain_gridfile(
     ))?;
     let mode_grid = config.mode_grid.trim();
     let mesh_type = config.mesh_type.trim();
+    if let (Some(region @ GridRegion::Close { .. }), "landmesh", "hex") =
+        (domain_region, mesh_type, mode_grid)
+    {
+        return super::cmrc_land::publish_regional_land(
+            source_gridfile,
+            output_gridfile,
+            Path::new(config.landtype_file.trim()),
+            gridnum_perdegree,
+            region,
+            workdir,
+        );
+    }
     let clean_close = match (domain_region, mesh_type, mode_grid) {
         (Some(GridRegion::Close { points }), "oceanmesh", "tri") => Some(points.as_slice()),
         _ => None,
@@ -2244,7 +2270,13 @@ fn publish_certified_domain_gridfile(
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output_gridfile)?,
         kept_cells: kept_cells.unwrap_or(quality_report.geometry.cell_count),
-        topology,
+        topology: serde_json::json!({
+            "boundary_loops": topology.boundary_loop_count,
+            "boundary_vertex_degree_violations": topology.boundary_vertex_degree_violation_count,
+            "euler": topology.euler_characteristic,
+            "expected_euler": topology.expected_euler_characteristic,
+            "violations": topology.violations,
+        }),
         quality_topology: (component_count, quality_issue_json),
         geometry: serde_json::json!({
             "cell_view": "tri",
@@ -2306,7 +2338,12 @@ fn run_certified_pipeline(
         .transpose()?
         .flatten();
     let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
+    let regional_land_colm = config.mesh_type.trim() == "landmesh"
+        && config.mode_grid.trim() == "hex"
+        && config.output_format.trim().eq_ignore_ascii_case("CoLM")
+        && matches!(regional_domain, Some(GridRegion::Close { .. }));
     if regional_domain.is_some()
+        && !regional_land_colm
         && !matches!(
             (
                 config.mesh_type.trim(),
@@ -2316,10 +2353,8 @@ fn run_certified_pipeline(
             ("oceanmesh", "tri", Some(GridRegion::Close { .. }))
         )
     {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "CMRC regional publication currently supports oceanmesh/tri with a single close polygon only; regional dual and other boundary adapters are not implemented",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "CMRC regional publication supports oceanmesh/tri or landmesh/hex/CoLM with a single close polygon only"));
     }
     if is_domain_export
         && !(crate::namelist_sets_landtype_file(contents)
@@ -2386,6 +2421,14 @@ fn run_certified_pipeline(
             "CMRC NXP must be positive",
         ));
     }
+    validate_certified_mother_family(
+        base_nxp,
+        if config.refine {
+            options.maximum_level
+        } else {
+            0
+        },
+    )?;
     let requirements = if config.refine {
         certified_requirement_plan(
             contents,
@@ -2683,7 +2726,7 @@ fn run_certified_pipeline(
         "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
         "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
-        "published_grid_is_certified_face_subset": is_domain_export,
+        "published_grid_is_certified_face_subset": is_domain_export && requested_view == "tri",
         "requirement_balance_scope": physical_balance_scope,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
@@ -2745,6 +2788,14 @@ fn run_certified_pipeline(
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
     });
+    // Only the regional land adapter proves whole dual-cell lineage. Legacy
+    // global hex domain exports have not passed that audit; do not certify them.
+    certificate_document["published_grid_is_certified_dual_cell_subset"] =
+        if is_domain_export && requested_view == "hex" && !regional_land_colm {
+            serde_json::Value::Null
+        } else {
+            regional_land_colm.into()
+        };
     certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
@@ -2956,13 +3007,7 @@ fn run_certified_pipeline(
             "landtype_kept_cells": landtype_masked_cells,
             "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
             "published_grid_remap_available": !is_domain_export,
-            "published_domain_topology": topology.as_ref().map(|report| serde_json::json!({
-                "boundary_loops": report.boundary_loop_count,
-                "boundary_vertex_degree_violations": report.boundary_vertex_degree_violation_count,
-                "euler": report.euler_characteristic,
-                "expected_euler": report.expected_euler_characteristic,
-                "violations": report.violations,
-            })),
+            "published_domain_topology": topology,
             "published_domain_quality_topology": domain_quality.as_ref().map(|(component_count, issues)| serde_json::json!({
                 "connected_components": component_count,
                 "issues": issues,
@@ -3251,6 +3296,7 @@ struct CertifiedRequirementPlan {
     effective_levels: Vec<usize>,
     // None for threshold/hydro sources: partial raw provenance would be misleading.
     raw_region_levels: Option<Vec<usize>>,
+    threshold_provenance: Option<serde_json::Value>,
     conservative_global_bound: bool,
 }
 
@@ -3262,6 +3308,7 @@ impl CertifiedRequirementPlan {
             nlat: 2,
             effective_levels: vec![0; 8],
             raw_region_levels: Some(vec![0; 8]),
+            threshold_provenance: None,
             conservative_global_bound: false,
         }
     }
@@ -3285,6 +3332,7 @@ impl CertifiedRequirementPlan {
                 "scope": "canonical_region_sample_centers_quantized_not_analytic_coverage",
                 "histogram": self.raw_region_levels.as_deref().map(histogram),
             },
+            "threshold_sources": self.threshold_provenance.as_ref(),
             "effective_source_raster": {
                 "scope": "gradient_limited_composed_sources_with_conservative_bounds",
                 "histogram": histogram(&self.effective_levels),
@@ -3346,7 +3394,11 @@ fn certified_requirement_plan(
         !matches!(calculated_region_prefix, "" | "/tmp" | "none");
     let calculated_regions =
         if refine.refine_cal && (!has_threshold_sources || has_configured_calculated_regions) {
-            read_method_c_calculated_refinement_regions(refine, calculated_level)?
+            read_method_c_calculated_refinement_regions(
+                refine,
+                calculated_level,
+                has_threshold_sources,
+            )?
         } else {
             Vec::new()
         };
@@ -3384,16 +3436,33 @@ fn certified_requirement_plan(
     let base_m = hfield.base_m.unwrap_or_else(|| {
         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * base_nxp as f64)
     });
-    let mut field = crate::hfield_refine::build_composed_hfield(
-        &regions,
-        refine,
-        mesh_type,
-        Some(config),
-        base_m,
-        &hfield,
-        calculated_level.clamp(1, field_max_level),
-        None,
-    )?;
+    let (mut field, threshold_provenance) = if has_threshold_sources {
+        let (field, report) = crate::hfield_refine::build_composed_hfield_with_report(
+            &regions,
+            refine,
+            mesh_type,
+            Some(config),
+            base_m,
+            &hfield,
+            calculated_level.clamp(1, field_max_level),
+            None,
+        )?;
+        (field, Some(report))
+    } else {
+        (
+            crate::hfield_refine::build_composed_hfield(
+                &regions,
+                refine,
+                mesh_type,
+                Some(config),
+                base_m,
+                &hfield,
+                calculated_level.clamp(1, field_max_level),
+                None,
+            )?,
+            None,
+        )
+    };
     crate::hydro_refinement_adapter::apply_hydro_target_to_field(
         &mut field, &hfield, base_m, None,
     )?;
@@ -3438,6 +3507,7 @@ fn certified_requirement_plan(
         nlat: field.nlat(),
         effective_levels: levels,
         raw_region_levels,
+        threshold_provenance,
         conservative_global_bound,
     })
 }
@@ -6159,6 +6229,77 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn calculated_zero_mask_does_not_force_a_quiet_threshold_to_refine() {
+        let root = std::env::temp_dir().join(format!("cmrc_quiet_cal_mask_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mask = root.join("mask.nml");
+        std::fs::write(&mask, "bbox_num = 1\nbbox_refine = 0\n0 90 90 0\n").unwrap();
+        let land = root.join("land.nc");
+        let mut file = crate::create_netcdf_quiet(&land).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 4).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1_i8; 32], (.., ..))
+            .unwrap();
+        drop(file);
+        let config = EarthmeshConfig {
+            mesh_type: "landmesh".into(),
+            landtype_file: land.display().to_string(),
+            ..EarthmeshConfig::default()
+        };
+        let mut refine = RefineConfig {
+            refine_cal: true,
+            max_iter_cal: 2,
+            refine_num_landtypes: true,
+            th_num_landtypes: 10,
+            mask_refine_cal_type: "bbox".into(),
+            mask_refine_cal_fprefix: mask.display().to_string(),
+            ..RefineConfig::default()
+        };
+        let contents = "&hfield\n NL%hfield_nlon=8\n NL%hfield_nlat=4\n/\n";
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert!(
+            plan.regions.is_empty(),
+            "evaluation mask is not a hard demand"
+        );
+        assert!(plan.effective_levels.iter().all(|&level| level == 0));
+        assert!(!plan.conservative_global_bound);
+        let report = plan
+            .threshold_provenance
+            .as_ref()
+            .expect("quiet threshold still reports provenance");
+        assert_eq!(report["scope"], "threshold_only_before_gradient");
+        assert!(report["criteria"].is_array());
+        let layers = plan.layer_report(None, 3);
+        assert_eq!(
+            layers["threshold_sources"]["scope"],
+            "threshold_only_before_gradient"
+        );
+        assert!(!layers["threshold_sources"]
+            .to_string()
+            .contains("composition_timing_ms"));
+        let repeat = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert_eq!(layers, repeat.layer_report(None, 3));
+        // Preserve the named-region-only contract when there is no threshold.
+        refine.refine_num_landtypes = false;
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert_eq!(plan.regions.len(), 1);
+        assert_eq!(plan.effective_levels.iter().max(), Some(&2));
+        assert!(plan.threshold_provenance.is_none());
+        assert!(plan.layer_report(None, 3)["threshold_sources"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mother_family_preflight_checks_possible_levels_not_only_the_maximum() {
+        assert!(super::validate_certified_mother_family(7, 1).is_err());
+        assert!(super::validate_certified_mother_family(3, 4).is_ok());
+        assert!(super::validate_certified_mother_family(5, 2).is_ok());
+        assert!(super::validate_certified_mother_family(1, usize::MAX).is_ok());
+    }
+
     use super::*;
 
     #[test]

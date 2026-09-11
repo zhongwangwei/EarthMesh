@@ -80,6 +80,69 @@ pub(crate) struct HfieldDomainMask {
     active: Vec<bool>,
 }
 
+// Reporting only: these counters never feed the composed field or its limiter.
+struct ThresholdAudit {
+    raw_levels: Vec<usize>,
+    criteria: Vec<serde_json::Value>,
+}
+
+impl ThresholdAudit {
+    fn new(len: usize) -> Self {
+        Self {
+            raw_levels: vec![0; len],
+            criteria: Vec::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        field: &HField,
+        domain: Option<&HfieldDomainMask>,
+        criterion: &str,
+        level: usize,
+        block: usize,
+        policy: &str,
+        active: &[bool],
+        samples: Option<&[usize]>,
+    ) {
+        let mut hit_bins = 0usize;
+        let mut eligible_bins = 0usize;
+        let mut valid_samples = 0usize;
+        let mut empty_bins = 0usize;
+        for i in 0..field.nlon() {
+            for j in 0..field.nlat() {
+                if domain.is_some_and(|domain| !domain.is_active(i, j)) {
+                    continue;
+                }
+                let index = i * field.nlat() + j;
+                eligible_bins += 1;
+                if let Some(samples) = samples {
+                    valid_samples += samples[index];
+                    empty_bins += usize::from(samples[index] == 0);
+                }
+                if active[index] {
+                    hit_bins += 1;
+                    self.raw_levels[index] = self.raw_levels[index].max(level);
+                }
+            }
+        }
+        self.criteria.push(serde_json::json!({
+            "criterion": criterion, "target_level": level, "policy": policy,
+            "block_bins": block, "eligible_bins": eligible_bins, "raw_hit_bins": hit_bins,
+            "valid_source_samples": samples.map(|_| valid_samples),
+            "empty_source_bins_before_nearest_fallback": samples.map(|_| empty_bins),
+        }));
+    }
+}
+
+fn record_hfield_phase(phase: &str, started: &mut std::time::Instant) {
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    if std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1") {
+        eprintln!("earthmesh_cli: hfield_timing phase={phase} elapsed_ms={elapsed:.3}");
+    }
+    *started = std::time::Instant::now();
+}
+
 impl HfieldDomainMask {
     pub(crate) fn new(nlon: usize, nlat: usize, domain: &GridRegion) -> Self {
         let mut active = vec![false; nlon * nlat];
@@ -418,6 +481,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
     stats_cache: &mut ThresholdStatsCache,
+    mut audit: Option<&mut ThresholdAudit>,
 ) -> io::Result<usize> {
     let specs = enabled_mean_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -428,7 +492,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
     let mut applied = 0usize;
     for spec in specs {
         let input = threshold_dir.join(format!("{}.nc", spec.file_stem));
-        let key = (input.display().to_string(), spec.var_name.clone());
+        let key = (input.display().to_string(), spec.var_name.clone(), true);
         if !stats_cache.contains_key(&key) {
             let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
             let stats = read_threshold_stats_on_hfield_masked(
@@ -441,6 +505,23 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
             stats_cache.insert(key.clone(), stats);
         }
         let stats = stats_cache.get(&key).expect("threshold stats cached");
+        if let Some(audit) = audit.as_deref_mut() {
+            let active: Vec<bool> = stats
+                .mean
+                .iter()
+                .map(|&value| value > spec.threshold)
+                .collect();
+            audit.record(
+                field,
+                domain,
+                &format!("{}_mean", spec.var_name),
+                target_level.clamp(1, 5),
+                1,
+                "one_shot_target_level",
+                &active,
+                Some(&stats.samples),
+            );
+        }
         min_with_threshold_matrix(field, &stats.mean, spec.threshold, h_inside, domain);
         applied += 1;
     }
@@ -470,6 +551,7 @@ pub(crate) fn apply_std_threshold_hfield_contributions(
         None,
         None,
         &mut stats_cache,
+        None,
     )
 }
 
@@ -483,6 +565,7 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
     stats_cache: &mut ThresholdStatsCache,
+    mut audit: Option<&mut ThresholdAudit>,
 ) -> io::Result<usize> {
     let specs = enabled_std_threshold_field_specs(refine, mesh_type);
     if specs.is_empty() {
@@ -493,19 +576,42 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     let mut applied = 0usize;
     for spec in specs {
         let input = threshold_dir.join(format!("{}.nc", spec.file_stem));
-        let key = (input.display().to_string(), spec.var_name.clone());
+        let key = (input.display().to_string(), spec.var_name.clone(), true);
+        let key = if stats_cache.contains_key(&key) {
+            key
+        } else {
+            (key.0, key.1, false)
+        };
         if !stats_cache.contains_key(&key) {
             let file = crate::open_netcdf(&input).map_err(crate::netcdf_to_io_error)?;
-            let stats = read_threshold_stats_on_hfield_masked(
+            let stats = read_threshold_stats_on_hfield_for_criteria(
                 &file,
                 &spec.var_name,
                 field,
                 landtype_mask,
                 domain,
+                key.2,
             )?;
             stats_cache.insert(key.clone(), stats);
         }
         let stats = stats_cache.get(&key).expect("threshold stats cached");
+        if let Some(audit) = audit.as_deref_mut() {
+            let active: Vec<bool> = stats
+                .stddev
+                .iter()
+                .map(|&value| value > spec.threshold)
+                .collect();
+            audit.record(
+                field,
+                domain,
+                &format!("{}_std", spec.var_name),
+                target_level.clamp(1, 5),
+                1,
+                "one_shot_target_level",
+                &active,
+                Some(&stats.samples),
+            );
+        }
         min_with_threshold_matrix(field, &stats.stddev, spec.threshold, h_inside, domain);
         applied += 1;
     }
@@ -554,6 +660,7 @@ fn apply_landtype_basic_threshold_hfield_contributions(
     target_level: usize,
     g: f64,
     domain: Option<&HfieldDomainMask>,
+    audit: Option<&mut ThresholdAudit>,
 ) -> io::Result<usize> {
     if !has_landtype_basic_threshold_hfield_sources(refine, mesh_type) {
         return Ok(0);
@@ -576,6 +683,7 @@ fn apply_landtype_basic_threshold_hfield_contributions(
         base_m,
         target_level,
         domain,
+        audit,
     )?;
     if applied > 0 {
         field.limit_gradient(g)?;
@@ -1407,7 +1515,9 @@ fn apply_landtype_basic_thresholds_from_source(
     }
     bins.exclude_class(maxlc);
 
-    apply_landtype_basic_thresholds_from_bins(field, &bins, refine, mesh_type, base_m, level, None)
+    apply_landtype_basic_thresholds_from_bins(
+        field, &bins, refine, mesh_type, base_m, level, None, None,
+    )
 }
 
 /// What a block of h-field cells contains.
@@ -1443,8 +1553,8 @@ fn hfield_cells_for_meters(field: &HField, meters: f64) -> usize {
 /// of that level's parent cell: "would a cell of the size this level refines
 /// away be too heterogeneous?" Coarse levels use wide blocks and set a coarse
 /// `h`, fine levels narrow blocks and a fine `h`, and `min` accumulates them
-/// into the nested field Method-C wants. The answer is monotone in block size,
-/// so the levels nest by construction.
+/// into the nested field Method-C wants. Each level is evaluated independently; proportion criteria need not be
+/// monotone in block size. The pointwise minimum preserves all triggered targets.
 ///
 /// Blocks are grid-aligned rather than following mesh cells — the h-field cannot
 /// see mesh cells. That leaves the size right and the placement approximate,
@@ -1455,6 +1565,8 @@ fn apply_cell_content_threshold(
     base_m: f64,
     max_level: usize,
     domain: Option<&HfieldDomainMask>,
+    criterion: &str,
+    mut audit: Option<&mut ThresholdAudit>,
     demanded: impl Fn(&LandtypeBlockStats) -> bool,
 ) {
     let nlon = field.nlon();
@@ -1495,6 +1607,18 @@ fn apply_cell_content_threshold(
             }
             i0 = i1;
         }
+        if let Some(audit) = audit.as_deref_mut() {
+            audit.record(
+                field,
+                domain,
+                criterion,
+                level,
+                block,
+                "per_level_parent_blocks",
+                &active,
+                None,
+            );
+        }
         min_with_bool_matrix(field, &active, base_m / 2f64.powi(level as i32), domain);
     }
 }
@@ -1507,6 +1631,7 @@ fn apply_landtype_basic_thresholds_from_bins(
     base_m: f64,
     target_level: usize,
     domain: Option<&HfieldDomainMask>,
+    mut audit: Option<&mut ThresholdAudit>,
 ) -> io::Result<usize> {
     let len = field.nlon() * field.nlat();
     let max_level = target_level.clamp(1, 5);
@@ -1518,25 +1643,50 @@ fn apply_landtype_basic_thresholds_from_bins(
 
     let mut applied = 0usize;
     if has_land_thresholds(refine, mesh_type) && refine.refine_num_landtypes {
-        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
-            block.distinct as i32 > refine.th_num_landtypes
-        });
+        apply_cell_content_threshold(
+            field,
+            bins,
+            base_m,
+            max_level,
+            domain,
+            "num_landtypes",
+            audit.as_deref_mut(),
+            |block| block.distinct as i32 > refine.th_num_landtypes,
+        );
         applied += 1;
     }
     if has_land_thresholds(refine, mesh_type) && refine.refine_area_mainland {
-        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
-            block.land > 0
-                && (block.max_class_count as f64 / block.land as f64) < refine.th_area_mainland
-        });
+        apply_cell_content_threshold(
+            field,
+            bins,
+            base_m,
+            max_level,
+            domain,
+            "area_mainland",
+            audit.as_deref_mut(),
+            |block| {
+                block.land > 0
+                    && (block.max_class_count as f64 / block.land as f64) < refine.th_area_mainland
+            },
+        );
         applied += 1;
     }
     if has_ocean_thresholds(refine, mesh_type) {
-        apply_cell_content_threshold(field, bins, base_m, max_level, domain, |block| {
-            block.total > 0 && {
-                let ratio = block.ocean as f64 / block.total as f64;
-                ratio > refine.th_sea_ratio[0] && ratio < refine.th_sea_ratio[1]
-            }
-        });
+        apply_cell_content_threshold(
+            field,
+            bins,
+            base_m,
+            max_level,
+            domain,
+            "sea_ratio",
+            audit,
+            |block| {
+                block.total > 0 && {
+                    let ratio = block.ocean as f64 / block.total as f64;
+                    ratio > refine.th_sea_ratio[0] && ratio < refine.th_sea_ratio[1]
+                }
+            },
+        );
         applied += 1;
     }
     Ok(applied)
@@ -1552,6 +1702,31 @@ pub(crate) fn build_composed_hfield(
     threshold_level: usize,
     domain: Option<&GridRegion>,
 ) -> io::Result<HField> {
+    build_composed_hfield_with_report(
+        regions,
+        refine,
+        mesh_type,
+        config,
+        base_m,
+        options,
+        threshold_level,
+        domain,
+    )
+    .map(|(field, _)| field)
+}
+
+pub(crate) fn build_composed_hfield_with_report(
+    regions: &[RefinementRegion],
+    refine: &RefineConfig,
+    mesh_type: &str,
+    config: Option<&EarthmeshConfig>,
+    base_m: f64,
+    options: &HfieldRefineOptions,
+    threshold_level: usize,
+    domain: Option<&GridRegion>,
+) -> io::Result<(HField, serde_json::Value)> {
+    let mut audit = ThresholdAudit::new(options.nlon * options.nlat);
+    let mut phase_started = std::time::Instant::now();
     let domain = domain.map(|domain| HfieldDomainMask::new(options.nlon, options.nlat, domain));
     let mut field = build_hfield_from_regions_in_domain(
         regions,
@@ -1561,7 +1736,52 @@ pub(crate) fn build_composed_hfield(
         options.nlat,
         domain.as_ref(),
     )?;
+    record_hfield_phase("regions", &mut phase_started);
     if refine.refine_cal {
+        // A degree-zero calculated mask bounds threshold evaluation; it is not
+        // an unconditional max-level region. Keep specified sources and their
+        // transition apron independent of this threshold-only intersection.
+        let prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
+        let mut threshold_domain = domain;
+        if has_threshold_hfield_sources(refine, mesh_type)
+            && !matches!(prefix, "" | "/tmp" | "none")
+        {
+            // max_level=0 selects only degree-zero masks using the same shape
+            // readers (including canonical close polygons and circle corridors).
+            let mut masks = crate::read_method_c_calculated_refinement_regions(refine, 0, false)?;
+            if !masks.is_empty() {
+                for mask in &mut masks {
+                    // The reader selected degree zero. Give this footprint a
+                    // valid dummy level solely to reuse geographic validation;
+                    // it is never composed as a refinement demand.
+                    let (RefinementRegion::Bbox { level, .. }
+                    | RefinementRegion::Circle { level, .. }
+                    | RefinementRegion::Corridor { level, .. }
+                    | RefinementRegion::Polygon { level, .. }) = mask;
+                    *level = 1;
+                    mask.validate()?;
+                }
+                let mask = threshold_domain.get_or_insert_with(|| HfieldDomainMask {
+                    nlon: options.nlon,
+                    nlat: options.nlat,
+                    active: vec![true; options.nlon * options.nlat],
+                });
+                for i in 0..options.nlon {
+                    let lon = -180.0 + (i as f64 + 0.5) * 360.0 / options.nlon as f64;
+                    for j in 0..options.nlat {
+                        let lat = -90.0 + (j as f64 + 0.5) * 180.0 / options.nlat as f64;
+                        mask.active[i * options.nlat + j] &= masks.iter().any(|region| {
+                            region.contains_lonlat_canonical(LonLatDegrees::new(lon, lat))
+                        });
+                    }
+                }
+                eprintln!(
+                    "earthmesh_cli: threshold evaluation mask: {} degree-zero regions, {} / {} active raster bins (not hard refinement regions)",
+                    masks.len(), mask.active.iter().filter(|&&active| active).count(), mask.active.len()
+                );
+            }
+        }
+        record_hfield_phase("threshold_domain", &mut phase_started);
         let needs_landtype_mask = has_mean_threshold_hfield_sources(refine, mesh_type)
             || !enabled_std_threshold_field_specs(refine, mesh_type).is_empty();
         let landtype_mask = if needs_landtype_mask {
@@ -1569,6 +1789,7 @@ pub(crate) fn build_composed_hfield(
         } else {
             None
         };
+        record_hfield_phase("landtype_mask", &mut phase_started);
         let mut threshold_stats_cache = ThresholdStatsCache::new();
         apply_mean_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
@@ -1578,9 +1799,11 @@ pub(crate) fn build_composed_hfield(
             threshold_level,
             options.g,
             landtype_mask.as_ref(),
-            domain.as_ref(),
+            threshold_domain.as_ref(),
             &mut threshold_stats_cache,
+            Some(&mut audit),
         )?;
+        record_hfield_phase("mean", &mut phase_started);
         apply_std_threshold_hfield_contributions_with_landtype_mask(
             &mut field,
             refine,
@@ -1589,9 +1812,11 @@ pub(crate) fn build_composed_hfield(
             threshold_level,
             options.g,
             landtype_mask.as_ref(),
-            domain.as_ref(),
+            threshold_domain.as_ref(),
             &mut threshold_stats_cache,
+            Some(&mut audit),
         )?;
+        record_hfield_phase("std", &mut phase_started);
         apply_landtype_basic_threshold_hfield_contributions(
             &mut field,
             refine,
@@ -1600,10 +1825,24 @@ pub(crate) fn build_composed_hfield(
             base_m,
             threshold_level,
             options.g,
-            domain.as_ref(),
+            threshold_domain.as_ref(),
+            Some(&mut audit),
         )?;
     }
-    Ok(field)
+    record_hfield_phase("landtype_thresholds", &mut phase_started);
+    let mut histogram = std::collections::BTreeMap::new();
+    for level in audit.raw_levels {
+        *histogram.entry(level).or_insert(0usize) += 1;
+    }
+    let report = serde_json::json!({
+        "scope": "threshold_only_before_gradient",
+        "counts_are_diagnostic_only": true,
+        "raster_grid": { "nlon": options.nlon, "nlat": options.nlat },
+        "criteria": audit.criteria,
+        "raw_threshold_histogram": histogram,
+        "limitations": "Not v2 current-cell support, not final mesh counts; excludes named/hydro sources. Existing effective raster remains hard."
+    });
+    Ok((field, report))
 }
 
 /// Keep refinement sources local to the requested output domain while leaving
@@ -1633,11 +1872,14 @@ pub(crate) fn constrain_hfield_to_domain(
 
 #[derive(Clone, Debug)]
 struct ThresholdStats {
+    samples: Vec<usize>,
     mean: Vec<f64>,
     stddev: Vec<f64>,
 }
 
-type ThresholdStatsCache = HashMap<(String, String), ThresholdStats>;
+// Last key component: whether empty-bin nearest means were materialized.
+// Full entries can serve std; std-only entries must never serve mean.
+type ThresholdStatsCache = HashMap<(String, String, bool), ThresholdStats>;
 
 fn read_threshold_stats_on_hfield_masked(
     file: &netcdf::File,
@@ -1646,6 +1888,18 @@ fn read_threshold_stats_on_hfield_masked(
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
 ) -> io::Result<ThresholdStats> {
+    read_threshold_stats_on_hfield_for_criteria(file, name, field, landtype_mask, domain, true)
+}
+
+fn read_threshold_stats_on_hfield_for_criteria(
+    file: &netcdf::File,
+    name: &str,
+    field: &HField,
+    landtype_mask: Option<&LandtypeMaskSource>,
+    domain: Option<&HfieldDomainMask>,
+    nearest_mean: bool,
+) -> io::Result<ThresholdStats> {
+    let mut stats_started = std::time::Instant::now();
     let variable = file.variable(name).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1694,6 +1948,7 @@ fn read_threshold_stats_on_hfield_masked(
     let len = field.nlon() * field.nlat();
     if !active_lon.iter().any(|active| *active) || !active_lat.iter().any(|active| *active) {
         return Ok(ThresholdStats {
+            samples: vec![0; len],
             mean: vec![0.0; len],
             stddev: vec![0.0; len],
         });
@@ -1851,6 +2106,19 @@ fn read_threshold_stats_on_hfield_masked(
         }
     }
 
+    record_hfield_phase("threshold_stats_scan", &mut stats_started);
+    // Empty-bin nearest values contribute only to mean, never population std.
+    // Do not reopen full global columns for a statistic the caller does not use.
+    // All consumed source tiles still pass the same missing/non-finite checks.
+    if !nearest_mean {
+        record_hfield_phase("threshold_stats_fallback_skipped", &mut stats_started);
+        return Ok(ThresholdStats {
+            samples: count,
+            mean,
+            stddev,
+        });
+    }
+
     // Preserve the dense compatibility behavior when the HField is finer than
     // the threshold raster: empty bins inherit their nearest source value.
     let mut nearest_by_i = std::collections::BTreeMap::<usize, Vec<(usize, usize)>>::new();
@@ -1900,7 +2168,12 @@ fn read_threshold_stats_on_hfield_masked(
         }
     }
 
-    Ok(ThresholdStats { mean, stddev })
+    record_hfield_phase("threshold_stats_fallback", &mut stats_started);
+    Ok(ThresholdStats {
+        samples: count,
+        mean,
+        stddev,
+    })
 }
 
 fn threshold_tile(
@@ -2027,7 +2300,11 @@ fn threshold_stats_on_hfield_from_source_masked(
         }
     }
 
-    ThresholdStats { mean, stddev }
+    ThresholdStats {
+        samples: count,
+        mean,
+        stddev,
+    }
 }
 
 #[cfg(test)]
@@ -2128,6 +2405,161 @@ fn min_with_bool_matrix(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn std_only_skips_nearest_mean_without_poisoning_shared_cache() {
+        // The shared threshold path must not depend on the model domain or LAI.
+        for mesh_type in [
+            "landmesh",
+            "oceanmesh",
+            "atmosmesh",
+            "atmos",
+            "LOCmesh",
+            "earthmesh",
+        ] {
+            for name in ["lai", "sst", "typhoon"] {
+                let root = std::env::temp_dir()
+                    .join(format!("earthmesh_std_only_cache_{}", std::process::id()));
+                std::fs::create_dir_all(&root).unwrap();
+                let path = root.join(format!("{name}.nc"));
+                let mut file = crate::create_netcdf_quiet(&path).unwrap();
+                file.add_dimension("longitude", 4).unwrap();
+                file.add_dimension("latitude", 2).unwrap();
+                file.add_variable::<f64>(name, &["longitude", "latitude"])
+                    .unwrap()
+                    .put_values(&[10.0, 1.0, 10.0, 1.0, 10.0, 1.0, 10.0, 1.0], (.., ..))
+                    .unwrap();
+                drop(file);
+                let file = crate::open_netcdf(&path).unwrap();
+                let mut field = HField::uniform(4, 4, 100.0).unwrap();
+                let full =
+                    read_threshold_stats_on_hfield_masked(&file, name, &field, None, None).unwrap();
+                let std_only = read_threshold_stats_on_hfield_for_criteria(
+                    &file, name, &field, None, None, false,
+                )
+                .unwrap();
+                assert_eq!(std_only.stddev, full.stddev);
+                assert_eq!(std_only.samples, full.samples);
+                assert_eq!(full.mean[2], 10.0);
+                assert_eq!(std_only.mean[2], 0.0, "unused fallback was not computed");
+                drop(file);
+
+                let mut refine = RefineConfig {
+                    threshold_dir: root.display().to_string(),
+                    ..RefineConfig::default()
+                };
+                let (flags, thresholds) = match name {
+                    "lai" => (
+                        &mut refine.refine_onelayer_lnd[..],
+                        &mut refine.th_onelayer_lnd[..],
+                    ),
+                    "sst" => (
+                        &mut refine.refine_onelayer_ocn[..],
+                        &mut refine.th_onelayer_ocn[..],
+                    ),
+                    "typhoon" => (
+                        &mut refine.refine_onelayer_atmos[..],
+                        &mut refine.th_onelayer_atmos[..],
+                    ),
+                    _ => unreachable!(),
+                };
+                flags[0] = true;
+                flags[1] = true;
+                thresholds[0] = 5.0;
+                thresholds[1] = 1.0;
+                let mut cache = ThresholdStatsCache::new();
+                apply_std_threshold_hfield_contributions_with_landtype_mask(
+                    &mut field, &refine, mesh_type, 100.0, 1, 10.0, None, None, &mut cache, None,
+                )
+                .unwrap();
+                assert_eq!(field.get(0, 2), 100.0);
+                apply_mean_threshold_hfield_contributions_with_landtype_mask(
+                    &mut field, &refine, mesh_type, 100.0, 1, 10.0, None, None, &mut cache, None,
+                )
+                .unwrap();
+                assert_eq!(
+                    field.get(0, 2),
+                    50.0,
+                    "mean must still fill empty bins after std cached partial stats"
+                );
+                assert_eq!(cache.len(), 2);
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn threshold_audit_counts_raw_union_without_changing_demands() {
+        let mut actual = HField::uniform(4, 2, 100.0).unwrap();
+        let mut expected = actual.clone();
+        let domain = HfieldDomainMask {
+            nlon: 4,
+            nlat: 2,
+            active: vec![true, false, true, true, true, true, true, true],
+        };
+        let mut bins = LandtypeBinStats::new(&actual, Some(&domain));
+        bins.record(0, 1).unwrap();
+        bins.record(0, 2).unwrap();
+        bins.record(2, 1).unwrap();
+        let refine = RefineConfig {
+            refine_num_landtypes: true,
+            th_num_landtypes: 1,
+            ..RefineConfig::default()
+        };
+        let mut audit = ThresholdAudit::new(8);
+        apply_landtype_basic_thresholds_from_bins(
+            &mut actual,
+            &bins,
+            &refine,
+            "landmesh",
+            100.0,
+            2,
+            Some(&domain),
+            Some(&mut audit),
+        )
+        .unwrap();
+        apply_landtype_basic_thresholds_from_bins(
+            &mut expected,
+            &bins,
+            &refine,
+            "landmesh",
+            100.0,
+            2,
+            Some(&domain),
+            None,
+        )
+        .unwrap();
+        assert_eq!(actual.values(), expected.values());
+        assert_eq!(audit.criteria.len(), 2);
+        for (index, row) in audit.criteria.iter().enumerate() {
+            assert_eq!(row["target_level"], index + 1);
+            assert_eq!(row["block_bins"], 1);
+            assert_eq!(row["raw_hit_bins"], 1);
+            assert_eq!(row["eligible_bins"], 7);
+        }
+        // Continuous one-shot demand overlaps the existing hit, also hits a
+        // masked-out bin and one new bin. The union must not double-count.
+        let active = [true, true, true, false, false, false, false, false];
+        let samples = [4, 4, 2, 0, 0, 0, 0, 0];
+        audit.record(
+            &actual,
+            Some(&domain),
+            "lai_std",
+            2,
+            1,
+            "one_shot_target_level",
+            &active,
+            Some(&samples),
+        );
+        assert_eq!(audit.raw_levels, [2, 0, 2, 0, 0, 0, 0, 0]);
+        assert_eq!(audit.criteria[2]["raw_hit_bins"], 2);
+        assert_eq!(audit.criteria[2]["valid_source_samples"], 6);
+        assert_eq!(
+            audit.criteria[2]["empty_source_bins_before_nearest_fallback"],
+            5
+        );
+        assert_eq!(actual.values(), expected.values(), "reporting is read-only");
+    }
     use earthmesh_mesh::LonLatDegrees;
 
     fn test_landtype_global_maxlc(path: &Path) -> i32 {
@@ -2897,6 +3329,14 @@ mod tests {
                 error.to_string().contains("missing/non-finite"),
                 "{case}: {error}"
             );
+            let error = read_threshold_stats_on_hfield_for_criteria(
+                &file, "lai", &field, None, None, false,
+            )
+            .expect_err(case);
+            assert!(
+                error.to_string().contains("missing/non-finite"),
+                "{case}: {error}"
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2974,40 +3414,68 @@ mod tests {
 
     #[test]
     fn std_thresholds_contribute_to_hfield_without_mean_flag() {
-        let root =
-            std::env::temp_dir().join(format!("earthmesh_hfield_lai_std_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("lai.nc");
-        let values = vec![
-            0.0_f64, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ];
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
-        file.add_dimension("longitude", 8).unwrap();
-        file.add_dimension("latitude", 2).unwrap();
-        file.add_variable::<f64>("lai", &["longitude", "latitude"])
-            .unwrap()
-            .put_values(&values, (.., ..))
-            .unwrap();
-        drop(file);
+        // The shared threshold path must not depend on the model domain or LAI.
+        for mesh_type in [
+            "landmesh",
+            "oceanmesh",
+            "atmosmesh",
+            "atmos",
+            "LOCmesh",
+            "earthmesh",
+        ] {
+            for name in ["lai", "sst", "typhoon"] {
+                let root = std::env::temp_dir()
+                    .join(format!("earthmesh_hfield_lai_std_{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).unwrap();
+                let path = root.join(format!("{name}.nc"));
+                let values = vec![
+                    0.0_f64, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.0,
+                ];
+                let mut file = crate::create_netcdf_quiet(&path).unwrap();
+                file.add_dimension("longitude", 8).unwrap();
+                file.add_dimension("latitude", 2).unwrap();
+                file.add_variable::<f64>(name, &["longitude", "latitude"])
+                    .unwrap()
+                    .put_values(&values, (.., ..))
+                    .unwrap();
+                drop(file);
 
-        let mut refine = RefineConfig {
-            threshold_dir: root.display().to_string(),
-            ..RefineConfig::default()
-        };
-        refine.refine_onelayer_lnd[1] = true;
-        refine.th_onelayer_lnd[1] = 1.0;
-        let mut field = HField::uniform(4, 2, 100.0).unwrap();
+                let mut refine = RefineConfig {
+                    threshold_dir: root.display().to_string(),
+                    ..RefineConfig::default()
+                };
+                let (flags, thresholds) = match name {
+                    "lai" => (
+                        &mut refine.refine_onelayer_lnd[..],
+                        &mut refine.th_onelayer_lnd[..],
+                    ),
+                    "sst" => (
+                        &mut refine.refine_onelayer_ocn[..],
+                        &mut refine.th_onelayer_ocn[..],
+                    ),
+                    "typhoon" => (
+                        &mut refine.refine_onelayer_atmos[..],
+                        &mut refine.th_onelayer_atmos[..],
+                    ),
+                    _ => unreachable!(),
+                };
+                flags[1] = true;
+                thresholds[1] = 1.0;
+                let mut field = HField::uniform(4, 2, 100.0).unwrap();
 
-        let applied = apply_std_threshold_hfield_contributions(
-            &mut field, &refine, "landmesh", 100.0, 1, 10.0,
-        )
-        .unwrap();
+                let applied = apply_std_threshold_hfield_contributions(
+                    &mut field, &refine, mesh_type, 100.0, 1, 10.0,
+                )
+                .unwrap();
 
-        assert_eq!(applied, 1);
-        assert_eq!(field.get(0, 1), 50.0);
-        assert_eq!(field.get(1, 1), 100.0);
-        let _ = std::fs::remove_dir_all(root);
+                assert_eq!(applied, 1);
+                assert_eq!(field.get(0, 1), 50.0);
+                assert_eq!(field.get(1, 1), 100.0);
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
     }
 
     #[test]
@@ -3052,6 +3520,7 @@ mod tests {
             None,
             None,
             &mut cache,
+            None,
         )
         .unwrap();
         assert_eq!(cache.len(), 1);
@@ -3065,6 +3534,7 @@ mod tests {
             None,
             None,
             &mut cache,
+            None,
         )
         .unwrap();
 
@@ -3397,6 +3867,7 @@ mod tests {
                 "earthmesh",
                 100.0,
                 2,
+                None,
                 None,
             )
             .unwrap();
@@ -3952,6 +4423,116 @@ mod tests {
         .unwrap();
         assert_eq!(stats.mean, vec![0.0; 8]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn calculated_mask_scopes_only_thresholds_before_composition() {
+        let root = std::env::temp_dir().join(format!("hfield_cal_mask_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mask = root.join("mask.nml");
+        std::fs::write(&mask, "bbox_num = 1\nbbox_refine = 0\n0 90 90 0\n").unwrap();
+        let land = root.join("land.nc");
+        let mut file = crate::create_netcdf_quiet(&land).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        let mut values = [1_i8; 16];
+        values[0] = 0;
+        values[8] = 0;
+        values[15] = 2;
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(file);
+        let refine = RefineConfig {
+            refine_cal: true,
+            max_iter_cal: 1,
+            refine_sea_ratio: true,
+            th_sea_ratio: [0.4, 0.6],
+            mask_refine_cal_type: "bbox".into(),
+            mask_refine_cal_fprefix: mask.display().to_string(),
+            ..RefineConfig::default()
+        };
+        let config = EarthmeshConfig {
+            landtype_file: land.display().to_string(),
+            ..EarthmeshConfig::default()
+        };
+        let options = HfieldRefineOptions {
+            nlon: 4,
+            nlat: 2,
+            ..HfieldRefineOptions::default()
+        };
+        let specified = [RefinementRegion::Bbox {
+            west_degrees: -90.0,
+            east_degrees: 0.0,
+            south_degrees: 0.0,
+            north_degrees: 90.0,
+            level: 1,
+        }];
+        let field = build_composed_hfield(
+            &specified,
+            &refine,
+            "landmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            field.get(2, 1),
+            50.0,
+            "in-mask sea-ratio criterion still works on land"
+        );
+        assert_eq!(field.get(0, 1), 100.0, "out-of-mask hotspot is ignored");
+        assert_eq!(
+            field.get(1, 1),
+            50.0,
+            "specified source outside threshold mask survives"
+        );
+        let domain = GridRegion::Bbox {
+            west: -180.0,
+            east: 0.0,
+            south: 0.0,
+            north: 90.0,
+        };
+        let field = build_composed_hfield(
+            &specified,
+            &refine,
+            "landmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            Some(&domain),
+        )
+        .unwrap();
+        assert_eq!(
+            field.get(2, 1),
+            100.0,
+            "threshold mask intersects output domain"
+        );
+        assert_eq!(field.get(1, 1), 50.0);
+        // A real mask with no raster sample centers must not become global.
+        std::fs::write(&mask, "bbox_num = 1\nbbox_refine = 0\n1 2 2 1\n").unwrap();
+        let field = build_composed_hfield(
+            &[],
+            &refine,
+            "landmesh",
+            Some(&config),
+            100.0,
+            &options,
+            1,
+            None,
+        )
+        .unwrap();
+        assert!(field
+            .level_map(100.0, 1)
+            .unwrap()
+            .iter()
+            .all(|&level| level == 0));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
