@@ -301,6 +301,61 @@ fn a_wider_neighbourhood_spreads_the_demand() {
 }
 
 #[test]
+fn stddev_demand_is_not_monotone_with_radius_at_a_fixed_cell() {
+    // These are the two counterexamples the public stddev producer must keep:
+    // changing the source-neighbourhood radius changes the statistic, not just
+    // the footprint. That holds for every catalogue field that uses this path.
+    let root = temp_root("radius_nonmonotone");
+    let bounds = source_bounds_for_bbox(105.0, 113.0, 18.0, 26.0, 1).expect("bounds");
+    let center = (291, 68);
+
+    for var_name in ["lai", "sst", "typhoon"] {
+        let coarse_hit = root.join(format!("{var_name}_coarse_hit.nc"));
+        write_field(&coarse_hit, var_name, |lon, lat| {
+            if (lon, lat) == (center.0 + 2, center.1) {
+                100.0
+            } else {
+                0.0
+            }
+        });
+        let fine = threshold_stddev_demand(&coarse_hit, var_name, 1, bounds, 1, 10.0)
+            .expect("fine radius");
+        let coarse = threshold_stddev_demand(&coarse_hit, var_name, 1, bounds, 3, 10.0)
+            .expect("coarse radius");
+        assert!(
+            !fine.is_demanded(center.0, center.1),
+            "{var_name} fine radius quiet"
+        );
+        assert!(
+            coarse.is_demanded(center.0, center.1),
+            "{var_name} coarse radius hit"
+        );
+
+        let fine_hit = root.join(format!("{var_name}_fine_hit.nc"));
+        write_field(&fine_hit, var_name, |lon, lat| {
+            if (lon, lat) == center {
+                100.0
+            } else {
+                0.0
+            }
+        });
+        let fine =
+            threshold_stddev_demand(&fine_hit, var_name, 1, bounds, 1, 20.0).expect("fine radius");
+        let coarse = threshold_stddev_demand(&fine_hit, var_name, 1, bounds, 3, 20.0)
+            .expect("coarse radius");
+        assert!(
+            fine.is_demanded(center.0, center.1),
+            "{var_name} fine radius hit"
+        );
+        assert!(
+            !coarse.is_demanded(center.0, center.1),
+            "{var_name} coarse radius quiet"
+        );
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_non_finite_std_threshold_is_rejected_too() {
     let root = temp_root("bad_std_threshold");
     let path = root.join("slope.nc");

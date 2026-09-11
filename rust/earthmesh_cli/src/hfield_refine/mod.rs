@@ -101,6 +101,7 @@ impl ThresholdAudit {
         criterion: &str,
         level: usize,
         block: usize,
+        parent_meters: f64,
         policy: &str,
         active: &[bool],
         samples: Option<&[usize]>,
@@ -126,11 +127,36 @@ impl ThresholdAudit {
                 }
             }
         }
+        // Nominal block geometry, not mesh cells or nearest-mean source footprints.
+        // Terminal blocks are clipped rather than wrapping across the seam.
+        let span = |bins: usize, degrees: f64| {
+            let largest = block.min(bins);
+            let tail = bins % block;
+            [
+                if tail == 0 { largest } else { tail } as f64 * degrees,
+                largest as f64 * degrees,
+            ]
+        };
+        let latitude_bin_meters =
+            field.dlat_degrees() * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS
+                / 180.0;
+        let previous_block = (policy == "per_level_parent_blocks" && level > 1)
+            .then(|| hfield_cells_for_meters(field, parent_meters * 2.0));
         self.criteria.push(serde_json::json!({
             "criterion": criterion, "target_level": level, "policy": policy,
             "block_bins": block, "eligible_bins": eligible_bins, "raw_hit_bins": hit_bins,
             "valid_source_samples": samples.map(|_| valid_samples),
             "empty_source_bins_before_nearest_fallback": samples.map(|_| empty_bins),
+            "support": {
+                "kind": "nominal_grid_aligned_hfield_bins_not_mesh_cells",
+                "target_parent_scale_m": parent_meters,
+                "latitude_bin_m": latitude_bin_meters,
+                "latitude_span_degrees": span(field.nlat(), field.dlat_degrees()),
+                "longitude_span_degrees": span(field.nlon(), 360.0 / field.nlon() as f64),
+                "requested_parent_below_latitude_bin": parent_meters < latitude_bin_meters * (1.0 - 1e-12),
+                "same_block_as_previous_level": previous_block.map(|previous| previous == block),
+                "longitude_blocks_wrap": false,
+            },
         }));
     }
 }
@@ -517,6 +543,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
                 &format!("{}_mean", spec.var_name),
                 target_level.clamp(1, 5),
                 1,
+                base_m / 2f64.powi((target_level.clamp(1, 5) - 1) as i32),
                 "one_shot_target_level",
                 &active,
                 Some(&stats.samples),
@@ -607,6 +634,7 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
                 &format!("{}_std", spec.var_name),
                 target_level.clamp(1, 5),
                 1,
+                base_m / 2f64.powi((target_level.clamp(1, 5) - 1) as i32),
                 "one_shot_target_level",
                 &active,
                 Some(&stats.samples),
@@ -1556,9 +1584,10 @@ fn hfield_cells_for_meters(field: &HField, meters: f64) -> usize {
 /// into the nested field Method-C wants. Each level is evaluated independently; proportion criteria need not be
 /// monotone in block size. The pointwise minimum preserves all triggered targets.
 ///
-/// Blocks are grid-aligned rather than following mesh cells — the h-field cannot
-/// see mesh cells. That leaves the size right and the placement approximate,
-/// where before both were wrong.
+/// Blocks are grid-aligned, not mesh-cell supports. Rounding, the one-bin floor,
+/// and clipped terminal blocks approximate the requested latitude scale; longitude
+/// uses the same bin count, not a geodesic distance. Fine levels may reuse exactly
+/// the same support, which the audit reports rather than hiding as scale adaptation.
 fn apply_cell_content_threshold(
     field: &mut HField,
     bins: &LandtypeBinStats,
@@ -1614,6 +1643,7 @@ fn apply_cell_content_threshold(
                 criterion,
                 level,
                 block,
+                parent_meters,
                 "per_level_parent_blocks",
                 &active,
                 None,
@@ -2407,6 +2437,137 @@ mod tests {
     use super::*;
 
     #[test]
+    fn threshold_contract_reports_parent_support_floor_and_clipped_blocks() {
+        let meters_per_degree = std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 180.0;
+        for (nlon, nlat, parent_degrees, levels) in [(720, 360, 0.5, 2), (10, 4, 135.0, 1)] {
+            let base_m = parent_degrees * meters_per_degree;
+            let mut field = HField::uniform(nlon, nlat, base_m).unwrap();
+            let mut bins = LandtypeBinStats::new(&field, None);
+            bins.record(0, 1).unwrap();
+            bins.record(0, 2).unwrap();
+            let mut audit = ThresholdAudit::new(nlon * nlat);
+            apply_cell_content_threshold(
+                &mut field,
+                &bins,
+                base_m,
+                levels,
+                None,
+                "num_landtypes",
+                Some(&mut audit),
+                |stats| stats.distinct > 1,
+            );
+            assert_eq!(audit.criteria.len(), levels);
+            let support = &audit.criteria[0]["support"];
+            assert_eq!(
+                support["kind"],
+                "nominal_grid_aligned_hfield_bins_not_mesh_cells"
+            );
+            assert_eq!(support["requested_parent_below_latitude_bin"], false);
+            assert_eq!(
+                support["same_block_as_previous_level"],
+                serde_json::Value::Null
+            );
+            if nlon == 720 {
+                assert_eq!(hfield_cells_for_meters(&field, base_m), 1);
+                assert_eq!(hfield_cells_for_meters(&field, base_m / 2.0), 1);
+                assert_eq!(
+                    audit.criteria[1]["support"]["requested_parent_below_latitude_bin"],
+                    true
+                );
+                assert_eq!(
+                    audit.criteria[1]["support"]["same_block_as_previous_level"],
+                    true
+                );
+                assert_eq!(
+                    support["latitude_span_degrees"],
+                    serde_json::json!([0.5, 0.5])
+                );
+                assert_eq!(
+                    audit.criteria[1]["support"]["latitude_span_degrees"],
+                    support["latitude_span_degrees"]
+                );
+                assert_eq!(
+                    field.get(0, 0),
+                    base_m / 4.0,
+                    "diagnosis must not cancel existing hard demand"
+                );
+            } else {
+                // Three-bin blocks in a non-square raster, with one-bin tails.
+                assert_eq!(
+                    support["longitude_span_degrees"],
+                    serde_json::json!([36.0, 108.0])
+                );
+                assert_eq!(
+                    support["latitude_span_degrees"],
+                    serde_json::json!([45.0, 135.0])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn threshold_contract_mean_and_std_depend_on_source_support() {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_threshold_contract_support_{}.nc",
+            std::process::id()
+        ));
+        let values: Vec<f64> = [0.0, 0.0, 4.0, 4.0, 0.0, 4.0, 2.0, 2.0]
+            .into_iter()
+            .chain([0.0; 8])
+            .flat_map(|value| [value; 2])
+            .collect();
+        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        file.add_dimension("longitude", 16).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        for name in ["lai", "sst", "typhoon"] {
+            file.add_variable::<f64>(name, &["longitude", "latitude"])
+                .unwrap()
+                .put_values(&values, (.., ..))
+                .unwrap();
+        }
+        drop(file);
+        let file = crate::open_netcdf(&path).unwrap();
+        let coarse = HField::uniform(4, 2, 100.0).unwrap();
+        let fine = HField::uniform(8, 2, 100.0).unwrap();
+        for name in ["lai", "sst", "typhoon"] {
+            let parent = read_threshold_stats_on_hfield_for_criteria(
+                &file, name, &coarse, None, None, false,
+            )
+            .unwrap();
+            let child =
+                read_threshold_stats_on_hfield_for_criteria(&file, name, &fine, None, None, false)
+                    .unwrap();
+            assert_eq!((parent.samples[0], child.samples[0]), (4, 2));
+            assert_eq!(
+                (parent.mean[0], child.mean[0], child.mean[2]),
+                (2.0, 0.0, 4.0)
+            );
+            assert_eq!(parent.stddev[0], 2.0, "population, not sample std");
+            assert_eq!((child.stddev[0], child.stddev[2]), (0.0, 0.0));
+            assert!(
+                parent.stddev[2] < 1.75 && child.stddev[4] > 1.75,
+                "fine demand may occur beneath a quiet parent"
+            );
+        }
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn threshold_contract_independent_hits_remain_hard() {
+        let mut field = HField::uniform(4, 2, 100.0).unwrap();
+        let coarse_hits = [true, false, false, false, false, false, false, false];
+        let fine_hits = [false, false, true, false, false, false, false, false];
+        min_with_bool_matrix(&mut field, &coarse_hits, 50.0, None);
+        min_with_bool_matrix(&mut field, &fine_hits, 25.0, None);
+        // A later quiet level is not permission to discard either target.
+        min_with_bool_matrix(&mut field, &[false; 8], 12.5, None);
+        assert_eq!(field.get(0, 0), 50.0);
+        assert_eq!(field.get(1, 0), 25.0);
+        assert_eq!(field.get(0, 1), 100.0);
+    }
+
+    #[test]
     fn std_only_skips_nearest_mean_without_poisoning_shared_cache() {
         // The shared threshold path must not depend on the model domain or LAI.
         for mesh_type in [
@@ -2547,6 +2708,7 @@ mod tests {
             "lai_std",
             2,
             1,
+            50.0,
             "one_shot_target_level",
             &active,
             Some(&samples),

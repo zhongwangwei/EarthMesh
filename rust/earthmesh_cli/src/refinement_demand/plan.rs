@@ -6,13 +6,12 @@
 //! the land-type criteria come off the same raster the carve uses. Each one
 //! produces a [`RefinementDemand`]; the union is what gets reduced to circles.
 //!
-//! The scale matters. A criterion that compares a value against a threshold
-//! (`sst > 28`, `slope > 15`) gives the same answer whatever the cell size, so
-//! evaluating it once is enough. A criterion about what a cell *contains*
-//! (land-cover heterogeneity) does not: how many classes crowd into a cell
-//! depends on how big the cell is, so it is asked again at every level with
-//! that level's cell size. `cell_meters` is what carries that through, and it
-//! is why this takes a scale rather than assuming one.
+//! This adapter's "mean" criterion compares a source-pixel value, not a spatial
+//! mean. That point comparison ignores `cell_meters`; a support-averaged mean
+//! would not. Std and land-cover criteria use scale-dependent source windows.
+//! They are reevaluated at every level: a quiet parent does not imply quiet
+//! children, and a fine-scale quiet result does not erase an earlier demand.
+//! These source windows are also distinct from HField bins and actual mesh cells.
 
 use std::io;
 use std::path::Path;
