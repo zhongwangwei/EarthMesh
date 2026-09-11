@@ -118,6 +118,9 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     let root = temp_root("method_c_hfield_threshold_no_regions");
     let threshold_dir = root.join("threshold");
     fs::create_dir_all(&threshold_dir).expect("create threshold dir");
+    // Keep the NXP-derived parent scale (~12 degrees): each support must
+    // contain several original source samples for this std-driven smoke test.
+    // A 100 km support over 5x10-degree data is empty/singleton, not roughness.
     let src_nlon = 72;
     let src_nlat = 18;
     let hfield_nlon = 36;
@@ -126,7 +129,7 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     for i in 0..src_nlon {
         let lon = -180.0 + (i as f64 + 0.5) * 360.0 / src_nlon as f64;
         for j in 0..src_nlat {
-            let lat = -90.0 + (j as f64 + 0.5) * 180.0 / src_nlat as f64;
+            let lat = 90.0 - (j as f64 + 0.5) * 180.0 / src_nlat as f64;
             if (80.0..=150.0).contains(&lon) && (0.0..=50.0).contains(&lat) {
                 values[i * src_nlat + j] = if i % 2 == 0 { 10.0 } else { 0.0 };
             }
@@ -145,7 +148,7 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_method_c_hfield_threshold'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%threshold_dir='{}'\n  RL%refine_lai_s=.true.\n  RL%th_lai_s=2.0\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_max_level=1\n  NL%hfield_base_m=100000.0\n  NL%hfield_nlon={hfield_nlon}\n  NL%hfield_nlat={hfield_nlat}\n/\n",
+            "&mkgrd\n  NL%EXPNME='case_method_c_hfield_threshold'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.true.\n  RL%max_iter_spc=0\n  RL%max_iter_cal=1\n  RL%threshold_dir='{}'\n  RL%refine_lai_s=.true.\n  RL%th_lai_s=2.0\n/\n&hfield\n  NL%hfield_on=.true.\n  NL%hfield_g=0.2\n  NL%hfield_max_level=1\n  NL%hfield_nlon={hfield_nlon}\n  NL%hfield_nlat={hfield_nlat}\n/\n",
             threshold_dir.display()
         ),
     )
