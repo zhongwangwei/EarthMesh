@@ -58,6 +58,12 @@ only whole triangles inside the region, then applies the land mask. Published
 boundary/topology and triangle angle checks remain separate from the global
 closed-sphere certificate; the raster itself is not geometrically certified.
 
+**Threshold-scope limitation:** a regional output domain does not restrict
+threshold evaluation to that region. Project YAML currently cannot express the
+namelist `mask_refine_cal_*` evaluation window. To preserve such a case exactly,
+run its original namelist and use the standalone exporter below; do not treat a
+global-demand Project run as an equivalent regional-threshold comparison.
+
 ## What is written
 
 - `elmindex(nlat,nlon)` on disk: int32 IDs; CoLM's Fortran NetCDF API reads
