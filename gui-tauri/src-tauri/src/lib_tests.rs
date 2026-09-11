@@ -132,7 +132,7 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/4'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
@@ -143,21 +143,21 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     assert!(!engine::engine_candidate_is_compatible(&stub));
     assert!(engine::engine_candidate_is_compatible(&compatible));
     // Matching package versions are insufficient: the old sidecar cannot parse
-    // sea_ratio even though it reports the same alpha version as the new GUI.
+    // the CoLM delivery schema even though it reports the same alpha version as the new GUI.
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
     .unwrap();
     match engine::inspect_engine_candidate(&compatible) {
         engine::EngineCandidate::Unusable(reason) => {
-            assert!(reason.contains("earthmesh-studio-engine/2"));
+            assert!(reason.contains("earthmesh-studio-engine/4"));
             assert!(reason.contains("earthmesh-studio-engine/3"));
         }
-        _ => panic!("same-version sidecar without sea_ratio support must be rejected"),
+        _ => panic!("same-version sidecar without CoLM delivery schema support must be rejected"),
     }
     let _ = fs::remove_dir_all(root);
 }
@@ -1199,6 +1199,48 @@ fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
     let summary = project_summary(yaml).expect("target summary");
     assert_eq!(summary.target_kind, "ocean");
     assert_eq!(summary.model_format, "CoLM");
+}
+
+#[test]
+fn colm_mesh_delivery_defaults_off_and_setter_persists() {
+    let yaml = preset_yaml("colm_mesh_delivery", MeshIntentPreset::Custom);
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+
+    let yaml = set_colm_mesh_delivery(yaml, true, Some(240)).expect("enable colm mesh");
+    let summary = project_summary(yaml.clone()).expect("summary enabled");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(240));
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+
+    let yaml = set_colm_mesh_delivery(yaml, false, None).expect("disable colm mesh");
+    let summary = project_summary(yaml).expect("summary disabled");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_preserved_and_rejected_for_non_colm_targets() {
+    let base = set_colm_mesh_delivery(
+        preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom),
+        true,
+        Some(120),
+    )
+    .expect("base colm delivery");
+    let edited = preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom);
+    let preserved =
+        preserve_unexposed_project_fields(base.clone(), edited, false).expect("preserve delivery");
+    let summary = project_summary(preserved).expect("summary");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(120));
+
+    let non_colm = set_project_target(base, "ocean".to_string(), "FVCOM".to_string())
+        .expect("switching away from CoLM clears delivery");
+    let summary = project_summary(non_colm).expect("non-colm summary");
+    assert_eq!(summary.model_format, "FVCOM");
+    assert!(!summary.colm_mesh_enabled);
 }
 
 #[test]

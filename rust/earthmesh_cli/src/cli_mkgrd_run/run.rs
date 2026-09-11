@@ -209,6 +209,16 @@ fn run_prepared_mkgrd(
                 .to_string(),
         );
     }
+    if has_explicit_execution_mode
+        && project
+            .as_ref()
+            .is_some_and(|spec| spec.config.delivery.colm_mesh.is_some())
+    {
+        return Err(
+            "project CoLM mesh delivery is available only through the default --project execution path; explicit low-level execution modes do not select the final project gridfile"
+                .to_string(),
+        );
+    }
     if !has_explicit_execution_mode {
         let mut auto_refine_state = project
             .as_ref()
@@ -537,9 +547,11 @@ fn run_prepared_mkgrd(
                 }
             }
         };
+        let mut selected_project_gridfile =
+            final_gridfile(&report).map(std::path::Path::to_path_buf);
         if let Some(spec) = project.as_ref() {
             if spec.config.hydro_execution_plan()?.is_some() {
-                let gridfile = final_gridfile(&report).ok_or_else(|| {
+                let gridfile = selected_project_gridfile.as_deref().ok_or_else(|| {
                     "project hydro closed loop requires a completed gridfile-producing run"
                         .to_string()
                 })?;
@@ -565,6 +577,7 @@ fn run_prepared_mkgrd(
                     "earthmesh_cli: project hydro final gridfile={}",
                     closed.final_gridfile.display()
                 );
+                selected_project_gridfile = Some(closed.final_gridfile.clone());
                 if spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::Block
                     && closed.final_coupling_quality_verdict.as_deref() == Some("fail")
                 {
@@ -579,7 +592,7 @@ fn run_prepared_mkgrd(
                 }
             }
             if spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::Block {
-                let gridfile = final_gridfile(&report).ok_or_else(|| {
+                let gridfile = selected_project_gridfile.as_deref().ok_or_else(|| {
                     "project quality block policy requires a completed gridfile-producing run"
                         .to_string()
                 })?;
@@ -590,6 +603,27 @@ fn run_prepared_mkgrd(
                 )?
                 .verdict;
                 enforce_project_quality_policy(spec.config.quality.on_violation, verdict)?;
+            }
+            if let Some(gridfile) = selected_project_gridfile.as_deref() {
+                if let Some(report) = write_project_colm_mesh_delivery(&spec.config, gridfile)? {
+                    let pixels_per_degree = spec
+                        .config
+                        .delivery
+                        .colm_mesh
+                        .as_ref()
+                        .map(|delivery| delivery.pixels_per_degree)
+                        .unwrap_or_default();
+                    println!("colm_mesh_input={}", report.output.display());
+                    println!(
+                        "colm_mesh_pixels_per_degree={} colm_mesh_shape={}x{} cells={} assigned_pixels={}",
+                        pixels_per_degree, report.nlon, report.nlat, report.cells, report.assigned_pixels
+                    );
+                }
+            } else if spec.config.delivery.colm_mesh.is_some() {
+                return Err(
+                    "project CoLM mesh delivery requested but no final project gridfile was selected"
+                        .to_string(),
+                );
             }
         }
         if !quiet {
@@ -927,6 +961,78 @@ fn record_auto_refine_decision(
     Ok(())
 }
 
+fn project_colm_mesh_kind(
+    config: &earthmesh_project::ProjectConfig,
+) -> Result<Option<earthmesh_cli::unstructured_mesh_support::GridfileCellKind>, String> {
+    let Some(_colm_mesh) = &config.delivery.colm_mesh else {
+        return Ok(None);
+    };
+    if config.target.model_format != earthmesh_project::ModelFormat::CoLM {
+        return Err("delivery colm_mesh requires target.model_format=CoLM".to_string());
+    }
+    Ok(Some(match config.target.cell {
+        earthmesh_project::MeshCellKind::Tri => {
+            earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Tri
+        }
+        earthmesh_project::MeshCellKind::Hex => {
+            earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex
+        }
+    }))
+}
+
+fn project_colm_mesh_output_path(gridfile: &std::path::Path) -> std::path::PathBuf {
+    let directory = gridfile
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = gridfile
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("gridfile");
+    directory
+        .join("standard")
+        .join(format!("CoLM_{stem}_mesh.nc"))
+}
+
+fn write_project_colm_mesh_delivery(
+    config: &earthmesh_project::ProjectConfig,
+    gridfile: &std::path::Path,
+) -> Result<Option<earthmesh_cli::colm_mesh_input::ColmMeshInputReport>, String> {
+    let Some(kind) = project_colm_mesh_kind(config)? else {
+        return Ok(None);
+    };
+    let colm_mesh = config
+        .delivery
+        .colm_mesh
+        .as_ref()
+        .expect("kind is present only when colm delivery is configured");
+    if colm_mesh.pixels_per_degree == 0 {
+        return Err("delivery colm_mesh pixels_per_degree must be positive".to_string());
+    }
+    let output = project_colm_mesh_output_path(gridfile);
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "create CoLM mesh delivery directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    earthmesh_cli::colm_mesh_input::write_colm_mesh_from_gridfile_with_kind(
+        gridfile,
+        &output,
+        colm_mesh.pixels_per_degree,
+        kind,
+    )
+    .map(Some)
+    .map_err(|err| {
+        format!(
+            "write CoLM mesh input from selected project gridfile {} at {} px/degree: {err}",
+            gridfile.display(),
+            colm_mesh.pixels_per_degree
+        )
+    })
+}
+
 pub(crate) fn enforce_project_quality_policy(
     policy: earthmesh_project::ViolationPolicy,
     verdict: earthmesh_quality::QualityLevel,
@@ -946,10 +1052,55 @@ pub(crate) fn enforce_project_quality_policy(
 mod tests {
     use super::*;
     use earthmesh_project::{
-        DomainConfig, MeshIntentPreset, ProjectConfig, RefinementBackend, ResolutionSpec,
-        ViolationPolicy,
+        ColmMeshDeliveryConfig, DomainConfig, MeshCellKind, MeshIntentPreset, ModelFormat,
+        ProjectConfig, RefinementBackend, ResolutionSpec, ViolationPolicy,
     };
     use earthmesh_quality::QualityLevel;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    static NETCDF_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write_tiny_hex_gridfile(path: &Path) {
+        let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
+        for (name, length) in [
+            ("sjx_points", 4),
+            ("lbx_points", 1),
+            ("dimb", 3),
+            ("dimc", 4),
+        ] {
+            file.add_dimension(name, length).unwrap();
+        }
+        file.add_variable::<f64>("GLONM", &["sjx_points"])
+            .unwrap()
+            .put_values(&[100.0, 104.0, 104.0, 100.0], ..)
+            .unwrap();
+        file.add_variable::<f64>("GLATM", &["sjx_points"])
+            .unwrap()
+            .put_values(&[20.0, 20.0, 22.0, 22.0], ..)
+            .unwrap();
+        file.add_variable::<f64>("GLONW", &["lbx_points"])
+            .unwrap()
+            .put_values(&[102.0], ..)
+            .unwrap();
+        file.add_variable::<f64>("GLATW", &["lbx_points"])
+            .unwrap()
+            .put_values(&[21.0], ..)
+            .unwrap();
+        file.add_variable::<i32>("itab_m%iw", &["sjx_points", "dimb"])
+            .unwrap()
+            .put_values(&[1; 12], ..)
+            .unwrap();
+        file.add_variable::<i32>("itab_w%im", &["lbx_points", "dimc"])
+            .unwrap()
+            .put_values(&[1, 2, 3, 4], ..)
+            .unwrap();
+        file.add_variable::<i32>("n_ngrwm", &["lbx_points"])
+            .unwrap()
+            .put_values(&[4], ..)
+            .unwrap();
+        file.close().unwrap();
+    }
 
     #[test]
     fn project_block_policy_rejects_failed_quality() {
@@ -982,6 +1133,124 @@ mod tests {
         let err = enforce_project_quality_policy(ViolationPolicy::AutoRefine, QualityLevel::Fail)
             .unwrap_err();
         assert!(err.contains("on_violation=auto_refine"), "{err}");
+    }
+
+    #[test]
+    fn project_colm_mesh_delivery_is_opt_in_and_uses_target_cell_kind() {
+        let mut project = ProjectConfig::scaffold(
+            "colm_kind",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        assert_eq!(project_colm_mesh_kind(&project).unwrap(), None);
+
+        project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: 240,
+        });
+        project.quality.on_violation = ViolationPolicy::Warn;
+        project.target.cell = MeshCellKind::Hex;
+        assert_eq!(
+            project_colm_mesh_kind(&project).unwrap(),
+            Some(earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex)
+        );
+
+        project.target.cell = MeshCellKind::Tri;
+        assert_eq!(
+            project_colm_mesh_kind(&project).unwrap(),
+            Some(earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Tri)
+        );
+    }
+
+    #[test]
+    fn project_colm_mesh_delivery_rejects_non_colm_and_names_standard_output() {
+        let mut project = ProjectConfig::scaffold(
+            "colm_kind",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: 240,
+        });
+        project.target.model_format = ModelFormat::Fvcom;
+        assert!(project_colm_mesh_kind(&project)
+            .unwrap_err()
+            .contains("target.model_format=CoLM"));
+
+        let path = project_colm_mesh_output_path(std::path::Path::new(
+            "/tmp/run/gridfile_NXP0040_hex_landmesh.nc4",
+        ));
+        assert_eq!(
+            path,
+            std::path::Path::new("/tmp/run/standard/CoLM_gridfile_NXP0040_hex_landmesh_mesh.nc")
+        );
+    }
+
+    #[test]
+    fn project_colm_mesh_delivery_writes_tiny_final_gridfile_next_to_selected_path() {
+        let _guard = NETCDF_TEST_LOCK.lock().expect("netcdf lock");
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_colm_delivery_write_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let gridfile = root.join("final_selected.nc4");
+        write_tiny_hex_gridfile(&gridfile);
+        let mut project = ProjectConfig::scaffold(
+            "colm_write",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: 1,
+        });
+        project.quality.on_violation = ViolationPolicy::Warn;
+        let report = write_project_colm_mesh_delivery(&project, &gridfile)
+            .expect("delivery write")
+            .expect("delivery enabled");
+        let expected = root.join("standard/CoLM_final_selected_mesh.nc");
+        assert_eq!(report.output, expected);
+        assert!(expected.is_file());
+        assert_eq!(report.cells, 1);
+        assert!(report.assigned_pixels > 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_colm_mesh_delivery_rejects_explicit_low_level_modes() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cli_colm_delivery_low_level_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "colm_low_level",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(40),
+        );
+        project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: 240,
+        });
+        project.quality.on_violation = ViolationPolicy::Warn;
+        let path = root.join("project.yaml");
+        fs::write(&path, project.to_yaml().unwrap()).unwrap();
+
+        let err = run_mkgrd_or_project(
+            "--project".into(),
+            vec![
+                path.to_string_lossy().into_owned(),
+                "--run-refine-passthrough".into(),
+            ]
+            .into_iter(),
+        )
+        .unwrap_err();
+        assert!(err.contains("CoLM mesh delivery"), "{err}");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

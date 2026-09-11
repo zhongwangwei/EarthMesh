@@ -795,6 +795,8 @@ function renderStep(i){
           ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"所有模型均可选择；不兼容时仍保存通用网格":"all models remain selectable; incompatible adapters fall back to grid-only")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
           ${field(lang?"交付状态":"Delivery",`<b id="targetDeliveryOutput" style="font-size:15px"></b>`,lang?"通用 EarthMesh gridfile 始终保存":"canonical EarthMesh gridfile is always saved")}
+          <div id="colmMeshDeliveryControls">${field(lang?"CoLM 网格输入":"CoLM mesh input",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="colmMeshEnabled"> <span>${lang?"导出 CoLM mesh NetCDF":"Export CoLM mesh NetCDF"}</span></label>`,lang?"显式开启；不从阈值源分辨率推断":"explicit opt-in; not inferred from threshold source resolution")}
+          ${field(lang?"栅格分辨率 (像素/度)":"Raster resolution (px/degree)",`<input class="input" id="colmMeshPixelsPerDegree" type="number" min="1" step="1" value="240">`,lang?"建议 240；开启后必须为正整数":"suggested 240; required positive integer when enabled")}</div>
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 基础网格构造":"EXPERT — base mesh construction"}</span>
@@ -2091,6 +2093,7 @@ if(MAP_WINDOW_MODE){
   let hydroRefine = defaultHydroRefine();
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
+  let colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
   const defaultAlgorithmControls = () => ({
     leppMaxCycles: METHOD_C_DEFAULTS.max_cycles,
@@ -2235,6 +2238,16 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (cellEdit) {
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
+    const selectedModelForDelivery = (targetEdit && targetEdit.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
+    const colmDeliveryEnabled = selectedModelForDelivery === "CoLM" && !!colmMeshDelivery.enabled;
+    if (colmDeliveryEnabled && !(Number.isInteger(colmMeshDelivery.pixelsPerDegree) && colmMeshDelivery.pixelsPerDegree > 0)) {
+      throw new Error(zh() ? "CoLM mesh 栅格分辨率必须为正整数" : "CoLM mesh pixels/degree must be a positive integer");
+    }
+    yaml = await invoke("set_colm_mesh_delivery", {
+      yaml,
+      enabled: colmDeliveryEnabled,
+      pixelsPerDegree: colmDeliveryEnabled ? colmMeshDelivery.pixelsPerDegree : null
+    });
     const layerIds = Object.keys(layerEdits).sort((a,b) => Number(!!layerEdits[b].enabled) - Number(!!layerEdits[a].enabled));
     for (const id of layerIds) {
       const e = layerEdits[id];
@@ -2349,6 +2362,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     summary:    (yaml) => invoke("project_summary", { yaml }),
     setProjectTarget: (yaml, kind, modelFormat) => invoke("set_project_target", { yaml, kind, modelFormat }),
     setTargetCell: (yaml, cell) => invoke("set_target_cell", { yaml, cell }),
+    setColmMeshDelivery: (yaml, enabled, pixelsPerDegree) => invoke("set_colm_mesh_delivery", { yaml, enabled, pixelsPerDegree }),
     setThresholdCriterion: (yaml, id, enabled, value) => invoke("set_threshold_criterion", { yaml, id, enabled, value }),
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
     setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
@@ -3440,6 +3454,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (matchingTpl >= 0) tpl = matchingTpl;
       targetEdit = { kind: sum.target_kind, modelFormat: sum.model_format };
       cellEdit = String(sum.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
+      colmMeshDelivery = { enabled: !!sum.colm_mesh_enabled, pixelsPerDegree: sum.colm_mesh_pixels_per_degree || 240 };
       if (sum.nxp != null) { resUnitIdx = 1; resVal = sum.nxp; }
       else if (sum.approx_degree != null) { resUnitIdx = 2; resVal = sum.approx_degree; }
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
@@ -3603,6 +3618,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     for (const k of Object.keys(criterionEdits)) delete criterionEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
+    colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
@@ -3689,6 +3705,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         : (zh() ? `仅 EarthMesh 网格（跳过 ${model} 专用输出）` : `EarthMesh grid only (${model} adapter skipped)`);
       deliveryIn.title = status === "full" ? "" : (skipped || "");
     }
+    const colmControls = document.getElementById("colmMeshDeliveryControls");
+    const colmEnabled = document.getElementById("colmMeshEnabled");
+    const colmPpd = document.getElementById("colmMeshPixelsPerDegree");
+    if (colmControls) colmControls.style.display = model === "CoLM" ? "" : "none";
+    if (colmEnabled) colmEnabled.checked = !!colmMeshDelivery.enabled;
+    if (colmPpd) { colmPpd.value = colmMeshDelivery.pixelsPerDegree ?? 240; colmPpd.disabled = !colmMeshDelivery.enabled; colmPpd.setCustomValidity(""); }
     if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
     if (ready) ready.textContent = model;
     if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
@@ -3782,6 +3804,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const models = compatibleTargetModels();
         const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
         targetEdit = { kind: kind, modelFormat: currentModel };
+        if (currentModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());
       };
@@ -3790,7 +3813,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       modelIn.onchange = async () => {
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
         const models = compatibleTargetModels();
-        targetEdit = { kind: kind, modelFormat: models.includes(modelIn.value) ? modelIn.value : models[0] };
+        const nextModel = models.includes(modelIn.value) ? modelIn.value : models[0];
+        targetEdit = { kind: kind, modelFormat: nextModel };
+        if (nextModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
         clearRunArtifacts();
         paintTargetOutputs(await refreshSummary());
       };
@@ -3802,6 +3827,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         paintTargetOutputs(await refreshSummary());
       };
     }
+    const colmEnabled = document.getElementById("colmMeshEnabled");
+    const colmPpd = document.getElementById("colmMeshPixelsPerDegree");
+    const syncColm = async () => {
+      const enabled = !!(colmEnabled && colmEnabled.checked);
+      const text = colmPpd ? colmPpd.value.trim() : "240";
+      const value = Number(text);
+      const valid = Number.isInteger(value) && value > 0;
+      if (colmPpd) colmPpd.setCustomValidity(enabled && !valid ? (zh()?"请输入正整数":"Enter a positive integer") : "");
+      colmMeshDelivery = { enabled, pixelsPerDegree: valid ? value : null };
+      clearRunArtifacts();
+      if (enabled && !valid) return;
+      paintTargetOutputs(await refreshSummary());
+    };
+    if (colmEnabled) colmEnabled.onchange = syncColm;
+    if (colmPpd) { colmPpd.oninput = syncColm; colmPpd.onchange = syncColm; }
     const s = await refreshSummary();
     paintTargetOutputs(s);
     wireExpertTargetStep();

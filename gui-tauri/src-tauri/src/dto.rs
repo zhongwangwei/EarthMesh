@@ -112,6 +112,10 @@ pub(crate) struct ProjectSummary {
     pub(crate) delivery_status: String,
     /// Why the specialized writer is skipped, when it is.
     pub(crate) delivery_skipped_reason: Option<String>,
+    /// Project-level opt-in CoLM mesh raster handoff.
+    pub(crate) colm_mesh_enabled: bool,
+    /// Explicit CoLM mesh raster pixels per degree when enabled.
+    pub(crate) colm_mesh_pixels_per_degree: Option<usize>,
     pub(crate) domain: String,
     pub(crate) domain_shape: String,
     pub(crate) nxp: Option<i32>,

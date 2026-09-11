@@ -2,9 +2,9 @@
 
 use earthmesh_project::{
     criterion_catalog, default_mask_sea_ratio, threshold_criterion_by_id, CloseBoundaryMode,
-    CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
-    MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
-    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
+    CloseMaskFormat, ColmMeshDeliveryConfig, DomainConfig, HfieldRefinementRecipe,
+    HydroCoastConfig, MeshCellKind, MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole,
+    RegionShape, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
     SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
     LANDCOVER_CRITERION_ID, SEA_RATIO_CRITERION_ID,
 };
@@ -291,6 +291,9 @@ pub(crate) fn set_project_target(
     if cfg.target.kind != MeshDomainKind::Coupled {
         cfg.coupling = None;
     }
+    if cfg.target.model_format != ModelFormat::CoLM {
+        cfg.delivery.colm_mesh = None;
+    }
     validated_yaml(cfg)
 }
 
@@ -302,6 +305,25 @@ pub(crate) fn set_target_cell(yaml: String, cell: String) -> Result<String, Stri
         "hex" => MeshCellKind::Hex,
         "tri" => MeshCellKind::Tri,
         other => return Err(format!("unknown cell shape '{other}'")),
+    };
+    validated_yaml(cfg)
+}
+
+/// Set or clear the opt-in CoLM mesh raster delivery.
+#[tauri::command]
+pub(crate) fn set_colm_mesh_delivery(
+    yaml: String,
+    enabled: bool,
+    pixels_per_degree: Option<usize>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.delivery.colm_mesh = if enabled {
+        Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: pixels_per_degree
+                .ok_or_else(|| "CoLM mesh delivery requires pixels_per_degree".to_string())?,
+        })
+    } else {
+        None
     };
     validated_yaml(cfg)
 }

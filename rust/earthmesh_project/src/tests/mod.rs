@@ -24,6 +24,7 @@ fn sample() -> ProjectConfig {
             resolution: ResolutionSpec::Nxp(40),
             model_format: ModelFormat::CoLM,
         },
+        delivery: ProjectDeliveryConfig::default(),
         data_layers: vec![
             ProjectDataLayer {
                 id: "lc".into(),
@@ -628,6 +629,76 @@ fn every_target_and_model_pairing_is_accepted_and_says_what_it_delivers() {
     let triple = ProjectTargetTriple::from(&p.target);
     assert_eq!(triple.output_delivery(), ProjectOutputDelivery::Full);
     assert_eq!(triple.skipped_adapter_reason(), None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_opt_in_and_round_trips() {
+    let legacy = sample().to_yaml().expect("yaml");
+    assert!(!legacy.contains("colm_mesh"));
+    let parsed = ProjectConfig::from_yaml(&legacy).expect("legacy delivery absent");
+    assert_eq!(parsed.delivery.colm_mesh, None);
+
+    let mut project = sample();
+    project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    let yaml = project.to_yaml().expect("yaml");
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+    assert_eq!(
+        yaml_round_trip(&project).delivery.colm_mesh,
+        project.delivery.colm_mesh
+    );
+}
+
+#[test]
+fn colm_mesh_delivery_requires_explicit_positive_resolution_and_colm_target() {
+    let missing = r#"
+schema_version: 3.0.0
+metadata:
+  name: bad_colm_mesh
+domain: Global
+target:
+  kind: Land
+  cell: Hex
+  intent: Custom
+  resolution: !Nxp 40
+  model_format: CoLM
+delivery:
+  colm_mesh: {}
+"#;
+    assert!(ProjectConfig::from_yaml(missing)
+        .unwrap_err()
+        .contains("missing field `pixels_per_degree`"));
+
+    let mut zero = sample();
+    zero.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 0,
+    });
+    assert!(yaml_err(&zero).contains("pixels_per_degree must be positive"));
+
+    let mut non_colm = sample();
+    non_colm.target.model_format = ModelFormat::Fvcom;
+    non_colm.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    assert!(yaml_err(&non_colm).contains("target.model_format=CoLM"));
+}
+
+#[test]
+fn colm_mesh_delivery_does_not_change_lowered_source_resolution() {
+    let mut base = sample();
+    let before = base.try_lower().expect("lower without delivery");
+    base.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 7,
+    });
+    let after = base.try_lower().expect("lower with delivery");
+    assert_eq!(
+        after.mkgrd.gridnum_perdegree,
+        before.mkgrd.gridnum_perdegree
+    );
+    assert_eq!(after.mkgrd.nxp, before.mkgrd.nxp);
+    assert_eq!(after.to_namelist(), before.to_namelist());
 }
 
 #[test]

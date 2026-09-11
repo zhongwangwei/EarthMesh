@@ -46,6 +46,7 @@ impl ProjectConfig {
         }
         self.domain.validate()?;
         self.target.validate()?;
+        self.validate_delivery()?;
         self.validate_data_layers()?;
         self.validate_landtype_requirements()?;
         self.refinement.validate()?;
@@ -107,6 +108,18 @@ impl ProjectConfig {
     fn validated(config: Self) -> Result<Self, String> {
         config.validate()?;
         Ok(config)
+    }
+
+    fn validate_delivery(&self) -> Result<(), String> {
+        if let Some(colm_mesh) = &self.delivery.colm_mesh {
+            if colm_mesh.pixels_per_degree == 0 {
+                return Err("delivery colm_mesh pixels_per_degree must be positive".to_string());
+            }
+            if self.target.model_format != crate::ModelFormat::CoLM {
+                return Err("delivery colm_mesh requires target.model_format=CoLM".to_string());
+            }
+        }
+        Ok(())
     }
 
     fn validate_data_layers(&self) -> Result<(), String> {

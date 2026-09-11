@@ -308,6 +308,12 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         delivery_skipped_reason: target_triple
             .skipped_adapter_reason()
             .map(|reason| reason.to_string()),
+        colm_mesh_enabled: cfg.delivery.colm_mesh.is_some(),
+        colm_mesh_pixels_per_degree: cfg
+            .delivery
+            .colm_mesh
+            .as_ref()
+            .map(|delivery| delivery.pixels_per_degree),
         domain: domain.to_string(),
         domain_shape: domain_shape.to_string(),
         nxp,

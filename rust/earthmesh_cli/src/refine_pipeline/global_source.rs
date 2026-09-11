@@ -2134,6 +2134,30 @@ fn publish_certified_domain_gridfile(
             None
         };
         (None, fvcom)
+    } else if let (Some(region @ GridRegion::Close { .. }), "landmesh", "tri") =
+        (domain_region, mesh_type, mode_grid)
+    {
+        fs::create_dir_all(workdir)?;
+        let regional_gridfile = workdir.join("whole_regional_tri.nc4");
+        crate::regional_gridfile_writers::write_regional_gridfile(
+            source_gridfile,
+            &regional_gridfile,
+            region,
+            "tri",
+        )?;
+        let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+            &regional_gridfile,
+            output_gridfile,
+            &config.landtype_file,
+            gridnum_perdegree,
+            "tri",
+            "landmesh",
+            None,
+            None,
+            false,
+            None,
+        )?;
+        (Some(kept), None)
     } else {
         let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
             source_gridfile,
@@ -2299,7 +2323,7 @@ fn run_certified_pipeline(
         .flatten();
     let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
     let regional_land_colm = config.mesh_type.trim() == "landmesh"
-        && config.mode_grid.trim() == "hex"
+        && matches!(config.mode_grid.trim(), "hex" | "tri")
         && config.output_format.trim().eq_ignore_ascii_case("CoLM")
         && matches!(regional_domain, Some(GridRegion::Close { .. }));
     if regional_domain.is_some()
@@ -2314,7 +2338,7 @@ fn run_certified_pipeline(
         )
     {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "CMRC regional publication supports oceanmesh/tri or landmesh/hex/CoLM with a single close polygon only"));
+            "CMRC regional publication supports oceanmesh/tri or landmesh/{hex,tri}/CoLM with a single close polygon only"));
     }
     if is_domain_export
         && !(crate::namelist_sets_landtype_file(contents)

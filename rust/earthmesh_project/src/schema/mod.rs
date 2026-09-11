@@ -27,6 +27,10 @@ pub struct ProjectConfig {
     pub metadata: ProjectMetadata,
     pub domain: DomainConfig,
     pub target: MeshTargetConfig,
+    /// Optional model-specific delivery artifacts requested in addition to the
+    /// canonical EarthMesh gridfile. Absence means no extra delivery.
+    #[serde(default)]
+    pub delivery: ProjectDeliveryConfig,
     #[serde(default)]
     pub data_layers: Vec<ProjectDataLayer>,
     #[serde(default)]
@@ -237,6 +241,24 @@ pub enum ModelFormat {
     MpasOcean,
     MpasSimple,
     Fvcom,
+}
+
+// ----------------------------- delivery -----------------------------
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectDeliveryConfig {
+    /// Optional CoLM unstructured mesh raster handoff. Absence means disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colm_mesh: Option<ColmMeshDeliveryConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColmMeshDeliveryConfig {
+    /// Explicit output raster resolution in pixels per degree. This is a
+    /// delivery raster setting, independent of threshold/source rasters.
+    pub pixels_per_degree: usize,
 }
 
 // ----------------------------- data layers -----------------------------

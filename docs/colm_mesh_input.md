@@ -21,6 +21,43 @@ supported generators.
 It does not regenerate the mesh, change its angles, or extend an existing
 `certified_ready` certificate to the raster.
 
+## Project-level delivery
+
+Project YAML can request this handoff explicitly for CoLM targets:
+
+```yaml
+delivery:
+  colm_mesh:
+    pixels_per_degree: 240
+```
+
+`delivery.colm_mesh` is opt-in. When the block is absent or null, EarthMesh
+does not write a CoLM mesh input. When present, `pixels_per_degree` must be an
+explicit positive integer; the GUI leaves the checkbox off by default and only
+suggests `240` after the user enables it. This raster resolution is independent
+of threshold rasters, landtype source resolution, and the refinement source-grid
+resolution used during project lowering.
+
+The project path writes the CoLM mesh only after the final native grid has passed
+regional selection, AutoRefine/hydro processing, and the configured quality block
+policy. It uses the final selected gridfile, including hydro's
+`closed.final_gridfile` when that differs from the initial gridfile, and fails
+the requested delivery if no final gridfile is available. CoLM delivery is valid
+only for `target.model_format: CoLM`; non-CoLM project targets reject the setting, and
+the GUI clears it when switching away from CoLM.
+
+The exported topology comes from `target.cell`: `Tri` selects native M triangles
+and `Hex` selects native W polygons. The project path does not infer topology
+from filenames and does not convert between triangles and hexagons. Successful
+project runs print `colm_mesh_input=<path>` and write the file next to the final
+grid under `standard/CoLM_<grid_stem>_mesh.nc`.
+
+For regional CMRC land/CoLM projects, both `Tri` and `Hex` support a single
+close polygon. The triangle path coarsens the global mother mesh first, keeps
+only whole triangles inside the region, then applies the land mask. Published
+boundary/topology and triangle angle checks remain separate from the global
+closed-sphere certificate; the raster itself is not geometrically certified.
+
 ## What is written
 
 - `elmindex(nlat,nlon)` on disk: int32 IDs; CoLM's Fortran NetCDF API reads

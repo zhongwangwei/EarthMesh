@@ -543,6 +543,20 @@ check(
 );
 log("target kind/model are editable canonical state");
 
+check(
+  html.includes('id="colmMeshDeliveryControls"') &&
+    html.includes('id="colmMeshEnabled"') &&
+    html.includes('id="colmMeshPixelsPerDegree"') &&
+    html.includes('invoke("set_colm_mesh_delivery"') &&
+    html.includes("setColmMeshDelivery:") &&
+    html.includes("selectedModelForDelivery === \"CoLM\"") &&
+    html.includes("Number.isInteger(colmMeshDelivery.pixelsPerDegree)") &&
+    html.includes('if (nextModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 }') &&
+    libRs.includes("set_colm_mesh_delivery,"),
+  "CoLM mesh delivery UI must be backed by a registered Tauri IPC command",
+);
+log("CoLM mesh delivery command is wired and model-gated");
+
 {
   const compose = section(html, /async function composeYaml\(\) \{([\s\S]*?)\n  \}/, "composeYaml body");
   const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");

@@ -177,7 +177,7 @@ It is off by default. The threshold `t` is a fraction in `0 ≤ t < 0.5` (defaul
 `0.05`): refine where ocean share is strictly between `t` and `1−t` (5%–95% by
 default). `0` selects any mixed land/ocean neighbourhood; pure land and pure
 ocean do not qualify. This does not change the domain's sea/land masking ratio.
-Studio requires engine protocol `earthmesh-studio-engine/3` for this criterion;
+Studio requires engine protocol `earthmesh-studio-engine/4` for this criterion;
 older sidecars are rejected even when their package version is identical.
 
 Clicking **Run** spawns the mesh generator. **No setup needed if you've built the
