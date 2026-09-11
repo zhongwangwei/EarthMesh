@@ -343,16 +343,24 @@ impl ProjectConfig {
                     .into(),
             );
         }
-        let supported = self.refinement.backend == crate::RefinementBackend::Certified
-            || (self.refinement.backend == crate::RefinementBackend::MethodC
-                && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
-                && self
-                    .refinement
+        let supported = match self.refinement.backend {
+            crate::RefinementBackend::Certified => true,
+            crate::RefinementBackend::MethodC
+                if self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical =>
+            {
+                self.refinement
                     .hfield
                     .as_ref()
-                    .is_some_and(|recipe| recipe.enabled));
+                    .is_some_and(|recipe| recipe.enabled)
+            }
+            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => self
+                .refinement
+                .adaptive
+                .as_ref()
+                .is_none_or(|recipe| recipe.enabled),
+        };
         if !supported {
-            return Err("refinement.threshold_region requires Certified or canonical MethodC with hfield; other routes cannot separate evaluation masks from hard refinement regions".into());
+            return Err("refinement.threshold_region requires Certified, canonical MethodC with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled".into());
         }
         Ok(())
     }

@@ -2464,19 +2464,85 @@ fn active_threshold_region_replays_through_canonical_method_c_hfield_before_enab
 }
 
 #[test]
-fn active_threshold_region_rejects_unsupported_backend_on_activation() {
-    let yaml = preserved_active_threshold_region_compose_base("active_region_unsupported_replay");
-    let yaml = set_refinement_backend(yaml, "red_green".to_string())
-        .expect("unsupported backend selectable while threshold region is dormant");
-    let error = set_refinement(yaml, true, true, 1)
-        .expect_err("activation must reject unsupported threshold-region backend");
-
-    assert!(
-        error.contains(
-            "refinement.threshold_region requires Certified or canonical MethodC with hfield"
+fn active_threshold_region_replays_through_adaptive_backends_before_enable() {
+    for (name, backend, expected_backend, expected_algorithm) in [
+        (
+            "red_green",
+            "red_green",
+            earthmesh_project::RefinementBackend::RedGreen,
+            earthmesh_project::MethodCAlgorithm::Canonical,
         ),
-        "{error}"
-    );
+        (
+            "lepp_delaunay",
+            "lepp_delaunay",
+            earthmesh_project::RefinementBackend::MethodC,
+            earthmesh_project::MethodCAlgorithm::LeppDelaunay,
+        ),
+    ] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{name}_adaptive_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, true, Some(2), Some(true))
+            .unwrap_or_else(|error| panic!("{name}: adaptive route before activation: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{name}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{name}: backend before activation: {error}"));
+        let yaml = set_refinement(yaml, true, true, 1)
+            .unwrap_or_else(|error| panic!("{name}: activate threshold region: {error}"));
+        let saved = validate_project(yaml)
+            .unwrap_or_else(|error| panic!("{name}: canonical save serialization: {error}"));
+        let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+        assert_eq!(cfg.refinement.backend, expected_backend, "{name}");
+        assert_eq!(
+            cfg.refinement.method_c.algorithm, expected_algorithm,
+            "{name}"
+        );
+        assert!(
+            cfg.refinement
+                .adaptive
+                .as_ref()
+                .is_some_and(|adaptive| adaptive.enabled),
+            "{name}: adaptive route should remain enabled"
+        );
+        assert!(
+            cfg.refinement
+                .hfield
+                .as_ref()
+                .is_none_or(|hfield| !hfield.enabled),
+            "{name}: h-field must stay inactive for adaptive replay"
+        );
+        assert!(cfg.refinement.enabled, "{name}");
+        assert!(cfg.refinement.threshold_enabled, "{name}");
+        assert!(matches!(
+            cfg.refinement.threshold_region,
+            Some(RegionShape::Close { .. })
+        ));
+    }
+}
+
+#[test]
+fn active_threshold_region_rejects_adaptive_backends_when_adaptive_is_off() {
+    for backend in ["red_green", "lepp_delaunay"] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{backend}_adaptive_off_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, false, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: adaptive off replay: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{backend}: backend before activation: {error}"));
+        let error = set_refinement(yaml, true, true, 1)
+            .expect_err("activation must reject adaptive backend with adaptive off");
+
+        assert!(
+            error.contains("refinement.threshold_region"),
+            "{backend}: {error}"
+        );
+        assert!(error.contains("adaptive"), "{backend}: {error}");
+    }
 }
 
 #[test]

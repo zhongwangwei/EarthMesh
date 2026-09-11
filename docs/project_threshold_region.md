@@ -64,14 +64,24 @@ imports retain the existing polygon-reader acceptance rules.
 | Certified / CMRC | Supported |
 | Method-C canonical with enabled HField | Supported |
 | Method-C canonical without HField | Rejected |
-| Method-C LEPP-Delaunay | Rejected |
-| RedGreen | Rejected |
+| Method-C LEPP-Delaunay with adaptive enabled | Supported |
+| RedGreen with adaptive enabled | Supported |
+| RedGreen / LEPP-Delaunay with adaptive disabled | Rejected |
 
-The last three routes still overload calculated masks as named hard regions.
-Their existing unscoped/named-refinement behavior is unchanged. Supporting this
-field on them requires separating that adapter contract first, not weakening
-the Project gate. Land, atmosphere and ocean use the same field and criteria
-pipeline; no case-specific region is hard-coded.
+For RedGreen and LEPP-Delaunay, an omitted `adaptive` recipe defaults to enabled;
+`adaptive.enabled: false` explicitly disables the statistical demand consumer.
+Canonical Method-C without HField still has no supported criteria-driven loop.
+Land, atmosphere and ocean use the same field and criteria pipeline; no
+case-specific region is hard-coded.
+
+Both adaptive routes reuse the shared statistical-support mask. In raw NML,
+when statistical criteria and an adaptive/HField consumer are active, calculated
+regions with degree zero are evaluation windows, not additional hard demands.
+Positive-degree calculated regions remain hard demands. Without statistical
+sources or without either consumer, the legacy reader still interprets degree
+zero as the maximum configured hard-refinement level, where that route is valid.
+Callers that relied on the former adaptive double consumption must use a
+positive degree or `specified_*` for an independent hard requirement.
 
 ## Staging and failure behavior
 

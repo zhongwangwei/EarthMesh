@@ -478,9 +478,9 @@ pub fn run_refine_pipeline_namelist(
     let domain_region = read_method_c_domain_region(&config)?;
     let use_hfield_regions = active_hfield_options.is_some();
     let mesh_type = config.mesh_type.trim();
-    let has_threshold_hfield_sources = use_hfield_regions
-        && refine.refine_cal
-        && crate::hfield_refine::has_threshold_hfield_sources(&refine, mesh_type);
+    let has_threshold_sources =
+        refine.refine_cal && crate::hfield_refine::has_threshold_hfield_sources(&refine, mesh_type);
+    let has_threshold_hfield_sources = use_hfield_regions && has_threshold_sources;
     // Whether *some* backend is going to consume the criteria itself. The
     // legacy calculated-region reader must stand down for either of them, not
     // just for the h-field: with the point+radius route the criteria are the
@@ -607,7 +607,9 @@ pub fn run_refine_pipeline_namelist(
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,
             max_cal_level,
-            has_threshold_hfield_sources,
+            // The shared statistical planner owns degree-zero evaluation
+            // windows; do not also inject them as hard refinement regions.
+            has_threshold_sources && (use_hfield_regions || adaptive_options.is_some()),
         )?);
     }
     if regions.is_empty()

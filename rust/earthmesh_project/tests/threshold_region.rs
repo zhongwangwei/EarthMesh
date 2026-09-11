@@ -118,24 +118,46 @@ fn threshold_region_geometry_is_validated_even_when_refinement_is_disabled() {
 }
 
 #[test]
-fn threshold_region_rejects_routes_that_would_turn_the_window_into_hard_demand() {
+fn threshold_region_requires_a_statistical_demand_consumer() {
     let shape = RegionShape::Circle {
         lon: 110.0,
         lat: 20.0,
         radius_km: 500.0,
     };
     let mut cfg = project();
-    for backend in [RefinementBackend::MethodC, RefinementBackend::RedGreen] {
-        cfg.refinement.backend = backend;
-        assert!(with_region(&cfg, &shape)
-            .unwrap_err()
-            .contains("threshold_region requires"));
-    }
     cfg.refinement.backend = RefinementBackend::MethodC;
-    cfg.refinement.method_c.algorithm = earthmesh_project::MethodCAlgorithm::LeppDelaunay;
     assert!(with_region(&cfg, &shape)
         .unwrap_err()
         .contains("threshold_region requires"));
+    for backend in [RefinementBackend::RedGreen, RefinementBackend::MethodC] {
+        cfg.refinement.backend = backend;
+        cfg.refinement.method_c.algorithm = if backend == RefinementBackend::MethodC {
+            earthmesh_project::MethodCAlgorithm::LeppDelaunay
+        } else {
+            earthmesh_project::MethodCAlgorithm::Canonical
+        };
+        for adaptive in [
+            None,
+            Some(earthmesh_project::AdaptiveRefinementRecipe::default()),
+        ] {
+            cfg.refinement.adaptive = adaptive;
+            let scoped = with_region(&cfg, &shape).unwrap().try_lower().unwrap();
+            assert!(scoped.adaptive.is_some());
+            assert!(scoped.hfield.is_none());
+            assert!(!scoped.refine.refine_spc);
+        }
+        cfg.refinement.adaptive = Some(earthmesh_project::AdaptiveRefinementRecipe {
+            enabled: false,
+            ..Default::default()
+        });
+        let error = with_region(&cfg, &shape).unwrap_err();
+        assert!(
+            error.contains("threshold_region requires") && error.contains("adaptive"),
+            "{error}"
+        );
+    }
+    cfg.refinement.adaptive = None;
+    cfg.refinement.backend = RefinementBackend::MethodC;
     cfg.refinement.method_c.algorithm = earthmesh_project::MethodCAlgorithm::Canonical;
     cfg.refinement.hfield = Some(earthmesh_project::HfieldRefinementRecipe::default());
     let scoped = with_region(&cfg, &shape).unwrap().lower();
