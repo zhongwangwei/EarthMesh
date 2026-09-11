@@ -975,6 +975,52 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
     );
     assert!(certified.ready_marker.exists());
     assert!(certified.remap.is_none());
+    // A land island can be a single whole triangle; retain it and its warning.
+    write_all_ocean(&landtype);
+    let centre = regional.m_points[2];
+    let lon = (centre.lon + 179.5).round().rem_euclid(360.0) as usize;
+    let lat = (89.5 - centre.lat).round().clamp(0.0, 179.0) as usize;
+    {
+        let mut file = netcdf::append(&landtype).unwrap();
+        file.variable_mut("landtype")
+            .unwrap()
+            .put_value(1_i8, [lon, lat])
+            .unwrap();
+        file.close().unwrap();
+    }
+    let island = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect("a one-cell land island must remain a warning, not a publication failure");
+    let island_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&island.output.output)
+            .unwrap();
+    let island_lineages =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&island.output.output)
+            .unwrap();
+    assert_regional_triangles_are_whole_global_subset(&island_mesh, &island_lineages, &global);
+    let island_resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(&island.certified_run.unwrap().resources).unwrap())
+            .unwrap();
+    assert_eq!(island_resources["published_domain_geometry"]["cells"], 1);
+    assert_eq!(
+        island_resources["published_domain_geometry"]["contract_pass"],
+        true
+    );
+    assert_eq!(
+        island_resources["published_domain_topology"]["violations"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        island_resources["published_domain_topology"]["boundary_loops"],
+        1
+    );
+    assert_eq!(island_resources["published_domain_topology"]["euler"], 1);
+    assert!(
+        island_resources["published_domain_quality_topology"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["type"] == "orphan_cell" && issue["severity"] == "warn")
+    );
     let result_dir = run.output.output.parent().unwrap();
     let before = fs::read_dir(result_dir)
         .unwrap()

@@ -2217,9 +2217,17 @@ fn publish_certified_domain_gridfile(
     let mut quality_issues =
         earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input).validate_all();
     if mesh_type == "landmesh" {
-        quality_issues.retain(|issue| {
-            issue.issue_type != earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
-        });
+        // As for land dual cells, retain islands (including one-cell islands)
+        // and their diagnostics without relaxing winding or manifold checks.
+        for issue in &mut quality_issues {
+            if matches!(
+                issue.issue_type,
+                earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
+                    | earthmesh_quality::topology::TopologyIssueType::OrphanCell
+            ) {
+                issue.severity = earthmesh_quality::topology::Severity::Warn;
+            }
+        }
     }
     let hard_issues = quality_issues
         .iter()
