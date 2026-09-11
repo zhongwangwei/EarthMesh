@@ -132,6 +132,7 @@ fn a_resolution_dependent_criterion_changes_its_mind_between_levels() {
     let refine = RefineConfig {
         refine_num_landtypes: true,
         th_num_landtypes: 1,
+        max_iter_cal: 1,
         ..RefineConfig::default()
     };
     // Criteria-driven refinement is suspended on this backend: Method-C seeds
