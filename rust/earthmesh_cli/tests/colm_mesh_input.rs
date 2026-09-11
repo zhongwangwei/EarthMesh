@@ -8,6 +8,10 @@ use std::{
     process::Command,
 };
 
+// Keep complete fixture lifetimes and child CLI launches mutually exclusive.
+// Per-call NetCDF locks do not prevent this overlap from causing HDF5 file-lock errors.
+static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn root(name: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!(
         "earthmesh_colm_input_{name}_{}",
@@ -174,6 +178,7 @@ fn tri_mesh(path: &Path, placeholders: usize, reversed_second: bool) {
 
 #[test]
 fn explicit_export_preserves_ids_counts_footprint_and_fortran_order() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     for placeholders in [0, 1, 2] {
         let p = root(&format!("order{placeholders}"));
         let input = p.join("native.nc");
@@ -289,6 +294,7 @@ fn explicit_export_preserves_ids_counts_footprint_and_fortran_order() {
 
 #[test]
 fn triangle_export_uses_m_cells_ids_lineage_and_exact_ownership() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     for placeholders in [0, 2] {
         for reversed_second in [false, true] {
             let p = root(&format!("tri{placeholders}_{reversed_second}"));
@@ -376,6 +382,7 @@ fn triangle_export_uses_m_cells_ids_lineage_and_exact_ownership() {
 
 #[test]
 fn default_hex_export_does_not_accept_true_triangle_grid() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("tri_default_hex");
     let input = p.join("native_tri.nc");
     let output = p.join("colm.nc");
@@ -388,6 +395,7 @@ fn default_hex_export_does_not_accept_true_triangle_grid() {
 
 #[test]
 fn triangle_export_rejects_invalid_m_triangle_connectivity() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("bad_tri");
     let input = p.join("native_tri.nc");
     let output = p.join("colm.nc");
@@ -409,6 +417,7 @@ fn triangle_export_rejects_invalid_m_triangle_connectivity() {
 
 #[test]
 fn rejected_exports_preserve_old_output_and_leave_no_partials() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("rollback");
     let input = p.join("native.nc");
     let output = p.join("colm.nc");
@@ -434,6 +443,7 @@ fn rejected_exports_preserve_old_output_and_leave_no_partials() {
 
 #[test]
 fn dateline_and_polar_cells_are_not_lost() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     for (name, ring) in [
         ("dateline", quad(179., -179., 10., 12.)),
         ("pole", vec![(-120., 80.), (0., 80.), (120., 80.)]),
@@ -462,6 +472,7 @@ fn dateline_and_polar_cells_are_not_lost() {
 
 #[test]
 fn cli_requires_explicit_valid_resolution_and_exports() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("cli");
     let input = p.join("native.nc");
     let output = p.join("colm.nc");
@@ -509,6 +520,7 @@ fn cli_requires_explicit_valid_resolution_and_exports() {
 
 #[test]
 fn cli_triangle_kind_exports_m_cell_ids() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("cli_tri");
     let input = p.join("native_tri.nc");
     let output = p.join("colm_tri.nc");
@@ -549,6 +561,7 @@ fn cli_triangle_kind_exports_m_cell_ids() {
 
 #[test]
 fn regional_240_per_degree_export_does_not_require_a_global_raster() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("regional240");
     let input = p.join("native.nc");
     let output = p.join("colm.nc");
@@ -562,6 +575,7 @@ fn regional_240_per_degree_export_does_not_require_a_global_raster() {
 #[cfg(unix)]
 #[test]
 fn aliases_and_directory_outputs_are_rejected_without_side_effects() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("aliases");
     let input = p.join("native.nc");
     mesh(&input, &[quad(100., 101., 20., 21.)], 1);
@@ -581,6 +595,7 @@ fn aliases_and_directory_outputs_are_rejected_without_side_effects() {
 
 #[test]
 fn subpixel_interior_overlap_is_rejected_before_publication() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("sliver");
     let input = p.join("native.nc");
     let output = p.join("colm.nc");
@@ -598,6 +613,7 @@ fn subpixel_interior_overlap_is_rejected_before_publication() {
 
 #[test]
 fn great_circle_edge_bulge_is_included_above_vertex_latitudes() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let p = root("bulge");
     let input = p.join("native.nc");
     let output = p.join("colm.nc");
