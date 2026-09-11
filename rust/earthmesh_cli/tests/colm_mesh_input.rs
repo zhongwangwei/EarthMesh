@@ -1,4 +1,7 @@
-use earthmesh_cli::colm_mesh_input::write_colm_mesh_from_gridfile;
+use earthmesh_cli::{
+    colm_mesh_input::{write_colm_mesh_from_gridfile, write_colm_mesh_from_gridfile_with_kind},
+    unstructured_mesh_support::GridfileCellKind,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -82,6 +85,93 @@ fn quad(w: f64, e: f64, s: f64, n: f64) -> Vec<(f64, f64)> {
     vec![(w, s), (e, s), (e, n), (w, n)]
 }
 
+fn tri_mesh(path: &Path, placeholders: usize, reversed_second: bool) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
+    let m_rows = placeholders + 2;
+    let w_rows = placeholders + 4;
+    for (name, length) in [
+        ("sjx_points", m_rows),
+        ("lbx_points", w_rows),
+        ("dimb", 3),
+        ("dimc", 2),
+    ] {
+        file.add_dimension(name, length).unwrap();
+    }
+    let vertices = [(100., 20.), (104., 20.), (104., 22.), (100., 22.)];
+    let mut mlon = vec![0.; placeholders];
+    let mut mlat = vec![0.; placeholders];
+    mlon.extend([102.7, 101.3]);
+    mlat.extend([20.7, 21.3]);
+    let mut wlon = vec![0.; placeholders];
+    let mut wlat = vec![0.; placeholders];
+    for (lon, lat) in vertices {
+        wlon.push(lon);
+        wlat.push(lat);
+    }
+    let id = |physical: i32| -> i32 { physical + if placeholders == 2 { 2 } else { 1 } };
+    let mut m_to_w = vec![1; m_rows * 3];
+    let tri1 = [id(0), id(1), id(2)];
+    let tri2 = if reversed_second {
+        [id(3), id(2), id(0)]
+    } else {
+        [id(0), id(2), id(3)]
+    };
+    m_to_w[placeholders * 3..placeholders * 3 + 3].copy_from_slice(&tri1);
+    m_to_w[(placeholders + 1) * 3..(placeholders + 1) * 3 + 3].copy_from_slice(&tri2);
+    let mut w_to_m = vec![1; w_rows * 2];
+    let mut counts = vec![1; w_rows];
+    let m1 = id(0);
+    let m2 = id(1);
+    for (physical_w, owners) in [
+        (0usize, vec![m1, m2]),
+        (1, vec![m1]),
+        (2, vec![m1, m2]),
+        (3, vec![m2]),
+    ] {
+        let row = placeholders + physical_w;
+        counts[row] = owners.len() as i32;
+        for (k, owner) in owners.into_iter().enumerate() {
+            w_to_m[row * 2 + k] = owner;
+        }
+    }
+    for (name, dim, values) in [
+        ("GLONM", "sjx_points", mlon),
+        ("GLATM", "sjx_points", mlat),
+        ("GLONW", "lbx_points", wlon),
+        ("GLATW", "lbx_points", wlat),
+    ] {
+        file.add_variable::<f64>(name, &[dim])
+            .unwrap()
+            .put_values(&values, ..)
+            .unwrap();
+    }
+    file.add_variable::<i32>("itab_m%iw", &["sjx_points", "dimb"])
+        .unwrap()
+        .put_values(&m_to_w, ..)
+        .unwrap();
+    file.add_variable::<i32>("itab_w%im", &["lbx_points", "dimc"])
+        .unwrap()
+        .put_values(&w_to_m, ..)
+        .unwrap();
+    file.add_variable::<i32>("n_ngrwm", &["lbx_points"])
+        .unwrap()
+        .put_values(&counts, ..)
+        .unwrap();
+    let mut m_lineage = vec![0_i64; placeholders];
+    m_lineage.extend([701, 702]);
+    file.add_variable::<i64>("earthmesh_m_lineage", &["sjx_points"])
+        .unwrap()
+        .put_values(&m_lineage, ..)
+        .unwrap();
+    let mut w_lineage = vec![0_i64; placeholders];
+    w_lineage.extend([901, 902, 903, 904]);
+    file.add_variable::<i64>("earthmesh_w_lineage", &["lbx_points"])
+        .unwrap()
+        .put_values(&w_lineage, ..)
+        .unwrap();
+    file.close().unwrap();
+}
+
 #[test]
 fn explicit_export_preserves_ids_counts_footprint_and_fortran_order() {
     for placeholders in [0, 1, 2] {
@@ -119,6 +209,42 @@ fn explicit_export_preserves_ids_counts_footprint_and_fortran_order() {
             .unwrap()
             .get_values::<f64, _>(..)
             .unwrap();
+        let center_lon_var = f.variable("longitude").expect("longitude centers");
+        assert_eq!(
+            center_lon_var
+                .dimensions()
+                .iter()
+                .map(|d| d.name())
+                .collect::<Vec<_>>(),
+            ["nlon"]
+        );
+        let center_lat_var = f.variable("latitude").expect("latitude centers");
+        assert_eq!(
+            center_lat_var
+                .dimensions()
+                .iter()
+                .map(|d| d.name())
+                .collect::<Vec<_>>(),
+            ["nlat"]
+        );
+        assert_eq!(
+            center_lon_var.vartype(),
+            netcdf::types::NcVariableType::Float(netcdf::types::FloatType::F64)
+        );
+        assert_eq!(
+            center_lat_var.vartype(),
+            netcdf::types::NcVariableType::Float(netcdf::types::FloatType::F64)
+        );
+        let center_lon = center_lon_var.get_values::<f64, _>(..).unwrap();
+        let center_lat = center_lat_var.get_values::<f64, _>(..).unwrap();
+        assert_eq!(center_lon.len(), west.len());
+        assert_eq!(center_lat.len(), north.len());
+        for i in 0..west.len() {
+            assert_eq!(center_lon[i], west[i] + 0.5);
+        }
+        for j in 0..north.len() {
+            assert_eq!(center_lat[j], north[j] - 0.5);
+        }
         for (j, n) in north.iter().enumerate() {
             for (i, w) in west.iter().enumerate() {
                 let (x, y) = (w + 0.5, n - 0.5);
@@ -159,6 +285,126 @@ fn explicit_export_preserves_ids_counts_footprint_and_fortran_order() {
         drop(f);
         fs::remove_dir_all(p).unwrap();
     }
+}
+
+#[test]
+fn triangle_export_uses_m_cells_ids_lineage_and_exact_ownership() {
+    for placeholders in [0, 2] {
+        for reversed_second in [false, true] {
+            let p = root(&format!("tri{placeholders}_{reversed_second}"));
+            let input = p.join("native_tri.nc");
+            let output = p.join("colm_tri.nc");
+            tri_mesh(&input, placeholders, reversed_second);
+            let before = fs::read(&input).unwrap();
+            let first_id = if placeholders == 2 { 2 } else { 1 };
+            let report =
+                write_colm_mesh_from_gridfile_with_kind(&input, &output, 1, GridfileCellKind::Tri)
+                    .unwrap();
+            assert_eq!(report.cells, 2);
+            assert_eq!(report.assigned_pixels, 8);
+            assert_eq!(report.boundary_tie_pixels, 0);
+            let f = netcdf::open(&output).unwrap();
+            let semantics: String = f
+                .attribute("earthmesh_semantics")
+                .unwrap()
+                .value()
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert_eq!(
+                semantics,
+                "pixel_center_rasterized_native_m_cell_ids; outside=0; boundary_tie=smallest_id"
+            );
+            assert_eq!(
+                f.variable("cell_id")
+                    .unwrap()
+                    .get_values::<i32, _>(..)
+                    .unwrap(),
+                [first_id, first_id + 1]
+            );
+            assert_eq!(
+                f.variable("source_lineage")
+                    .unwrap()
+                    .get_values::<i64, _>(..)
+                    .unwrap(),
+                [701, 702]
+            );
+            assert_eq!(
+                f.variable("pixel_count")
+                    .unwrap()
+                    .get_values::<i64, _>(..)
+                    .unwrap(),
+                [4, 4]
+            );
+            let west = f
+                .variable("lon_w")
+                .unwrap()
+                .get_values::<f64, _>(..)
+                .unwrap();
+            let north = f
+                .variable("lat_n")
+                .unwrap()
+                .get_values::<f64, _>(..)
+                .unwrap();
+            let ids = f
+                .variable("elmindex")
+                .unwrap()
+                .get_values::<i32, _>(..)
+                .unwrap();
+            for (j, n) in north.iter().enumerate() {
+                for (i, w) in west.iter().enumerate() {
+                    let (x, y) = (w + 0.5, n - 0.5);
+                    let expected = if (100.0..104.0).contains(&x) && (20.0..22.0).contains(&y) {
+                        let split_y = 20.0 + (x - 100.0) * (2.0 / 4.0);
+                        if y <= split_y {
+                            first_id
+                        } else {
+                            first_id + 1
+                        }
+                    } else {
+                        0
+                    };
+                    assert_eq!(ids[j * west.len() + i], expected, "{x}, {y}");
+                }
+            }
+            assert_eq!(before, fs::read(&input).unwrap());
+            drop(f);
+            fs::remove_dir_all(p).unwrap();
+        }
+    }
+}
+
+#[test]
+fn default_hex_export_does_not_accept_true_triangle_grid() {
+    let p = root("tri_default_hex");
+    let input = p.join("native_tri.nc");
+    let output = p.join("colm.nc");
+    tri_mesh(&input, 2, false);
+    let err = write_colm_mesh_from_gridfile(&input, &output, 1).unwrap_err();
+    assert!(err.to_string().contains("hex") || err.to_string().contains("W"));
+    assert!(!output.exists());
+    fs::remove_dir_all(p).unwrap();
+}
+
+#[test]
+fn triangle_export_rejects_invalid_m_triangle_connectivity() {
+    let p = root("bad_tri");
+    let input = p.join("native_tri.nc");
+    let output = p.join("colm.nc");
+    tri_mesh(&input, 2, false);
+    {
+        let mut f = netcdf::append(&input).unwrap();
+        f.variable_mut("itab_m%iw")
+            .unwrap()
+            .put_values(&[2_i32, 2, 4], (2, ..))
+            .unwrap();
+        f.close().unwrap();
+    }
+    let err = write_colm_mesh_from_gridfile_with_kind(&input, &output, 1, GridfileCellKind::Tri)
+        .unwrap_err();
+    assert!(err.to_string().contains("duplicate W vertex"));
+    assert!(!output.exists());
+    fs::remove_dir_all(p).unwrap();
 }
 
 #[test]
@@ -232,6 +478,22 @@ fn cli_requires_explicit_valid_resolution_and_exports() {
     assert!(!run(&[]).status.success());
     assert!(!run(&["--pixels-per-degree", "0"]).status.success());
     assert!(!run(&["--pixels-per-degree", "1", "extra"]).status.success());
+    assert!(!run(&["--pixels-per-degree", "1", "--kind"])
+        .status
+        .success());
+    assert!(!run(&["--pixels-per-degree", "1", "--kind", "quad"])
+        .status
+        .success());
+    assert!(
+        !run(&["--pixels-per-degree", "1", "--kind", "hex", "--kind", "hex"])
+            .status
+            .success()
+    );
+    assert!(
+        !run(&["--pixels-per-degree", "1", "--pixels-per-degree", "2",])
+            .status
+            .success()
+    );
     assert!(!output.exists());
     let result = run(&["--pixels-per-degree", "1"]);
     assert!(
@@ -242,6 +504,46 @@ fn cli_requires_explicit_valid_resolution_and_exports() {
     let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(value["assigned_pixels"], 8);
     assert!(output.is_file());
+    fs::remove_dir_all(p).unwrap();
+}
+
+#[test]
+fn cli_triangle_kind_exports_m_cell_ids() {
+    let p = root("cli_tri");
+    let input = p.join("native_tri.nc");
+    let output = p.join("colm_tri.nc");
+    tri_mesh(&input, 2, false);
+    let result = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+        .arg("--colm-mesh-from-gridfile")
+        .arg(&input)
+        .arg(&output)
+        .args(["--pixels-per-degree", "1", "--kind", "tri"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["cells"], 2);
+    assert_eq!(value["assigned_pixels"], 8);
+    let f = netcdf::open(&output).unwrap();
+    assert_eq!(
+        f.variable("cell_id")
+            .unwrap()
+            .get_values::<i32, _>(..)
+            .unwrap(),
+        [2, 3]
+    );
+    assert_eq!(
+        f.variable("source_lineage")
+            .unwrap()
+            .get_values::<i64, _>(..)
+            .unwrap(),
+        [701, 702]
+    );
+    drop(f);
     fs::remove_dir_all(p).unwrap();
 }
 

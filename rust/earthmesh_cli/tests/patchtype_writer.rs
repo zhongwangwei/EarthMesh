@@ -11,8 +11,9 @@ fn patchtype_writer_preserves_patchid_save_schema() {
         lon_e: vec![101.0, 102.0, 103.0],
         lat_n: vec![30.0, 29.0],
         lat_s: vec![29.0, 28.0],
-        longitude: vec![100.5, 101.5, 102.5],
-        latitude: vec![29.5, 28.5],
+        // Preserve supplied lookup centers, even when not exact edge midpoints.
+        longitude: vec![100.4, 101.6, 102.4],
+        latitude: vec![29.4, 28.6],
     };
 
     let report = earthmesh_cli::mask_postproc_writers::write_patchid_netcdf(&output, &patch)

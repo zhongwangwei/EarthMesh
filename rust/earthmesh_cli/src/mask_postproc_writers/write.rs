@@ -37,16 +37,12 @@ pub fn write_patchid_netcdf(
             .map_err(netcdf_to_io_error)?;
     }
     {
-        let mut var = file
-            .add_variable::<f64>("longitude", &["nlon"])
-            .map_err(netcdf_to_io_error)?;
+        let mut var = file.variable_mut("longitude").expect("defined longitude");
         var.put_values(&patch.longitude, ..)
             .map_err(netcdf_to_io_error)?;
     }
     {
-        let mut var = file
-            .add_variable::<f64>("latitude", &["nlat"])
-            .map_err(netcdf_to_io_error)?;
+        let mut var = file.variable_mut("latitude").expect("defined latitude");
         var.put_values(&patch.latitude, ..)
             .map_err(netcdf_to_io_error)?;
     }
@@ -104,6 +100,20 @@ pub(crate) fn create_patchid_file(
         file.add_variable::<f64>(name, &[dimension])
             .map_err(netcdf_to_io_error)?
             .put_values(values, ..)
+            .map_err(netcdf_to_io_error)?;
+    }
+    for (name, dimension, lower, upper) in [
+        ("longitude", "nlon", lon_w, lon_e),
+        ("latitude", "nlat", lat_s, lat_n),
+    ] {
+        let centers: Vec<f64> = lower
+            .iter()
+            .zip(upper)
+            .map(|(a, b)| (a + b) * 0.5)
+            .collect();
+        file.add_variable::<f64>(name, &[dimension])
+            .map_err(netcdf_to_io_error)?
+            .put_values(&centers, ..)
             .map_err(netcdf_to_io_error)?;
     }
     Ok(file)

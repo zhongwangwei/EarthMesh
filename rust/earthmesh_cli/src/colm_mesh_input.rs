@@ -8,11 +8,13 @@ use earthmesh_geometry::{Point, PreparedSphericalPolygon, SphericalPointLocation
 use serde::Serialize;
 
 use crate::{
+    grid_quality_inputs::tri_quality_cells_from_gridfile,
     grid_quality_pipeline::{
         quality_input_from_gridfile_hex_native, read_gridfile_cell_lineages,
         read_gridfile_mesh_points,
     },
-    gridfile_m_row_layout, gridfile_w_row_layout, netcdf_to_io_error, GridfileMeshPoints,
+    gridfile_m_row_layout, gridfile_w_row_layout, netcdf_to_io_error, GridfileCellKind,
+    GridfileMeshPoints,
 };
 
 const MAX_PIXELS: usize = 268_435_456;
@@ -55,6 +57,15 @@ pub fn write_colm_mesh_from_gridfile(
     output: impl AsRef<Path>,
     pixels_per_degree: usize,
 ) -> io::Result<ColmMeshInputReport> {
+    write_colm_mesh_from_gridfile_with_kind(input, output, pixels_per_degree, GridfileCellKind::Hex)
+}
+
+pub fn write_colm_mesh_from_gridfile_with_kind(
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    pixels_per_degree: usize,
+    kind: GridfileCellKind,
+) -> io::Result<ColmMeshInputReport> {
     if pixels_per_degree == 0 {
         return Err(invalid("pixels_per_degree must be positive"));
     }
@@ -70,12 +81,20 @@ pub fn write_colm_mesh_from_gridfile(
     validate_output_path(input, output)?;
 
     let mesh = read_gridfile_mesh_points(input)?;
-    // Reuse the existing native-hex validation path before rasterizing its rings.
-    let _ = quality_input_from_gridfile_hex_native(&mesh)?;
+    match kind {
+        GridfileCellKind::Hex => {
+            // Reuse the existing native-hex validation path before rasterizing its W rings.
+            let _ = quality_input_from_gridfile_hex_native(&mesh)?;
+        }
+        GridfileCellKind::Tri => {}
+    }
     let lineages = read_gridfile_cell_lineages(input)?;
-    let cells = raster_cells(&mesh, &lineages.w, pixels_per_degree, global_nlat)?;
+    let cells = raster_cells(&mesh, kind, &lineages, pixels_per_degree, global_nlat)?;
     if cells.is_empty() {
-        return Err(invalid("gridfile contains no physical W cells"));
+        return Err(invalid(format!(
+            "gridfile contains no physical {} cells",
+            colm_cell_label(kind)
+        )));
     }
     let window = raster_window(&cells, global_nlon, pixels_per_degree)?;
     let total = window
@@ -151,7 +170,7 @@ pub fn write_colm_mesh_from_gridfile(
                             inside[x] = new_inside;
                         } else if inside[x] && new_inside {
                             return Err(invalid(format!(
-                                "gridfile W cells overlap in their interiors at lon={lon}, lat={lat}: {} and {}",
+                                "gridfile native cells overlap in their interiors at lon={lon}, lat={lat}: {} and {}",
                                 cells[owners[x]].canonical_id, cell.canonical_id
                             )));
                         } else if new_inside {
@@ -190,7 +209,7 @@ pub fn write_colm_mesh_from_gridfile(
                 empty.len(), &empty[..empty.len().min(8)]
             )));
         }
-        write_metadata(&mut file, &cells, &pixel_counts)?;
+        write_metadata(&mut file, kind, &cells, &pixel_counts)?;
         file.close().map_err(netcdf_to_io_error)?;
         Ok(())
     })?;
@@ -283,7 +302,7 @@ fn reject_interior_overlaps(cells: &[RasterCell], nlon: usize, ppd: usize) -> io
             // Relative area tolerance absorbs roundoff at coincident shared edges.
             if !fraction.is_finite() || fraction > 1.0e-9 {
                 return Err(invalid(format!(
-                    "gridfile W cells {} and {} have interior overlap (fraction={fraction})",
+                    "gridfile native cells {} and {} have interior overlap (fraction={fraction})",
                     cells[a].canonical_id, cells[b].canonical_id
                 )));
             }
@@ -295,12 +314,29 @@ fn reject_interior_overlaps(cells: &[RasterCell], nlon: usize, ppd: usize) -> io
 
 fn raster_cells(
     mesh: &GridfileMeshPoints,
+    kind: GridfileCellKind,
+    lineages: &crate::MethodCGridfileLineages,
+    pixels_per_degree: usize,
+    nlat: usize,
+) -> io::Result<Vec<RasterCell>> {
+    match kind {
+        GridfileCellKind::Hex => raster_w_cells(mesh, &lineages.w, pixels_per_degree, nlat),
+        GridfileCellKind::Tri => {
+            raster_m_triangle_cells(mesh, &lineages.m, pixels_per_degree, nlat)
+        }
+    }
+}
+
+fn raster_w_cells(
+    mesh: &GridfileMeshPoints,
     lineages: &[i64],
     pixels_per_degree: usize,
     nlat: usize,
 ) -> io::Result<Vec<RasterCell>> {
     if mesh.w_to_m_width == 0 || mesh.w_to_m.is_empty() || mesh.n_w.is_empty() {
-        return Err(invalid("CoLM mesh export requires itab_w%im and n_ngrwm"));
+        return Err(invalid(
+            "CoLM hex mesh export requires itab_w%im and n_ngrwm",
+        ));
     }
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
@@ -330,21 +366,68 @@ fn raster_cells(
                 Ok(Point::new(mesh.m_lon[m_row], mesh.m_lat[m_row]))
             })
             .collect::<io::Result<Vec<_>>>()?;
-        let polygon = PreparedSphericalPolygon::new(&ring)
-            .map_err(|error| invalid(format!("invalid W cell {canonical_id}: {error}")))?;
-        polygon
-            .point_location(ring[0])
-            .map_err(|error| invalid(format!("invalid W cell {canonical_id}: {error}")))?;
-        let bounds = cap_bounds(&ring, pixels_per_degree, nlat)
-            .map_err(|message| invalid(format!("W cell {canonical_id}: {message}")))?;
-        cells.push(RasterCell {
+        cells.push(raster_cell_from_ring(
+            "W",
             canonical_id,
-            lineage: lineages.get(row).copied(),
-            polygon,
-            bounds,
-        });
+            lineages.get(row).copied(),
+            ring,
+            pixels_per_degree,
+            nlat,
+        )?);
     }
     Ok(cells)
+}
+
+fn raster_m_triangle_cells(
+    mesh: &GridfileMeshPoints,
+    lineages: &[i64],
+    pixels_per_degree: usize,
+    nlat: usize,
+) -> io::Result<Vec<RasterCell>> {
+    let m_layout = gridfile_m_row_layout(mesh);
+    let cells = tri_quality_cells_from_gridfile(mesh)?;
+    let mut raster = Vec::new();
+    for (row, vertices) in cells {
+        let Some(canonical_id) = m_layout.canonical_id_for_physical_row(row) else {
+            continue;
+        };
+        let ring = vertices
+            .iter()
+            .map(|&w_row| Point::new(mesh.w_lon[w_row], mesh.w_lat[w_row]))
+            .collect::<Vec<_>>();
+        raster.push(raster_cell_from_ring(
+            "M",
+            canonical_id,
+            lineages.get(row).copied(),
+            ring,
+            pixels_per_degree,
+            nlat,
+        )?);
+    }
+    Ok(raster)
+}
+
+fn raster_cell_from_ring(
+    label: &str,
+    canonical_id: i32,
+    lineage: Option<i64>,
+    ring: Vec<Point>,
+    pixels_per_degree: usize,
+    nlat: usize,
+) -> io::Result<RasterCell> {
+    let polygon = PreparedSphericalPolygon::new(&ring)
+        .map_err(|error| invalid(format!("invalid {label} cell {canonical_id}: {error}")))?;
+    polygon
+        .point_location(ring[0])
+        .map_err(|error| invalid(format!("invalid {label} cell {canonical_id}: {error}")))?;
+    let bounds = cap_bounds(&ring, pixels_per_degree, nlat)
+        .map_err(|message| invalid(format!("{label} cell {canonical_id}: {message}")))?;
+    Ok(RasterCell {
+        canonical_id,
+        lineage,
+        polygon,
+        bounds,
+    })
 }
 
 fn cap_bounds(
@@ -441,16 +524,32 @@ fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
     (n > 0.0 && n.is_finite()).then(|| [v[0] / n, v[1] / n, v[2] / n])
 }
 
+fn colm_semantics_attribute(kind: GridfileCellKind) -> &'static str {
+    match kind {
+        GridfileCellKind::Hex => {
+            "pixel_center_rasterized_native_w_cell_ids; outside=0; boundary_tie=smallest_id"
+        }
+        GridfileCellKind::Tri => {
+            "pixel_center_rasterized_native_m_cell_ids; outside=0; boundary_tie=smallest_id"
+        }
+    }
+}
+
+fn colm_cell_label(kind: GridfileCellKind) -> &'static str {
+    match kind {
+        GridfileCellKind::Hex => "W",
+        GridfileCellKind::Tri => "M",
+    }
+}
+
 fn write_metadata(
     file: &mut netcdf::FileMut,
+    kind: GridfileCellKind,
     cells: &[RasterCell],
     pixel_counts: &[usize],
 ) -> io::Result<()> {
-    file.add_attribute(
-        "earthmesh_semantics",
-        "pixel_center_rasterized_native_w_cell_ids; outside=0; boundary_tie=smallest_id",
-    )
-    .map_err(netcdf_to_io_error)?;
+    file.add_attribute("earthmesh_semantics", colm_semantics_attribute(kind))
+        .map_err(netcdf_to_io_error)?;
     file.add_dimension("cell", cells.len())
         .map_err(netcdf_to_io_error)?;
     let ids = cells

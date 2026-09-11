@@ -3,13 +3,21 @@
 ```sh
 earthmesh_cli --colm-mesh-from-gridfile \
   gridfile_NXP0144_hex_landmesh.nc4 colm_mesh.nc \
-  --pixels-per-degree 240
+  --pixels-per-degree 240 --kind hex
+
+earthmesh_cli --colm-mesh-from-gridfile \
+  gridfile_NXP0192_tri_oceanmesh.nc4 colm_mesh_tri.nc \
+  --pixels-per-degree 240 --kind tri
 ```
 
 Use `colm_mesh.nc` as `DEF_file_mesh` for an **UNSTRUCTURED** CoLM build.
-The input is the final native hex/polygon grid, after regional selection and
-land-cell selection. This explicit adapter is independent of CMRC generation:
-it also accepts valid native polygon grids from other supported generators.
+The input is the final native grid, after regional selection and domain-cell
+selection. `--kind hex` (the backward-compatible default) rasterizes native W
+polygon cells from `itab_w%im`; `--kind tri` rasterizes native M triangular cells
+from `itab_m%iw`. A gridfile can carry both M and W views, so topology is
+an explicit option and is never inferred from the filename. This adapter is
+independent of CMRC generation: it also accepts valid native grids from other
+supported generators.
 It does not regenerate the mesh, change its angles, or extend an existing
 `certified_ready` certificate to the raster.
 
@@ -20,20 +28,26 @@ It does not regenerate the mesh, change its angles, or extend an existing
 - `lon_w/lon_e(nlon)` and `lat_s/lat_n(nlat)`, in degrees, with west-to-east
   longitudes and north-to-south latitudes. The resolution is explicitly chosen
   by `--pixels-per-degree`; it is not inferred from threshold statistics.
+- `longitude(nlon)` and `latitude(nlat)`: float64 pixel-center coordinates,
+  computed as edge midpoints, matching the supplied Pearl River PatchID example.
 - `cell_id`, `pixel_count`, and source lineage when present: trace raster
-  elements back to final native W cells. Canonical IDs are retained; dummy
-  rows are not elements. These additional variables are not required by CoLM.
+  elements back to the selected native cells. For `--kind hex` they are final W
+  cell IDs and `earthmesh_w_lineage`; for `--kind tri` they are final M triangle
+  cell IDs and `earthmesh_m_lineage`. Canonical IDs are retained; dummy rows are
+  not elements. These additional variables are not required by CoLM.
 
-Every positive pixel is assigned by its center's membership in the native
-**spherical, great-circle-edged** cell. Shared-edge ties use the lowest native
+Every positive pixel is assigned by its center's membership in the selected
+native **spherical, great-circle-edged** cell. TRI mode uses genuine M triangles,
+not synthetic three-vertex W cells or W dual polygons. HEX mode preserves the
+existing W polygon semantics. Shared-edge ties use the lowest selected native
 ID. Every delivered cell must own at least one pixel; otherwise export fails
 and requests a finer raster. Invalid geometry and interior overlaps fail rather than silently assigning
 another cell. Candidate polygons are intersected before sampling; the relative
 intersection-area tolerance is 1e-9 for shared-edge roundoff.
 
 Zero denotes pixels outside the represented whole-cell footprint. There is
-**no nearest-cell filling**, polygon clipping to a requested boundary, or
-landtype masking at this stage. Coastal cells can contain water pixels;
+**no nearest-cell filling**, polygon clipping to a requested boundary, topology
+conversion, or landtype masking at this stage. Coastal cells can contain water pixels;
 CoLM's mesh reader includes these positive pixels and land-patch preprocessing
 classifies them later. This is not a land-only coastline raster.
 

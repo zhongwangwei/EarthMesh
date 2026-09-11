@@ -109,7 +109,7 @@ pub(crate) fn usage(message: &str) -> String {
        earthmesh_cli --hydro-close-recipe <input.geojson> <output_prefix> <recipe.json> [--class-refine CLASS=DEGREE ...] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--example-namelist FILE]
        earthmesh_cli --hydro-close-mask-nmls <input.geojson> <output_prefix> [--class-refine CLASS=DEGREE ...] [--max-rings-per-class N] [--max-rings-by-class CLASS=COUNT ...] [--max-masks-per-refine-degree N | --no-max-masks-per-refine-degree] [--min-ring-separation-deg DEG] [--buffer-deg-by-refine-degree DEGREE=BUFFER ...] [--simplify-tolerance-deg DEG] [--dissolve-overlapping-envelopes] [--non-cumulative-refine]
        earthmesh_cli --hydro-composite-close-mask-nmls <recipe.json> <output_prefix> [--summary-json PATH]
-       earthmesh_cli --colm-mesh-from-gridfile <native_hex.nc4> <colm_mesh.nc> --pixels-per-degree N
+       earthmesh_cli --colm-mesh-from-gridfile <native_grid.nc4> <colm_mesh.nc> --pixels-per-degree N [--kind tri|hex]
        earthmesh_cli --colm-coupling-csv-to-netcdf <colm_coupling_cells.csv> <colm_coupling_cells.nc> [--case-name NAME] [--delivery-manifest PATH] [--restart-template-netcdf PATH] [--forcing-template-netcdf PATH]
        earthmesh_cli --mesh-quality <gridfile.nc4> [out_dir] [quality.nml] [--kind tri|hex]
        earthmesh_cli --project-quality <project.yaml|json> <gridfile.nc4> <out_dir>
