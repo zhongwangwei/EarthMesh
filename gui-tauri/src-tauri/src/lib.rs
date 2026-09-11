@@ -62,7 +62,6 @@ pub fn run() {
             set_adaptive_refinement,
             set_refinement_backend,
             set_method_c_algorithm_options,
-            set_harp_dv_options,
             set_certified_options,
             set_hfield_refinement,
             set_expert,

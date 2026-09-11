@@ -4,7 +4,6 @@ use crate::certified_options::{
 use crate::final_quality_non_negative_usize;
 use crate::fvcom_mesh_2dm_output_path;
 use crate::gridfile_mesh_from_one_based_state;
-use crate::harp_dv_options::{read_harp_dv_options, HarpDvRunOptions};
 use crate::method_c_algorithm::{
     read_method_c_algorithm_options, MethodCAlgorithm, MethodCAlgorithmOptions,
 };
@@ -279,6 +278,12 @@ pub fn run_refine_pipeline_namelist(
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
+    if earthmesh_core::namelist_has_section(&contents, "harp_dv") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "retired &harp_dv namelist section is no longer supported; use method_c, red_green, or certified",
+        ));
+    }
     if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
         && backend != RefineBackend::Certified
     {
@@ -299,7 +304,6 @@ pub fn run_refine_pipeline_namelist(
     let quality = QualityNamelist::from_quality_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
-    let harp_dv_options = read_harp_dv_options(&contents)?;
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(&contents)?;
     let native_deltax = read_native_grid_deltax(&contents)?;
@@ -550,8 +554,8 @@ pub fn run_refine_pipeline_namelist(
     }
 
     // Named before anything dispatches on it, because the dispatch used to end
-    // in a `_ =>` arm that ran Method-C. Measured: `harpdv`, `harp-dv`,
-    // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
+    // in a `_ =>` arm that ran Method-C. Measured: misspellings
+    // `redgreen` and `method-c` produced a Method-C mesh and
     // said nothing -- a user asking for one backend and silently getting
     // another, which is the failure class guide 11.1 records.
     if quality.lepp_post_quality && backend != RefineBackend::MethodC {
@@ -692,10 +696,7 @@ pub fn run_refine_pipeline_namelist(
         };
         eprintln!(
             "earthmesh_cli: ignoring {requested_by} and the {requested_spring_nest_iterations} \
-             refinement spring iteration(s) they ask for. HARP-DV smooths through transactional \
-             site moves with Delaunay legalization, and a Laplacian spring on top of that fights \
-             its acceptance test. Use NL%refine_backend = method_c to run the spring instead. \
-             This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
+             refinement spring iteration(s) they ask for. certified refinement owns its geometry certificate, and a Laplacian spring on top of that would invalidate it. Use NL%refine_backend = method_c to run the spring instead.              This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
         );
     }
     let file_dir = PathBuf::from(config.file_dir());
@@ -713,7 +714,6 @@ pub fn run_refine_pipeline_namelist(
         spring_nest_passes,
         hfield_diagnostics,
         adaptive_run,
-        harp_dv_run,
         lepp_hard_regions,
         lepp_adaptive_hybrid,
         lepp_post_quality,
@@ -773,44 +773,6 @@ pub fn run_refine_pipeline_namelist(
                 adaptive,
                 config.mode_grid.trim() == "tri",
                 spring_nest_iterations,
-            )?
-        }
-        RefineBackend::HarpDv => {
-            // The same list red-green refuses, and for the same reason: each of
-            // these would otherwise be dropped and the run would still write a
-            // valid mesh that is not the mesh that was asked for. Measured
-            // before this guard: `harp_dv` with `&hfield` configured produced
-            // 6450 cells and never read the field.
-            let unsupported = if active_hfield_options.is_some() {
-                Some("an h-field (&hfield)")
-            } else if native_cartesian_xy {
-                Some("a Cartesian-XY mesh")
-            } else if native_surface_global_expansion {
-                Some("the native surface expansion (NL%sfcgrid_res_factor)")
-            } else {
-                None
-            };
-            if let Some(unsupported) = unsupported {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "NL%refine_backend = harp_dv does not serve {unsupported}; it re-reads a \
-                         target scale against the cells that exist and serves circular regions. \
-                         Use method_c for this run"
-                    ),
-                ));
-            }
-            refine_with_harp_dv(
-                &mesh,
-                &regions,
-                adaptive_options.as_ref(),
-                &config,
-                domain_region.as_ref(),
-                mesh_type,
-                method_c_nxp,
-                max_level,
-                &refine,
-                harp_dv_options,
             )?
         }
         RefineBackend::MethodC => {
@@ -930,7 +892,6 @@ pub fn run_refine_pipeline_namelist(
                     spring_nest_passes,
                     hfield_diagnostics,
                     adaptive_run,
-                    harp_dv_run: None,
                     lepp_hard_regions: Vec::new(),
                     lepp_adaptive_hybrid: None,
                     lepp_post_quality,
@@ -1419,7 +1380,6 @@ pub fn run_refine_pipeline_namelist(
         hfield_diagnostics,
         transition_faces,
         spring_nest_passes,
-        harp_dv_run,
         certified_run: None,
         lepp_adaptive_hybrid,
         lepp_post_quality,
@@ -3118,7 +3078,6 @@ fn run_certified_pipeline(
         hfield_diagnostics: Default::default(),
         transition_faces: 0,
         spring_nest_passes: 0,
-        harp_dv_run: None,
         certified_run: Some(CertifiedRunRecord {
             mode: mode_name.to_string(),
             product_outcome: product_outcome.to_string(),
@@ -3678,14 +3637,6 @@ struct RefinedGrid {
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     adaptive_run: Option<AdaptiveRunRecord>,
-    /// What HARP-DV's own run reported, or `None` from the other peer backends.
-    ///
-    /// It used to reach only stderr, so a caller reading the run record could
-    /// not tell a mesh that met its demands from one that stopped at a budget
-    /// or a scale floor -- both exited zero with a mesh written. `adaptive_run`
-    /// could not carry it: that is Method-C's per-level circle record and says
-    /// nothing about cycles, refusals or a stop reason.
-    harp_dv_run: Option<HarpDvRunRecord>,
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
     lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
@@ -3749,79 +3700,6 @@ fn region_center_demand(
             )
         })
         .collect()
-}
-
-/// The part of HARP-DV's report a run record can carry.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HarpDvRunRecord {
-    pub stop_reason: String,
-    pub cycles_completed: u32,
-    /// Insertions only; geometry-only commits are in `r_adaptation_moves`.
-    pub transactions_committed: usize,
-    pub fallback_transactions_committed: usize,
-    pub r_adaptation_moves: usize,
-    pub paired_r_adaptation_moves: usize,
-    pub multi_ring_r_adaptation_moves: usize,
-    pub angles_below_40_deg: usize,
-    pub angles_in_40_90_deg: usize,
-    pub angles_above_90_deg: usize,
-    pub angles_in_40_80_deg: usize,
-    pub angles_above_80_deg: usize,
-    pub angle_min_deg: f64,
-    pub angle_max_deg: f64,
-    pub angle_window_40_80_verdict: String,
-    pub angle_window_unmeasurable_triangles: usize,
-    pub vertices_below_degree_5: usize,
-    pub active_adaptive_sites: usize,
-    pub active_leaf_sites: usize,
-    pub interior_leaf_sites: usize,
-    pub lineage_unknown_adaptive_sites: usize,
-    pub leaf_degree_4: usize,
-    pub leaf_degree_5: usize,
-    pub leaf_degree_6: usize,
-    pub leaf_degree_7: usize,
-    pub leaf_degree_other: usize,
-    pub leaf_birth_cycle_min: u32,
-    pub leaf_birth_cycle_max: u32,
-    pub leaf_target_scale_measured: usize,
-    pub leaf_target_scale_min_m: f64,
-    pub leaf_target_scale_max_m: f64,
-    pub angles_below_40_at_leaf_vertices: usize,
-    pub angles_above_80_at_leaf_vertices: usize,
-    pub angles_below_40_at_interior_leaf_vertices: usize,
-    pub angles_above_80_at_interior_leaf_vertices: usize,
-    pub violating_triangles_touching_leaf: usize,
-    pub violating_triangles_touching_interior_leaf: usize,
-    pub d4_leaf_retirement_audit_evaluated: bool,
-    pub d4_leaf_retirement_candidates: usize,
-    pub d4_leaf_retirement_trials_total: usize,
-    pub d4_leaf_retirement_triangulations: usize,
-    pub d4_leaf_retirement_hard_gate_safe: usize,
-    pub d4_leaf_retirement_physical_safe: usize,
-    pub d4_leaf_retirement_balance_safe: usize,
-    pub d4_leaf_retirement_quality_improving: usize,
-    pub d4_leaf_retirement_fully_acceptable: usize,
-    pub d4_leaf_retirement_committed: usize,
-    pub quality_leaf_retirement_committed: usize,
-    pub conservative_remap_rows: usize,
-    pub conservative_remap_max_row_sum_error: f64,
-    pub conservative_remap_file: Option<PathBuf>,
-    pub target_triangle_angles_below_40_deg: usize,
-    pub target_triangle_angles_above_80_deg: usize,
-    pub target_triangle_angle_count: usize,
-    pub target_triangle_angle_min_deg: f64,
-    pub target_triangle_angle_max_deg: f64,
-    pub angle_window_penalty: f64,
-    pub angle_window_40_80_penalty: f64,
-    pub quality_optimiser_moves: usize,
-    pub triangle_eta_min: f64,
-    pub triangle_eta_p1: f64,
-    pub triangles_below_eta_0_89: usize,
-    pub unresolved_cells: usize,
-    pub physical_demands_remaining: usize,
-    pub balance_demands_remaining: usize,
-    pub quality_constrained_cells: usize,
-    pub unbalanced_pairs_remaining: usize,
 }
 
 /// Most incident triangles a cell may have.
@@ -4292,7 +4170,6 @@ fn refine_with_redgreen(
         lepp_hard_regions: Vec::new(),
         lepp_adaptive_hybrid: None,
         lepp_post_quality: None,
-        harp_dv_run: None,
     })
 }
 
@@ -4531,7 +4408,6 @@ fn refine_with_method_c_lepp(
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         adaptive_run: None,
-        harp_dv_run: None,
         lepp_hard_regions: hard_regions,
         lepp_adaptive_hybrid: Some(report),
         lepp_post_quality: None,
@@ -4580,705 +4456,6 @@ fn lepp_region_boundary_segments(
         );
     }
     earthmesh_boundary::SegmentList::from_pairs(protected)
-}
-
-/// Refine by re-reading the criteria against the cells that exist.
-///
-/// This route differs at the pipeline boundary because it
-/// produces its mesh from `MeshState`, so it goes out through
-/// `to_triangular_mesh` rather than arriving as a `TriangularMesh` already.
-fn refine_with_harp_dv(
-    mesh: &earthmesh_mesh::TriangularMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
-    adaptive_options: Option<&crate::adaptive_refine::AdaptiveRefineOptions>,
-    config: &EarthmeshConfig,
-    domain_region: Option<&GridRegion>,
-    mesh_type: &str,
-    nxp: usize,
-    max_level: usize,
-    refine: &RefineConfig,
-    options: HarpDvRunOptions,
-) -> io::Result<RefinedGrid> {
-    use earthmesh_refine_harp_dv as harp;
-
-    // Said outright rather than served quietly with less. Each of these would
-    // otherwise be dropped and the run would still write a valid mesh that is
-    // not the mesh that was asked for.
-    // Circles and closed curves are served; a box or a corridor is not, and is
-    // still said outright rather than dropped. A closed curve became servable
-    // when `SphericalBoundaryModel` arrived: the question a target scale asks
-    // is "is this cell inside the region", and for a curve with holes that is
-    // the model's subject rather than something to reimplement per backend.
-    let unsupported = regions
-        .iter()
-        .find(|region| {
-            !matches!(
-                region,
-                earthmesh_mesh::RefinementRegion::Circle { .. }
-                    | earthmesh_mesh::RefinementRegion::Polygon { .. }
-            )
-        })
-        .map(|_| "a region that is not a circle or a closed curve");
-    if let Some(unsupported) = unsupported {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "NL%refine_backend = harp_dv does not serve {unsupported}; it reads a target \
-                 scale per cell, and a box or corridor carries no discretised boundary to read \
-                 one against. Use method_c for this run"
-            ),
-        ));
-    }
-
-    // A named region asks for a level; HARP-DV asks for a length. One level is
-    // one halving, the same relation Method-C's nesting produces, so a level-L
-    // request becomes the base cell width divided by two to the L.
-    // Two different lengths, measured rather than derived, because
-    // `2*pi*R/(5*nxp)` is neither of them cleanly. At NXP 21 that formula gives
-    // 381 km; the mesh's median cell `sqrt(A/pi)` is 190 km and its median
-    // triangle edge is 364 km. The formula is an edge length, near enough --
-    // which is why `TargetScale`, which compares cell scales, was asking for
-    // half of what a level meant. Guide 11.31.
-
-    // Only the cell scale is used here. `harp_base_lengths` still measures both
-    // because the pair makes the distinction checkable: 190 km against 364 km
-    // at NXP 21 is why taking the nominal `2*pi*R/(5*nxp)` for either was wrong.
-    let (base_cell_m, _base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
-        let nominal =
-            2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
-        (nominal / 2.0, nominal)
-    });
-    let boundaries = harp_region_boundaries(regions)?;
-    let mut region_boundaries = boundaries.clone();
-    let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
-        .iter()
-        .zip(&boundaries)
-        .enumerate()
-        .map(|(index, (region, boundary))| {
-            let target_scale_m = base_cell_m / 2.0_f64.powi(region.level() as i32);
-            match boundary {
-                HarpRegionBoundary::Circle {
-                    center,
-                    radius_meters,
-                } => Box::new(harp::TargetScale {
-                    id: format!("region-{index}"),
-                    target_scale_m,
-                    region: harp::TargetRegion::Circle {
-                        centre: *center,
-                        radius_m: *radius_meters,
-                    },
-                    source_resolution_m: None,
-                }) as Box<dyn harp::CellCriterion>,
-                // One closed curve at a time: each mask is its own demand, and a
-                // model holding all of them at once would answer "inside" for a
-                // cell in any of them, which is a different question.
-                HarpRegionBoundary::Polygon(boundary) => Box::new(harp::TargetScale {
-                    id: format!("region-{index}"),
-                    target_scale_m,
-                    region: harp::TargetRegion::Polygon {
-                        boundary: boundary.clone(),
-                    },
-                    source_resolution_m: None,
-                })
-                    as Box<dyn harp::CellCriterion>,
-            }
-        })
-        .collect();
-
-    let mut criteria = criteria;
-    let mut adaptive_run: Option<AdaptiveRunRecord> = None;
-    if let Some(adaptive_options) = adaptive_options {
-        let adaptive_base_m = adaptive_options.base_m.unwrap_or(base_cell_m);
-        let adaptive_inputs = adaptive_demand_inputs(
-            domain_region,
-            config,
-            adaptive_landtype_file(config),
-            mesh_type,
-            adaptive_options.coastline,
-        )?;
-        let adaptive_depth = adaptive_options.max_level.unwrap_or(max_level).clamp(1, 5);
-        let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "NL%gridnum_perdegree must fit usize",
-            )
-        })?;
-        if gridnum_perdegree == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "NL%gridnum_perdegree must be positive for HARP-DV source-resolution stopping",
-            ));
-        }
-        let source_resolution_m =
-            earthmesh_core::KM_PER_DEGREE_EQUATOR * 1000.0 / gridnum_perdegree as f64;
-        let mut passes = Vec::new();
-        let mut deepest_level = 0usize;
-        let mut stopped_on_empty_demand = false;
-        for level in 1..=adaptive_depth {
-            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
-                refine,
-                &adaptive_inputs,
-                level,
-                adaptive_base_m,
-                adaptive_depth,
-            )?;
-            eprintln!(
-                "harp_dv adaptive level {level} judging {:.0} m cells: {} circles over {} demanded source cells",
-                adaptive_base_m / 2f64.powi((level - 1) as i32),
-                demand.circles.len(),
-                demand.demanded_cells,
-            );
-            if demand.circles.is_empty() {
-                if demand.demanded {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "{} demanded source cells at HARP-DV adaptive level {level}, but circle reduction produced no region",
-                            demand.demanded_cells
-                        ),
-                    ));
-                }
-                stopped_on_empty_demand = true;
-                break;
-            }
-            let criterion_id = if demand.criterion_ids.is_empty() {
-                format!("adaptive-level-{level}")
-            } else {
-                format!("{}-level-{level}", demand.criterion_ids.join("+"))
-            };
-            region_boundaries.extend(harp_region_boundaries(&demand.circles)?);
-            let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
-            criteria.push(Box::new(harp::TargetScale {
-                id: criterion_id,
-                target_scale_m,
-                region: harp::TargetRegion::circles(demand.circles.clone()),
-                source_resolution_m: Some(source_resolution_m),
-            }));
-            deepest_level = level;
-            passes.push(crate::refinement_demand::nest::NestPassReport {
-                level,
-                cell_meters: adaptive_base_m / 2f64.powi((level - 1) as i32),
-                circle_count: demand.circles.len(),
-                regions: demand.circles,
-                demanded_cells: demand.demanded_cells,
-                faces_before: mesh.nwd,
-                faces_after: mesh.nwd,
-            });
-        }
-        adaptive_run = Some((
-            crate::refinement_demand::nest::AdaptiveNestReport {
-                passes,
-                deepest_level,
-                stopped_on_empty_demand,
-                spring_passes: 0,
-            },
-            adaptive_depth,
-            adaptive_base_m,
-            adaptive_options.coastline,
-        ));
-    }
-    let mut adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-
-    // Quality as a criterion, with Ruppert's precondition satisfied: the sites
-    // ringing each refinement region are protected segments, so a circumcentre
-    // that encroaches on one splits it instead of being inserted. Without that
-    // the refinement does not terminate (guide 11.25); with it, it reaches
-    // Ruppert's angle bound (11.26).
-    if let Some(min_angle_deg) = harp_min_angle_target(refine) {
-        let segments = harp_region_boundary_segments(&adaptive, &region_boundaries);
-        adaptive.protect_segments(segments);
-        criteria.push(Box::new(harp::MinAngle {
-            id: "min-angle".to_string(),
-            min_angle_deg,
-        }));
-    }
-    let mut trace_session = crate::harp_trace::from_env()?;
-    let request = harp::HarpDvRequest {
-        config: options.config,
-        criteria: &criteria,
-        candidate_policy: options.candidate_policy,
-        gates: options.gates,
-    };
-    let outcome = if let Some(trace_session) = trace_session.as_mut() {
-        let window_budget_audit = trace_session.window_budget_audit_mode();
-        let mut emit_trace = |event: harp::HarpTraceEvent| {
-            crate::harp_trace::write_core_event(trace_session, &event)
-                .map_err(harp::HarpDvError::from)
-        };
-        harp::refine_harp_dv_traced_with_window_budget_audit(
-            adaptive,
-            &request,
-            window_budget_audit,
-            &mut emit_trace,
-        )
-    } else {
-        harp::refine_harp_dv(adaptive, &request)
-    }
-    .map_err(|error| io::Error::other(error.to_string()))?;
-    if let Some(trace_session) = trace_session {
-        trace_session.publish(&outcome.report)?;
-    }
-
-    // What it could not do, on the run's own output rather than in a log line
-    // nobody reads afterwards.
-    //
-    // Gated on the stop reason and not only on `unresolved_cells`. A run can
-    // stop with that list empty and still not have delivered what was asked:
-    // the budget can run out mid-traversal, leaving the demands it never
-    // reached out of the list; the cycle limit can arrive with committed but
-    // still-unmet demands; and neighbour-scale imbalance is counted separately
-    // from unresolved cells altogether. Each of those used to exit silently,
-    // and a silent exit reads as "the mesh you asked for".
-    let finished_clean = matches!(
-        outcome.report.stop_reason,
-        harp::StopReason::AllSatisfied | harp::StopReason::NoAcceptedTransactions
-    ) && outcome.unresolved_cells.is_empty()
-        && outcome.report.unbalanced_pairs_remaining == 0;
-    // Only when the block below will not fire: it says the same things in more
-    // detail whenever there are unresolved cells, and two lines saying one
-    // thing trains people to read neither.
-    if !finished_clean && outcome.unresolved_cells.is_empty() {
-        eprintln!(
-            "harp_dv: stopped because {:?}; {} cells unresolved, {} adjacent pairs past the \
-             neighbour scale bound. The mesh below is what the run reached, not what was asked",
-            outcome.report.stop_reason,
-            outcome.unresolved_cells.len(),
-            outcome.report.unbalanced_pairs_remaining
-        );
-    }
-    if !outcome.unresolved_cells.is_empty() {
-        let refusals = outcome.report.refusals;
-        eprintln!(
-            "harp_dv: {} cells could not be refined further, and {} adjacent pairs are past the \
-             neighbour scale bound; stopped because {:?}",
-            outcome.unresolved_cells.len(),
-            outcome.report.unbalanced_pairs_remaining,
-            outcome.report.stop_reason
-        );
-        // By kind, because the three want different answers: a degree wall
-        // wants site motion, a pentagon wall wants the demand moved off it, and
-        // a ladder that ran out wants another rung.
-        eprintln!(
-            "harp_dv: refusals -- degree {}, pentagon {}, sliver {}, not insertable {}, topology \
-             {}, no improvement {}, unmeasurable {}",
-            refusals.degree,
-            refusals.pentagon,
-            refusals.sliver,
-            refusals.not_insertable,
-            refusals.topology,
-            refusals.no_improvement,
-            refusals.unmeasurable
-        );
-        if outcome.report.degree_relieving_moves > 0 {
-            eprintln!(
-                "harp_dv: {} moves relieved a degree wall",
-                outcome.report.degree_relieving_moves
-            );
-        }
-        if outcome.report.r_adaptation_moves > 0 {
-            eprintln!(
-                "harp_dv: {} r-adaptation moves committed",
-                outcome.report.r_adaptation_moves
-            );
-        }
-        if outcome.report.fallback_transactions_committed > 0
-            || outcome.report.paired_r_adaptation_moves > 0
-        {
-            eprintln!(
-                "harp_dv: stalled recovery committed {} fallback insertions and {} paired site \
-                 moves",
-                outcome.report.fallback_transactions_committed,
-                outcome.report.paired_r_adaptation_moves
-            );
-        }
-        if outcome.report.multi_ring_r_adaptation_moves > 0 {
-            eprintln!(
-                "harp_dv: {} moves came from widening the recovery to a few rings around each \
-                 stalled region",
-                outcome.report.multi_ring_r_adaptation_moves
-            );
-        }
-        if outcome.report.quality_constrained_count > 0 {
-            eprintln!(
-                "harp_dv: {} remaining cells exhausted every candidate at the {:.1} degree \
-                 triangle-angle floor; more cycles cannot serve those cells under the current \
-                 quality constraint",
-                outcome.report.quality_constrained_count, options.gates.min_triangle_angle_deg
-            );
-        }
-    }
-
-    let refined = outcome
-        .mesh
-        .to_triangular_mesh()
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let conservative_remap_rows = outcome
-        .mesh
-        .conservative_remap()
-        .iter()
-        .map(|row| row.old_site_id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    let conservative_remap_max_row_sum_error = outcome
-        .mesh
-        .conservative_remap()
-        .iter()
-        .fold(std::collections::BTreeMap::new(), |mut sums, row| {
-            *sums.entry(row.old_site_id).or_insert(0.0) += row.overlap_fraction;
-            sums
-        })
-        .into_values()
-        .map(|sum: f64| (sum - 1.0).abs())
-        .fold(0.0, f64::max);
-    let conservative_remap_file = if outcome.mesh.conservative_remap().is_empty() {
-        None
-    } else {
-        let result_dir = PathBuf::from(config.file_dir()).join("result");
-        fs::create_dir_all(&result_dir)?;
-        let path = result_dir.join("harp_dv_conservative_remap.csv");
-        let mut csv = String::from("old_site_id,new_site_id,overlap_fraction\n");
-        for row in outcome.mesh.conservative_remap() {
-            csv.push_str(&format!(
-                "{},{},{:.17}\n",
-                row.old_site_id.0, row.new_site_id.0, row.overlap_fraction
-            ));
-        }
-        fs::write(&path, csv)?;
-        Some(path)
-    };
-    if let Some((report, _, _, _)) = &mut adaptive_run {
-        // HARP-DV evaluates every requested level together rather than running
-        // one topology pass per level. Each row is therefore a demand level,
-        // and the only honest topology counts are the shared run boundaries.
-        for pass in &mut report.passes {
-            pass.faces_before = mesh.nwd;
-            pass.faces_after = refined.nwd;
-        }
-    }
-
-    // HARP-DV already repairs its continuously graded mesh through
-    // transactional site moves followed by Delaunay legalization and quality
-    // acceptance. A fixed-connectivity Laplacian spring works against that
-    // size field, so it is deliberately not run here.
-    let state = spherical_voronoi_state(&refined)?;
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-    let spring_nest_passes = 0;
-    let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
-    Ok(RefinedGrid {
-        // HARP-DV builds no transition band, so there is nothing to count in
-        // these terms -- the same answer red-green gives, and for the same
-        // reason.
-        transition_faces: 0,
-        pentagon_indices: refined.impent,
-        state: Some(state),
-        output_mesh,
-        method_c_metadata,
-        spring_nest_passes,
-        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
-        adaptive_run,
-        // HARP-DV's own ending, on the record rather than only on stderr.
-        harp_dv_run: Some(HarpDvRunRecord {
-            stop_reason: format!("{:?}", outcome.report.stop_reason),
-            cycles_completed: outcome.report.cycles_completed,
-            transactions_committed: outcome.report.transactions_committed,
-            fallback_transactions_committed: outcome.report.fallback_transactions_committed,
-            r_adaptation_moves: outcome.report.r_adaptation_moves,
-            paired_r_adaptation_moves: outcome.report.paired_r_adaptation_moves,
-            multi_ring_r_adaptation_moves: outcome.report.multi_ring_r_adaptation_moves,
-            angles_below_40_deg: outcome.report.angles_below_40_deg,
-            angles_in_40_90_deg: outcome.report.angles_in_40_90_deg,
-            angles_above_90_deg: outcome.report.angles_above_90_deg,
-            angles_in_40_80_deg: outcome.report.angles_in_40_80_deg,
-            angles_above_80_deg: outcome.report.angles_above_80_deg,
-            angle_min_deg: outcome.report.angle_min_deg,
-            angle_max_deg: outcome.report.angle_max_deg,
-            angle_window_40_80_verdict: outcome
-                .report
-                .angle_window_40_80_verdict
-                .as_str()
-                .to_string(),
-            angle_window_unmeasurable_triangles: outcome.report.angle_window_unmeasurable_triangles,
-            vertices_below_degree_5: outcome.report.vertices_below_degree_5,
-            active_adaptive_sites: outcome.report.active_adaptive_sites,
-            active_leaf_sites: outcome.report.active_leaf_sites,
-            interior_leaf_sites: outcome.report.interior_leaf_sites,
-            lineage_unknown_adaptive_sites: outcome.report.lineage_unknown_adaptive_sites,
-            leaf_degree_4: outcome.report.leaf_degree_4,
-            leaf_degree_5: outcome.report.leaf_degree_5,
-            leaf_degree_6: outcome.report.leaf_degree_6,
-            leaf_degree_7: outcome.report.leaf_degree_7,
-            leaf_degree_other: outcome.report.leaf_degree_other,
-            leaf_birth_cycle_min: outcome.report.leaf_birth_cycle_min,
-            leaf_birth_cycle_max: outcome.report.leaf_birth_cycle_max,
-            leaf_target_scale_measured: outcome.report.leaf_target_scale_measured,
-            leaf_target_scale_min_m: outcome.report.leaf_target_scale_min_m,
-            leaf_target_scale_max_m: outcome.report.leaf_target_scale_max_m,
-            angles_below_40_at_leaf_vertices: outcome.report.angles_below_40_at_leaf_vertices,
-            angles_above_80_at_leaf_vertices: outcome.report.angles_above_80_at_leaf_vertices,
-            angles_below_40_at_interior_leaf_vertices: outcome
-                .report
-                .angles_below_40_at_interior_leaf_vertices,
-            angles_above_80_at_interior_leaf_vertices: outcome
-                .report
-                .angles_above_80_at_interior_leaf_vertices,
-            violating_triangles_touching_leaf: outcome.report.violating_triangles_touching_leaf,
-            violating_triangles_touching_interior_leaf: outcome
-                .report
-                .violating_triangles_touching_interior_leaf,
-            d4_leaf_retirement_audit_evaluated: outcome.report.d4_leaf_retirement_audit_evaluated,
-            d4_leaf_retirement_candidates: outcome.report.d4_leaf_retirement_candidates,
-            d4_leaf_retirement_trials_total: outcome.report.d4_leaf_retirement_trials_total,
-            d4_leaf_retirement_triangulations: outcome.report.d4_leaf_retirement_triangulations,
-            d4_leaf_retirement_hard_gate_safe: outcome.report.d4_leaf_retirement_hard_gate_safe,
-            d4_leaf_retirement_physical_safe: outcome.report.d4_leaf_retirement_physical_safe,
-            d4_leaf_retirement_balance_safe: outcome.report.d4_leaf_retirement_balance_safe,
-            d4_leaf_retirement_quality_improving: outcome
-                .report
-                .d4_leaf_retirement_quality_improving,
-            d4_leaf_retirement_fully_acceptable: outcome.report.d4_leaf_retirement_fully_acceptable,
-            d4_leaf_retirement_committed: outcome.report.d4_leaf_retirement_committed,
-            quality_leaf_retirement_committed: outcome.report.quality_leaf_retirement_committed,
-            conservative_remap_rows,
-            conservative_remap_max_row_sum_error,
-            conservative_remap_file,
-            target_triangle_angles_below_40_deg: outcome.report.target_triangle_angles_below_40_deg,
-            target_triangle_angles_above_80_deg: outcome.report.target_triangle_angles_above_80_deg,
-            target_triangle_angle_count: outcome.report.target_triangle_angle_count,
-            target_triangle_angle_min_deg: outcome.report.target_triangle_angle_min_deg,
-            target_triangle_angle_max_deg: outcome.report.target_triangle_angle_max_deg,
-            angle_window_penalty: outcome.report.angle_window_penalty,
-            angle_window_40_80_penalty: outcome.report.angle_window_40_80_penalty,
-            quality_optimiser_moves: outcome.report.quality_optimiser_moves,
-            triangle_eta_min: outcome.report.triangle_eta_min,
-            triangle_eta_p1: outcome.report.triangle_eta_p1,
-            triangles_below_eta_0_89: outcome.report.triangles_below_eta_0_89,
-            unresolved_cells: outcome.unresolved_cells.len(),
-            physical_demands_remaining: outcome.report.physical_demands_remaining,
-            balance_demands_remaining: outcome.report.balance_demands_remaining,
-            quality_constrained_cells: outcome.report.quality_constrained_count,
-            unbalanced_pairs_remaining: outcome.report.unbalanced_pairs_remaining,
-        }),
-        lepp_hard_regions: Vec::new(),
-        lepp_adaptive_hybrid: None,
-        lepp_post_quality: None,
-    })
-}
-
-/// The mesh's own median cell scale and median triangle edge, in metres.
-///
-/// Two quantities that a single nominal-spacing formula conflates. HARP's
-/// criterion comparing `sqrt(A/pi)` wants the first; the second keeps the
-/// measurement and its unit distinction checkable.
-fn harp_base_lengths(mesh: &earthmesh_mesh::TriangularMesh) -> Option<(f64, f64)> {
-    let state = earthmesh_mesh::MeshState::from_triangular_mesh(mesh).ok()?;
-    let radius = state.sphere_radius();
-    let mut scales: Vec<f64> = (earthmesh_mesh::MESH_STATE_FIRST_ID..state.vertices().len())
-        .filter_map(|site| {
-            let cell = state.voronoi_cell(site).ok()?;
-            let area = cell.area_on_unit_sphere()? * radius * radius;
-            Some((area / std::f64::consts::PI).sqrt())
-        })
-        .collect();
-    let mut edges: Vec<f64> = Vec::new();
-    for triangle in earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len() {
-        let corners = state.triangles()[triangle];
-        for corner in 0..3 {
-            edges.push(earthmesh_mesh::arc_length_unit_sphere(
-                state.vertices()[corners[corner]],
-                state.vertices()[corners[(corner + 1) % 3]],
-            ));
-        }
-    }
-    if scales.is_empty() || edges.is_empty() {
-        return None;
-    }
-    let median = |values: &mut Vec<f64>| {
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        values[values.len() / 2]
-    };
-    Some((median(&mut scales), median(&mut edges)))
-}
-
-/// Which backend a run asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RefineBackend {
-    MethodC,
-    RedGreen,
-    HarpDv,
-    Certified,
-}
-
-fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
-    if matches!(backend, RefineBackend::HarpDv | RefineBackend::Certified) {
-        0
-    } else {
-        requested
-    }
-}
-
-/// Resolve `NL%refine_backend`, refusing anything that is not a backend.
-///
-/// Case-insensitive, because `HARP_DV` asks for HARP-DV by any reading. What it
-/// will not do is guess: the dispatch this replaced fell through to Method-C
-/// for every unrecognised value, so `redgreen`, `harp-dv` and `method-c` each
-/// produced a Method-C mesh in silence.
-fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
-    let name = requested.trim().to_ascii_lowercase();
-    match name.as_str() {
-        "method_c" => Ok(RefineBackend::MethodC),
-        "red_green" => Ok(RefineBackend::RedGreen),
-        "harp_dv" => Ok(RefineBackend::HarpDv),
-        "certified" => Ok(RefineBackend::Certified),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "NL%refine_backend = '{other}' is not a refinement backend; the choices are \
-                 method_c, red_green, harp_dv and certified"
-            ),
-        )),
-    }
-}
-
-/// The angle floor a run asks for, if any.
-///
-/// Off unless asked: a quality criterion adds cells nobody requested, and
-/// Ruppert's bound is about 20.7 degrees -- above it the refinement is not
-/// guaranteed to terminate and a run can spend its whole budget.
-///
-/// From `RL%harp_min_angle_deg`. It used to come from an
-/// `EARTHMESH_HARP_MIN_ANGLE` environment variable that no document and no
-/// interface mentioned, so the only way to find the feature was to read this
-/// function. The namelist is where a run says what it wants, and the parser
-/// refuses anything above the bound rather than letting the run discover it.
-fn harp_min_angle_target(refine: &RefineConfig) -> Option<f64> {
-    (refine.harp_min_angle_deg > 0.0).then_some(refine.harp_min_angle_deg)
-}
-
-#[derive(Clone)]
-enum HarpRegionBoundary {
-    Circle {
-        center: earthmesh_mesh::LonLatDegrees,
-        radius_meters: f64,
-    },
-    Polygon(earthmesh_boundary::SphericalBoundaryModel),
-}
-
-/// Validate and compile region geometry once per HARP-DV run.
-///
-/// Both the demand criterion and protected-segment scan consume this result;
-/// rebuilding a spherical boundary once per mesh vertex made polygon runs
-/// quadratic in input-ring size and let invalid rings silently mean no demand.
-fn harp_region_boundaries(
-    regions: &[earthmesh_mesh::RefinementRegion],
-) -> io::Result<Vec<HarpRegionBoundary>> {
-    regions
-        .iter()
-        .enumerate()
-        .map(|(index, region)| {
-            region.validate().map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("HARP-DV region {index} is invalid: {error}"),
-                )
-            })?;
-            match region {
-                earthmesh_mesh::RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    ..
-                } => Ok(HarpRegionBoundary::Circle {
-                    center: *center,
-                    radius_meters: *radius_meters,
-                }),
-                earthmesh_mesh::RefinementRegion::Polygon { .. } => {
-                    let boundary = crate::boundary_model::boundary_model_from_regions(
-                        std::slice::from_ref(region),
-                    );
-                    if boundary.loops.is_empty() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("HARP-DV polygon region {index} does not enclose a loop"),
-                        ));
-                    }
-                    if let Err(errors) = boundary.validate() {
-                        let details = errors
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("HARP-DV polygon region {index} is invalid: {details}"),
-                        ));
-                    }
-                    Ok(HarpRegionBoundary::Polygon(boundary))
-                }
-                _ => Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!("HARP-DV region {index} is not a circle or closed curve"),
-                )),
-            }
-        })
-        .collect()
-}
-
-/// A refinement region's boundary, discretised as mesh edges.
-///
-/// The edges that straddle it -- one endpoint inside, one outside -- which is
-/// what the curve looks like on this mesh. Ruppert's segments are a list like
-/// this; a set of nearby *sites* is a different predicate and an unsound one
-/// (guide 11.28).
-fn harp_region_boundary_segments(
-    mesh: &earthmesh_refine_harp_dv::AdaptiveMesh,
-    regions: &[HarpRegionBoundary],
-) -> Vec<(usize, usize)> {
-    let state = mesh.state();
-    let radius = state.sphere_radius();
-    // What "inside" means is the run's business; what a segment list *is*, and
-    // that a split replaces one with two, is `earthmesh_boundary`'s. Guide
-    // 11.28 asked for the list to live there rather than be rebuilt at each
-    // call site, because the version that lived here was a predicate wearing a
-    // list's name and 11.29 measured what that cost.
-    let inside = |site: usize| {
-        let point = state.vertices()[site];
-        regions
-            .iter()
-            .any(|region| harp_region_contains(region, point, radius))
-    };
-    let edges =
-        (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len()).flat_map(|triangle| {
-            let corners = state.triangles()[triangle];
-            (0..3).map(move |corner| (corners[(corner + 1) % 3], corners[(corner + 2) % 3]))
-        });
-    earthmesh_boundary::SegmentList::from_straddling_edges(edges, inside)
-        .iter()
-        .collect()
-}
-
-fn harp_region_contains(
-    region: &HarpRegionBoundary,
-    point: earthmesh_mesh::CartesianPoint,
-    radius: f64,
-) -> bool {
-    let length = earthmesh_mesh::magnitude(point);
-    if length <= 0.0 {
-        return false;
-    }
-    match region {
-        HarpRegionBoundary::Circle {
-            center,
-            radius_meters,
-        } => {
-            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-            let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
-            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
-        }
-        HarpRegionBoundary::Polygon(boundary) => {
-            let here = earthmesh_mesh::xyz_to_lonlat_degrees(point);
-            boundary.contains(here.lon_degrees, here.lat_degrees)
-        }
-    }
 }
 
 /// The Voronoi/PCVT step, in lon/lat, for a mesh on the sphere.
@@ -5905,6 +5082,42 @@ fn adaptive_demand_windows(
         .collect()
 }
 
+/// Which retained backend a run asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefineBackend {
+    MethodC,
+    RedGreen,
+    Certified,
+}
+
+fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
+    if matches!(backend, RefineBackend::Certified) {
+        0
+    } else {
+        requested
+    }
+}
+
+/// Resolve `NL%refine_backend`, refusing retired HARP-DV spellings explicitly.
+fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
+    let name = requested.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "method_c" => Ok(RefineBackend::MethodC),
+        "red_green" => Ok(RefineBackend::RedGreen),
+        "certified" => Ok(RefineBackend::Certified),
+        "harp_dv" | "harp-dv" | "harpdv" => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "NL%refine_backend = harp_dv has been retired; use method_c, red_green, or certified",
+        )),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green and certified"
+            ),
+        )),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LonLatWindow {
     west: f64,
@@ -6507,11 +5720,7 @@ mod tests {
     }
 
     #[test]
-    fn harp_uses_its_transactional_repair_instead_of_the_generic_spring() {
-        assert_eq!(
-            effective_refinement_spring_iterations(RefineBackend::HarpDv, 2_000),
-            0
-        );
+    fn only_certified_disables_the_generic_spring() {
         assert_eq!(
             effective_refinement_spring_iterations(RefineBackend::RedGreen, 2_000),
             2_000
@@ -6550,43 +5759,6 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
         assert!(segments.iter().all(|edge| mesh_edges.contains(&edge)));
-    }
-
-    #[test]
-    fn harp_rejects_invalid_polygon_geometry_before_refinement() {
-        let crossing = earthmesh_mesh::RefinementRegion::Polygon {
-            points: vec![
-                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
-            ],
-            level: 1,
-        };
-        let error = match harp_region_boundaries(&[crossing]) {
-            Ok(_) => panic!("self-intersecting HARP polygon must fail"),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("crosses itself"));
-
-        let valid = earthmesh_mesh::RefinementRegion::Polygon {
-            points: vec![
-                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
-            ],
-            level: 1,
-        };
-        let compiled = harp_region_boundaries(&[valid]).expect("valid polygon");
-        assert!(harp_region_contains(
-            &compiled[0],
-            earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
-                5.0, 5.0
-            )),
-            earthmesh_core::EARTH_RADIUS_METERS,
-        ));
     }
 
     #[test]

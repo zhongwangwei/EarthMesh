@@ -272,7 +272,7 @@ For questions or support, please contact:
   triangle budget from the resolution asked for instead of a literal that capped
   global runs at NXP 70, gives Method-C's valence repair the M point that actually
   overflowed rather than one from the emitted mesh's id space, and names the spring
-  settings HARP-DV drops instead of one it does not.
+  settings a backend drops instead of one it does not.
 - 2026.08.08 - v3.0.0-alpha4 makes all three backends serve a closed curve, wires the
   boundary subsystem into the carve, and fixes a spring the default refinement route
   had been dropping in silence.

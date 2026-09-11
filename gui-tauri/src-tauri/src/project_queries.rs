@@ -105,7 +105,6 @@ pub(crate) fn project_capabilities() -> Result<ProjectCapabilities, String> {
         default_relax: baseline.mkgrd.relax,
         default_hfield_g: HfieldRefinementRecipe::default().g,
         method_c_defaults: Default::default(),
-        harp_dv_defaults: Default::default(),
         certified_defaults: Default::default(),
         method_c_spring_nxp1_km: METHOD_C_SPRING_NXP1_KM,
         km_per_degree_equator: KM_PER_DEGREE_EQUATOR,
@@ -345,18 +344,6 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             .refinement
             .method_c
             .minimum_triangle_angle_deg,
-        harp_dv_max_cycles: cfg.refinement.harp_dv.max_cycles,
-        harp_dv_minimum_cell_width_m: cfg.refinement.harp_dv.minimum_cell_width_m,
-        harp_dv_maximum_cells: cfg.refinement.harp_dv.maximum_cells,
-        harp_dv_maximum_patch_cells: cfg.refinement.harp_dv.maximum_patch_cells,
-        harp_dv_maximum_neighbor_scale_ratio: cfg.refinement.harp_dv.maximum_neighbor_scale_ratio,
-        harp_dv_minimum_candidate_separation_m: cfg
-            .refinement
-            .harp_dv
-            .minimum_candidate_separation_m,
-        harp_dv_maximum_vertex_degree: cfg.refinement.harp_dv.maximum_vertex_degree,
-        harp_dv_minimum_triangle_angle_deg: cfg.refinement.harp_dv.minimum_triangle_angle_deg,
-        harp_dv_criterion_minimum_angle_deg: cfg.refinement.harp_dv.criterion_minimum_angle_deg,
         certified_mode: match cfg.refinement.certified.mode {
             earthmesh_project::CertifiedMode::SafeMotherOnly => "safe_mother_only",
             earthmesh_project::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
@@ -451,7 +438,6 @@ fn refinement_backend_id(backend: earthmesh_project::RefinementBackend) -> &'sta
     match backend {
         earthmesh_project::RefinementBackend::MethodC => "method_c",
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
-        earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
         earthmesh_project::RefinementBackend::Certified => "certified",
     }
 }
@@ -466,7 +452,6 @@ fn refinement_algorithm_id(cfg: &ProjectConfig) -> &'static str {
         }
         earthmesh_project::RefinementBackend::MethodC => "method_c",
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
-        earthmesh_project::RefinementBackend::HarpDv => "harp_dv",
         earthmesh_project::RefinementBackend::Certified => "certified",
     }
 }

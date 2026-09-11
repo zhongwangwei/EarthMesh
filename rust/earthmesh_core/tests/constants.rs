@@ -870,32 +870,38 @@ fn runtime_state_records_data_preprocess_source_grid_globals() {
 /// A backend name that is not a backend is refused, not guessed at.
 ///
 /// The pipeline used to match on this string with a `_` arm that ran Method-C,
-/// so `harpdv`, `harp-dv`, `redgreen`, `method-c` and `HARP_DV` all produced a
-/// Method-C mesh in silence -- a user asking for one backend and getting
+/// so `redgreen` and `method-c` produced a Method-C mesh in silence -- a user asking for one backend and getting
 /// another.
 #[test]
 fn an_unknown_refine_backend_is_refused() {
-    for name in ["harpdv", "harp-dv", "redgreen", "method-c", "hex"] {
+    for name in ["redgreen", "method-c", "hex"] {
         let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
             .expect_err("this is not a refinement backend");
         assert!(error.contains("refine_backend"), "{name}: {error}");
     }
 }
 
-/// The three real names are accepted, in any case.
+/// The retained backend names are accepted, in any case.
 #[test]
-fn the_four_backends_are_accepted_in_any_case() {
+fn the_retained_backends_are_accepted_in_any_case() {
     for name in [
         "method_c",
         "red_green",
-        "harp_dv",
         "certified",
-        "HARP_DV",
         "Red_Green",
         "CERTIFIED",
     ] {
         EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
             .unwrap_or_else(|error| panic!("{name} should be a backend: {error}"));
+    }
+}
+
+#[test]
+fn retired_harp_refine_backend_is_rejected_explicitly() {
+    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
+        let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
+            .expect_err("HARP-DV is retired");
+        assert!(error.contains("retired"), "{name}: {error}");
     }
 }
 

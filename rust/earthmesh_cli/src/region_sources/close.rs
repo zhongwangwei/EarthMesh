@@ -164,7 +164,7 @@ fn method_c_geometry_points_for_canonical_ngrdll(points: &[GeometryPoint]) -> Ve
 /// a level-2 region must sit inside a level-1 one, or its perimeter has no
 /// ground to transition through, and `method_c_spawn_internal` refuses the pass
 /// by name -- `pass 2 polygon regions require explicit parent-level halo`.
-/// Measured before this: the same mask that red-green and HARP-DV both served
+/// Measured before this: the same mask that red-green served
 /// stopped Method-C, which is the default backend.
 ///
 /// # Growing a ring

@@ -47,7 +47,6 @@ fn sample() -> ProjectConfig {
             max_passes: 3,
             threshold_criteria: Vec::new(),
             method_c: Default::default(),
-            harp_dv: Default::default(),
             certified: Default::default(),
             adaptive: None,
             specified_circle: None,
@@ -1768,16 +1767,6 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
 }
 
 #[test]
-fn harp_dv_does_not_lower_the_generic_spring() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    let lowered = project.lower();
-
-    assert_eq!(lowered.refine.spring_global_type, 0);
-    assert_eq!(lowered.refine.spring_regional_type, 0);
-}
-
-#[test]
 fn hfield_raster_targets_eight_base_cells_per_raster_cell() {
     // Measured window, in base cells per raster cell: 4 fails (aliased), 6.9-12
     // passes at both resolutions, 32 fails (fragmented). Target the middle.
@@ -2091,7 +2080,7 @@ fn layer_role_labels_are_schema_owned() {
 }
 
 #[test]
-fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
+fn quality_warning_default_matches_intent_defaults() {
     assert_eq!(
         QualityConfig::default().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
@@ -2099,11 +2088,6 @@ fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
     assert_eq!(
         MeshIntentPreset::HydrologyLand.defaults().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
-    );
-    assert_eq!(
-        HarpDvRefinementRecipe::default().minimum_triangle_angle_deg,
-        0.0,
-        "HARP-DV reports the warning but does not enforce it by default"
     );
 }
 
@@ -2380,12 +2364,12 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
     );
 
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
     project.quality.on_violation = ViolationPolicy::AutoRefine;
     assert_eq!(
         project.lower().mkgrd.nxp,
         80,
-        "HARP-DV owns its quality repair and must not inherit Method-C's stride-three lattice"
+        "CMRC owns its quality repair and must not inherit Method-C's stride-three lattice"
     );
 }
 
@@ -2394,7 +2378,7 @@ fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
     let mut project = sample();
     project.target.resolution = ResolutionSpec::Nxp(80);
     project.quality.on_violation = ViolationPolicy::Warn;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
     project.data_layers = vec![
         ProjectDataLayer {
             id: "merit".into(),
@@ -2488,6 +2472,26 @@ fn coupling_config_lowers_overlay_and_feature_detection_options() {
     p.data_layers
         .retain(|layer| layer.role != ProjectLayerRole::LandType);
     assert!(p.try_lower().unwrap_err().contains("landtype layer"));
+}
+
+#[test]
+fn project_yaml_rejects_retired_harp_backend_and_options() {
+    let yaml = sample().to_yaml().unwrap();
+
+    let backend_yaml = yaml.replace("backend: MethodC", "backend: HarpDv");
+    let error = ProjectConfig::from_yaml(&backend_yaml).expect_err("HARP-DV backend is retired");
+    assert!(
+        error.contains("HarpDv") || error.contains("unknown"),
+        "{error}"
+    );
+
+    let option_yaml = yaml.replace("refinement:\n", "refinement:\n  harp_dv: {}\n");
+    let error =
+        ProjectConfig::from_yaml(&option_yaml).expect_err("retired HARP options are unknown");
+    assert!(
+        error.contains("harp_dv") || error.contains("unknown"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2769,9 +2773,7 @@ fn coupling_cama_root_round_trips_with_compatibility_alias() {
 fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     // The run refuses this at the dispatch, but a project is edited and saved
     // long before it is run. Without the refusal here, the GUI would happily
-    // save a project whose only symptom is a run that dies -- and before the
-    // dispatch grew its guard, harp_dv took the pair and produced 6450 cells
-    // having never read the field.
+    // save a project whose only symptom is a run that dies.
     let mut p = sample();
     p.refinement.hfield = Some(crate::HfieldRefinementRecipe {
         enabled: true,
@@ -2791,7 +2793,6 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
 
     for (backend, name) in [
         (crate::RefinementBackend::RedGreen, "red_green"),
-        (crate::RefinementBackend::HarpDv, "harp_dv"),
         (crate::RefinementBackend::Certified, "certified"),
     ] {
         p.refinement.backend = backend;
@@ -2914,41 +2915,6 @@ fn method_c_lepp_algorithm_rejects_invalid_limits_and_post_quality_composition()
         .validate()
         .expect_err("two LEPP owners")
         .contains("cannot be combined"));
-}
-
-#[test]
-fn harp_dv_algorithm_lowers_every_exposed_control() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    project.refinement.harp_dv = crate::HarpDvRefinementRecipe {
-        max_cycles: 3,
-        minimum_cell_width_m: 2_000.0,
-        maximum_cells: 9_000,
-        maximum_patch_cells: 800,
-        maximum_neighbor_scale_ratio: 1.5,
-        minimum_candidate_separation_m: 2.0,
-        maximum_vertex_degree: 6,
-        minimum_triangle_angle_deg: 25.0,
-        criterion_minimum_angle_deg: 10.0,
-    };
-
-    let namelist = project.try_lower().expect("HARP-DV project").to_namelist();
-    assert!(namelist.contains("&harp_dv"));
-    assert!(namelist.contains("NL%max_cycles = 3"));
-    assert!(namelist.contains("NL%minimum_cell_width_m = 2000"));
-    assert!(namelist.contains("NL%maximum_cells = 9000"));
-    assert!(namelist.contains("NL%maximum_patch_cells = 800"));
-    assert!(namelist.contains("NL%maximum_neighbor_scale_ratio = 1.5"));
-    assert!(namelist.contains("NL%minimum_candidate_separation_m = 2"));
-    assert!(namelist.contains("NL%maximum_vertex_degree = 6"));
-    assert!(namelist.contains("NL%minimum_triangle_angle_deg = 25"));
-    assert!(namelist.contains("RL%harp_min_angle_deg = 10"));
-
-    project.refinement.harp_dv.maximum_patch_cells = 9_001;
-    assert!(project
-        .validate()
-        .expect_err("patch budget exceeds mesh budget")
-        .contains("maximum_patch_cells"));
 }
 
 #[test]

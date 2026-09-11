@@ -300,16 +300,20 @@ impl EarthmeshConfig {
 
         // Both of these were free-form strings that the pipeline matched on
         // with a `_` arm, so a typo chose a different thing in silence:
-        // `redgreen`, `harp-dv` and `method-c` each produced a Method-C mesh,
-        // and an unrecognised `mode_grid` fell through to the hex reading.
+        // `redgreen` and `method-c` each produced a Method-C mesh, and an
+        // unrecognised `mode_grid` fell through to the hex reading.
         // Named here rather than at each match, because there are a dozen
         // matches on `mode_grid` alone and one of them will always be missed.
+        let refine_backend = self.refine_backend.trim().to_ascii_lowercase();
+        if matches!(refine_backend.as_str(), "harp_dv" | "harp-dv" | "harpdv") {
+            return Err("refine_backend harp_dv has been retired; expected method_c, red_green, or certified".to_string());
+        }
         if !matches!(
-            self.refine_backend.trim().to_ascii_lowercase().as_str(),
-            "method_c" | "red_green" | "harp_dv" | "certified"
+            refine_backend.as_str(),
+            "method_c" | "red_green" | "certified"
         ) {
             return Err(format!(
-                "unsupported refine_backend {}; expected method_c, red_green, harp_dv, or certified",
+                "unsupported refine_backend {}; expected method_c, red_green, or certified",
                 self.refine_backend
             ));
         }

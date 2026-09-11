@@ -36,6 +36,9 @@ const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/scri
 );
 new Function(scripts.join("\n"));
 log(`parsed ${scripts.length} inline scripts`);
+check(!/harp[_-]?dv|harp[A-Z]/i.test(html), "retired HARP controls must not be exposed");
+check(!libRs.includes("set_harp_dv_options"), "retired HARP command must not be registered");
+log("retired HARP UI and commands are absent");
 
 check(
   !/<[^>]+\s+on[a-z]+\s*=/i.test(html),
@@ -100,12 +103,12 @@ check(
 log("niter_refine default remains engine-owned");
 
 check(
-  html.includes('const springControls = algorithm === "harp_dv"') &&
-    html.includes("HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance") &&
+  html.includes('const springControls = algorithm === "certified"') &&
+    html.includes("generic spring smoothing would invalidate the certificate.") &&
     html.includes('${springControls}'),
-  "HARP-DV must explain and hide the inapplicable generic spring controls",
+  "CMRC must explain and hide the inapplicable generic spring controls",
 );
-log("HARP-DV and CMRC hide inapplicable generic spring controls");
+log("CMRC hides inapplicable generic spring controls");
 
 check(
   html.includes('id="thresholdRefineOn"') &&
@@ -243,7 +246,7 @@ check(
     html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
     html.includes("+ algorithmBlock") &&
     !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
-  "Method-C must visibly own Canonical and LEPP-Delaunay while CMRC, Red-Green, and HARP-DV remain peer backends",
+  "Method-C must visibly own Canonical and LEPP-Delaunay while CMRC and Red-Green remain peer backends",
 );
 log("algorithm hierarchy shows LEPP-Delaunay AdaptiveHybrid under Method-C");
 
@@ -251,14 +254,11 @@ check(
   html.includes('id="canonicalMethodCOptions"') &&
     html.includes('id="leppDelaunayOptions"') &&
     html.includes('id="redGreenOptions"') &&
-    html.includes('id="harpDvOptions"') &&
     html.includes('id="certifiedOptions"') &&
     html.includes("const algorithmOptionsBlock = {") &&
     html.includes("+ algorithmOptionsBlock") &&
     html.includes('id="leppMaximumPathLength"') &&
-    html.includes('id="harpMaximumPatchCells"') &&
     html.includes('invoke("set_method_c_algorithm_options"') &&
-    html.includes('invoke("set_harp_dv_options"') &&
     html.includes('invoke("set_certified_options"'),
   "the selected algorithm must be the only one whose complete production controls are rendered and saved",
 );
@@ -281,7 +281,7 @@ log("CMRC defaults to reverse coarsening and large meshes use viewport LOD");
 
 {
   const canonical = section(html, /const canonicalMethodCOptions = `([\s\S]*?)`;\n    const leppOptions/, "Canonical Method-C options");
-  const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const harpOptions/, "Red-Green options");
+  const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const certifiedOptions/, "Red-Green options");
   check(
     !canonical.includes('id="expertWeakConcav"') &&
       redGreen.includes('id="expertWeakConcav"') &&
@@ -1021,7 +1021,6 @@ check(
     html.includes("applyProjectCapabilities(capabilities)") &&
     html.includes("DEFAULT_HFIELD_G = capabilities.default_hfield_g") &&
     html.includes("METHOD_C_DEFAULTS = capabilities.method_c_defaults") &&
-    html.includes("HARP_DV_DEFAULTS = capabilities.harp_dv_defaults") &&
     html.includes("CERTIFIED_DEFAULTS = capabilities.certified_defaults") &&
     html.includes("const algorithmDefaults = defaultAlgorithmControls();") &&
     html.includes("DEFAULT_OPENMP = capabilities.default_openmp") &&
@@ -1233,7 +1232,7 @@ log("discrete mask is existing-project-only");
 
 {
   // Algorithm and route were two selects that knew nothing about each other, so
-  // the pair `harp_dv` + h-field was one click away and the run refuses it.
+  // an unsupported backend + h-field was one click away and the run refuses it.
   // Both halves are needed: the non-Method-C DOM must not contain H-field
   // controls, and stale projects must be reset before rendering or saving.
   check(

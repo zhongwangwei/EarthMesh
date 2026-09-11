@@ -37,7 +37,7 @@ fn certified_uniform_dispatches_without_activating_refinement() {
 
 #[test]
 fn other_backends_keep_the_existing_disabled_refinement_dispatch() {
-    for backend in ["method_c", "red_green", "harp_dv"] {
+    for backend in ["method_c", "red_green"] {
         let config = EarthmeshConfig {
             mesh_type: "oceanmesh".into(),
             refine_backend: backend.into(),

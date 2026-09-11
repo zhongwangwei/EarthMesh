@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use earthmesh_project::{MeshCellKind, ProjectConfig, RefinementBackend};
+use earthmesh_project::{MeshCellKind, ProjectConfig};
 
 /// Which mesh survives comparison of an AutoRefine candidate with its baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub fn write_project_quality_report_with_namelist(
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let mesh = crate::grid_quality_pipeline::read_gridfile_mesh_points(gridfile)
         .map_err(|err| format!("project quality read {}: {err}", gridfile.display()))?;
-    let mut input = match project.target.cell {
+    let input = match project.target.cell {
         MeshCellKind::Hex => crate::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh),
         MeshCellKind::Tri => crate::grid_quality_pipeline::quality_input_from_gridfile(&mesh),
     }
@@ -148,21 +148,6 @@ pub fn write_project_quality_report_with_namelist(
                 .map_err(|err| format!("project quality read {}: {err}", path.display()))
         })
         .transpose()?;
-    let harp_dv = target_namelist_text
-        .as_deref()
-        .and_then(|text| earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(text).ok())
-        .map_or(
-            project.refinement.backend == RefinementBackend::HarpDv,
-            |config| config.refine_backend.eq_ignore_ascii_case("harp_dv"),
-        );
-    // HARP's stored generations describe insertion ancestry, not dyadic cell
-    // sizes. Physical adjacent-size ratios are still measured from geometry.
-    if harp_dv {
-        input
-            .cells
-            .iter_mut()
-            .for_each(|cell| cell.refine_level = None);
-    }
     let target_nxp = project.try_lower()?.mkgrd.nxp;
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     let thresholds = earthmesh_quality::QualityThresholds {

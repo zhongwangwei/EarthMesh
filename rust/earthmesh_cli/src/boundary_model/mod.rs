@@ -10,7 +10,7 @@
 //!
 //! The carve runs after whichever backend refined, so this sees the same shape
 //! whichever one it was. A check written inside Method-C would have to be
-//! written again for red-green and again for HARP-DV, and the third copy is
+//! written again for red-green; duplicate backend copies are
 //! where they start to disagree.
 //!
 //! # What `topology_counts` is for

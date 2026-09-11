@@ -177,7 +177,6 @@ impl ProjectConfig {
                 max_passes: 0,
                 threshold_criteria: Vec::new(),
                 method_c: Default::default(),
-                harp_dv: Default::default(),
                 certified: Default::default(),
                 adaptive: None,
                 specified_circle: None,

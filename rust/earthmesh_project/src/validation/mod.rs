@@ -234,8 +234,6 @@ impl ProjectConfig {
     /// place that knows what each backend can do -- but a project is edited and
     /// saved long before it is run, so the refusal has to exist here too or the
     /// only way to learn is to start a run and watch it fail. Measured before
-    /// the dispatch grew its guard: `harp_dv` with an h-field configured
-    /// produced 6450 cells having never read the field.
     fn validate_backend_serves_refinement_route(&self) -> Result<(), String> {
         if !self.refinement.enabled {
             return Ok(());
@@ -264,12 +262,6 @@ impl ProjectConfig {
             crate::RefinementBackend::RedGreen => Err(
                 "refinement.backend red_green does not serve an h-field; it refines named regions \
                  and the point+radius criteria. Use method_c, or turn refinement.hfield off"
-                    .to_string(),
-            ),
-            crate::RefinementBackend::HarpDv => Err(
-                "refinement.backend harp_dv does not serve an h-field; it re-reads a target scale \
-                 against the cells that exist and serves circular regions. Use method_c, or turn \
-                 refinement.hfield off"
                     .to_string(),
             ),
             crate::RefinementBackend::Certified => Err(
@@ -586,7 +578,6 @@ impl ThresholdCriterionConfig {
 impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
         self.method_c.validate()?;
-        self.harp_dv.validate()?;
         self.certified.validate()?;
         if let Some(circles) = &self.specified_circle {
             let circles = circles.as_slice();
@@ -678,65 +669,6 @@ impl MethodCRefinementRecipe {
         {
             return Err(
                 "refinement.method_c minimum_triangle_angle_deg must be finite and in [0, 60)"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-}
-
-impl crate::HarpDvRefinementRecipe {
-    fn validate(&self) -> Result<(), String> {
-        if self.max_cycles == 0 {
-            return Err("refinement.harp_dv max_cycles must be > 0".to_string());
-        }
-        if !self.minimum_cell_width_m.is_finite() || self.minimum_cell_width_m <= 0.0 {
-            return Err(
-                "refinement.harp_dv minimum_cell_width_m must be positive and finite".to_string(),
-            );
-        }
-        if self.maximum_cells == 0 {
-            return Err("refinement.harp_dv maximum_cells must be > 0".to_string());
-        }
-        if self.maximum_patch_cells == 0 || self.maximum_patch_cells > self.maximum_cells {
-            return Err(
-                "refinement.harp_dv maximum_patch_cells must be in 1..=maximum_cells".to_string(),
-            );
-        }
-        if !self.maximum_neighbor_scale_ratio.is_finite()
-            || self.maximum_neighbor_scale_ratio <= 1.0
-        {
-            return Err(
-                "refinement.harp_dv maximum_neighbor_scale_ratio must be finite and > 1"
-                    .to_string(),
-            );
-        }
-        if !self.minimum_candidate_separation_m.is_finite()
-            || self.minimum_candidate_separation_m <= 0.0
-        {
-            return Err(
-                "refinement.harp_dv minimum_candidate_separation_m must be positive and finite"
-                    .to_string(),
-            );
-        }
-        if !(3..=earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE)
-            .contains(&self.maximum_vertex_degree)
-        {
-            return Err("refinement.harp_dv maximum_vertex_degree must be in 3..=7".to_string());
-        }
-        if !self.minimum_triangle_angle_deg.is_finite()
-            || !(0.0..60.0).contains(&self.minimum_triangle_angle_deg)
-        {
-            return Err(
-                "refinement.harp_dv minimum_triangle_angle_deg must be finite and in [0, 60)"
-                    .to_string(),
-            );
-        }
-        if !self.criterion_minimum_angle_deg.is_finite()
-            || !(0.0..=20.7).contains(&self.criterion_minimum_angle_deg)
-        {
-            return Err(
-                "refinement.harp_dv criterion_minimum_angle_deg must be finite and in [0, 20.7]"
                     .to_string(),
             );
         }

@@ -211,21 +211,6 @@ fn write_landtype_file_by_predicate(path: &std::path::Path, is_land: impl Fn(f64
     var.put_values(&values, (.., ..)).expect("write landtype");
 }
 
-fn write_sparse_landtype_file_for_gridnum(path: &std::path::Path, gridnum_perdegree: usize) {
-    let (nlons, nlats) = (360 * gridnum_perdegree, 180 * gridnum_perdegree);
-    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create sparse landtype file");
-    file.add_dimension("longitude", nlons)
-        .expect("longitude dim");
-    file.add_dimension("latitude", nlats).expect("latitude dim");
-    let mut var = file
-        .add_variable::<i8>("landtype", &["longitude", "latitude"])
-        .expect("landtype var");
-    let strip = vec![1_i8; nlats];
-    let lon_zero = 180 * gridnum_perdegree;
-    var.put_values(&strip, (lon_zero..lon_zero + 1, ..))
-        .expect("write sparse landtype strip");
-}
-
 fn non_placeholder_points(points: &[LonLatPoint]) -> Vec<LonLatPoint> {
     points
         .iter()
@@ -2890,293 +2875,6 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
     );
 }
 
-/// The harp_dv backend, from namelist to gridfile.
-///
-/// The one test that says the backend exists as far as a user is concerned.
-/// Everything below it works on `MeshState`; this is where that becomes a file
-/// with a consistent topology, read back rather than trusted.
-#[test]
-fn harp_dv_backend_refines_a_named_circle_end_to_end() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
-    let root = temp_root("redgreen_named_circle");
-    let sources = root.join("sources");
-    fs::create_dir_all(&sources).expect("create sources");
-    // Two levels, so the chaining is exercised rather than just the first
-    // round: a level-2 mask carries its own parent halo down to level 1, which
-    // is the nesting red-green's `halo` erodes against.
-    write_circle_mask_netcdf(
-        sources.join("refine_circle_001.nc4"),
-        &CircleMask {
-            refine_degree: 2,
-            points: vec![LonLatPoint {
-                lon: 115.0,
-                lat: 25.0,
-            }],
-            radius_km: vec![2_000.0],
-        },
-    )
-    .expect("write circle specified refine source");
-
-    let namelist = root.join("mkgrd_harp_dv_circle.nml");
-    let base_dir = format!("{}/", root.display());
-    let refine_prefix = sources.join("refine_circle").display().to_string();
-    fs::write(
-        &namelist,
-        format!(
-            "&mkgrd\n  NL%EXPNME='case_harp_dv_circle'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=1\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=20\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
-        ),
-    )
-    .expect("write harp_dv namelist");
-
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
-        .expect("harp_dv backend should run through the refinement pipeline");
-
-    assert_eq!(run.max_level, 2);
-    assert_eq!(run.spring_nest_iterations, 0);
-    assert_eq!(
-        run.spring_nest_passes, 0,
-        "HARP-DV owns smoothing through transactional site moves"
-    );
-    assert!(run.output.output.exists());
-    assert!(
-        run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
-        "harp_dv should refine the initial mesh: {} vs {}",
-        run.output.lbx_points,
-        run.gridinit.as_ref().unwrap().gridfile.lbx_points
-    );
-    // HARP-DV does fill per-cell generations -- it carries a depth per site --
-    // so unlike red-green there is something measured off this mesh.
-    assert!(run.realized_max_level > 0);
-    // And no transition band, which is red-green's answer too and for the same
-    // reason: it does not build one, so zero reads "not measured from this
-    // mesh" rather than "none were needed".
-    assert_eq!(run.transition_faces, 0);
-    // The run record's counts come from the gridfile when there is no Voronoi
-    // state to take them from.
-    assert!(run.runtime_state.grid.nwa > 0);
-    assert!(run.runtime_state.grid.nma > run.runtime_state.grid.nwa);
-
-    // "More cells" is what a wrong `output_mesh` would also produce. This is
-    // the assertion that says the file is a mesh.
-    let refined_mesh =
-        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
-            .expect("read final harp_dv mesh");
-    let topology =
-        earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&refined_mesh);
-    assert!(
-        topology.is_consistent(),
-        "harp_dv output topology violations: {:?}",
-        &topology.violations[..topology.violations.len().min(8)]
-    );
-}
-
-#[test]
-fn harp_trace_failure_does_not_write_final_gridfile() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
-    let root = temp_root("harp_trace_existing_target_failure");
-    let sources = root.join("sources");
-    fs::create_dir_all(&sources).expect("create sources");
-    write_circle_mask_netcdf(
-        sources.join("refine_circle_001.nc4"),
-        &CircleMask {
-            refine_degree: 1,
-            points: vec![LonLatPoint { lon: 0.0, lat: 0.0 }],
-            radius_km: vec![2_000.0],
-        },
-    )
-    .expect("write circle specified refine source");
-
-    let namelist = root.join("mkgrd_harp_trace_existing_target_failure.nml");
-    let base_dir = format!("{}/", root.display());
-    let refine_prefix = sources.join("refine_circle").display().to_string();
-    fs::write(
-        &namelist,
-        format!(
-            "&mkgrd\n  NL%EXPNME='case_harp_trace_existing_target_failure'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=1\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n&harp_dv\n  NL%max_cycles=1\n/\n",
-        ),
-    )
-    .expect("write HARP trace failure namelist");
-
-    let trace_target = root.join("harp_trace.jsonl");
-    fs::write(&trace_target, "sentinel\n").expect("write existing trace sentinel");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-passthrough")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .arg("--source-first-triangle-id")
-        .arg("1")
-        .env("EARTHMESH_HARP_TRACE_JSONL", &trace_target)
-        .current_dir(&root)
-        .output()
-        .expect("run HARP trace failure case");
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("HARP trace target already exists"),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read_to_string(&trace_target).expect("read trace sentinel"),
-        "sentinel\n"
-    );
-    let result = root.join("case_harp_trace_existing_target_failure/result");
-    assert!(!result.join("gridfile_NXP0006_hex.nc4").exists());
-    assert!(!result.join("harp_dv_conservative_remap.csv").exists());
-}
-
-#[test]
-fn harp_dv_backend_consumes_adaptive_landcover_criteria_without_named_regions() {
-    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
-    let root = temp_root("harp_dv_landcover_adaptive");
-    let sources = root.join("sources");
-    fs::create_dir_all(&sources).expect("create sources");
-    write_bbox_mask_netcdf(
-        sources.join("domain_bbox_000.nc4"),
-        &BBoxMask {
-            refine_degree: 0,
-            points: vec![BBoxPoint {
-                west: -6.0,
-                east: 6.0,
-                north: 6.0,
-                south: -6.0,
-            }],
-        },
-    )
-    .expect("write bbox domain source");
-    let landtype = root.join("landtype.nc");
-    write_sparse_landtype_file_for_gridnum(&landtype, 120);
-
-    let namelist = root.join("mkgrd_harp_dv_landcover.nml");
-    let base_dir = format!("{}/", root.display());
-    let domain_prefix = sources.join("domain_bbox").display().to_string();
-    fs::write(
-        &namelist,
-        format!(
-            "&mkgrd
-  NL%EXPNME='case_harp_dv_landcover'
-  NL%base_dir='{base_dir}'
-  NL%NXP=6
-  NL%mesh_type='landmesh'
-  NL%mode_grid='hex'
-  NL%mode_file='none'
-  NL%mode_file_description='none'
-  NL%refine=.true.
-  NL%refine_backend='harp_dv'
-  NL%niter=0
-  NL%beta=1.0
-  NL%relax=0.25
-  NL%gridnum_perdegree=120
-  NL%landtype_file='{}'
-  NL%mask_domain_global=.false.
-  NL%mask_domain_type='bbox'
-  NL%mask_domain_fprefix='{domain_prefix}'
-  NL%mask_patch_on=.false.
-  NL%output_format='CoLM'
-/
-&mkrefine
-  RL%Istransition=.true.
-  RL%SpringGlobal_type=0
-  RL%SpringRegional_type=0
-  RL%refine_spc=.false.
-  RL%refine_cal=.true.
-  RL%max_iter_spc=0
-  RL%max_iter_cal=1
-  RL%niter_refine=0
-  RL%num_rc=1
-  RL%set_dis_type='linear'
-  RL%halo=3,3,3,0,0,0,0,0,0
-  RL%max_transition_row=3,3,3,0,0,0,0,0,0
-  RL%mask_refine_cal_fprefix='/tmp'
-  RL%refine_num_landtypes=.true.
-  RL%th_num_landtypes=1
-/
-&harp_dv
-  NL%max_cycles=1
-/
-&adaptive
-  NL%adaptive_on=.true.
-  NL%adaptive_max_level=1
-  NL%adaptive_base_m=800000.0
-  NL%adaptive_coastline=.false.
-/
-",
-            landtype.display()
-        ),
-    )
-    .expect("write harp_dv landcover namelist");
-
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
-        .expect("HARP-DV should consume adaptive landcover criteria");
-    let harp = run.harp_dv_run.expect("HARP-DV report");
-    assert_eq!(
-        harp.cycles_completed, 1,
-        "&harp_dv controls must reach the backend"
-    );
-    assert!(
-        harp.transactions_committed > 0,
-        "adaptive landcover criteria must do work: {harp:?}"
-    );
-    assert!(harp.active_adaptive_sites >= harp.active_leaf_sites);
-    assert_eq!(
-        harp.leaf_degree_4
-            + harp.leaf_degree_5
-            + harp.leaf_degree_6
-            + harp.leaf_degree_7
-            + harp.leaf_degree_other,
-        harp.active_leaf_sites
-    );
-    assert!(harp.leaf_birth_cycle_min <= harp.leaf_birth_cycle_max);
-    assert!(harp.leaf_target_scale_min_m <= harp.leaf_target_scale_max_m);
-    assert!(harp.interior_leaf_sites <= harp.active_leaf_sites);
-    assert!(harp.leaf_target_scale_measured <= harp.active_leaf_sites);
-    assert!(harp.lineage_unknown_adaptive_sites <= harp.active_adaptive_sites);
-    assert!(
-        harp.angles_below_40_at_interior_leaf_vertices <= harp.angles_below_40_at_leaf_vertices
-    );
-    assert!(
-        harp.angles_above_80_at_interior_leaf_vertices <= harp.angles_above_80_at_leaf_vertices
-    );
-    assert!(
-        harp.violating_triangles_touching_interior_leaf <= harp.violating_triangles_touching_leaf
-    );
-    assert_eq!(harp.d4_leaf_retirement_candidates, 0);
-    assert!(harp.d4_leaf_retirement_fully_acceptable <= harp.d4_leaf_retirement_quality_improving);
-    assert!(harp.d4_leaf_retirement_fully_acceptable <= harp.d4_leaf_retirement_candidates);
-    assert!(
-        run.realized_region_halvings > 0.0,
-        "adaptive circles must reach the achieved-resolution measurement"
-    );
-    assert!(run.output.output.exists());
-    let adaptive_report = run
-        .output
-        .output
-        .parent()
-        .expect("result dir")
-        .join("adaptive_refinement.json");
-    assert!(
-        adaptive_report.exists(),
-        "HARP-DV adaptive criteria must leave the same demand report as the other consumers"
-    );
-    assert!(
-        fs::read_to_string(adaptive_report)
-            .expect("adaptive report")
-            .contains("\"base_m\":800000"),
-        "explicit adaptive_base_m must reach the HARP-DV target/report"
-    );
-}
-
-/// A request red-green cannot serve is refused, not served with less.
-///
-/// The marking comes from named regions; an h-field's target levels are simply
-/// not read on this route. Ignoring them would produce a mesh that is valid,
-/// passes its quality checks, and is not what the project asked for.
 #[test]
 fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
@@ -3343,97 +3041,6 @@ fn redgreen_backend_refuses_to_run_without_its_transition_rows() {
     );
 }
 
-/// What a harp_dv mesh actually measures, put through the quality gate.
-///
-/// The reason the pipeline was wired before the remaining tuning: section
-/// 13.3's improvement gate needs weights, and the only honest source for them
-/// is what a real mesh scores. Nothing before this point could produce a
-/// number -- the backend worked on `MeshState` and never reached a file.
-///
-/// This asserts the two things that decide whether the mesh is usable at all,
-/// and prints the rest so the numbers are visible when the gate is next
-/// touched.
-#[test]
-fn harp_dv_output_passes_the_mesh_quality_gate() {
-    let root = temp_root("harp_dv_quality");
-    let sources = root.join("sources");
-    std::fs::create_dir_all(&sources).expect("create sources");
-    write_circle_mask_netcdf(
-        sources.join("refine_circle_001.nc4"),
-        &CircleMask {
-            refine_degree: 2,
-            points: vec![LonLatPoint {
-                lon: 115.0,
-                lat: 25.0,
-            }],
-            radius_km: vec![2_000.0],
-        },
-    )
-    .expect("write circle specified refine source");
-
-    let namelist = root.join("mkgrd_harp_dv_quality.nml");
-    let base_dir = format!("{}/", root.display());
-    let refine_prefix = sources.join("refine_circle").display().to_string();
-    std::fs::write(
-        &namelist,
-        format!(
-            "&mkgrd\n  NL%EXPNME='case_harp_dv_quality'\n  NL%base_dir='{base_dir}'\n  NL%NXP=21\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=2\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='circle'\n  RL%mask_refine_spc_fprefix='{refine_prefix}'\n/\n",
-        ),
-    )
-    .expect("write harp_dv namelist");
-
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
-        .expect("harp_dv backend should run");
-
-    let mesh = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
-        .expect("read harp_dv gridfile mesh points");
-    let input = earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh)
-        .expect("hex quality input");
-    let report =
-        earthmesh_quality::compute(&input, &earthmesh_quality::QualityThresholds::default());
-    let harp = run.harp_dv_run.as_ref().expect("HARP-DV report");
-
-    println!(
-        "harp_dv quality: cells {}, min angle {:.2} deg, max angle {:.2} deg, area ratio {:.3}, \
-         edge km mean {:.1}",
-        report.geometry.cell_count,
-        report.geometry.min_angle_deg,
-        report.geometry.max_angle_deg,
-        report.geometry.cell_area_ratio,
-        report.geometry.edge_length_km.mean,
-    );
-
-    // A mesh with a degenerate cell is not a coarser answer to the same
-    // question; it is one a solver cannot use.
-    assert!(
-        report.geometry.min_angle_deg > 0.0,
-        "a cell has a zero or inverted angle: {:?}",
-        report.geometry
-    );
-    // Topology is the claim the whole transaction layer rests on. If any of
-    // these fails, every hard gate above it was measuring the wrong thing.
-    assert_eq!(report.topology.connected_component_count, 1);
-    assert_eq!(report.topology.non_manifold_vertex_fan_count, 0);
-    assert_eq!(report.topology.invalid_vertex_index_count, 0);
-    assert_eq!(report.topology.euler_characteristic_mismatch_count, 0);
-    assert!(harp.quality_optimiser_moves > 0);
-    assert!(harp.triangle_eta_min.is_finite() && harp.triangle_eta_min > 0.0);
-    assert!(harp.triangle_eta_p1 >= harp.triangle_eta_min);
-}
-
-/// The native spawn refuses a route it would otherwise swallow -- and only then.
-///
-/// It sits at the head of Method-C's branch chain and never consults `&adaptive`
-/// or `&hfield`, so a namelist carrying both used to get the native mesh in
-/// silence: measured at NXP 6, `&nsfcgrids` with and without `&adaptive`
-/// produced bit-identical 435-cell meshes, exit 0, and not one line of adaptive
-/// output.
-///
-/// The pair is not always a swallow, which is the part worth pinning. With
-/// `refine_spc` on, the native spawn stands down and the h-field branch runs --
-/// that is how Cartesian-XY serves `&ngrids` and an h-field together. A guard
-/// keyed on "native regions are configured" rather than on the branch's own
-/// condition refuses that too, and 64 tests said so.
 #[test]
 fn native_grids_refuse_a_route_they_would_swallow_and_not_one_they_share() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
@@ -3480,4 +3087,40 @@ fn native_grids_refuse_a_route_they_would_swallow_and_not_one_they_share() {
         error.to_string().contains("nothing composes them"),
         "{error}"
     );
+}
+
+#[test]
+fn retired_harp_backend_is_rejected_before_refinement() {
+    let root = temp_root("retired_harp_backend");
+    let namelist = root.join("mkgrd_retired_harp.nml");
+    let base_dir = root.to_string_lossy();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_retired_harp'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n"
+        ),
+    )
+    .expect("write retired HARP namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect_err("HARP-DV is retired");
+    assert!(error.to_string().contains("retired"), "{error}");
+}
+
+#[test]
+fn retired_harp_namelist_section_is_rejected_even_with_default_backend() {
+    let root = temp_root("retired_harp_section");
+    let namelist = root.join("mkgrd_retired_harp_section.nml");
+    let base_dir = root.to_string_lossy();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='case_retired_harp_section'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&harp_dv\n  NL%max_cycles=1\n/\n"
+        ),
+    )
+    .expect("write retired HARP section namelist");
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect_err("HARP-DV section is retired");
+    assert!(error.to_string().contains("retired"), "{error}");
 }

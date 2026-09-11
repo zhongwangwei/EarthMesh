@@ -296,7 +296,6 @@ fn run_prepared_mkgrd(
             );
             if spec.config.refinement.backend.owns_quality_repair() {
                 let owner = match spec.config.refinement.backend {
-                    earthmesh_project::RefinementBackend::HarpDv => "HARP-DV",
                     earthmesh_project::RefinementBackend::Certified => "CMRC",
                     _ => unreachable!("only repair-owning backends enter this branch"),
                 };
@@ -966,8 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn transactional_backends_are_not_method_c_quality_repair_candidates() {
-        assert!(RefinementBackend::HarpDv.owns_quality_repair());
+    fn certified_backend_is_not_a_method_c_quality_repair_candidate() {
         assert!(RefinementBackend::Certified.owns_quality_repair());
         assert!(!RefinementBackend::MethodC.owns_quality_repair());
         assert!(!RefinementBackend::RedGreen.owns_quality_repair());

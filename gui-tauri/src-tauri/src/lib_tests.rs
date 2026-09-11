@@ -859,7 +859,6 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);
     assert_eq!(capabilities.method_c_defaults, Default::default());
-    assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(capabilities.certified_defaults, Default::default());
     assert_eq!(
         capabilities.certified_defaults.mode,
@@ -3284,12 +3283,7 @@ fn the_summary_says_what_a_target_and_model_pairing_delivers() {
     assert_eq!(summary.delivery_status, "full");
 }
 
-/// The GUI can select every mesh-refinement algorithm the engine has.
-///
-/// It could not: `set_refinement_backend` knew `method_c` and `red_green`, and
-/// `RefinementBackend` had no HARP-DV variant at all, so the third backend was
-/// unreachable from a project file or the interface. The engine had shipped it
-/// and nothing above the CLI could ask for it.
+/// The GUI can select every retained mesh-refinement algorithm.
 #[test]
 fn every_refinement_algorithm_is_selectable_from_a_project() {
     let base = circle_project("backend selection").to_yaml().expect("yaml");
@@ -3307,11 +3301,6 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
         (
             "red_green",
             earthmesh_project::RefinementBackend::RedGreen,
-            earthmesh_project::MethodCAlgorithm::Canonical,
-        ),
-        (
-            "harp_dv",
-            earthmesh_project::RefinementBackend::HarpDv,
             earthmesh_project::MethodCAlgorithm::Canonical,
         ),
         (
@@ -3333,17 +3322,28 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
             name
         );
     }
+    let error = crate::project_edits::set_refinement_backend(base, "not_a_backend".to_string())
+        .expect_err("an unknown name is not a backend");
+    assert!(error.contains("unknown refinement algorithm"));
+    assert!(error.contains("certified"));
+}
 
-    let error = crate::project_edits::set_refinement_backend(base, "harpdv".to_string())
-        .expect_err("a typo is not a backend");
-    assert!(
-        error.contains("harp_dv"),
-        "the message should list it: {error}"
-    );
-    assert!(
-        error.contains("certified"),
-        "the message should list it: {error}"
-    );
+#[test]
+fn retired_harp_backend_cannot_be_selected_or_restored() {
+    let base = circle_project("retired backend").to_yaml().expect("yaml");
+    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
+        let error = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
+            .expect_err("retired backend must not silently select another algorithm");
+        assert!(error.contains("retired"), "{name}: {error}");
+    }
+    let capabilities = serde_json::to_value(project_capabilities()).unwrap();
+    assert!(capabilities.get("harp_dv_defaults").is_none());
+    let summary = serde_json::to_value(project_summary(base).unwrap()).unwrap();
+    assert!(summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|name| !name.starts_with("harp_dv")));
 }
 
 #[test]
@@ -3368,24 +3368,6 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.method_c_lepp_maximum_path_length, 700);
     assert!(!summary.method_c_lepp_stop_at_source_resolution);
     assert_eq!(summary.method_c_lepp_minimum_triangle_angle_deg, 20.0);
-
-    let harp = crate::project_edits::set_refinement_backend(base, "harp_dv".to_string())
-        .expect("HARP-DV algorithm");
-    let harp = crate::project_edits::set_harp_dv_options(
-        harp, 4, 2_000.0, 10_000, 900, 1.5, 2.0, 6, 25.0, 10.0,
-    )
-    .expect("HARP-DV options");
-    let summary = project_summary(harp).expect("HARP-DV summary");
-    assert_eq!(summary.refinement_algorithm, "harp_dv");
-    assert_eq!(summary.harp_dv_max_cycles, 4);
-    assert_eq!(summary.harp_dv_minimum_cell_width_m, 2_000.0);
-    assert_eq!(summary.harp_dv_maximum_cells, 10_000);
-    assert_eq!(summary.harp_dv_maximum_patch_cells, 900);
-    assert_eq!(summary.harp_dv_maximum_neighbor_scale_ratio, 1.5);
-    assert_eq!(summary.harp_dv_minimum_candidate_separation_m, 2.0);
-    assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
-    assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
-    assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
 }
 
 #[test]

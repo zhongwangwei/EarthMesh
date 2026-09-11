@@ -24,35 +24,6 @@ pub const DEFAULT_METHOD_C_LEPP_MAXIMUM_PATH_LENGTH: usize = 100_000;
 pub const DEFAULT_METHOD_C_LEPP_MINIMUM_TRIANGLE_ANGLE_DEGREES: f64 = 0.0;
 pub const DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION: bool = true;
 
-/// One source of truth for the production HARP-DV controls exposed through
-/// project files, namelists, and the GUI.
-pub const DEFAULT_HARP_DV_MAX_CYCLES: u32 = 60;
-pub const DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M: f64 = 1_000.0;
-pub const DEFAULT_HARP_DV_MAXIMUM_CELLS: usize = 5_000_000;
-pub const DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS: usize = 10_000;
-pub const DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO: f64 = 1.75;
-pub const DEFAULT_HARP_DV_MINIMUM_CANDIDATE_SEPARATION_M: f64 = 1.0;
-pub const DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE: usize = 7;
-/// Off by default: HARP refuses no transaction on a small angle alone.
-///
-/// It was `DEFAULT_MIN_ANGLE_WARN_DEG`, and deliberately so -- guide section
-/// 11.54 records moving it from 30 to 25 because the stricter floor was buying
-/// angle margin nobody asked for by refusing refinement. Zero is the end of
-/// that argument: the floor now refuses nothing, and the quality report's own
-/// 25 degree warning line is unchanged, so a run that produces small angles
-/// still says so instead of being stopped from producing them.
-///
-/// Note what this does *not* switch off. The writer's admissibility test used
-/// to live inside the same `> 0.0` guard, so a zero floor took it with it; it
-/// is now checked unconditionally in `transaction::check`. Degree, closure,
-/// winding, protected pentagons and the patch bound are all separate gates and
-/// are unaffected.
-///
-/// Restoring the floor is this one constant, or `NL%minimum_triangle_angle_deg`
-/// per run.
-pub const DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG: f64 = 0.0;
-pub const DEFAULT_HARP_DV_CRITERION_MINIMUM_ANGLE_DEG: f64 = 0.0;
-
 /// Equatorial kilometers per degree on EarthMesh's configured sphere.
 pub const KM_PER_DEGREE_EQUATOR: f64 =
     2.0 * std::f64::consts::PI * (EARTH_RADIUS_METERS / 1000.0) / 360.0;

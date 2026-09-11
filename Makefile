@@ -49,9 +49,9 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_project/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_boundary/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine/Cargo.toml --check
-	$(CARGO) fmt --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_certified/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 
 fmt-gui:
@@ -71,9 +71,9 @@ clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_project/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_boundary/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine/Cargo.toml --all-targets -- -D warnings
-	$(CARGO) clippy --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_certified/Cargo.toml --all-targets -- -D warnings
 
 clippy-gui:
 	CARGO_TARGET_DIR=$(GUI_TARGET_DIR) $(CARGO) clippy --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
