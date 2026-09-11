@@ -106,6 +106,7 @@ use colm_types::{
 mod colm_coupling_csv;
 mod colm_coupling_netcdf;
 mod colm_manifest_writer;
+pub mod colm_mesh_input;
 mod colm_surface_reader;
 mod colm_template_writers;
 mod netcdf_io;

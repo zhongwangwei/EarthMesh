@@ -24,7 +24,17 @@ fn patchtype_writer_preserves_patchid_save_schema() {
     let file = netcdf::open(&output).expect("open patchtype");
     assert_eq!(file.dimension("nlon").expect("nlon").len(), 3);
     assert_eq!(file.dimension("nlat").expect("nlat").len(), 2);
-    assert_eq!(read_i32(&file, "elmindex"), vec![2, 3, 4, 5, 6, 7]);
+    // CoLM nf90_get_var sees the reversed on-disk dimensions (nlon, nlat).
+    let variable = file.variable("elmindex").unwrap();
+    assert_eq!(
+        variable
+            .dimensions()
+            .iter()
+            .map(|d| d.name())
+            .collect::<Vec<_>>(),
+        ["nlat", "nlon"]
+    );
+    assert_eq!(read_i32(&file, "elmindex"), vec![2, 4, 6, 3, 5, 7]);
     assert_eq!(read_f64(&file, "lon_w"), patch.lon_w);
     assert_eq!(read_f64(&file, "lon_e"), patch.lon_e);
     assert_eq!(read_f64(&file, "lat_n"), patch.lat_n);

@@ -118,3 +118,24 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
     }
     Ok(())
 }
+
+pub(crate) fn run_colm_mesh_from_gridfile(
+    args: impl Iterator<Item = String>,
+) -> Result<(), String> {
+    let args = args.collect::<Vec<_>>();
+    if args.len() != 4 || args[2] != "--pixels-per-degree" {
+        return Err(usage(
+            "--colm-mesh-from-gridfile requires INPUT OUTPUT --pixels-per-degree N",
+        ));
+    }
+    let resolution = crate::cli_args::parse_positive_usize("--pixels-per-degree", &args[3])?;
+    let report = earthmesh_cli::colm_mesh_input::write_colm_mesh_from_gridfile(
+        &args[0], &args[1], resolution,
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
