@@ -2302,10 +2302,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (specifiedRefine.enabled && specifiedRefine.kind === "close") {
       yaml = await applyCloseBoundary(yaml, "specified", specifiedRefine.closeBoundary);
     }
-    yaml = await invoke("set_refinement", {
-      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
-      maxPasses: refinementPasses
-    });
     yaml = await invoke("set_adaptive_refinement", {
       yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "adaptive",
       maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
@@ -2319,6 +2315,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
     yaml = await invoke("set_refinement_backend", {
       yaml, backend: specifiedRefine.algorithm || "method_c"
+    });
+    // Validate active demands only after their consuming route is configured.
+    yaml = await invoke("set_refinement", {
+      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
+      maxPasses: refinementPasses
     });
     if (specifiedRefine.algorithm === "lepp_delaunay") {
       yaml = await invoke("set_method_c_algorithm_options", {

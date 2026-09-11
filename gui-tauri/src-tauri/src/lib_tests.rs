@@ -1,8 +1,8 @@
 use super::*;
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseBoundaryMode, CoupledMeshConfig, DomainConfig, HydroCoastConfig,
-    MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig, ProjectDataLayer,
-    ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
+    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, CoupledMeshConfig, DomainConfig,
+    HydroCoastConfig, MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig,
+    ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG,
     INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
 };
@@ -494,6 +494,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
         path: "fixtures/refine.txt".to_string(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "fixtures/threshold-region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
     cfg.hydro_coast = Some(HydroCoastConfig {
         merit_root: "fixtures/merit".to_string(),
         cama_root: Some("fixtures/hydro-cama".to_string()),
@@ -529,6 +534,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
     };
     assert!(Path::new(path).is_absolute());
     assert!(Path::new(&cfg.refinement.specified_close.unwrap().path).is_absolute());
+    let Some(RegionShape::Close { path, .. }) = &cfg.refinement.threshold_region else {
+        panic!("close threshold region");
+    };
+    assert!(Path::new(path).is_absolute());
+    assert!(Path::new(path).ends_with("fixtures/threshold-region.nml"));
     let hydro = cfg.hydro_coast.unwrap();
     assert!(Path::new(&hydro.merit_root).is_absolute());
     assert!(Path::new(hydro.cama_root.as_deref().unwrap()).is_absolute());
@@ -605,6 +615,9 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         path: absolute_missing.to_string_lossy().into_owned(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Shapefile {
+        path: "threshold/region.shp".to_string(),
+    });
     let project_path = project_dir.join("project.yaml");
     fs::write(&project_path, cfg.to_yaml().unwrap()).unwrap();
 
@@ -618,6 +631,10 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         Path::new(&opened_cfg.refinement.specified_close.unwrap().path),
         absolute_missing
     );
+    let Some(RegionShape::Shapefile { path }) = &opened_cfg.refinement.threshold_region else {
+        panic!("shapefile threshold region");
+    };
+    assert_eq!(Path::new(path), project_dir.join("threshold/region.shp"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1264,6 +1281,12 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
             enabled: false,
             value: Some(3.5),
         });
+    base.refinement.threshold_region = Some(RegionShape::Close {
+        path: "/data/hidden_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    base.refinement.threshold_enabled = false;
     base.quality.min_angle_deg = 31.0;
     base.validate().expect("valid migration base");
 
@@ -1286,6 +1309,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         migrated.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        migrated.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!migrated.refinement.threshold_enabled);
     assert!(migrated
         .data_layers
         .iter()
@@ -1318,6 +1346,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         compatible.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        compatible.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!compatible.refinement.threshold_enabled);
     assert_eq!(compatible.target.kind, MeshDomainKind::Coupled);
     assert_eq!(compatible.target.model_format, ModelFormat::CoLM);
 }
@@ -2315,6 +2348,202 @@ fn preserve_unexposed_project_fields_keeps_supported_hidden_opened_config() {
         .iter()
         .any(|layer| layer.id == "custom_threshold"));
 }
+
+fn active_threshold_region_opened_yaml(name: &str) -> String {
+    let yaml = set_layer_path(
+        hydrology_yaml(name),
+        "lai".to_string(),
+        "/opened/lai.nc".to_string(),
+        true,
+    )
+    .expect("opened LAI threshold source");
+    let yaml = set_threshold_criterion(yaml, "lai_std".to_string(), true, Some(7.5))
+        .expect("opened LAI std criterion");
+    let mut cfg = ProjectConfig::from_yaml(&yaml).expect("opened threshold project");
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/active_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    let yaml = cfg.to_yaml().expect("dormant threshold region yaml");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("opened CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("opened active threshold region");
+    ProjectConfig::from_yaml(&yaml)
+        .expect("active threshold region base")
+        .to_yaml()
+        .expect("active threshold region yaml")
+}
+
+fn preserved_active_threshold_region_compose_base(name: &str) -> String {
+    let opened_yaml = active_threshold_region_opened_yaml(name);
+    let scaffold = ProjectConfig::scaffold(
+        name,
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: 108.0,
+                e: 120.0,
+                s: 18.0,
+                n: 26.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(40),
+    );
+    let yaml = preserve_unexposed_project_fields(
+        opened_yaml,
+        scaffold.to_yaml().expect("scaffold yaml"),
+        false,
+    )
+    .expect("preserve active threshold region while dormant");
+    set_layer_path(yaml, "lai".to_string(), "/opened/lai.nc".to_string(), true)
+        .expect("replay visible LAI source")
+}
+
+#[test]
+fn active_threshold_region_replays_through_cmrc_backend_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_cmrc_replay");
+    assert!(
+        set_refinement(yaml.clone(), true, true, 1).is_err(),
+        "the former enable-before-route order must not bypass admission"
+    );
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("h-field off");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::Certified
+    );
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+    assert!(cfg
+        .refinement
+        .threshold_criteria
+        .iter()
+        .any(|criterion| criterion.id == "lai_std" && criterion.enabled));
+}
+
+#[test]
+fn active_threshold_region_replays_through_canonical_method_c_hfield_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_hfield_replay");
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, true, Some(0.25), Some(4), Some(10_000.0))
+        .expect("h-field route before activation");
+    let yaml = set_refinement_backend(yaml, "method_c".to_string()).expect("canonical Method-C");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::MethodC
+    );
+    assert_eq!(
+        cfg.refinement.method_c.algorithm,
+        earthmesh_project::MethodCAlgorithm::Canonical
+    );
+    assert!(cfg
+        .refinement
+        .hfield
+        .as_ref()
+        .is_some_and(|hfield| hfield.enabled));
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+}
+
+#[test]
+fn active_threshold_region_rejects_unsupported_backend_on_activation() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_unsupported_replay");
+    let yaml = set_refinement_backend(yaml, "red_green".to_string())
+        .expect("unsupported backend selectable while threshold region is dormant");
+    let error = set_refinement(yaml, true, true, 1)
+        .expect_err("activation must reject unsupported threshold-region backend");
+
+    assert!(
+        error.contains(
+            "refinement.threshold_region requires Certified or canonical MethodC with hfield"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn dormant_threshold_region_survives_gui_compose_visible_edit_and_save() {
+    let mut opened = circle_project("hidden_threshold_region_roundtrip");
+    opened.refinement.threshold_enabled = false;
+    opened.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    opened
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "lai_std".to_string(),
+            enabled: false,
+            value: Some(1.25),
+        });
+    opened.expert.openmp = Some(2);
+    opened
+        .validate()
+        .expect("dormant threshold region is valid");
+
+    let visible_edit = set_domain_bbox(
+        ProjectConfig::scaffold(
+            "hidden_threshold_region_roundtrip",
+            opened.target.intent,
+            opened.domain.clone(),
+            opened.target.resolution,
+        )
+        .to_yaml()
+        .unwrap(),
+        108.0,
+        120.0,
+        18.0,
+        26.0,
+        None,
+    )
+    .expect("visible bbox edit");
+    let composed =
+        preserve_unexposed_project_fields(opened.to_yaml().unwrap(), visible_edit, false)
+            .expect("compose preserves hidden threshold region");
+    let recomposed = set_refinement(composed, false, false, 0).expect("visible refinement edit");
+    let saved = validate_project(recomposed).expect("canonical save serialization");
+    let reopened = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        reopened.refinement.threshold_region,
+        opened.refinement.threshold_region
+    );
+    assert!(!reopened.refinement.threshold_enabled);
+    assert_eq!(
+        reopened.refinement.threshold_criteria,
+        opened.refinement.threshold_criteria
+    );
+    assert_eq!(reopened.expert.openmp, Some(2));
+    let DomainConfig::Regional {
+        shape: RegionShape::Bbox { w, e, s, n },
+        ..
+    } = reopened.domain
+    else {
+        panic!("visible bbox edit must win over hidden opened circle");
+    };
+    assert_eq!((w, e, s, n), (108.0, 120.0, 18.0, 26.0));
+}
+
 #[test]
 fn preserve_unexposed_project_fields_keeps_user_bbox_edit_over_hidden_circle() {
     let base = circle_project("opened");

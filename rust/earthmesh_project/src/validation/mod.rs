@@ -60,6 +60,7 @@ impl ProjectConfig {
         }
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
+        self.validate_threshold_region()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
             && self.refinement.backend != crate::RefinementBackend::Certified
@@ -293,32 +294,67 @@ impl ProjectConfig {
     fn has_calculated_refinement_source(&self) -> bool {
         self.refinement.threshold_enabled
             && self.data_layers.iter().any(|layer| {
-                if !layer.enabled {
-                    return false;
-                }
-                match layer.role {
-                    ProjectLayerRole::LandType => {
-                        self.effective_landcover_criterion()
-                            .is_some_and(|criterion| criterion.enabled)
-                            || self
-                                .effective_sea_ratio_criterion()
-                                .is_some_and(|criterion| criterion.enabled)
-                    }
-                    ProjectLayerRole::Threshold(field) => {
-                        self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
-                            || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)
-                    }
-                    ProjectLayerRole::MeritHydro => {
-                        self.hydro_coast.as_ref().is_some_and(|hydro| {
+                self.layer_has_threshold_criterion(layer)
+                    || (layer.enabled
+                        && layer.role == ProjectLayerRole::MeritHydro
+                        && self.hydro_coast.as_ref().is_some_and(|hydro| {
                             hydro.has_river_refinement()
                                 || (hydro.coast_refinement_enabled
                                     && (hydro.coast_land_refinement_enabled
                                         || hydro.coast_ocean_refinement_enabled))
-                        })
-                    }
-                    ProjectLayerRole::Cama => false,
-                }
+                        }))
             })
+    }
+
+    fn layer_has_threshold_criterion(&self, layer: &ProjectDataLayer) -> bool {
+        if !layer.enabled {
+            return false;
+        }
+        match layer.role {
+            ProjectLayerRole::LandType => {
+                self.effective_landcover_criterion()
+                    .is_some_and(|criterion| criterion.enabled)
+                    || self
+                        .effective_sea_ratio_criterion()
+                        .is_some_and(|criterion| criterion.enabled)
+            }
+            ProjectLayerRole::Threshold(field) => {
+                self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
+                    || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)
+            }
+            ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+        }
+    }
+
+    fn validate_threshold_region(&self) -> Result<(), String> {
+        if self.refinement.threshold_region.is_none()
+            || !self.refinement.enabled
+            || !self.refinement.threshold_enabled
+        {
+            return Ok(());
+        }
+        if !self
+            .data_layers
+            .iter()
+            .any(|layer| self.layer_has_threshold_criterion(layer))
+        {
+            return Err(
+                "refinement.threshold_region requires an active statistical threshold criterion"
+                    .into(),
+            );
+        }
+        let supported = self.refinement.backend == crate::RefinementBackend::Certified
+            || (self.refinement.backend == crate::RefinementBackend::MethodC
+                && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
+                && self
+                    .refinement
+                    .hfield
+                    .as_ref()
+                    .is_some_and(|recipe| recipe.enabled));
+        if !supported {
+            return Err("refinement.threshold_region requires Certified or canonical MethodC with hfield; other routes cannot separate evaluation masks from hard refinement regions".into());
+        }
+        Ok(())
     }
 
     pub(crate) fn threshold_statistic_enabled(
@@ -592,6 +628,15 @@ impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
         self.method_c.validate()?;
         self.certified.validate()?;
+        if let Some(shape) = &self.threshold_region {
+            shape
+                .validate()
+                .map_err(|err| format!("refinement.threshold_region: {err}"))?;
+            if matches!(shape, RegionShape::Close { boundary, .. } if !matches!(boundary, crate::CloseBoundaryMode::Polyline))
+            {
+                return Err("refinement.threshold_region only supports polyline close boundaries; calculated masks do not apply boundary transforms".into());
+            }
+        }
         if let Some(circles) = &self.specified_circle {
             let circles = circles.as_slice();
             if circles.is_empty() {

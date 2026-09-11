@@ -45,6 +45,7 @@ fn sample() -> ProjectConfig {
             backend: crate::RefinementBackend::default(),
             enabled: true,
             threshold_enabled: true,
+            threshold_region: None,
             max_passes: 3,
             threshold_criteria: Vec::new(),
             method_c: Default::default(),

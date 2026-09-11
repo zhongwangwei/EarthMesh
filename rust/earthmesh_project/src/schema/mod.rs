@@ -335,6 +335,12 @@ pub struct RefinementRecipe {
     /// Data layers remain available to mesh output when this is disabled.
     #[serde(default)]
     pub threshold_enabled: bool,
+    /// Optional statistical evaluation window, independent of the delivery
+    /// domain and specified refinement. CLI staging emits degree-zero masks.
+    /// Absent means the existing unrestricted threshold support; retained but
+    /// inactive when refinement or thresholds are switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_region: Option<RegionShape>,
     #[serde(default)]
     pub max_passes: u8,
     /// Independent mean/std criteria for continuous threshold sources. The

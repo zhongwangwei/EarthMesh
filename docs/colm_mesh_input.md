@@ -58,11 +58,12 @@ only whole triangles inside the region, then applies the land mask. Published
 boundary/topology and triangle angle checks remain separate from the global
 closed-sphere certificate; the raster itself is not geometrically certified.
 
-**Threshold-scope limitation:** a regional output domain does not restrict
-threshold evaluation to that region. Project YAML currently cannot express the
-namelist `mask_refine_cal_*` evaluation window. To preserve such a case exactly,
-run its original namelist and use the standalone exporter below; do not treat a
-global-demand Project run as an equivalent regional-threshold comparison.
+**Independent threshold scope:** a regional output domain is not implicitly
+used as the threshold evaluation window. Configure `refinement.threshold_region`
+explicitly for CMRC or canonical Method-C/HField projects. See
+[supported routes, input formats and degree-zero staging](project_threshold_region.md).
+Do not compare a global-demand Project run with a region-scoped namelist as if
+they were the same workload.
 
 ## What is written
 

@@ -301,6 +301,23 @@ impl ProjectConfig {
         lowering_layers.lower_into(&mut mkgrd, &mut refine);
         if self.refinement.enabled && self.refinement.threshold_enabled {
             apply_threshold_values(&mut refine, self);
+            if let Some(shape) = &self.refinement.threshold_region {
+                // File imports and primitives are staged as evaluation-only
+                // masks by the CLI; these are never specified/hard demands.
+                let (kind, source) = match shape {
+                    RegionShape::Bbox { w, e, s, n } => ("bbox", bbox_geometry(*w, *e, *s, *n)?),
+                    RegionShape::Circle {
+                        lon,
+                        lat,
+                        radius_km,
+                    } => ("circle", circle_geometry(*lon, *lat, *radius_km)?),
+                    RegionShape::Shapefile { path } | RegionShape::Close { path, .. } => {
+                        ("close", path.clone())
+                    }
+                };
+                refine.mask_refine_cal_type = kind.into();
+                refine.mask_refine_cal_fprefix = source;
+            }
         }
         // Refinement runs only when a real source supplies data. LandType mask
         // availability is independent from its explicit categorical criterion.

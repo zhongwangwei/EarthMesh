@@ -176,6 +176,7 @@ impl ProjectConfig {
                 backend: RefinementBackend::default(),
                 enabled: false,
                 threshold_enabled: false,
+                threshold_region: None,
                 max_passes: 0,
                 threshold_criteria: Vec::new(),
                 method_c: Default::default(),

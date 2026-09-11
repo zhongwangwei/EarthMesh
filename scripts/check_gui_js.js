@@ -588,9 +588,10 @@ log("CoLM mesh delivery command is wired and model-gated");
   check(
     compose.indexOf('invoke("set_adaptive_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
       compose.indexOf('invoke("set_hfield_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.indexOf('invoke("set_refinement_backend"') < compose.indexOf('invoke("set_refinement"') &&
       compose.includes('invoke("preserve_unexposed_quality_fields"') &&
       reflect.includes('algorithm: sum.refinement_algorithm || sum.refinement_backend || "method_c"'),
-    "opened GUI projects must restore backend choice after route setters and preserve hidden LEPP quality only after compatibility is known",
+    "opened GUI projects must configure routes and backend before enabling refinement, and preserve hidden LEPP quality only after compatibility is known",
   );
   log("opened project backend/route/hidden-LEPP round-trip is ordered safely");
 }
