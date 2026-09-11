@@ -60,3 +60,59 @@ This is a mesh-input handoff, **not** a complete CoLM running-data package.
 Raw surface fields, generated landdata, initial states, forcing, full CoLM
 preprocessing, and solver validation remain separate steps. Coupling CSV/NetCDF
 and forcing/restart *templates* are not substitutes for `DEF_file_mesh`.
+
+## Real CoLM mesh-stage smoke
+
+With an existing CoLM source checkout, GNU `mpifort`, `make`, `nf-config`,
+`nc-config`, and Python 3.12+ with NumPy/netCDF4 already installed:
+
+```sh
+python -B scripts/test_colm_mesh_smoke.py
+python -B scripts/run_colm_mesh_smoke.py \
+  --colm-repo /path/to/CoLM202X \
+  --revision ebe6de998692f075216037810ce9184fa407e27b \
+  --out /tmp/earthmesh-colm-serial \
+  --mesh regional=/path/to/colm_mesh.nc
+# Repeat with a NEW --out and --mpi-ranks 3 for MPI IO/worker coverage.
+```
+
+The runner archives the specified committed CoLM source into a new directory;
+local model edits are recorded but are neither used nor changed. It switches
+only the archived spatial macros to UNSTRUCTURED and selects serial/MPI,
+leaving other physics macros untouched. It builds the real CoLM modules with
+bounds/FPE checks, calls `mesh_build` and `landelm_build`, saves native mesh and
+land-element files, and reloads them in a **fresh process**. No CoLM routine is
+replaced by a mock. `2005` is only the restart directory label for this smoke,
+not an assertion about the raster's land-cover epoch.
+
+Each phase checks model `landelm` consistency and dumps worker memberships.
+The independent Python audit maps CoLM's union-grid **edges** back to input
+pixels and checks all cell IDs, counts and ownerships, including missing and
+duplicate pixels. A zero exit or model marker alone is not acceptance; only
+`EARTHMESH_COLM_MESH_ROUNDTRIP_OK` after both audits indicates success.
+The model's block-vector landelm files are block-suffixed; there is no required
+`landelm/2005/landelm.nc` index file.
+
+Use short, shell-safe output paths, as stock CoLM uses fixed-length filenames
+and unquoted internal directory commands. Outputs must be new. The runner
+records source/input/binary hashes, compiler options, commands, logs and timing.
+It reads the regional raster for audit and stores full membership dumps; this
+is a bounded acceptance tool, not a streaming global-data pipeline. CoLM block
+boundaries must align with the raster for exact one-pixel roundtrip; the smoke
+uses 5-degree blocks (including the tested 240 pixels/degree exports). A split
+pixel fails explicitly instead of being counted as an equivalent input pixel.
+
+This stops before land-only filtering, landpatch/PFT/crop construction and
+surface aggregation. Coastal water pixels are retained as in the input.
+A full default CoLM preprocessing run additionally needs compatible landtype,
+`plant_15s` PFT/LAI/SAI/height tiles, `global_CFT_surface_data.nc`, lake depth,
+soil fields and topography. Atmospheric forcing is not a prerequisite for this
+mesh stage or for surface-data generation; it is a later simulation input.
+
+Observed compatibility limit (2026-09-11): the pinned CoLM revision passed the
+serial tiny and L1/L2/L3 mesh roundtrips on GNU 16.1.0/macOS arm64. The 3-rank
+Open MPI 5.0.9 build instead failed during CoLM's landelm vector setup
+(`MOD_Pixelset.F90`, `vecgs%vcnt`), after mesh construction. An isolated O0
+Pixelset diagnostic also failed with invalid component bounds; the root cause
+is unresolved. `--mpi-ranks` exposes this check, not a supported-MPI claim;
+it does not silently fall back to serial or skip landelm construction.
