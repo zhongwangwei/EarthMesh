@@ -354,6 +354,15 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
     let selected_gridfile = json_string(&decision, "selected_gridfile");
     assert_eq!(selected_gridfile, baseline_gridfile);
     assert_ne!(selected_gridfile, candidate_gridfile);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let final_report = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("project_final_quality="))
+        .expect("selected final admission report");
+    let final_quality = fs::read_to_string(final_report).unwrap();
+    assert_eq!(json_string(&final_quality, "mesh_name"), selected_gridfile);
+    assert!(final_quality.contains("final_mesh_admission"));
+
     for path in [&baseline_gridfile, &candidate_gridfile, &selected_gridfile] {
         assert!(
             root.join(path).is_file(),

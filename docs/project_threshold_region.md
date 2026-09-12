@@ -24,6 +24,39 @@ land/ocean-masked meshes may instead have boundaries, holes and multiple
 components; those checks are not interchangeable with closed-sphere checks.
 This feature does not change validation contracts or algorithm kernels.
 
+## Project final admission
+
+The default `--project` workflow now sends the **selected final gridfile** from
+CMRC, canonical Method-C/HField, RedGreen or LEPP through the same final admission
+entry point after AutoRefine and hydro, before explicit CoLM mesh delivery.
+`final_quality/quality_summary.json` records this check separately from candidate
+and hydro diagnostics, including a `final_mesh_admission` gate.
+
+Admission uses physical M triangles for TRI and the stored W rings for HEX:
+TRI cells require 3 edges; HEX cells require 5–7 edges, independent of backend.
+It does not sort corners or repair individual rings. Native producers use both
+winding conventions; one whole-mesh reversal can translate clockwise into the
+quality library's counter-clockwise convention. The report records this choice;
+mixed winding, misoriented shared edges and self-intersections remain detectable.
+The source gridfile is unchanged.
+
+Invalid connectivity, malformed polygons and the physical cell contract cannot
+be waived with `Warn`. Unmasked global Earth/atmosphere additionally requires
+Euler 2, no boundary edges and exactly one connected component. Regional and
+surface-masked meshes may have manifold boundaries and multiple components.
+Disconnected components and isolated complete cells remain visible as warnings,
+not false connectivity failures; malformed boundary junctions still fail. Numerical
+geometry gates still follow `Warn` / `Block` / `AutoRefine`; final admission does
+not start another repair loop.
+
+This unifies **final Project admission**, not all model-export lifecycles.
+Low-level NML paths, internal CMRC certificates and legacy model artifacts are
+unchanged. Some adapters still emit artifacts inside the engine pipeline; their
+existence does not mean the Project passed final admission. Moving refined MPAS
+and regional FVCOM delivery requires aligned cellwidth/global-parent and OBC
+context respectively; this step does not substitute uniform widths or discard
+boundary metadata to pretend that migration is complete.
+
 ## Configuration
 
 Add this to an otherwise valid CMRC project (same region syntax as `domain`):

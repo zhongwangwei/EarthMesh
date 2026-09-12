@@ -591,20 +591,27 @@ fn run_prepared_mkgrd(
                     report = earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline(adapter.pipeline);
                 }
             }
-            if spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::Block {
-                let gridfile = selected_project_gridfile.as_deref().ok_or_else(|| {
-                    "project quality block policy requires a completed gridfile-producing run"
-                        .to_string()
-                })?;
-                let verdict = project_quality_report_with_namelist(
-                    spec,
-                    gridfile,
-                    std::path::Path::new(&namelist),
-                )?
-                .verdict;
-                enforce_project_quality_policy(spec.config.quality.on_violation, verdict)?;
-            }
             if let Some(gridfile) = selected_project_gridfile.as_deref() {
+                // The selected mesh may differ from the engine report after hydro or
+                // AutoRefine. Audit it, not a rejected candidate or global parent.
+                let out_dir = gridfile
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("final_quality");
+                let final_quality = earthmesh_cli::project_quality::admit_project_final_gridfile(
+                    &spec.config,
+                    gridfile,
+                    &out_dir,
+                    Some(std::path::Path::new(&namelist)),
+                )?;
+                println!(
+                    "project_final_quality={}",
+                    out_dir.join("quality_summary.json").display()
+                );
+                println!(
+                    "project_final_quality_verdict={}",
+                    final_quality.verdict.as_str()
+                );
                 if let Some(report) = write_project_colm_mesh_delivery(&spec.config, gridfile)? {
                     let pixels_per_degree = spec
                         .config
@@ -619,11 +626,8 @@ fn run_prepared_mkgrd(
                         pixels_per_degree, report.nlon, report.nlat, report.cells, report.assigned_pixels
                     );
                 }
-            } else if spec.config.delivery.colm_mesh.is_some() {
-                return Err(
-                    "project CoLM mesh delivery requested but no final project gridfile was selected"
-                        .to_string(),
-                );
+            } else {
+                return Err("project final admission requires a selected gridfile".to_string());
             }
         }
         if !quiet {
@@ -1033,20 +1037,7 @@ fn write_project_colm_mesh_delivery(
     })
 }
 
-pub(crate) fn enforce_project_quality_policy(
-    policy: earthmesh_project::ViolationPolicy,
-    verdict: earthmesh_quality::QualityLevel,
-) -> Result<(), String> {
-    if policy != earthmesh_project::ViolationPolicy::Warn
-        && verdict == earthmesh_quality::QualityLevel::Fail
-    {
-        return Err(format!(
-            "project quality gate failed (verdict=fail, on_violation={})",
-            policy.as_str()
-        ));
-    }
-    Ok(())
-}
+pub(crate) use earthmesh_cli::project_quality::enforce_project_quality_policy;
 
 #[cfg(test)]
 mod tests {
