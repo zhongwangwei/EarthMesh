@@ -83,12 +83,16 @@ const DATA: &str = "reference_meshes/mesh.nc";
                 self.assertIn(f"grep exited {status}", result.stdout)
 
     def test_unwritable_report_fails_with_or_without_a_match(self):
-        for source in ["pub fn mesh() {}", "pub use mesh::*;"]:
-            with self.subTest(source=source):
-                self.source.write_text(source + "\n")
-                result = self.gate(f"EM_ARCH_OUT={self.root}")
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("cannot write", result.stdout)
+        shells = [[]]
+        if dash := shutil.which("dash"):
+            shells.append([f"SHELL={dash}"])
+        for shell in shells:
+            for source in ["pub fn mesh() {}", "pub use mesh::*;"]:
+                with self.subTest(shell=shell, source=source):
+                    self.source.write_text(source + "\n")
+                    result = self.gate(f"EM_ARCH_OUT={self.root}", *shell)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("cannot write", result.stdout)
 
 
 if __name__ == "__main__":

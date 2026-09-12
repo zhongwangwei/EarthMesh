@@ -107,12 +107,13 @@ EM_ARCH_OUT = /tmp/earthmesh_architecture_hits
 # look". The first version of this target treated every non-zero the same, so a
 # missing tool read as a clean result -- which is how it passed for months while
 # checking nothing. Anything above 1 is now a failure of the gate itself.
+# Unlike the special builtin :, printf lets dash handle redirection failures.
 define em_arch_verdict
 if [ "$$status" -eq 0 ]; then \
 	cat "$$tmp" > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; \
 	cat "$(EM_ARCH_OUT)"; echo '$(1)'; rm -f "$$tmp"; exit 1; \
 elif [ "$$status" -eq 1 ]; then \
-	: > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; rm -f "$$tmp"; \
+	printf '%s' '' > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; rm -f "$$tmp"; \
 else \
 	echo "check-architecture: grep exited $$status, so it checked nothing"; rm -f "$$tmp"; exit 1; \
 fi
