@@ -38,6 +38,9 @@ pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
     metadata: MethodCGridfileMetadataSlices<'_>,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     validate_unstructured_mesh(mesh)?;
+    if let Some(context) = metadata.mpas {
+        context.validate(mesh.w_points.len())?;
+    }
     for (name, values) in [
         ("earthmesh_m_refine_level", metadata.m_refine_level),
         (
@@ -173,6 +176,10 @@ pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
         }
     }
 
+    if let Some(context) = metadata.mpas {
+        context.write(&mut file)?;
+    }
+    file.close().map_err(netcdf_to_io_error)?;
     Ok(UnstructuredMeshWriteReport {
         output: output.to_path_buf(),
         sjx_points: mesh.m_points.len(),

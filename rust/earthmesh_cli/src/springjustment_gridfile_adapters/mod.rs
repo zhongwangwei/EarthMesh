@@ -5,7 +5,7 @@ mod regional;
 
 pub use global::{
     run_springjustment_global_from_unstructured_gridfile,
-    run_springjustment_global_from_unstructured_mesh,
+    run_springjustment_global_from_unstructured_mesh, write_springjustment_global_gridfile,
 };
 pub use persistence::write_springjustment_global_persistence;
 pub use regional::{

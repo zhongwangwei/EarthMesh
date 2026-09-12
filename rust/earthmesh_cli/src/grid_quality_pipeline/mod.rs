@@ -15,6 +15,6 @@ pub use crate::springjustment_gridfile_adapters::{
     run_springjustment_global_from_unstructured_gridfile,
     run_springjustment_global_from_unstructured_mesh,
     run_springjustment_regional_from_unstructured_gridfile,
-    run_springjustment_regional_from_unstructured_mesh, write_springjustment_global_persistence,
-    write_springjustment_regional_gridfile,
+    run_springjustment_regional_from_unstructured_mesh, write_springjustment_global_gridfile,
+    write_springjustment_global_persistence, write_springjustment_regional_gridfile,
 };

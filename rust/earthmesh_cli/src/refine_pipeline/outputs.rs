@@ -50,6 +50,7 @@ pub(super) struct MethodCMetadataSlices<'a> {
 impl<'a> MethodCMetadataSlices<'a> {
     fn gridfile(&self) -> MethodCGridfileMetadataSlices<'a> {
         MethodCGridfileMetadataSlices {
+            mpas: None, // This producer does not yet retain its actual nominal widths.
             m_refine_level: Some(self.m_refine_level),
             m_refine_level_orig: Some(self.m_refine_level_orig),
             m_ngr: Some(self.m_ngr),

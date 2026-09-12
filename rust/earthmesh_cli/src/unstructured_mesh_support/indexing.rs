@@ -47,6 +47,27 @@ impl GridfileRowLayout {
     }
 }
 
+pub(crate) fn unstructured_w_row_layout(mesh: &super::UnstructuredMesh) -> GridfileRowLayout {
+    // Coordinates alone are not a sentinel: a real polygon can be at (0, 0).
+    let is_sentinel = |row: usize| {
+        mesh.w_points
+            .get(row)
+            .is_some_and(|p| p.lon == 0.0 && p.lat == 0.0)
+            && mesh.n_w_to_m.get(row).is_some_and(|&count| {
+                (0..=1).contains(&count)
+                    && mesh
+                        .w_to_m
+                        .get(row)
+                        .is_some_and(|ring| count as usize <= ring.len() && row_is_constant(ring))
+            })
+    };
+    if is_sentinel(0) && is_sentinel(1) {
+        GridfileRowLayout::two_explicit_placeholders()
+    } else {
+        GridfileRowLayout::compact(usize::from(is_sentinel(0)))
+    }
+}
+
 pub(crate) fn gridfile_m_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLayout {
     let first_is_origin = coordinate_row_is_origin(&mesh.m_lon, &mesh.m_lat, 0);
     let first_is_sentinel = m_row_is_sentinel(&mesh.m_to_w, 0);

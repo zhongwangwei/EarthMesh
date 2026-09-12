@@ -333,6 +333,13 @@ fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery
         assert_eq!(report["topology"]["euler_characteristic"], 2);
         assert_eq!(report["topology"]["boundary_edge_count"], 0);
         let gridfile = Path::new(report["mesh_name"].as_str().unwrap());
+        let widths =
+            earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile).unwrap();
+        assert_eq!(
+            widths.is_some(),
+            name == "cmrc",
+            "{name}: unavailable nominal widths must not be synthesized"
+        );
         let delivered = field("colm_mesh_input=");
         assert!(Path::new(&delivered).is_file());
         assert_eq!(

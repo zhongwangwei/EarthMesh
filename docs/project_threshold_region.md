@@ -58,6 +58,36 @@ requires aligned cellwidth/global-parent context; RedGreen/LEPP do not yet persi
 per-W nominal widths, so uniform widths are not substituted to pretend migration
 is complete.
 
+### MPAS native width context (prerequisite, not final dispatch)
+
+Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units
+`km`) together with `earthmesh_mpas_base_nxp`, `earthmesh_mpas_step`,
+`earthmesh_mpas_density_reference_width_km` and `earthmesh_mpas_cellwidth_source`.
+The vector follows every native W row, including placeholders. The reference
+width is the producer-global physical minimum, not the minimum of a later crop;
+removing the finest cells must not renormalize `meshDensity`.
+
+CMRC records its existing delivered-W-level width formula for all native output
+formats. Its legacy MPAS export consumes those same values. The explicit
+`write_springjustment_global_gridfile` adapter saves the older Spring core's exact
+widths, including transition interpolation, when that core supplies them. It does
+not infer widths from Method-C levels or mutate the input gridfile. This library
+adapter is not an automatic modern Project Method-C integration.
+
+Regional, landtype, mask-postproc and clean-ocean metadata paths compact widths
+with W-row identities, preserve the global reference/NXP/step/source, and copy
+widths when W vertices are split. Width-only clean-ocean rewrites also retain OBC.
+Absent context stays absent; partial headers, wrong dimensions/types/units or
+invalid values fail rather than select a uniform fallback.
+
+Modern Method-C/HField, RedGreen and LEPP do not yet produce this context: their
+actual nominal-width provenance must be retained before they can supply it.
+This change does not move MPAS into common Project final publication. Regional
+full MPAS also still needs the global-parent metric/weight context; compacted
+native widths alone are not sufficient. Existing MPAS builders and density
+formulas are unchanged, so do not pass cropped widths to a builder that would
+recompute their local minimum and expect parent-equivalent density.
+
 ### FVCOM selected-final delivery
 
 For `target.cell: Tri` + `target.model_format: Fvcom`, Project writes

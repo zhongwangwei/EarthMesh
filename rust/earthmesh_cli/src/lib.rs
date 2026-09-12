@@ -184,7 +184,6 @@ pub mod unstructured_mesh_io;
 use unstructured_mesh_io::{
     gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
     write_unstructured_mesh_netcdf_with_method_c_metadata,
-    write_unstructured_mesh_netcdf_with_refine_levels,
 };
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{
@@ -371,6 +370,7 @@ pub mod gridfile_output_writers;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
+pub mod mpas_gridfile_context;
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{

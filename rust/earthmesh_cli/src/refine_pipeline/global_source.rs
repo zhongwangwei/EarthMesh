@@ -637,6 +637,7 @@ pub fn run_refine_pipeline_namelist(
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
             MethodCGridfileMetadataSlices {
+                mpas: None,
                 m_refine_level: (!source_levels.m_refine_level.is_empty())
                     .then_some(source_levels.m_refine_level.as_slice()),
                 m_refine_level_orig: (!source_levels.m_refine_level_orig.is_empty())
@@ -2039,21 +2040,17 @@ fn certified_mpas_cellwidth(base_nxp: usize, w_refine_levels: &[i32]) -> io::Res
 
 fn publish_certified_atmos_mpas(
     mesh: &crate::UnstructuredMesh,
-    w_refine_levels: &[i32],
+    context: &crate::mpas_gridfile_context::MpasGridfileContext,
     mesh_output: &Path,
     graph_output: &Path,
-    base_nxp: usize,
-    delivered_level: usize,
 ) -> io::Result<CertifiedMpasPublication> {
-    let cellwidth = certified_mpas_cellwidth(base_nxp, w_refine_levels)?;
-    let step = delivered_level.checked_add(1).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "CMRC MPAS delivered level overflowed",
-        )
-    })?;
-    let mpas =
-        crate::build_mpas_mesh_from_unstructured_one_based(mesh, &cellwidth, base_nxp, step)?;
+    let step = context.step;
+    let mpas = crate::build_mpas_mesh_from_unstructured_one_based(
+        mesh,
+        &context.cellwidth_km,
+        context.base_nxp,
+        step,
+    )?;
     let mesh_density_min = mpas.mesh_density[1..]
         .iter()
         .copied()
@@ -2889,6 +2886,15 @@ fn run_certified_pipeline(
         log_cmrc_phase(timing_enabled, "remap_csv", &mut phase_started);
         fs::write(&temporary_manifest_path, manifest_json)?;
         fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
+        let mpas_context = crate::mpas_gridfile_context::MpasGridfileContext::from_producer(
+            &output_mesh,
+            certified_mpas_cellwidth(base_nxp, &w_refine_levels)?,
+            base_nxp,
+            delivered_level.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "CMRC MPAS step overflow")
+            })?,
+            "cmrc_delivered_w_levels",
+        )?;
         let (
             report,
             landtype_masked_cells,
@@ -2903,6 +2909,7 @@ fn run_certified_pipeline(
                 &temporary_source_path,
                 &output_mesh,
                 MethodCGridfileMetadataSlices {
+                    mpas: Some(&mpas_context),
                     m_lineage: Some(&m_pre_export_lineage),
                     w_lineage: Some(&w_pre_export_lineage),
                     m_refine_level: Some(&m_refine_levels),
@@ -2936,11 +2943,15 @@ fn run_certified_pipeline(
             )
         } else {
             (
-                crate::write_unstructured_mesh_netcdf_with_refine_levels(
+                crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
                     &temporary_path,
                     &output_mesh,
-                    Some(&m_refine_levels),
-                    Some(&w_refine_levels),
+                    MethodCGridfileMetadataSlices {
+                        mpas: Some(&mpas_context),
+                        m_refine_level: Some(&m_refine_levels),
+                        w_refine_level: Some(&w_refine_levels),
+                        ..Default::default()
+                    },
                 )?,
                 None,
                 None,
@@ -2952,11 +2963,9 @@ fn run_certified_pipeline(
         let mpas = if mpas_output_paths.is_some() {
             Some(publish_certified_atmos_mpas(
                 &output_mesh,
-                &w_refine_levels,
+                &mpas_context,
                 &temporary_mpas_path,
                 &temporary_mpas_graph_path,
-                base_nxp,
-                delivered_level,
             )?)
         } else {
             None

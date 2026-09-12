@@ -413,9 +413,41 @@ fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
     assert_eq!(resources["mpas"]["mesh_density_min"], 0.0625);
     assert_eq!(resources["mpas"]["mesh_density_max"], 1.0);
     assert_eq!(resources["mpas"]["step"], 2);
+    let native = netcdf::open(&run.output.output).unwrap();
+    let widths = read_f64(&native, "earthmesh_w_cellwidth_km");
+    assert_eq!(widths.len(), native.dimension("lbx_points").unwrap().len());
     let gridfile =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
             .unwrap();
+    let context =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
+            .unwrap()
+            .unwrap();
+    assert_eq!((context.base_nxp, context.step), (3, 2));
+    assert_eq!(context.source, "cmrc_delivered_w_levels");
+    assert_eq!(context.cellwidth_km, widths);
+    for (&width, &level) in widths.iter().zip(&gridfile.w_refine_level) {
+        assert_eq!(width, (7680.0 / 3.0) / 2_f64.powi(level));
+    }
+    let native_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
+            .unwrap();
+    let rebuilt = earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(
+        &native_mesh, &context.cellwidth_km, context.base_nxp, context.step,
+    ).unwrap();
+    assert_eq!(
+        &rebuilt.mesh_density[rebuilt.mesh_density.len() - density.len()..],
+        density
+    );
+    assert_eq!(
+        rebuilt.nominal_min_dc,
+        (7680 / 3 / 2) as f64 / earthmesh_core::EARTH_RADIUS_METERS * 1000.0
+    );
+    assert_eq!(context.density_reference_width_km, 1280.0);
+    assert_eq!(
+        read_f64(&file, "nominalMinDc"),
+        vec![rebuilt.nominal_min_dc]
+    );
     let placeholder_rows = gridfile.w_refine_level.len() - density.len();
     assert!(placeholder_rows <= 2);
     for (level, actual) in gridfile.w_refine_level[placeholder_rows..]
@@ -838,6 +870,16 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
     assert_eq!(gridfile.w_refine_level.len(), gridfile.w_lon.len());
     assert!(gridfile.m_refine_level.iter().all(|level| *level >= 0));
     assert!(gridfile.w_refine_level.iter().all(|level| *level >= 0));
+    let context =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
+            .unwrap()
+            .unwrap();
+    assert_eq!(context.cellwidth_km.len(), gridfile.w_lon.len());
+    assert_eq!(context.base_nxp, 3);
+    for (&width, &level) in context.cellwidth_km.iter().zip(&gridfile.w_refine_level) {
+        assert_eq!(width, (7680.0 / 3.0) / 2_f64.powi(level));
+    }
+
     let lineages =
         earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&run.output.output)
             .unwrap();

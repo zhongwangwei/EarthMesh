@@ -60,6 +60,8 @@ pub struct MethodCGridfileLineages {
 /// native one-based Method-C value (placeholder rows may be zero).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MethodCGridfileMetadataSlices<'a> {
+    /// Optional backend-owned MPAS width context; independent of Method-C levels.
+    pub mpas: Option<&'a crate::mpas_gridfile_context::MpasGridfileContext>,
     /// Stable Delaunay W-face lineage for each final triangular M-cell row.
     pub m_lineage: Option<&'a [i64]>,
     pub m_refine_level: Option<&'a [i32]>,

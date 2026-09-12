@@ -11,7 +11,7 @@ fn springjustment_global_gridfile_adapter_reads_mesh_writes_persistence_and_retu
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
         .expect("write gridfile");
 
-    let report =
+    let mut report =
         earthmesh_cli::grid_quality_pipeline::run_springjustment_global_from_unstructured_gridfile(
             &gridfile,
             &root,
@@ -57,6 +57,36 @@ fn springjustment_global_gridfile_adapter_reads_mesh_writes_persistence_and_retu
         vec![200.0; mesh.w_points.len()]
     );
 
+    // Exercise transport with a synthetic nonuniform core result: no level
+    // conversion or uniform fallback may replace these fractional widths.
+    let widths = report.core.cellwidth.as_mut().unwrap();
+    widths[1] = 120.75;
+    widths[2] = 65.25;
+    let native = root.join("selected.nc4");
+    earthmesh_cli::grid_quality_pipeline::write_springjustment_global_gridfile(
+        &native, &report, 9, 3,
+    )
+    .unwrap();
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&native)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        &context.cellwidth_km,
+        report.core.cellwidth.as_ref().unwrap()
+    );
+    assert_eq!(context.density_reference_width_km, 65.25);
+    assert_eq!((context.base_nxp, context.step), (9, 3));
+    assert_eq!(context.source, "spring_global_distance_layers");
+    report.core.cellwidth = None;
+    earthmesh_cli::grid_quality_pipeline::write_springjustment_global_gridfile(
+        &native, &report, 9, 3,
+    )
+    .unwrap();
+    assert!(
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&native)
+            .unwrap()
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
