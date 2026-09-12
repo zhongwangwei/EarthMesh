@@ -1,5 +1,7 @@
 //! EarthMesh execution pipelines, format adapters, and CLI-facing reports.
 
+mod atomic_output;
+
 use earthmesh_core::MkgrdWorkspacePlan;
 use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 

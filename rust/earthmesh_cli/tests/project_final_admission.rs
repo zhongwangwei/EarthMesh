@@ -252,7 +252,7 @@ fn final_admission_uses_native_cells_scope_and_policy_not_backend_or_intent() {
 }
 
 #[test]
-fn project_cli_backends_admit_the_selected_mesh_before_explicit_colm_delivery() {
+fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery() {
     use earthmesh_project::{
         ColmMeshDeliveryConfig, MethodCAlgorithm, ModelFormat, SpecifiedCircleRefinement,
         SpecifiedCircleRefinements,
@@ -342,6 +342,43 @@ fn project_cli_backends_admit_the_selected_mesh_before_explicit_colm_delivery() 
         assert!(
             stdout.find("project_final_quality=").unwrap()
                 < stdout.find("colm_mesh_input=").unwrap()
+        );
+        // Same backend and physical demand, only model-format configuration
+        // changes. Closed global TRI does not require an OBC sidecar.
+        p.target.model_format = ModelFormat::Fvcom;
+        p.delivery.colm_mesh = None;
+        fs::write(&path, p.to_yaml().unwrap()).unwrap();
+        let fvcom = support::output(
+            std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([
+                    "--project",
+                    path.to_str().unwrap(),
+                    "--max-tris",
+                    "100000",
+                    "--quiet",
+                ]),
+        )
+        .unwrap();
+        let fvcom_stdout = String::from_utf8_lossy(&fvcom.stdout);
+        assert!(
+            fvcom.status.success(),
+            "{name} FVCOM\n{fvcom_stdout}\n{}",
+            String::from_utf8_lossy(&fvcom.stderr)
+        );
+        let delivered = fvcom_stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("fvcom_mesh_input="))
+            .expect("selected final FVCOM artifact");
+        let mesh_text = fs::read_to_string(delivered).unwrap();
+        assert_eq!(
+            mesh_text.lines().filter(|l| l.starts_with("E3T ")).count(),
+            report["geometry"]["cell_count"].as_u64().unwrap() as usize
+        );
+        assert!(!mesh_text.lines().any(|l| l.starts_with("NS ")));
+        assert!(
+            fvcom_stdout.find("project_final_quality=").unwrap()
+                < fvcom_stdout.find("fvcom_mesh_input=").unwrap()
         );
         fs::remove_dir_all(root).unwrap();
     }

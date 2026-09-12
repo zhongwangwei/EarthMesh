@@ -210,6 +210,15 @@ pub fn write_clean_regional_ocean_gridfile(
         )?;
     }
 
+    // Metadata rewrite recreates the NetCDF file. Keep the exact boundary order
+    // with the final mesh so a later copy/temporary-directory cleanup is safe.
+    let orders = report.boundary_orders.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "clean ocean TRI has no classified OBC context",
+        )
+    })?;
+    crate::obc_boundary_io::write_gridfile_obc_order(&plan.result_gridfile, &orders.obc_order)?;
     Ok(plan)
 }
 

@@ -62,8 +62,13 @@ fn write_two_triangle_gridfile(path: &Path) {
         w_to_m: vec![vec![1], vec![1, 2], vec![1], vec![1, 2], vec![2]],
         n_w_to_m: vec![0, 2, 1, 2, 1],
     };
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh)
-        .expect("write two-triangle gridfile");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_refine_levels(
+        path,
+        &mesh,
+        Some(&[0, 0, 1]),
+        Some(&[0, 0, 1, 1, 0]),
+    )
+    .expect("write two-triangle gridfile with metadata, exercising the clean-ocean rewrite");
 }
 
 #[test]
@@ -107,6 +112,17 @@ fn clean_ocean_window_preserves_triangle_count_obc_and_global_source_indices() {
     )
     .expect("read OBC order");
     assert!(!obc.is_empty());
+    let file = netcdf::open(&plan.result_gridfile).unwrap();
+    let attr = file
+        .attribute("earthmesh_fvcom_obc_order")
+        .expect("final gridfile owns OBC context");
+    let values = match attr.value().unwrap() {
+        netcdf::AttributeValue::Ints(values) => values,
+        netcdf::AttributeValue::Int(value) => vec![value],
+        other => panic!("wrong OBC attribute type: {other:?}"),
+    };
+    assert_eq!(values, obc.iter().map(|&id| id as i32).collect::<Vec<_>>());
+    drop(file);
 
     let contain =
         earthmesh_cli::contain_io::read_contain_netcdf(&plan.contain_domain).expect("read contain");
@@ -139,5 +155,22 @@ fn clean_ocean_window_preserves_triangle_count_obc_and_global_source_indices() {
         2
     );
 
+    // Final-file copy is also CMRC's publication handoff. Sidecars may now be
+    // removed without losing the exact classified boundary sequence.
+    let selected = root.join("selected.nc4");
+    fs::copy(&plan.result_gridfile, &selected).unwrap();
+    fs::remove_file(plan.obc_output.as_ref().unwrap()).unwrap();
+    fs::remove_file(plan.obcv2_output.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&selected).unwrap(),
+        Some(obc)
+    );
+    let delayed = root.join("delayed.2dm");
+    let delivered = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &selected, &delayed,
+    )
+    .unwrap();
+    assert_eq!(delivered.triangles, triangles);
+    assert_eq!(fs::read_to_string(&delayed).unwrap(), fvcom_text);
     let _ = fs::remove_dir_all(root);
 }

@@ -892,6 +892,41 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
         fvcom.display().to_string()
     );
     assert!(resources["fvcom_2dm"]["triangles"].as_u64().unwrap() > 0);
+    // CMRC already removed its temporary domain directory: the published native
+    // gridfile must carry the exact OBC needed by delayed Project delivery.
+    let obc = earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&run.output.output)
+        .unwrap()
+        .expect("published CMRC OBC context");
+    assert!(!obc.is_empty());
+    assert_eq!(obc[0], 1);
+    let delayed_path = root.join("delayed_fvcom.2dm");
+    let delayed = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &run.output.output,
+        &delayed_path,
+    )
+    .unwrap();
+    assert_eq!(
+        delayed.triangles as u64,
+        resources["fvcom_2dm"]["triangles"].as_u64().unwrap()
+    );
+    assert_eq!(
+        delayed.nodes as u64,
+        resources["fvcom_2dm"]["nodes"].as_u64().unwrap()
+    );
+    assert_eq!(
+        delayed.boundary_segments as u64,
+        resources["fvcom_2dm"]["boundary_segments"]
+            .as_u64()
+            .unwrap()
+    );
+    // This existing synthetic case classifies no open chains. Preserve that
+    // result exactly; do not invent NS records to make a model-ready claim.
+    assert_eq!(delayed.boundary_segments, 0);
+    assert_eq!(
+        fs::read_to_string(&fvcom).unwrap(),
+        fs::read_to_string(&delayed_path).unwrap()
+    );
+
     assert!(
         resources["published_domain_topology"]["boundary_loops"]
             .as_u64()

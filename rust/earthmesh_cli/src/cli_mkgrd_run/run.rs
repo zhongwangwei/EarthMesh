@@ -612,6 +612,34 @@ fn run_prepared_mkgrd(
                     "project_final_quality_verdict={}",
                     final_quality.verdict.as_str()
                 );
+                if spec.config.target.model_format == earthmesh_project::ModelFormat::Fvcom {
+                    if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
+                        let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
+                        let output = gridfile
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."))
+                            .join("standard")
+                            .join(format!("FVCOM_{stem}.2dm"));
+                        let fvcom = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(gridfile, &output)
+                            .map_err(|err| format!("project FVCOM final delivery: {err}"))?;
+                        let boundary_status = if final_quality.topology.boundary_edge_count == 0 {
+                            "closed_mesh"
+                        } else if fvcom.boundary_segments > 0 {
+                            "open_chains_preserved"
+                        } else {
+                            eprintln!("earthmesh_cli: FVCOM has boundary edges but no classified open-boundary chains; boundary conditions and forcing are not certified by mesh export");
+                            "no_open_chains_classified"
+                        };
+                        println!("fvcom_boundary_status={boundary_status}");
+                        println!("fvcom_mesh_input={}", fvcom.output.display());
+                        println!(
+                            "fvcom_triangles={} fvcom_nodes={} fvcom_boundary_segments={}",
+                            fvcom.triangles, fvcom.nodes, fvcom.boundary_segments
+                        );
+                    } else {
+                        eprintln!("earthmesh_cli: FVCOM specialized export requires triangular cells; grid-only delivery");
+                    }
+                }
                 if let Some(report) = write_project_colm_mesh_delivery(&spec.config, gridfile)? {
                     let pixels_per_degree = spec
                         .config

@@ -28,7 +28,8 @@ This feature does not change validation contracts or algorithm kernels.
 
 The default `--project` workflow now sends the **selected final gridfile** from
 CMRC, canonical Method-C/HField, RedGreen or LEPP through the same final admission
-entry point after AutoRefine and hydro, before explicit CoLM mesh delivery.
+entry point after AutoRefine and hydro, before explicit CoLM mesh delivery or
+configured TRI/FVCOM delivery.
 `final_quality/quality_summary.json` records this check separately from candidate
 and hydro diagnostics, including a `final_mesh_admission` gate.
 
@@ -52,10 +53,38 @@ not start another repair loop.
 This unifies **final Project admission**, not all model-export lifecycles.
 Low-level NML paths, internal CMRC certificates and legacy model artifacts are
 unchanged. Some adapters still emit artifacts inside the engine pipeline; their
-existence does not mean the Project passed final admission. Moving refined MPAS
-and regional FVCOM delivery requires aligned cellwidth/global-parent and OBC
-context respectively; this step does not substitute uniform widths or discard
-boundary metadata to pretend that migration is complete.
+existence does not mean the Project passed final admission. Refined MPAS still
+requires aligned cellwidth/global-parent context; RedGreen/LEPP do not yet persist
+per-W nominal widths, so uniform widths are not substituted to pretend migration
+is complete.
+
+### FVCOM selected-final delivery
+
+For `target.cell: Tri` + `target.model_format: Fvcom`, Project writes
+`standard/FVCOM_<selected_gridfile_stem>.2dm` beside the selected gridfile, after
+final admission. The backend and land/ocean/atmosphere intent do not select a
+separate export algorithm. HEX/FVCOM retains the existing grid-only contract.
+
+New ocean TRI mask-postproc/clean-ocean gridfiles embed the exact same-run
+`obc_order` as the integer global attribute `earthmesh_fvcom_obc_order` (canonical
+vertex IDs, with `1` as the sequence placeholder and segment separator). This
+survives metadata rewrites, byte copies, and CMRC temporary-directory cleanup;
+Project never searches neighboring directories for a possibly stale OBC sidecar.
+An absent attribute differs from an explicitly present empty order. A mesh with
+boundary edges and missing context is rejected before writing; a closed mesh
+needs no OBC metadata. Older regional files must be regenerated through the
+boundary-producing path rather than silently exported with an empty boundary.
+
+The adapter validates boundary vertices and consecutive boundary edges, retains
+NS segmentation, checks physical M-triangle/W-node counts, and atomically
+publishes without replacing an old output on failure. `fvcom_mesh_input=` points
+to the new artifact. `fvcom_boundary_status=` distinguishes `closed_mesh`,
+`open_chains_preserved` and `no_open_chains_classified`. The last state keeps a
+warning: a recorded empty/all-separator order does **not** prove that the model's
+open-boundary conditions are complete. Existing synthetic CMRC ocean fixtures
+produce this state; the exporter preserves it rather than inventing NS records.
+A `.2dm` mesh and its available OBC are not bathymetry, forcing, or solver-run
+certification.
 
 ## Configuration
 
