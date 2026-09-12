@@ -202,7 +202,11 @@ pub fn write_clean_regional_ocean_gridfile(
         report.renewal.is_in_domain_ustr.len(),
         &source_levels,
     )?;
-    if final_metadata.m.is_some() || final_metadata.w.is_some() || final_metadata.mpas.is_some() {
+    if final_metadata.m.is_some()
+        || final_metadata.w.is_some()
+        || final_metadata.mpas.is_some()
+        || final_metadata.hfield.is_some()
+    {
         write_unstructured_mesh_netcdf_with_method_c_metadata(
             &plan.result_gridfile,
             &report.finalization.mesh,

@@ -5,9 +5,11 @@ use std::{
 
 use earthmesh_cli::{
     coordinate_types::LonLatPoint,
+    hfield_gridfile_context::HfieldGridfileContext,
     mpas_gridfile_context::MpasGridfileContext,
     unstructured_mesh_support::{MethodCGridfileMetadataSlices, UnstructuredMesh},
 };
+use earthmesh_hfield::HField;
 use earthmesh_project::ModelFormat;
 
 const MPAS_OCEAN_SPHERE_RADIUS_METERS: f64 = 6_371_220.0;
@@ -145,6 +147,34 @@ fn write_gridfile(path: &Path, mesh: &UnstructuredMesh, context: Option<&MpasGri
     .unwrap();
 }
 
+fn hfield_context() -> HfieldGridfileContext {
+    HfieldGridfileContext {
+        field: HField::from_values(
+            4,
+            3,
+            vec![
+                400.0, 320.0, 240.0, 160.0, 200.0, 150.0, 125.0, 100.0, 500.0, 250.0, 125.0, 62.5,
+            ],
+        )
+        .unwrap(),
+        base_m: 500.0,
+        max_level: 5,
+    }
+}
+
+fn write_hfield_only_gridfile(path: &Path, mesh: &UnstructuredMesh) {
+    let hfield = hfield_context();
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        path,
+        mesh,
+        MethodCGridfileMetadataSlices {
+            hfield: Some(&hfield),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
 fn read_f64(path: &Path, name: &str) -> Vec<f64> {
     netcdf::open(path)
         .unwrap()
@@ -174,6 +204,30 @@ fn scalar_attr_f64(path: &Path, name: &str) -> f64 {
         netcdf::AttributeValue::Double(value) => value,
         other => panic!("{name} has unexpected value {other:?}"),
     }
+}
+
+fn scalar_attr_string(path: &Path, name: &str) -> String {
+    match netcdf::open(path)
+        .unwrap()
+        .attribute(name)
+        .unwrap()
+        .value()
+        .unwrap()
+    {
+        netcdf::AttributeValue::Str(value) => value,
+        other => panic!("{name} has unexpected value {other:?}"),
+    }
+}
+
+fn assert_delivery_provenance(path: &Path, context: &MpasGridfileContext) {
+    assert_eq!(
+        scalar_attr_string(path, "earthmesh_mpas_cellwidth_source"),
+        context.source
+    );
+    assert_close(
+        scalar_attr_f64(path, "earthmesh_mpas_density_reference_width_km"),
+        context.density_reference_width_km,
+    );
 }
 
 fn assert_close(actual: f64, expected: f64) {
@@ -294,6 +348,7 @@ fn final_mpas_delivery_uses_native_context_density_for_all_layouts_and_full_form
             assert_eq!(graph_out, Some(out.join("graph.info")));
             assert!(graph_out.unwrap().exists());
             assert_density_from_context(&mesh_out, &context);
+            assert_delivery_provenance(&mesh_out, &context);
             assert_full_matches_existing_builder(&mesh_out, &expected);
             assert_eq!(fs::read(&gridfile).unwrap(), input_before);
             let nominal = read_f64(&mesh_out, "nominalMinDc")[0];
@@ -336,8 +391,120 @@ fn final_mpas_simple_delivery_writes_mesh_only_for_all_layouts_and_removes_stale
         assert_eq!(graph_out, None);
         assert!(!out.join("graph.info").exists());
         assert_density_from_context(&mesh_out, &context);
+        assert_delivery_provenance(&mesh_out, &context);
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+#[test]
+fn final_mpas_delivery_rejects_raw_hfield_without_mpas_widths() {
+    let root = temp_root("raw_hfield_missing_width");
+    let gridfile = root.join("final_grid.nc4");
+    let out = root.join("mpas");
+    write_hfield_only_gridfile(&gridfile, &canonical_voronoi_fixture_mesh());
+    seed_bundle(&out);
+
+    let err = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &gridfile,
+        &out,
+        ModelFormat::Mpas,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ));
+    assert!(err
+        .to_string()
+        .contains("missing persisted MPAS width context"));
+    assert_bundle_preserved(&out);
+    assert_no_staged_artifacts(&out);
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn exact_hfield_quantized_context(mesh: &UnstructuredMesh) -> MpasGridfileContext {
+    let mut context = context_for(mesh);
+    context.source = "method_c_hfield_quantized_w_demand_v1".to_string();
+    context.density_reference_width_km = 12.5;
+    for width in &mut context.cellwidth_km {
+        *width = 25.0;
+    }
+    context.cellwidth_km[0] = 12.5;
+    context
+}
+
+#[test]
+fn final_mpas_delivery_uses_hfield_reference_for_nominal_only_on_exact_source() {
+    for format in [
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+    ] {
+        let root = temp_root("exact_hfield_nominal");
+        let mesh = canonical_voronoi_fixture_mesh();
+        let context = exact_hfield_quantized_context(&mesh);
+        let gridfile = root.join("final_grid.nc4");
+        let out = root.join("mpas");
+        write_gridfile(&gridfile, &mesh, Some(&context));
+
+        let (mesh_out, graph_out) =
+            earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                &gridfile, &out, format,
+            )
+            .unwrap();
+
+        assert_eq!(graph_out.is_some(), format != ModelFormat::MpasSimple);
+        assert_density_from_context(&mesh_out, &context);
+        assert_delivery_provenance(&mesh_out, &context);
+        if format != ModelFormat::MpasSimple {
+            let sphere_radius = if format == ModelFormat::MpasOcean {
+                MPAS_OCEAN_SPHERE_RADIUS_METERS
+            } else {
+                1.0
+            };
+            assert_close(scalar_attr_f64(&mesh_out, "sphere_radius"), sphere_radius);
+            assert_close(
+                read_f64(&mesh_out, "nominalMinDc")[0],
+                context.density_reference_width_km * 1000.0 / earthmesh_core::EARTH_RADIUS_METERS
+                    * sphere_radius,
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn final_mpas_delivery_rejects_unknown_reserved_hfield_quantized_source_version() {
+    let root = temp_root("unknown_exact_source");
+    let mesh = canonical_voronoi_fixture_mesh();
+    let context = exact_hfield_quantized_context(&mesh);
+    let gridfile = root.join("final_grid.nc4");
+    let out = root.join("mpas");
+    write_gridfile(&gridfile, &mesh, Some(&context));
+    netcdf::append(&gridfile)
+        .unwrap()
+        .add_attribute(
+            "earthmesh_mpas_cellwidth_source",
+            "method_c_hfield_quantized_w_demand_v2",
+        )
+        .unwrap();
+    seed_bundle(&out);
+
+    let err = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &gridfile,
+        &out,
+        ModelFormat::Mpas,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ));
+    assert_bundle_preserved(&out);
+    assert_no_staged_artifacts(&out);
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -702,6 +869,7 @@ fn regional_mpas_final_delivery_uses_parent_lineage_subset_for_all_formats() {
             &read_f64(&mesh_out, "meshDensity"),
             &read_f64(&expected, "meshDensity"),
         );
+        assert_delivery_provenance(&mesh_out, &context);
         if format == ModelFormat::MpasSimple {
             assert_eq!(
                 read_i32(&mesh_out, "cellsOnVertex"),

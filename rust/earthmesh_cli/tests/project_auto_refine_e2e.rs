@@ -238,7 +238,7 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
 }
 
 #[test]
-fn project_block_quality_keeps_hfield_report_when_regional_mpas_is_unavailable() {
+fn project_block_quality_delivers_regional_hfield_mpas_after_admission() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -268,23 +268,41 @@ fn project_block_quality_keeps_hfield_report_when_regional_mpas_is_unavailable()
     )
     .expect("run Project Block CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "HField MPAS needs producer width context"
-    );
-    assert!(
-        stderr.contains("project MPAS final delivery: missing persisted MPAS width context"),
-        "{stderr}"
-    );
+    assert!(output.status.success(), "regional HField MPAS: {stderr}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("project_final_quality="),
         "final admission must precede delivery"
     );
+    let field = |prefix: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("missing {prefix}: {stdout}"))
+    };
     assert!(
-        !stdout.contains("mpas_mesh_input="),
-        "unavailable delivery must not publish a final mesh"
+        stdout.find("project_final_quality=").unwrap() < stdout.find("mpas_mesh_input=").unwrap()
     );
+    assert!(Path::new(field("mpas_parent_gridfile=")).is_file());
+    assert!(Path::new(field("mpas_graph_info=")).is_file());
+    let mpas = netcdf::open(field("mpas_mesh_input=")).unwrap();
+    assert_eq!(
+        mpas.attribute("earthmesh_mpas_cellwidth_source")
+            .unwrap()
+            .value()
+            .unwrap(),
+        netcdf::AttributeValue::Str("method_c_hfield_quantized_w_demand_v1".into())
+    );
+    let density = mpas
+        .variable("meshDensity")
+        .unwrap()
+        .get_values::<f64, _>(..)
+        .unwrap();
+    assert!(!density.is_empty());
+    assert!(density
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0));
+    drop(mpas);
     let mut quality_reports = Vec::new();
     find_named(&root, "quality_summary.json", &mut quality_reports);
     let quality = fs::read_to_string(

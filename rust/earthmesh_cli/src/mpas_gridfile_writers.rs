@@ -236,7 +236,8 @@ fn write_final_mpas(
     let first =
         crate::unstructured_mesh_support::unstructured_w_row_layout(&mesh).first_physical_row;
     // The builder's local-min normalization is not the producer-global reference.
-    // Replace only density, never infer nominal sizes from the final geometry.
+    // Never infer nominal sizes from final geometry. Only the explicit HField
+    // source below uses its generation-demand reference for nominalMinDc.
     let density = std::iter::once(1.0)
         .chain(
             context.cellwidth_km[first..]
@@ -282,6 +283,7 @@ fn write_final_mpas(
             }
             simple.mesh_density = density;
             write_mpas_simple_mesh_netcdf(&staged_mesh, &simple)?;
+            context.write_delivery_provenance(&staged_mesh)?;
             publish_artifacts(&[(&staged_mesh, &mesh_output)], &[&graph_output])?;
             Ok((mesh_output, None))
         } else {
@@ -297,10 +299,14 @@ fn write_final_mpas(
                     "MPAS physical W row count mismatch",
                 ));
             }
+            if context.source == crate::mpas_gridfile_context::HFIELD_QUANTIZED_DEMAND_V1 {
+                full.nominal_min_dc = context.density_reference_width_km * 1000.0
+                    / earthmesh_core::EARTH_RADIUS_METERS;
+            }
             if !full.nominal_min_dc.is_finite() || full.nominal_min_dc <= 0.0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "MPAS nominalMinDc is not positive at the recorded NXP/step",
+                    "MPAS nominalMinDc is not positive for the recorded width source",
                 ));
             }
             full.mesh_density = density;
@@ -319,6 +325,7 @@ fn write_final_mpas(
                     mesh_density: full.mesh_density,
                 };
                 write_mpas_simple_mesh_netcdf(&staged_mesh, &simple)?;
+                context.write_delivery_provenance(&staged_mesh)?;
                 publish_artifacts(&[(&staged_mesh, &mesh_output)], &[&graph_output])?;
                 return Ok((mesh_output, None));
             }
@@ -327,6 +334,7 @@ fn write_final_mpas(
             } else {
                 write_mpas_mesh_netcdf(&staged_mesh, &full)?;
             }
+            context.write_delivery_provenance(&staged_mesh)?;
             write_mpas_graph_info(
                 &staged_graph,
                 10,

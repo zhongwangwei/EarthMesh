@@ -157,11 +157,98 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
         .expect("threshold hfield should drive direct Method-C refinement");
 
+    let demand =
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(&run.output.output)
+            .unwrap()
+            .expect("the exact consumed spherical demand must survive the pipeline");
+    assert_eq!(
+        (demand.field.nlon(), demand.field.nlat()),
+        (hfield_nlon, hfield_nlat)
+    );
+    assert_eq!(
+        demand.base_m,
+        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / 30.0
+    );
+    assert_eq!(demand.max_level, 1);
+    assert_eq!(
+        demand
+            .field
+            .level_at(110.0, 20.0, demand.base_m, demand.max_level),
+        1
+    );
+    assert_eq!(
+        demand
+            .field
+            .level_at(-100.0, -40.0, demand.base_m, demand.max_level),
+        0
+    );
+    let widths =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
+            .unwrap()
+            .expect("producer-persisted nominal demand");
+    assert_eq!(widths.source, "method_c_hfield_quantized_w_demand_v1");
+    assert_eq!(
+        widths.density_reference_width_km,
+        demand.base_m / 2.0 / 1000.0
+    );
+    let delivered = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &run.output.output,
+        root.join("mpas"),
+        earthmesh_project::ModelFormat::Mpas,
+    )
+    .expect("HField global MPAS delivery");
+    assert!(delivered.0.exists());
+    assert!(delivered.1.unwrap().exists());
     assert!(run.regions.is_empty());
     assert_eq!(run.max_level, 1);
     assert!(
         run.output.lbx_points > run.gridinit.as_ref().unwrap().gridfile.lbx_points,
         "threshold hfield should refine the initial mesh"
+    );
+
+    // Post-quality changes row topology and has no Method-C row metadata;
+    // it must preserve source demand and evaluate nominal widths at its new W sites.
+    let derivative_namelist = fs::read_to_string(&namelist)
+        .unwrap()
+        .replace("case_method_c_hfield_threshold", "case_hfield_derivative")
+        .replace("NL%mode_grid='hex'", "NL%mode_grid='tri'");
+    fs::write(
+        &namelist,
+        format!("{derivative_namelist}\n&quality\n NL%lepp_post_quality=.true.\n NL%lepp_post_quality_max_insertions=1\n NL%lepp_post_quality_max_edge_km=1300.0\n/\n"),
+    )
+    .unwrap();
+    let derivative = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect("HField post-quality derivative");
+    let derivative = derivative.lepp_post_quality.expect("post-quality output");
+    let restored = earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(
+        &derivative.output.output,
+    )
+    .unwrap()
+    .expect("post-quality must preserve demand without row metadata");
+    assert_eq!(restored.field.values(), demand.field.values());
+    assert_eq!(restored.base_m, demand.base_m);
+    assert_eq!(restored.max_level, demand.max_level);
+    let derivative_widths =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&derivative.output.output)
+            .unwrap()
+            .expect("post-quality nominal demand evaluated at new W sites");
+    assert!(derivative_widths.cellwidth_km.len() > widths.cellwidth_km.len());
+    let derivative_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        &derivative.output.output,
+    )
+    .unwrap();
+    assert_eq!(
+        derivative_widths,
+        earthmesh_cli::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
+            &derivative_mesh,
+            &restored,
+            6,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        derivative_widths.density_reference_width_km,
+        widths.density_reference_width_km
     );
 }
 
@@ -1015,6 +1102,12 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
         .regions
         .iter()
         .any(|region| matches!(region, earthmesh_mesh::RefinementRegion::Bbox { .. })));
+    assert!(
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(&run.output.output)
+            .unwrap()
+            .is_none(),
+        "Cartesian coordinates must not acquire spherical demand metadata"
+    );
     let cartesian_base = earthmesh_refine_method_c::MethodCMesh::from_cart_hex(18, 1_000_000.0)
         .expect("build Cartesian base mesh");
     assert!(
@@ -1064,6 +1157,12 @@ fn cartesian_native_method_c_samples_geographic_threshold_hfield_from_origin() {
     let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 100_000, None)
         .expect("geographic threshold hfield should refine Cartesian-XY mesh");
 
+    assert!(
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(&run.output.output)
+            .unwrap()
+            .is_none(),
+        "Cartesian coordinates must not acquire spherical demand metadata"
+    );
     let cartesian_base = earthmesh_refine_method_c::MethodCMesh::from_cart_hex(18, 1_000_000.0)
         .expect("build Cartesian base mesh");
     assert!(run.regions.is_empty());

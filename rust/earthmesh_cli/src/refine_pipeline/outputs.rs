@@ -50,7 +50,8 @@ pub(super) struct MethodCMetadataSlices<'a> {
 impl<'a> MethodCMetadataSlices<'a> {
     fn gridfile(&self) -> MethodCGridfileMetadataSlices<'a> {
         MethodCGridfileMetadataSlices {
-            mpas: None, // This producer does not yet retain its actual nominal widths.
+            hfield: None,
+            mpas: None, // Only a producer with an explicit demand contract fills this below.
             m_refine_level: Some(self.m_refine_level),
             m_refine_level_orig: Some(self.m_refine_level_orig),
             m_ngr: Some(self.m_ngr),
@@ -80,9 +81,27 @@ pub(super) fn write_refined_outputs(
     output_mesh: &UnstructuredMesh,
     domain_region: Option<&GridRegion>,
     metadata: Option<MethodCMetadataSlices<'_>>,
+    hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
     hard_center_demand: Option<&[bool]>,
     name_suffix: &str,
 ) -> io::Result<MethodCRefinedOutputReports> {
+    let mpas = hfield
+        .map(|demand| {
+            crate::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
+                output_mesh,
+                demand,
+                nxp,
+            )
+        })
+        .transpose()?;
+    let metadata = MethodCGridfileMetadataSlices {
+        hfield,
+        mpas: mpas.as_ref(),
+        ..metadata
+            .as_ref()
+            .map(MethodCMetadataSlices::gridfile)
+            .unwrap_or_default()
+    };
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}{name_suffix}.nc4",
         config.mode_grid.trim(),
@@ -107,10 +126,7 @@ pub(super) fn write_refined_outputs(
         let raw_output = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
             &raw_path,
             output_mesh,
-            metadata
-                .as_ref()
-                .map(MethodCMetadataSlices::gridfile)
-                .unwrap_or_default(),
+            metadata,
         )?;
         if config.mesh_type.trim() == "oceanmesh" && config.mode_grid.trim() == "tri" {
             if let Some(GridRegion::Close { points }) = domain_region {
@@ -144,8 +160,8 @@ pub(super) fn write_refined_outputs(
                 &domain_path,
                 region,
                 config.mode_grid.trim(),
-                metadata.as_ref().map(|fields| fields.m_refine_level),
-                metadata.as_ref().map(|fields| fields.w_refine_level),
+                metadata.m_refine_level,
+                metadata.w_refine_level,
             )?;
             if kept == 0 {
                 return Err(io::Error::new(
@@ -201,10 +217,7 @@ pub(super) fn write_refined_outputs(
             &output_path,
             domain_region,
             config.mode_grid.trim(),
-            metadata
-                .as_ref()
-                .map(MethodCMetadataSlices::gridfile)
-                .unwrap_or_default(),
+            metadata,
         )?;
         let land_output_path = file_dir.join("result").join(format!(
             "gridfile_NXP{nxp:04}_{}{name_suffix}_landmesh.nc4",
@@ -333,10 +346,7 @@ pub(super) fn write_refined_outputs(
             &output_path,
             domain_region,
             config.mode_grid.trim(),
-            metadata
-                .as_ref()
-                .map(MethodCMetadataSlices::gridfile)
-                .unwrap_or_default(),
+            metadata,
         )?;
         (raw_output, None, None, output)
     };

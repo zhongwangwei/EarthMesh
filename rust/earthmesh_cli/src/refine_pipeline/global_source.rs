@@ -564,6 +564,7 @@ pub fn run_refine_pipeline_namelist(
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
             MethodCGridfileMetadataSlices {
+                hfield: None,
                 mpas: None,
                 m_refine_level: (!source_levels.m_refine_level.is_empty())
                     .then_some(source_levels.m_refine_level.as_slice()),
@@ -643,6 +644,7 @@ pub fn run_refine_pipeline_namelist(
         transition_faces,
         spring_nest_passes,
         hfield_diagnostics,
+        hfield_context,
         adaptive_run,
         lepp_hard_regions,
         lepp_adaptive_hybrid,
@@ -725,6 +727,7 @@ pub fn run_refine_pipeline_namelist(
                     mesh,
                     spring_nest_passes,
                     hfield_diagnostics,
+                    hfield_context,
                     adaptive_run,
                 } = refine_with_method_c(
                     mesh,
@@ -821,6 +824,7 @@ pub fn run_refine_pipeline_namelist(
                     method_c_metadata,
                     spring_nest_passes,
                     hfield_diagnostics,
+                    hfield_context,
                     adaptive_run,
                     lepp_hard_regions: Vec::new(),
                     lepp_adaptive_hybrid: None,
@@ -1064,6 +1068,7 @@ pub fn run_refine_pipeline_namelist(
                 w_refine_level_orig: &meta.w_refine_levels_orig,
                 w_ngr: &meta.w_ngr,
             }),
+        hfield_context.as_ref(),
         hard_center_demand.as_deref(),
         "",
     )?;
@@ -1185,6 +1190,7 @@ pub fn run_refine_pipeline_namelist(
             &lepp.output_mesh,
             None,
             None,
+            hfield_context.as_ref(),
             hard_center_demand.as_deref(),
             "_lepp",
         )?;
@@ -3635,6 +3641,7 @@ struct RefinedGrid {
     transition_faces: usize,
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive_run: Option<AdaptiveRunRecord>,
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
@@ -4147,6 +4154,7 @@ fn refine_with_redgreen(
         transition_faces: 0,
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        hfield_context: None,
         // Reported for the same two reasons Method-C reports it: the ocean
         // carve reads it to protect the cells a criterion demanded from its
         // largest-component rule, and the quality step reads the written file
@@ -4209,6 +4217,7 @@ struct MethodCRefineOutcome {
     mesh: MethodCMesh,
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
@@ -4406,6 +4415,7 @@ fn refine_with_method_c_lepp(
         transition_faces: 0,
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        hfield_context: None,
         adaptive_run: None,
         lepp_hard_regions: hard_regions,
         lepp_adaptive_hybrid: Some(report),
@@ -4529,6 +4539,7 @@ fn refine_with_method_c(
     // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
     // it, carried out to the layer that knows where the run's outputs land.
     let mut adaptive_run: Option<AdaptiveRunRecord> = None;
+    let mut hfield_context = None;
     let (mesh, spring_nest_passes) = if !is_atmosmesh
         && (native_only_spawn || native_surface_global_expansion)
         && !refine.refine_spc
@@ -4826,6 +4837,11 @@ fn refine_with_method_c(
                 spring_nest_iterations,
             )?;
             hfield_diagnostics = diagnostics;
+            hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
+                field,
+                base_m,
+                max_level: field_max_level as u8,
+            });
             (refined, passes)
         }
     } else if spring_nest_iterations > 0 {
@@ -4882,6 +4898,7 @@ fn refine_with_method_c(
         mesh,
         spring_nest_passes,
         hfield_diagnostics,
+        hfield_context,
         adaptive_run,
     })
 }

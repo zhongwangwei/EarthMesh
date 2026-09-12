@@ -65,7 +65,7 @@ Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units
 `km`) together with `earthmesh_mpas_base_nxp`, `earthmesh_mpas_step`,
 `earthmesh_mpas_density_reference_width_km` and `earthmesh_mpas_cellwidth_source`.
 The vector follows every native W row, including placeholders. The reference
-width is the producer-global physical minimum, not the minimum of a later crop;
+width is the producer-global reference defined by its source, not a later crop minimum;
 removing the finest cells must not renormalize `meshDensity`.
 
 Newly generated, unrefined base grids record their known uniform `7680/NXP` km
@@ -89,12 +89,70 @@ widths when W vertices are split. Width-only clean-ocean rewrites also retain OB
 Absent context stays absent; partial headers, wrong dimensions/types/units or
 invalid values fail rather than select a uniform fallback.
 
-Modern Method-C/HField, RedGreen and LEPP do not yet produce this context: their
-actual nominal-width provenance must be retained before they can supply it.
-Regional full MPAS still needs global-parent metric/weight context; compacted
-native widths alone are not sufficient. Existing low-level builders still
-normalize by their input minimum, whereas the final adapter below explicitly
-uses the preserved global reference.
+Non-HField Method-C, RedGreen and LEPP do not yet produce MPAS nominal-width
+context. No conversion from birth generations or measured polygon geometry is
+used to bypass that missing contract. Spherical HField producers use the explicit
+nominal-demand contract below, not reconstructed legacy Spring interpolation.
+
+### Effective spherical HField demand (not MPAS widths)
+
+Successful spherical HField runs embed the exact field consumed by refinement,
+after specified/threshold/hydro composition and final domain limiting:
+
+- `earthmesh_hfield_target_m`: f64 metres, dimensions
+  `[earthmesh_hfield_nlat, earthmesh_hfield_nlon]`, longitude-fast values.
+- `earthmesh_hfield_base_m`: f64 positive base size and
+  `earthmesh_hfield_max_level`: integer effective cap in 1..5.
+- `earthmesh_hfield_semantics = spherical_effective_demand_v1`: demand-only
+  snapshot, not realized size or spring target lengths.
+
+The v1 grid is global, cell-centred at `-180 + (i+.5)*360/nlon` longitude and
+`-90 + (j+.5)*180/nlat` latitude. Replay uses the existing `HField::sample` /
+`level_at`: periodic longitude, the existing polar-continuous interpolation,
+then `ceil(log2(base_m/h) - 1e-9)` clamped to `[0,max_level]` (zero for
+`h >= base_m`). The current Method-C
+pipeline samples these target levels for selection; its nest spring still uses
+the separate NXP/level/mrow compatibility target, not this continuous field.
+
+`read_hfield_gridfile_context` reconstructs the exact field and quantization
+inputs without reading sidecars or original rasters. Native copies, region/land
+masking, clean-ocean rewrites and post-quality derivatives retain the **whole
+source demand**, not a W-row-compacted or re-normalized field. Cartesian and
+non-HField producers do not acquire fabricated spherical demand. Entirely
+absent context remains absent; partial/unknown semantics, wrong dimensions,
+types/units and invalid sizes/base/caps reject rather than silently drop data.
+MPAS delivery still rejects files containing only this raw snapshot without a
+producer-persisted MPAS context; the final adapter does not infer missing widths.
+
+### HField quantized nominal W demand
+
+MPAS defines `meshDensity` as the generation density function evaluated at cells,
+not measured cell area/edge length. [MPAS Registry](https://github.com/MPAS-Dev/MPAS-Model/blob/f34984b2c89353cf31c235b08d3b4acd96b37bb3/src/core_init_atmosphere/Registry.xml)
+The upstream Tools injector transforms generation widths with a fourth power
+and interpolates density to cells. [MPAS-Tools injector](https://github.com/MPAS-Dev/MPAS-Tools/blob/4e723bd7fe8203a221e03ce622ee4fd1c9beaf5d/conda_package/mpas_tools/ocean/inject_meshDensity.py#L54-L95)
+
+EarthMesh's `method_c_hfield_quantized_w_demand_v1` is an explicit **nominal
+requested-scale** convention: evaluate the same `try_level_at` consumed by the
+producer at each final physical W site, then use `base_m / 2^level / 1000` km.
+It is not a birth generation, realized resolution or Spring U-edge target.
+Unlike the Tools continuous-density interpolation, EarthMesh samples HField
+first and quantizes using its actual producer's level cap and tolerance.
+
+The reference is `base_m / 2^Lmax / 1000` km, where `Lmax` is the maximum of
+`field.level_map(base_m,max_level)` over the **whole source field**. It need not
+be reached at any final W site: all physical `meshDensity` values may be below
+one. Crop/mask retains the same reference and compacts producer widths; a
+post-quality derivative re-evaluates demand at its changed W sites.
+
+Only this tagged source uses `reference_km * 1000 / EARTH_RADIUS_METERS` for
+unit-sphere `nominalMinDc`; MPAS-Ocean scales it with its existing sphere radius.
+The existing base-NXP/step fields retain producer provenance (step=`Lmax+1`),
+but cannot substitute the legacy integer formula when `base_m` was overridden.
+Final MPAS files also record the width-source tag and reference-width attribute
+before staged publication, so the delivery convention remains visible.
+This is a generation-demand export contract, not solver validation or a promise
+that the achieved cell sizes meet every target. Cartesian/other algorithms
+still receive no fabricated context.
 
 ### MPAS selected-final delivery
 
@@ -120,18 +178,19 @@ and isolated whole cells are allowed. The ordered subset preserves final W order
 parent metrics and density. Dropped stencil edges retain the existing zero-weight
 sentinel behavior; this is not a physical boundary-condition prescription.
 
-The connected regional producer is CMRC whole-land dual-cell selection, now
-independent of model format. Other producers may use the same adapter only when
-they supply its complete parent/geometry/width contract. Missing or malformed
-context fails, and modern Method-C/HField, RedGreen and LEPP still do not acquire
-invented widths. No new ocean-HEX selection algorithm is included. Retaining a
+Connected regional producers include CMRC whole-land dual-cell selection and
+spherical Method-C HField whole-cell crops, independent of model format. Other
+producers may use the same adapter only when they supply its complete
+parent/geometry/width contract. Missing or malformed context fails; non-HField
+Method-C, RedGreen and LEPP still do not acquire invented widths. No new ocean-HEX selection algorithm is included. Retaining a
 parent costs additional disk space. Internal/legacy MPAS artifacts alone are not
 proof that Project final delivery passed.
 
 Density is `(producer_global_reference_width / final_W_width)^4`, aligned to
 physical rows with placeholders excluded. It is not renormalized to the cropped
 minimum. All other full/Simple/Ocean builder formulas and format conventions are
-retained, including the legacy integer `nominalMinDc` calculation; final full
+retained. Legacy sources keep the integer `nominalMinDc` calculation; only the
+explicit HField tag uses its nominal reference as described above. Final full
 export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
 uses the existing physical-radius writer. Simple remains an incomplete mesh
 schema, not a solver-ready full mesh, and has no graph.

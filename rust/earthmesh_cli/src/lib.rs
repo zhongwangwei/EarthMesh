@@ -369,6 +369,7 @@ pub mod gridfile_output_writers;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
+pub mod hfield_gridfile_context;
 pub mod mpas_gridfile_context;
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;

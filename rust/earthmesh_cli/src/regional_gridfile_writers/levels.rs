@@ -8,6 +8,7 @@ use crate::{
 
 pub(crate) struct OptionalRefineLevelVectors {
     pub mpas: Option<crate::mpas_gridfile_context::MpasGridfileContext>,
+    pub hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     pub m_lineage: Vec<i64>,
     pub m: Vec<i32>,
     pub m_orig: Vec<i32>,
@@ -20,6 +21,7 @@ pub(crate) struct OptionalRefineLevelVectors {
 
 pub(crate) struct FinalRefineLevelVectors {
     pub mpas: Option<crate::mpas_gridfile_context::MpasGridfileContext>,
+    pub hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     pub m_lineage: Option<Vec<i64>>,
     pub m: Option<Vec<i32>>,
     pub m_orig: Option<Vec<i32>>,
@@ -34,6 +36,7 @@ impl FinalRefineLevelVectors {
     pub(crate) fn slices(&self) -> MethodCGridfileMetadataSlices<'_> {
         MethodCGridfileMetadataSlices {
             mpas: self.mpas.as_ref(),
+            hfield: self.hfield.as_ref(),
             m_lineage: self.m_lineage.as_deref(),
             m_refine_level: self.m.as_deref(),
             m_refine_level_orig: self.m_orig.as_deref(),
@@ -87,6 +90,7 @@ pub(crate) fn refine_levels_from_gridfile(
     let lineages = read_gridfile_cell_lineages(gridfile)?;
     Ok(OptionalRefineLevelVectors {
         mpas: crate::mpas_gridfile_context::read_mpas_gridfile_context(gridfile)?,
+        hfield: crate::hfield_gridfile_context::read_hfield_gridfile_context(gridfile)?,
         m_lineage: lineages.m,
         m: mesh.m_refine_level,
         m_orig: mesh.m_refine_level_orig,
@@ -160,6 +164,7 @@ pub(crate) fn final_refine_levels_for_mask_postproc(
 fn empty_final_metadata() -> FinalRefineLevelVectors {
     FinalRefineLevelVectors {
         mpas: None,
+        hfield: None,
         m_lineage: None,
         m: None,
         m_orig: None,
@@ -211,6 +216,7 @@ pub(crate) fn final_method_c_metadata_for_mask_postproc(
         &source.w_lineage,
     )?;
     Ok(FinalRefineLevelVectors {
+        hfield: source.hfield.clone(),
         mpas: compact_mpas_context(
             mode_grid,
             report,

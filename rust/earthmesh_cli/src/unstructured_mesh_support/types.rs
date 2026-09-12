@@ -60,6 +60,8 @@ pub struct MethodCGridfileLineages {
 /// native one-based Method-C value (placeholder rows may be zero).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MethodCGridfileMetadataSlices<'a> {
+    /// Effective spherical demand and its quantization inputs, not MPAS widths.
+    pub hfield: Option<&'a crate::hfield_gridfile_context::HfieldGridfileContext>,
     /// Optional backend-owned MPAS width context; independent of Method-C levels.
     pub mpas: Option<&'a crate::mpas_gridfile_context::MpasGridfileContext>,
     /// Stable Delaunay W-face lineage for each final triangular M-cell row.
