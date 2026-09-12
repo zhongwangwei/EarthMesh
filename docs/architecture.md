@@ -120,6 +120,13 @@ aliases may remain at parser boundaries while old Project files are supported;
 they are not exposed as current GUI choices or output identifiers. GUI/CLI policy
 is sourced from the Project model.
 
+The naming check rejects explicit source-origin labels such as `Fortran reference`,
+`reference_fortran`, and `v2_reference`, plus modules named `reference` or
+`reference_*`. Ordinary mathematical reference values and persisted file-format
+keys are allowed; existing NetCDF keys must not be renamed to satisfy a naming
+lint. `make check-architecture-selftest` exercises both accepted and rejected
+fixtures, including failed checks and unwritable reports.
+
 The large `earthmesh_cli` and `earthmesh_mesh` modules remain internally split
 by algorithm and file-format responsibility. Moving them into a single flat
 module would not reduce behavior or dependencies and would make the numerical

@@ -126,18 +126,14 @@ check-architecture:
 	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
 		$(EM_ARCH_GREP) -F '#[deprecated' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,deprecated compatibility facades are forbidden)
+	@# Reject source-origin labels/modules, not numerical reference values or file-format keys.
 	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
-		$(EM_ARCH_GREP) -iE '\breference\b|reference_' rust > "$$tmp" 2>/dev/null; status=$$?; \
+		$(EM_ARCH_GREP) -iE '(^|[^[:alnum:]])((fortran|v2|source[-_ ]origin)[-_ ]+reference|reference[-_ ]+(fortran|v2|source[-_ ]origin))([^[:alnum:]]|$$)|(^|[^[:alnum:]_])mod[[:space:]]+(r#)?reference([_[:space:];{]|$$)' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,source-origin reference naming is forbidden)
 	@python3 scripts/check_architecture.py .
 
 check-architecture-selftest:
-	@probe=$$(mktemp -d /tmp/earthmesh_arch_probe.XXXXXX); log="$$probe.log"; \
-		if $(MAKE) --no-print-directory check-architecture EM_ARCH_OUT="$$probe" >"$$log" 2>&1; then \
-			cat "$$log"; rm -rf "$$probe"; rm -f "$$log"; echo 'check-architecture must fail when EM_ARCH_OUT is not writable as a file'; exit 1; \
-		fi; \
-		rm -rf "$$probe"; rm -f "$$log"; \
-		echo 'check-architecture fail-closed selftest PASSED'
+	python3 -B scripts/test_check_architecture.py
 
 check-mesh-quality-views:
 	CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh
