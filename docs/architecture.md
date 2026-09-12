@@ -30,29 +30,27 @@ Arrows indicate the normal direction toward higher-level orchestration, not a
 complete Cargo dependency graph. Shared physical constants live in
 `earthmesh_core`; geometry and h-field code reuse that source of truth.
 
-## Three refinement backends
+## Three retained refinement backends
 
 `earthmesh_refine_redgreen` is red-green refinement: mark any set of triangles,
 split each of them into four, and close the seams by halving the neighbours the
 split left hanging. `earthmesh_refine_method_c` is Method-C, which subdivides a
-closed region and surrounds it with transition rows. `earthmesh_refine_harp_dv`
-is HARP-DV, which re-reads the criteria against the cells that exist after every
-cycle and changes the mesh only where they are still unmet, refusing any change
-that would leave a thin triangle.
+closed region and surrounds it with transition rows. `earthmesh_refine_certified`
+is CMRC, which starts from a certified mother grid and only accepts
+reverse-coarsening changes that preserve the active certificate contract.
 
-The name of this section said "Two" and the paragraph placed Method-C in
-`earthmesh_mesh`'s `method_c_*` modules until 2026-08-09. Both were true once:
-HARP-DV arrived later, and Method-C moved into its own crate. A count in a
-heading is the kind of fact that goes stale without anyone editing the sentence
-around it.
+HARP-DV was retired before this active architecture contract: `harp_dv` backend
+names and `&harp_dv` namelist sections now fail explicitly instead of falling
+back to another backend.
 
-The difference that decides which to use is what happens to a marking the
-algorithm cannot take as given. Red-green's judge chain *grows* it until it is
-legal -- every error it can return is an input-validation error, never a refusal
-of a shape. Method-C refuses: its seed lattice steps three cells at a time, its
-perimeter has to be a multiple of three, and its transition patch reaches two
-faces beyond the mask. So red-green refines an arbitrary region and Method-C
-refines a region shaped like the ones it can build.
+The difference that decides which retained backend to use is what happens to a
+marking the algorithm cannot take as given. Red-green's judge chain *grows* it
+until it is legal -- every error it can return is an input-validation error,
+never a refusal of a shape. Method-C refuses: its seed lattice steps three cells
+at a time, its perimeter has to be a multiple of three, and its transition patch
+reaches two faces beyond the mask. CMRC certifies a conservative coarsening
+state and refuses changes that would violate its primal/dual/physical/balance
+contracts.
 
 Method-C buys something for that: vertex degree stays in {5, 6, 7}, which is
 what keeps the *hexagonal dual* usable. A model that consumes the triangles
@@ -121,6 +119,13 @@ directories are forbidden by `make check-architecture`. Narrow legacy **input**
 aliases may remain at parser boundaries while old Project files are supported;
 they are not exposed as current GUI choices or output identifiers. GUI/CLI policy
 is sourced from the Project model.
+
+The naming check rejects explicit source-origin labels such as `Fortran reference`,
+`reference_fortran`, and `v2_reference`, plus modules named `reference` or
+`reference_*`. Ordinary mathematical reference values and persisted file-format
+keys are allowed; existing NetCDF keys must not be renamed to satisfy a naming
+lint. `make check-architecture-selftest` exercises both accepted and rejected
+fixtures, including failed checks and unwritable reports.
 
 The large `earthmesh_cli` and `earthmesh_mesh` modules remain internally split
 by algorithm and file-format responsibility. Moving them into a single flat

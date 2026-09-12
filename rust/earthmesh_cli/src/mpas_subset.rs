@@ -5,8 +5,6 @@ use std::io;
 /// a topologically-consistent regional (limited-area) MPAS mesh.
 pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<MpasMesh> {
     let nc = global.lat_cell.len();
-    let nv = global.lat_vertex.len();
-    let ne = global.lat_edge.len();
     if keep_cell.len() != nc {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -17,20 +15,33 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
         ));
     }
 
+    let cells = (1..nc).filter(|&c| keep_cell[c]).collect::<Vec<_>>();
+    subset_mpas_mesh_in_cell_order(global, &cells)
+}
+
+/// Preserve the supplied physical cell order while reindexing regional connectivity.
+/// As with the mask adapter, `global` must be a valid one-based MPAS mesh.
+pub fn subset_mpas_mesh_in_cell_order(global: &MpasMesh, cells: &[usize]) -> io::Result<MpasMesh> {
+    let nc = global.lat_cell.len();
+    let nv = global.lat_vertex.len();
+    let ne = global.lat_edge.len();
     let mut new_cell = vec![0usize; nc];
-    let mut kept_cells = Vec::new();
-    for c in 1..nc {
-        if keep_cell[c] {
-            new_cell[c] = kept_cells.len() + 1;
-            kept_cells.push(c);
+    for (i, &c) in cells.iter().enumerate() {
+        if c == 0 || c >= nc || new_cell[c] != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "selected MPAS cells must be unique physical parent indices",
+            ));
         }
+        new_cell[c] = i + 1;
     }
+    let kept_cells = cells.to_vec();
     let mut new_vertex = vec![0usize; nv];
     let mut kept_vertices = Vec::new();
     for v in 1..nv {
         if global.cells_on_vertex[v]
             .iter()
-            .any(|&c| c > 0 && keep_cell[c as usize])
+            .any(|&c| c > 0 && new_cell[c as usize] != 0)
         {
             new_vertex[v] = kept_vertices.len() + 1;
             kept_vertices.push(v);
@@ -41,7 +52,7 @@ pub fn subset_mpas_mesh(global: &MpasMesh, keep_cell: &[bool]) -> io::Result<Mpa
     for e in 1..ne {
         if global.cells_on_edge[e]
             .iter()
-            .any(|&c| c > 0 && keep_cell[c as usize])
+            .any(|&c| c > 0 && new_cell[c as usize] != 0)
         {
             new_edge[e] = kept_edges.len() + 1;
             kept_edges.push(e);

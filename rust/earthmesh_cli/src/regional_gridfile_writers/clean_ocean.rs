@@ -202,7 +202,11 @@ pub fn write_clean_regional_ocean_gridfile(
         report.renewal.is_in_domain_ustr.len(),
         &source_levels,
     )?;
-    if final_metadata.m.is_some() || final_metadata.w.is_some() {
+    if final_metadata.m.is_some()
+        || final_metadata.w.is_some()
+        || final_metadata.mpas.is_some()
+        || final_metadata.hfield.is_some()
+    {
         write_unstructured_mesh_netcdf_with_method_c_metadata(
             &plan.result_gridfile,
             &report.finalization.mesh,
@@ -210,6 +214,15 @@ pub fn write_clean_regional_ocean_gridfile(
         )?;
     }
 
+    // Metadata rewrite recreates the NetCDF file. Keep the exact boundary order
+    // with the final mesh so a later copy/temporary-directory cleanup is safe.
+    let orders = report.boundary_orders.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "clean ocean TRI has no classified OBC context",
+        )
+    })?;
+    crate::obc_boundary_io::write_gridfile_obc_order(&plan.result_gridfile, &orders.obc_order)?;
     Ok(plan)
 }
 

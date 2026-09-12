@@ -2,9 +2,9 @@
 
 use earthmesh_project::{
     criterion_catalog, default_mask_sea_ratio, threshold_criterion_by_id, CloseBoundaryMode,
-    CloseMaskFormat, DomainConfig, HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind,
-    MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole, RegionShape,
-    SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
+    CloseMaskFormat, ColmMeshDeliveryConfig, DomainConfig, HfieldRefinementRecipe,
+    HydroCoastConfig, MeshCellKind, MeshDomainKind, ModelFormat, ProjectConfig, ProjectLayerRole,
+    RegionShape, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCircleRefinements,
     SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ViolationPolicy,
     LANDCOVER_CRITERION_ID, SEA_RATIO_CRITERION_ID,
 };
@@ -291,6 +291,9 @@ pub(crate) fn set_project_target(
     if cfg.target.kind != MeshDomainKind::Coupled {
         cfg.coupling = None;
     }
+    if cfg.target.model_format != ModelFormat::CoLM {
+        cfg.delivery.colm_mesh = None;
+    }
     validated_yaml(cfg)
 }
 
@@ -302,6 +305,25 @@ pub(crate) fn set_target_cell(yaml: String, cell: String) -> Result<String, Stri
         "hex" => MeshCellKind::Hex,
         "tri" => MeshCellKind::Tri,
         other => return Err(format!("unknown cell shape '{other}'")),
+    };
+    validated_yaml(cfg)
+}
+
+/// Set or clear the opt-in CoLM mesh raster delivery.
+#[tauri::command]
+pub(crate) fn set_colm_mesh_delivery(
+    yaml: String,
+    enabled: bool,
+    pixels_per_degree: Option<usize>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.delivery.colm_mesh = if enabled {
+        Some(ColmMeshDeliveryConfig {
+            pixels_per_degree: pixels_per_degree
+                .ok_or_else(|| "CoLM mesh delivery requires pixels_per_degree".to_string())?,
+        })
+    } else {
+        None
     };
     validated_yaml(cfg)
 }
@@ -687,7 +709,7 @@ pub(crate) fn set_expert(
 ///
 /// Canonical Method-C and LEPP-Delaunay share the Method-C project backend;
 /// LEPP-Delaunay selects its AdaptiveHybrid local-refinement implementation.
-/// Red-Green, HARP-DV, and CMRC are independent backends.
+/// Red-Green and CMRC are independent backends.
 ///
 /// Orthogonal to `set_adaptive_refinement` with one exception. The point+radius
 /// route's criteria half is shared -- both backends consume the circles it
@@ -714,10 +736,8 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
             cfg.refinement.method_c = Default::default();
             earthmesh_project::RefinementBackend::RedGreen
         }
-        "harp_dv" => {
-            cfg.quality.lepp_post_quality = None;
-            cfg.refinement.method_c = Default::default();
-            earthmesh_project::RefinementBackend::HarpDv
+        "harp_dv" | "HARP_DV" | "harp-dv" | "harpdv" => {
+            return Err("HARP-DV was retired; use method_c, lepp_delaunay, red_green, or certified".to_string());
         }
         "certified" => {
             cfg.quality.lepp_post_quality = None;
@@ -728,7 +748,7 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
         }
         other => {
             return Err(format!(
-                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, harp_dv, or certified"
+                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, or certified"
             ))
         }
     };
@@ -811,34 +831,5 @@ pub(crate) fn set_method_c_algorithm_options(
     cfg.refinement.method_c.maximum_path_length = maximum_path_length;
     cfg.refinement.method_c.stop_at_source_resolution = stop_at_source_resolution;
     cfg.refinement.method_c.minimum_triangle_angle_deg = minimum_triangle_angle_deg;
-    validated_yaml(cfg)
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn set_harp_dv_options(
-    yaml: String,
-    max_cycles: u32,
-    minimum_cell_width_m: f64,
-    maximum_cells: usize,
-    maximum_patch_cells: usize,
-    maximum_neighbor_scale_ratio: f64,
-    minimum_candidate_separation_m: f64,
-    maximum_vertex_degree: usize,
-    minimum_triangle_angle_deg: f64,
-    criterion_minimum_angle_deg: f64,
-) -> Result<String, String> {
-    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
-    cfg.refinement.harp_dv = earthmesh_project::HarpDvRefinementRecipe {
-        max_cycles,
-        minimum_cell_width_m,
-        maximum_cells,
-        maximum_patch_cells,
-        maximum_neighbor_scale_ratio,
-        minimum_candidate_separation_m,
-        maximum_vertex_degree,
-        minimum_triangle_angle_deg,
-        criterion_minimum_angle_deg,
-    };
     validated_yaml(cfg)
 }

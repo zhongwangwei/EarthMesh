@@ -1,0 +1,39 @@
+! CMRC counterpart of v2 A3: two refinement levels within 2000 km of 120E, 40N.
+! Run from the repository root; uses the two tracked input/refine_spc_circle*.nml files.
+! Five gradation rings improve A3 hex tail shape at a modest extra cell cost;
+! this case-specific choice does not change the global default (three rings).
+&mkgrd
+  NL%EXPNME = 'CMRC_atmosphere_A3'
+  NL%base_dir = './cases/'
+  NL%mesh_type = 'atmosmesh'
+  NL%mode_grid = 'hex'
+  NL%mode_file = 'none'
+  NL%mode_file_description = 'none'
+  NL%NXP = 64
+  NL%refine = .TRUE.
+  NL%refine_backend = 'certified'
+  NL%gridnum_perdegree = 120
+  NL%landtype_file = 'none'
+  NL%mask_domain_global = .TRUE.
+  NL%mask_patch_on = .FALSE.
+  NL%output_format = 'MPAS'
+/
+&mkrefine
+  RL%Istransition = .TRUE.
+  RL%refine_spc = .TRUE.
+  RL%max_iter_spc = 2
+  RL%mask_refine_spc_type = 'circle'
+  RL%mask_refine_spc_fprefix = './input/refine_spc_circle'
+  RL%refine_cal = .FALSE.
+  RL%SpringGlobal_type = 0
+  RL%SpringRegional_type = 0
+/
+&certified
+  NL%mode = 'reverse_coarsening'
+  NL%delivery = 'coupled'
+  NL%angle_contract = 'domain_quality_38_to_82_v1'
+  NL%maximum_level = 8
+  NL%maximum_cells = 20000000
+  NL%gradation_rings_per_level = 5
+  NL%search_budget = 100000
+/

@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -435,20 +437,21 @@ fn binary_can_run_mask_restart_area_judge_continuation_branch() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart Area_judge path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge path");
 
     assert!(
         output.status.success(),
@@ -529,14 +532,15 @@ fn binary_can_run_mask_restart_area_judge_with_configured_global_source_dims() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary configured mask_restart Area_judge path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary configured mask_restart Area_judge path");
 
     assert!(
         output.status.success(),
@@ -605,22 +609,23 @@ fn binary_mask_restart_area_judge_can_generate_land_final_postproc_gridfile() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart Area_judge final postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge final postproc path");
 
     assert!(
         output.status.success(),
@@ -728,22 +733,23 @@ fn binary_mask_restart_area_judge_can_generate_ocean_final_postproc_gridfile() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart Area_judge ocean final postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge ocean final postproc path");
 
     assert!(
         output.status.success(),
@@ -831,20 +837,21 @@ fn binary_mask_restart_area_judge_ocean_without_persisted_contain_remains_area_o
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart Area_judge ocean area-only path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge ocean area-only path");
 
     assert!(
         output.status.success(),
@@ -942,22 +949,21 @@ fn binary_mask_restart_area_judge_ocean_inferrs_final_postproc_boundary_from_per
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .current_dir(&root)
-        .output()
-        .expect(
-            "run earthmesh_cli binary mask_restart Area_judge ocean inferred final postproc path",
-        );
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge ocean inferred final postproc path");
 
     assert!(
         output.status.success(),
@@ -1039,22 +1045,23 @@ fn binary_mask_restart_area_judge_can_generate_earth_final_postproc_outputs() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart Area_judge earth final postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart Area_judge earth final postproc path");
 
     assert!(
         output.status.success(),
@@ -1439,16 +1446,17 @@ fn binary_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph_outputs
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge-refine-landtype-source")
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary restart-refine landtype atmos full MPAS handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge-refine-landtype-source")
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary restart-refine landtype atmos full MPAS handoff");
 
     assert!(
         output.status.success(),
@@ -1527,18 +1535,19 @@ fn binary_can_handoff_area_judge_restart_grid_into_refine_pipeline_refine_from_l
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge-refine-landtype-source")
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary restart Area_judge refine landtype handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge-refine-landtype-source")
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary restart Area_judge refine landtype handoff");
 
     assert!(
         output.status.success(),
@@ -1614,15 +1623,16 @@ fn binary_default_restart_refine_landtype_ocean_uses_mode_grid_num_vertex_for_po
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default restart-refine landtype ocean handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart-refine landtype ocean handoff");
 
     assert!(
         output.status.success(),
@@ -1783,17 +1793,18 @@ fn binary_default_restart_refine_landtype_atmos_full_mpas_reports_mesh_and_graph
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli default restart-refine landtype atmos full MPAS handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli default restart-refine landtype atmos full MPAS handoff");
 
     assert!(
         output.status.success(),
@@ -1872,15 +1883,16 @@ fn binary_default_entry_handoffs_restart_refine_from_landtype_file_when_initial_
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default restart-refine landtype handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart-refine landtype handoff");
 
     assert!(
         output.status.success(),
@@ -1959,17 +1971,18 @@ fn binary_default_restart_refine_earth_reports_patchtype_and_info_outputs() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default restart-refine earth handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart-refine earth handoff");
 
     assert!(
         output.status.success(),
@@ -2048,17 +2061,18 @@ fn binary_default_restart_refine_landtype_earth_hex_reports_patchtype_and_info_o
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--restart-refine-initial-gridfile")
-        .arg(&initial_gridfile)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("6")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default restart-refine landtype earth hex handoff");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--restart-refine-initial-gridfile")
+            .arg(&initial_gridfile)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("6")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart-refine landtype earth hex handoff");
 
     assert!(
         output.status.success(),
@@ -2139,17 +2153,16 @@ fn binary_default_restart_refine_landtype_uses_existing_case_gridfile_when_initi
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect(
-            "run earthmesh_cli binary default restart-refine landtype inferred gridfile handoff",
-        );
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart-refine landtype inferred gridfile handoff");
 
     assert!(
         output.status.success(),
@@ -2230,18 +2243,17 @@ fn binary_explicit_restart_refine_landtype_uses_existing_case_gridfile_when_init
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect(
-            "run earthmesh_cli binary explicit restart-refine landtype inferred gridfile handoff",
-        );
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary explicit restart-refine landtype inferred gridfile handoff");
 
     assert!(
         output.status.success(),

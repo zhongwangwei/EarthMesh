@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 
 static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -465,16 +467,17 @@ fn binary_can_run_mask_restart_ocean_postproc_branch() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-ocean")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--mask-postproc-num-vertex")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart ocean path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-ocean")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--mask-postproc-num-vertex")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart ocean path");
 
     assert!(
         output.status.success(),
@@ -522,14 +525,15 @@ fn binary_mask_restart_ocean_postproc_infers_num_vertex_when_arg_is_omitted() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-ocean")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart ocean inferred num_vertex path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-ocean")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart ocean inferred num_vertex path");
 
     assert!(
         output.status.success(),
@@ -577,13 +581,14 @@ fn binary_default_entry_runs_mask_restart_ocean_postproc_branch() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default mask_restart ocean path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default mask_restart ocean path");
 
     assert!(
         output.status.success(),
@@ -646,14 +651,15 @@ fn binary_can_run_mask_restart_patch_preprocessing_branch() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-patch")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary mask_restart patch path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-patch")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary mask_restart patch path");
 
     assert!(
         output.status.success(),
@@ -1622,13 +1628,14 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default patch-on restart Area_judge postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default patch-on restart Area_judge postproc path");
 
     assert!(
         output.status.success(),
@@ -1723,13 +1730,14 @@ fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_out
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default restart Area_judge inferred postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default restart Area_judge inferred postproc path");
 
     assert!(
         output.status.success(),
@@ -1823,14 +1831,15 @@ fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs(
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary explicit restart Area_judge inferred postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary explicit restart Area_judge inferred postproc path");
 
     assert!(
         output.status.success(),
@@ -1920,22 +1929,21 @@ fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_p
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-mask-restart-area-judge")
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .arg("--source-gridnum-perdegree")
-        .arg("120")
-        .arg("--source-nlons")
-        .arg("43200")
-        .arg("--source-nlats")
-        .arg("21600")
-        .current_dir(&root)
-        .output()
-        .expect(
-            "run earthmesh_cli binary explicit restart Area_judge override inferred postproc path",
-        );
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-mask-restart-area-judge")
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .arg("--source-gridnum-perdegree")
+            .arg("120")
+            .arg("--source-nlons")
+            .arg("43200")
+            .arg("--source-nlats")
+            .arg("21600")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary explicit restart Area_judge override inferred postproc path");
 
     assert!(
         output.status.success(),
@@ -2002,13 +2010,14 @@ fn binary_default_entry_dispatches_mask_restart_patch_branch() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--mask-restart-max-iter")
-        .arg("7")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--mask-restart-max-iter")
+            .arg("7")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary");
 
     assert!(
         output.status.success(),

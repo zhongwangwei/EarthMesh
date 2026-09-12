@@ -32,7 +32,7 @@ fn mask_postproc_patchtype_writer_uses_plan_path_and_coordinate_builder() {
     assert_eq!(report.nlat, 2);
 
     let file = netcdf::open(&report.output).expect("open patchtype");
-    assert_eq!(read_i32(&file, "elmindex"), vec![2, 0, 3, 4]);
+    assert_eq!(read_i32(&file, "elmindex"), vec![2, 3, 0, 4]);
     assert_eq!(read_f64(&file, "lon_w"), vec![11.0, 12.0]);
     assert_eq!(read_f64(&file, "lon_e"), vec![12.0, 13.0]);
     assert_eq!(read_f64(&file, "lat_n"), vec![47.0, 48.0]);

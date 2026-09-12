@@ -2,7 +2,7 @@
 //!
 //! `TriangularMesh` is the type every backend consumes and it is Method-C's:
 //! `mrlm`, `mrow`, `ngr`, `impent` and the transition rows are its nesting
-//! bookkeeping, meaningless to red-green and to HARP-DV. That is why Method-C
+//! bookkeeping, meaningless to red-green. That is why Method-C
 //! has never been lifted into its own crate -- moving it would leave the mesh
 //! crate depending on the backend, with the dependency arrow pointing the wrong
 //! way.

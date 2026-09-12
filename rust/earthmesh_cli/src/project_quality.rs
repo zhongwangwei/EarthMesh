@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use earthmesh_project::{MeshCellKind, ProjectConfig, RefinementBackend};
+use earthmesh_project::{MeshCellKind, ProjectConfig};
 
 /// Which mesh survives comparison of an AutoRefine candidate with its baseline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,34 +135,141 @@ pub fn write_project_quality_report_with_namelist(
     out_dir: &Path,
     target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
+    write_project_quality_report_impl(project, gridfile, out_dir, target_namelist, false)
+}
+
+/// Final Project admission, after AutoRefine/hydro selection and before model delivery.
+/// Unlike candidate diagnostics, this audits stored HEX rings without repair/reordering.
+/// Structural validity and the physical cell/domain contracts cannot be waived by Warn.
+pub fn admit_project_final_gridfile(
+    project: &ProjectConfig,
+    gridfile: &Path,
+    out_dir: &Path,
+    target_namelist: Option<&Path>,
+) -> Result<earthmesh_quality::MeshQualityReport, String> {
+    write_project_quality_report_impl(project, gridfile, out_dir, target_namelist, true)
+}
+
+pub fn enforce_project_quality_policy(
+    policy: earthmesh_project::ViolationPolicy,
+    verdict: earthmesh_quality::QualityLevel,
+) -> Result<(), String> {
+    if policy != earthmesh_project::ViolationPolicy::Warn
+        && verdict == earthmesh_quality::QualityLevel::Fail
+    {
+        return Err(format!(
+            "project quality gate failed (verdict=fail, on_violation={})",
+            policy.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn final_mesh_contract(
+    project: &ProjectConfig,
+    input: &earthmesh_quality::QualityMeshInput,
+    report: &earthmesh_quality::MeshQualityReport,
+) -> Result<(), String> {
+    for (cell, polygon) in input.cells.iter().enumerate() {
+        let edges = polygon.vertices.len();
+        let valid = match project.target.cell {
+            MeshCellKind::Hex => (5..=7).contains(&edges),
+            MeshCellKind::Tri => edges == 3,
+        };
+        if !valid {
+            return Err(format!(
+                "physical {:?} cell {cell} has {edges} edges; HEX requires 5..=7, TRI requires 3",
+                project.target.cell
+            ));
+        }
+    }
+    let topology = &report.topology;
+    if project.expected_euler_characteristic() == Some(2)
+        && (topology.euler_characteristic != 2
+            || topology.boundary_edge_count != 0
+            || topology.connected_component_count != 1)
+    {
+        return Err(format!(
+            "global Earth/atmosphere requires one closed sphere: Euler={}, boundary_edges={}, components={}",
+            topology.euler_characteristic, topology.boundary_edge_count,
+            topology.connected_component_count
+        ));
+    }
+    if let Some(issue) = report
+        .topology_issues
+        .iter()
+        .find(|issue| issue.severity == earthmesh_quality::topology::Severity::Fail)
+    {
+        return Err(format!("{}: {}", issue.issue_type.as_str(), issue.message));
+    }
+    let geometry = &report.geometry;
+    for (name, count) in [
+        ("self_intersection_count", geometry.self_intersection_count),
+        ("invalid_polygon_count", geometry.invalid_polygon_count),
+        ("zero_area_cell_count", geometry.zero_area_cell_count),
+        (
+            "negative_area_cell_count",
+            geometry.negative_area_cell_count,
+        ),
+        ("non_finite_cell_count", geometry.non_finite_cell_count),
+    ] {
+        if count != 0 {
+            return Err(format!("{name}={count}"));
+        }
+    }
+    Ok(())
+}
+
+fn write_project_quality_report_impl(
+    project: &ProjectConfig,
+    gridfile: &Path,
+    out_dir: &Path,
+    target_namelist: Option<&Path>,
+    final_admission: bool,
+) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let mesh = crate::grid_quality_pipeline::read_gridfile_mesh_points(gridfile)
         .map_err(|err| format!("project quality read {}: {err}", gridfile.display()))?;
     let mut input = match project.target.cell {
+        MeshCellKind::Hex if final_admission => {
+            crate::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&mesh)
+        }
         MeshCellKind::Hex => crate::grid_quality_pipeline::quality_input_from_gridfile_hex(&mesh),
         MeshCellKind::Tri => crate::grid_quality_pipeline::quality_input_from_gridfile(&mesh),
     }
     .map_err(|err| format!("project quality validate {}: {err}", gridfile.display()))?;
+    let mut winding_convention = "not_applicable";
+    if final_admission {
+        // Native producers use both winding conventions. Convert the whole mesh
+        // to quality's CCW convention, never reorder/repair individual rings.
+        // A shared edge traversed in the same direction stays so under this
+        // global reversal; mixed winding and self-intersections remain visible.
+        let winding = input.cells.iter().find_map(|cell| {
+            let ring = cell
+                .vertices
+                .iter()
+                .map(|&v| input.vertices[v])
+                .collect::<Vec<_>>();
+            earthmesh_geometry::try_spherical_polygon_area(&ring)
+                .ok()
+                .map(|area| area.winding)
+        });
+        winding_convention = match winding {
+            Some(earthmesh_geometry::SphericalWinding::Clockwise) => "clockwise_reversed",
+            Some(_) => "counter_clockwise",
+            None => "unresolved",
+        };
+        if winding == Some(earthmesh_geometry::SphericalWinding::Clockwise) {
+            for cell in &mut input.cells {
+                cell.vertices.reverse();
+            }
+        }
+    }
     let target_namelist_text = target_namelist
         .map(|path| {
             fs::read_to_string(path)
                 .map_err(|err| format!("project quality read {}: {err}", path.display()))
         })
         .transpose()?;
-    let harp_dv = target_namelist_text
-        .as_deref()
-        .and_then(|text| earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(text).ok())
-        .map_or(
-            project.refinement.backend == RefinementBackend::HarpDv,
-            |config| config.refine_backend.eq_ignore_ascii_case("harp_dv"),
-        );
-    // HARP's stored generations describe insertion ancestry, not dyadic cell
-    // sizes. Physical adjacent-size ratios are still measured from geometry.
-    if harp_dv {
-        input
-            .cells
-            .iter_mut()
-            .for_each(|cell| cell.refine_level = None);
-    }
     let target_nxp = project.try_lower()?.mkgrd.nxp;
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     let thresholds = earthmesh_quality::QualityThresholds {
@@ -178,6 +285,54 @@ pub fn write_project_quality_report_with_namelist(
             expected_euler_characteristic: project.expected_euler_characteristic(),
         },
     );
+    if final_admission && project.expected_euler_characteristic().is_none() {
+        // Disconnected islands (including complete single-cell islands) are
+        // legitimate in regional/surface-masked products. Keep the diagnostics,
+        // but do not apply the standalone validator's connected-mesh contract.
+        use earthmesh_quality::{
+            topology::{Severity, TopologyIssueType},
+            QualityLevel,
+        };
+        for issue in &mut report.topology_issues {
+            if matches!(
+                issue.issue_type,
+                TopologyIssueType::DisconnectedMesh | TopologyIssueType::OrphanCell
+            ) {
+                issue.severity = Severity::Warn;
+                issue
+                    .message
+                    .push_str(" (allowed components in regional/masked Project domain)");
+            }
+        }
+        for gate in &mut report.gates {
+            if gate.metric == "orphan_cell_count" && gate.value > 0.0 {
+                gate.level = QualityLevel::Warn;
+                gate.detail =
+                    "complete isolated cells are allowed in regional/masked Project domains"
+                        .to_string();
+            }
+        }
+        report.verdict = report
+            .gates
+            .iter()
+            .map(|gate| gate.level)
+            .chain(
+                report
+                    .topology_issues
+                    .iter()
+                    .map(|issue| match issue.severity {
+                        Severity::Fail => QualityLevel::Fail,
+                        Severity::Warn => QualityLevel::Warn,
+                    }),
+            )
+            .fold(QualityLevel::Pass, |worst, level| {
+                if level.is_worse_than(worst) {
+                    level
+                } else {
+                    worst
+                }
+            });
+    }
     report.mesh_name = gridfile.display().to_string();
     let cell_view = match project.target.cell {
         MeshCellKind::Hex => "hex",
@@ -203,6 +358,28 @@ pub fn write_project_quality_report_with_namelist(
         )
         .map_err(|err| format!("project quality attach point+radius diagnostics: {err}"))?;
     }
+    let admission = if final_admission {
+        let admission = final_mesh_contract(project, &input, &report);
+        report.gates.push(earthmesh_quality::GateResult {
+            metric: "final_mesh_admission".to_string(),
+            value: f64::from(admission.is_err()),
+            level: if admission.is_ok() {
+                earthmesh_quality::QualityLevel::Pass
+            } else {
+                report.verdict = earthmesh_quality::QualityLevel::Fail;
+                earthmesh_quality::QualityLevel::Fail
+            },
+            detail: format!(
+                "{}; native_winding={winding_convention}",
+                admission.as_ref().err().map(String::as_str).unwrap_or(
+                    "stored physical cells satisfy the Project cell and domain contracts"
+                )
+            ),
+        });
+        admission
+    } else {
+        Ok(())
+    };
     earthmesh_quality::io::write_all(&report, out_dir)
         .map_err(|err| format!("project quality write report: {err}"))?;
     fs::write(
@@ -210,6 +387,16 @@ pub fn write_project_quality_report_with_namelist(
         earthmesh_quality::io::to_quality_repair_plan_json_capped(&report, repair_level_cap),
     )
     .map_err(|err| format!("project quality write capped repair plan: {err}"))?;
+    admission.map_err(|reason| {
+        format!(
+            "project final mesh admission failed for {}: {reason}; report={}",
+            gridfile.display(),
+            out_dir.join("quality_summary.json").display()
+        )
+    })?;
+    if final_admission {
+        enforce_project_quality_policy(project.quality.on_violation, report.verdict)?;
+    }
     Ok(report)
 }
 

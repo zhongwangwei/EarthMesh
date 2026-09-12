@@ -1,3 +1,5 @@
+mod support;
+
 use std::{fs, path::Path, process::Command, sync::Mutex};
 
 use earthmesh_cli::{
@@ -59,14 +61,15 @@ fn mesh_quality_cli_reports_tri_and_hex_views_without_repo_fixture() {
 
     for kind in ["tri", "hex"] {
         let out_dir = root.join(kind);
-        let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-            .arg("--mesh-quality")
-            .arg(&gridfile)
-            .arg(&out_dir)
-            .arg("--kind")
-            .arg(kind)
-            .output()
-            .expect("run earthmesh_cli");
+        let output = support::output(
+            Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .arg("--mesh-quality")
+                .arg(&gridfile)
+                .arg(&out_dir)
+                .arg("--kind")
+                .arg(kind),
+        )
+        .expect("run earthmesh_cli");
         assert!(
             output.status.success(),
             "{kind} failed\nstdout:\n{}\nstderr:\n{}",
@@ -173,15 +176,16 @@ fn mesh_quality_cli_attaches_hfield_diagnostics_from_full_namelist() {
     .expect("write namelist");
 
     let out_dir = root.join("report");
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg("--mesh-quality")
-        .arg(&gridfile)
-        .arg(&out_dir)
-        .arg(&quality_nml)
-        .arg("--kind")
-        .arg("tri")
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg("--mesh-quality")
+            .arg(&gridfile)
+            .arg(&out_dir)
+            .arg(&quality_nml)
+            .arg("--kind")
+            .arg("tri"),
+    )
+    .expect("run earthmesh_cli");
     assert!(
         output.status.success(),
         "mesh-quality failed\nstdout:\n{}\nstderr:\n{}",
@@ -274,15 +278,16 @@ fn mesh_quality_cli_attaches_hfield_diagnostics_from_threshold_sources_without_r
     .expect("write namelist");
 
     let out_dir = root.join("report");
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg("--mesh-quality")
-        .arg(&gridfile)
-        .arg(&out_dir)
-        .arg(&quality_nml)
-        .arg("--kind")
-        .arg("tri")
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg("--mesh-quality")
+            .arg(&gridfile)
+            .arg(&out_dir)
+            .arg(&quality_nml)
+            .arg("--kind")
+            .arg("tri"),
+    )
+    .expect("run earthmesh_cli");
     assert!(
         output.status.success(),
         "mesh-quality failed\nstdout:\n{}\nstderr:\n{}",
@@ -380,15 +385,16 @@ fn mesh_quality_cli_reports_hfield_target_actual_mismatch() {
     .expect("write namelist");
 
     let out_dir = root.join("report");
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg("--mesh-quality")
-        .arg(&gridfile)
-        .arg(&out_dir)
-        .arg(&quality_nml)
-        .arg("--kind")
-        .arg("tri")
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg("--mesh-quality")
+            .arg(&gridfile)
+            .arg(&out_dir)
+            .arg(&quality_nml)
+            .arg("--kind")
+            .arg("tri"),
+    )
+    .expect("run earthmesh_cli");
     assert!(
         output.status.success(),
         "mesh-quality failed\nstdout:\n{}\nstderr:\n{}",
@@ -463,13 +469,14 @@ fn mesh_quality_cli_fails_loudly_when_hfield_regions_are_missing() {
     )
     .expect("write namelist");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg("--mesh-quality")
-        .arg(&gridfile)
-        .arg(root.join("report"))
-        .arg(&quality_nml)
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg("--mesh-quality")
+            .arg(&gridfile)
+            .arg(root.join("report"))
+            .arg(&quality_nml),
+    )
+    .expect("run earthmesh_cli");
     assert!(
         !output.status.success(),
         "mesh-quality should fail when h-field source discovery is empty"

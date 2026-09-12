@@ -136,6 +136,12 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
     let result = (|| {
         lowered.mkgrd.base_dir = format!("{}{}", run_dir.display(), std::path::MAIN_SEPARATOR);
         prepare_project_close_sources(&config, &spec.path, &run_dir.join("inputs"), &mut lowered)?;
+        prepare_project_threshold_region(
+            &config,
+            &spec.path,
+            &run_dir.join("inputs"),
+            &mut lowered,
+        )?;
         if lowered.data_layers.layers.iter().any(|layer| {
             layer.enabled
                 && !layer.path.trim().is_empty()
@@ -311,6 +317,89 @@ fn prepare_project_close_sources(
             lowered.refine.mask_refine_spc_fprefix = source.to_string_lossy().into_owned();
         }
     }
+    Ok(())
+}
+
+/// Calculated-region readers are file-based and overload positive mask degrees
+/// as hard demand. Stage exact geometry with degree zero, never reuse a prefix
+/// that could also match a neighbouring hard-demand file.
+fn prepare_project_threshold_region(
+    project: &ProjectConfig,
+    project_path: &Path,
+    stage_dir: &Path,
+    lowered: &mut LoweredProject,
+) -> Result<(), String> {
+    if !project.refinement.enabled || !project.refinement.threshold_enabled {
+        return Ok(());
+    }
+    let Some(shape) = &project.refinement.threshold_region else {
+        return Ok(());
+    };
+    fs::create_dir_all(stage_dir)
+        .map_err(|err| format!("create {}: {err}", stage_dir.display()))?;
+    let prefix = stage_dir.join("threshold_region_");
+    let path = stage_dir.join("threshold_region_001.nml");
+    let primitive = match shape {
+        RegionShape::Bbox { w, e, n, s } => {
+            Some(format!("bbox_num = 1\nbbox_refine = 0\n{w} {e} {n} {s}\n"))
+        }
+        RegionShape::Circle {
+            lon,
+            lat,
+            radius_km,
+        } => Some(format!(
+            "circle_num = 1\ncircle_refine = 0\n{lon} {lat} {radius_km}\n"
+        )),
+        _ => None,
+    };
+    if let Some(text) = primitive {
+        fs::write(&path, text).map_err(|err| format!("write {}: {err}", path.display()))?;
+    } else {
+        let (source, format) = match shape {
+            RegionShape::Shapefile { path } => (path, CloseMaskFormat::PolygonShp),
+            RegionShape::Close { path, format, .. } => (path, *format),
+            _ => unreachable!(),
+        };
+        let source = resolve_project_path(project_path, source);
+        if matches!(format, CloseMaskFormat::Nml | CloseMaskFormat::Netcdf) {
+            use earthmesh_cli::circle_close_mask_io::{
+                parse_close_mask_nml, read_close_mask_netcdf,
+            };
+            let mask = match format {
+                CloseMaskFormat::Nml => parse_close_mask_nml(&source, usize::MAX),
+                _ => read_close_mask_netcdf(&source).map(Some),
+            }
+            .map_err(|err| format!("read threshold_region {}: {err}", source.display()))?
+            .ok_or_else(|| "threshold_region contains no close mask".to_string())?;
+            if mask.refine_degree != 0 {
+                return Err(format!("threshold_region {} must have close_refine=0 (evaluation only); use specified_close for hard refinement", source.display()));
+            }
+            // Preserve source precision and NetCDF representation exactly.
+            let extension = if format == CloseMaskFormat::Nml {
+                "nml"
+            } else {
+                "nc"
+            };
+            fs::copy(&source, path.with_extension(extension))
+                .map_err(|err| format!("stage threshold_region {}: {err}", source.display()))?;
+        } else {
+            let rings = match format {
+                CloseMaskFormat::PolygonShp => read_shapefile_polygon_rings(&source),
+                _ => read_lonlat_text_points(&source).map(|ring| vec![ring]),
+            }
+            .map_err(|err| format!("read threshold_region {}: {err}", source.display()))?;
+            for (index, ring) in rings.iter().enumerate() {
+                write_close_mask_nml(
+                    &stage_dir.join(format!("threshold_region_{:03}.nml", index + 1)),
+                    ring,
+                    0,
+                )
+                .map_err(|err| format!("write threshold_region: {err}"))?;
+            }
+        }
+    }
+    lowered.refine.mask_refine_cal_fprefix = prefix.to_string_lossy().into_owned();
+    eprintln!("earthmesh_cli: threshold evaluation region -> {} ({}, degree 0; independent of delivery domain)", prefix.display(), lowered.refine.mask_refine_cal_type);
     Ok(())
 }
 
@@ -927,40 +1016,6 @@ mod tests {
     }
 
     #[test]
-    fn project_cli_does_not_apply_method_c_pass_clamping_to_harp_dv() {
-        let root = std::env::temp_dir().join(format!(
-            "earthmesh_cli_harp_auto_pass_{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let mut project = ProjectConfig::scaffold(
-            "harp_auto_pass",
-            MeshIntentPreset::CoastalOcean,
-            DomainConfig::Global,
-            ResolutionSpec::Nxp(80),
-        );
-        project.refinement.enabled = true;
-        project.refinement.max_passes = 1;
-        project.refinement.backend = earthmesh_project::RefinementBackend::HarpDv;
-        project.refinement.specified_circle =
-            Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
-                lon: 0.0,
-                lat: 0.0,
-                radius_km: 100.0,
-            }));
-        project.quality.on_violation = ViolationPolicy::AutoRefine;
-        let path = root.join("project.yaml");
-        fs::write(&path, project.to_yaml().unwrap()).unwrap();
-        let mut args = vec![path.to_string_lossy().into_owned()].into_iter();
-
-        let prepared = compile_project_arg(&mut args).unwrap();
-        assert_eq!(prepared.project.unwrap().config.refinement.max_passes, 1);
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn project_cli_stages_watershed_shapefile_as_close_domain() {
         let root = std::env::temp_dir().join(format!(
             "earthmesh_cli_project_watershed_{}",
@@ -995,6 +1050,180 @@ mod tests {
         assert!(stage_dir.join("domain_close_001.nml").is_file());
         assert!(nml.contains("mask_domain_type = 'close'"));
         assert!(nml.contains(&stage_dir.join("domain_close_").display().to_string()));
+    }
+
+    #[test]
+    fn project_threshold_regions_stage_exact_geometry_at_degree_zero() {
+        use earthmesh_cli::circle_close_mask_io::{
+            parse_circle_mask_nml, parse_close_mask_nml, write_close_mask_netcdf,
+        };
+        let root =
+            std::env::temp_dir().join(format!("project_threshold_regions_{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let points = [(100.0, 10.0), (102.0, 10.0), (102.0, 12.0), (100.0, 12.0)];
+        fs::write(root.join("window.txt"), "100,10\n102,10\n102,12\n100,12\n").unwrap();
+        fs::write(
+            root.join("window.nml"),
+            "close_num = 4\nclose_refine = 0\n100 10\n102 10\n102 12\n100 12\n",
+        )
+        .unwrap();
+        // A prefix-based import would also read this unrelated hard demand.
+        fs::write(root.join("window.nml.extra"), "not a region").unwrap();
+        write_test_polygon_shp(&root.join("window.shp"), &points);
+        let mask = parse_close_mask_nml(root.join("window.nml"), usize::MAX)
+            .unwrap()
+            .unwrap();
+        write_close_mask_netcdf(root.join("window.nc"), &mask).unwrap();
+        let mut shapes = vec![
+            RegionShape::Bbox {
+                w: 170.0,
+                e: -170.0,
+                s: -10.0,
+                n: 10.0,
+            },
+            RegionShape::Circle {
+                lon: 110.0,
+                lat: 20.0,
+                radius_km: 500.0,
+            },
+            RegionShape::Shapefile {
+                path: "window.shp".into(),
+            },
+        ];
+        for (path, format) in [
+            ("window.txt", CloseMaskFormat::LonLatText),
+            ("window.nml", CloseMaskFormat::Nml),
+            ("window.nc", CloseMaskFormat::Netcdf),
+            ("window.shp", CloseMaskFormat::PolygonShp),
+        ] {
+            shapes.push(RegionShape::Close {
+                path: path.into(),
+                format,
+                boundary: CloseBoundaryMode::Polyline,
+            });
+        }
+        let mut project = ProjectConfig::scaffold(
+            "threshold_shapes",
+            MeshIntentPreset::MultiObjectiveBalanced,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(12),
+        );
+        project.target.kind = earthmesh_project::MeshDomainKind::Earth;
+        project.refinement.enabled = true;
+        project.refinement.threshold_enabled = true;
+        project.refinement.max_passes = 1;
+        project.refinement.backend = earthmesh_project::RefinementBackend::Certified;
+        project.data_layers = vec![earthmesh_project::ProjectDataLayer {
+            id: "lai".into(),
+            role: earthmesh_project::ProjectLayerRole::Threshold(ThresholdField::Lai),
+            path: "lai.nc".into(),
+            enabled: true,
+            threshold_value: Some(1.0),
+        }];
+        for (index, shape) in shapes.into_iter().enumerate() {
+            project.refinement.threshold_region = Some(shape);
+            let nml = compile_project_spec(&ProjectRunSpec {
+                path: root.join(format!("project-{index}.yaml")),
+                config: project.clone(),
+            })
+            .unwrap();
+            let run_dir = Path::new(&nml).parent().unwrap();
+            let staged = run_dir.join("inputs/threshold_region_001.nml");
+            let text = fs::read_to_string(&nml).unwrap();
+            assert!(text.contains(
+                &run_dir
+                    .join("inputs/threshold_region_")
+                    .display()
+                    .to_string()
+            ));
+            assert!(text.contains("mask_domain_global = .TRUE."));
+            assert!(text.contains("refine_spc = .FALSE."));
+            match project.refinement.threshold_region.as_ref().unwrap() {
+                RegionShape::Bbox { .. } => {
+                    let mask = earthmesh_cli::bbox_mask_io::parse_bbox_mask_nml(staged, usize::MAX)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(mask.refine_degree, 0);
+                    assert_eq!(mask.points[0].west, 170.0);
+                    assert_eq!(mask.points[0].east, -170.0);
+                }
+                RegionShape::Circle { .. } => {
+                    let mask = parse_circle_mask_nml(staged, usize::MAX).unwrap().unwrap();
+                    assert_eq!(mask.refine_degree, 0);
+                    assert_eq!(mask.points[0].lon, 110.0);
+                    assert_eq!(mask.radius_km, vec![500.0]);
+                }
+                RegionShape::Close {
+                    path,
+                    format: CloseMaskFormat::Netcdf,
+                    ..
+                } => {
+                    assert_eq!(
+                        fs::read(staged.with_extension("nc")).unwrap(),
+                        fs::read(root.join(path)).unwrap()
+                    );
+                }
+                RegionShape::Close {
+                    path,
+                    format: CloseMaskFormat::Nml,
+                    ..
+                } => {
+                    assert_eq!(
+                        fs::read(staged).unwrap(),
+                        fs::read(root.join(path)).unwrap()
+                    );
+                }
+                _ => {
+                    let staged = parse_close_mask_nml(staged, usize::MAX).unwrap().unwrap();
+                    assert_eq!(staged.refine_degree, 0);
+                    // The shapefile reader may retain its closing point.
+                    assert_eq!(&staged.points[..4], &mask.points);
+                }
+            }
+            fs::remove_dir_all(run_dir).unwrap();
+        }
+        // Positive-degree masks are hard requests, not evaluation geometry.
+        let mut positive = mask;
+        positive.refine_degree = 2;
+        write_close_mask_netcdf(root.join("positive.nc"), &positive).unwrap();
+        fs::write(
+            root.join("positive.nml"),
+            "close_num = 4\nclose_refine = 2\n100 10\n102 10\n102 12\n100 12\n",
+        )
+        .unwrap();
+        for (path, format) in [
+            ("positive.nml", CloseMaskFormat::Nml),
+            ("positive.nc", CloseMaskFormat::Netcdf),
+            ("missing.nml", CloseMaskFormat::Nml),
+        ] {
+            project.refinement.threshold_region = Some(RegionShape::Close {
+                path: path.into(),
+                format,
+                boundary: CloseBoundaryMode::Polyline,
+            });
+            let entries_before = fs::read_dir(&root).unwrap().count();
+            let result = compile_project_spec(&ProjectRunSpec {
+                path: root.join("bad.yaml"),
+                config: project.clone(),
+            });
+            assert!(result.is_err());
+            if path.starts_with("positive") {
+                assert!(result.unwrap_err().contains("close_refine=0"));
+            }
+            assert_eq!(
+                fs::read_dir(&root).unwrap().count(),
+                entries_before,
+                "failed compile must clean its own run directory"
+            );
+        }
+        assert_eq!(
+            parse_close_mask_nml(root.join("positive.nml"), usize::MAX)
+                .unwrap()
+                .unwrap()
+                .refine_degree,
+            2
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn write_test_polygon_shp(path: &Path, ring: &[(f64, f64)]) {

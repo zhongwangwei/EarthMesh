@@ -1,10 +1,10 @@
+use crate::atomic_output::publish_artifacts;
 use crate::certified_options::{
     read_certified_options, CertifiedDelivery, CertifiedMode, CertifiedRunOptions,
 };
 use crate::final_quality_non_negative_usize;
 use crate::fvcom_mesh_2dm_output_path;
 use crate::gridfile_mesh_from_one_based_state;
-use crate::harp_dv_options::{read_harp_dv_options, HarpDvRunOptions};
 use crate::method_c_algorithm::{
     read_method_c_algorithm_options, MethodCAlgorithm, MethodCAlgorithmOptions,
 };
@@ -45,7 +45,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, QualityNamelist, RefineConfig};
 use earthmesh_mesh::{
@@ -56,7 +56,6 @@ use earthmesh_mesh::{
 use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
-use crate::unstructured_mesh_support::UnstructuredMeshTopologyReport;
 use crate::{write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved};
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
@@ -100,61 +99,6 @@ fn write_remap_csv<W: Write>(
         for row in formatted {
             writer.write_all(row.as_bytes())?;
         }
-    }
-    Ok(())
-}
-
-fn publish_certified_artifacts(
-    publications: &[(&Path, &Path)],
-    obsolete_paths: &[&Path],
-) -> io::Result<()> {
-    let ready = publications.len().checked_sub(1).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "no CMRC artifacts to publish")
-    })?;
-    let publication_id = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let backup_path = |path: &Path, index: usize| {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        path.with_file_name(format!(".{name}.cmrc-backup-{publication_id}-{index}"))
-    };
-    let backup_targets = std::iter::once((publications[ready].1, true))
-        .chain(
-            publications[..ready]
-                .iter()
-                .map(|(_, final_path)| (*final_path, false)),
-        )
-        .chain(obsolete_paths.iter().map(|path| (*path, false)));
-    let mut backups = Vec::new();
-    for (index, (final_path, is_ready)) in backup_targets.enumerate() {
-        if final_path.exists() {
-            let backup = backup_path(final_path, index);
-            if let Err(error) = fs::rename(final_path, &backup) {
-                restore_certified_backups(&backups);
-                return Err(error);
-            }
-            backups.push((final_path.to_path_buf(), backup, is_ready));
-        }
-    }
-
-    let mut published: Vec<usize> = Vec::new();
-    for (index, &(temporary, final_path)) in publications.iter().enumerate() {
-        if let Err(error) = fs::rename(temporary, final_path) {
-            for &published_index in published.iter().rev() {
-                let _ = fs::remove_file(publications[published_index].1);
-            }
-            restore_certified_backups(&backups);
-            return Err(error);
-        }
-        published.push(index);
-    }
-    for (_, backup, _) in backups {
-        let _ = fs::remove_file(backup);
     }
     Ok(())
 }
@@ -248,15 +192,6 @@ fn certified_gridfile_pre_export_lineages(mesh: &crate::UnstructuredMesh) -> (Ve
     )
 }
 
-fn restore_certified_backups(backups: &[(PathBuf, PathBuf, bool)]) {
-    for (original, backup, _) in backups.iter().filter(|(_, _, is_ready)| !is_ready) {
-        let _ = fs::rename(backup, original);
-    }
-    if let Some((original, backup, _)) = backups.iter().find(|(_, _, is_ready)| *is_ready) {
-        let _ = fs::rename(backup, original);
-    }
-}
-
 /// Execute global specified refinement directly through the Method-C
 /// Delaunay/Voronoi mesh layer.
 pub fn run_refine_pipeline_namelist(
@@ -270,6 +205,20 @@ pub fn run_refine_pipeline_namelist(
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
+    if earthmesh_core::namelist_has_section(&contents, "harp_dv") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "retired &harp_dv namelist section is no longer supported; use method_c, red_green, or certified",
+        ));
+    }
+    if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
+        && backend != RefineBackend::Certified
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "local updates require the certified backend",
+        ));
+    }
     if backend == RefineBackend::Certified {
         return run_certified_pipeline(
             &contents,
@@ -282,7 +231,6 @@ pub fn run_refine_pipeline_namelist(
     let quality = QualityNamelist::from_quality_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
-    let harp_dv_options = read_harp_dv_options(&contents)?;
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(&contents)?;
     let native_deltax = read_native_grid_deltax(&contents)?;
@@ -457,9 +405,9 @@ pub fn run_refine_pipeline_namelist(
     let domain_region = read_method_c_domain_region(&config)?;
     let use_hfield_regions = active_hfield_options.is_some();
     let mesh_type = config.mesh_type.trim();
-    let has_threshold_hfield_sources = use_hfield_regions
-        && refine.refine_cal
-        && crate::hfield_refine::has_threshold_hfield_sources(&refine, mesh_type);
+    let has_threshold_sources =
+        refine.refine_cal && crate::hfield_refine::has_threshold_hfield_sources(&refine, mesh_type);
+    let has_threshold_hfield_sources = use_hfield_regions && has_threshold_sources;
     // Whether *some* backend is going to consume the criteria itself. The
     // legacy calculated-region reader must stand down for either of them, not
     // just for the h-field: with the point+radius route the criteria are the
@@ -533,8 +481,8 @@ pub fn run_refine_pipeline_namelist(
     }
 
     // Named before anything dispatches on it, because the dispatch used to end
-    // in a `_ =>` arm that ran Method-C. Measured: `harpdv`, `harp-dv`,
-    // `redgreen`, `method-c` and `HARP_DV` all produced a Method-C mesh and
+    // in a `_ =>` arm that ran Method-C. Measured: misspellings
+    // `redgreen` and `method-c` produced a Method-C mesh and
     // said nothing -- a user asking for one backend and silently getting
     // another, which is the failure class guide 11.1 records.
     if quality.lepp_post_quality && backend != RefineBackend::MethodC {
@@ -586,6 +534,9 @@ pub fn run_refine_pipeline_namelist(
         regions.extend(read_method_c_calculated_refinement_regions(
             &refine,
             max_cal_level,
+            // The shared statistical planner owns degree-zero evaluation
+            // windows; do not also inject them as hard refinement regions.
+            has_threshold_sources && (use_hfield_regions || adaptive_options.is_some()),
         )?);
     }
     if regions.is_empty()
@@ -613,6 +564,8 @@ pub fn run_refine_pipeline_namelist(
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
             MethodCGridfileMetadataSlices {
+                hfield: None,
+                mpas: None,
                 m_refine_level: (!source_levels.m_refine_level.is_empty())
                     .then_some(source_levels.m_refine_level.as_slice()),
                 m_refine_level_orig: (!source_levels.m_refine_level_orig.is_empty())
@@ -674,10 +627,7 @@ pub fn run_refine_pipeline_namelist(
         };
         eprintln!(
             "earthmesh_cli: ignoring {requested_by} and the {requested_spring_nest_iterations} \
-             refinement spring iteration(s) they ask for. HARP-DV smooths through transactional \
-             site moves with Delaunay legalization, and a Laplacian spring on top of that fights \
-             its acceptance test. Use NL%refine_backend = method_c to run the spring instead. \
-             This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
+             refinement spring iteration(s) they ask for. certified refinement owns its geometry certificate, and a Laplacian spring on top of that would invalidate it. Use NL%refine_backend = method_c to run the spring instead.              This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
         );
     }
     let file_dir = PathBuf::from(config.file_dir());
@@ -694,8 +644,8 @@ pub fn run_refine_pipeline_namelist(
         transition_faces,
         spring_nest_passes,
         hfield_diagnostics,
+        hfield_context,
         adaptive_run,
-        harp_dv_run,
         lepp_hard_regions,
         lepp_adaptive_hybrid,
         lepp_post_quality,
@@ -757,44 +707,6 @@ pub fn run_refine_pipeline_namelist(
                 spring_nest_iterations,
             )?
         }
-        RefineBackend::HarpDv => {
-            // The same list red-green refuses, and for the same reason: each of
-            // these would otherwise be dropped and the run would still write a
-            // valid mesh that is not the mesh that was asked for. Measured
-            // before this guard: `harp_dv` with `&hfield` configured produced
-            // 6450 cells and never read the field.
-            let unsupported = if active_hfield_options.is_some() {
-                Some("an h-field (&hfield)")
-            } else if native_cartesian_xy {
-                Some("a Cartesian-XY mesh")
-            } else if native_surface_global_expansion {
-                Some("the native surface expansion (NL%sfcgrid_res_factor)")
-            } else {
-                None
-            };
-            if let Some(unsupported) = unsupported {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "NL%refine_backend = harp_dv does not serve {unsupported}; it re-reads a \
-                         target scale against the cells that exist and serves circular regions. \
-                         Use method_c for this run"
-                    ),
-                ));
-            }
-            refine_with_harp_dv(
-                &mesh,
-                &regions,
-                adaptive_options.as_ref(),
-                &config,
-                domain_region.as_ref(),
-                mesh_type,
-                method_c_nxp,
-                max_level,
-                &refine,
-                harp_dv_options,
-            )?
-        }
         RefineBackend::MethodC => {
             if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay {
                 refine_with_method_c_lepp(
@@ -815,6 +727,7 @@ pub fn run_refine_pipeline_namelist(
                     mesh,
                     spring_nest_passes,
                     hfield_diagnostics,
+                    hfield_context,
                     adaptive_run,
                 } = refine_with_method_c(
                     mesh,
@@ -911,8 +824,8 @@ pub fn run_refine_pipeline_namelist(
                     method_c_metadata,
                     spring_nest_passes,
                     hfield_diagnostics,
+                    hfield_context,
                     adaptive_run,
-                    harp_dv_run: None,
                     lepp_hard_regions: Vec::new(),
                     lepp_adaptive_hybrid: None,
                     lepp_post_quality,
@@ -1155,6 +1068,7 @@ pub fn run_refine_pipeline_namelist(
                 w_refine_level_orig: &meta.w_refine_levels_orig,
                 w_ngr: &meta.w_ngr,
             }),
+        hfield_context.as_ref(),
         hard_center_demand.as_deref(),
         "",
     )?;
@@ -1276,6 +1190,7 @@ pub fn run_refine_pipeline_namelist(
             &lepp.output_mesh,
             None,
             None,
+            hfield_context.as_ref(),
             hard_center_demand.as_deref(),
             "_lepp",
         )?;
@@ -1401,7 +1316,6 @@ pub fn run_refine_pipeline_namelist(
         hfield_diagnostics,
         transition_faces,
         spring_nest_passes,
-        harp_dv_run,
         certified_run: None,
         lepp_adaptive_hybrid,
         lepp_post_quality,
@@ -1437,6 +1351,7 @@ struct CertifiedConstruction {
     components_exhausted: usize,
     search_complete: bool,
     elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+    local_update: Option<serde_json::Value>,
 }
 
 fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -1454,12 +1369,27 @@ fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
     })
 }
 
+// Before scanning threshold rasters, reject only families with no possible
+// supported mother. The actual chosen level still passes full certification.
+fn validate_certified_mother_family(base_nxp: usize, maximum_level: usize) -> io::Result<()> {
+    let possible = (0..=maximum_level.min(usize::BITS as usize - 1))
+        .filter_map(|level| certified_subdivision(base_nxp, level).ok())
+        .any(earthmesh_refine_certified::certificate::is_supported_mother_subdivision);
+    if !possible {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
+            "CMRC NXP={base_nxp} has no certified mother subdivision at levels 0..={maximum_level}; rejected before threshold preparation"
+        )));
+    }
+    Ok(())
+}
+
 fn build_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     max_tris: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
     if options.mode == CertifiedMode::SafeMotherOnly {
@@ -1507,6 +1437,7 @@ fn build_certified_construction(
             components_exhausted: 0,
             search_complete: true,
             elastic_report: None,
+            local_update: None,
         });
     }
 
@@ -1522,6 +1453,7 @@ fn build_certified_construction(
             options,
             raster_requirements,
             budget,
+            local_update_path,
         );
     }
 
@@ -1621,6 +1553,7 @@ fn build_certified_construction(
                 components_exhausted: 0,
                 search_complete: true,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -1667,6 +1600,7 @@ fn build_certified_construction(
                 components_exhausted: 1,
                 search_complete: false,
                 elastic_report: None,
+                local_update: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -1685,6 +1619,7 @@ fn build_mixed_certified_construction(
     options: &CertifiedRunOptions,
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
+    local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1827,13 +1762,39 @@ fn build_mixed_certified_construction(
         .collect::<io::Result<Vec<_>>>()?
         .try_into()
         .expect("twelve source pentagons map to twelve compact sites");
-    let mesh = leaf_mesh.mesh.clone();
+    let mut mesh = leaf_mesh.mesh.clone();
     let delivered_levels = result
         .state
         .target_levels()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         .levels()
         .to_vec();
+    // Trial updates precede every final source/remap/geometry gate.
+    // Invalid input aborts; a rejected trial cannot mutate the retained control.
+    let local_update = local_update_path
+        .map(|path| {
+            let mut candidate = mesh.clone();
+            match super::cmrc_local_updates::apply(
+                &mut candidate,
+                &delivered_levels,
+                &pentagons,
+                path,
+                options.angle_contract,
+            ) {
+                Ok(report) => {
+                    mesh = candidate;
+                    Ok(serde_json::json!({"decision": "candidate", "proposal_validation": report}))
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    Ok(serde_json::json!({"decision": "control", "reason": error.to_string()}))
+                }
+                Err(error) => Err(error),
+            }
+        })
+        .transpose()?;
+    if let Some(report) = &local_update {
+        eprintln!("earthmesh_cli: experimental_local_update {report}");
+    }
     let final_cell_requirements = if mesh == initial_mesh
         && delivered_levels.iter().all(|&level| level == chosen_level)
     {
@@ -1914,6 +1875,7 @@ fn build_mixed_certified_construction(
         remap_certificate,
         final_cell_requirements: Some(final_cell_requirements),
         elastic_report: Some(result.report.clone()),
+        local_update,
     })
 }
 
@@ -1971,13 +1933,82 @@ fn elastic_report_json(
     })
 }
 
-struct CertifiedDomainPublication {
-    report: crate::UnstructuredMeshWriteReport,
-    kept_cells: usize,
-    topology: UnstructuredMeshTopologyReport,
-    quality_topology: (usize, Vec<serde_json::Value>),
-    geometry: serde_json::Value,
-    fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
+pub(super) struct CertifiedDomainPublication {
+    pub(super) report: crate::UnstructuredMeshWriteReport,
+    pub(super) kept_cells: usize,
+    pub(super) topology: serde_json::Value,
+    pub(super) quality_topology: (usize, Vec<serde_json::Value>),
+    pub(super) geometry: serde_json::Value,
+    pub(super) fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
+}
+
+struct CertifiedMpasPublication {
+    report: crate::MpasFullMeshPipelineReport,
+    mesh_density_min: f64,
+    mesh_density_max: f64,
+    step: usize,
+}
+
+fn certified_mpas_cellwidth(base_nxp: usize, w_refine_levels: &[i32]) -> io::Result<Vec<f64>> {
+    if base_nxp == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC MPAS export requires positive NXP",
+        ));
+    }
+    let base_width = 7680.0 / base_nxp as f64;
+    w_refine_levels
+        .iter()
+        .map(|&level| {
+            if level < 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CMRC MPAS export requires non-negative W refinement levels",
+                ));
+            }
+            Ok(base_width / 2_f64.powi(level))
+        })
+        .collect()
+}
+
+fn publish_certified_atmos_mpas(
+    mesh: &crate::UnstructuredMesh,
+    context: &crate::mpas_gridfile_context::MpasGridfileContext,
+    mesh_output: &Path,
+    graph_output: &Path,
+) -> io::Result<CertifiedMpasPublication> {
+    let step = context.step;
+    let mpas = crate::build_mpas_mesh_from_unstructured_one_based(
+        mesh,
+        &context.cellwidth_km,
+        context.base_nxp,
+        step,
+    )?;
+    let mesh_density_min = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let mesh_density_max = mpas.mesh_density[1..]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let mesh_report = crate::write_mpas_mesh_netcdf(mesh_output, &mpas)?;
+    let graph_info = crate::write_mpas_graph_info(
+        graph_output,
+        10,
+        &mpas.cells_on_cell,
+        &mpas.cells_on_edge,
+        &mpas.n_edges_on_cell,
+    )?;
+    Ok(CertifiedMpasPublication {
+        report: crate::MpasFullMeshPipelineReport {
+            mesh: mesh_report,
+            graph_info,
+        },
+        mesh_density_min,
+        mesh_density_max,
+        step,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1996,6 +2027,18 @@ fn publish_certified_domain_gridfile(
     ))?;
     let mode_grid = config.mode_grid.trim();
     let mesh_type = config.mesh_type.trim();
+    if let (Some(region @ GridRegion::Close { .. }), "landmesh", "hex") =
+        (domain_region, mesh_type, mode_grid)
+    {
+        return super::cmrc_land::publish_regional_land(
+            source_gridfile,
+            output_gridfile,
+            Path::new(config.landtype_file.trim()),
+            gridnum_perdegree,
+            region,
+            workdir,
+        );
+    }
     let clean_close = match (domain_region, mesh_type, mode_grid) {
         (Some(GridRegion::Close { points }), "oceanmesh", "tri") => Some(points.as_slice()),
         _ => None,
@@ -2023,6 +2066,30 @@ fn publish_certified_domain_gridfile(
             None
         };
         (None, fvcom)
+    } else if let (Some(region @ GridRegion::Close { .. }), "landmesh", "tri") =
+        (domain_region, mesh_type, mode_grid)
+    {
+        fs::create_dir_all(workdir)?;
+        let regional_gridfile = workdir.join("whole_regional_tri.nc4");
+        crate::regional_gridfile_writers::write_regional_gridfile(
+            source_gridfile,
+            &regional_gridfile,
+            region,
+            "tri",
+        )?;
+        let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+            &regional_gridfile,
+            output_gridfile,
+            &config.landtype_file,
+            gridnum_perdegree,
+            "tri",
+            "landmesh",
+            None,
+            None,
+            false,
+            None,
+        )?;
+        (Some(kept), None)
     } else {
         let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
             source_gridfile,
@@ -2082,9 +2149,17 @@ fn publish_certified_domain_gridfile(
     let mut quality_issues =
         earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input).validate_all();
     if mesh_type == "landmesh" {
-        quality_issues.retain(|issue| {
-            issue.issue_type != earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
-        });
+        // As for land dual cells, retain islands (including one-cell islands)
+        // and their diagnostics without relaxing winding or manifold checks.
+        for issue in &mut quality_issues {
+            if matches!(
+                issue.issue_type,
+                earthmesh_quality::topology::TopologyIssueType::DisconnectedMesh
+                    | earthmesh_quality::topology::TopologyIssueType::OrphanCell
+            ) {
+                issue.severity = earthmesh_quality::topology::Severity::Warn;
+            }
+        }
     }
     let hard_issues = quality_issues
         .iter()
@@ -2119,7 +2194,13 @@ fn publish_certified_domain_gridfile(
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output_gridfile)?,
         kept_cells: kept_cells.unwrap_or(quality_report.geometry.cell_count),
-        topology,
+        topology: serde_json::json!({
+            "boundary_loops": topology.boundary_loop_count,
+            "boundary_vertex_degree_violations": topology.boundary_vertex_degree_violation_count,
+            "euler": topology.euler_characteristic,
+            "expected_euler": topology.expected_euler_characteristic,
+            "violations": topology.violations,
+        }),
         quality_topology: (component_count, quality_issue_json),
         geometry: serde_json::json!({
             "cell_view": "tri",
@@ -2132,6 +2213,30 @@ fn publish_certified_domain_gridfile(
         }),
         fvcom_2dm,
     })
+}
+
+fn validate_local_update_mode(
+    config: &EarthmeshConfig,
+    options: &CertifiedRunOptions,
+    required_levels: &[usize],
+) -> io::Result<()> {
+    let maximum = required_levels.iter().copied().max().unwrap_or(0);
+    if !config.refine
+        || !config.mask_domain_global
+        || !matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        || config.mode_grid.trim() != "hex"
+        || !config.output_format.trim().eq_ignore_ascii_case("MPAS")
+        || options.mode != CertifiedMode::ReverseCoarsening
+        || options.delivery != CertifiedDelivery::Coupled
+        || options.angle_contract.as_str() != "domain_quality_38_to_82_v1"
+        || maximum == 0
+        || maximum > 2
+        || !required_levels.iter().any(|&level| level < maximum)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "local updates require global coupled atmosmesh/hex MPAS mixed reverse coarsening with the 38..82 angle contract"));
+    }
+    Ok(())
 }
 
 fn run_certified_pipeline(
@@ -2157,7 +2262,11 @@ fn run_certified_pipeline(
         .transpose()?
         .flatten();
     let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
+    let regional_land = config.mesh_type.trim() == "landmesh"
+        && matches!(config.mode_grid.trim(), "hex" | "tri")
+        && matches!(regional_domain, Some(GridRegion::Close { .. }));
     if regional_domain.is_some()
+        && !regional_land
         && !matches!(
             (
                 config.mesh_type.trim(),
@@ -2167,10 +2276,8 @@ fn run_certified_pipeline(
             ("oceanmesh", "tri", Some(GridRegion::Close { .. }))
         )
     {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "CMRC regional publication currently supports oceanmesh/tri with a single close polygon only; regional dual and other boundary adapters are not implemented",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "CMRC regional publication supports oceanmesh/tri or landmesh/{hex,tri} with a single close polygon only"));
     }
     if is_domain_export
         && !(crate::namelist_sets_landtype_file(contents)
@@ -2237,8 +2344,16 @@ fn run_certified_pipeline(
             "CMRC NXP must be positive",
         ));
     }
-    let (regions, requirement_nlon, requirement_nlat, required_levels) = if config.refine {
-        certified_requirement_levels(
+    validate_certified_mother_family(
+        base_nxp,
+        if config.refine {
+            options.maximum_level
+        } else {
+            0
+        },
+    )?;
+    let requirements = if config.refine {
+        certified_requirement_plan(
             contents,
             config,
             &refine,
@@ -2247,8 +2362,11 @@ fn run_certified_pipeline(
             calculated_level,
         )?
     } else {
-        (Vec::new(), 4, 2, vec![0; 8])
+        CertifiedRequirementPlan::uniform()
     };
+    let requirement_nlon = requirements.nlon;
+    let requirement_nlat = requirements.nlat;
+    let required_levels = &requirements.effective_levels;
     let chosen_level = required_levels.iter().copied().max().unwrap_or(0);
     if chosen_level > options.maximum_level {
         return Err(io::Error::new(
@@ -2265,6 +2383,29 @@ fn run_certified_pipeline(
         required_levels.clone(),
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let local_update_path = std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").map(PathBuf::from);
+    if let Some(path) = &local_update_path {
+        if !path.is_absolute() || !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local update request must be an existing absolute file",
+            ));
+        }
+        validate_local_update_mode(config, &options, required_levels)?;
+        if [
+            "EARTHMESH_CMRC_SELECT",
+            "EARTHMESH_CMRC_TRIM",
+            "EARTHMESH_CMRC_CHECKPOINT",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local updates cannot be combined with another experimental CMRC mode",
+            ));
+        }
+    }
     log_cmrc_phase(timing_enabled, "requirement_planning", &mut phase_started);
     let CertifiedConstruction {
         geometry,
@@ -2289,12 +2430,14 @@ fn run_certified_pipeline(
         components_exhausted,
         search_complete,
         elastic_report,
+        local_update,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
         &options,
         &raster_requirements,
         max_tris,
+        local_update_path.as_deref(),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
@@ -2400,8 +2543,7 @@ fn run_certified_pipeline(
         };
     let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
     let state = spherical_voronoi_state(&triangular)?;
-    certify_cmrc_published_dual(final_mesh.primal(), &state)?;
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+    let output_mesh = build_certified_cmrc_gridfile(final_mesh.primal(), &state)?;
     log_cmrc_phase(
         timing_enabled,
         "final_certification_and_dual",
@@ -2443,6 +2585,12 @@ fn run_certified_pipeline(
             .unwrap_or("gridfile.nc4"),
         std::process::id()
     ));
+    let global_parent_path = is_domain_export.then(|| {
+        output_path.with_file_name(format!(
+            "{}_global_parent.nc4",
+            output_path.file_stem().unwrap().to_string_lossy()
+        ))
+    });
     let temporary_source_path = result_dir.join(format!(
         ".certified_source_grid.cmrc-tmp-{}",
         std::process::id()
@@ -2494,6 +2642,8 @@ fn run_certified_pipeline(
     } else {
         "final_voronoi_cells_global_raster_max_bound"
     };
+    let requirement_layers =
+        requirements.layer_report(elastic_report.as_ref(), options.gradation_rings_per_level);
     let elastic_report_json = elastic_report.as_ref().map(elastic_report_json);
     let mut certificate_document = serde_json::json!({
         "backend": "certified",
@@ -2504,7 +2654,7 @@ fn run_certified_pipeline(
         "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
         "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
-        "published_grid_is_certified_face_subset": is_domain_export,
+        "published_grid_is_certified_face_subset": is_domain_export && requested_view == "tri",
         "requirement_balance_scope": physical_balance_scope,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
@@ -2566,6 +2716,15 @@ fn run_certified_pipeline(
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
     });
+    // Only the regional land adapter proves whole dual-cell lineage. Legacy
+    // global hex domain exports have not passed that audit; do not certify them.
+    certificate_document["published_grid_is_certified_dual_cell_subset"] =
+        if is_domain_export && requested_view == "hex" && !regional_land {
+            serde_json::Value::Null
+        } else {
+            regional_land.into()
+        };
+    certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
             "pre_export_closed_sphere_canonical_ids"
@@ -2579,7 +2738,32 @@ fn run_certified_pipeline(
     .then(|| fvcom_mesh_2dm_output_path(&file_dir));
     let temporary_fvcom_path =
         result_dir.join(format!(".fvcom.2dm.cmrc-tmp-{}", std::process::id()));
-    let manifest_json = serde_json::to_vec_pretty(&serde_json::json!({
+    let mpas_suffix = if safe_fallback {
+        "_certified_safe_fallback"
+    } else {
+        ""
+    };
+    let mpas_output_paths = (!is_domain_export
+        && matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
+        && config.mode_grid.trim() == "hex"
+        && config.output_format.trim().eq_ignore_ascii_case("MPAS"))
+    .then(|| {
+        (
+            result_dir.join(format!("MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.nc4")),
+            result_dir.join(format!(
+                "MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.graph.info"
+            )),
+        )
+    });
+    let temporary_mpas_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.nc4.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let temporary_mpas_graph_path = result_dir.join(format!(
+        ".MPASOUT_NXP{base_nxp:04}_global.graph.info.cmrc-tmp-{}",
+        std::process::id()
+    ));
+    let mut manifest = serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
         "dqx_execution_status": if options.angle_contract.as_str() == "domain_quality_38_to_82_v1" { "geometry_contract_only" } else { "not_applicable" },
@@ -2593,6 +2777,7 @@ fn run_certified_pipeline(
             CertifiedDelivery::Coupled => "coupled",
         },
         "gridfile": output_path.display().to_string(),
+        "global_parent_gridfile": global_parent_path.as_ref().map(|path| path.display().to_string()),
         "remap": if is_domain_export { serde_json::Value::Null } else { serde_json::Value::String(remap_path.display().to_string()) },
         "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
         "fvcom_2dm": fvcom_output_path.as_ref().map(|path| path.display().to_string()),
@@ -2601,24 +2786,36 @@ fn run_certified_pipeline(
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
-    }))
-    .map_err(io::Error::other)?;
+        "mpas": mpas_output_paths.as_ref().map(|(mesh, _)| mesh.display().to_string()),
+        "mpas_graph_info": mpas_output_paths.as_ref().map(|(_, graph)| graph.display().to_string()),
+        "mpas_sphere_radius": mpas_output_paths.as_ref().map(|_| 1.0),
+    });
+    if let Some(mut report) = local_update {
+        report["full_delivery_recertified"] = serde_json::json!(true);
+        report["angle_guard"] =
+            serde_json::json!("global_extrema_and_preferred_distribution_not_per_element");
+        manifest["experimental_local_update"] = report;
+    }
+    let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
     let (m_refine_levels, w_refine_levels) =
         certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
     let temporary_paths = [
-        &temporary_path,
-        &temporary_source_path,
-        &temporary_remap_path,
-        &temporary_certificate_path,
-        &temporary_manifest_path,
-        &temporary_resources_path,
-        &temporary_ready_marker,
-        &temporary_fvcom_path,
+        temporary_path.as_path(),
+        temporary_source_path.as_path(),
+        temporary_remap_path.as_path(),
+        temporary_certificate_path.as_path(),
+        temporary_manifest_path.as_path(),
+        temporary_resources_path.as_path(),
+        temporary_ready_marker.as_path(),
+        temporary_fvcom_path.as_path(),
+        temporary_mpas_path.as_path(),
+        temporary_mpas_graph_path.as_path(),
     ];
-    for path in temporary_paths {
+    for path in &temporary_paths {
         let _ = fs::remove_file(path);
     }
     log_cmrc_phase(timing_enabled, "artifact_assembly", &mut phase_started);
+    let mut raw_output = None;
     let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
         {
             let mut writer = BufWriter::new(fs::File::create(&temporary_remap_path)?);
@@ -2628,6 +2825,15 @@ fn run_certified_pipeline(
         log_cmrc_phase(timing_enabled, "remap_csv", &mut phase_started);
         fs::write(&temporary_manifest_path, manifest_json)?;
         fs::write(&temporary_ready_marker, format!("{product_outcome}\n"))?;
+        let mpas_context = crate::mpas_gridfile_context::MpasGridfileContext::from_producer(
+            &output_mesh,
+            certified_mpas_cellwidth(base_nxp, &w_refine_levels)?,
+            base_nxp,
+            delivered_level.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "CMRC MPAS step overflow")
+            })?,
+            "cmrc_delivered_w_levels",
+        )?;
         let (
             report,
             landtype_masked_cells,
@@ -2638,10 +2844,11 @@ fn run_certified_pipeline(
         ) = if is_domain_export {
             let (m_pre_export_lineage, w_pre_export_lineage) =
                 certified_gridfile_pre_export_lineages(&output_mesh);
-            crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            let mut parent_report = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
                 &temporary_source_path,
                 &output_mesh,
                 MethodCGridfileMetadataSlices {
+                    mpas: Some(&mpas_context),
                     m_lineage: Some(&m_pre_export_lineage),
                     w_lineage: Some(&w_pre_export_lineage),
                     m_refine_level: Some(&m_refine_levels),
@@ -2649,6 +2856,8 @@ fn run_certified_pipeline(
                     ..Default::default()
                 },
             )?;
+            parent_report.output = global_parent_path.as_ref().unwrap().clone();
+            raw_output = Some(parent_report);
             let domain_workdir =
                 result_dir.join(format!(".certified_domain.cmrc-tmp-{}", std::process::id()));
             let published = publish_certified_domain_gridfile(
@@ -2675,11 +2884,15 @@ fn run_certified_pipeline(
             )
         } else {
             (
-                crate::write_unstructured_mesh_netcdf_with_refine_levels(
+                crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
                     &temporary_path,
                     &output_mesh,
-                    Some(&m_refine_levels),
-                    Some(&w_refine_levels),
+                    MethodCGridfileMetadataSlices {
+                        mpas: Some(&mpas_context),
+                        m_refine_level: Some(&m_refine_levels),
+                        w_refine_level: Some(&w_refine_levels),
+                        ..Default::default()
+                    },
                 )?,
                 None,
                 None,
@@ -2687,6 +2900,16 @@ fn run_certified_pipeline(
                 None,
                 None,
             )
+        };
+        let mpas = if mpas_output_paths.is_some() {
+            Some(publish_certified_atmos_mpas(
+                &output_mesh,
+                &mpas_context,
+                &temporary_mpas_path,
+                &temporary_mpas_graph_path,
+            )?)
+        } else {
+            None
         };
         log_cmrc_phase(
             timing_enabled,
@@ -2708,6 +2931,7 @@ fn run_certified_pipeline(
         )?;
         let resource_json = serde_json::to_vec_pretty(&serde_json::json!({
             "certification_elapsed_ms": started.elapsed().as_millis(),
+            "requirement_layers": requirement_layers,
             "requirement_raster_cells": required_levels.len(),
             "target_voronoi_cells": geometry_report.voronoi_cells,
             "remap_rows": remap.rows().len(),
@@ -2718,6 +2942,8 @@ fn run_certified_pipeline(
                 "certificate": fs::metadata(&temporary_certificate_path)?.len(),
                 "manifest": fs::metadata(&temporary_manifest_path)?.len(),
                 "fvcom_2dm": if temporary_fvcom_path.exists() { serde_json::Value::from(fs::metadata(&temporary_fvcom_path)?.len()) } else { serde_json::Value::Null },
+                "mpas": if temporary_mpas_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_path)?.len()) } else { serde_json::Value::Null },
+                "mpas_graph_info": if temporary_mpas_graph_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_graph_path)?.len()) } else { serde_json::Value::Null },
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
@@ -2725,13 +2951,7 @@ fn run_certified_pipeline(
             "landtype_kept_cells": landtype_masked_cells,
             "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
             "published_grid_remap_available": !is_domain_export,
-            "published_domain_topology": topology.as_ref().map(|report| serde_json::json!({
-                "boundary_loops": report.boundary_loop_count,
-                "boundary_vertex_degree_violations": report.boundary_vertex_degree_violation_count,
-                "euler": report.euler_characteristic,
-                "expected_euler": report.expected_euler_characteristic,
-                "violations": report.violations,
-            })),
+            "published_domain_topology": topology,
             "published_domain_quality_topology": domain_quality.as_ref().map(|(component_count, issues)| serde_json::json!({
                 "connected_components": component_count,
                 "issues": issues,
@@ -2746,6 +2966,23 @@ fn run_certified_pipeline(
                     "boundary_segments": report.boundary_segments,
                 })
             }),
+            "mpas": mpas.as_ref().map(|report| {
+                let (mesh, graph) = mpas_output_paths.as_ref().expect("MPAS paths");
+                serde_json::json!({
+                    "mesh": mesh.display().to_string(),
+                    "graph_info": graph.display().to_string(),
+                    "n_cells": report.report.mesh.n_cells,
+                    "n_vertices": report.report.mesh.n_vertices,
+                    "n_edges": report.report.mesh.n_edges,
+                    "graph_interior_edges": report.report.graph_info.interior_edges,
+                    "mesh_density_min": report.mesh_density_min,
+                    "mesh_density_max": report.mesh_density_max,
+                    "base_nxp": base_nxp,
+                    "step": report.step,
+                    "sphere_radius": 1.0,
+                    "unit_convention": "unit_sphere",
+                })
+            }),
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
@@ -2756,13 +2993,12 @@ fn run_certified_pipeline(
     let (temporary, landtype_masked_cells) = match staged {
         Ok(report) => report,
         Err(error) => {
-            for path in temporary_paths {
+            for path in &temporary_paths {
                 let _ = fs::remove_file(path);
             }
             return Err(error);
         }
     };
-    let _ = fs::remove_file(&temporary_source_path);
     let mut publications = vec![
         (
             temporary_certificate_path.as_path(),
@@ -2773,12 +3009,19 @@ fn run_certified_pipeline(
         (temporary_resources_path.as_path(), resources_path.as_path()),
         (temporary_manifest_path.as_path(), manifest_path.as_path()),
     ];
+    if let Some(parent) = &global_parent_path {
+        publications.push((temporary_source_path.as_path(), parent.as_path()));
+    }
     if let Some(fvcom_path) = &fvcom_output_path {
         publications.push((temporary_fvcom_path.as_path(), fvcom_path.as_path()));
     }
+    if let Some((mpas_path, graph_path)) = &mpas_output_paths {
+        publications.push((temporary_mpas_path.as_path(), mpas_path.as_path()));
+        publications.push((temporary_mpas_graph_path.as_path(), graph_path.as_path()));
+    }
     publications.push((temporary_ready_marker.as_path(), ready_marker.as_path()));
-    if let Err(error) = publish_certified_artifacts(&publications, &[&obsolete_remap_path]) {
-        for path in temporary_paths {
+    if let Err(error) = publish_artifacts(&publications, &[&obsolete_remap_path]) {
+        for path in &temporary_paths {
             let _ = fs::remove_file(path);
         }
         return Err(io::Error::new(
@@ -2812,7 +3055,7 @@ fn run_certified_pipeline(
     Ok(RefinePipelineRunReport {
         gridinit: None,
         refine,
-        regions,
+        regions: requirements.regions,
         max_level: chosen_level,
         realized_max_level: delivered_level,
         finest_cell_km: 0.0,
@@ -2821,7 +3064,6 @@ fn run_certified_pipeline(
         hfield_diagnostics: Default::default(),
         transition_faces: 0,
         spring_nest_passes: 0,
-        harp_dv_run: None,
         certified_run: Some(CertifiedRunRecord {
             mode: mode_name.to_string(),
             product_outcome: product_outcome.to_string(),
@@ -2856,7 +3098,7 @@ fn run_certified_pipeline(
         lepp_adaptive_hybrid: None,
         lepp_post_quality: None,
         spring_nest_iterations: 0,
-        raw_output: None,
+        raw_output,
         landtype_masked_cells,
         coupled_outputs: None,
         output,
@@ -2864,10 +3106,11 @@ fn run_certified_pipeline(
     })
 }
 
-fn certify_cmrc_published_dual(
+fn build_certified_cmrc_gridfile(
     primal: &MeshState,
     state: &earthmesh_mesh::VoronoiGridState,
-) -> io::Result<()> {
+) -> io::Result<crate::UnstructuredMesh> {
+    let mut output = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let mut site_remap = vec![0usize; primal.vertices().len()];
     for (compact, site) in primal.active_vertex_slots().enumerate() {
         site_remap[site] = compact + earthmesh_mesh::MESH_STATE_FIRST_ID;
@@ -2944,6 +3187,24 @@ fn certify_cmrc_published_dual(
                 format!("CMRC published Voronoi cell {site} has incident faces {published_faces:?}, certified {certified_faces:?}"),
             ));
         }
+        // The generic state carries incident-face adjacency; native W cells
+        // require the certified cyclic fan, not just the same unordered set.
+        // This conversion emits one placeholder row, so canonical id maps to id-1.
+        let row = published_site - 1;
+        if output.n_w_to_m[row] as usize != cell.degree()
+            || cell.degree() > output.w_to_m[row].len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published Voronoi cell {site} has inconsistent degree"),
+            ));
+        }
+        output.w_to_m[row].fill(1);
+        for (slot, face) in cell.triangles.iter().enumerate() {
+            output.w_to_m[row][slot] = i32::try_from(face_remap[*face]).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "CMRC face id exceeds i32")
+            })?;
+        }
     }
     for face in primal.active_triangle_slots() {
         let published_face = face_remap[face];
@@ -2988,17 +3249,81 @@ fn certify_cmrc_published_dual(
             ));
         }
     }
-    Ok(())
+    Ok(output)
 }
 
-fn certified_requirement_levels(
+/// Separate source provenance from the effective raster that is still hard-certified.
+struct CertifiedRequirementPlan {
+    regions: Vec<RefinementRegion>,
+    nlon: usize,
+    nlat: usize,
+    effective_levels: Vec<usize>,
+    // None for threshold/hydro sources: partial raw provenance would be misleading.
+    raw_region_levels: Option<Vec<usize>>,
+    threshold_provenance: Option<serde_json::Value>,
+    conservative_global_bound: bool,
+}
+
+impl CertifiedRequirementPlan {
+    fn uniform() -> Self {
+        Self {
+            regions: Vec::new(),
+            nlon: 4,
+            nlat: 2,
+            effective_levels: vec![0; 8],
+            raw_region_levels: Some(vec![0; 8]),
+            threshold_provenance: None,
+            conservative_global_bound: false,
+        }
+    }
+
+    fn layer_report(
+        &self,
+        elastic: Option<&earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+        rings: usize,
+    ) -> serde_json::Value {
+        let histogram = |levels: &[usize]| {
+            let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+            for &level in levels {
+                *counts.entry(level).or_default() += 1;
+            }
+            counts
+        };
+        serde_json::json!({
+            "policy": "effective_raster_remains_hard",
+            "raw_source_raster": {
+                "status": if self.raw_region_levels.is_some() { "available" } else { "unavailable_threshold_or_hydro" },
+                "scope": "canonical_region_sample_centers_quantized_not_analytic_coverage",
+                "histogram": self.raw_region_levels.as_deref().map(histogram),
+            },
+            "threshold_sources": self.threshold_provenance.as_ref(),
+            "effective_source_raster": {
+                "scope": "gradient_limited_composed_sources_with_conservative_bounds",
+                "histogram": histogram(&self.effective_levels),
+                "conservative_global_bound": self.conservative_global_bound,
+                "raised_samples_over_raw": self.raw_region_levels.as_ref().map(|raw| {
+                    raw.iter().zip(&self.effective_levels).filter(|(r, e)| e > r).count()
+                }),
+            },
+            "raster_grid": { "nlon": self.nlon, "nlat": self.nlat },
+            "graph_scheduling_target": {
+                "status": if elastic.is_some() { "applied" } else { "not_applied" },
+                "scope": "initial_mother_voronoi_cells_after_raster_overlap_and_graph_gradation",
+                "histogram": elastic.map(|report| &report.requested_histogram),
+                "gradation_rings_per_level": elastic.map(|_| rings),
+            },
+        })
+    }
+}
+
+fn certified_requirement_plan(
     contents: &str,
     config: &EarthmeshConfig,
     refine: &RefineConfig,
     base_nxp: usize,
     specified_level: usize,
     calculated_level: usize,
-) -> io::Result<(Vec<RefinementRegion>, usize, usize, Vec<usize>)> {
+) -> io::Result<CertifiedRequirementPlan> {
     if crate::adaptive_refine::read_adaptive_refine_options(contents)?.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -3033,7 +3358,11 @@ fn certified_requirement_levels(
         !matches!(calculated_region_prefix, "" | "/tmp" | "none");
     let calculated_regions =
         if refine.refine_cal && (!has_threshold_sources || has_configured_calculated_regions) {
-            read_method_c_calculated_refinement_regions(refine, calculated_level)?
+            read_method_c_calculated_refinement_regions(
+                refine,
+                calculated_level,
+                has_threshold_sources,
+            )?
         } else {
             Vec::new()
         };
@@ -3054,7 +3383,7 @@ fn certified_requirement_levels(
     let mut regions = specified_regions;
     regions.extend(calculated_regions);
     if regions.is_empty() && !has_threshold_sources && hydro_level == 0 {
-        return Ok((regions, 4, 2, vec![0; 8]));
+        return Ok(CertifiedRequirementPlan::uniform());
     }
 
     let source_max_level = specified_level
@@ -3071,16 +3400,33 @@ fn certified_requirement_levels(
     let base_m = hfield.base_m.unwrap_or_else(|| {
         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * base_nxp as f64)
     });
-    let mut field = crate::hfield_refine::build_composed_hfield(
-        &regions,
-        refine,
-        mesh_type,
-        Some(config),
-        base_m,
-        &hfield,
-        calculated_level.clamp(1, field_max_level),
-        None,
-    )?;
+    let (mut field, threshold_provenance) = if has_threshold_sources {
+        let (field, report) = crate::hfield_refine::build_composed_hfield_with_report(
+            &regions,
+            refine,
+            mesh_type,
+            Some(config),
+            base_m,
+            &hfield,
+            calculated_level.clamp(1, field_max_level),
+            None,
+        )?;
+        (field, Some(report))
+    } else {
+        (
+            crate::hfield_refine::build_composed_hfield(
+                &regions,
+                refine,
+                mesh_type,
+                Some(config),
+                base_m,
+                &hfield,
+                calculated_level.clamp(1, field_max_level),
+                None,
+            )?,
+            None,
+        )
+    };
     crate::hydro_refinement_adapter::apply_hydro_target_to_field(
         &mut field, &hfield, base_m, None,
     )?;
@@ -3089,16 +3435,45 @@ fn certified_requirement_levels(
         .into_iter()
         .map(usize::from)
         .collect::<Vec<_>>();
+    // Do not mistake a region-only subset for the raw demand of a mixed-source run.
+    let raw_region_levels = if !has_threshold_sources && hfield.hydro_target_paths().is_none() {
+        Some(
+            crate::hfield_refine::build_raw_region_hfield(
+                &regions,
+                base_m,
+                field.nlon(),
+                field.nlat(),
+                None,
+            )?
+            .level_map(base_m, quantized_max_level)?
+            .into_iter()
+            .map(usize::from)
+            .collect(),
+        )
+    } else {
+        None
+    };
+    let mut conservative_global_bound = false;
     // A sub-raster specified region can fall between HField sample centers.
     // The safe-mother path is global, so retaining its declared level is the
     // conservative bound and costs no additional geometric machinery.
     if specified_present && levels.iter().copied().max().unwrap_or(0) < specified_level {
         levels.fill(specified_level);
+        conservative_global_bound = true;
     }
     if calculated_present && levels.iter().copied().max().unwrap_or(0) < calculated_level {
         levels.fill(calculated_level);
+        conservative_global_bound = true;
     }
-    Ok((regions, field.nlon(), field.nlat(), levels))
+    Ok(CertifiedRequirementPlan {
+        regions,
+        nlon: field.nlon(),
+        nlat: field.nlat(),
+        effective_levels: levels,
+        raw_region_levels,
+        threshold_provenance,
+        conservative_global_bound,
+    })
 }
 
 fn certified_outcome_error(outcome: earthmesh_refine_certified::CertifiedMeshOutcome) -> io::Error {
@@ -3266,15 +3641,8 @@ struct RefinedGrid {
     transition_faces: usize,
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive_run: Option<AdaptiveRunRecord>,
-    /// What HARP-DV's own run reported, or `None` from the other peer backends.
-    ///
-    /// It used to reach only stderr, so a caller reading the run record could
-    /// not tell a mesh that met its demands from one that stopped at a budget
-    /// or a scale floor -- both exited zero with a mesh written. `adaptive_run`
-    /// could not carry it: that is Method-C's per-level circle record and says
-    /// nothing about cycles, refusals or a stop reason.
-    harp_dv_run: Option<HarpDvRunRecord>,
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
     lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
@@ -3338,79 +3706,6 @@ fn region_center_demand(
             )
         })
         .collect()
-}
-
-/// The part of HARP-DV's report a run record can carry.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HarpDvRunRecord {
-    pub stop_reason: String,
-    pub cycles_completed: u32,
-    /// Insertions only; geometry-only commits are in `r_adaptation_moves`.
-    pub transactions_committed: usize,
-    pub fallback_transactions_committed: usize,
-    pub r_adaptation_moves: usize,
-    pub paired_r_adaptation_moves: usize,
-    pub multi_ring_r_adaptation_moves: usize,
-    pub angles_below_40_deg: usize,
-    pub angles_in_40_90_deg: usize,
-    pub angles_above_90_deg: usize,
-    pub angles_in_40_80_deg: usize,
-    pub angles_above_80_deg: usize,
-    pub angle_min_deg: f64,
-    pub angle_max_deg: f64,
-    pub angle_window_40_80_verdict: String,
-    pub angle_window_unmeasurable_triangles: usize,
-    pub vertices_below_degree_5: usize,
-    pub active_adaptive_sites: usize,
-    pub active_leaf_sites: usize,
-    pub interior_leaf_sites: usize,
-    pub lineage_unknown_adaptive_sites: usize,
-    pub leaf_degree_4: usize,
-    pub leaf_degree_5: usize,
-    pub leaf_degree_6: usize,
-    pub leaf_degree_7: usize,
-    pub leaf_degree_other: usize,
-    pub leaf_birth_cycle_min: u32,
-    pub leaf_birth_cycle_max: u32,
-    pub leaf_target_scale_measured: usize,
-    pub leaf_target_scale_min_m: f64,
-    pub leaf_target_scale_max_m: f64,
-    pub angles_below_40_at_leaf_vertices: usize,
-    pub angles_above_80_at_leaf_vertices: usize,
-    pub angles_below_40_at_interior_leaf_vertices: usize,
-    pub angles_above_80_at_interior_leaf_vertices: usize,
-    pub violating_triangles_touching_leaf: usize,
-    pub violating_triangles_touching_interior_leaf: usize,
-    pub d4_leaf_retirement_audit_evaluated: bool,
-    pub d4_leaf_retirement_candidates: usize,
-    pub d4_leaf_retirement_trials_total: usize,
-    pub d4_leaf_retirement_triangulations: usize,
-    pub d4_leaf_retirement_hard_gate_safe: usize,
-    pub d4_leaf_retirement_physical_safe: usize,
-    pub d4_leaf_retirement_balance_safe: usize,
-    pub d4_leaf_retirement_quality_improving: usize,
-    pub d4_leaf_retirement_fully_acceptable: usize,
-    pub d4_leaf_retirement_committed: usize,
-    pub quality_leaf_retirement_committed: usize,
-    pub conservative_remap_rows: usize,
-    pub conservative_remap_max_row_sum_error: f64,
-    pub conservative_remap_file: Option<PathBuf>,
-    pub target_triangle_angles_below_40_deg: usize,
-    pub target_triangle_angles_above_80_deg: usize,
-    pub target_triangle_angle_count: usize,
-    pub target_triangle_angle_min_deg: f64,
-    pub target_triangle_angle_max_deg: f64,
-    pub angle_window_penalty: f64,
-    pub angle_window_40_80_penalty: f64,
-    pub quality_optimiser_moves: usize,
-    pub triangle_eta_min: f64,
-    pub triangle_eta_p1: f64,
-    pub triangles_below_eta_0_89: usize,
-    pub unresolved_cells: usize,
-    pub physical_demands_remaining: usize,
-    pub balance_demands_remaining: usize,
-    pub quality_constrained_cells: usize,
-    pub unbalanced_pairs_remaining: usize,
 }
 
 /// Most incident triangles a cell may have.
@@ -3859,6 +4154,7 @@ fn refine_with_redgreen(
         transition_faces: 0,
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        hfield_context: None,
         // Reported for the same two reasons Method-C reports it: the ocean
         // carve reads it to protect the cells a criterion demanded from its
         // largest-component rule, and the quality step reads the written file
@@ -3881,7 +4177,6 @@ fn refine_with_redgreen(
         lepp_hard_regions: Vec::new(),
         lepp_adaptive_hybrid: None,
         lepp_post_quality: None,
-        harp_dv_run: None,
     })
 }
 
@@ -3922,6 +4217,7 @@ struct MethodCRefineOutcome {
     mesh: MethodCMesh,
     spring_nest_passes: usize,
     hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive_run: Option<AdaptiveRunRecord>,
 }
 
@@ -4119,8 +4415,8 @@ fn refine_with_method_c_lepp(
         transition_faces: 0,
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
+        hfield_context: None,
         adaptive_run: None,
-        harp_dv_run: None,
         lepp_hard_regions: hard_regions,
         lepp_adaptive_hybrid: Some(report),
         lepp_post_quality: None,
@@ -4169,705 +4465,6 @@ fn lepp_region_boundary_segments(
         );
     }
     earthmesh_boundary::SegmentList::from_pairs(protected)
-}
-
-/// Refine by re-reading the criteria against the cells that exist.
-///
-/// This route differs at the pipeline boundary because it
-/// produces its mesh from `MeshState`, so it goes out through
-/// `to_triangular_mesh` rather than arriving as a `TriangularMesh` already.
-fn refine_with_harp_dv(
-    mesh: &earthmesh_mesh::TriangularMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
-    adaptive_options: Option<&crate::adaptive_refine::AdaptiveRefineOptions>,
-    config: &EarthmeshConfig,
-    domain_region: Option<&GridRegion>,
-    mesh_type: &str,
-    nxp: usize,
-    max_level: usize,
-    refine: &RefineConfig,
-    options: HarpDvRunOptions,
-) -> io::Result<RefinedGrid> {
-    use earthmesh_refine_harp_dv as harp;
-
-    // Said outright rather than served quietly with less. Each of these would
-    // otherwise be dropped and the run would still write a valid mesh that is
-    // not the mesh that was asked for.
-    // Circles and closed curves are served; a box or a corridor is not, and is
-    // still said outright rather than dropped. A closed curve became servable
-    // when `SphericalBoundaryModel` arrived: the question a target scale asks
-    // is "is this cell inside the region", and for a curve with holes that is
-    // the model's subject rather than something to reimplement per backend.
-    let unsupported = regions
-        .iter()
-        .find(|region| {
-            !matches!(
-                region,
-                earthmesh_mesh::RefinementRegion::Circle { .. }
-                    | earthmesh_mesh::RefinementRegion::Polygon { .. }
-            )
-        })
-        .map(|_| "a region that is not a circle or a closed curve");
-    if let Some(unsupported) = unsupported {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!(
-                "NL%refine_backend = harp_dv does not serve {unsupported}; it reads a target \
-                 scale per cell, and a box or corridor carries no discretised boundary to read \
-                 one against. Use method_c for this run"
-            ),
-        ));
-    }
-
-    // A named region asks for a level; HARP-DV asks for a length. One level is
-    // one halving, the same relation Method-C's nesting produces, so a level-L
-    // request becomes the base cell width divided by two to the L.
-    // Two different lengths, measured rather than derived, because
-    // `2*pi*R/(5*nxp)` is neither of them cleanly. At NXP 21 that formula gives
-    // 381 km; the mesh's median cell `sqrt(A/pi)` is 190 km and its median
-    // triangle edge is 364 km. The formula is an edge length, near enough --
-    // which is why `TargetScale`, which compares cell scales, was asking for
-    // half of what a level meant. Guide 11.31.
-
-    // Only the cell scale is used here. `harp_base_lengths` still measures both
-    // because the pair makes the distinction checkable: 190 km against 364 km
-    // at NXP 21 is why taking the nominal `2*pi*R/(5*nxp)` for either was wrong.
-    let (base_cell_m, _base_edge_m) = harp_base_lengths(mesh).unwrap_or_else(|| {
-        let nominal =
-            2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
-        (nominal / 2.0, nominal)
-    });
-    let boundaries = harp_region_boundaries(regions)?;
-    let mut region_boundaries = boundaries.clone();
-    let criteria: Vec<Box<dyn harp::CellCriterion>> = regions
-        .iter()
-        .zip(&boundaries)
-        .enumerate()
-        .map(|(index, (region, boundary))| {
-            let target_scale_m = base_cell_m / 2.0_f64.powi(region.level() as i32);
-            match boundary {
-                HarpRegionBoundary::Circle {
-                    center,
-                    radius_meters,
-                } => Box::new(harp::TargetScale {
-                    id: format!("region-{index}"),
-                    target_scale_m,
-                    region: harp::TargetRegion::Circle {
-                        centre: *center,
-                        radius_m: *radius_meters,
-                    },
-                    source_resolution_m: None,
-                }) as Box<dyn harp::CellCriterion>,
-                // One closed curve at a time: each mask is its own demand, and a
-                // model holding all of them at once would answer "inside" for a
-                // cell in any of them, which is a different question.
-                HarpRegionBoundary::Polygon(boundary) => Box::new(harp::TargetScale {
-                    id: format!("region-{index}"),
-                    target_scale_m,
-                    region: harp::TargetRegion::Polygon {
-                        boundary: boundary.clone(),
-                    },
-                    source_resolution_m: None,
-                })
-                    as Box<dyn harp::CellCriterion>,
-            }
-        })
-        .collect();
-
-    let mut criteria = criteria;
-    let mut adaptive_run: Option<AdaptiveRunRecord> = None;
-    if let Some(adaptive_options) = adaptive_options {
-        let adaptive_base_m = adaptive_options.base_m.unwrap_or(base_cell_m);
-        let adaptive_inputs = adaptive_demand_inputs(
-            domain_region,
-            config,
-            adaptive_landtype_file(config),
-            mesh_type,
-            adaptive_options.coastline,
-        )?;
-        let adaptive_depth = adaptive_options.max_level.unwrap_or(max_level).clamp(1, 5);
-        let gridnum_perdegree = usize::try_from(config.gridnum_perdegree).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "NL%gridnum_perdegree must fit usize",
-            )
-        })?;
-        if gridnum_perdegree == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "NL%gridnum_perdegree must be positive for HARP-DV source-resolution stopping",
-            ));
-        }
-        let source_resolution_m =
-            earthmesh_core::KM_PER_DEGREE_EQUATOR * 1000.0 / gridnum_perdegree as f64;
-        let mut passes = Vec::new();
-        let mut deepest_level = 0usize;
-        let mut stopped_on_empty_demand = false;
-        for level in 1..=adaptive_depth {
-            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows(
-                refine,
-                &adaptive_inputs,
-                level,
-                adaptive_base_m,
-                adaptive_depth,
-            )?;
-            eprintln!(
-                "harp_dv adaptive level {level} judging {:.0} m cells: {} circles over {} demanded source cells",
-                adaptive_base_m / 2f64.powi((level - 1) as i32),
-                demand.circles.len(),
-                demand.demanded_cells,
-            );
-            if demand.circles.is_empty() {
-                if demand.demanded {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "{} demanded source cells at HARP-DV adaptive level {level}, but circle reduction produced no region",
-                            demand.demanded_cells
-                        ),
-                    ));
-                }
-                stopped_on_empty_demand = true;
-                break;
-            }
-            let criterion_id = if demand.criterion_ids.is_empty() {
-                format!("adaptive-level-{level}")
-            } else {
-                format!("{}-level-{level}", demand.criterion_ids.join("+"))
-            };
-            region_boundaries.extend(harp_region_boundaries(&demand.circles)?);
-            let target_scale_m = adaptive_base_m / 2.0_f64.powi(level as i32);
-            criteria.push(Box::new(harp::TargetScale {
-                id: criterion_id,
-                target_scale_m,
-                region: harp::TargetRegion::circles(demand.circles.clone()),
-                source_resolution_m: Some(source_resolution_m),
-            }));
-            deepest_level = level;
-            passes.push(crate::refinement_demand::nest::NestPassReport {
-                level,
-                cell_meters: adaptive_base_m / 2f64.powi((level - 1) as i32),
-                circle_count: demand.circles.len(),
-                regions: demand.circles,
-                demanded_cells: demand.demanded_cells,
-                faces_before: mesh.nwd,
-                faces_after: mesh.nwd,
-            });
-        }
-        adaptive_run = Some((
-            crate::refinement_demand::nest::AdaptiveNestReport {
-                passes,
-                deepest_level,
-                stopped_on_empty_demand,
-                spring_passes: 0,
-            },
-            adaptive_depth,
-            adaptive_base_m,
-            adaptive_options.coastline,
-        ));
-    }
-    let mut adaptive = harp::AdaptiveMesh::from_triangular_mesh(mesh)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-
-    // Quality as a criterion, with Ruppert's precondition satisfied: the sites
-    // ringing each refinement region are protected segments, so a circumcentre
-    // that encroaches on one splits it instead of being inserted. Without that
-    // the refinement does not terminate (guide 11.25); with it, it reaches
-    // Ruppert's angle bound (11.26).
-    if let Some(min_angle_deg) = harp_min_angle_target(refine) {
-        let segments = harp_region_boundary_segments(&adaptive, &region_boundaries);
-        adaptive.protect_segments(segments);
-        criteria.push(Box::new(harp::MinAngle {
-            id: "min-angle".to_string(),
-            min_angle_deg,
-        }));
-    }
-    let mut trace_session = crate::harp_trace::from_env()?;
-    let request = harp::HarpDvRequest {
-        config: options.config,
-        criteria: &criteria,
-        candidate_policy: options.candidate_policy,
-        gates: options.gates,
-    };
-    let outcome = if let Some(trace_session) = trace_session.as_mut() {
-        let window_budget_audit = trace_session.window_budget_audit_mode();
-        let mut emit_trace = |event: harp::HarpTraceEvent| {
-            crate::harp_trace::write_core_event(trace_session, &event)
-                .map_err(harp::HarpDvError::from)
-        };
-        harp::refine_harp_dv_traced_with_window_budget_audit(
-            adaptive,
-            &request,
-            window_budget_audit,
-            &mut emit_trace,
-        )
-    } else {
-        harp::refine_harp_dv(adaptive, &request)
-    }
-    .map_err(|error| io::Error::other(error.to_string()))?;
-    if let Some(trace_session) = trace_session {
-        trace_session.publish(&outcome.report)?;
-    }
-
-    // What it could not do, on the run's own output rather than in a log line
-    // nobody reads afterwards.
-    //
-    // Gated on the stop reason and not only on `unresolved_cells`. A run can
-    // stop with that list empty and still not have delivered what was asked:
-    // the budget can run out mid-traversal, leaving the demands it never
-    // reached out of the list; the cycle limit can arrive with committed but
-    // still-unmet demands; and neighbour-scale imbalance is counted separately
-    // from unresolved cells altogether. Each of those used to exit silently,
-    // and a silent exit reads as "the mesh you asked for".
-    let finished_clean = matches!(
-        outcome.report.stop_reason,
-        harp::StopReason::AllSatisfied | harp::StopReason::NoAcceptedTransactions
-    ) && outcome.unresolved_cells.is_empty()
-        && outcome.report.unbalanced_pairs_remaining == 0;
-    // Only when the block below will not fire: it says the same things in more
-    // detail whenever there are unresolved cells, and two lines saying one
-    // thing trains people to read neither.
-    if !finished_clean && outcome.unresolved_cells.is_empty() {
-        eprintln!(
-            "harp_dv: stopped because {:?}; {} cells unresolved, {} adjacent pairs past the \
-             neighbour scale bound. The mesh below is what the run reached, not what was asked",
-            outcome.report.stop_reason,
-            outcome.unresolved_cells.len(),
-            outcome.report.unbalanced_pairs_remaining
-        );
-    }
-    if !outcome.unresolved_cells.is_empty() {
-        let refusals = outcome.report.refusals;
-        eprintln!(
-            "harp_dv: {} cells could not be refined further, and {} adjacent pairs are past the \
-             neighbour scale bound; stopped because {:?}",
-            outcome.unresolved_cells.len(),
-            outcome.report.unbalanced_pairs_remaining,
-            outcome.report.stop_reason
-        );
-        // By kind, because the three want different answers: a degree wall
-        // wants site motion, a pentagon wall wants the demand moved off it, and
-        // a ladder that ran out wants another rung.
-        eprintln!(
-            "harp_dv: refusals -- degree {}, pentagon {}, sliver {}, not insertable {}, topology \
-             {}, no improvement {}, unmeasurable {}",
-            refusals.degree,
-            refusals.pentagon,
-            refusals.sliver,
-            refusals.not_insertable,
-            refusals.topology,
-            refusals.no_improvement,
-            refusals.unmeasurable
-        );
-        if outcome.report.degree_relieving_moves > 0 {
-            eprintln!(
-                "harp_dv: {} moves relieved a degree wall",
-                outcome.report.degree_relieving_moves
-            );
-        }
-        if outcome.report.r_adaptation_moves > 0 {
-            eprintln!(
-                "harp_dv: {} r-adaptation moves committed",
-                outcome.report.r_adaptation_moves
-            );
-        }
-        if outcome.report.fallback_transactions_committed > 0
-            || outcome.report.paired_r_adaptation_moves > 0
-        {
-            eprintln!(
-                "harp_dv: stalled recovery committed {} fallback insertions and {} paired site \
-                 moves",
-                outcome.report.fallback_transactions_committed,
-                outcome.report.paired_r_adaptation_moves
-            );
-        }
-        if outcome.report.multi_ring_r_adaptation_moves > 0 {
-            eprintln!(
-                "harp_dv: {} moves came from widening the recovery to a few rings around each \
-                 stalled region",
-                outcome.report.multi_ring_r_adaptation_moves
-            );
-        }
-        if outcome.report.quality_constrained_count > 0 {
-            eprintln!(
-                "harp_dv: {} remaining cells exhausted every candidate at the {:.1} degree \
-                 triangle-angle floor; more cycles cannot serve those cells under the current \
-                 quality constraint",
-                outcome.report.quality_constrained_count, options.gates.min_triangle_angle_deg
-            );
-        }
-    }
-
-    let refined = outcome
-        .mesh
-        .to_triangular_mesh()
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let conservative_remap_rows = outcome
-        .mesh
-        .conservative_remap()
-        .iter()
-        .map(|row| row.old_site_id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
-    let conservative_remap_max_row_sum_error = outcome
-        .mesh
-        .conservative_remap()
-        .iter()
-        .fold(std::collections::BTreeMap::new(), |mut sums, row| {
-            *sums.entry(row.old_site_id).or_insert(0.0) += row.overlap_fraction;
-            sums
-        })
-        .into_values()
-        .map(|sum: f64| (sum - 1.0).abs())
-        .fold(0.0, f64::max);
-    let conservative_remap_file = if outcome.mesh.conservative_remap().is_empty() {
-        None
-    } else {
-        let result_dir = PathBuf::from(config.file_dir()).join("result");
-        fs::create_dir_all(&result_dir)?;
-        let path = result_dir.join("harp_dv_conservative_remap.csv");
-        let mut csv = String::from("old_site_id,new_site_id,overlap_fraction\n");
-        for row in outcome.mesh.conservative_remap() {
-            csv.push_str(&format!(
-                "{},{},{:.17}\n",
-                row.old_site_id.0, row.new_site_id.0, row.overlap_fraction
-            ));
-        }
-        fs::write(&path, csv)?;
-        Some(path)
-    };
-    if let Some((report, _, _, _)) = &mut adaptive_run {
-        // HARP-DV evaluates every requested level together rather than running
-        // one topology pass per level. Each row is therefore a demand level,
-        // and the only honest topology counts are the shared run boundaries.
-        for pass in &mut report.passes {
-            pass.faces_before = mesh.nwd;
-            pass.faces_after = refined.nwd;
-        }
-    }
-
-    // HARP-DV already repairs its continuously graded mesh through
-    // transactional site moves followed by Delaunay legalization and quality
-    // acceptance. A fixed-connectivity Laplacian spring works against that
-    // size field, so it is deliberately not run here.
-    let state = spherical_voronoi_state(&refined)?;
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
-    let spring_nest_passes = 0;
-    let method_c_metadata = Some(gridfile_metadata(&state, &refined)?);
-    Ok(RefinedGrid {
-        // HARP-DV builds no transition band, so there is nothing to count in
-        // these terms -- the same answer red-green gives, and for the same
-        // reason.
-        transition_faces: 0,
-        pentagon_indices: refined.impent,
-        state: Some(state),
-        output_mesh,
-        method_c_metadata,
-        spring_nest_passes,
-        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
-        adaptive_run,
-        // HARP-DV's own ending, on the record rather than only on stderr.
-        harp_dv_run: Some(HarpDvRunRecord {
-            stop_reason: format!("{:?}", outcome.report.stop_reason),
-            cycles_completed: outcome.report.cycles_completed,
-            transactions_committed: outcome.report.transactions_committed,
-            fallback_transactions_committed: outcome.report.fallback_transactions_committed,
-            r_adaptation_moves: outcome.report.r_adaptation_moves,
-            paired_r_adaptation_moves: outcome.report.paired_r_adaptation_moves,
-            multi_ring_r_adaptation_moves: outcome.report.multi_ring_r_adaptation_moves,
-            angles_below_40_deg: outcome.report.angles_below_40_deg,
-            angles_in_40_90_deg: outcome.report.angles_in_40_90_deg,
-            angles_above_90_deg: outcome.report.angles_above_90_deg,
-            angles_in_40_80_deg: outcome.report.angles_in_40_80_deg,
-            angles_above_80_deg: outcome.report.angles_above_80_deg,
-            angle_min_deg: outcome.report.angle_min_deg,
-            angle_max_deg: outcome.report.angle_max_deg,
-            angle_window_40_80_verdict: outcome
-                .report
-                .angle_window_40_80_verdict
-                .as_str()
-                .to_string(),
-            angle_window_unmeasurable_triangles: outcome.report.angle_window_unmeasurable_triangles,
-            vertices_below_degree_5: outcome.report.vertices_below_degree_5,
-            active_adaptive_sites: outcome.report.active_adaptive_sites,
-            active_leaf_sites: outcome.report.active_leaf_sites,
-            interior_leaf_sites: outcome.report.interior_leaf_sites,
-            lineage_unknown_adaptive_sites: outcome.report.lineage_unknown_adaptive_sites,
-            leaf_degree_4: outcome.report.leaf_degree_4,
-            leaf_degree_5: outcome.report.leaf_degree_5,
-            leaf_degree_6: outcome.report.leaf_degree_6,
-            leaf_degree_7: outcome.report.leaf_degree_7,
-            leaf_degree_other: outcome.report.leaf_degree_other,
-            leaf_birth_cycle_min: outcome.report.leaf_birth_cycle_min,
-            leaf_birth_cycle_max: outcome.report.leaf_birth_cycle_max,
-            leaf_target_scale_measured: outcome.report.leaf_target_scale_measured,
-            leaf_target_scale_min_m: outcome.report.leaf_target_scale_min_m,
-            leaf_target_scale_max_m: outcome.report.leaf_target_scale_max_m,
-            angles_below_40_at_leaf_vertices: outcome.report.angles_below_40_at_leaf_vertices,
-            angles_above_80_at_leaf_vertices: outcome.report.angles_above_80_at_leaf_vertices,
-            angles_below_40_at_interior_leaf_vertices: outcome
-                .report
-                .angles_below_40_at_interior_leaf_vertices,
-            angles_above_80_at_interior_leaf_vertices: outcome
-                .report
-                .angles_above_80_at_interior_leaf_vertices,
-            violating_triangles_touching_leaf: outcome.report.violating_triangles_touching_leaf,
-            violating_triangles_touching_interior_leaf: outcome
-                .report
-                .violating_triangles_touching_interior_leaf,
-            d4_leaf_retirement_audit_evaluated: outcome.report.d4_leaf_retirement_audit_evaluated,
-            d4_leaf_retirement_candidates: outcome.report.d4_leaf_retirement_candidates,
-            d4_leaf_retirement_trials_total: outcome.report.d4_leaf_retirement_trials_total,
-            d4_leaf_retirement_triangulations: outcome.report.d4_leaf_retirement_triangulations,
-            d4_leaf_retirement_hard_gate_safe: outcome.report.d4_leaf_retirement_hard_gate_safe,
-            d4_leaf_retirement_physical_safe: outcome.report.d4_leaf_retirement_physical_safe,
-            d4_leaf_retirement_balance_safe: outcome.report.d4_leaf_retirement_balance_safe,
-            d4_leaf_retirement_quality_improving: outcome
-                .report
-                .d4_leaf_retirement_quality_improving,
-            d4_leaf_retirement_fully_acceptable: outcome.report.d4_leaf_retirement_fully_acceptable,
-            d4_leaf_retirement_committed: outcome.report.d4_leaf_retirement_committed,
-            quality_leaf_retirement_committed: outcome.report.quality_leaf_retirement_committed,
-            conservative_remap_rows,
-            conservative_remap_max_row_sum_error,
-            conservative_remap_file,
-            target_triangle_angles_below_40_deg: outcome.report.target_triangle_angles_below_40_deg,
-            target_triangle_angles_above_80_deg: outcome.report.target_triangle_angles_above_80_deg,
-            target_triangle_angle_count: outcome.report.target_triangle_angle_count,
-            target_triangle_angle_min_deg: outcome.report.target_triangle_angle_min_deg,
-            target_triangle_angle_max_deg: outcome.report.target_triangle_angle_max_deg,
-            angle_window_penalty: outcome.report.angle_window_penalty,
-            angle_window_40_80_penalty: outcome.report.angle_window_40_80_penalty,
-            quality_optimiser_moves: outcome.report.quality_optimiser_moves,
-            triangle_eta_min: outcome.report.triangle_eta_min,
-            triangle_eta_p1: outcome.report.triangle_eta_p1,
-            triangles_below_eta_0_89: outcome.report.triangles_below_eta_0_89,
-            unresolved_cells: outcome.unresolved_cells.len(),
-            physical_demands_remaining: outcome.report.physical_demands_remaining,
-            balance_demands_remaining: outcome.report.balance_demands_remaining,
-            quality_constrained_cells: outcome.report.quality_constrained_count,
-            unbalanced_pairs_remaining: outcome.report.unbalanced_pairs_remaining,
-        }),
-        lepp_hard_regions: Vec::new(),
-        lepp_adaptive_hybrid: None,
-        lepp_post_quality: None,
-    })
-}
-
-/// The mesh's own median cell scale and median triangle edge, in metres.
-///
-/// Two quantities that a single nominal-spacing formula conflates. HARP's
-/// criterion comparing `sqrt(A/pi)` wants the first; the second keeps the
-/// measurement and its unit distinction checkable.
-fn harp_base_lengths(mesh: &earthmesh_mesh::TriangularMesh) -> Option<(f64, f64)> {
-    let state = earthmesh_mesh::MeshState::from_triangular_mesh(mesh).ok()?;
-    let radius = state.sphere_radius();
-    let mut scales: Vec<f64> = (earthmesh_mesh::MESH_STATE_FIRST_ID..state.vertices().len())
-        .filter_map(|site| {
-            let cell = state.voronoi_cell(site).ok()?;
-            let area = cell.area_on_unit_sphere()? * radius * radius;
-            Some((area / std::f64::consts::PI).sqrt())
-        })
-        .collect();
-    let mut edges: Vec<f64> = Vec::new();
-    for triangle in earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len() {
-        let corners = state.triangles()[triangle];
-        for corner in 0..3 {
-            edges.push(earthmesh_mesh::arc_length_unit_sphere(
-                state.vertices()[corners[corner]],
-                state.vertices()[corners[(corner + 1) % 3]],
-            ));
-        }
-    }
-    if scales.is_empty() || edges.is_empty() {
-        return None;
-    }
-    let median = |values: &mut Vec<f64>| {
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        values[values.len() / 2]
-    };
-    Some((median(&mut scales), median(&mut edges)))
-}
-
-/// Which backend a run asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RefineBackend {
-    MethodC,
-    RedGreen,
-    HarpDv,
-    Certified,
-}
-
-fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
-    if matches!(backend, RefineBackend::HarpDv | RefineBackend::Certified) {
-        0
-    } else {
-        requested
-    }
-}
-
-/// Resolve `NL%refine_backend`, refusing anything that is not a backend.
-///
-/// Case-insensitive, because `HARP_DV` asks for HARP-DV by any reading. What it
-/// will not do is guess: the dispatch this replaced fell through to Method-C
-/// for every unrecognised value, so `redgreen`, `harp-dv` and `method-c` each
-/// produced a Method-C mesh in silence.
-fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
-    let name = requested.trim().to_ascii_lowercase();
-    match name.as_str() {
-        "method_c" => Ok(RefineBackend::MethodC),
-        "red_green" => Ok(RefineBackend::RedGreen),
-        "harp_dv" => Ok(RefineBackend::HarpDv),
-        "certified" => Ok(RefineBackend::Certified),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "NL%refine_backend = '{other}' is not a refinement backend; the choices are \
-                 method_c, red_green, harp_dv and certified"
-            ),
-        )),
-    }
-}
-
-/// The angle floor a run asks for, if any.
-///
-/// Off unless asked: a quality criterion adds cells nobody requested, and
-/// Ruppert's bound is about 20.7 degrees -- above it the refinement is not
-/// guaranteed to terminate and a run can spend its whole budget.
-///
-/// From `RL%harp_min_angle_deg`. It used to come from an
-/// `EARTHMESH_HARP_MIN_ANGLE` environment variable that no document and no
-/// interface mentioned, so the only way to find the feature was to read this
-/// function. The namelist is where a run says what it wants, and the parser
-/// refuses anything above the bound rather than letting the run discover it.
-fn harp_min_angle_target(refine: &RefineConfig) -> Option<f64> {
-    (refine.harp_min_angle_deg > 0.0).then_some(refine.harp_min_angle_deg)
-}
-
-#[derive(Clone)]
-enum HarpRegionBoundary {
-    Circle {
-        center: earthmesh_mesh::LonLatDegrees,
-        radius_meters: f64,
-    },
-    Polygon(earthmesh_boundary::SphericalBoundaryModel),
-}
-
-/// Validate and compile region geometry once per HARP-DV run.
-///
-/// Both the demand criterion and protected-segment scan consume this result;
-/// rebuilding a spherical boundary once per mesh vertex made polygon runs
-/// quadratic in input-ring size and let invalid rings silently mean no demand.
-fn harp_region_boundaries(
-    regions: &[earthmesh_mesh::RefinementRegion],
-) -> io::Result<Vec<HarpRegionBoundary>> {
-    regions
-        .iter()
-        .enumerate()
-        .map(|(index, region)| {
-            region.validate().map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("HARP-DV region {index} is invalid: {error}"),
-                )
-            })?;
-            match region {
-                earthmesh_mesh::RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    ..
-                } => Ok(HarpRegionBoundary::Circle {
-                    center: *center,
-                    radius_meters: *radius_meters,
-                }),
-                earthmesh_mesh::RefinementRegion::Polygon { .. } => {
-                    let boundary = crate::boundary_model::boundary_model_from_regions(
-                        std::slice::from_ref(region),
-                    );
-                    if boundary.loops.is_empty() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("HARP-DV polygon region {index} does not enclose a loop"),
-                        ));
-                    }
-                    if let Err(errors) = boundary.validate() {
-                        let details = errors
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("HARP-DV polygon region {index} is invalid: {details}"),
-                        ));
-                    }
-                    Ok(HarpRegionBoundary::Polygon(boundary))
-                }
-                _ => Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!("HARP-DV region {index} is not a circle or closed curve"),
-                )),
-            }
-        })
-        .collect()
-}
-
-/// A refinement region's boundary, discretised as mesh edges.
-///
-/// The edges that straddle it -- one endpoint inside, one outside -- which is
-/// what the curve looks like on this mesh. Ruppert's segments are a list like
-/// this; a set of nearby *sites* is a different predicate and an unsound one
-/// (guide 11.28).
-fn harp_region_boundary_segments(
-    mesh: &earthmesh_refine_harp_dv::AdaptiveMesh,
-    regions: &[HarpRegionBoundary],
-) -> Vec<(usize, usize)> {
-    let state = mesh.state();
-    let radius = state.sphere_radius();
-    // What "inside" means is the run's business; what a segment list *is*, and
-    // that a split replaces one with two, is `earthmesh_boundary`'s. Guide
-    // 11.28 asked for the list to live there rather than be rebuilt at each
-    // call site, because the version that lived here was a predicate wearing a
-    // list's name and 11.29 measured what that cost.
-    let inside = |site: usize| {
-        let point = state.vertices()[site];
-        regions
-            .iter()
-            .any(|region| harp_region_contains(region, point, radius))
-    };
-    let edges =
-        (earthmesh_mesh::MESH_STATE_FIRST_ID..state.triangles().len()).flat_map(|triangle| {
-            let corners = state.triangles()[triangle];
-            (0..3).map(move |corner| (corners[(corner + 1) % 3], corners[(corner + 2) % 3]))
-        });
-    earthmesh_boundary::SegmentList::from_straddling_edges(edges, inside)
-        .iter()
-        .collect()
-}
-
-fn harp_region_contains(
-    region: &HarpRegionBoundary,
-    point: earthmesh_mesh::CartesianPoint,
-    radius: f64,
-) -> bool {
-    let length = earthmesh_mesh::magnitude(point);
-    if length <= 0.0 {
-        return false;
-    }
-    match region {
-        HarpRegionBoundary::Circle {
-            center,
-            radius_meters,
-        } => {
-            let centre = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*center);
-            let dot = (point.x * centre.x + point.y * centre.y + point.z * centre.z) / length;
-            dot.clamp(-1.0, 1.0).acos() * radius <= *radius_meters
-        }
-        HarpRegionBoundary::Polygon(boundary) => {
-            let here = earthmesh_mesh::xyz_to_lonlat_degrees(point);
-            boundary.contains(here.lon_degrees, here.lat_degrees)
-        }
-    }
 }
 
 /// The Voronoi/PCVT step, in lon/lat, for a mesh on the sphere.
@@ -4942,6 +4539,7 @@ fn refine_with_method_c(
     // Same shape as `hfield_diagnostics`: assigned inside the branch that owns
     // it, carried out to the layer that knows where the run's outputs land.
     let mut adaptive_run: Option<AdaptiveRunRecord> = None;
+    let mut hfield_context = None;
     let (mesh, spring_nest_passes) = if !is_atmosmesh
         && (native_only_spawn || native_surface_global_expansion)
         && !refine.refine_spc
@@ -5239,6 +4837,11 @@ fn refine_with_method_c(
                 spring_nest_iterations,
             )?;
             hfield_diagnostics = diagnostics;
+            hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
+                field,
+                base_m,
+                max_level: field_max_level as u8,
+            });
             (refined, passes)
         }
     } else if spring_nest_iterations > 0 {
@@ -5295,6 +4898,7 @@ fn refine_with_method_c(
         mesh,
         spring_nest_passes,
         hfield_diagnostics,
+        hfield_context,
         adaptive_run,
     })
 }
@@ -5492,6 +5096,42 @@ fn adaptive_demand_windows(
             )
         })
         .collect()
+}
+
+/// Which retained backend a run asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefineBackend {
+    MethodC,
+    RedGreen,
+    Certified,
+}
+
+fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
+    if matches!(backend, RefineBackend::Certified) {
+        0
+    } else {
+        requested
+    }
+}
+
+/// Resolve `NL%refine_backend`, refusing retired HARP-DV spellings explicitly.
+fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
+    let name = requested.trim().to_ascii_lowercase();
+    match name.as_str() {
+        "method_c" => Ok(RefineBackend::MethodC),
+        "red_green" => Ok(RefineBackend::RedGreen),
+        "certified" => Ok(RefineBackend::Certified),
+        "harp_dv" | "harp-dv" | "harpdv" => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "NL%refine_backend = harp_dv has been retired; use method_c, red_green, or certified",
+        )),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green and certified"
+            ),
+        )),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5818,7 +5458,143 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[test]
+    fn calculated_zero_mask_does_not_force_a_quiet_threshold_to_refine() {
+        let root = std::env::temp_dir().join(format!("cmrc_quiet_cal_mask_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mask = root.join("mask.nml");
+        std::fs::write(&mask, "bbox_num = 1\nbbox_refine = 0\n0 90 90 0\n").unwrap();
+        let land = root.join("land.nc");
+        let mut file = crate::create_netcdf_quiet(&land).unwrap();
+        file.add_dimension("longitude", 8).unwrap();
+        file.add_dimension("latitude", 4).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[1_i8; 32], (.., ..))
+            .unwrap();
+        drop(file);
+        let config = EarthmeshConfig {
+            mesh_type: "landmesh".into(),
+            landtype_file: land.display().to_string(),
+            ..EarthmeshConfig::default()
+        };
+        let mut refine = RefineConfig {
+            refine_cal: true,
+            max_iter_cal: 2,
+            refine_num_landtypes: true,
+            th_num_landtypes: 10,
+            mask_refine_cal_type: "bbox".into(),
+            mask_refine_cal_fprefix: mask.display().to_string(),
+            ..RefineConfig::default()
+        };
+        let contents = "&hfield\n NL%hfield_nlon=8\n NL%hfield_nlat=4\n/\n";
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert!(
+            plan.regions.is_empty(),
+            "evaluation mask is not a hard demand"
+        );
+        assert!(plan.effective_levels.iter().all(|&level| level == 0));
+        assert!(!plan.conservative_global_bound);
+        let report = plan
+            .threshold_provenance
+            .as_ref()
+            .expect("quiet threshold still reports provenance");
+        assert_eq!(report["scope"], "threshold_only_before_gradient");
+        assert!(report["criteria"].is_array());
+        let layers = plan.layer_report(None, 3);
+        assert_eq!(
+            layers["threshold_sources"]["scope"],
+            "threshold_only_before_gradient"
+        );
+        assert!(!layers["threshold_sources"]
+            .to_string()
+            .contains("composition_timing_ms"));
+        let repeat = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert_eq!(layers, repeat.layer_report(None, 3));
+        // Preserve the named-region-only contract when there is no threshold.
+        refine.refine_num_landtypes = false;
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        assert_eq!(plan.regions.len(), 1);
+        assert_eq!(plan.effective_levels.iter().max(), Some(&2));
+        assert!(plan.threshold_provenance.is_none());
+        assert!(plan.layer_report(None, 3)["threshold_sources"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mother_family_preflight_checks_possible_levels_not_only_the_maximum() {
+        assert!(super::validate_certified_mother_family(7, 1).is_err());
+        assert!(super::validate_certified_mother_family(3, 4).is_ok());
+        assert!(super::validate_certified_mother_family(5, 2).is_ok());
+        assert!(super::validate_certified_mother_family(1, usize::MAX).is_ok());
+    }
+
     use super::*;
+
+    #[test]
+    fn local_update_admission_is_explicit_and_mixed_coupled_only() {
+        let config = EarthmeshConfig {
+            refine: true,
+            mask_domain_global: true,
+            mesh_type: "atmosmesh".into(),
+            mode_grid: "hex".into(),
+            output_format: "MPAS".into(),
+            ..EarthmeshConfig::default()
+        };
+        let options = CertifiedRunOptions {
+            mode: CertifiedMode::ReverseCoarsening,
+            delivery: CertifiedDelivery::Coupled,
+            angle_contract: earthmesh_refine_certified::AngleContractId::DomainQuality38To82V1,
+            ..CertifiedRunOptions::default()
+        };
+        for levels in [vec![0, 1], vec![0, 1, 2]] {
+            validate_local_update_mode(&config, &options, &levels).expect("mixed scope");
+        }
+        for levels in [vec![], vec![0], vec![1, 1], vec![0, 3]] {
+            assert!(validate_local_update_mode(&config, &options, &levels).is_err());
+        }
+        for rejected in [
+            EarthmeshConfig {
+                mask_domain_global: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                refine: false,
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mesh_type: "oceanmesh".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                mode_grid: "tri".into(),
+                ..config.clone()
+            },
+            EarthmeshConfig {
+                output_format: "FVCOM".into(),
+                ..config.clone()
+            },
+        ] {
+            assert!(validate_local_update_mode(&rejected, &options, &[0, 1]).is_err());
+        }
+        for rejected in [
+            CertifiedRunOptions {
+                mode: CertifiedMode::SafeMotherOnly,
+                ..options
+            },
+            CertifiedRunOptions {
+                delivery: CertifiedDelivery::Hex,
+                ..options
+            },
+            CertifiedRunOptions {
+                angle_contract: earthmesh_refine_certified::AngleContractId::LegacyStrict40To80,
+                ..options
+            },
+        ] {
+            assert!(validate_local_update_mode(&config, &rejected, &[0, 1]).is_err());
+        }
+    }
 
     fn legacy_remap_csv(rows: &[earthmesh_refine_certified::remap::RemapRow]) -> Vec<u8> {
         let mut output = Vec::new();
@@ -5875,61 +5651,78 @@ mod tests {
 
     #[test]
     fn failed_certified_publication_restores_the_previous_generation() {
-        let directory = std::env::temp_dir().join(format!(
-            "earthmesh-cmrc-publication-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).expect("create publication test directory");
         let names = [
             "certificate",
             "remap",
             "grid",
             "resources",
             "manifest",
+            "mpas",
+            "mpas-graph",
             "ready",
         ];
-        let paths = names
-            .iter()
-            .map(|name| {
-                let temporary = directory.join(format!("new-{name}"));
-                let final_path = directory.join(name);
-                fs::write(&temporary, format!("new-{name}")).expect("stage new artifact");
-                fs::write(&final_path, format!("old-{name}")).expect("write old artifact");
-                (temporary, final_path)
-            })
-            .collect::<Vec<_>>();
-        fs::remove_file(&paths[4].0).expect("remove staged manifest to force failure");
-        let publications = paths
-            .iter()
-            .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
-            .collect::<Vec<_>>();
+        for previous_generation in [false, true] {
+            for missing in [4, 5, 6, 7] {
+                let directory = std::env::temp_dir().join(format!(
+                    "earthmesh-cmrc-publication-{}-{}-{missing}-{previous_generation}",
+                    std::process::id(),
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                fs::create_dir_all(&directory).expect("create publication test directory");
+                let paths = names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| {
+                        let temporary = directory.join(format!(".{name}.cmrc-tmp-test"));
+                        let final_path = directory.join(name);
+                        if index != missing {
+                            fs::write(&temporary, format!("new-{name}"))
+                                .expect("stage new artifact");
+                        }
+                        if previous_generation {
+                            fs::write(&final_path, format!("old-{name}"))
+                                .expect("write old artifact");
+                        }
+                        (temporary, final_path)
+                    })
+                    .collect::<Vec<_>>();
+                let publications = paths
+                    .iter()
+                    .map(|(temporary, final_path)| (temporary.as_path(), final_path.as_path()))
+                    .collect::<Vec<_>>();
+                let obsolete = directory.join("obsolete-remap");
+                fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
 
-        let obsolete = directory.join("obsolete-remap");
-        fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
-
-        assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
-        for (name, (_, final_path)) in names.iter().zip(&paths) {
-            assert_eq!(
-                fs::read_to_string(final_path).expect("restored old artifact"),
-                format!("old-{name}")
-            );
+                assert!(publish_artifacts(&publications, &[&obsolete]).is_err());
+                for (name, (temporary, final_path)) in names.iter().zip(&paths) {
+                    if previous_generation {
+                        assert_eq!(
+                            fs::read_to_string(final_path).expect("restored old artifact"),
+                            format!("old-{name}")
+                        );
+                    } else {
+                        assert!(!final_path.exists(), "partial new artifact {name}");
+                    }
+                    // The caller owns cleanup of staged files not consumed by publication.
+                    let _ = fs::remove_file(temporary);
+                }
+                assert_eq!(
+                    fs::read_to_string(&obsolete).expect("restored obsolete remap"),
+                    "old-obsolete-remap"
+                );
+                assert!(fs::read_dir(&directory)
+                    .expect("read test directory")
+                    .all(|entry| {
+                        let name = entry.expect("directory entry").file_name();
+                        let name = name.to_string_lossy();
+                        !name.contains("earthmesh-backup") && !name.contains("cmrc-tmp")
+                    }));
+                fs::remove_dir_all(directory).expect("clean publication test directory");
+            }
         }
-        assert_eq!(
-            fs::read_to_string(&obsolete).expect("restored obsolete remap"),
-            "old-obsolete-remap"
-        );
-        assert!(fs::read_dir(&directory)
-            .expect("read test directory")
-            .all(|entry| !entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .contains("cmrc-backup")));
-        fs::remove_dir_all(directory).expect("clean publication test directory");
     }
 
     #[test]
@@ -5944,11 +5737,7 @@ mod tests {
     }
 
     #[test]
-    fn harp_uses_its_transactional_repair_instead_of_the_generic_spring() {
-        assert_eq!(
-            effective_refinement_spring_iterations(RefineBackend::HarpDv, 2_000),
-            0
-        );
+    fn only_certified_disables_the_generic_spring() {
         assert_eq!(
             effective_refinement_spring_iterations(RefineBackend::RedGreen, 2_000),
             2_000
@@ -5987,43 +5776,6 @@ mod tests {
             })
             .collect::<BTreeSet<_>>();
         assert!(segments.iter().all(|edge| mesh_edges.contains(&edge)));
-    }
-
-    #[test]
-    fn harp_rejects_invalid_polygon_geometry_before_refinement() {
-        let crossing = earthmesh_mesh::RefinementRegion::Polygon {
-            points: vec![
-                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
-            ],
-            level: 1,
-        };
-        let error = match harp_region_boundaries(&[crossing]) {
-            Ok(_) => panic!("self-intersecting HARP polygon must fail"),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("crosses itself"));
-
-        let valid = earthmesh_mesh::RefinementRegion::Polygon {
-            points: vec![
-                earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 0.0),
-                earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
-                earthmesh_mesh::LonLatDegrees::new(0.0, 10.0),
-            ],
-            level: 1,
-        };
-        let compiled = harp_region_boundaries(&[valid]).expect("valid polygon");
-        assert!(harp_region_contains(
-            &compiled[0],
-            earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(
-                5.0, 5.0
-            )),
-            earthmesh_core::EARTH_RADIUS_METERS,
-        ));
     }
 
     #[test]

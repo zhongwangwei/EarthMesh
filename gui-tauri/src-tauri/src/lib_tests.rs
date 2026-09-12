@@ -1,8 +1,8 @@
 use super::*;
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseBoundaryMode, CoupledMeshConfig, DomainConfig, HydroCoastConfig,
-    MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig, ProjectDataLayer,
-    ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
+    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, CoupledMeshConfig, DomainConfig,
+    HydroCoastConfig, MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig,
+    ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG,
     INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
 };
@@ -132,7 +132,7 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/4'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
@@ -143,21 +143,21 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     assert!(!engine::engine_candidate_is_compatible(&stub));
     assert!(engine::engine_candidate_is_compatible(&compatible));
     // Matching package versions are insufficient: the old sidecar cannot parse
-    // sea_ratio even though it reports the same alpha version as the new GUI.
+    // the CoLM delivery schema even though it reports the same alpha version as the new GUI.
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
     .unwrap();
     match engine::inspect_engine_candidate(&compatible) {
         engine::EngineCandidate::Unusable(reason) => {
-            assert!(reason.contains("earthmesh-studio-engine/2"));
+            assert!(reason.contains("earthmesh-studio-engine/4"));
             assert!(reason.contains("earthmesh-studio-engine/3"));
         }
-        _ => panic!("same-version sidecar without sea_ratio support must be rejected"),
+        _ => panic!("same-version sidecar without CoLM delivery schema support must be rejected"),
     }
     let _ = fs::remove_dir_all(root);
 }
@@ -494,6 +494,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
         path: "fixtures/refine.txt".to_string(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "fixtures/threshold-region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
     cfg.hydro_coast = Some(HydroCoastConfig {
         merit_root: "fixtures/merit".to_string(),
         cama_root: Some("fixtures/hydro-cama".to_string()),
@@ -529,6 +534,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
     };
     assert!(Path::new(path).is_absolute());
     assert!(Path::new(&cfg.refinement.specified_close.unwrap().path).is_absolute());
+    let Some(RegionShape::Close { path, .. }) = &cfg.refinement.threshold_region else {
+        panic!("close threshold region");
+    };
+    assert!(Path::new(path).is_absolute());
+    assert!(Path::new(path).ends_with("fixtures/threshold-region.nml"));
     let hydro = cfg.hydro_coast.unwrap();
     assert!(Path::new(&hydro.merit_root).is_absolute());
     assert!(Path::new(hydro.cama_root.as_deref().unwrap()).is_absolute());
@@ -605,6 +615,9 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         path: absolute_missing.to_string_lossy().into_owned(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Shapefile {
+        path: "threshold/region.shp".to_string(),
+    });
     let project_path = project_dir.join("project.yaml");
     fs::write(&project_path, cfg.to_yaml().unwrap()).unwrap();
 
@@ -618,6 +631,10 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         Path::new(&opened_cfg.refinement.specified_close.unwrap().path),
         absolute_missing
     );
+    let Some(RegionShape::Shapefile { path }) = &opened_cfg.refinement.threshold_region else {
+        panic!("shapefile threshold region");
+    };
+    assert_eq!(Path::new(path), project_dir.join("threshold/region.shp"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -859,7 +876,6 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);
     assert_eq!(capabilities.method_c_defaults, Default::default());
-    assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(capabilities.certified_defaults, Default::default());
     assert_eq!(
         capabilities.certified_defaults.mode,
@@ -1203,6 +1219,48 @@ fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
 }
 
 #[test]
+fn colm_mesh_delivery_defaults_off_and_setter_persists() {
+    let yaml = preset_yaml("colm_mesh_delivery", MeshIntentPreset::Custom);
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+
+    let yaml = set_colm_mesh_delivery(yaml, true, Some(240)).expect("enable colm mesh");
+    let summary = project_summary(yaml.clone()).expect("summary enabled");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(240));
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+
+    let yaml = set_colm_mesh_delivery(yaml, false, None).expect("disable colm mesh");
+    let summary = project_summary(yaml).expect("summary disabled");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_preserved_and_rejected_for_non_colm_targets() {
+    let base = set_colm_mesh_delivery(
+        preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom),
+        true,
+        Some(120),
+    )
+    .expect("base colm delivery");
+    let edited = preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom);
+    let preserved =
+        preserve_unexposed_project_fields(base.clone(), edited, false).expect("preserve delivery");
+    let summary = project_summary(preserved).expect("summary");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(120));
+
+    let non_colm = set_project_target(base, "ocean".to_string(), "FVCOM".to_string())
+        .expect("switching away from CoLM clears delivery");
+    let summary = project_summary(non_colm).expect("non-colm summary");
+    assert_eq!(summary.model_format, "FVCOM");
+    assert!(!summary.colm_mesh_enabled);
+}
+
+#[test]
 fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_state() {
     let yaml = preset_yaml("migration_base", MeshIntentPreset::MeritHydroCoast);
     let yaml = set_domain_bbox(yaml, 108.0, 120.0, 18.0, 26.0, None).unwrap();
@@ -1223,6 +1281,12 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
             enabled: false,
             value: Some(3.5),
         });
+    base.refinement.threshold_region = Some(RegionShape::Close {
+        path: "/data/hidden_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    base.refinement.threshold_enabled = false;
     base.quality.min_angle_deg = 31.0;
     base.validate().expect("valid migration base");
 
@@ -1245,6 +1309,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         migrated.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        migrated.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!migrated.refinement.threshold_enabled);
     assert!(migrated
         .data_layers
         .iter()
@@ -1277,6 +1346,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         compatible.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        compatible.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!compatible.refinement.threshold_enabled);
     assert_eq!(compatible.target.kind, MeshDomainKind::Coupled);
     assert_eq!(compatible.target.model_format, ModelFormat::CoLM);
 }
@@ -2274,6 +2348,268 @@ fn preserve_unexposed_project_fields_keeps_supported_hidden_opened_config() {
         .iter()
         .any(|layer| layer.id == "custom_threshold"));
 }
+
+fn active_threshold_region_opened_yaml(name: &str) -> String {
+    let yaml = set_layer_path(
+        hydrology_yaml(name),
+        "lai".to_string(),
+        "/opened/lai.nc".to_string(),
+        true,
+    )
+    .expect("opened LAI threshold source");
+    let yaml = set_threshold_criterion(yaml, "lai_std".to_string(), true, Some(7.5))
+        .expect("opened LAI std criterion");
+    let mut cfg = ProjectConfig::from_yaml(&yaml).expect("opened threshold project");
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/active_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    let yaml = cfg.to_yaml().expect("dormant threshold region yaml");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("opened CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("opened active threshold region");
+    ProjectConfig::from_yaml(&yaml)
+        .expect("active threshold region base")
+        .to_yaml()
+        .expect("active threshold region yaml")
+}
+
+fn preserved_active_threshold_region_compose_base(name: &str) -> String {
+    let opened_yaml = active_threshold_region_opened_yaml(name);
+    let scaffold = ProjectConfig::scaffold(
+        name,
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: 108.0,
+                e: 120.0,
+                s: 18.0,
+                n: 26.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(40),
+    );
+    let yaml = preserve_unexposed_project_fields(
+        opened_yaml,
+        scaffold.to_yaml().expect("scaffold yaml"),
+        false,
+    )
+    .expect("preserve active threshold region while dormant");
+    set_layer_path(yaml, "lai".to_string(), "/opened/lai.nc".to_string(), true)
+        .expect("replay visible LAI source")
+}
+
+#[test]
+fn active_threshold_region_replays_through_cmrc_backend_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_cmrc_replay");
+    assert!(
+        set_refinement(yaml.clone(), true, true, 1).is_err(),
+        "the former enable-before-route order must not bypass admission"
+    );
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("h-field off");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::Certified
+    );
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+    assert!(cfg
+        .refinement
+        .threshold_criteria
+        .iter()
+        .any(|criterion| criterion.id == "lai_std" && criterion.enabled));
+}
+
+#[test]
+fn active_threshold_region_replays_through_canonical_method_c_hfield_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_hfield_replay");
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, true, Some(0.25), Some(4), Some(10_000.0))
+        .expect("h-field route before activation");
+    let yaml = set_refinement_backend(yaml, "method_c".to_string()).expect("canonical Method-C");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::MethodC
+    );
+    assert_eq!(
+        cfg.refinement.method_c.algorithm,
+        earthmesh_project::MethodCAlgorithm::Canonical
+    );
+    assert!(cfg
+        .refinement
+        .hfield
+        .as_ref()
+        .is_some_and(|hfield| hfield.enabled));
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+}
+
+#[test]
+fn active_threshold_region_replays_through_adaptive_backends_before_enable() {
+    for (name, backend, expected_backend, expected_algorithm) in [
+        (
+            "red_green",
+            "red_green",
+            earthmesh_project::RefinementBackend::RedGreen,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
+        (
+            "lepp_delaunay",
+            "lepp_delaunay",
+            earthmesh_project::RefinementBackend::MethodC,
+            earthmesh_project::MethodCAlgorithm::LeppDelaunay,
+        ),
+    ] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{name}_adaptive_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, true, Some(2), Some(true))
+            .unwrap_or_else(|error| panic!("{name}: adaptive route before activation: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{name}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{name}: backend before activation: {error}"));
+        let yaml = set_refinement(yaml, true, true, 1)
+            .unwrap_or_else(|error| panic!("{name}: activate threshold region: {error}"));
+        let saved = validate_project(yaml)
+            .unwrap_or_else(|error| panic!("{name}: canonical save serialization: {error}"));
+        let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+        assert_eq!(cfg.refinement.backend, expected_backend, "{name}");
+        assert_eq!(
+            cfg.refinement.method_c.algorithm, expected_algorithm,
+            "{name}"
+        );
+        assert!(
+            cfg.refinement
+                .adaptive
+                .as_ref()
+                .is_some_and(|adaptive| adaptive.enabled),
+            "{name}: adaptive route should remain enabled"
+        );
+        assert!(
+            cfg.refinement
+                .hfield
+                .as_ref()
+                .is_none_or(|hfield| !hfield.enabled),
+            "{name}: h-field must stay inactive for adaptive replay"
+        );
+        assert!(cfg.refinement.enabled, "{name}");
+        assert!(cfg.refinement.threshold_enabled, "{name}");
+        assert!(matches!(
+            cfg.refinement.threshold_region,
+            Some(RegionShape::Close { .. })
+        ));
+    }
+}
+
+#[test]
+fn active_threshold_region_rejects_adaptive_backends_when_adaptive_is_off() {
+    for backend in ["red_green", "lepp_delaunay"] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{backend}_adaptive_off_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, false, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: adaptive off replay: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{backend}: backend before activation: {error}"));
+        let error = set_refinement(yaml, true, true, 1)
+            .expect_err("activation must reject adaptive backend with adaptive off");
+
+        assert!(
+            error.contains("refinement.threshold_region"),
+            "{backend}: {error}"
+        );
+        assert!(error.contains("adaptive"), "{backend}: {error}");
+    }
+}
+
+#[test]
+fn dormant_threshold_region_survives_gui_compose_visible_edit_and_save() {
+    let mut opened = circle_project("hidden_threshold_region_roundtrip");
+    opened.refinement.threshold_enabled = false;
+    opened.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    opened
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "lai_std".to_string(),
+            enabled: false,
+            value: Some(1.25),
+        });
+    opened.expert.openmp = Some(2);
+    opened
+        .validate()
+        .expect("dormant threshold region is valid");
+
+    let visible_edit = set_domain_bbox(
+        ProjectConfig::scaffold(
+            "hidden_threshold_region_roundtrip",
+            opened.target.intent,
+            opened.domain.clone(),
+            opened.target.resolution,
+        )
+        .to_yaml()
+        .unwrap(),
+        108.0,
+        120.0,
+        18.0,
+        26.0,
+        None,
+    )
+    .expect("visible bbox edit");
+    let composed =
+        preserve_unexposed_project_fields(opened.to_yaml().unwrap(), visible_edit, false)
+            .expect("compose preserves hidden threshold region");
+    let recomposed = set_refinement(composed, false, false, 0).expect("visible refinement edit");
+    let saved = validate_project(recomposed).expect("canonical save serialization");
+    let reopened = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        reopened.refinement.threshold_region,
+        opened.refinement.threshold_region
+    );
+    assert!(!reopened.refinement.threshold_enabled);
+    assert_eq!(
+        reopened.refinement.threshold_criteria,
+        opened.refinement.threshold_criteria
+    );
+    assert_eq!(reopened.expert.openmp, Some(2));
+    let DomainConfig::Regional {
+        shape: RegionShape::Bbox { w, e, s, n },
+        ..
+    } = reopened.domain
+    else {
+        panic!("visible bbox edit must win over hidden opened circle");
+    };
+    assert_eq!((w, e, s, n), (108.0, 120.0, 18.0, 26.0));
+}
+
 #[test]
 fn preserve_unexposed_project_fields_keeps_user_bbox_edit_over_hidden_circle() {
     let base = circle_project("opened");
@@ -3284,12 +3620,7 @@ fn the_summary_says_what_a_target_and_model_pairing_delivers() {
     assert_eq!(summary.delivery_status, "full");
 }
 
-/// The GUI can select every mesh-refinement algorithm the engine has.
-///
-/// It could not: `set_refinement_backend` knew `method_c` and `red_green`, and
-/// `RefinementBackend` had no HARP-DV variant at all, so the third backend was
-/// unreachable from a project file or the interface. The engine had shipped it
-/// and nothing above the CLI could ask for it.
+/// The GUI can select every retained mesh-refinement algorithm.
 #[test]
 fn every_refinement_algorithm_is_selectable_from_a_project() {
     let base = circle_project("backend selection").to_yaml().expect("yaml");
@@ -3307,11 +3638,6 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
         (
             "red_green",
             earthmesh_project::RefinementBackend::RedGreen,
-            earthmesh_project::MethodCAlgorithm::Canonical,
-        ),
-        (
-            "harp_dv",
-            earthmesh_project::RefinementBackend::HarpDv,
             earthmesh_project::MethodCAlgorithm::Canonical,
         ),
         (
@@ -3333,17 +3659,28 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
             name
         );
     }
+    let error = crate::project_edits::set_refinement_backend(base, "not_a_backend".to_string())
+        .expect_err("an unknown name is not a backend");
+    assert!(error.contains("unknown refinement algorithm"));
+    assert!(error.contains("certified"));
+}
 
-    let error = crate::project_edits::set_refinement_backend(base, "harpdv".to_string())
-        .expect_err("a typo is not a backend");
-    assert!(
-        error.contains("harp_dv"),
-        "the message should list it: {error}"
-    );
-    assert!(
-        error.contains("certified"),
-        "the message should list it: {error}"
-    );
+#[test]
+fn retired_harp_backend_cannot_be_selected_or_restored() {
+    let base = circle_project("retired backend").to_yaml().expect("yaml");
+    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
+        let error = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
+            .expect_err("retired backend must not silently select another algorithm");
+        assert!(error.contains("retired"), "{name}: {error}");
+    }
+    let capabilities = serde_json::to_value(project_capabilities()).unwrap();
+    assert!(capabilities.get("harp_dv_defaults").is_none());
+    let summary = serde_json::to_value(project_summary(base).unwrap()).unwrap();
+    assert!(summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|name| !name.starts_with("harp_dv")));
 }
 
 #[test]
@@ -3368,24 +3705,6 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.method_c_lepp_maximum_path_length, 700);
     assert!(!summary.method_c_lepp_stop_at_source_resolution);
     assert_eq!(summary.method_c_lepp_minimum_triangle_angle_deg, 20.0);
-
-    let harp = crate::project_edits::set_refinement_backend(base, "harp_dv".to_string())
-        .expect("HARP-DV algorithm");
-    let harp = crate::project_edits::set_harp_dv_options(
-        harp, 4, 2_000.0, 10_000, 900, 1.5, 2.0, 6, 25.0, 10.0,
-    )
-    .expect("HARP-DV options");
-    let summary = project_summary(harp).expect("HARP-DV summary");
-    assert_eq!(summary.refinement_algorithm, "harp_dv");
-    assert_eq!(summary.harp_dv_max_cycles, 4);
-    assert_eq!(summary.harp_dv_minimum_cell_width_m, 2_000.0);
-    assert_eq!(summary.harp_dv_maximum_cells, 10_000);
-    assert_eq!(summary.harp_dv_maximum_patch_cells, 900);
-    assert_eq!(summary.harp_dv_maximum_neighbor_scale_ratio, 1.5);
-    assert_eq!(summary.harp_dv_minimum_candidate_separation_m, 2.0);
-    assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
-    assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
-    assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
 }
 
 #[test]

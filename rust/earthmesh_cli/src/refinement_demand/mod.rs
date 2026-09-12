@@ -1,50 +1,9 @@
-//! Where refinement is wanted, and how that becomes Method-C regions.
+//! Shared per-level statistical demand and its source-index/circle adapter.
 //!
-//! Every criterion asks the same question of every source-raster cell: does
-//! this cell need a finer mesh? A coastline asks it of a land/sea class map,
-//! sea surface temperature of an SST field, land-cover of a category count,
-//! and bathymetry will ask it of a depth field. The answer is always a boolean
-//! raster, and reducing such a raster to circles does not depend on which
-//! criterion produced it.
-//!
-//! So the two halves live apart. Producers ([`landtype`], [`threshold`]) turn a
-//! data source into a [`RefinementDemand`]; [`reduce_demand_to_circles`] turns
-//! any demand into circles. Adding a criterion means adding a producer, not
-//! touching the reduction.
-//!
-//! The h-field is the other consumer of the same input: it takes the union of
-//! criteria and gradient-limits it into a continuous `h(x)`, where this takes
-//! the union and covers it with circles. Both start from demand, which is why
-//! they can be compared on the same criterion.
-//!
-//! # Where this comes from
-//!
-//! Points-plus-a-radius is not a representation invented here. Walko & Avissar
-//! (2011) give it as OLAM's own way of naming a refined area -- "a sequence of
-//! points plus a radius of influence" -- in the same paper that defines the
-//! conforming subdivision and transition rows this engine implements as
-//! Method-C. Deriving those points from data criteria rather than from a user
-//! is Fan et al. (2024). What is added here is asking the criteria again after
-//! each level, at the size of the cells that level just made.
-//!
-//! That last part is the regrid loop of structured AMR (Berger & Oliger 1984)
-//! with a different reason behind it: AMR re-evaluates because the solution
-//! moves, this re-evaluates because the answer depends on the cell. "How many
-//! land-cover classes are in this cell" cannot be asked before the cell exists,
-//! and its answer changes once the cell is halved -- which is precisely what a
-//! single up-front field has no way to express.
-//!
-//! - Walko, R. L., & Avissar, R. (2011). A direct method for constructing
-//!   refined regions in unstructured conforming triangular-hexagonal
-//!   computational grids: Application to OLAM. Monthly Weather Review 139(12),
-//!   3923-3937. doi:10.1175/MWR-D-11-00021.1
-//! - Fan, H., Xu, Q., Bai, F., Wei, Z., Zhang, Y., Lu, X., et al. (2024). An
-//!   unstructured mesh generation tool for efficient high-resolution
-//!   representation of spatial heterogeneity in land surface models.
-//!   Geophysical Research Letters 51(6). doi:10.1029/2023GL107059
-//! - Berger, M. J., & Oliger, J. (1984). Adaptive mesh refinement for
-//!   hyperbolic partial differential equations. Journal of Computational
-//!   Physics 53(3), 484-512. doi:10.1016/0021-9991(84)90073-1
+//! `threshold_support` reads original data into parent-scale angular supports;
+//! both this planner and HField consume its decisions without recomputing them.
+//! Geometric coastline demand and low-level legacy producers remain separate.
+//! Circle materialization is an adapter constraint, not a different statistic.
 
 pub mod cell_stats;
 mod class_counts;
@@ -53,6 +12,7 @@ pub mod landtype;
 pub mod nest;
 pub mod plan;
 pub mod threshold;
+pub(crate) mod threshold_support;
 
 use std::io;
 

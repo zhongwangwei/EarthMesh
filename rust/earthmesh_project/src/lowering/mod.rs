@@ -1,9 +1,8 @@
 use crate::{
     criterion_catalog, degree_to_nxp, km_to_nxp, AdaptiveRefinementRecipe,
-    CertifiedRefinementRecipe, DomainConfig, GeometryIr, HarpDvRefinementRecipe,
-    HfieldRefinementRecipe, MethodCAlgorithm, MethodCRefinementRecipe, ProjectConfig,
-    ProjectLayerRole, RegionShape, ResolutionSpec, ThresholdField, ThresholdStatistic,
-    ViolationPolicy,
+    CertifiedRefinementRecipe, DomainConfig, GeometryIr, HfieldRefinementRecipe, MethodCAlgorithm,
+    MethodCRefinementRecipe, ProjectConfig, ProjectLayerRole, RegionShape, ResolutionSpec,
+    ThresholdField, ThresholdStatistic, ViolationPolicy,
 };
 use earthmesh_core::{
     DataLayerConfig, DataLayerRole, DataLayersNamelist, EarthmeshConfig, QualityNamelist,
@@ -21,8 +20,6 @@ pub struct LoweredProject {
     pub backend: crate::RefinementBackend,
     /// Method-C's internal algorithm and bounded LEPP settings.
     pub method_c: MethodCRefinementRecipe,
-    /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
-    pub harp_dv: HarpDvRefinementRecipe,
     /// CMRC delivery mode and strict resource/search bounds.
     pub certified: CertifiedRefinementRecipe,
     /// Emitted as a standalone `&adaptive` group when enabled.
@@ -102,21 +99,6 @@ impl LoweredProject {
         } else {
             String::new()
         };
-        let harp_dv = if self.mkgrd.refine && self.backend == crate::RefinementBackend::HarpDv {
-            format!(
-                "&harp_dv\n   NL%max_cycles = {}\n   NL%minimum_cell_width_m = {}\n   NL%maximum_cells = {}\n   NL%maximum_patch_cells = {}\n   NL%maximum_neighbor_scale_ratio = {}\n   NL%minimum_candidate_separation_m = {}\n   NL%maximum_vertex_degree = {}\n   NL%minimum_triangle_angle_deg = {}\n/\n\n",
-                self.harp_dv.max_cycles,
-                self.harp_dv.minimum_cell_width_m,
-                self.harp_dv.maximum_cells,
-                self.harp_dv.maximum_patch_cells,
-                self.harp_dv.maximum_neighbor_scale_ratio,
-                self.harp_dv.minimum_candidate_separation_m,
-                self.harp_dv.maximum_vertex_degree,
-                self.harp_dv.minimum_triangle_angle_deg,
-            )
-        } else {
-            String::new()
-        };
         let certified = if self.mkgrd.refine && self.backend == crate::RefinementBackend::Certified
         {
             format!(
@@ -143,11 +125,10 @@ impl LoweredProject {
             String::new()
         };
         format!(
-            "{}\n{}{}{}{}{}{}{}\n{}",
+            "{}\n{}{}{}{}{}{}\n{}",
             self.mkgrd.to_mkgrd_namelist(),
             mkrefine,
             method_c,
-            harp_dv,
             certified,
             adaptive,
             hfield,
@@ -320,6 +301,23 @@ impl ProjectConfig {
         lowering_layers.lower_into(&mut mkgrd, &mut refine);
         if self.refinement.enabled && self.refinement.threshold_enabled {
             apply_threshold_values(&mut refine, self);
+            if let Some(shape) = &self.refinement.threshold_region {
+                // File imports and primitives are staged as evaluation-only
+                // masks by the CLI; these are never specified/hard demands.
+                let (kind, source) = match shape {
+                    RegionShape::Bbox { w, e, s, n } => ("bbox", bbox_geometry(*w, *e, *s, *n)?),
+                    RegionShape::Circle {
+                        lon,
+                        lat,
+                        radius_km,
+                    } => ("circle", circle_geometry(*lon, *lat, *radius_km)?),
+                    RegionShape::Shapefile { path } | RegionShape::Close { path, .. } => {
+                        ("close", path.clone())
+                    }
+                };
+                refine.mask_refine_cal_type = kind.into();
+                refine.mask_refine_cal_fprefix = source;
+            }
         }
         // Refinement runs only when a real source supplies data. LandType mask
         // availability is independent from its explicit categorical criterion.
@@ -422,10 +420,7 @@ impl ProjectConfig {
                 .spring_regional_type
                 .unwrap_or(refine.spring_regional_type);
         }
-        if matches!(
-            self.refinement.backend,
-            crate::RefinementBackend::HarpDv | crate::RefinementBackend::Certified
-        ) {
+        if matches!(self.refinement.backend, crate::RefinementBackend::Certified) {
             // These backends certify their own transactional geometry; the
             // fixed-topology generic spring would invalidate that certificate.
             refine.spring_global_type = 0;
@@ -436,9 +431,6 @@ impl ProjectConfig {
         }
         if let Some(enabled) = self.expert.weak_concav_eliminate {
             refine.weak_concav_eliminate = enabled;
-        }
-        if self.refinement.backend == crate::RefinementBackend::HarpDv {
-            refine.harp_min_angle_deg = self.refinement.harp_dv.criterion_minimum_angle_deg;
         }
         if let Some(beta) = self.expert.beta {
             mkgrd.beta = beta;
@@ -462,7 +454,6 @@ impl ProjectConfig {
         mkgrd.refine_backend = match backend {
             crate::RefinementBackend::MethodC => "method_c",
             crate::RefinementBackend::RedGreen => "red_green",
-            crate::RefinementBackend::HarpDv => "harp_dv",
             crate::RefinementBackend::Certified => "certified",
         }
         .to_string();
@@ -520,7 +511,6 @@ impl ProjectConfig {
             refine,
             backend,
             method_c: self.refinement.method_c.clone(),
-            harp_dv: self.refinement.harp_dv.clone(),
             certified: self.refinement.certified.clone(),
             adaptive,
             hfield,

@@ -506,8 +506,11 @@ pub(super) fn solve_component_transaction_at_level(
                 .topology_states
                 .saturating_sub(candidate_topology_states);
             halo_expansion_offset = counters.halo_expansions;
-            search_component.core_parents = transition.candidate.core_parents.clone();
-            search_component.transition_parents = transition.boundary.halo_parents.clone();
+            sync_search_component_partition(
+                &mut search_component,
+                transition.candidate.core_parents.clone(),
+                transition.boundary.halo_parents.clone(),
+            );
         }
         let exact_core_candidate = transition.candidate.custom_transition_triangles.is_empty();
         let mut candidate_state = state.clone();
@@ -1037,6 +1040,22 @@ fn remap_transition_trial(
     Ok(trial)
 }
 
+fn sync_search_component_partition(
+    component: &mut HierarchyComponent,
+    core_parents: Vec<TriangleAddress>,
+    transition_parents: Vec<TriangleAddress>,
+) {
+    component.parents = core_parents
+        .iter()
+        .chain(&transition_parents)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    component.core_parents = core_parents;
+    component.transition_parents = transition_parents;
+}
+
 fn guard_face_suffix(failed_guard_face: Option<usize>) -> String {
     failed_guard_face
         .map(|face| format!("; failed guard face {face}"))
@@ -1555,6 +1574,69 @@ mod tests {
             .mesh
             .active_vertex_slots()
             .all(|site| slots[site].is_some()));
+    }
+
+    #[test]
+    fn cached_component_partition_tracks_layout_changed_retry() {
+        let source = MotherGrid::generate(4).unwrap();
+        let (core, transition) = source
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .filter_map(|address| address.parent_2_to_1())
+            .find_map(|parent| {
+                hierarchy_parent_neighbours(&source, parent)
+                    .ok()
+                    .and_then(|neighbours| {
+                        neighbours
+                            .into_iter()
+                            .next()
+                            .map(|neighbour| (parent, neighbour))
+                    })
+            })
+            .unwrap();
+        let limits = TransitionTopologyLimits {
+            topology_states: 8,
+            maximum_halo_expansions: 0,
+        };
+        let mut search_component = HierarchyComponent {
+            id: 7,
+            parents: vec![core, transition],
+            boundary_edges: Vec::new(),
+            core_parents: vec![core],
+            transition_parents: vec![transition],
+        };
+        assert_eq!(
+            search_component
+                .parents
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            search_component
+                .core_parents
+                .iter()
+                .chain(&search_component.transition_parents)
+                .copied()
+                .collect::<BTreeSet<_>>()
+        );
+
+        let mut stale_after_layout_shrink = search_component.clone();
+        stale_after_layout_shrink.transition_parents.clear();
+        assert!(matches!(
+            limits.solve_from_cursor_with_promotion(&source, &stale_after_layout_shrink, 0, None),
+            TransitionTopologyOutcome::InvalidBoundary { reason, .. }
+                if reason == "component parents must equal core union transition parents"
+        ));
+
+        sync_search_component_partition(&mut search_component, vec![core], Vec::new());
+        assert_eq!(search_component.parents, vec![core]);
+        assert!(matches!(
+            limits.solve_from_cursor_with_promotion(&source, &search_component, 0, None),
+            TransitionTopologyOutcome::RequiresWiderHalo {
+                states_examined: 0,
+                halo_expansions: 0,
+            }
+        ));
     }
 
     #[test]

@@ -170,6 +170,24 @@ pub(super) fn trim_mpas_inserted_placeholder_rows(
     }
 }
 
+pub(super) fn normalized_mpas_output_trim_counts(mesh: &UnstructuredMesh) -> (usize, usize) {
+    // Keep one internal row for the MPAS writer to drop. Both explicit dummy
+    // rows and rows inserted during normalization obey the same rule.
+    let cells = crate::unstructured_mesh_support::unstructured_w_row_layout(mesh)
+        .first_physical_row
+        .saturating_sub(1);
+    let triangles = usize::from((0..2).all(|row| {
+        mesh.m_points
+            .get(row)
+            .is_some_and(|point| point.lon == 0.0 && point.lat == 0.0)
+            && mesh
+                .m_to_w
+                .get(row)
+                .is_some_and(|ids| ids.windows(2).all(|pair| pair[0] == pair[1]))
+    }));
+    (cells, triangles)
+}
+
 fn drain_prefix<T>(values: &mut Vec<T>, count: usize) {
     values.drain(0..count);
 }

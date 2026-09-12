@@ -60,7 +60,7 @@ fn studio_protocol_probe_is_stable_and_side_effect_free() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "earthmesh-studio-engine/3"
+        "earthmesh-studio-engine/4"
     );
     assert!(!cwd.join("run_manifest.json").exists());
     let _ = std::fs::remove_dir_all(cwd);

@@ -1,3 +1,5 @@
+mod support;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -71,14 +73,15 @@ fn cli_lepp_post_quality_writes_separate_artifacts_without_replacing_canonical_g
         "&quality\n  NL%lepp_post_quality=.true.\n  NL%lepp_post_quality_max_insertions=1\n  NL%lepp_post_quality_max_edge_km=1300.0\n/",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("20000")
-        .arg("--run-refine-passthrough")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("20000")
+            .arg("--run-refine-passthrough")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -148,14 +151,15 @@ fn cli_lepp_post_quality_rejects_non_method_c_backend() {
         "&quality\n  NL%lepp_post_quality=.true.\n  NL%lepp_post_quality_max_insertions=1\n  NL%lepp_post_quality_max_edge_km=1300.0\n/",
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("20000")
-        .arg("--run-refine-passthrough")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("20000")
+            .arg("--run-refine-passthrough")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -177,14 +181,15 @@ fn cli_lepp_adaptive_hybrid_is_the_selected_method_c_production_path() {
         "method_c",
         "&method_c\n  NL%algorithm='lepp_delaunay'\n  NL%max_cycles=1\n  NL%maximum_insertions_per_cycle=1\n  NL%maximum_neighbor_size_ratio=10.0\n/",
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("20000")
-        .arg("--run-refine-passthrough")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("20000")
+            .arg("--run-refine-passthrough")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

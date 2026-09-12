@@ -70,6 +70,7 @@ pub(crate) fn read_method_c_close_refinement_regions(
 pub(crate) fn read_method_c_calculated_close_refinement_regions(
     source: &Path,
     max_level: usize,
+    zero_is_threshold_domain: bool,
     regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
@@ -80,7 +81,9 @@ pub(crate) fn read_method_c_calculated_close_refinement_regions(
     let Some(mask) = mask else {
         return Ok(());
     };
-    let Some(level) = method_c_calculated_region_level(mask.refine_degree, max_level) else {
+    let Some(level) =
+        method_c_calculated_region_level(mask.refine_degree, max_level, zero_is_threshold_domain)
+    else {
         return Ok(());
     };
     regions.push(RefinementRegion::Polygon {
@@ -161,7 +164,7 @@ fn method_c_geometry_points_for_canonical_ngrdll(points: &[GeometryPoint]) -> Ve
 /// a level-2 region must sit inside a level-1 one, or its perimeter has no
 /// ground to transition through, and `method_c_spawn_internal` refuses the pass
 /// by name -- `pass 2 polygon regions require explicit parent-level halo`.
-/// Measured before this: the same mask that red-green and HARP-DV both served
+/// Measured before this: the same mask that red-green served
 /// stopped Method-C, which is the default backend.
 ///
 /// # Growing a ring

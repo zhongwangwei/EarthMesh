@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -102,18 +104,21 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
             "refinement:\n",
             "refinement:\n  hfield:\n    enabled: true\n",
         );
+    // Isolate quality selection from the pending regional/refined MPAS context.
+    let project = project.replace("model_format: Mpas", "model_format: CoLM");
     fs::write(&project_path, project).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project AutoRefine CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project AutoRefine CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -233,7 +238,7 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
 }
 
 #[test]
-fn project_block_quality_includes_hfield_gates() {
+fn project_block_quality_delivers_regional_hfield_mpas_after_admission() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -250,19 +255,54 @@ fn project_block_quality_includes_hfield_gates() {
         .replace("on_violation: AutoRefine", "on_violation: Block");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project Block CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project Block CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stderr:\n{stderr}");
+    assert!(output.status.success(), "regional HField MPAS: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("project_final_quality="),
+        "final admission must precede delivery"
+    );
+    let field = |prefix: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("missing {prefix}: {stdout}"))
+    };
+    assert!(
+        stdout.find("project_final_quality=").unwrap() < stdout.find("mpas_mesh_input=").unwrap()
+    );
+    assert!(Path::new(field("mpas_parent_gridfile=")).is_file());
+    assert!(Path::new(field("mpas_graph_info=")).is_file());
+    let mpas = netcdf::open(field("mpas_mesh_input=")).unwrap();
+    assert_eq!(
+        mpas.attribute("earthmesh_mpas_cellwidth_source")
+            .unwrap()
+            .value()
+            .unwrap(),
+        netcdf::AttributeValue::Str("method_c_hfield_quantized_w_demand_v1".into())
+    );
+    let density = mpas
+        .variable("meshDensity")
+        .unwrap()
+        .get_values::<f64, _>(..)
+        .unwrap();
+    assert!(!density.is_empty());
+    assert!(density
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0));
+    drop(mpas);
     let mut quality_reports = Vec::new();
     find_named(&root, "quality_summary.json", &mut quality_reports);
     let quality = fs::read_to_string(
@@ -299,19 +339,22 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
         )
         .replace("  niter: 1", "  niter: 20")
         .replace("  niter_refine: 1", "  niter_refine: 20");
+    // Isolate quality selection from the pending regional/refined MPAS context.
+    let project = project.replace("model_format: Mpas", "model_format: CoLM");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project AutoRefine rejection CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project AutoRefine rejection CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -349,6 +392,15 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
     let selected_gridfile = json_string(&decision, "selected_gridfile");
     assert_eq!(selected_gridfile, baseline_gridfile);
     assert_ne!(selected_gridfile, candidate_gridfile);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let final_report = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("project_final_quality="))
+        .expect("selected final admission report");
+    let final_quality = fs::read_to_string(final_report).unwrap();
+    assert_eq!(json_string(&final_quality, "mesh_name"), selected_gridfile);
+    assert!(final_quality.contains("final_mesh_admission"));
+
     for path in [&baseline_gridfile, &candidate_gridfile, &selected_gridfile] {
         assert!(
             root.join(path).is_file(),
@@ -404,11 +456,12 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
         .replace("expert: {}", "expert:\n  niter: 1\n  niter_refine: 1");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["--project", project_path.to_str().unwrap(), "--quiet"])
-        .output()
-        .expect("run global uniform AutoRefine project");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["--project", project_path.to_str().unwrap(), "--quiet"]),
+    )
+    .expect("run global uniform AutoRefine project");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -422,5 +475,11 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
         .to_string_lossy()
         .contains("quality_auto_refine/pass_1")));
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let final_mesh = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("mpas_mesh_input="))
+        .expect("selected base mesh with native widths must receive final MPAS delivery");
+    assert!(Path::new(final_mesh).is_file());
     let _ = fs::remove_dir_all(root);
 }

@@ -433,6 +433,13 @@ fn convex_clip_planes(vertices: &[[f64; 3]]) -> Result<ConvexClipPlanes, Spheric
 type ConvexClipPlane = ([f64; 3], f64);
 type ConvexClipPlanes = Vec<ConvexClipPlane>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SphericalPointLocation {
+    Outside,
+    Boundary,
+    Inside,
+}
+
 /// Spherical polygon with validation and per-ring geometry cached for repeated
 /// overlap tests.
 #[derive(Debug)]
@@ -470,6 +477,31 @@ impl PreparedSphericalPolygon {
             .get_or_init(|| convex_clip_planes(&self.vertices))
             .as_deref()
             .map_err(|error| *error)
+    }
+
+    pub fn point_location(
+        &self,
+        point: Point,
+    ) -> Result<SphericalPointLocation, SphericalPolygonError> {
+        const TOLERANCE: f64 = 1.0e-12;
+        let unit = unit_from_lon_lat(0, point.x, point.y)?;
+        let mut boundary = false;
+        for &(normal, sign) in self.convex_planes()? {
+            let normal_len = dot3(normal, normal).sqrt();
+            if normal_len <= 0.0 || !normal_len.is_finite() {
+                return Err(SphericalPolygonError::DegenerateArea);
+            }
+            let distance = sign * dot3(normal, unit) / normal_len;
+            if distance < -TOLERANCE {
+                return Ok(SphericalPointLocation::Outside);
+            }
+            boundary |= distance.abs() <= TOLERANCE;
+        }
+        Ok(if boundary {
+            SphericalPointLocation::Boundary
+        } else {
+            SphericalPointLocation::Inside
+        })
     }
 
     /// Fraction of this compact convex cell covered by another prepared convex
@@ -1305,7 +1337,8 @@ mod tests {
         signed_spherical_polygon_excess, spherical_convex_overlap_fraction,
         spherical_polygon_area_km2, try_spherical_polygon_area, try_spherical_polygon_excess,
         try_spherical_polygon_signed_minor_excess_fast, Point, PreparedSphericalPolygon,
-        SphericalAreaBranch, SphericalPolygonError, SphericalWinding, EARTH_RADIUS_KM,
+        SphericalAreaBranch, SphericalPointLocation, SphericalPolygonError, SphericalWinding,
+        EARTH_RADIUS_KM,
     };
     use std::time::Instant;
 
@@ -1776,6 +1809,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn prepared_spherical_polygon_classifies_point_location() {
+        let prepared = PreparedSphericalPolygon::new(&rect(0.0, 0.0, 1.0, 1.0)).unwrap();
+        assert_eq!(
+            prepared.point_location(Point::new(0.5, 0.5)).unwrap(),
+            SphericalPointLocation::Inside
+        );
+        assert_eq!(
+            prepared.point_location(Point::new(0.5, 0.0)).unwrap(),
+            SphericalPointLocation::Boundary
+        );
+        assert_eq!(
+            prepared.point_location(Point::new(2.0, 0.5)).unwrap(),
+            SphericalPointLocation::Outside
+        );
     }
 
     #[test]

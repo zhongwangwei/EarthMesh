@@ -473,6 +473,8 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
         &output,
         &mesh,
         earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+            hfield: None,
+            mpas: None,
             m_refine_level: Some(&m_levels),
             m_refine_level_orig: Some(&m_orig),
             m_ngr: Some(&m_ngr),
@@ -526,6 +528,8 @@ fn regional_clip_preserves_method_c_metadata_after_inserted_placeholder() {
         &input,
         &mesh,
         earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+            hfield: None,
+            mpas: None,
             m_refine_level: Some(&[0, 5]),
             m_refine_level_orig: Some(&[0, 3]),
             m_ngr: Some(&[0, 6]),

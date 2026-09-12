@@ -326,6 +326,7 @@ pub fn run_mask_postproc_ocean_domain(
             )
         })?;
         obc = Some(write_obc_boundary_netcdf(obc_output, &orders)?);
+        crate::obc_boundary_io::write_gridfile_obc_order(&plan.result_gridfile, &orders.obc_order)?;
         boundary_orders = Some(orders);
     }
 

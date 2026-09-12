@@ -49,9 +49,9 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_project/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_boundary/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine/Cargo.toml --check
-	$(CARGO) fmt --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_certified/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 
 fmt-gui:
@@ -71,9 +71,9 @@ clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_project/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_boundary/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine/Cargo.toml --all-targets -- -D warnings
-	$(CARGO) clippy --manifest-path rust/earthmesh_refine_harp_dv/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_method_c/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_certified/Cargo.toml --all-targets -- -D warnings
 
 clippy-gui:
 	CARGO_TARGET_DIR=$(GUI_TARGET_DIR) $(CARGO) clippy --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -107,12 +107,13 @@ EM_ARCH_OUT = /tmp/earthmesh_architecture_hits
 # look". The first version of this target treated every non-zero the same, so a
 # missing tool read as a clean result -- which is how it passed for months while
 # checking nothing. Anything above 1 is now a failure of the gate itself.
+# Unlike the special builtin :, printf lets dash handle redirection failures.
 define em_arch_verdict
 if [ "$$status" -eq 0 ]; then \
 	cat "$$tmp" > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; \
 	cat "$(EM_ARCH_OUT)"; echo '$(1)'; rm -f "$$tmp"; exit 1; \
 elif [ "$$status" -eq 1 ]; then \
-	: > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; rm -f "$$tmp"; \
+	printf '%s' '' > "$(EM_ARCH_OUT)" || { echo "check-architecture: cannot write $(EM_ARCH_OUT)"; rm -f "$$tmp"; exit 1; }; rm -f "$$tmp"; \
 else \
 	echo "check-architecture: grep exited $$status, so it checked nothing"; rm -f "$$tmp"; exit 1; \
 fi
@@ -126,18 +127,14 @@ check-architecture:
 	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
 		$(EM_ARCH_GREP) -F '#[deprecated' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,deprecated compatibility facades are forbidden)
+	@# Reject source-origin labels/modules, not numerical reference values or file-format keys.
 	@tmp=$$(mktemp /tmp/earthmesh_architecture_hits.XXXXXX) || exit 1; \
-		$(EM_ARCH_GREP) -iE '\breference\b|reference_' rust > "$$tmp" 2>/dev/null; status=$$?; \
+		$(EM_ARCH_GREP) -iE '(^|[^[:alnum:]])((fortran|v2|source[-_ ]origin)[-_ ]+reference|reference[-_ ]+(fortran|v2|source[-_ ]origin))([^[:alnum:]]|$$)|(^|[^[:alnum:]_])mod[[:space:]]+(r#)?reference([_[:space:];{]|$$)' rust > "$$tmp" 2>/dev/null; status=$$?; \
 		$(call em_arch_verdict,source-origin reference naming is forbidden)
 	@python3 scripts/check_architecture.py .
 
 check-architecture-selftest:
-	@probe=$$(mktemp -d /tmp/earthmesh_arch_probe.XXXXXX); log="$$probe.log"; \
-		if $(MAKE) --no-print-directory check-architecture EM_ARCH_OUT="$$probe" >"$$log" 2>&1; then \
-			cat "$$log"; rm -rf "$$probe"; rm -f "$$log"; echo 'check-architecture must fail when EM_ARCH_OUT is not writable as a file'; exit 1; \
-		fi; \
-		rm -rf "$$probe"; rm -f "$$log"; \
-		echo 'check-architecture fail-closed selftest PASSED'
+	python3 -B scripts/test_check_architecture.py
 
 check-mesh-quality-views:
 	CARGO="$(CARGO)" scripts/check_mesh_quality_views.sh

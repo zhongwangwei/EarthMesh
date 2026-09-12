@@ -104,7 +104,7 @@ fn land_runner_reads_inputs_and_writes_patchtype_and_final_gridfile() {
     assert_eq!(report.final_gridfile.sjx_points, 3);
 
     let patch_file = netcdf::open(&report.patchtype.output).expect("open patchtype");
-    assert_eq!(read_i32(&patch_file, "elmindex"), vec![3, 4, 3, 0]);
+    assert_eq!(read_i32(&patch_file, "elmindex"), vec![3, 3, 4, 0]);
 
     let final_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
         &report.final_gridfile.output,

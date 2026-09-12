@@ -1,3 +1,6 @@
+mod gridfile;
+pub use gridfile::read_gridfile_obc_order;
+pub(crate) use gridfile::write_gridfile_obc_order;
 mod paths;
 mod read;
 mod reports;

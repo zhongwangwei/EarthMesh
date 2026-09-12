@@ -198,6 +198,11 @@ fn map_project_input_paths(cfg: &mut ProjectConfig, mut visit: impl FnMut(&mut S
     if let Some(close) = cfg.refinement.specified_close.as_mut() {
         visit(&mut close.path);
     }
+    if let Some(RegionShape::Shapefile { path } | RegionShape::Close { path, .. }) =
+        cfg.refinement.threshold_region.as_mut()
+    {
+        visit(path);
+    }
     if let Some(hydro) = cfg.hydro_coast.as_mut() {
         visit(&mut hydro.merit_root);
         if let Some(cama_root) = hydro.cama_root.as_mut() {

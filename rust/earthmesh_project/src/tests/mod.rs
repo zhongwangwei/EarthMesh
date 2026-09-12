@@ -24,6 +24,7 @@ fn sample() -> ProjectConfig {
             resolution: ResolutionSpec::Nxp(40),
             model_format: ModelFormat::CoLM,
         },
+        delivery: ProjectDeliveryConfig::default(),
         data_layers: vec![
             ProjectDataLayer {
                 id: "lc".into(),
@@ -44,10 +45,10 @@ fn sample() -> ProjectConfig {
             backend: crate::RefinementBackend::default(),
             enabled: true,
             threshold_enabled: true,
+            threshold_region: None,
             max_passes: 3,
             threshold_criteria: Vec::new(),
             method_c: Default::default(),
-            harp_dv: Default::default(),
             certified: Default::default(),
             adaptive: None,
             specified_circle: None,
@@ -629,6 +630,76 @@ fn every_target_and_model_pairing_is_accepted_and_says_what_it_delivers() {
     let triple = ProjectTargetTriple::from(&p.target);
     assert_eq!(triple.output_delivery(), ProjectOutputDelivery::Full);
     assert_eq!(triple.skipped_adapter_reason(), None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_opt_in_and_round_trips() {
+    let legacy = sample().to_yaml().expect("yaml");
+    assert!(!legacy.contains("colm_mesh"));
+    let parsed = ProjectConfig::from_yaml(&legacy).expect("legacy delivery absent");
+    assert_eq!(parsed.delivery.colm_mesh, None);
+
+    let mut project = sample();
+    project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    let yaml = project.to_yaml().expect("yaml");
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+    assert_eq!(
+        yaml_round_trip(&project).delivery.colm_mesh,
+        project.delivery.colm_mesh
+    );
+}
+
+#[test]
+fn colm_mesh_delivery_requires_explicit_positive_resolution_and_colm_target() {
+    let missing = r#"
+schema_version: 3.0.0
+metadata:
+  name: bad_colm_mesh
+domain: Global
+target:
+  kind: Land
+  cell: Hex
+  intent: Custom
+  resolution: !Nxp 40
+  model_format: CoLM
+delivery:
+  colm_mesh: {}
+"#;
+    assert!(ProjectConfig::from_yaml(missing)
+        .unwrap_err()
+        .contains("missing field `pixels_per_degree`"));
+
+    let mut zero = sample();
+    zero.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 0,
+    });
+    assert!(yaml_err(&zero).contains("pixels_per_degree must be positive"));
+
+    let mut non_colm = sample();
+    non_colm.target.model_format = ModelFormat::Fvcom;
+    non_colm.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    assert!(yaml_err(&non_colm).contains("target.model_format=CoLM"));
+}
+
+#[test]
+fn colm_mesh_delivery_does_not_change_lowered_source_resolution() {
+    let mut base = sample();
+    let before = base.try_lower().expect("lower without delivery");
+    base.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 7,
+    });
+    let after = base.try_lower().expect("lower with delivery");
+    assert_eq!(
+        after.mkgrd.gridnum_perdegree,
+        before.mkgrd.gridnum_perdegree
+    );
+    assert_eq!(after.mkgrd.nxp, before.mkgrd.nxp);
+    assert_eq!(after.to_namelist(), before.to_namelist());
 }
 
 #[test]
@@ -1768,16 +1839,6 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
 }
 
 #[test]
-fn harp_dv_does_not_lower_the_generic_spring() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    let lowered = project.lower();
-
-    assert_eq!(lowered.refine.spring_global_type, 0);
-    assert_eq!(lowered.refine.spring_regional_type, 0);
-}
-
-#[test]
 fn hfield_raster_targets_eight_base_cells_per_raster_cell() {
     // Measured window, in base cells per raster cell: 4 fails (aliased), 6.9-12
     // passes at both resolutions, 32 fails (fragmented). Target the middle.
@@ -2091,7 +2152,7 @@ fn layer_role_labels_are_schema_owned() {
 }
 
 #[test]
-fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
+fn quality_warning_default_matches_intent_defaults() {
     assert_eq!(
         QualityConfig::default().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
@@ -2099,11 +2160,6 @@ fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
     assert_eq!(
         MeshIntentPreset::HydrologyLand.defaults().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
-    );
-    assert_eq!(
-        HarpDvRefinementRecipe::default().minimum_triangle_angle_deg,
-        0.0,
-        "HARP-DV reports the warning but does not enforce it by default"
     );
 }
 
@@ -2380,12 +2436,12 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
     );
 
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
     project.quality.on_violation = ViolationPolicy::AutoRefine;
     assert_eq!(
         project.lower().mkgrd.nxp,
         80,
-        "HARP-DV owns its quality repair and must not inherit Method-C's stride-three lattice"
+        "CMRC owns its quality repair and must not inherit Method-C's stride-three lattice"
     );
 }
 
@@ -2394,7 +2450,7 @@ fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
     let mut project = sample();
     project.target.resolution = ResolutionSpec::Nxp(80);
     project.quality.on_violation = ViolationPolicy::Warn;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
     project.data_layers = vec![
         ProjectDataLayer {
             id: "merit".into(),
@@ -2488,6 +2544,26 @@ fn coupling_config_lowers_overlay_and_feature_detection_options() {
     p.data_layers
         .retain(|layer| layer.role != ProjectLayerRole::LandType);
     assert!(p.try_lower().unwrap_err().contains("landtype layer"));
+}
+
+#[test]
+fn project_yaml_rejects_retired_harp_backend_and_options() {
+    let yaml = sample().to_yaml().unwrap();
+
+    let backend_yaml = yaml.replace("backend: MethodC", "backend: HarpDv");
+    let error = ProjectConfig::from_yaml(&backend_yaml).expect_err("HARP-DV backend is retired");
+    assert!(
+        error.contains("HarpDv") || error.contains("unknown"),
+        "{error}"
+    );
+
+    let option_yaml = yaml.replace("refinement:\n", "refinement:\n  harp_dv: {}\n");
+    let error =
+        ProjectConfig::from_yaml(&option_yaml).expect_err("retired HARP options are unknown");
+    assert!(
+        error.contains("harp_dv") || error.contains("unknown"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2769,9 +2845,7 @@ fn coupling_cama_root_round_trips_with_compatibility_alias() {
 fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     // The run refuses this at the dispatch, but a project is edited and saved
     // long before it is run. Without the refusal here, the GUI would happily
-    // save a project whose only symptom is a run that dies -- and before the
-    // dispatch grew its guard, harp_dv took the pair and produced 6450 cells
-    // having never read the field.
+    // save a project whose only symptom is a run that dies.
     let mut p = sample();
     p.refinement.hfield = Some(crate::HfieldRefinementRecipe {
         enabled: true,
@@ -2791,7 +2865,6 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
 
     for (backend, name) in [
         (crate::RefinementBackend::RedGreen, "red_green"),
-        (crate::RefinementBackend::HarpDv, "harp_dv"),
         (crate::RefinementBackend::Certified, "certified"),
     ] {
         p.refinement.backend = backend;
@@ -2914,41 +2987,6 @@ fn method_c_lepp_algorithm_rejects_invalid_limits_and_post_quality_composition()
         .validate()
         .expect_err("two LEPP owners")
         .contains("cannot be combined"));
-}
-
-#[test]
-fn harp_dv_algorithm_lowers_every_exposed_control() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    project.refinement.harp_dv = crate::HarpDvRefinementRecipe {
-        max_cycles: 3,
-        minimum_cell_width_m: 2_000.0,
-        maximum_cells: 9_000,
-        maximum_patch_cells: 800,
-        maximum_neighbor_scale_ratio: 1.5,
-        minimum_candidate_separation_m: 2.0,
-        maximum_vertex_degree: 6,
-        minimum_triangle_angle_deg: 25.0,
-        criterion_minimum_angle_deg: 10.0,
-    };
-
-    let namelist = project.try_lower().expect("HARP-DV project").to_namelist();
-    assert!(namelist.contains("&harp_dv"));
-    assert!(namelist.contains("NL%max_cycles = 3"));
-    assert!(namelist.contains("NL%minimum_cell_width_m = 2000"));
-    assert!(namelist.contains("NL%maximum_cells = 9000"));
-    assert!(namelist.contains("NL%maximum_patch_cells = 800"));
-    assert!(namelist.contains("NL%maximum_neighbor_scale_ratio = 1.5"));
-    assert!(namelist.contains("NL%minimum_candidate_separation_m = 2"));
-    assert!(namelist.contains("NL%maximum_vertex_degree = 6"));
-    assert!(namelist.contains("NL%minimum_triangle_angle_deg = 25"));
-    assert!(namelist.contains("RL%harp_min_angle_deg = 10"));
-
-    project.refinement.harp_dv.maximum_patch_cells = 9_001;
-    assert!(project
-        .validate()
-        .expect_err("patch budget exceeds mesh budget")
-        .contains("maximum_patch_cells"));
 }
 
 #[test]

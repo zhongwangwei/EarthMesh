@@ -13,8 +13,9 @@ fn mpas_full_builder_composes_geometry_payload_and_writer() {
         earthmesh_cli::mpas_unstructured_mesh_builders::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, 9, 3)
             .expect("build full MPAS mesh payload");
 
-    assert_eq!(mpas.x_cell.len(), mesh.w_points.len());
-    assert_eq!(mpas.x_vertex.len(), mesh.m_points.len());
+    // The source has two sentinels; the payload keeps one, never a ghost cell.
+    assert_eq!(mpas.x_cell.len(), mesh.w_points.len() - 1);
+    assert_eq!(mpas.x_vertex.len(), mesh.m_points.len() - 1);
     assert!(mpas.x_edge.len() > 2);
     assert_eq!(mpas.n_edges_on_cell[2], 3);
     assert_eq!(mpas.vertices_on_cell[2].len(), 10);
@@ -30,8 +31,8 @@ fn mpas_full_builder_composes_geometry_payload_and_writer() {
     let output = root.join("MPASOUT_NXP0009_global.nc4");
     let report =
         earthmesh_cli::write_mpas_mesh_netcdf(&output, &mpas).expect("write full MPAS mesh");
-    assert_eq!(report.n_cells, mesh.w_points.len() - 1);
-    assert_eq!(report.n_vertices, mesh.m_points.len() - 1);
+    assert_eq!(report.n_cells, mesh.w_points.len() - 2);
+    assert_eq!(report.n_vertices, mesh.m_points.len() - 2);
     assert_eq!(report.output, output);
 
     let _ = std::fs::remove_dir_all(&root);

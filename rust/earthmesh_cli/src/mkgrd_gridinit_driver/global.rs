@@ -5,7 +5,6 @@ use crate::convert_mpas_mode_file_to_earthmesh;
 use crate::copy_existing_earthmesh_mode_file;
 use crate::earthmesh_runtime_state_from_compact_mesh;
 use crate::read_unstructured_mesh_netcdf;
-use crate::write_gridfile_from_one_based_state;
 use crate::MkgrdGridinitRunReport;
 use std::fs;
 use std::io;
@@ -117,14 +116,25 @@ pub fn run_mkgrd_gridinit_global_namelist(
             config.relax,
             max_tris,
         )?;
-        let gridfile = write_gridfile_from_one_based_state(
-            config.file_dir(),
+        let mesh = crate::gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+        crate::validate_published_cell_degrees(&mesh, &config.mode_grid)?;
+        let output_path = crate::gridfile_output_path(config.file_dir(), nxp, 1, &config.mode_grid);
+        let context = crate::mpas_gridfile_context::MpasGridfileContext::from_producer(
+            &mesh,
+            vec![7680.0 / nxp as f64; mesh.w_points.len()],
             nxp,
             1,
-            &config.mode_grid,
-            &state.grid,
-            &state.tabs,
+            "gridinit_uniform_base",
         )?;
+        let gridfile =
+            crate::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+                output_path,
+                &mesh,
+                crate::MethodCGridfileMetadataSlices {
+                    mpas: Some(&context),
+                    ..Default::default()
+                },
+            )?;
         let mut generated_runtime_state = EarthmeshRuntimeState::new(config.clone());
         generated_runtime_state.grid = state.grid;
         generated_runtime_state.ijtabs = state.tabs;

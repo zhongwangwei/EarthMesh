@@ -69,6 +69,8 @@ pub fn write_mpas_simple_mesh_netcdf(
     file.add_attribute("sphere_radius", 1.0_f64)
         .map_err(netcdf_to_io_error)?;
 
+    file.close().map_err(netcdf_to_io_error)?;
+
     Ok(MpasSimpleMeshWriteReport {
         output: output.to_path_buf(),
         n_cells,

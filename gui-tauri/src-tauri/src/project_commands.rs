@@ -77,9 +77,10 @@ pub(crate) fn preserve_unexposed_project_fields(
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
 
     cfg.expert = base.expert;
+    cfg.delivery = base.delivery;
     cfg.refinement.threshold_criteria = base.refinement.threshold_criteria.clone();
+    cfg.refinement.threshold_region = base.refinement.threshold_region.clone();
     cfg.refinement.method_c = base.refinement.method_c.clone();
-    cfg.refinement.harp_dv = base.refinement.harp_dv.clone();
     cfg.refinement.certified = base.refinement.certified.clone();
     if cfg.refinement.specified_circle.is_none()
         && cfg.refinement.specified_bbox.is_none()
