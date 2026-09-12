@@ -1,12 +1,13 @@
 //! Whole certified Voronoi cells, selected by regional and land-type centres.
 //! Regional W rings have open boundaries; their partial M view is not a triangle mesh.
 use super::global_source::CertifiedDomainPublication;
-use crate::grid_quality_inputs::{
-    quality_input_from_gridfile_hex_native, read_gridfile_cell_lineages,
-};
-use crate::{gridfile_m_row_layout, gridfile_w_row_layout, GridRegion, GridfileMeshPoints};
+use crate::grid_quality_inputs::quality_input_from_gridfile_hex_native;
+#[cfg(test)]
+use crate::regional_gridfile_writers::lineage::same_cycle;
+use crate::regional_gridfile_writers::verify_whole_cell_lineage;
+use crate::{gridfile_w_row_layout, GridRegion};
 use earthmesh_quality::topology::{self, MeshTopologyValidator, Severity, TopologyIssueType};
-use std::{collections::HashSet, fs, io, path::Path};
+use std::{fs, io, path::Path};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -53,119 +54,6 @@ pub(super) fn publish_regional_land(
         geometry,
         fvcom_2dm: None,
     })
-}
-
-// Source and output may have different placeholder layouts. Check the actual
-// delivered rings, not reconstructed/sorted polygons that could hide corruption.
-fn verify_whole_cell_lineage(
-    source: &Path,
-    output: &Path,
-    grid: &GridfileMeshPoints,
-) -> io::Result<()> {
-    let original = crate::read_gridfile_mesh_points(source)?;
-    let lineage = read_gridfile_cell_lineages(output)?;
-    let m_layout = gridfile_m_row_layout(grid);
-    let w_layout = gridfile_w_row_layout(grid);
-    let source_m = gridfile_m_row_layout(&original);
-    let source_w = gridfile_w_row_layout(&original);
-    if lineage.m.len() != grid.m_lon.len() || lineage.w.len() != grid.w_lon.len() {
-        return Err(invalid(
-            "CMRC land delivery requires complete M/W source lineage",
-        ));
-    }
-    for (lon, lat, levels, ids, layout, source_lon, source_lat, source_levels, source_layout) in [
-        (
-            &grid.m_lon,
-            &grid.m_lat,
-            &grid.m_refine_level,
-            &lineage.m,
-            m_layout,
-            &original.m_lon,
-            &original.m_lat,
-            &original.m_refine_level,
-            source_m,
-        ),
-        (
-            &grid.w_lon,
-            &grid.w_lat,
-            &grid.w_refine_level,
-            &lineage.w,
-            w_layout,
-            &original.w_lon,
-            &original.w_lat,
-            &original.w_refine_level,
-            source_w,
-        ),
-    ] {
-        if levels.len() != lon.len() || source_levels.len() != source_lon.len() {
-            return Err(invalid(
-                "CMRC land delivery requires complete refinement levels",
-            ));
-        }
-        let mut used = HashSet::new();
-        for row in layout.first_physical_row..lon.len() {
-            let id =
-                i32::try_from(ids[row]).map_err(|_| invalid("CMRC land lineage ID overflow"))?;
-            let source_row = source_layout
-                .physical_row_for_canonical_id(id, source_lon.len())
-                .ok_or_else(|| invalid("CMRC land lineage points outside certified source"))?;
-            if !used.insert(id)
-                || lon[row] != source_lon[source_row]
-                || lat[row] != source_lat[source_row]
-                || levels[row] != source_levels[source_row]
-            {
-                return Err(invalid(
-                    "CMRC land delivery changed source coordinates, levels or identity",
-                ));
-            }
-        }
-    }
-    for row in w_layout.first_physical_row..grid.w_lon.len() {
-        let source_id = i32::try_from(lineage.w[row])
-            .map_err(|_| invalid("CMRC land cell lineage overflow"))?;
-        let source_row = source_w
-            .physical_row_for_canonical_id(source_id, original.w_lon.len())
-            .ok_or_else(|| invalid("CMRC land cell lost source identity"))?;
-        let count = grid.n_w[row] as usize; // native adapter already validated count/indices
-        if original.n_w.get(source_row).copied() != Some(count as i32) {
-            return Err(invalid(
-                "CMRC land delivery changed a certified cell's corner count",
-            ));
-        }
-        let source_start = source_row * original.w_to_m_width;
-        let source_ring = original
-            .w_to_m
-            .get(source_start..source_start + count)
-            .ok_or_else(|| invalid("CMRC source cell has incomplete connectivity"))?;
-        let ring = grid.w_to_m[row * grid.w_to_m_width..row * grid.w_to_m_width + count]
-            .iter()
-            .map(|&id| {
-                let m_row = m_layout
-                    .physical_row_for_canonical_id(id, grid.m_lon.len())
-                    .ok_or_else(|| invalid("CMRC land corner index is invalid"))?;
-                i32::try_from(lineage.m[m_row])
-                    .map_err(|_| invalid("CMRC land corner lineage overflow"))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        if !same_cycle(&ring, source_ring) {
-            return Err(invalid(
-                "CMRC land delivery changed a certified cell's cyclic boundary",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn same_cycle(a: &[i32], b: &[i32]) -> bool {
-    if a.is_empty() || a.len() != b.len() {
-        return false;
-    }
-    let Some(start) = b.iter().position(|&id| id == a[0]) else {
-        return false;
-    };
-    // Reversal is the existing outward-winding normalization, not a geometry edit.
-    (0..a.len()).all(|i| a[i] == b[(start + i) % b.len()])
-        || (0..a.len()).all(|i| a[i] == b[(start + b.len() - i) % b.len()])
 }
 
 type LandAudit = (

@@ -423,6 +423,15 @@ fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
         earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
             .unwrap()
             .unwrap();
+    let physical =
+        earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&gridfile)
+            .unwrap();
+    let orientation = earthmesh_quality::topology::MeshTopologyValidator::new(&physical)
+        .validate_shared_edge_orientation();
+    assert!(
+        orientation.is_empty(),
+        "native CMRC must preserve certified cyclic fans: {orientation:?}"
+    );
     assert_eq!((context.base_nxp, context.step), (3, 2));
     assert_eq!(context.source, "cmrc_delivered_w_levels");
     assert_eq!(context.cellwidth_km, widths);
@@ -1116,80 +1125,126 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
 }
 
 #[test]
-fn certified_close_land_publishes_whole_dual_cells_for_colm() {
-    let root = temp_root("regional_land_colm");
-    let landtype = root.join("landtype.nc");
-    write_landtype(&landtype);
-    let close = root.join("domain.nml");
-    write_close_domain(&close);
-    let path = root.join("cmrc.nml");
-    let contents = namelist(&root, "regional_land_colm", 6, 1_000)
+fn certified_close_land_publishes_whole_dual_cells_independently_of_model_format() {
+    for format in ["CoLM", "MPAS", "MPAS-Ocean", "MPAS-Simple"] {
+        let root = temp_root("regional_land_colm");
+        let landtype = root.join("landtype.nc");
+        write_landtype(&landtype);
+        let close = root.join("domain.nml");
+        write_close_domain(&close);
+        let path = root.join("cmrc.nml");
+        let contents = namelist(&root, "regional_land_colm", 6, 1_000)
         .replace("mesh_type='earthmesh'", "mesh_type='landmesh'")
         .replace("NL%landtype_file='none'", &format!("NL%landtype_file='{}'", landtype.display()))
         .replace("NL%mask_domain_global=.true.", &format!(
             "NL%mask_domain_global=.false.\n  NL%mask_domain_type='close'\n  NL%mask_domain_fprefix='{}'", close.display()));
-    fs::write(&path, contents).unwrap();
-    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
-    let grid = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+        fs::write(
+            &path,
+            contents.replace("output_format='CoLM'", &format!("output_format='{format}'")),
+        )
         .unwrap();
-    let input = earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&grid)
-        .unwrap();
-    assert!(!input.cells.is_empty());
-    assert!(input.cells.len() < 362);
-    for ((&lon, &lat), &count) in grid.w_lon.iter().zip(&grid.w_lat).zip(&grid.n_w) {
-        if count >= 3 {
-            // The northern close edge is a great-circle arc, not a latitude parallel.
-            assert!((100.0..=160.0).contains(&lon) && (0.0..=55.0).contains(&lat));
+        let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+        let grid =
+            earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&run.output.output)
+                .unwrap();
+        let input =
+            earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&grid)
+                .unwrap();
+        assert!(!input.cells.is_empty());
+        assert!(input.cells.len() < 362);
+        for ((&lon, &lat), &count) in grid.w_lon.iter().zip(&grid.w_lat).zip(&grid.n_w) {
+            if count >= 3 {
+                // The northern close edge is a great-circle arc, not a latitude parallel.
+                assert!((100.0..=160.0).contains(&lon) && (0.0..=55.0).contains(&lat));
+            }
         }
-    }
-    let geometry = earthmesh_quality::compute(&input, &Default::default()).geometry;
-    assert_eq!(geometry.negative_area_cell_count, 0);
-    assert_eq!(geometry.invalid_polygon_count, 0);
-    assert!(geometry.min_angle_deg.is_finite() && geometry.max_angle_deg.is_finite());
-    let run = run.certified_run.unwrap();
-    let cert: serde_json::Value =
-        serde_json::from_slice(&fs::read(run.certificate).unwrap()).unwrap();
-    assert_eq!(cert["geometry_scope"], "pre_export_closed_sphere");
-    assert_eq!(cert["published_grid_is_certified_face_subset"], false);
-    assert_eq!(cert["published_grid_is_certified_dual_cell_subset"], true);
-    assert_eq!(
-        cert["published_domain_geometry"]["whole_cell_lineage_verified"],
-        true
-    );
-    assert_eq!(cert["published_domain_geometry"]["cell_view"], "hex");
-    assert_eq!(cert["published_grid_remap_available"], false);
-    assert!(run.remap.is_none());
-    let resources: serde_json::Value =
-        serde_json::from_slice(&fs::read(run.resources).unwrap()).unwrap();
-    assert_eq!(
-        resources["published_domain_topology"]["violations"],
-        serde_json::json!([])
-    );
-    assert!(
-        resources["published_domain_topology"]["boundary_loops"]
-            .as_u64()
+        let geometry = earthmesh_quality::compute(&input, &Default::default()).geometry;
+        assert_eq!(geometry.negative_area_cell_count, 0);
+        assert_eq!(geometry.invalid_polygon_count, 0);
+        assert!(geometry.min_angle_deg.is_finite() && geometry.max_angle_deg.is_finite());
+        let parent = run
+            .raw_output
+            .as_ref()
+            .expect("durable same-run global parent");
+        assert_eq!(run.refinement_parent_gridfile(), parent.output);
+        let parent_path = parent.output.clone();
+        let parent_points =
+            earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(&parent_path).unwrap();
+        assert_eq!(parent.lbx_points, parent_points.w_lon.len());
+        let parent_input =
+            earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(
+                &parent_points,
+            )
+            .unwrap();
+        assert_eq!(
+            earthmesh_quality::topology::boundary_topology(&parent_input).edge_count,
+            0
+        );
+        assert_eq!(
+            earthmesh_quality::topology::euler_characteristic(&parent_input),
+            2
+        );
+        let run = run.certified_run.unwrap();
+        let cert: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.certificate).unwrap()).unwrap();
+        assert_eq!(cert["geometry_scope"], "pre_export_closed_sphere");
+        assert_eq!(cert["published_grid_is_certified_face_subset"], false);
+        assert_eq!(cert["published_grid_is_certified_dual_cell_subset"], true);
+        assert_eq!(
+            cert["published_domain_geometry"]["whole_cell_lineage_verified"],
+            true
+        );
+        assert_eq!(cert["published_domain_geometry"]["cell_view"], "hex");
+        assert_eq!(cert["published_grid_remap_available"], false);
+        assert!(run.remap.is_none());
+        let resources: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.resources).unwrap()).unwrap();
+        assert_eq!(
+            resources["published_domain_topology"]["violations"],
+            serde_json::json!([])
+        );
+        assert!(
+            resources["published_domain_topology"]["boundary_loops"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.manifest).unwrap()).unwrap();
+        assert!(std::path::Path::new(manifest["ready"].as_str().unwrap()).exists());
+        assert_eq!(
+            manifest["global_parent_gridfile"],
+            parent_path.display().to_string()
+        );
+        // A subsequent empty land selection must not damage the previous ready bundle.
+        let result_dir = root.join("regional_land_colm/result");
+        let before = fs::read_dir(&result_dir)
             .unwrap()
-            > 0
-    );
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(run.manifest).unwrap()).unwrap();
-    assert!(std::path::Path::new(manifest["ready"].as_str().unwrap()).exists());
-    // A subsequent empty land selection must not damage the previous ready bundle.
-    let result_dir = root.join("regional_land_colm/result");
-    let before = fs::read_dir(&result_dir)
-        .unwrap()
-        .map(|entry| {
-            let path = entry.unwrap().path();
-            let bytes = fs::read(&path).unwrap();
-            (path, bytes)
-        })
-        .collect::<Vec<_>>();
-    write_all_ocean(&landtype);
-    assert!(earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err());
-    for (path, bytes) in &before {
-        assert_eq!(fs::read(path).unwrap(), *bytes);
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect::<Vec<_>>();
+        // A blocked retained-parent target must roll back the entire ready bundle.
+        let backup = root.join("parent.backup");
+        fs::rename(&parent_path, &backup).unwrap();
+        fs::create_dir(&parent_path).unwrap();
+        assert!(earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err());
+        for (entry, bytes) in &before {
+            if entry != &parent_path {
+                assert_eq!(fs::read(entry).unwrap(), *bytes);
+            }
+        }
+        fs::remove_dir(&parent_path).unwrap();
+        fs::rename(backup, &parent_path).unwrap();
+        write_all_ocean(&landtype);
+        assert!(earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err());
+        for (path, bytes) in &before {
+            assert_eq!(fs::read(path).unwrap(), *bytes);
+        }
+        assert_eq!(fs::read_dir(&result_dir).unwrap().count(), before.len());
     }
-    assert_eq!(fs::read_dir(&result_dir).unwrap().count(), before.len());
 }
 
 #[test]
@@ -1205,9 +1260,9 @@ fn certified_regional_earthmesh_is_rejected_instead_of_published_global() {
 
     let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
         .expect_err("regional earthmesh would otherwise ignore the selector");
-    assert!(error.to_string().contains(
-        "supports oceanmesh/tri or landmesh/{hex,tri}/CoLM with a single close polygon only"
-    ));
+    assert!(error
+        .to_string()
+        .contains("supports oceanmesh/tri or landmesh/{hex,tri} with a single close polygon only"));
     assert!(!root
         .join("regional_earthmesh_reject/result/gridfile_NXP0003_hex.nc4")
         .exists());
@@ -1431,7 +1486,7 @@ fn certified_regional_unimplemented_views_and_boundaries_fail_closed() {
             earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
         assert!(error.to_string().contains(
-            "supports oceanmesh/tri or landmesh/{hex,tri}/CoLM with a single close polygon only"
+            "supports oceanmesh/tri or landmesh/{hex,tri} with a single close polygon only"
         ));
         assert!(!root.join(case).join("result/certified_ready").exists());
     }

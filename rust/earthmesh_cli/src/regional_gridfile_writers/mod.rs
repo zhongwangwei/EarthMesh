@@ -14,3 +14,6 @@ pub(crate) use levels::final_refine_levels_from_gridfile_for_mask_postproc;
 pub use regional::{write_regional_gridfile, write_regional_gridfile_with_refine_levels};
 
 pub use fvcom::write_fvcom_from_final_gridfile;
+
+pub(crate) mod lineage;
+pub(crate) use lineage::verify_whole_cell_lineage;

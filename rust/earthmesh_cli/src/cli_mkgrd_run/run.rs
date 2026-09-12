@@ -640,6 +640,45 @@ fn run_prepared_mkgrd(
                         eprintln!("earthmesh_cli: FVCOM specialized export requires triangular cells; grid-only delivery");
                     }
                 }
+                if matches!(
+                    spec.config.target.model_format,
+                    earthmesh_project::ModelFormat::Mpas
+                        | earthmesh_project::ModelFormat::MpasOcean
+                        | earthmesh_project::ModelFormat::MpasSimple
+                ) {
+                    if spec.config.target.cell == earthmesh_project::MeshCellKind::Hex {
+                        let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
+                        let output = gridfile
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."))
+                            .join("standard")
+                            .join(format!("MPAS_{stem}"));
+                        let parent = refinement_parent_gridfile(&report)
+                            .filter(|parent| *parent != gridfile);
+                        let delivery = if let Some(parent) = parent {
+                            earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile_with_parent(
+                                gridfile, parent, output, spec.config.target.model_format,
+                            )
+                        } else {
+                            earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                                gridfile,
+                                output,
+                                spec.config.target.model_format,
+                            )
+                        };
+                        let (mesh, graph) = delivery
+                            .map_err(|err| format!("project MPAS final delivery: {err}"))?;
+                        if let Some(parent) = parent {
+                            println!("mpas_parent_gridfile={}", parent.display());
+                        }
+                        println!("mpas_mesh_input={}", mesh.display());
+                        if let Some(graph) = graph {
+                            println!("mpas_graph_info={}", graph.display());
+                        }
+                    } else {
+                        eprintln!("earthmesh_cli: MPAS specialized export requires hexagonal cells; grid-only delivery");
+                    }
+                }
                 if let Some(report) = write_project_colm_mesh_delivery(&spec.config, gridfile)? {
                     let pixels_per_degree = spec
                         .config

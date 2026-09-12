@@ -7,7 +7,7 @@ pub(crate) use indexing::{
     mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id, unstructured_w_row_layout,
     GridfileRowLayout,
 };
-pub use topology::check_unstructured_mesh_topology;
+pub use topology::{check_unstructured_mesh_topology, validate_published_cell_degrees};
 pub(crate) use topology::{
     split_non_manifold_triangle_vertex_fans, unstructured_dimc, validate_unstructured_mesh,
 };

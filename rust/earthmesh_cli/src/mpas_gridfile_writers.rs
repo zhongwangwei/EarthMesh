@@ -147,3 +147,270 @@ pub fn write_regional_mpas_from_gridfile(
         kept,
     ))
 }
+
+/// Deliver an admitted closed global grid using its producer-owned nominal W
+/// widths. Open/masked meshes need parent metrics before they can use this path.
+/// Returns the final mesh and optional graph paths; MPAS-Simple has no graph.
+pub fn write_mpas_from_final_gridfile(
+    gridfile: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+    format: earthmesh_project::ModelFormat,
+) -> io::Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    write_final_mpas(gridfile.as_ref(), None, output_dir.as_ref(), format)
+}
+
+/// Deliver an exact whole-cell selection using an explicit closed global parent.
+/// Parent geometry/metrics and density reference survive; boundary connectivity
+/// is reindexed by the existing MPAS subset adapter, not reconstructed.
+pub fn write_mpas_from_final_gridfile_with_parent(
+    gridfile: impl AsRef<Path>,
+    parent_gridfile: impl AsRef<Path>,
+    output_dir: impl AsRef<Path>,
+    format: earthmesh_project::ModelFormat,
+) -> io::Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    write_final_mpas(
+        gridfile.as_ref(),
+        Some(parent_gridfile.as_ref()),
+        output_dir.as_ref(),
+        format,
+    )
+}
+
+fn write_final_mpas(
+    gridfile: &Path,
+    parent: Option<&Path>,
+    output_dir: &Path,
+    format: earthmesh_project::ModelFormat,
+) -> io::Result<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    use crate::atomic_output::{publish_artifacts, validate_output_path};
+    use earthmesh_project::ModelFormat;
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    if !matches!(
+        format,
+        ModelFormat::Mpas | ModelFormat::MpasOcean | ModelFormat::MpasSimple
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected an MPAS model format",
+        ));
+    }
+    let source = parent.unwrap_or(gridfile);
+    let context = required_mpas_context(source)?;
+    let mesh = read_unstructured_mesh_netcdf(source)?;
+    crate::validate_published_cell_degrees(&mesh, "hex")?;
+    let points = crate::read_gridfile_mesh_points(source)?;
+    validate_final_mpas_topology(&points, true)?;
+    let selection = if parent.is_some() {
+        let selected_context = required_mpas_context(gridfile)?;
+        let selected_points = crate::read_gridfile_mesh_points(gridfile)?;
+        validate_final_mpas_topology(&selected_points, false)?;
+        let rows = crate::regional_gridfile_writers::verify_whole_cell_lineage(
+            source,
+            gridfile,
+            &selected_points,
+        )?;
+        let source_first = crate::gridfile_w_row_layout(&points).first_physical_row;
+        let selected_first = crate::gridfile_w_row_layout(&selected_points).first_physical_row;
+        if context.base_nxp != selected_context.base_nxp
+            || context.step != selected_context.step
+            || context.source != selected_context.source
+            || context.density_reference_width_km != selected_context.density_reference_width_km
+            || rows.iter().enumerate().any(|(i, &row)| {
+                selected_context.cellwidth_km[selected_first + i]
+                    != context.cellwidth_km[source_first + row - 1]
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected MPAS width context differs from explicit parent",
+            ));
+        }
+        Some(rows)
+    } else {
+        None
+    };
+    let first =
+        crate::unstructured_mesh_support::unstructured_w_row_layout(&mesh).first_physical_row;
+    // The builder's local-min normalization is not the producer-global reference.
+    // Replace only density, never infer nominal sizes from the final geometry.
+    let density = std::iter::once(1.0)
+        .chain(
+            context.cellwidth_km[first..]
+                .iter()
+                .map(|width| (context.density_reference_width_km / width).powi(4)),
+        )
+        .collect::<Vec<_>>();
+    if density.iter().any(|d| !d.is_finite() || *d <= 0.0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MPAS density must be finite and positive",
+        ));
+    }
+    let mesh_output = output_dir.join("mesh.nc4");
+    let graph_output = output_dir.join("graph.info");
+    validate_output_path(gridfile, &mesh_output)?;
+    validate_output_path(gridfile, &graph_output)?;
+    validate_output_path(source, &mesh_output)?;
+    validate_output_path(source, &graph_output)?;
+    if mesh_output.exists() {
+        validate_output_path(&mesh_output, &graph_output)?;
+    }
+    let stage = output_dir.join(format!(
+        ".mpas-tmp-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&stage)?;
+    let result = (|| {
+        let staged_mesh = stage.join("mesh.nc4");
+        let staged_graph = stage.join("graph.info");
+        if format == ModelFormat::MpasSimple && selection.is_none() {
+            let mut simple =
+                build_mpas_simple_mesh_from_unstructured_one_based(&mesh, &context.cellwidth_km)?;
+            if simple.mesh_density.len() != density.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MPAS physical W row count mismatch",
+                ));
+            }
+            simple.mesh_density = density;
+            write_mpas_simple_mesh_netcdf(&staged_mesh, &simple)?;
+            publish_artifacts(&[(&staged_mesh, &mesh_output)], &[&graph_output])?;
+            Ok((mesh_output, None))
+        } else {
+            let mut full = build_mpas_mesh_from_unstructured_one_based(
+                &mesh,
+                &context.cellwidth_km,
+                context.base_nxp,
+                context.step,
+            )?;
+            if full.mesh_density.len() != density.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MPAS physical W row count mismatch",
+                ));
+            }
+            if !full.nominal_min_dc.is_finite() || full.nominal_min_dc <= 0.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MPAS nominalMinDc is not positive at the recorded NXP/step",
+                ));
+            }
+            full.mesh_density = density;
+            if let Some(rows) = &selection {
+                full = crate::mpas_subset::subset_mpas_mesh_in_cell_order(&full, rows)?;
+            }
+            if format == ModelFormat::MpasSimple {
+                let simple = crate::MpasSimpleMesh {
+                    x_cell: full.x_cell,
+                    y_cell: full.y_cell,
+                    z_cell: full.z_cell,
+                    x_vertex: full.x_vertex,
+                    y_vertex: full.y_vertex,
+                    z_vertex: full.z_vertex,
+                    cells_on_vertex: full.cells_on_vertex,
+                    mesh_density: full.mesh_density,
+                };
+                write_mpas_simple_mesh_netcdf(&staged_mesh, &simple)?;
+                publish_artifacts(&[(&staged_mesh, &mesh_output)], &[&graph_output])?;
+                return Ok((mesh_output, None));
+            }
+            if format == ModelFormat::MpasOcean {
+                write_mpas_ocean_mesh_netcdf(&staged_mesh, &full)?;
+            } else {
+                write_mpas_mesh_netcdf(&staged_mesh, &full)?;
+            }
+            write_mpas_graph_info(
+                &staged_graph,
+                10,
+                &full.cells_on_cell,
+                &full.cells_on_edge,
+                &full.n_edges_on_cell,
+            )?;
+            // Mesh is the readiness marker: publish it after graph, restore last.
+            publish_artifacts(
+                &[(&staged_graph, &graph_output), (&staged_mesh, &mesh_output)],
+                &[],
+            )?;
+            Ok((mesh_output, Some(graph_output)))
+        }
+    })();
+    if let Err(error) = fs::remove_dir_all(&stage) {
+        eprintln!(
+            "earthmesh_cli: MPAS staging cleanup {}: {error}",
+            stage.display()
+        );
+    }
+    result
+}
+
+fn required_mpas_context(
+    path: &Path,
+) -> io::Result<crate::mpas_gridfile_context::MpasGridfileContext> {
+    crate::mpas_gridfile_context::read_mpas_gridfile_context(path)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+            "missing persisted MPAS width context; the producer must supply nominal W widths (uniform fallback is not allowed)"))
+}
+
+fn validate_final_mpas_topology(
+    points: &crate::GridfileMeshPoints,
+    closed: bool,
+) -> io::Result<()> {
+    use earthmesh_quality::topology::{
+        boundary_topology, connected_component_count, euler_characteristic,
+        genus_zero_euler_expectation, MeshTopologyValidator, Severity, TopologyIssueType,
+    };
+    let input = crate::grid_quality_pipeline::quality_input_from_gridfile_hex_native(points)?;
+    if input
+        .cells
+        .iter()
+        .any(|cell| !(5..=7).contains(&cell.vertices.len()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MPAS final cells require 5–7 corners",
+        ));
+    }
+    let boundary = boundary_topology(&input);
+    let euler = euler_characteristic(&input);
+    if closed && (boundary.edge_count != 0 || euler != 2 || connected_component_count(&input) != 1)
+    {
+        return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "regional/masked MPAS final delivery requires global-parent metrics and exact cell mapping; expected one closed sphere"));
+    }
+    if !closed && genus_zero_euler_expectation(&input, &boundary) != Some(euler) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MPAS selected topology has invalid regional Euler/boundary structure",
+        ));
+    }
+    if let Some(issue) = MeshTopologyValidator::new(&input)
+        .validate_all()
+        .into_iter()
+        .find(|issue| {
+            issue.severity == Severity::Fail
+                && (closed
+                    || !matches!(
+                        issue.issue_type,
+                        TopologyIssueType::DisconnectedMesh | TopologyIssueType::OrphanCell
+                    ))
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "MPAS final topology {}: {}",
+                issue.issue_type.as_str(),
+                issue.message
+            ),
+        ));
+    }
+    Ok(())
+}

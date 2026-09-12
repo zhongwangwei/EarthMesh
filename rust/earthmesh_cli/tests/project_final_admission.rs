@@ -340,6 +340,21 @@ fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery
             name == "cmrc",
             "{name}: unavailable nominal widths must not be synthesized"
         );
+        if widths.is_none() {
+            let output = root.join("unavailable_mpas");
+            let err = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                gridfile,
+                &output,
+                ModelFormat::Mpas,
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("missing persisted MPAS width context"),
+                "{name}: {err}"
+            );
+            assert!(!output.exists());
+        }
         let delivered = field("colm_mesh_input=");
         assert!(Path::new(&delivered).is_file());
         assert_eq!(
@@ -389,4 +404,276 @@ fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery
         );
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn project_cli_mpas_delivery_uses_the_admitted_global_hex_and_native_scales() {
+    use earthmesh_project::{ModelFormat, SpecifiedCircleRefinement, SpecifiedCircleRefinements};
+    for (kind, refined) in [
+        (MeshCellKind::Hex, true),
+        (MeshCellKind::Hex, false),
+        (MeshCellKind::Tri, false),
+    ] {
+        let root = std::env::temp_dir().join(format!(
+            "project_final_mpas_{kind:?}_{refined}_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut p = project(kind);
+        p.domain = DomainConfig::Global;
+        p.target.kind = MeshDomainKind::Atmosphere;
+        p.target.model_format = ModelFormat::Mpas;
+        p.refinement.enabled = refined;
+        if refined {
+            p.refinement.backend = RefinementBackend::Certified;
+            p.refinement.max_passes = 1;
+            p.refinement.specified_circle =
+                Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+                    lon: 110.,
+                    lat: 20.,
+                    radius_km: 500.,
+                }));
+        }
+        p.expert.niter = Some(1);
+        p.expert.niter_refine = Some(1);
+        let path = root.join("project.yaml");
+        fs::write(&path, p.to_yaml().unwrap()).unwrap();
+        let result = support::output(
+            std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([
+                    "--project",
+                    path.to_str().unwrap(),
+                    "--max-tris",
+                    "100000",
+                    "--quiet",
+                ]),
+        )
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{stdout}\n{stderr}");
+        let field = |key: &str| {
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(key))
+                .unwrap_or_else(|| panic!("missing {key}: {stdout}\n{stderr}"))
+        };
+        let quality: serde_json::Value =
+            serde_json::from_slice(&fs::read(field("project_final_quality=")).unwrap()).unwrap();
+        let gridfile = Path::new(quality["mesh_name"].as_str().unwrap());
+        if kind == MeshCellKind::Tri {
+            assert!(!stdout.contains("mpas_mesh_input="));
+            assert!(stderr
+                .contains("MPAS specialized export requires hexagonal cells; grid-only delivery"));
+            fs::remove_dir_all(root).unwrap();
+            continue;
+        }
+        let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context.source,
+            if refined {
+                "cmrc_delivered_w_levels"
+            } else {
+                "gridinit_uniform_base"
+            }
+        );
+        let mpas = netcdf::open(field("mpas_mesh_input=")).unwrap();
+        assert_eq!(quality["cell_view"], "hex");
+        assert_eq!(quality["topology"]["boundary_edge_count"], 0);
+        assert_eq!(quality["topology"]["misoriented_shared_edge_count"], 0);
+        let ncells = mpas.dimension("nCells").unwrap().len();
+        let widths = &context.cellwidth_km[context.cellwidth_km.len() - ncells..];
+        let density = mpas
+            .variable("meshDensity")
+            .unwrap()
+            .get_values::<f64, _>(..)
+            .unwrap();
+        assert_eq!(
+            density,
+            widths
+                .iter()
+                .map(|w| (context.density_reference_width_km / w).powi(4))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            mpas.variable("nominalMinDc")
+                .unwrap()
+                .get_value::<f64, _>(())
+                .unwrap(),
+            (7680 / context.base_nxp / 2_usize.pow((context.step - 1) as u32)) as f64
+                / earthmesh_core::EARTH_RADIUS_METERS
+                * 1000.0
+        );
+        let graph = fs::read_to_string(field("mpas_graph_info=")).unwrap();
+        assert_eq!(
+            graph
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            ncells
+        );
+        assert_eq!(
+            Path::new(field("mpas_mesh_input="))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent(),
+            gridfile.parent()
+        );
+        assert!(
+            stdout.find("project_final_quality=").unwrap()
+                < stdout.find("mpas_mesh_input=").unwrap()
+        );
+        drop(mpas);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn project_regional_mpas_retains_the_same_run_parent_after_final_admission() {
+    use earthmesh_project::{
+        CloseBoundaryMode, CloseMaskFormat, ModelFormat, ProjectDataLayer, ProjectLayerRole,
+    };
+    let root = std::env::temp_dir().join(format!("project_regional_mpas_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let landtype = root.join("landtype.nc4");
+    let mut f = earthmesh_cli::create_netcdf_quiet(&landtype).unwrap();
+    // Exercise the real CLI's supported 120/degree source contract, without
+    // allocating a global raster in memory or treating fill values as land.
+    f.add_dimension("longitude", 43_200).unwrap();
+    f.add_dimension("latitude", 21_600).unwrap();
+    let mut land = f
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap();
+    land.set_chunking(&[360, 180]).unwrap();
+    land.set_compression(1, true).unwrap();
+    let stripe = vec![1_i8; 360 * 21_600];
+    for lon in (0..43_200).step_by(360) {
+        land.put_values(&stripe, (lon..lon + 360, ..)).unwrap();
+    }
+    f.close().unwrap();
+    let close = root.join("domain.nml");
+    fs::write(
+        &close,
+        "close_num = 4\nclose_refine = 0\n100.0 0.0\n160.0 0.0\n160.0 50.0\n100.0 50.0\n",
+    )
+    .unwrap();
+    for format in [
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+    ] {
+        let mut p = project(MeshCellKind::Hex);
+        p.target.kind = MeshDomainKind::Land;
+        p.target.model_format = format;
+        p.target.resolution = ResolutionSpec::Nxp(6);
+        p.domain = DomainConfig::Regional {
+            shape: RegionShape::Close {
+                path: close.display().to_string(),
+                format: CloseMaskFormat::Nml,
+                boundary: CloseBoundaryMode::Polyline,
+            },
+            sea_ratio: None,
+        };
+        p.data_layers = vec![ProjectDataLayer {
+            id: "landtype".into(),
+            role: ProjectLayerRole::LandType,
+            path: landtype.display().to_string(),
+            enabled: true,
+            threshold_value: None,
+        }];
+        p.refinement.enabled = true;
+        p.refinement.backend = RefinementBackend::Certified;
+        p.refinement.max_passes = 1;
+        p.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+            earthmesh_project::SpecifiedCircleRefinement {
+                lon: 110.0,
+                lat: 20.0,
+                radius_km: 500.0,
+            },
+        ));
+        p.expert.niter = Some(1);
+        p.expert.niter_refine = Some(1);
+        let project_path = root.join("project.yaml");
+        fs::write(&project_path, p.to_yaml().unwrap()).unwrap();
+        let result = support::output(
+            std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([
+                    "--project",
+                    project_path.to_str().unwrap(),
+                    "--max-tris",
+                    "100000",
+                    "--quiet",
+                ]),
+        )
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{stdout}\n{stderr}");
+        let field = |key: &str| {
+            stdout
+                .lines()
+                .find_map(|l| l.strip_prefix(key))
+                .unwrap_or_else(|| panic!("missing {key}: {stdout}\n{stderr}"))
+        };
+        let quality: serde_json::Value =
+            serde_json::from_slice(&fs::read(field("project_final_quality=")).unwrap()).unwrap();
+        assert!(quality["topology"]["boundary_edge_count"].as_u64().unwrap() > 0);
+        assert_eq!(quality["topology"]["misoriented_shared_edge_count"], 0);
+        assert!(
+            stdout.find("project_final_quality=").unwrap()
+                < stdout.find("mpas_mesh_input=").unwrap()
+        );
+        let parent_path = Path::new(field("mpas_parent_gridfile="));
+        assert!(parent_path.is_file());
+        assert!(!parent_path.to_string_lossy().contains("cmrc-tmp"));
+        let parent =
+            earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(parent_path).unwrap();
+        let parent_input =
+            earthmesh_cli::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&parent)
+                .unwrap();
+        assert_eq!(
+            earthmesh_quality::topology::boundary_topology(&parent_input).edge_count,
+            0
+        );
+        let final_path = Path::new(quality["mesh_name"].as_str().unwrap());
+        let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(final_path)
+            .unwrap()
+            .unwrap();
+        let file = netcdf::open(field("mpas_mesh_input=")).unwrap();
+        let count = file.dimension("nCells").unwrap().len();
+        assert_eq!(
+            count as u64,
+            quality["geometry"]["cell_count"].as_u64().unwrap()
+        );
+        assert!(count < parent_input.cells.len());
+        assert_eq!(
+            file.variable("meshDensity")
+                .unwrap()
+                .get_values::<f64, _>(..)
+                .unwrap(),
+            context.cellwidth_km[context.cellwidth_km.len() - count..]
+                .iter()
+                .map(|w| (context.density_reference_width_km / w).powi(4))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            stdout.contains("mpas_graph_info="),
+            format != ModelFormat::MpasSimple
+        );
+        drop(file);
+    }
+    fs::remove_dir_all(root).unwrap();
 }

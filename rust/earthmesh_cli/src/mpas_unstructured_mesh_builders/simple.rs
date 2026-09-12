@@ -7,7 +7,9 @@ use crate::UnstructuredMesh;
 use earthmesh_mesh::lonlat_points_to_unit_xyz;
 use std::io;
 
-use super::placeholder_rows::normalize_mpas_placeholder_inputs;
+use super::placeholder_rows::{
+    normalize_mpas_placeholder_inputs, normalized_mpas_output_trim_counts,
+};
 
 pub fn build_mpas_simple_mesh_from_unstructured_one_based(
     mesh: &UnstructuredMesh,
@@ -15,6 +17,7 @@ pub fn build_mpas_simple_mesh_from_unstructured_one_based(
 ) -> io::Result<MpasSimpleMesh> {
     let (mesh, cellwidth) = normalize_mpas_placeholder_inputs(mesh, cellwidth)?;
     let mesh = &mesh;
+    let (trim_cell_rows, trim_vertex_rows) = normalized_mpas_output_trim_counts(mesh);
     let cellwidth = cellwidth.as_slice();
     validate_unstructured_mesh(mesh)?;
     if cellwidth.len() != mesh.w_points.len() {
@@ -81,7 +84,7 @@ pub fn build_mpas_simple_mesh_from_unstructured_one_based(
         .map(|width| (min_cellwidth / width).powi(4))
         .collect();
 
-    let simple = MpasSimpleMesh {
+    let mut simple = MpasSimpleMesh {
         x_cell,
         y_cell,
         z_cell,
@@ -91,6 +94,15 @@ pub fn build_mpas_simple_mesh_from_unstructured_one_based(
         cells_on_vertex,
         mesh_density,
     };
+    // Match the full builder: normalization rows are not physical output cells.
+    simple.x_cell.drain(0..trim_cell_rows);
+    simple.y_cell.drain(0..trim_cell_rows);
+    simple.z_cell.drain(0..trim_cell_rows);
+    simple.mesh_density.drain(0..trim_cell_rows);
+    simple.x_vertex.drain(0..trim_vertex_rows);
+    simple.y_vertex.drain(0..trim_vertex_rows);
+    simple.z_vertex.drain(0..trim_vertex_rows);
+    simple.cells_on_vertex.drain(0..trim_vertex_rows);
     validate_mpas_simple_mesh(&simple)?;
     Ok(simple)
 }

@@ -29,7 +29,7 @@ This feature does not change validation contracts or algorithm kernels.
 The default `--project` workflow now sends the **selected final gridfile** from
 CMRC, canonical Method-C/HField, RedGreen or LEPP through the same final admission
 entry point after AutoRefine and hydro, before explicit CoLM mesh delivery or
-configured TRI/FVCOM delivery.
+configured TRI/FVCOM or HEX/MPAS-family delivery.
 `final_quality/quality_summary.json` records this check separately from candidate
 and hydro diagnostics, including a `final_mesh_admission` gate.
 
@@ -51,14 +51,15 @@ geometry gates still follow `Warn` / `Block` / `AutoRefine`; final admission doe
 not start another repair loop.
 
 This unifies **final Project admission**, not all model-export lifecycles.
-Low-level NML paths, internal CMRC certificates and legacy model artifacts are
-unchanged. Some adapters still emit artifacts inside the engine pipeline; their
+Low-level NML paths retain their own dispatch; internal CMRC certificates and
+legacy model artifacts remain separate from final admission. Some adapters still
+emit artifacts inside the engine pipeline; their
 existence does not mean the Project passed final admission. Refined MPAS still
 requires aligned cellwidth/global-parent context; RedGreen/LEPP do not yet persist
 per-W nominal widths, so uniform widths are not substituted to pretend migration
 is complete.
 
-### MPAS native width context (prerequisite, not final dispatch)
+### MPAS native width context
 
 Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units
 `km`) together with `earthmesh_mpas_base_nxp`, `earthmesh_mpas_step`,
@@ -67,8 +68,16 @@ The vector follows every native W row, including placeholders. The reference
 width is the producer-global physical minimum, not the minimum of a later crop;
 removing the finest cells must not renormalize `meshDensity`.
 
+Newly generated, unrefined base grids record their known uniform `7680/NXP` km
+width with step 1; imported grids do not acquire invented widths. This W-row
+metadata is retained for both TRI and HEX native files: the native file stores
+both views, and the standalone MPAS adapter always consumes W polygons. It does
+not override the Project TRI/MPAS grid-only contract.
 CMRC records its existing delivered-W-level width formula for all native output
-formats. Its legacy MPAS export consumes those same values. The explicit
+formats. Its legacy MPAS export consumes those same values. CMRC native W rings
+are written in the certified primal's rotational face-fan order, rather than the
+generic conversion's unordered incident-face list; this preserves the certified
+corners and fixes inconsistent native shared-edge winding before admission. The explicit
 `write_springjustment_global_gridfile` adapter saves the older Spring core's exact
 widths, including transition interpolation, when that core supplies them. It does
 not infer widths from Method-C levels or mutate the input gridfile. This library
@@ -82,11 +91,57 @@ invalid values fail rather than select a uniform fallback.
 
 Modern Method-C/HField, RedGreen and LEPP do not yet produce this context: their
 actual nominal-width provenance must be retained before they can supply it.
-This change does not move MPAS into common Project final publication. Regional
-full MPAS also still needs the global-parent metric/weight context; compacted
-native widths alone are not sufficient. Existing MPAS builders and density
-formulas are unchanged, so do not pass cropped widths to a builder that would
-recompute their local minimum and expect parent-equivalent density.
+Regional full MPAS still needs global-parent metric/weight context; compacted
+native widths alone are not sufficient. Existing low-level builders still
+normalize by their input minimum, whereas the final adapter below explicitly
+uses the preserved global reference.
+
+### MPAS selected-final delivery
+
+For `target.cell: Hex` and `Mpas`, `MpasOcean` or `MpasSimple`, Project runs the
+shared native-context adapter **after** selected-file final admission, independent
+of backend or intent. Authoritative outputs are
+`standard/MPAS_<selected_gridfile_stem>/mesh.nc4` and (full/Ocean) `graph.info`;
+stdout identifies them as `mpas_mesh_input` and `mpas_graph_info`.
+TRI/MPAS remains explicitly grid-only, matching the capability registry.
+
+Global delivery checks actual W polygons (5–7 sides), manifold/reciprocal
+topology, no boundary, Euler 2 and one component. Regional delivery requires an
+explicit closed global parent from the selected run's `raw_output`; CMRC retains
+that native parent in the same artifact publication set and records its path as
+`global_parent_gridfile`. No filename discovery or nearest-centre matching is used.
+
+The shared verifier binds each final row by positive ancestry plus exact finite
+coordinates (signed zero is equivalent), not by assuming ancestor IDs are unique.
+It rejects ambiguous or repeated parent-row matches, changed optional levels,
+cyclic corners or W widths/reference/NXP/step/source. Regional polygons separately
+pass 5–7, manifold-boundary and component-aware Euler checks; legitimate islands
+and isolated whole cells are allowed. The ordered subset preserves final W order,
+parent metrics and density. Dropped stencil edges retain the existing zero-weight
+sentinel behavior; this is not a physical boundary-condition prescription.
+
+The connected regional producer is CMRC whole-land dual-cell selection, now
+independent of model format. Other producers may use the same adapter only when
+they supply its complete parent/geometry/width contract. Missing or malformed
+context fails, and modern Method-C/HField, RedGreen and LEPP still do not acquire
+invented widths. No new ocean-HEX selection algorithm is included. Retaining a
+parent costs additional disk space. Internal/legacy MPAS artifacts alone are not
+proof that Project final delivery passed.
+
+Density is `(producer_global_reference_width / final_W_width)^4`, aligned to
+physical rows with placeholders excluded. It is not renormalized to the cropped
+minimum. All other full/Simple/Ocean builder formulas and format conventions are
+retained, including the legacy integer `nominalMinDc` calculation; final full
+export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
+uses the existing physical-radius writer. Simple remains an incomplete mesh
+schema, not a solver-ready full mesh, and has no graph.
+
+Outputs are staged and closed before publication. The existing CMRC artifact-set
+rollback helper is shared: graph is published first and mesh last; ordinary
+publication errors restore the previous files. This is not crash-atomic or
+concurrent-reader transaction isolation. Changing to Simple removes a stale
+graph in the same publication transaction. Solver execution, boundary forcing
+and model-specific initial conditions are outside mesh export validation.
 
 ### FVCOM selected-final delivery
 

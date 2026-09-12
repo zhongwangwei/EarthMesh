@@ -26,6 +26,18 @@ fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
     )
     .expect("run Rust mkgrd gridinit path");
 
+    let context =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&report.gridfile.output)
+            .unwrap()
+            .expect("newly generated base mesh must preserve its nominal scale");
+    assert_eq!(
+        context.cellwidth_km,
+        vec![7680.0; report.gridfile.lbx_points]
+    );
+    assert_eq!(context.base_nxp, 1);
+    assert_eq!(context.step, 1);
+    assert_eq!(context.density_reference_width_km, 7680.0);
+    assert_eq!(context.source, "gridinit_uniform_base");
     assert_eq!(report.config.nxp, 1);
     assert_eq!(report.config.mode_grid, "hex");
     assert_eq!(report.workspace_mask.workspace.created_directories.len(), 5);
@@ -196,6 +208,12 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
         &namelist, &root, 100,
     )
     .expect("copy existing EarthMesh mode file");
+    assert!(
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&report.gridfile.output)
+            .unwrap()
+            .is_none(),
+        "imported mesh must not acquire guessed uniform widths"
+    );
 
     assert_eq!(report.gridfile.sjx_points, 1);
     assert_eq!(report.gridfile.lbx_points, 1);

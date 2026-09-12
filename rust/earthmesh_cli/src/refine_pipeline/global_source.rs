@@ -1,3 +1,4 @@
+use crate::atomic_output::publish_artifacts;
 use crate::certified_options::{
     read_certified_options, CertifiedDelivery, CertifiedMode, CertifiedRunOptions,
 };
@@ -44,7 +45,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, QualityNamelist, RefineConfig};
 use earthmesh_mesh::{
@@ -98,71 +99,6 @@ fn write_remap_csv<W: Write>(
         for row in formatted {
             writer.write_all(row.as_bytes())?;
         }
-    }
-    Ok(())
-}
-
-fn publish_certified_artifacts(
-    publications: &[(&Path, &Path)],
-    obsolete_paths: &[&Path],
-) -> io::Result<()> {
-    let ready = publications.len().checked_sub(1).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "no CMRC artifacts to publish")
-    })?;
-    let publication_id = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let backup_path = |path: &Path, index: usize| {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        path.with_file_name(format!(".{name}.cmrc-backup-{publication_id}-{index}"))
-    };
-    let backup_targets = std::iter::once((publications[ready].1, true))
-        .chain(
-            publications[..ready]
-                .iter()
-                .map(|(_, final_path)| (*final_path, false)),
-        )
-        .chain(obsolete_paths.iter().map(|path| (*path, false)));
-    let mut backups = Vec::new();
-    for (index, (final_path, is_ready)) in backup_targets.enumerate() {
-        if final_path.exists() {
-            if !final_path.is_file() {
-                restore_certified_backups(&backups);
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!(
-                        "CMRC artifact target is not a regular file: {}",
-                        final_path.display()
-                    ),
-                ));
-            }
-            let backup = backup_path(final_path, index);
-            if let Err(error) = fs::rename(final_path, &backup) {
-                restore_certified_backups(&backups);
-                return Err(error);
-            }
-            backups.push((final_path.to_path_buf(), backup, is_ready));
-        }
-    }
-
-    let mut published: Vec<usize> = Vec::new();
-    for (index, &(temporary, final_path)) in publications.iter().enumerate() {
-        if let Err(error) = fs::rename(temporary, final_path) {
-            for &published_index in published.iter().rev() {
-                let _ = fs::remove_file(publications[published_index].1);
-            }
-            restore_certified_backups(&backups);
-            return Err(error);
-        }
-        published.push(index);
-    }
-    for (_, backup, _) in backups {
-        let _ = fs::remove_file(backup);
     }
     Ok(())
 }
@@ -254,15 +190,6 @@ fn certified_gridfile_pre_export_lineages(mesh: &crate::UnstructuredMesh) -> (Ve
             .map(|row| lineage_for_row(row, w_has_placeholders))
             .collect(),
     )
-}
-
-fn restore_certified_backups(backups: &[(PathBuf, PathBuf, bool)]) {
-    for (original, backup, _) in backups.iter().filter(|(_, _, is_ready)| !is_ready) {
-        let _ = fs::rename(backup, original);
-    }
-    if let Some((original, backup, _)) = backups.iter().find(|(_, _, is_ready)| *is_ready) {
-        let _ = fs::rename(backup, original);
-    }
 }
 
 /// Execute global specified refinement directly through the Method-C
@@ -2329,12 +2256,11 @@ fn run_certified_pipeline(
         .transpose()?
         .flatten();
     let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
-    let regional_land_colm = config.mesh_type.trim() == "landmesh"
+    let regional_land = config.mesh_type.trim() == "landmesh"
         && matches!(config.mode_grid.trim(), "hex" | "tri")
-        && config.output_format.trim().eq_ignore_ascii_case("CoLM")
         && matches!(regional_domain, Some(GridRegion::Close { .. }));
     if regional_domain.is_some()
-        && !regional_land_colm
+        && !regional_land
         && !matches!(
             (
                 config.mesh_type.trim(),
@@ -2345,7 +2271,7 @@ fn run_certified_pipeline(
         )
     {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "CMRC regional publication supports oceanmesh/tri or landmesh/{hex,tri}/CoLM with a single close polygon only"));
+            "CMRC regional publication supports oceanmesh/tri or landmesh/{hex,tri} with a single close polygon only"));
     }
     if is_domain_export
         && !(crate::namelist_sets_landtype_file(contents)
@@ -2611,8 +2537,7 @@ fn run_certified_pipeline(
         };
     let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
     let state = spherical_voronoi_state(&triangular)?;
-    certify_cmrc_published_dual(final_mesh.primal(), &state)?;
-    let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
+    let output_mesh = build_certified_cmrc_gridfile(final_mesh.primal(), &state)?;
     log_cmrc_phase(
         timing_enabled,
         "final_certification_and_dual",
@@ -2654,6 +2579,12 @@ fn run_certified_pipeline(
             .unwrap_or("gridfile.nc4"),
         std::process::id()
     ));
+    let global_parent_path = is_domain_export.then(|| {
+        output_path.with_file_name(format!(
+            "{}_global_parent.nc4",
+            output_path.file_stem().unwrap().to_string_lossy()
+        ))
+    });
     let temporary_source_path = result_dir.join(format!(
         ".certified_source_grid.cmrc-tmp-{}",
         std::process::id()
@@ -2782,10 +2713,10 @@ fn run_certified_pipeline(
     // Only the regional land adapter proves whole dual-cell lineage. Legacy
     // global hex domain exports have not passed that audit; do not certify them.
     certificate_document["published_grid_is_certified_dual_cell_subset"] =
-        if is_domain_export && requested_view == "hex" && !regional_land_colm {
+        if is_domain_export && requested_view == "hex" && !regional_land {
             serde_json::Value::Null
         } else {
-            regional_land_colm.into()
+            regional_land.into()
         };
     certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
@@ -2840,6 +2771,7 @@ fn run_certified_pipeline(
             CertifiedDelivery::Coupled => "coupled",
         },
         "gridfile": output_path.display().to_string(),
+        "global_parent_gridfile": global_parent_path.as_ref().map(|path| path.display().to_string()),
         "remap": if is_domain_export { serde_json::Value::Null } else { serde_json::Value::String(remap_path.display().to_string()) },
         "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
         "fvcom_2dm": fvcom_output_path.as_ref().map(|path| path.display().to_string()),
@@ -2877,6 +2809,7 @@ fn run_certified_pipeline(
         let _ = fs::remove_file(path);
     }
     log_cmrc_phase(timing_enabled, "artifact_assembly", &mut phase_started);
+    let mut raw_output = None;
     let staged = (|| -> io::Result<(crate::UnstructuredMeshWriteReport, Option<usize>)> {
         {
             let mut writer = BufWriter::new(fs::File::create(&temporary_remap_path)?);
@@ -2905,7 +2838,7 @@ fn run_certified_pipeline(
         ) = if is_domain_export {
             let (m_pre_export_lineage, w_pre_export_lineage) =
                 certified_gridfile_pre_export_lineages(&output_mesh);
-            crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            let mut parent_report = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
                 &temporary_source_path,
                 &output_mesh,
                 MethodCGridfileMetadataSlices {
@@ -2917,6 +2850,8 @@ fn run_certified_pipeline(
                     ..Default::default()
                 },
             )?;
+            parent_report.output = global_parent_path.as_ref().unwrap().clone();
+            raw_output = Some(parent_report);
             let domain_workdir =
                 result_dir.join(format!(".certified_domain.cmrc-tmp-{}", std::process::id()));
             let published = publish_certified_domain_gridfile(
@@ -3058,7 +2993,6 @@ fn run_certified_pipeline(
             return Err(error);
         }
     };
-    let _ = fs::remove_file(&temporary_source_path);
     let mut publications = vec![
         (
             temporary_certificate_path.as_path(),
@@ -3069,6 +3003,9 @@ fn run_certified_pipeline(
         (temporary_resources_path.as_path(), resources_path.as_path()),
         (temporary_manifest_path.as_path(), manifest_path.as_path()),
     ];
+    if let Some(parent) = &global_parent_path {
+        publications.push((temporary_source_path.as_path(), parent.as_path()));
+    }
     if let Some(fvcom_path) = &fvcom_output_path {
         publications.push((temporary_fvcom_path.as_path(), fvcom_path.as_path()));
     }
@@ -3077,7 +3014,7 @@ fn run_certified_pipeline(
         publications.push((temporary_mpas_graph_path.as_path(), graph_path.as_path()));
     }
     publications.push((temporary_ready_marker.as_path(), ready_marker.as_path()));
-    if let Err(error) = publish_certified_artifacts(&publications, &[&obsolete_remap_path]) {
+    if let Err(error) = publish_artifacts(&publications, &[&obsolete_remap_path]) {
         for path in &temporary_paths {
             let _ = fs::remove_file(path);
         }
@@ -3155,7 +3092,7 @@ fn run_certified_pipeline(
         lepp_adaptive_hybrid: None,
         lepp_post_quality: None,
         spring_nest_iterations: 0,
-        raw_output: None,
+        raw_output,
         landtype_masked_cells,
         coupled_outputs: None,
         output,
@@ -3163,10 +3100,11 @@ fn run_certified_pipeline(
     })
 }
 
-fn certify_cmrc_published_dual(
+fn build_certified_cmrc_gridfile(
     primal: &MeshState,
     state: &earthmesh_mesh::VoronoiGridState,
-) -> io::Result<()> {
+) -> io::Result<crate::UnstructuredMesh> {
+    let mut output = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
     let mut site_remap = vec![0usize; primal.vertices().len()];
     for (compact, site) in primal.active_vertex_slots().enumerate() {
         site_remap[site] = compact + earthmesh_mesh::MESH_STATE_FIRST_ID;
@@ -3243,6 +3181,24 @@ fn certify_cmrc_published_dual(
                 format!("CMRC published Voronoi cell {site} has incident faces {published_faces:?}, certified {certified_faces:?}"),
             ));
         }
+        // The generic state carries incident-face adjacency; native W cells
+        // require the certified cyclic fan, not just the same unordered set.
+        // This conversion emits one placeholder row, so canonical id maps to id-1.
+        let row = published_site - 1;
+        if output.n_w_to_m[row] as usize != cell.degree()
+            || cell.degree() > output.w_to_m[row].len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CMRC published Voronoi cell {site} has inconsistent degree"),
+            ));
+        }
+        output.w_to_m[row].fill(1);
+        for (slot, face) in cell.triangles.iter().enumerate() {
+            output.w_to_m[row][slot] = i32::try_from(face_remap[*face]).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "CMRC face id exceeds i32")
+            })?;
+        }
     }
     for face in primal.active_triangle_slots() {
         let published_face = face_remap[face];
@@ -3287,7 +3243,7 @@ fn certify_cmrc_published_dual(
             ));
         }
     }
-    Ok(())
+    Ok(output)
 }
 
 /// Separate source provenance from the effective raster that is still hard-certified.
@@ -5485,6 +5441,7 @@ fn adaptive_landtype_file(config: &EarthmeshConfig) -> Option<&std::path::Path> 
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
     #[test]
     fn calculated_zero_mask_does_not_force_a_quiet_threshold_to_refine() {
         let root = std::env::temp_dir().join(format!("cmrc_quiet_cal_mask_{}", std::process::id()));
@@ -5722,7 +5679,7 @@ mod tests {
                 let obsolete = directory.join("obsolete-remap");
                 fs::write(&obsolete, "old-obsolete-remap").expect("write obsolete remap");
 
-                assert!(publish_certified_artifacts(&publications, &[&obsolete]).is_err());
+                assert!(publish_artifacts(&publications, &[&obsolete]).is_err());
                 for (name, (temporary, final_path)) in names.iter().zip(&paths) {
                     if previous_generation {
                         assert_eq!(
@@ -5744,7 +5701,7 @@ mod tests {
                     .all(|entry| {
                         let name = entry.expect("directory entry").file_name();
                         let name = name.to_string_lossy();
-                        !name.contains("cmrc-backup") && !name.contains("cmrc-tmp")
+                        !name.contains("earthmesh-backup") && !name.contains("cmrc-tmp")
                     }));
                 fs::remove_dir_all(directory).expect("clean publication test directory");
             }

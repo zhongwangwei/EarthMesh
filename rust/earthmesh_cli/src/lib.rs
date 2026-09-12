@@ -31,7 +31,7 @@ use global_source_axes::build_global_source_axes_one_based;
 pub mod unstructured_mesh_support;
 pub(crate) use unstructured_mesh_support::{
     gridfile_m_row_layout, gridfile_w_row_layout, mesh_row_for_canonical_id, unstructured_dimc,
-    validate_unstructured_mesh, GridfileRowLayout,
+    validate_published_cell_degrees, validate_unstructured_mesh, GridfileRowLayout,
 };
 use unstructured_mesh_support::{
     GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
@@ -162,7 +162,6 @@ pub mod mode_file_io;
 use mode_file_io::{
     convert_fvcom_mode_file_to_earthmesh, convert_iap_ocean_mode_file_to_earthmesh,
     convert_mpas_mode_file_to_earthmesh, copy_existing_earthmesh_mode_file,
-    write_gridfile_from_one_based_state,
 };
 pub mod contain_io;
 pub(crate) use contain_io::validate_contain_mesh;
