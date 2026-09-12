@@ -427,9 +427,7 @@ fn exact_hfield_quantized_context(mesh: &UnstructuredMesh) -> MpasGridfileContex
     let mut context = context_for(mesh);
     context.source = "method_c_hfield_quantized_w_demand_v1".to_string();
     context.density_reference_width_km = 12.5;
-    for width in &mut context.cellwidth_km {
-        *width = 25.0;
-    }
+    context.cellwidth_km.fill(25.0);
     context.cellwidth_km[0] = 12.5;
     context
 }
