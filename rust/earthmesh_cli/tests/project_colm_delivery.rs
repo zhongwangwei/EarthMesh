@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -51,17 +53,18 @@ fn run_project(root: &Path, project: &ProjectConfig) -> Output {
     fs::create_dir_all(root).unwrap();
     let project_path = root.join("project.yaml");
     fs::write(&project_path, project.to_yaml().unwrap()).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run earthmesh_cli --project")
+    support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run earthmesh_cli --project")
 }
 
 fn stdout_line<'a>(stdout: &'a str, prefix: &str) -> Option<&'a str> {
@@ -206,17 +209,18 @@ fn project_cli_colm_mesh_delivery_emits_only_after_successful_project_gate() {
             "data_layers: []\ndelivery:\n  colm_mesh:\n    pixels_per_degree: 1\n",
         );
     fs::write(&project_path, blocked).unwrap();
-    let blocked_output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&blocked_root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project Block delivery CLI");
+    let blocked_output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&blocked_root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project Block delivery CLI");
     let blocked_stdout = String::from_utf8_lossy(&blocked_output.stdout);
     let blocked_stderr = String::from_utf8_lossy(&blocked_output.stderr);
     assert!(

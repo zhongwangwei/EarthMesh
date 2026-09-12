@@ -1,3 +1,5 @@
+mod support;
+
 use earthmesh_cli::{
     colm_mesh_input::{write_colm_mesh_from_gridfile, write_colm_mesh_from_gridfile_with_kind},
     unstructured_mesh_support::GridfileCellKind,
@@ -478,13 +480,14 @@ fn cli_requires_explicit_valid_resolution_and_exports() {
     let output = p.join("colm.nc");
     mesh(&input, &[quad(100., 104., 20., 22.)], 1);
     let run = |tail: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-            .arg("--colm-mesh-from-gridfile")
-            .arg(&input)
-            .arg(&output)
-            .args(tail)
-            .output()
-            .unwrap()
+        support::output(
+            Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .arg("--colm-mesh-from-gridfile")
+                .arg(&input)
+                .arg(&output)
+                .args(tail),
+        )
+        .unwrap()
     };
     assert!(!run(&[]).status.success());
     assert!(!run(&["--pixels-per-degree", "0"]).status.success());
@@ -525,13 +528,14 @@ fn cli_triangle_kind_exports_m_cell_ids() {
     let input = p.join("native_tri.nc");
     let output = p.join("colm_tri.nc");
     tri_mesh(&input, 2, false);
-    let result = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .arg("--colm-mesh-from-gridfile")
-        .arg(&input)
-        .arg(&output)
-        .args(["--pixels-per-degree", "1", "--kind", "tri"])
-        .output()
-        .unwrap();
+    let result = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg("--colm-mesh-from-gridfile")
+            .arg(&input)
+            .arg(&output)
+            .args(["--pixels-per-degree", "1", "--kind", "tri"]),
+    )
+    .unwrap();
     assert!(
         result.status.success(),
         "{}",

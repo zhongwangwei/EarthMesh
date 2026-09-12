@@ -1,3 +1,5 @@
+mod support;
+
 use earthmesh_cli::{
     bbox_mask_io::write_bbox_mask_netcdf, bbox_mask_io::BBoxMask, bbox_mask_io::BBoxPoint,
     circle_close_mask_io::write_circle_mask_netcdf, circle_close_mask_io::CircleMask,
@@ -366,22 +368,23 @@ fn binary_can_run_refine_namelist_through_top_level_passthrough_smoke() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-passthrough")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .arg("--source-nlons")
-        .arg("6")
-        .arg("--source-nlats")
-        .arg("6")
-        .arg("--source-first-triangle-id")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary refine smoke");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-passthrough")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .arg("--source-nlons")
+            .arg("6")
+            .arg("--source-nlats")
+            .arg("6")
+            .arg("--source-first-triangle-id")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary refine smoke");
 
     assert!(
         output.status.success(),
@@ -425,13 +428,14 @@ fn binary_run_refine_source_state_flag_is_removed() {
     fs::write(&source_state, "not a compact source-state\n").expect("write bad source-state");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--run-refine-source-state")
-        .arg(&source_state)
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary bad source-state path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--run-refine-source-state")
+            .arg(&source_state)
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary bad source-state path");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -546,16 +550,17 @@ fn binary_can_run_refine_namelist_with_landtype_source_without_source_state_file
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary landtype-source path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary landtype-source path");
 
     assert!(
         output.status.success(),
@@ -615,16 +620,17 @@ fn binary_landtype_source_atmos_full_mpas_reports_mesh_and_graph_outputs() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary full-MPAS landtype-source path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary full-MPAS landtype-source path");
 
     assert!(
         output.status.success(),
@@ -680,15 +686,16 @@ fn binary_default_entry_runs_landtype_refine_through_refine_pipeline_path() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary default landtype-source path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary default landtype-source path");
 
     assert!(
         output.status.success(),
@@ -763,16 +770,17 @@ fn binary_landtype_source_can_run_calculated_refine_thresholds() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary landtype calculated path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary landtype calculated path");
 
     assert!(
         output.status.success(),
@@ -840,16 +848,17 @@ fn binary_landtype_source_runs_ocean_final_domain_postproc() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary landtype ocean final postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary landtype ocean final postproc path");
 
     assert!(
         output.status.success(),
@@ -909,16 +918,17 @@ fn binary_landtype_source_runs_land_final_domain_postproc() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("200000")
-        .arg("--run-refine-landtype-source")
-        .arg("--source-gridnum-perdegree")
-        .arg("1")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary landtype land final postproc path");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("200000")
+            .arg("--run-refine-landtype-source")
+            .arg("--source-gridnum-perdegree")
+            .arg("1")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary landtype land final postproc path");
 
     assert!(
         output.status.success(),

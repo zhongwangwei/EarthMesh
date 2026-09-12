@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 
 #[test]
@@ -134,13 +136,14 @@ fn earthmesh_cli_binary_runs_gridinit_namelist() {
     .expect("write namelist");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = std::process::Command::new(exe)
-        .arg(&namelist)
-        .arg("--max-tris")
-        .arg("100")
-        .current_dir(&root)
-        .output()
-        .expect("run earthmesh_cli binary");
+    let output = support::output(
+        std::process::Command::new(exe)
+            .arg(&namelist)
+            .arg("--max-tris")
+            .arg("100")
+            .current_dir(&root),
+    )
+    .expect("run earthmesh_cli binary");
 
     assert!(
         output.status.success(),

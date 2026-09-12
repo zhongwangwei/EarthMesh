@@ -1,3 +1,5 @@
+mod support;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -151,17 +153,18 @@ fn run_raw(
     }
     let nml = root.join(format!("{case}.nml"));
     fs::write(&nml, lowered.to_namelist()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(root)
-        .args([
-            nml.to_str().unwrap(),
-            "--run-refine-passthrough",
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .unwrap();
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(root)
+            .args([
+                nml.to_str().unwrap(),
+                "--run-refine-passthrough",
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .unwrap();
     mesh_from_output(root, case, &output)
 }
 
@@ -215,11 +218,12 @@ fn adaptive_zero_degree_masks_are_evaluation_windows_not_hard_demands() {
 fn run_project(root: &Path, cfg: &ProjectConfig, case: &str) -> UnstructuredMesh {
     let path = root.join(format!("{case}.yaml"));
     fs::write(&path, cfg.to_yaml().unwrap()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(root)
-        .args(["--project", path.to_str().unwrap(), "--max-tris", "100000"])
-        .output()
-        .unwrap();
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(root)
+            .args(["--project", path.to_str().unwrap(), "--max-tris", "100000"]),
+    )
+    .unwrap();
     let mesh = mesh_from_output(root, case, &output);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let delivered = netcdf::open(value(&stdout, "colm_mesh_input=")).unwrap();
