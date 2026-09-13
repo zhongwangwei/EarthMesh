@@ -28,6 +28,93 @@ fn project(kind: MeshCellKind) -> ProjectConfig {
     p
 }
 
+#[test]
+fn project_execution_cannot_bypass_final_admission_with_low_level_modes() {
+    use earthmesh_project::{ModelFormat, SpecifiedCircleRefinement, SpecifiedCircleRefinements};
+    let root =
+        std::env::temp_dir().join(format!("project_execution_boundary_{}", std::process::id()));
+    if root.exists() {
+        fs::remove_dir_all(&root).unwrap();
+    }
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("project.yaml");
+    let mut p = project(MeshCellKind::Tri);
+    p.domain = DomainConfig::Global;
+    p.refinement.enabled = true;
+    p.refinement.max_passes = 1;
+    p.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 110.,
+            lat: 20.,
+            radius_km: 500.,
+        }));
+    p.expert.niter = Some(1);
+    p.expert.niter_refine = Some(1);
+    for format in [
+        ModelFormat::Icon,
+        ModelFormat::Fvcom,
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+        ModelFormat::CoLM,
+    ] {
+        p.target.model_format = format;
+        for cell in [MeshCellKind::Tri, MeshCellKind::Hex] {
+            p.target.cell = cell;
+            for policy in [
+                ViolationPolicy::Warn,
+                ViolationPolicy::Block,
+                ViolationPolicy::AutoRefine,
+            ] {
+                p.quality.on_violation = policy;
+                let yaml = p.to_yaml().unwrap();
+                fs::write(&path, &yaml).unwrap();
+                for flag in [
+                    "--run-refine-passthrough",
+                    "--run-refine-landtype-source",
+                    "--run-mask-restart-ocean",
+                    "--run-mask-restart-patch",
+                    "--run-mask-restart-area-judge",
+                    "--run-mask-restart-area-judge-refine",
+                    "--run-mask-restart-area-judge-refine-landtype-source",
+                ] {
+                    let output = support::output(
+                        std::process::Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                            .current_dir(&root)
+                            .arg("--project")
+                            .arg(&path)
+                            .args([flag, "--quiet", "--max-tris", "100000"]),
+                    )
+                    .unwrap();
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    assert!(
+                        !output.status.success()
+                            && stderr
+                                .contains("project execution requires the default --project path")
+                            && stderr.contains("standalone namelist"),
+                        "{format:?}/{cell:?}/{policy:?}/{flag}\n{stdout}\n{stderr}"
+                    );
+                    assert!(!stdout.contains("project_final_quality="));
+                    assert!(!stdout.contains("mesh_input="));
+                    assert_eq!(fs::read_to_string(&path).unwrap(), yaml);
+                    let mut files = fs::read_dir(&root)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name())
+                        .collect::<Vec<_>>();
+                    files.sort();
+                    assert_eq!(files, ["project.yaml", "run_manifest.json"]);
+                    let manifest: serde_json::Value =
+                        serde_json::from_slice(&fs::read(root.join("run_manifest.json")).unwrap())
+                            .unwrap();
+                    assert_eq!(manifest["status"], "failed");
+                }
+            }
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 // Deliberately independent physical-cell views: TRI delivery must not audit
 // auxiliary boundary W fans as if they were delivered HEX polygons.
 fn grid(path: &Path, kind: MeshCellKind, vertices: &[(f64, f64)], cells: &[Vec<usize>]) {

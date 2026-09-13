@@ -33,6 +33,14 @@ entry point after AutoRefine and hydro, before configured model delivery
 `final_quality/quality_summary.json` records this check separately from candidate
 and hydro diagnostics, including a `final_mesh_admission` gate.
 
+`--project` cannot be combined with explicit low-level execution switches
+(`--run-refine-*` or `--run-mask-restart-*`): those dispatch paths do not select
+and admit the final Project mesh. This applies to all model formats, cell kinds
+and quality policies, including grid-only delivery and CoLM without an optional
+raster export. Remove the switch to run the full Project workflow; use a
+standalone `mkgrd.nml` for intentional low-level execution. Normal Project
+options such as `--quiet`, `--max-tris` and source-grid overrides remain available.
+
 Admission uses physical M triangles for TRI and the stored W rings for HEX:
 TRI cells require 3 edges; HEX cells require 5–7 edges, independent of backend.
 It does not sort corners or repair individual rings. Native producers use both

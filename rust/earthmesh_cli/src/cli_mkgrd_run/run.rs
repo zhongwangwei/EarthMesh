@@ -199,23 +199,9 @@ fn run_prepared_mkgrd(
         || run_mask_restart_area_judge
         || run_mask_restart_area_judge_refine
         || run_mask_restart_area_judge_refine_landtype_source;
-    if has_explicit_execution_mode
-        && project.as_ref().is_some_and(|spec| {
-            spec.config.quality.on_violation == earthmesh_project::ViolationPolicy::AutoRefine
-        })
-    {
+    if has_explicit_execution_mode && project.is_some() {
         return Err(
-            "project quality auto_refine is available only through the default --project execution path; explicit low-level execution modes cannot safely rerun the project"
-                .to_string(),
-        );
-    }
-    if has_explicit_execution_mode
-        && project
-            .as_ref()
-            .is_some_and(|spec| spec.config.delivery.colm_mesh.is_some())
-    {
-        return Err(
-            "project CoLM mesh delivery is available only through the default --project execution path; explicit low-level execution modes do not select the final project gridfile"
+            "project execution requires the default --project path for final mesh admission and model delivery; remove explicit low-level execution switches, or use a standalone namelist for low-level execution"
                 .to_string(),
         );
     }
@@ -1346,7 +1332,10 @@ mod tests {
             .into_iter(),
         )
         .unwrap_err();
-        assert!(err.contains("CoLM mesh delivery"), "{err}");
+        assert!(
+            err.contains("project execution requires the default --project path"),
+            "{err}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
