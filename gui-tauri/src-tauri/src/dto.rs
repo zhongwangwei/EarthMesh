@@ -215,12 +215,14 @@ pub(crate) struct RunResult {
     pub(crate) ok: bool,
     pub(crate) code: Option<i32>,
     pub(crate) outdir: String,
-    /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
+    /// The selected final gridfile (legacy `gridfile=` if unavailable), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
     /// CMRC certificate, manifest, and resource evidence from the reported
     /// gridfile's result directory. None for non-CMRC runs.
     pub(crate) certified: Option<serde_json::Value>,
+    /// Validated current-run completion report and path; None for failed/legacy engines.
+    pub(crate) delivery: Option<serde_json::Value>,
     /// Every candidate-selection decision produced by the shared AutoRefine
     /// loop, ordered by pass and artifact path. Empty for non-AutoRefine runs.
     pub(crate) auto_refine_decisions: Vec<AutoRefineDecision>,

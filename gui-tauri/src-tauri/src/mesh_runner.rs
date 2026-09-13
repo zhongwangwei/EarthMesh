@@ -24,7 +24,12 @@ use crate::mesh_process::{begin_run, clear_running_child, record_running_child, 
 
 static RUN_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-type CapturedGridfile = Arc<Mutex<Option<(u8, String)>>>;
+#[derive(Debug, Default)]
+pub(crate) struct ProjectOutput {
+    pub(crate) gridfile: Option<String>,
+    pub(crate) delivery_report: Option<String>,
+    gridfile_priority: u8,
+}
 
 /// Stage the complete Project and execute the canonical CLI project workflow.
 #[tauri::command]
@@ -83,13 +88,26 @@ async fn run_project_cli(
             )
         })?;
     let log_app = app.clone();
-    let (ok, code, gridfile) = capture_mesh_child_with_logger(child, run.id(), move |line| {
+    let (ok, code, output) = capture_mesh_child_with_logger(child, run.id(), move |line| {
         let _ = log_app.emit("mkgrd://log", line);
     })?;
+    let delivery = crate::project_delivery::read_project_delivery(
+        &cfg,
+        &run_dir,
+        output
+            .gridfile
+            .as_deref()
+            .filter(|_| output.gridfile_priority == 3),
+        output.delivery_report.as_deref(),
+        ok,
+    )?;
     let gridfile = if ok {
-        Some(require_project_gridfile(&run_dir, gridfile.as_deref())?)
+        Some(require_project_gridfile(
+            &run_dir,
+            output.gridfile.as_deref(),
+        )?)
     } else {
-        gridfile
+        output.gridfile
     };
     let scan = scan_auto_refine_decisions(&run_dir);
     for warning in &scan.warnings {
@@ -103,6 +121,7 @@ async fn run_project_cli(
             .as_deref()
             .and_then(read_certified_bundle_for_gridfile),
         gridfile,
+        delivery,
         auto_refine_decisions: scan.decisions,
     })
 }
@@ -358,32 +377,40 @@ pub(crate) fn join_output_thread(
         .map_err(|_| format!("child {stream} reader thread panicked"))?
 }
 
-fn capture_reported_gridfile(
-    captured: &CapturedGridfile,
+fn capture_project_output(
+    captured: &Arc<Mutex<ProjectOutput>>,
     line: &str,
     stream: &str,
 ) -> Result<(), String> {
-    let (priority, path) = if let Some(path) = line.strip_prefix("project_hydro_final_gridfile=") {
+    let mut state = captured
+        .lock()
+        .map_err(|_| "run output state lock poisoned".to_string())?;
+    if stream == "stdout" {
+        if let Some(path) = line.strip_prefix("project_delivery_report=") {
+            state.delivery_report = Some(path.trim().to_string());
+            return Ok(());
+        }
+    }
+    let (priority, path) = if let Some(path) = line
+        .strip_prefix("project_final_gridfile=")
+        .filter(|_| stream == "stdout")
+    {
+        (3, path)
+    } else if let Some(path) = line.strip_prefix("project_hydro_final_gridfile=") {
         (2, path)
     } else if let Some(path) = line.strip_prefix("earthmesh_cli: project hydro final gridfile=") {
         (2, path)
-    } else if stream == "stdout" {
-        match line.strip_prefix("gridfile=") {
-            Some(path) => (1, path),
-            None => return Ok(()),
-        }
+    } else if let Some(path) = line
+        .strip_prefix("gridfile=")
+        .filter(|_| stream == "stdout")
+    {
+        (1, path)
     } else {
         return Ok(());
     };
-    let mut state = captured
-        .lock()
-        .map_err(|_| "run gridfile state lock poisoned".to_string())?;
-    if state
-        .as_ref()
-        .map(|(current_priority, _)| priority >= *current_priority)
-        .unwrap_or(true)
-    {
-        *state = Some((priority, path.trim().to_string()));
+    if priority >= state.gridfile_priority {
+        state.gridfile_priority = priority;
+        state.gridfile = Some(path.trim().to_string());
     }
     Ok(())
 }
@@ -392,7 +419,7 @@ pub(crate) fn capture_mesh_child_with_logger<F>(
     mut child: Child,
     run_id: RunId,
     log: F,
-) -> Result<(bool, Option<i32>, Option<String>), String>
+) -> Result<(bool, Option<i32>, ProjectOutput), String>
 where
     F: Fn(String) + Clone + Send + 'static,
 {
@@ -413,23 +440,23 @@ where
         return Err(error);
     }
 
-    let gridfile_seen: CapturedGridfile = Arc::new(Mutex::new(None));
+    let output_seen = Arc::new(Mutex::new(ProjectOutput::default()));
 
     let stdout_log = log.clone();
-    let stdout_gridfile = Arc::clone(&gridfile_seen);
+    let stdout_gridfile = Arc::clone(&output_seen);
     let stdout_thread = thread::spawn(move || {
         read_child_lines(BufReader::new(stdout), "stdout", |line| {
-            capture_reported_gridfile(&stdout_gridfile, line, "stdout")?;
+            capture_project_output(&stdout_gridfile, line, "stdout")?;
             stdout_log(line.to_string());
             Ok(())
         })
     });
 
     let stderr_log = log.clone();
-    let stderr_gridfile = Arc::clone(&gridfile_seen);
+    let stderr_gridfile = Arc::clone(&output_seen);
     let stderr_thread = thread::spawn(move || {
         read_child_lines(BufReader::new(stderr), "stderr", |line| {
-            capture_reported_gridfile(&stderr_gridfile, line, "stderr")?;
+            capture_project_output(&stderr_gridfile, line, "stderr")?;
             stderr_log(format!("[stderr] {line}"));
             Ok(())
         })
@@ -449,12 +476,12 @@ where
         code.map(|value| value.to_string())
             .unwrap_or_else(|| "signal".into())
     ));
-    let gridfile = gridfile_seen
-        .lock()
-        .map_err(|_| "run gridfile state lock poisoned".to_string())?
-        .as_ref()
-        .map(|(_, path)| path.clone());
-    Ok((status.success(), code, gridfile))
+    let output = std::mem::take(
+        &mut *output_seen
+            .lock()
+            .map_err(|_| "run output state lock poisoned".to_string())?,
+    );
+    Ok((status.success(), code, output))
 }
 
 #[tauri::command]

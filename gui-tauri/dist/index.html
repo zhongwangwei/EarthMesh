@@ -870,10 +870,11 @@ function renderStep(i){
         </div></div>`;
     } else {
       const ok=runInfo&&runInfo.ok;
-      html+=`<div class="verdict"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
-        <div><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
+      html+=`<div class="verdict" style="${ok?'':'background:rgba(229,72,77,.08);border-color:#e5484d'}"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
+        <div style="min-width:0;overflow-wrap:anywhere"><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
         <div class="vs" id="runOutputSummary"></div></div></div>
         ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
+        <div class="card" id="deliveryCard" style="margin-top:16px;overflow-wrap:anywhere"></div>
         <div class="card" id="certifiedCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="autoRefineCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="qualityCard" style="margin-top:16px"><h3>${lang?"质量指标":"Quality metrics"}</h3>
@@ -2434,6 +2435,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function clearRunArtifacts() {
     hasRun = false;
     runInfo = null;
+    const deliveryCard = document.getElementById("deliveryCard");
+    if (deliveryCard) { deliveryCard.textContent = ""; deliveryCard.style.display = "none"; }
     _lastQuality = null;
     _meshPreview = null;
     _meshPreviewToken++;
@@ -3397,6 +3400,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (runInfo && runInfo.outdir) invoke("open_path", { path: runInfo.outdir }).catch((e) => logLine("✗ " + e));
     };
     if (runInfo) renderAutoRefineDecisions(runInfo.autoRefineDecisions || []);
+    renderProjectDelivery(runInfo);
     if (runInfo) renderCertifiedRun(runInfo.certified);
     // Re-render the cached quality result when step 6 rebuilds its DOM.
     if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
@@ -4039,7 +4043,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
                      : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
         setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
         const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, certified: r.certified || null, autoRefineDecisions: decisions };
+        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
         if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
         break;
       }
@@ -4062,13 +4066,69 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   const openButton = (label, path) => {
     if (!path) return null;
-    const button = document.createElement("span");
+    const button = document.createElement("button");
+    button.type = "button";
     button.className = "btn-ghost";
     button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
     button.textContent = label;
     button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
     return button;
   };
+
+  function renderProjectDelivery(result) {
+    const card = document.getElementById("deliveryCard");
+    if (!card) return;
+    card.style.display = "";
+    card.textContent = "";
+    const title = document.createElement("h3");
+    title.textContent = zh() ? "实际交付结果" : "Actual delivery";
+    card.appendChild(title);
+    const summary = document.createElement("div");
+    summary.className = "ch";
+    card.appendChild(summary);
+    if (!result || !result.ok) {
+      summary.textContent = zh() ? "运行失败，未确认模型文件交付。" : "Run failed; model delivery is not confirmed.";
+      return;
+    }
+    const bundle = result.delivery;
+    if (!bundle || !bundle.report) {
+      summary.textContent = zh() ? "引擎未报告实际交付结果；无法确认模型文件已交付。" : "This engine did not report actual delivery; model files are unconfirmed.";
+      return;
+    }
+    const report = bundle.report;
+    const delivered = report.model_delivery_status === "model_delivered";
+    summary.textContent = delivered
+      ? (zh() ? "模型文件已交付（不代表已通过模型试运行）。" : "Model files delivered (not a model solver validation).")
+      : (zh() ? "仅生成通用网格；未交付模型文件。" : "Native mesh only; no model files delivered.");
+    const target = document.createElement("p");
+    target.className = "ch";
+    target.textContent = [report.target.kind, report.target.cell, report.target.model_format].join(" / ")
+      + " · " + (zh() ? "计划能力：" : "Planned capability: ") + report.capability
+      + " · " + (zh() ? "最终质量判定：" : "Final quality verdict: ") + report.final_quality.verdict.toUpperCase();
+    card.appendChild(target);
+    if (report.skipped_reason) {
+      const reason = document.createElement("p");
+      reason.className = "ch"; reason.textContent = report.skipped_reason;
+      card.appendChild(reason);
+    }
+    const files = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = zh() ? "文件与检查报告" : "Files and check reports";
+    files.appendChild(label);
+    const paths = [
+      [zh()?"最终选定网格":"Selected final mesh", report.gridfile],
+      [zh()?"最终质量报告":"Final quality report", report.final_quality.report],
+      [zh()?"交付清单":"Delivery record", bundle.report_path],
+      ...Object.entries(report.model_artifacts),
+    ];
+    paths.forEach(([name, path]) => {
+      const row = document.createElement("div");
+      const text = document.createElement("div");
+      text.className = "ch"; text.textContent = path;
+      row.append(openButton(name, path), text); files.appendChild(row);
+    });
+    card.appendChild(files);
+  }
 
   function renderCertifiedRun(bundle) {
     const card = document.getElementById("certifiedCard");

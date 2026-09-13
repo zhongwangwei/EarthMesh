@@ -19,6 +19,7 @@ mod mesh_paths;
 mod mesh_process;
 mod mesh_runner;
 mod project_commands;
+mod project_delivery;
 mod project_edits;
 mod project_queries;
 mod quality;

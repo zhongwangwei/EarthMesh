@@ -1278,3 +1278,39 @@ log("discrete mask is existing-project-only");
   check(!stale.length && !missing.length, "i18n key drift", { stale, missing });
   log(`checked ${keys.length} i18n keys`);
 }
+
+// Execute the actual delivery renderer, including legacy/failed paths, without a DOM dependency.
+{
+  const body = section(html, /function renderProjectDelivery\(result\) \{([\s\S]*?)\n  \}\n\n  function renderCertifiedRun/, "actual delivery renderer");
+  const render = new Function("result", "document", "zh", "openButton", body);
+  const element = () => ({
+    style: {}, children: [], value: "",
+    set textContent(value) { this.value = value; this.children = []; },
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(" "); },
+    append(...children) { this.children.push(...children); },
+    appendChild(child) { this.append(child); },
+  });
+  for (const chinese of [false, true]) {
+    const card = element(), links = [];
+    const document = { getElementById: () => card, createElement: element };
+    const open = (name, path) => { links.push(path); const button = element(); button.textContent = name; return button; };
+    const report = { target: {kind:"Land",cell:"Tri",model_format:"CoLM"}, capability:"full",
+      gridfile:"/run/final.nc4", final_quality:{report:"/run/quality.json",verdict:"warn"},
+      model_delivery_status:"model_delivered", model_artifacts:{colm_mesh_input:"/run/colm.nc"}, skipped_reason:null };
+    const result = {ok:true,delivery:{report_path:"/run/delivery.json",report}};
+    render(result, document, () => chinese, open);
+    check(card.textContent.includes(chinese ? "模型文件已交付" : "Model files delivered"), "actual delivered renderer");
+    check(links.join() === "/run/final.nc4,/run/quality.json,/run/delivery.json,/run/colm.nc", "renderer must bind current record paths");
+    report.model_delivery_status="native_only"; report.model_artifacts={}; report.skipped_reason="<img src=x>";
+    links.length=0; render(result, document, () => chinese, open);
+    check(card.textContent.includes(chinese ? "仅生成通用网格" : "Native mesh only") && card.textContent.includes("<img src=x>"), "native-only reason renders as text");
+    check(links.length===3, "native-only must not expose model links");
+    for (const input of [{ok:true}, {...result,ok:false}, null]) {
+      links.length=0; render(input, document, () => chinese, open);
+      check(links.length===0 && !card.textContent.includes("CoLM"), "failed or legacy runs must clear delivery links");
+      check(card.textContent.includes(input && input.ok ? (chinese ? "无法确认" : "unconfirmed") : (chinese ? "运行失败" : "Run failed")), "unknown is not delivered");
+    }
+  }
+  check(html.includes("delivery: r.ok ? r.delivery || null : null") && html.includes('deliveryCard.textContent = ""; deliveryCard.style.display = "none";'), "actual delivery is captured only on success and cleared on restart");
+  log("actual delivery renderer: final links, native-only, legacy, failure and bilingual text passed");
+}

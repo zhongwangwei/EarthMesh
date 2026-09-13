@@ -211,8 +211,9 @@ automatically.
   through the shared `earthmesh_project` model.
 - Data layers, domain, quality, refinement, target output, and run state are
   reflected from `ProjectConfig` instead of duplicated frontend tables.
-- Runs are explicit: the backend stages the engine, writes `mkgrd.nml`, streams
-  stdout/stderr to the Log pane, supports kill, and reports the output directory.
+- Runs are explicit: the backend stages the engine and `project.yaml`, invokes
+  the shared CLI `--project` workflow, streams stdout/stderr to the Log pane,
+  supports kill, and reports the output directory.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
   engine reports a gridfile; quality uses `tri-strict` for triangle targets and
   `hex-cgrid` for hex targets.
@@ -258,3 +259,69 @@ platform icon set.
 - **Own workspace.** `src-tauri/Cargo.toml` declares an empty `[workspace]`, so
   this app stays out of the engine workspace and never affects
   `cargo test -p earthmesh_*`.
+
+## Actual Project delivery in Run / Results
+
+The result card reads the CLI's `project_delivery_report=` completion record,
+not the configured model, directory contents, or process exit status alone.
+`project_final_gridfile=` takes precedence over hydro/intermediate and legacy
+`gridfile=` lines, so map/quality loading follows the selected final mesh.
+
+- **Model files delivered** means the current successful adapter returned the
+  expected model artifacts. It does not mean a model solver has been run.
+- **Native mesh only** is a valid successful outcome for grid-only pairings and
+  CoLM without the optional mesh-raster delivery request; the reason is shown.
+- A compatible older engine without a completion record shows **unconfirmed**,
+  not an inferred model-delivered result. A malformed reported record fails the
+  GUI run rather than silently downgrading it to success.
+
+The backend checks the schema, configured target/capability, artifact keys,
+selected mesh, and final-quality mesh/verdict linkage. Referenced files must
+exist within this unique run directory after canonicalization. Only a successful
+child supplies an actual delivery card; restarting clears it. Keyboard-accessible
+buttons open the selected native mesh, model files, original final-quality
+report, and delivery record. The original admission report is distinct from the
+GUI's optional quality reanalysis. See the [CLI delivery contract](../docs/project_threshold_region.md).
+
+### Bounded integration verification
+
+`make test-gui` includes dependency-free execution of the actual JS renderer and
+Rust record/capture regressions. An optional real-CLI smoke test covers Land/CoLM
+TRI and HEX, CoLM without raster opt-in, Atmosphere/MPAS, regional Ocean/FVCOM,
+and a legal TRI/MPAS native-only pairing. NXP3 uniform grids and synthetic constant
+masks make this a delivery-boundary check, not a realistic coastline,
+refinement-quality, performance, or solver benchmark.
+
+With existing Python netCDF4/numpy and Playwright installations, run from the
+repository root (no packages are installed by these checks):
+
+```sh
+export EARTHMESH_GUI_E2E_ENGINE="$PWD/target/debug/earthmesh_cli"
+export EARTHMESH_GUI_E2E_OUTPUT="$(mktemp -d)"
+CARGO_TARGET_DIR=target cargo build --manifest-path rust/earthmesh_cli/Cargo.toml
+python3 - <<'PY'
+import os
+from pathlib import Path
+import netCDF4
+import numpy as np
+root = Path(os.environ["EARTHMESH_GUI_E2E_OUTPUT"])
+for name, value in [("land", 1), ("ocean", 0)]:
+    with netCDF4.Dataset(root / f"{name}.nc4", "w") as ds:
+        ds.createDimension("longitude", 43200)
+        ds.createDimension("latitude", 21600)
+        v = ds.createVariable("landtype", "i1", ("longitude", "latitude"),
+                              zlib=True, complevel=1, chunksizes=(360, 180))
+        stripe = np.full((360, 21600), value, dtype="i1")
+        for x in range(0, 43200, 360):
+            v[x:x+360, :] = stripe
+PY
+CARGO_TARGET_DIR=target/gui cargo test --manifest-path gui-tauri/src-tauri/Cargo.toml --lib gui_real_project_delivery_land_atmosphere_ocean -- --ignored
+python3 scripts/check_gui_delivery_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
+```
+
+The Python check feeds real CLI/Rust GUI results through **mocked Tauri
+transport** in headless Chromium: Chinese/English at 1400px and 1000px,
+file-link paths and keyboard activation, missing records, failed/pending runs,
+and inert diagnostic text. It does not emulate native map/quality commands or
+assert native WebView packaging or model-solver readiness. Regional CMRC Ocean
+uses its supported close-polygon path; unsupported bbox entry remains rejected.

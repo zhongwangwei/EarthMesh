@@ -808,7 +808,11 @@ fn sidecar_success_reports_exit_and_gridfile() {
     let run = mesh_process::begin_run().expect("reserve run");
     let logs = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&logs);
-    let child = spawn_test_sidecar("gridfile=/tmp/gui-success.nc", "sidecar warning", 0);
+    let child = spawn_test_sidecar(
+        "gridfile=/tmp/base.nc\nproject_final_gridfile=/tmp/gui-success.nc\nproject_hydro_final_gridfile=/tmp/intermediate.nc\ngridfile=/tmp/rejected.nc",
+        "sidecar warning",
+        0,
+    );
 
     let (ok, code, gridfile) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
@@ -818,7 +822,7 @@ fn sidecar_success_reports_exit_and_gridfile() {
 
     assert!(ok);
     assert_eq!(code, Some(0));
-    assert_eq!(gridfile.as_deref(), Some("/tmp/gui-success.nc"));
+    assert_eq!(gridfile.gridfile.as_deref(), Some("/tmp/gui-success.nc"));
     assert!(logs
         .lock()
         .unwrap()
@@ -842,7 +846,7 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
 
     assert!(!ok);
     assert_eq!(code, Some(7));
-    assert_eq!(gridfile, None);
+    assert_eq!(gridfile.gridfile, None);
     let logs = logs.lock().unwrap();
     assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
     assert!(logs.iter().any(|line| line == "— exited with 7"));
@@ -3741,4 +3745,177 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.certified_maximum_cells, 900_000);
     assert_eq!(summary.certified_gradation_rings_per_level, 5);
     assert_eq!(summary.certified_search_budget, 12_000);
+}
+
+/// Opt-in boundary smoke; runs the real CLI, not external model solvers.
+/// See scripts/check_gui_delivery_e2e.py for WebView transport/render verification.
+#[test]
+#[ignore = "requires EARTHMESH_GUI_E2E_ENGINE and EARTHMESH_GUI_E2E_OUTPUT with land.nc4/ocean.nc4 fixtures"]
+fn gui_real_project_delivery_land_atmosphere_ocean() {
+    use earthmesh_project::{ColmMeshDeliveryConfig, MeshCellKind, RefinementBackend};
+    let _guard = RUN_STATE_TEST_LOCK.lock().unwrap();
+    let engine = env::var("EARTHMESH_GUI_E2E_ENGINE").expect("absolute CLI binary path");
+    let root = PathBuf::from(env::var("EARTHMESH_GUI_E2E_OUTPUT").expect("artifact directory"));
+    let mut records = Vec::new();
+    for (name, kind, cell, format, colm, backend) in [
+        (
+            "land_tri",
+            MeshDomainKind::Land,
+            MeshCellKind::Tri,
+            ModelFormat::CoLM,
+            true,
+            RefinementBackend::Certified,
+        ),
+        (
+            "land_hex",
+            MeshDomainKind::Land,
+            MeshCellKind::Hex,
+            ModelFormat::CoLM,
+            true,
+            RefinementBackend::MethodC,
+        ),
+        (
+            "land_native",
+            MeshDomainKind::Land,
+            MeshCellKind::Tri,
+            ModelFormat::CoLM,
+            false,
+            RefinementBackend::RedGreen,
+        ),
+        (
+            "atmosphere",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Hex,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::Certified,
+        ),
+        (
+            "ocean",
+            MeshDomainKind::Ocean,
+            MeshCellKind::Tri,
+            ModelFormat::Fvcom,
+            false,
+            RefinementBackend::Certified,
+        ),
+        (
+            "grid_only",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Tri,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::MethodC,
+        ),
+    ] {
+        let mut cfg = ProjectConfig::scaffold(
+            name,
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(3),
+        );
+        cfg.target.kind = kind;
+        cfg.target.cell = cell;
+        cfg.target.model_format = format;
+        cfg.refinement.enabled = false;
+        cfg.refinement.backend = backend;
+        cfg.refinement.threshold_enabled = false;
+        cfg.data_layers.clear();
+        cfg.expert.niter = Some(1);
+        cfg.quality.on_violation = ViolationPolicy::Warn;
+        if kind == MeshDomainKind::Land || kind == MeshDomainKind::Ocean {
+            cfg.data_layers.push(ProjectDataLayer {
+                id: "landtype".into(),
+                role: ProjectLayerRole::LandType,
+                path: root
+                    .join(if kind == MeshDomainKind::Land {
+                        "land.nc4"
+                    } else {
+                        "ocean.nc4"
+                    })
+                    .display()
+                    .to_string(),
+                enabled: true,
+                threshold_value: None,
+            });
+        }
+        if kind == MeshDomainKind::Ocean {
+            let close = root.join("ocean-domain.nml");
+            fs::write(
+                &close,
+                "close_num=4\nclose_refine=0\n100 0\n160 0\n160 50\n100 50\n",
+            )
+            .unwrap();
+            cfg.domain = DomainConfig::Regional {
+                shape: RegionShape::Close {
+                    path: close.display().to_string(),
+                    format: CloseMaskFormat::Nml,
+                    boundary: CloseBoundaryMode::Polyline,
+                },
+                sea_ratio: None,
+            };
+        }
+        if colm {
+            cfg.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+                pixels_per_degree: 1,
+            });
+        }
+        let dir = mesh_runner::project_run_dir(&cfg, Some(root.join(name).display().to_string()))
+            .unwrap();
+        let yaml = cfg.to_yaml().unwrap();
+        fs::write(dir.join("project.yaml"), &yaml).unwrap();
+        let run = mesh_process::begin_run().unwrap();
+        let child = mesh_runner::project_cli_command(&engine, &dir.join("project.yaml"), &dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&logs);
+        let (ok, code, output) =
+            mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
+                capture.lock().unwrap().push(line)
+            })
+            .unwrap();
+        fs::write(dir.join("gui.log"), logs.lock().unwrap().join("\n")).unwrap();
+        assert!(ok, "{name}: {}", dir.join("gui.log").display());
+        let gridfile =
+            mesh_runner::require_project_gridfile(&dir, output.gridfile.as_deref()).unwrap();
+        let delivery = crate::project_delivery::read_project_delivery(
+            &cfg,
+            &dir,
+            Some(&gridfile),
+            output.delivery_report.as_deref(),
+            ok,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            delivery["report"]["model_delivery_status"],
+            if name == "land_native" || name == "grid_only" {
+                "native_only"
+            } else {
+                "model_delivered"
+            }
+        );
+        let quality: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                delivery["report"]["final_quality"]["report"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(quality["mesh_name"], gridfile);
+        records.push(serde_json::json!({"name":name,"summary": project_summary(yaml).unwrap(), "quality":quality,
+            "result":dto::RunResult {ok, code, outdir:dir.display().to_string(), gridfile:Some(gridfile), delivery:Some(delivery), certified:None, auto_refine_decisions:Vec::new()}}));
+    }
+    fs::write(
+        root.join("gui-records.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"capabilities":project_capabilities().unwrap(),"cases":records}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
 }

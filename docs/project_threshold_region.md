@@ -100,6 +100,12 @@ Artifacts come from adapter return values, never a scan of earlier files; reject
 AutoRefine candidates and global parents are not the selected native output.
 This does not change standalone NML output or add a final-admission bypass.
 
+The GUI Run / Results card now consumes this actual record, validates its
+selected-mesh/final-quality linkage and run-scoped artifact paths, and exposes
+native/model/report file links. Older engines without a record remain explicitly
+unconfirmed; failed runs never show a model-delivered result. This does not change
+planned capability or turn legitimate native-only delivery into an error.
+
 ### MPAS native width context
 
 Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units
