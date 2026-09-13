@@ -218,11 +218,18 @@ Complete demand coverage is necessary, not sufficient, for MPAS delivery:
 admission remain mandatory. Retained nominal targets do not certify achieved
 resolution or model-solver suitability.
 
-Known generation boundary: the NXP 6 global-bbox LEPP case with two insertions
-still produces two degree-4 W cells. Its resolved demand is retained, but final
-MPAS rejects the parent even when selected regional cells pass admission.
-Fixing the insertion/degree contract is separate from this metadata contract;
-no geometry or final gate is changed here.
+HEX LEPP now commits a legal single insertion or a bounded atomic pair: when
+one midpoint creates a degree-4 fan, one neighboring LEPP insertion must restore
+the full affected set to 5–7 sides. Both sites consume the insertion budget; the
+closure is recorded as balance work (or boundary work when splitting a protected
+segment), not another physical demand. A rejected pair restores mesh and segment
+state. The NXP 6 global-bbox two-insertion regression now delivers global and
+selected regional MPAS, MPAS-Ocean and MPAS-Simple with the retained demand.
+Insufficient budget or no legal local pair can still prevent progress: HEX runs
+with unresolved demand and zero committed insertions fail rather than publish an
+unchanged success. Partial progress still reports unresolved demand. This fixes
+the insertion contract, not the angle-quality objective or demand completeness;
+TRI keeps its historical single-insertion behavior and final gates are unchanged.
 
 ### Native spherical W-ring construction
 

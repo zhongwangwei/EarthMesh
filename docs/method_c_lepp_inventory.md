@@ -173,9 +173,14 @@ face -> LEPP -> interior terminal edge -> spherical midpoint
 
 The midpoint rejects near-antipodal edges. The insertion report carries stable
 site/face ids and the locally affected sites. Method-C gates preserve the
-twelve original pentagon degrees and the writer's degree-seven limit. A
-committed test insertion remains closed, Delaunay, deterministic, local, and
-round-trips through the Method-C table rebuild.
+twelve original pentagon degrees and the writer's degree-seven limit. For HEX
+CLI publication the same gate also requires every affected vertex to remain in
+the 5..=7 degree range; when a single terminal midpoint would create a
+degree-four Voronoi cell, the local paired insertion is bounded by the same
+per-run/per-cycle budgets and both committed sites are counted. TRI keeps the
+historical minimum-degree-free behavior. A committed test insertion remains closed,
+Delaunay, deterministic, local, and round-trips through the Method-C table
+rebuild.
 
 ## PostQuality production continuation
 
@@ -198,9 +203,12 @@ The production switch is explicit:
 The quality block's `min_angle_warn_deg` is the spherical minimum-angle target;
 the maximum-edge target is optional. This path currently requires a global,
 spherical, closed Method-C mesh. It preserves the ordinary
-`gridfile_NXP####_<mode>.nc4` and writes
+`gridfile_NXP####_<mode>.nc4` and, only after that canonical output has been
+published, attempts the optional optimized publication
 `gridfile_NXP####_<mode>_lepp.nc4` plus
-`method_c_lepp_post_quality.json`.
+`method_c_lepp_post_quality.json`. For HEX, an unchanged optimized mesh is not
+reported as success while quality violations remain; the CLI fails clearly
+instead of falling back or relabeling the canonical mesh.
 
 ## AdaptiveHybrid and constrained-boundary continuation
 
@@ -217,7 +225,11 @@ The constrained insertion API accepts an `earthmesh_boundary::SegmentList`.
 Boundary-terminal insertion is allowed only on a protected segment; splitting
 inherits its marker, and mesh plus marker state roll back together on failure.
 If a proposed terminal midpoint encroaches another protected segment, that
-segment is split first and the original demand remains for the next cycle.
+segment is split first and the original demand remains for the next cycle. For
+HEX, zero committed insertions with unresolved hard demand is a failure before
+final conversion/writers, while nonzero partial runs still publish their
+unresolved-demand report. This is a bounded local repair contract, not a blanket
+completeness or angle-improvement guarantee.
 `refine_adaptive_hybrid_constrained` drives the same AdaptiveHybrid loop after
 verifying that every listed segment is a real mesh edge and every open edge is
 protected. The CLI discretises named-region and output-domain boundaries as

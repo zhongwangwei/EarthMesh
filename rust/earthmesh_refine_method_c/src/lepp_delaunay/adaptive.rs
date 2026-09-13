@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,15 +18,11 @@ use earthmesh_mesh::{
 };
 use earthmesh_refine::RefinementCause;
 
-use super::insertion::{
-    insert_lepp_terminal_midpoint_constrained_with_postcondition,
-    insert_lepp_terminal_midpoint_with_postcondition, LeppInsertionSplitReason,
-};
+use super::insertion::{insert_lepp_terminal_batch, LeppInsertionSplitReason};
 use super::post_quality::{quality_snapshot, strictly_improves_quality_snapshot};
 use super::{
-    insert_lepp_terminal_midpoint_constrained, push_report_detail, spherical_edge_length, FaceId,
-    LeppInsertionError, LeppInsertionGates, LeppInsertionReport, LeppPostQualityConfig,
-    LeppSearchConfig, LEPP_REPORT_DETAIL_LIMIT,
+    push_report_detail, spherical_edge_length, FaceId, LeppInsertionError, LeppInsertionGates,
+    LeppInsertionReport, LeppPostQualityConfig, LeppSearchConfig, LEPP_REPORT_DETAIL_LIMIT,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -690,8 +687,7 @@ fn refine_adaptive_hybrid_impl(
             )? {
                 continue;
             }
-            report.path_stats.attempted += 1;
-            let insertion = if candidate.kind == CandidateKind::Quality {
+            let quality = if candidate.kind == CandidateKind::Quality {
                 let quality_config = LeppPostQualityConfig {
                     minimum_spherical_triangle_angle_degrees: Some(config.minimum_triangle_angle),
                     ..LeppPostQualityConfig::default()
@@ -701,70 +697,70 @@ fn refine_adaptive_hybrid_impl(
                         message: error.to_string(),
                     }
                 })?;
-                if let Some(segments) = segments.as_deref_mut() {
-                    insert_lepp_terminal_midpoint_constrained_with_postcondition(
-                        mesh,
-                        segments,
-                        candidate.stable.slot,
-                        &config.search,
-                        &config.gates,
-                        |state, _| {
-                            quality_snapshot(state, &quality_config).is_ok_and(|after| {
-                                strictly_improves_quality_snapshot(after, baseline)
-                            })
-                        },
-                    )
-                } else {
-                    insert_lepp_terminal_midpoint_with_postcondition(
-                        mesh,
-                        candidate.stable.slot,
-                        &config.search,
-                        &config.gates,
-                        |state, _| {
-                            quality_snapshot(state, &quality_config).is_ok_and(|after| {
-                                strictly_improves_quality_snapshot(after, baseline)
-                            })
-                        },
-                    )
-                }
-            } else if let Some(segments) = segments.as_deref_mut() {
-                insert_lepp_terminal_midpoint_constrained(
-                    mesh,
-                    segments,
-                    candidate.stable.slot,
-                    &config.search,
-                    &config.gates,
-                )
+                Some((quality_config, baseline))
             } else {
-                insert_lepp_terminal_midpoint_with_postcondition(
-                    mesh,
-                    candidate.stable.slot,
-                    &config.search,
-                    &config.gates,
-                    |_, _| true,
-                )
+                None
             };
-            match insertion {
-                Ok(insertion) => {
-                    committed_this_cycle += 1;
-                    report.path_stats.committed += 1;
-                    let path_len = insertion.path.faces.len();
-                    report.path_stats.total_path_faces += path_len;
-                    report.path_stats.max_path_faces =
-                        report.path_stats.max_path_faces.max(path_len);
-                    *path_histogram.entry(path_len).or_default() += 1;
-                    push_report_detail(&mut report.path_stats.path_lengths, path_len);
-                    match committed_kind(candidate.kind, insertion.split_reason) {
-                        CandidateKind::Physical => report.insertion_counts.physical += 1,
-                        CandidateKind::Balance => report.insertion_counts.balance += 1,
-                        CandidateKind::Quality => report.insertion_counts.quality += 1,
-                        CandidateKind::Boundary => report.insertion_counts.boundary += 1,
+            let remaining = (config.maximum_insertions_per_cycle - committed_this_cycle)
+                .min(config.maximum_vertices - mesh.vertex_count());
+            let quality_error = RefCell::new(None);
+            let batch = insert_lepp_terminal_batch(
+                mesh,
+                segments.as_deref_mut(),
+                candidate.stable.slot,
+                &config.search,
+                &config.gates,
+                remaining,
+                |state| {
+                    if quality_error.borrow().is_some() {
+                        return false;
                     }
-                    push_report_detail(&mut report.insertions, insertion);
+                    quality.as_ref().is_none_or(
+                        |(quality_config, baseline)| match quality_snapshot(state, quality_config) {
+                            Ok(after) => strictly_improves_quality_snapshot(after, *baseline),
+                            Err(error) => {
+                                quality_error.replace(Some(error));
+                                false
+                            }
+                        },
+                    )
+                },
+            );
+            if let Some(error) = quality_error.into_inner() {
+                return Err(AdaptiveHybridError::InvalidMesh {
+                    message: error.to_string(),
+                });
+            }
+            report.path_stats.attempted += batch.attempted;
+            match batch.result {
+                Ok(insertions) => {
+                    report.path_stats.rejected += batch.attempted - insertions.len();
+                    for (index, insertion) in insertions.into_iter().enumerate() {
+                        committed_this_cycle += 1;
+                        report.path_stats.committed += 1;
+                        let path_len = insertion.path.faces.len();
+                        report.path_stats.total_path_faces += path_len;
+                        report.path_stats.max_path_faces =
+                            report.path_stats.max_path_faces.max(path_len);
+                        *path_histogram.entry(path_len).or_default() += 1;
+                        push_report_detail(&mut report.path_stats.path_lengths, path_len);
+                        let kind = if index == 0 {
+                            candidate.kind
+                        } else {
+                            CandidateKind::Balance
+                        };
+                        match committed_kind(kind, insertion.split_reason) {
+                            CandidateKind::Physical => report.insertion_counts.physical += 1,
+                            CandidateKind::Balance => report.insertion_counts.balance += 1,
+                            CandidateKind::Quality => report.insertion_counts.quality += 1,
+                            CandidateKind::Boundary => report.insertion_counts.boundary += 1,
+                        }
+                        push_report_detail(&mut report.insertions, insertion);
+                    }
                     rejected_this_mesh.clear();
                 }
                 Err(error) => {
-                    report.path_stats.rejected += 1;
+                    report.path_stats.rejected += batch.attempted;
                     rejected_this_mesh.insert((candidate.criterion_id.clone(), candidate.stable));
                     push_report_detail(
                         &mut report.rejections,
@@ -872,8 +868,12 @@ fn validate_config(config: &AdaptiveHybridConfig) -> Result<(), AdaptiveHybridEr
             "minimum_triangle_angle must be finite and in [0, 60)",
         ));
     }
-    if config.gates.maximum_vertex_degree < 3 {
-        return Err(invalid("maximum_vertex_degree must be at least three"));
+    if config.gates.maximum_vertex_degree < 3
+        || config.gates.minimum_vertex_degree > config.gates.maximum_vertex_degree
+    {
+        return Err(invalid(
+            "maximum_vertex_degree must be at least three and not less than minimum_vertex_degree",
+        ));
     }
     Ok(())
 }

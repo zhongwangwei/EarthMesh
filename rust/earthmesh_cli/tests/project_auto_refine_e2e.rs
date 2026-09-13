@@ -737,7 +737,7 @@ fn lepp_resolved_project() -> earthmesh_project::ProjectConfig {
 }
 
 #[test]
-fn project_lepp_resolved_region_rejects_degree_four_parent_after_selected_admission() {
+fn project_lepp_resolved_region_delivers_mpas_after_selected_admission() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("lepp_inserting.yaml");
@@ -761,25 +761,10 @@ fn project_lepp_resolved_region_rejects_degree_four_parent_after_selected_admiss
     .expect("run inserting LEPP Project CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success(),
-        "inserting LEPP HEX still has a degree-4 parent"
-    );
-    assert!(
-        stderr.contains("project MPAS final delivery")
-            && stderr.contains("requires 5..=7")
-            && stderr.contains("degree 4"),
-        "{stderr}"
-    );
-    assert!(!stdout.contains("mpas_mesh_input=") && !stdout.contains("mpas_graph_info="));
-    for name in ["mesh.nc4", "graph.info"] {
-        let mut artifacts = Vec::new();
-        find_named(&root, name, &mut artifacts);
-        assert!(
-            artifacts.is_empty(),
-            "no final artifact after rejection: {artifacts:?}"
-        );
-    }
+    assert!(output.status.success(), "{stderr}\n{stdout}");
+    let mesh = Path::new(project_field(&stdout, "mpas_mesh_input="));
+    let graph = Path::new(project_field(&stdout, "mpas_graph_info="));
+    assert!(mesh.is_file() && graph.is_file());
 
     let final_quality = Path::new(project_field(&stdout, "project_final_quality="));
     let quality: serde_json::Value =
@@ -819,5 +804,21 @@ fn project_lepp_resolved_region_rejects_degree_four_parent_after_selected_admiss
     assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
     assert_eq!(context.base_nxp, 6);
     assert!((context.density_reference_width_km - reference_km).abs() < 1.0e-9);
+    assert_eq!(
+        scalar_attr_string(mesh, "earthmesh_mpas_cellwidth_source"),
+        context.source
+    );
+    assert!(
+        (scalar_attr_f64(mesh, "earthmesh_mpas_density_reference_width_km") - reference_km).abs()
+            < 1.0e-9
+    );
+    let file = netcdf::open(mesh).unwrap();
+    let degrees = file
+        .variable("nEdgesOnCell")
+        .unwrap()
+        .get_values::<i32, _>(..)
+        .unwrap();
+    assert!(!degrees.is_empty() && degrees.iter().all(|n| (5..=7).contains(n)));
+    drop(file);
     let _ = fs::remove_dir_all(root);
 }

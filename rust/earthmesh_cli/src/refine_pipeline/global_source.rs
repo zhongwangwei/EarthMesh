@@ -74,6 +74,17 @@ fn log_cmrc_phase(enabled: bool, phase: &str, started: &mut Instant) {
     }
 }
 
+fn method_c_lepp_insertion_gates(
+    protected_pentagons: [usize; 12],
+    mode_grid: &str,
+) -> LeppInsertionGates {
+    let mut gates = LeppInsertionGates::for_method_c(protected_pentagons);
+    if mode_grid.trim() == "hex" {
+        gates.minimum_vertex_degree = 5;
+    }
+    gates
+}
+
 fn format_remap_csv_row(row: &earthmesh_refine_certified::remap::RemapRow) -> String {
     let mut output = String::with_capacity(row.sources.len().saturating_mul(32));
     for &(source, weight) in &row.sources {
@@ -783,7 +794,7 @@ pub fn run_refine_pipeline_namelist(
                                 "NL%lepp_post_quality_max_insertions must fit usize",
                             )
                         })?,
-                        gates: LeppInsertionGates::for_method_c(mesh.impent),
+                        gates: method_c_lepp_insertion_gates(mesh.impent, config.mode_grid.trim()),
                         ..LeppPostQualityConfig::default()
                     };
                     let report =
@@ -1217,6 +1228,15 @@ pub fn run_refine_pipeline_namelist(
     };
 
     let lepp_post_quality = if let Some(lepp) = lepp_post_quality {
+        if config.mode_grid.trim() == "hex"
+            && lepp.report.committed == 0
+            && lepp.report.after.violating_faces > 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "LEPP post-quality HEX optimization committed no insertions while quality violations remain; refusing unchanged _lepp 5..=7 publication",
+            ));
+        }
         let hard_center_demand = adaptive_hard_center_demand(
             adaptive_run.as_ref(),
             config.mode_grid.trim(),
@@ -4398,7 +4418,7 @@ fn refine_with_method_c_lepp(
             maximum_path_length: options.maximum_path_length,
             ..LeppSearchConfig::default()
         },
-        gates: LeppInsertionGates::for_method_c(pentagons),
+        gates: method_c_lepp_insertion_gates(pentagons, config.mode_grid.trim()),
     };
     let mut boundary_segments = lepp_region_boundary_segments(&state, named_regions, domain_region);
     let refinement_started = std::time::Instant::now();
@@ -4439,6 +4459,15 @@ fn refine_with_method_c_lepp(
             report.stop_reason =
                 earthmesh_refine_method_c::AdaptiveHybridStopReason::NoCommittableInsertion;
         }
+    }
+    if config.mode_grid.trim() == "hex"
+        && report.path_stats.committed == 0
+        && report.unresolved_demand_count > 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "LEPP AdaptiveHybrid HEX refinement committed no insertions while demands remain unresolved; refusing unchanged 5..=7 publication",
+        ));
     }
     let refined = state.to_triangular_mesh(pentagons, None)?;
     let initial_voronoi = spherical_voronoi_state(&refined)?;

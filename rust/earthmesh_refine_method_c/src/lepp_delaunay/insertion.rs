@@ -1,10 +1,13 @@
+mod batch;
+pub(crate) use batch::insert_lepp_terminal_batch;
+
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
 use earthmesh_boundary::SegmentList;
 use earthmesh_mesh::{
     magnitude, CartesianPoint, FaceId as StableFaceId, InsertionReport, InsertionTransactionError,
-    MeshState, VertexId, MESH_STATE_FIRST_ID,
+    MeshPatch, MeshState, VertexId, MESH_STATE_FIRST_ID,
 };
 
 use super::{find_lepp, LeppEdgeId, LeppPath, LeppSearchConfig, LeppSearchError, LeppTerminal};
@@ -12,6 +15,8 @@ use super::{find_lepp, LeppEdgeId, LeppPath, LeppSearchConfig, LeppSearchError, 
 /// Hard gates for one terminal-edge insertion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LeppInsertionGates {
+    /// Zero leaves primal TRI fans unrestricted below the maximum. HEX uses five.
+    pub minimum_vertex_degree: usize,
     pub maximum_vertex_degree: usize,
     pub protected_vertices: Vec<usize>,
 }
@@ -19,6 +24,7 @@ pub struct LeppInsertionGates {
 impl Default for LeppInsertionGates {
     fn default() -> Self {
         Self {
+            minimum_vertex_degree: 0,
             maximum_vertex_degree: 7,
             protected_vertices: Vec::new(),
         }
@@ -102,6 +108,7 @@ pub enum LeppInsertionError {
     DegreeLimit {
         vertex: usize,
         degree: usize,
+        minimum: usize,
         maximum: usize,
     },
     ProtectedVertexDegreeWouldChange {
@@ -156,11 +163,12 @@ impl std::fmt::Display for LeppInsertionError {
             Self::DegreeLimit {
                 vertex,
                 degree,
+                minimum,
                 maximum,
             } => write!(
                 formatter,
-                "terminal midpoint would leave vertex {vertex} at degree {degree}; maximum is \
-                 {maximum}"
+                "terminal midpoint would leave vertex {vertex} at degree {degree}; required range is \
+                 {minimum}..={maximum}"
             ),
             Self::ProtectedVertexDegreeWouldChange {
                 vertex,
@@ -284,11 +292,24 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
     gates: &LeppInsertionGates,
     postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
 ) -> Result<LeppInsertionReport, LeppInsertionError> {
+    insert_terminal_midpoint_staged(mesh, start, config, gates, false, postcondition)
+        .map(|(report, _)| report)
+}
+
+fn insert_terminal_midpoint_staged(
+    mesh: &mut MeshState,
+    start: usize,
+    config: &LeppSearchConfig,
+    gates: &LeppInsertionGates,
+    retain_undo: bool,
+    postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
+) -> Result<(LeppInsertionReport, Option<MeshPatch>), LeppInsertionError> {
     // Batch drivers validate the closed mesh once before their insertion loop;
     // the public one-shot wrapper performs the same check for standalone use.
-    if gates.maximum_vertex_degree < 3 {
+    if gates.maximum_vertex_degree < 3 || gates.minimum_vertex_degree > gates.maximum_vertex_degree
+    {
         return Err(LeppInsertionError::InvalidGates {
-            message: "maximum_vertex_degree must be at least three".to_string(),
+            message: "maximum_vertex_degree must be at least three and not less than minimum_vertex_degree".to_string(),
         });
     }
     if let Some(&vertex) = gates
@@ -319,6 +340,11 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let undo = if retain_undo {
+        Some(mesh.snapshot_around(&insertion_cavity(mesh, point, None)?))
+    } else {
+        None
+    };
     let failure = Cell::new(None);
     let transaction = mesh.insert_site_transactionally(point, |state, report| {
         let changed: BTreeSet<_> = report.created.iter().copied().collect();
@@ -333,7 +359,7 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
                 failure.set(Some(GateFailure::UnmeasurableDegree { vertex }));
                 return false;
             };
-            if degree > gates.maximum_vertex_degree {
+            if degree < gates.minimum_vertex_degree || degree > gates.maximum_vertex_degree {
                 failure.set(Some(GateFailure::Degree { vertex, degree }));
                 return false;
             }
@@ -367,6 +393,7 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
                 return Err(LeppInsertionError::DegreeLimit {
                     vertex,
                     degree,
+                    minimum: gates.minimum_vertex_degree,
                     maximum: gates.maximum_vertex_degree,
                 });
             }
@@ -400,16 +427,19 @@ pub(crate) fn insert_lepp_terminal_midpoint_with_postcondition(
         .filter_map(|&vertex| mesh.vertex_id(vertex))
         .collect();
     let created_faces = insertion.created_ids.clone();
-    Ok(LeppInsertionReport {
-        path,
-        requested_edge: edge,
-        split_edge: edge,
-        split_reason: LeppInsertionSplitReason::TerminalEdge,
-        point,
-        insertion,
-        affected_sites,
-        created_faces,
-    })
+    Ok((
+        LeppInsertionReport {
+            path,
+            requested_edge: edge,
+            split_edge: edge,
+            split_reason: LeppInsertionSplitReason::TerminalEdge,
+            point,
+            insertion,
+            affected_sites,
+            created_faces,
+        },
+        undo,
+    ))
 }
 
 pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
@@ -420,9 +450,31 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
     gates: &LeppInsertionGates,
     postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
 ) -> Result<LeppInsertionReport, LeppInsertionError> {
-    if gates.maximum_vertex_degree < 3 {
+    insert_terminal_midpoint_constrained_staged(
+        mesh,
+        segments,
+        start,
+        config,
+        gates,
+        false,
+        postcondition,
+    )
+    .map(|(report, _)| report)
+}
+
+fn insert_terminal_midpoint_constrained_staged(
+    mesh: &mut MeshState,
+    segments: &mut SegmentList,
+    start: usize,
+    config: &LeppSearchConfig,
+    gates: &LeppInsertionGates,
+    retain_undo: bool,
+    postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
+) -> Result<(LeppInsertionReport, Option<MeshPatch>), LeppInsertionError> {
+    if gates.maximum_vertex_degree < 3 || gates.minimum_vertex_degree > gates.maximum_vertex_degree
+    {
         return Err(LeppInsertionError::InvalidGates {
-            message: "maximum_vertex_degree must be at least three".to_string(),
+            message: "maximum_vertex_degree must be at least three and not less than minimum_vertex_degree".to_string(),
         });
     }
     if let Some(&vertex) = gates
@@ -484,6 +536,7 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
         .flatten();
     let splits_open_edge = open_edge_face.is_some();
     let cavity = insertion_cavity(mesh, point, open_edge_face)?;
+    let undo = retain_undo.then(|| mesh.snapshot_around(&cavity));
     let cavity_sites = mesh.sites_touching(&cavity);
     let protected_degrees = gates
         .protected_vertices
@@ -568,6 +621,7 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
                     return Err(LeppInsertionError::DegreeLimit {
                         vertex,
                         degree,
+                        minimum: gates.minimum_vertex_degree,
                         maximum: gates.maximum_vertex_degree,
                     });
                 }
@@ -604,16 +658,19 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
         .filter_map(|&vertex| mesh.vertex_id(vertex))
         .collect();
     let created_faces = insertion.created_ids.clone();
-    Ok(LeppInsertionReport {
-        path,
-        requested_edge: terminal_edge,
-        split_edge: edge,
-        split_reason,
-        point,
-        insertion,
-        affected_sites,
-        created_faces,
-    })
+    Ok((
+        LeppInsertionReport {
+            path,
+            requested_edge: terminal_edge,
+            split_edge: edge,
+            split_reason,
+            point,
+            insertion,
+            affected_sites,
+            created_faces,
+        },
+        undo,
+    ))
 }
 
 fn validate_segments_are_mesh_edges(
@@ -701,7 +758,7 @@ fn constrained_gates_pass(
             failure.set(Some(GateFailure::UnmeasurableDegree { vertex }));
             return false;
         };
-        if degree > gates.maximum_vertex_degree {
+        if degree < gates.minimum_vertex_degree || degree > gates.maximum_vertex_degree {
             failure.set(Some(GateFailure::Degree { vertex, degree }));
             return false;
         }
