@@ -2814,6 +2814,114 @@ fn switching_landtype_sources_in_both_directions_keeps_one_mask_source() {
 }
 
 #[test]
+fn opened_sources_survive_gui_compose_without_activating_preset_defaults() {
+    for intent in [
+        MeshIntentPreset::AtmosphereMpas,
+        MeshIntentPreset::HydrologyLand,
+        MeshIntentPreset::CoastalOcean,
+    ] {
+        let scaffold = ProjectConfig::scaffold(
+            "opened_sources",
+            intent,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(80),
+        );
+        for mut sources in [
+            vec![],
+            vec![ProjectDataLayer {
+                id: "landcover".into(),
+                role: ProjectLayerRole::LandType,
+                path: String::new(),
+                enabled: false,
+                threshold_value: Some(4.0),
+            }],
+            vec![ProjectDataLayer {
+                // IDs do not determine source roles; opened schema fields do.
+                id: "landcover".into(),
+                role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+                path: "/opened/lai.nc".into(),
+                enabled: true,
+                threshold_value: Some(2.5),
+            }],
+        ] {
+            let mut opened = scaffold.clone();
+            if intent != MeshIntentPreset::AtmosphereMpas {
+                sources.push(ProjectDataLayer {
+                    id: "custom_landcover".into(),
+                    role: ProjectLayerRole::LandType,
+                    path: "/opened/landcover.nc".into(),
+                    enabled: true,
+                    threshold_value: None,
+                });
+            }
+            opened.data_layers = sources.clone();
+            opened.validate().expect("valid opened project fixture");
+            let yaml = preserve_unexposed_project_fields(
+                opened.to_yaml().unwrap(),
+                scaffold.to_yaml().unwrap(),
+                false,
+            )
+            .expect("preserve opened sources");
+            let saved = validate_project(yaml).unwrap();
+            let restored = ProjectConfig::from_yaml(&saved).unwrap();
+            for source in &sources {
+                assert_eq!(
+                    restored
+                        .data_layers
+                        .iter()
+                        .find(|layer| layer.id == source.id),
+                    Some(source),
+                    "opened source changed for {intent:?}"
+                );
+            }
+            for slot in &restored.data_layers {
+                if !sources.iter().any(|source| source.id == slot.id) {
+                    assert!(
+                        !slot.enabled,
+                        "unexpected active source: {intent:?} {slot:?}"
+                    );
+                    assert!(slot.path.is_empty(), "unexpected preset path: {slot:?}");
+                }
+            }
+            let reopened = preserve_unexposed_project_fields(
+                saved.clone(),
+                scaffold.to_yaml().unwrap(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                ProjectConfig::from_yaml(&reopened).unwrap().data_layers,
+                restored.data_layers,
+                "save/reopen must not change source configuration"
+            );
+
+            // Missing preset slots remain available for an explicit source edit.
+            let edited = set_layer_path(saved, "lai".into(), "/new/lai.nc".into(), true)
+                .expect("explicitly enable a previously absent source");
+            let edited = ProjectConfig::from_yaml(&edited).unwrap();
+            let lai = edited
+                .data_layers
+                .iter()
+                .find(|layer| layer.id == "lai")
+                .unwrap();
+            assert!(lai.enabled);
+            assert_eq!(lai.path, "/new/lai.nc");
+            assert_eq!(
+                edited
+                    .data_layers
+                    .iter()
+                    .filter(|layer| {
+                        layer.enabled
+                            && layer.role == ProjectLayerRole::Threshold(ThresholdField::Lai)
+                    })
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
 fn opened_custom_landtype_source_survives_gui_compose_roundtrip() {
     let mut opened =
         ProjectConfig::from_yaml(&hydrology_yaml("custom_landtype_roundtrip")).unwrap();

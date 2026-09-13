@@ -66,7 +66,7 @@ pub(crate) fn set_project_metadata(
 /// The frontend composes YAML from visible controls. When the user opens an
 /// existing project and saves/runs without editing advanced sections, we should
 /// not silently drop carried-but-hidden project fields such as hydro/coupling
-/// options, expert overrides, unsupported domain shapes, or custom data layers.
+/// options, expert overrides, unsupported domain shapes, or source configuration.
 #[tauri::command]
 pub(crate) fn preserve_unexposed_project_fields(
     base_yaml: String,
@@ -110,25 +110,17 @@ pub(crate) fn preserve_unexposed_project_fields(
         cfg.target.model_format = base.target.model_format;
     }
 
-    for layer in base.data_layers {
+    // Opened sources are authoritative; missing preset slots are browse targets,
+    // not permission to activate a default source. Visible edits replay afterward.
+    let scaffold_layers = std::mem::replace(&mut cfg.data_layers, base.data_layers);
+    for mut layer in scaffold_layers {
         if !cfg
             .data_layers
             .iter()
             .any(|candidate| candidate.id == layer.id)
         {
-            if layer.enabled
-                && matches!(
-                    layer.role,
-                    earthmesh_project::ProjectLayerRole::Threshold(_)
-                        | earthmesh_project::ProjectLayerRole::LandType
-                )
-            {
-                for sibling in &mut cfg.data_layers {
-                    if sibling.role == layer.role {
-                        sibling.enabled = false;
-                    }
-                }
-            }
+            layer.enabled = false;
+            layer.path.clear();
             cfg.data_layers.push(layer);
         }
     }
