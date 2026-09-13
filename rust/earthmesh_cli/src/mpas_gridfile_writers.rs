@@ -299,7 +299,11 @@ fn write_final_mpas(
                     "MPAS physical W row count mismatch",
                 ));
             }
-            if context.source == crate::mpas_gridfile_context::HFIELD_QUANTIZED_DEMAND_V1 {
+            if matches!(
+                context.source.as_str(),
+                crate::mpas_gridfile_context::HFIELD_QUANTIZED_DEMAND_V1
+                    | crate::mpas_gridfile_context::ADAPTIVE_REGION_PASS_DEMAND_V1
+            ) {
                 full.nominal_min_dc = context.density_reference_width_km * 1000.0
                     / earthmesh_core::EARTH_RADIUS_METERS;
             }

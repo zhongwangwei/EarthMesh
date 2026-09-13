@@ -67,3 +67,38 @@ fn topology_order_reverses_clockwise_walk_to_ccw() {
 
     assert_eq!(ordered[2], vec![10, 60, 50, 40, 30, 20, 1]);
 }
+
+#[test]
+fn topology_order_rejects_invalid_cycle_or_orientation_instead_of_guessing() {
+    for case in [
+        "zero_center",
+        "nan_center",
+        "overflow_center",
+        "nan_vertex",
+        "zero_area",
+        "broken_cycle",
+    ] {
+        let (mut vertices, mut cells) = hexagon_points([0.0, 60.0, 120.0, 180.0, 240.0, 300.0]);
+        let mut edges = hexagon_edges();
+        match case {
+            "zero_center" => cells[2] = CartesianPoint::new(0.0, 0.0, 0.0),
+            "nan_center" => cells[2].x = f64::NAN,
+            "overflow_center" => cells[2].x = f64::MAX,
+            "nan_vertex" => vertices[10].x = f64::NAN,
+            "zero_area" => vertices.fill(CartesianPoint::new(0.0, 0.0, 1.0)),
+            "broken_cycle" => edges[30] = [98, 99, 0],
+            _ => unreachable!(),
+        }
+        assert!(
+            order_vertices_on_cell_by_shared_edges_one_based(
+                &[vec![], vec![], vec![10, 20, 30, 40, 50, 60, 1]],
+                &[0, 0, 6],
+                &edges,
+                &vertices,
+                &cells,
+            )
+            .is_none(),
+            "{case}"
+        );
+    }
+}

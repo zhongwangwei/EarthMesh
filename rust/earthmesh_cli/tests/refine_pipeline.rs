@@ -233,6 +233,26 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
             .unwrap()
             .expect("post-quality nominal demand evaluated at new W sites");
     assert!(derivative_widths.cellwidth_km.len() > widths.cellwidth_km.len());
+    // This metadata-less derivative owns a fresh parent snapshot, not the
+    // discarded Method-C ancestry or invented refinement generations.
+    let snapshot = netcdf::open(&derivative.output.output).unwrap();
+    for (name, dim) in [
+        ("earthmesh_m_lineage", "sjx_points"),
+        ("earthmesh_w_lineage", "lbx_points"),
+    ] {
+        let rows = snapshot.dimension(dim).unwrap().len();
+        assert_eq!(
+            snapshot
+                .variable(name)
+                .unwrap()
+                .get_values::<i64, _>(..)
+                .unwrap(),
+            (1..=rows).map(|row| row as i64).collect::<Vec<_>>()
+        );
+    }
+    assert!(snapshot.variable("earthmesh_m_refine_level").is_none());
+    assert!(snapshot.variable("earthmesh_w_refine_level").is_none());
+    drop(snapshot);
     let derivative_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
         &derivative.output.output,
     )
@@ -1061,6 +1081,71 @@ fn default_atmos_native_method_c_mdomain_five_overrides_compatibility_global_fla
             grid.glatw[iw], grid.yew[iw],
             "mdomain=5 should keep Canonical cartesian-y W output placeholders"
         );
+    }
+}
+
+#[test]
+fn cartesian_method_c_rejects_spherical_adaptive_before_generation() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    for (refine_spc, refine_cal) in [(true, false), (false, true)] {
+        let root = temp_root(&format!("cartesian_adaptive_{refine_spc}_{refine_cal}"));
+        let namelist = root.join("cartesian_adaptive.nml");
+        fs::write(
+            &namelist,
+            format!(
+                "&mkgrd
+  NL%EXPNME='cartesian_adaptive'
+  NL%base_dir='{}/'
+  NL%NXP=6
+  NL%deltax=1.0
+  NL%mesh_type='atmosmesh'
+  NL%mode_grid='hex'
+  NL%mode_file='none'
+  NL%mode_file_description='none'
+  NL%refine=.true.
+  NL%refine_backend='method_c'
+  NL%niter=0
+  NL%landtype_file='none'
+  NL%mask_domain_global=.true.
+  NL%mask_patch_on=.false.
+  NL%output_format='MPAS'
+  NL%mdomain=5
+  NL%ngrids=2
+  NL%ngrdll(2)=1
+  NL%grdrad(2,1)=2.0
+  NL%grdlat(2,1)=0.0
+  NL%grdlon(2,1)=0.0
+/
+&mkrefine
+  RL%Istransition=.true.
+  RL%SpringGlobal_type=0
+  RL%SpringRegional_type=0
+  RL%niter_refine=0
+  RL%refine_spc=.{refine_spc}.
+  RL%refine_cal=.{refine_cal}.
+  RL%max_iter_spc=1
+  RL%max_iter_cal=1
+/
+&adaptive
+  NL%adaptive_on=.true.
+  NL%adaptive_max_level=1
+/
+",
+                root.display(),
+            ),
+        )
+        .expect("write Cartesian adaptive namelist");
+
+        // Even tiny X/Y values inside latitude bounds are not geographic sites.
+        // Zero triangle budget proves admission happens before grid generation.
+        let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 0, None)
+            .expect_err("Cartesian adaptive demand has no native coordinate contract");
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+        assert!(
+            error.to_string().contains("Cartesian-XY &adaptive"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1, "no mesh delivery");
     }
 }
 

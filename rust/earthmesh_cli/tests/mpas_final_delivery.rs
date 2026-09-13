@@ -511,6 +511,7 @@ fn final_mpas_delivery_rejects_missing_malformed_bad_degree_and_open_global_inpu
         "missing_context",
         "malformed_context",
         "bad_degree",
+        "misoriented_ring",
         "open_global_parent_required",
         "density_underflow",
         "zero_nominal",
@@ -530,6 +531,12 @@ fn final_mpas_delivery_rejects_missing_malformed_bad_degree_and_open_global_inpu
             }
             "bad_degree" => {
                 let mesh = bad_degree_mesh();
+                write_gridfile(&gridfile, &mesh, Some(&context_for(&mesh)));
+            }
+            "misoriented_ring" => {
+                let mut mesh = canonical_voronoi_fixture_mesh();
+                let n = mesh.n_w_to_m[1] as usize;
+                mesh.w_to_m[1][1..n].reverse();
                 write_gridfile(&gridfile, &mesh, Some(&context_for(&mesh)));
             }
             "open_global_parent_required" => {
@@ -574,6 +581,9 @@ fn final_mpas_delivery_rejects_missing_malformed_bad_degree_and_open_global_inpu
                 err.kind(),
                 io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
             ));
+        }
+        if case == "misoriented_ring" {
+            assert!(err.to_string().contains("misoriented_shared_edge"), "{err}");
         }
         assert_bundle_preserved(&out);
         assert_no_staged_artifacts(&out);
@@ -1339,4 +1349,245 @@ fn regional_mpas_final_delivery_rejects_ambiguous_same_ancestry_identity() {
         assert_no_staged_artifacts(&out);
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+fn adaptive_region_pipeline_delivery(backend: &str) {
+    let root = temp_root(&format!("adaptive_region_{backend}"));
+    let namelist = root.join("adaptive.nml");
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd
+  NL%EXPNME='adaptive_region'
+  NL%base_dir='{}/'
+  NL%NXP=21
+  NL%mesh_type='atmosmesh'
+  NL%mode_grid='hex'
+  NL%mode_file='none'
+  NL%mode_file_description='none'
+  NL%refine=.true.
+  NL%refine_backend='{backend}'
+  NL%niter=0
+  NL%beta=1.0
+  NL%relax=0.25
+  NL%landtype_file='none'
+  NL%mask_domain_global=.true.
+  NL%mask_patch_on=.false.
+  NL%output_format='MPAS'
+/
+&mkrefine
+  RL%Istransition=.true.
+  RL%SpringGlobal_type=0
+  RL%SpringRegional_type=0
+  RL%niter_refine=0
+  RL%refine_spc=.true.
+  RL%refine_cal=.false.
+  RL%max_iter_spc=1
+  RL%max_iter_cal=0
+  RL%num_rc=0
+  RL%halo=3,3,3,0,0,0,0,0,0
+  RL%max_transition_row=3,3,3,0,0,0,0,0,0
+  RL%mask_refine_spc_type='circle'
+  RL%mask_refine_spc_fprefix='inline:circles:lon=114,lat=22,radius_km=400'
+/
+&adaptive
+  adaptive_on=.true.
+  adaptive_max_level=1
+  adaptive_base_m=400000.0
+  adaptive_coastline=.false.
+/
+",
+            root.display()
+        ),
+    )
+    .unwrap();
+    let disabled = root.join("adaptive_disabled.nml");
+    fs::write(
+        &disabled,
+        fs::read_to_string(&namelist)
+            .unwrap()
+            .replace("adaptive_on=.true.", "adaptive_on=.false.")
+            .replace("EXPNME='adaptive_region'", "EXPNME='adaptive_disabled'"),
+    )
+    .unwrap();
+    let no_record = earthmesh_cli::run_refine_pipeline_namelist(&disabled, &root, 200_000, None)
+        .expect("direct named-only producer remains supported");
+    assert!(
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&no_record.output.output)
+            .unwrap()
+            .is_none(),
+        "missing adaptive record must not fabricate nominal demand"
+    );
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 200_000, None)
+        .expect("real adaptive region producer");
+    let parent = &run.output.output;
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(parent)
+        .unwrap()
+        .expect("producer must persist its actual region-pass demand");
+    assert_eq!(context.source, "adaptive_region_pass_w_demand_v1");
+    assert_eq!(context.base_nxp, 21);
+    assert_eq!(context.step, 2);
+    assert_eq!(context.density_reference_width_km, 200.0);
+    if backend == "red_green" {
+        let file = netcdf::open(parent).unwrap();
+        for (name, dim) in [
+            ("earthmesh_m_lineage", "sjx_points"),
+            ("earthmesh_w_lineage", "lbx_points"),
+        ] {
+            let rows = file.dimension(dim).unwrap().len();
+            assert_eq!(
+                file.variable(name)
+                    .expect("parent snapshot lineage must exist")
+                    .get_values::<i64, _>(..)
+                    .unwrap(),
+                (1..=rows).map(|row| row as i64).collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            file.variable("earthmesh_w_refine_level").is_none(),
+            "snapshot identity must not invent algorithm generations"
+        );
+    }
+    let points =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(parent).unwrap();
+    let first = points.n_w_to_m.iter().position(|&n| n >= 3).unwrap();
+    let demand = earthmesh_mesh::RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+        radius_meters: 400_000.0,
+        level: 1,
+    };
+    for row in first..points.w_points.len() {
+        let requested = demand.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(
+            points.w_points[row].lon,
+            points.w_points[row].lat,
+        ));
+        assert_eq!(
+            context.cellwidth_km[row],
+            if requested { 200.0 } else { 400.0 }
+        );
+    }
+    assert!(context.cellwidth_km[first..].contains(&200.0));
+    assert!(context.cellwidth_km[first..].contains(&400.0));
+
+    if backend == "method_c" {
+        // Post-quality is a new snapshot: evaluate the same emitted request at
+        // its changed W sites rather than copying the old row widths.
+        let derivative_namelist = root.join("derivative.nml");
+        let config = fs::read_to_string(&namelist)
+            .unwrap()
+            .replace("EXPNME='adaptive_region'", "EXPNME='adaptive_derivative'")
+            .replace("mode_grid='hex'", "mode_grid='tri'")
+            .replace("output_format='MPAS'", "output_format='CoLM'");
+        fs::write(
+            &derivative_namelist,
+            format!("{config}\n&quality\n NL%lepp_post_quality=.true.\n NL%lepp_post_quality_max_insertions=1\n NL%lepp_post_quality_max_edge_km=100.0\n/\n"),
+        )
+        .unwrap();
+        let derivative =
+            earthmesh_cli::run_refine_pipeline_namelist(&derivative_namelist, &root, 200_000, None)
+                .unwrap()
+                .lepp_post_quality
+                .expect("actual adaptive post-quality derivative");
+        let widths = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(
+            &derivative.output.output,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(widths.cellwidth_km.len() > context.cellwidth_km.len());
+        assert_eq!(widths.source, context.source);
+        assert_eq!(
+            widths.density_reference_width_km,
+            context.density_reference_width_km
+        );
+        let changed = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+            &derivative.output.output,
+        )
+        .unwrap();
+        let first = changed.n_w_to_m.iter().position(|&n| n >= 3).unwrap();
+        for (point, &width) in changed.w_points[first..]
+            .iter()
+            .zip(&widths.cellwidth_km[first..])
+        {
+            let requested = demand.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(
+                point.lon, point.lat,
+            ));
+            assert_eq!(width, if requested { 200.0 } else { 400.0 });
+        }
+    }
+
+    // A crop on the opposite hemisphere removes every finest-demand cell.
+    let regional = root.join("regional.nc4");
+    let kept = earthmesh_cli::regional_gridfile_writers::write_regional_gridfile(
+        parent,
+        &regional,
+        &earthmesh_cli::coordinate_types::GridRegion::Bbox {
+            west: -150.0,
+            east: -60.0,
+            south: -50.0,
+            north: 50.0,
+        },
+        "hex",
+    )
+    .unwrap();
+    assert!(kept > 0 && kept < points.w_points.len() - first);
+    let selected = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&regional)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.density_reference_width_km, 200.0);
+    for format in [
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+    ] {
+        for (name, grid, widths, parent_path) in [
+            ("global", parent.as_path(), &context, None),
+            (
+                "regional",
+                regional.as_path(),
+                &selected,
+                Some(parent.as_path()),
+            ),
+        ] {
+            let out = root.join(format!("{name}_{format:?}"));
+            let (file, graph) = if let Some(parent) = parent_path {
+                earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile_with_parent(
+                    grid, parent, &out, format,
+                )
+            } else {
+                earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                    grid, &out, format,
+                )
+            }
+            .unwrap();
+            assert_eq!(graph.is_some(), format != ModelFormat::MpasSimple);
+            assert_density_from_context(&file, widths);
+            assert_delivery_provenance(&file, widths);
+            if name == "regional" {
+                assert!(read_f64(&file, "meshDensity")
+                    .iter()
+                    .all(|&rho| rho == 1.0 / 16.0));
+            }
+            if format != ModelFormat::MpasSimple {
+                let radius = if format == ModelFormat::MpasOcean {
+                    MPAS_OCEAN_SPHERE_RADIUS_METERS
+                } else {
+                    1.0
+                };
+                assert_close(
+                    read_f64(&file, "nominalMinDc")[0],
+                    200_000.0 / earthmesh_core::EARTH_RADIUS_METERS * radius,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn method_c_adaptive_region_pipeline_delivers_global_and_regional_mpas() {
+    adaptive_region_pipeline_delivery("method_c");
+}
+
+#[test]
+fn redgreen_adaptive_region_pipeline_delivers_global_and_regional_mpas() {
+    adaptive_region_pipeline_delivery("red_green");
 }

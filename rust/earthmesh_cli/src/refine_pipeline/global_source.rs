@@ -399,6 +399,12 @@ pub fn run_refine_pipeline_namelist(
             "LEPP AdaptiveHybrid requires the spherical Method-C base mesh; Cartesian-XY and native surface expansion are unsupported",
         ));
     }
+    if backend == RefineBackend::MethodC && native_cartesian_xy && adaptive_options.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Cartesian-XY &adaptive requires a native demand contract; spherical point+radius demand is unsupported",
+        ));
+    }
     let method_c_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
     let active_hfield_options = hfield_options.as_ref();
@@ -1069,8 +1075,12 @@ pub fn run_refine_pipeline_namelist(
                 w_ngr: &meta.w_ngr,
             }),
         hfield_context.as_ref(),
+        adaptive_run
+            .as_ref()
+            .map(|(report, _, base_m, _)| (report, *base_m)),
         hard_center_demand.as_deref(),
         "",
+        native_cartesian_xy,
     )?;
 
     let lepp_adaptive_hybrid = if let Some(report) = lepp_adaptive_hybrid {
@@ -1191,8 +1201,12 @@ pub fn run_refine_pipeline_namelist(
             None,
             None,
             hfield_context.as_ref(),
+            adaptive_run
+                .as_ref()
+                .map(|(report, _, base_m, _)| (report, *base_m)),
             hard_center_demand.as_deref(),
             "_lepp",
+            native_cartesian_xy,
         )?;
         let report_path = file_dir
             .join("result")

@@ -124,7 +124,7 @@ pub fn order_vertices_on_cell_by_shared_edges_one_based(
             return None;
         };
         let center_mag = magnitude(cell_center);
-        if center_mag == 0.0 {
+        if !center_mag.is_finite() || center_mag <= 0.0 {
             if debug {
                 eprintln!("EARTHMESH_MPAS_DEBUG: cell {cell_id} has zero-magnitude center");
             }
@@ -158,6 +158,9 @@ pub fn order_vertices_on_cell_by_shared_edges_one_based(
             let va = vector_between(cell_center, pa);
             let vb = vector_between(cell_center, pb);
             orientation += dot(cross(va, vb), normal);
+        }
+        if !orientation.is_finite() || orientation == 0.0 {
+            return None;
         }
         if orientation < 0.0 {
             // Reverse the walk direction while keeping the deterministic

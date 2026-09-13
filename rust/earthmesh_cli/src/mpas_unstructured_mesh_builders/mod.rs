@@ -4,3 +4,5 @@ mod simple;
 
 pub use full::build_mpas_mesh_from_unstructured_one_based;
 pub use simple::build_mpas_simple_mesh_from_unstructured_one_based;
+
+pub(crate) use placeholder_rows::normalize_unstructured_mesh_placeholder_rows;

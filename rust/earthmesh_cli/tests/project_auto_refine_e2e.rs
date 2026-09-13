@@ -483,3 +483,197 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
     assert!(Path::new(final_mesh).is_file());
     let _ = fs::remove_dir_all(root);
 }
+
+fn project_field<'a>(stdout: &'a str, prefix: &str) -> &'a str {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("missing {prefix}: {stdout}"))
+}
+
+fn scalar_attr_f64(path: &Path, name: &str) -> f64 {
+    match netcdf::open(path)
+        .unwrap()
+        .attribute(name)
+        .unwrap()
+        .value()
+        .unwrap()
+    {
+        netcdf::AttributeValue::Double(value) => value,
+        other => panic!("{name} has unexpected value {other:?}"),
+    }
+}
+
+fn scalar_attr_string(path: &Path, name: &str) -> String {
+    match netcdf::open(path)
+        .unwrap()
+        .attribute(name)
+        .unwrap()
+        .value()
+        .unwrap()
+    {
+        netcdf::AttributeValue::Str(value) => value,
+        other => panic!("{name} has unexpected value {other:?}"),
+    }
+}
+
+fn adaptive_region_project(
+    backend: earthmesh_project::RefinementBackend,
+) -> earthmesh_project::ProjectConfig {
+    use earthmesh_project::{
+        AdaptiveRefinementRecipe, DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset,
+        MethodCAlgorithm, ModelFormat, ProjectConfig, RegionShape, ResolutionSpec,
+        SpecifiedCircleRefinement, SpecifiedCircleRefinements, ViolationPolicy,
+    };
+
+    let mut project = ProjectConfig::scaffold(
+        "adaptive_region_project",
+        MeshIntentPreset::Custom,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: -150.0,
+                e: -60.0,
+                s: -50.0,
+                n: 50.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(21),
+    );
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = false;
+    project.refinement.max_passes = 1;
+    project.refinement.backend = backend;
+    project.refinement.method_c.algorithm = MethodCAlgorithm::Canonical;
+    project.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 114.0,
+            lat: 22.0,
+            radius_km: 400.0,
+        }));
+    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        enabled: true,
+        max_level: 1,
+        base_m: Some(400_000.0),
+        coastline: false,
+    });
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.expert.niter = Some(1);
+    project.expert.niter_refine = Some(1);
+    project.expert.openmp = Some(1);
+    project
+}
+
+#[test]
+fn project_adaptive_region_delivers_regional_mpas_with_parent_context() {
+    for (label, backend) in [
+        ("method_c", earthmesh_project::RefinementBackend::MethodC),
+        ("red_green", earthmesh_project::RefinementBackend::RedGreen),
+    ] {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.join(format!("{label}.yaml"));
+        fs::write(
+            &project_path,
+            adaptive_region_project(backend)
+                .to_yaml()
+                .expect("project yaml"),
+        )
+        .unwrap();
+
+        let output = support::output(
+            Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([
+                    "--project",
+                    project_path.to_str().unwrap(),
+                    "--max-tris",
+                    "200000",
+                    "--quiet",
+                ]),
+        )
+        .unwrap_or_else(|error| panic!("run {label} Project CLI: {error}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{label} stderr:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.find("project_final_quality=").unwrap()
+                < stdout.find("mpas_mesh_input=").unwrap(),
+            "{label} final admission must precede MPAS delivery:\n{stdout}"
+        );
+        let parent = Path::new(project_field(&stdout, "mpas_parent_gridfile="));
+        let final_quality = Path::new(project_field(&stdout, "project_final_quality="));
+        let mpas_path = Path::new(project_field(&stdout, "mpas_mesh_input="));
+        assert!(
+            parent.is_file(),
+            "{label} parent missing: {}",
+            parent.display()
+        );
+        assert!(
+            final_quality.is_file(),
+            "{label} final quality missing: {}",
+            final_quality.display()
+        );
+        let selected_native = PathBuf::from(json_string(
+            &fs::read_to_string(final_quality).unwrap(),
+            "mesh_name",
+        ));
+        let selected_native = if selected_native.is_absolute() {
+            selected_native
+        } else {
+            root.join(selected_native)
+        };
+        assert!(
+            selected_native.is_file(),
+            "{label} native missing: {}",
+            selected_native.display()
+        );
+        assert!(
+            mpas_path.is_file(),
+            "{label} MPAS missing: {}",
+            mpas_path.display()
+        );
+        assert!(Path::new(project_field(&stdout, "mpas_graph_info=")).is_file());
+
+        for gridfile in [parent, selected_native.as_path()] {
+            let context =
+                earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(context.source, "adaptive_region_pass_w_demand_v1");
+            assert_eq!(context.density_reference_width_km, 200.0);
+            assert_eq!(context.base_nxp, 21);
+        }
+
+        assert_eq!(
+            scalar_attr_string(mpas_path, "earthmesh_mpas_cellwidth_source"),
+            "adaptive_region_pass_w_demand_v1"
+        );
+        assert_eq!(
+            scalar_attr_f64(mpas_path, "earthmesh_mpas_density_reference_width_km"),
+            200.0
+        );
+        let file = netcdf::open(mpas_path).unwrap();
+        let density = file
+            .variable("meshDensity")
+            .unwrap()
+            .get_values::<f64, _>(..)
+            .unwrap();
+        assert!(!density.is_empty(), "{label} density missing");
+        assert!(
+            density
+                .iter()
+                .all(|value| (*value - 1.0 / 16.0).abs() < 1.0e-12),
+            "{label} regional crop should remove finest W samples: {density:?}"
+        );
+        assert_eq!(
+            file.attribute("mesh_spec").unwrap().value().unwrap(),
+            netcdf::AttributeValue::Str("1.0".into())
+        );
+        drop(file);
+        let _ = fs::remove_dir_all(root);
+    }
+}

@@ -82,19 +82,58 @@ pub(super) fn write_refined_outputs(
     domain_region: Option<&GridRegion>,
     metadata: Option<MethodCMetadataSlices<'_>>,
     hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
+    adaptive: Option<(&crate::refinement_demand::nest::AdaptiveNestReport, f64)>,
     hard_center_demand: Option<&[bool]>,
     name_suffix: &str,
+    native_cartesian_xy: bool,
 ) -> io::Result<MethodCRefinedOutputReports> {
-    let mpas = hfield
-        .map(|demand| {
+    // Finish native W construction after ALL algorithm/Spring work, before
+    // any crop/mask/model branch. Never reorder the algorithm-owned input.
+    let oriented;
+    let output_mesh = if native_cartesian_xy {
+        output_mesh
+    } else {
+        oriented = oriented_spherical_native_w_rings(output_mesh)?;
+        &oriented
+    };
+    let mpas = match (hfield, adaptive) {
+        (Some(demand), None) => Some(
             crate::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
                 output_mesh,
                 demand,
                 nxp,
-            )
-        })
-        .transpose()?;
-    let metadata = MethodCGridfileMetadataSlices {
+            )?,
+        ),
+        (None, Some((report, base_m))) => Some(
+            crate::mpas_gridfile_context::MpasGridfileContext::from_adaptive_region_demand(
+                output_mesh,
+                report,
+                base_m,
+                nxp,
+            )?,
+        ),
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "refined output cannot have two competing MPAS demand producers",
+            ))
+        }
+    };
+    // A fresh producer without algorithm ancestry still needs a root snapshot
+    // identity before whole-cell extraction. These are not refinement levels;
+    // existing algorithm lineage and no-context routes remain untouched.
+    let snapshot_lineage = (mpas.is_some() && metadata.is_none()).then(|| {
+        (
+            (1..=output_mesh.m_points.len())
+                .map(|row| row as i64)
+                .collect::<Vec<_>>(),
+            (1..=output_mesh.w_points.len())
+                .map(|row| row as i64)
+                .collect::<Vec<_>>(),
+        )
+    });
+    let mut metadata = MethodCGridfileMetadataSlices {
         hfield,
         mpas: mpas.as_ref(),
         ..metadata
@@ -102,6 +141,10 @@ pub(super) fn write_refined_outputs(
             .map(MethodCMetadataSlices::gridfile)
             .unwrap_or_default()
     };
+    if let Some((m, w)) = &snapshot_lineage {
+        metadata.m_lineage = Some(m);
+        metadata.w_lineage = Some(w);
+    }
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}{name_suffix}.nc4",
         config.mode_grid.trim(),
@@ -415,5 +458,149 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+}
+
+fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<UnstructuredMesh> {
+    use crate::unstructured_mesh_support::{
+        mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, unstructured_w_row_layout,
+    };
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid spherical native W ring cycle, coordinates or membership",
+        )
+    };
+    if mesh.m_points.iter().chain(&mesh.w_points).any(|point| {
+        !point.lon.is_finite() || !point.lat.is_finite() || !(-90.0..=90.0).contains(&point.lat)
+    }) {
+        return Err(invalid());
+    }
+    let normalized =
+        crate::mpas_unstructured_mesh_builders::normalize_unstructured_mesh_placeholder_rows(mesh)?;
+    let m_padding = normalized.m_points.len() - mesh.m_points.len();
+    let w_padding = normalized.w_points.len() - mesh.w_points.len();
+    let m_two = mesh_points_have_two_placeholder_rows(&mesh.m_points)
+        && mesh
+            .m_to_w
+            .iter()
+            .take(2)
+            .all(|row| row.iter().all(|&id| id <= 1));
+    let faces = crate::triangles_on_cell_one_based_from_mesh(&normalized)?;
+    let degrees = crate::n_edges_on_cell_usize_from_mesh(&normalized)?;
+    let edges = crate::get_edge_from_unstructured_mesh(&normalized)?;
+    let vertices = earthmesh_mesh::lonlat_points_to_unit_xyz(&crate::lonlat_degrees_from_points(
+        &normalized.m_points,
+    ));
+    let cells = earthmesh_mesh::lonlat_points_to_unit_xyz(&crate::lonlat_degrees_from_points(
+        &normalized.w_points,
+    ));
+    let ordered = earthmesh_mesh::order_vertices_on_cell_by_shared_edges_one_based(
+        &faces,
+        &degrees,
+        &edges.edges_on_vertex,
+        &vertices,
+        &cells,
+    )
+    .ok_or_else(invalid)?;
+    let edge_set = |ring: &[i32]| {
+        let mut edges = (0..ring.len())
+            .map(|k| {
+                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                (a.min(b), a.max(b))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        edges
+    };
+    let mut output = mesh.clone();
+    for row in unstructured_w_row_layout(mesh).first_physical_row..mesh.w_points.len() {
+        let n = usize::try_from(mesh.n_w_to_m[row]).map_err(|_| invalid())?;
+        if !(3..=7).contains(&n) {
+            return Err(invalid());
+        }
+        let original = &mesh.w_to_m[row][..n];
+        let mut ring = ordered[row + w_padding][..n]
+            .iter()
+            .map(|&id| {
+                id.checked_sub(m_padding)
+                    .and_then(|index| mesh_canonical_id_for_row(index, m_two))
+                    .ok_or_else(invalid)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let start = ring
+            .iter()
+            .position(|&id| id == original[0])
+            .ok_or_else(invalid)?;
+        ring.rotate_left(start);
+        let mut before = original.to_vec();
+        let mut after = ring.clone();
+        before.sort_unstable();
+        after.sort_unstable();
+        if before != after || edge_set(original) != edge_set(&ring) {
+            return Err(invalid());
+        }
+        output.w_to_m[row][..n].copy_from_slice(&ring);
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod native_ring_tests {
+    use super::*;
+
+    #[test]
+    fn publication_orients_only_rings_and_preserves_each_placeholder_layout() {
+        let state = earthmesh_mesh::gridinit_voronoi_state_canonical(2, 0, 1.0, 0.25, 100).unwrap();
+        let compact = crate::gridfile_mesh_from_one_based_state(&state.grid, &state.tabs).unwrap();
+        for placeholders in 0..=2 {
+            let mut mesh = compact.clone();
+            if placeholders == 0 {
+                mesh.m_points.remove(0);
+                mesh.w_points.remove(0);
+                mesh.m_to_w.remove(0);
+                mesh.w_to_m.remove(0);
+                mesh.n_w_to_m.remove(0);
+                for row in &mut mesh.m_to_w {
+                    for id in row {
+                        *id -= 1;
+                    }
+                }
+                for row in &mut mesh.w_to_m {
+                    for id in row {
+                        *id -= 1;
+                    }
+                }
+            } else if placeholders == 2 {
+                let zero = crate::LonLatPoint { lon: 0.0, lat: 0.0 };
+                mesh.m_points.insert(0, zero);
+                mesh.w_points.insert(0, zero);
+                mesh.m_to_w.insert(0, [0; 3]);
+                mesh.w_to_m.insert(0, vec![0]);
+                mesh.n_w_to_m.insert(0, 0);
+            }
+            let expected = mesh.w_to_m.clone();
+            let row = placeholders;
+            let n = mesh.n_w_to_m[row] as usize;
+            mesh.w_to_m[row][1..n].reverse();
+            let oriented = oriented_spherical_native_w_rings(&mesh).unwrap();
+            assert_eq!(oriented.m_points, mesh.m_points);
+            assert_eq!(oriented.w_points, mesh.w_points);
+            assert_eq!(oriented.m_to_w, mesh.m_to_w);
+            assert_eq!(oriented.n_w_to_m, mesh.n_w_to_m);
+            assert_eq!(oriented.w_to_m, expected, "layout {placeholders}");
+            assert_ne!(mesh.w_to_m, expected, "input not mutated");
+        }
+        for case in ["duplicate", "changed_edges", "bad_lat", "nan"] {
+            let mut mesh = compact.clone();
+            match case {
+                "duplicate" => mesh.w_to_m[1][1] = mesh.w_to_m[1][0],
+                "changed_edges" => mesh.w_to_m[1].swap(1, 2),
+                "bad_lat" => mesh.w_points[1].lat = 91.0,
+                "nan" => mesh.m_points[2].lon = f64::NAN,
+                _ => unreachable!(),
+            }
+            assert!(oriented_spherical_native_w_rings(&mesh).is_err(), "{case}");
+        }
     }
 }

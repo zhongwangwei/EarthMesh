@@ -55,9 +55,9 @@ Low-level NML paths retain their own dispatch; internal CMRC certificates and
 legacy model artifacts remain separate from final admission. Some adapters still
 emit artifacts inside the engine pipeline; their
 existence does not mean the Project passed final admission. Refined MPAS still
-requires aligned cellwidth/global-parent context; RedGreen/LEPP do not yet persist
-per-W nominal widths, so uniform widths are not substituted to pretend migration
-is complete.
+requires aligned producer-owned widths and global-parent context. Unsupported
+producer routes still fail instead of substituting uniform widths to pretend
+migration is complete.
 
 ### MPAS native width context
 
@@ -89,10 +89,10 @@ widths when W vertices are split. Width-only clean-ocean rewrites also retain OB
 Absent context stays absent; partial headers, wrong dimensions/types/units or
 invalid values fail rather than select a uniform fallback.
 
-Non-HField Method-C, RedGreen and LEPP do not yet produce MPAS nominal-width
-context. No conversion from birth generations or measured polygon geometry is
-used to bypass that missing contract. Spherical HField producers use the explicit
-nominal-demand contract below, not reconstructed legacy Spring interpolation.
+Only producers retaining the HField or adaptive region-pass demand described
+below acquire these nominal-width contracts. Other Method-C routes and LEPP
+remain without context. Birth generations and measured polygon geometry never
+substitute for a missing source or reconstruct legacy Spring interpolation.
 
 ### Effective spherical HField demand (not MPAS widths)
 
@@ -144,7 +144,7 @@ be reached at any final W site: all physical `meshDensity` values may be below
 one. Crop/mask retains the same reference and compacts producer widths; a
 post-quality derivative re-evaluates demand at its changed W sites.
 
-Only this tagged source uses `reference_km * 1000 / EARTH_RADIUS_METERS` for
+This tagged source uses `reference_km * 1000 / EARTH_RADIUS_METERS` for
 unit-sphere `nominalMinDc`; MPAS-Ocean scales it with its existing sphere radius.
 The existing base-NXP/step fields retain producer provenance (step=`Lmax+1`),
 but cannot substitute the legacy integer formula when `base_m` was overridden.
@@ -153,6 +153,53 @@ before staged publication, so the delivery convention remains visible.
 This is a generation-demand export contract, not solver validation or a promise
 that the achieved cell sizes meet every target. Cartesian/other algorithms
 still receive no fabricated context.
+
+### Adaptive region-pass nominal W demand
+
+`adaptive_region_pass_w_demand_v1` reuses the **actual retained**
+`AdaptiveNestReport` and `base_m` of canonical Method-C point+radius and RedGreen
+adaptive runs. For each final W site it finds the deepest recorded pass with an
+active region (`region.level >= pass.level`) containing that site, using the
+same shared canonical spherical region predicate as generation. The width is
+`base_m / 2^pass.level / 1000` km; outside all recorded active regions it is
+`base_m / 1000`. A raw region's deeper level does not imply that an unexecuted
+pass occurred. Circle, bbox, polygon and corridor semantics are shared, not
+approximated by circular report summaries or reconstructed from sidecars.
+
+The global reference uses the deepest **recorded** pass, with step=depth+1.
+Empty but genuinely present reports describe unrefined emitted demand; missing
+reports never yield a uniform fallback. Pass sequence, base/judging scale,
+regions and physical W coordinates are validated. Density and nominalMinDc use
+the same reference rule as the exact HField contract, including an unsampled
+finest level and crops removing every finest-demand cell.
+
+This is nominal **emitted-pass demand**, not the complete unexecuted user plan,
+realized geometry, algorithm ancestry, Spring targets or a guarantee that every
+requested region succeeded. A fresh parent with this MPAS context but no
+algorithm lineage receives stable M/W snapshot-row IDs before crop/mask; those
+are root snapshot identities, not invented refinement generations. Existing
+Method-C ancestry remains unchanged, and regional exact parent/site/corner
+validation remains mandatory.
+
+Direct named-only runs without an adaptive record, LEPP hybrid, Cartesian and
+native two-stage routes do not acquire this context. Cartesian Method-C with
+`&adaptive` is rejected before grid generation: its X/Y placeholders must not be
+interpreted as geographic demand sites. Cartesian HField remains unchanged.
+In particular LEPP's named
+region targets are resolved from its initial mesh internally and are not yet
+retained; substituting this base/level convention would misrepresent that
+producer. This contract changes no mesh construction or model-solver behavior.
+
+### Native spherical W-ring construction
+
+After all refinement and Spring work, shared output construction uses the
+existing shared-edge cycle orderer on a copy, before native writing or crop/mask.
+Only active W-ring direction may change; the original first corner, padding,
+row IDs, corner/undirected-edge sets, coordinates and demand remain unchanged.
+Algorithm-internal neighbor order is untouched, and Cartesian output explicitly
+skips spherical orientation. Invalid cycles or nonfinite/degenerate orientation
+fail rather than publishing an unproven order. Readers and final model adapters
+do not repair altered/imported files; the same topology gates still apply.
 
 ### MPAS selected-final delivery
 
@@ -178,11 +225,12 @@ and isolated whole cells are allowed. The ordered subset preserves final W order
 parent metrics and density. Dropped stencil edges retain the existing zero-weight
 sentinel behavior; this is not a physical boundary-condition prescription.
 
-Connected regional producers include CMRC whole-land dual-cell selection and
-spherical Method-C HField whole-cell crops, independent of model format. Other
+Connected regional producers include CMRC whole-land dual-cell selection,
+spherical Method-C HField, and canonical Method-C/RedGreen adaptive whole-cell
+crops, independent of model format. Other
 producers may use the same adapter only when they supply its complete
-parent/geometry/width contract. Missing or malformed context fails; non-HField
-Method-C, RedGreen and LEPP still do not acquire invented widths. No new ocean-HEX selection algorithm is included. Retaining a
+parent/geometry/width contract. Missing or malformed context fails; unsupported
+producer routes still do not acquire invented widths. No new ocean-HEX selection algorithm is included. Retaining a
 parent costs additional disk space. Internal/legacy MPAS artifacts alone are not
 proof that Project final delivery passed.
 
@@ -190,8 +238,8 @@ Density is `(producer_global_reference_width / final_W_width)^4`, aligned to
 physical rows with placeholders excluded. It is not renormalized to the cropped
 minimum. All other full/Simple/Ocean builder formulas and format conventions are
 retained. Legacy sources keep the integer `nominalMinDc` calculation; only the
-explicit HField tag uses its nominal reference as described above. Final full
-export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
+explicit HField and adaptive region-pass tags use their nominal reference as
+described above. Final full export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
 uses the existing physical-radius writer. Simple remains an incomplete mesh
 schema, not a solver-ready full mesh, and has no graph.
 

@@ -337,9 +337,15 @@ fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery
             earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile).unwrap();
         assert_eq!(
             widths.is_some(),
-            name == "cmrc",
-            "{name}: unavailable nominal widths must not be synthesized"
+            name != "lepp",
+            "{name}: only producers with retained nominal demand supply widths"
         );
+        if matches!(name, "method_c" | "redgreen") {
+            assert_eq!(
+                widths.as_ref().unwrap().source,
+                "adaptive_region_pass_w_demand_v1"
+            );
+        }
         if widths.is_none() {
             let output = root.join("unavailable_mpas");
             let err = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(

@@ -8,6 +8,7 @@ const NXP: &str = "earthmesh_mpas_base_nxp";
 const STEP: &str = "earthmesh_mpas_step";
 const REFERENCE: &str = "earthmesh_mpas_density_reference_width_km";
 const SOURCE: &str = "earthmesh_mpas_cellwidth_source";
+pub(crate) const ADAPTIVE_REGION_PASS_DEMAND_V1: &str = "adaptive_region_pass_w_demand_v1";
 pub(crate) const HFIELD_QUANTIZED_DEMAND_V1: &str = "method_c_hfield_quantized_w_demand_v1";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +73,78 @@ impl MpasGridfileContext {
         Ok(context)
     }
 
+    /// Nominal emitted-pass demand, not achieved resolution or unexecuted requests.
+    /// The shared region predicate is sampled at final W sites; closure/transition
+    /// geometry does not change the nominal field. Missing reports never call this.
+    pub fn from_adaptive_region_demand(
+        mesh: &crate::UnstructuredMesh,
+        report: &crate::refinement_demand::nest::AdaptiveNestReport,
+        base_m: f64,
+        base_nxp: usize,
+    ) -> io::Result<Self> {
+        if !base_m.is_finite()
+            || base_m <= 0.0
+            || report.deepest_level != report.passes.len()
+            || report.passes.len() > 5
+        {
+            return Err(invalid("adaptive MPAS demand requires a finite positive base and consistent depth in 0..=5"));
+        }
+        let width_m = |level: usize| base_m / 2.0_f64.powi(level as i32);
+        let mut indices = Vec::with_capacity(report.passes.len());
+        for (index, pass) in report.passes.iter().enumerate() {
+            if pass.level != index + 1
+                || pass.cell_meters != width_m(index)
+                || !pass
+                    .regions
+                    .iter()
+                    .any(|region| region.level() >= pass.level)
+            {
+                return Err(invalid("adaptive MPAS demand requires contiguous active passes and the actual judging-generation scale"));
+            }
+            for region in &pass.regions {
+                region.validate()?;
+            }
+            indices.push(earthmesh_mesh::RefinementRegionIndex::new(&pass.regions));
+        }
+        let first =
+            crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
+        if first >= mesh.w_points.len() {
+            return Err(invalid("adaptive MPAS demand requires physical W cells"));
+        }
+        let reference = width_m(report.deepest_level) / 1000.0;
+        let mut cellwidth_km = vec![reference; mesh.w_points.len()];
+        for (width, point) in cellwidth_km[first..]
+            .iter_mut()
+            .zip(&mesh.w_points[first..])
+        {
+            if !point.lon.is_finite()
+                || !point.lat.is_finite()
+                || !(-90.0..=90.0).contains(&point.lat)
+            {
+                return Err(invalid(
+                    "adaptive MPAS demand requires finite geographic W sites",
+                ));
+            }
+            let site = earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat);
+            let level = indices
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(index, regions)| regions.contains_lonlat_canonical(site, index + 1))
+                .map_or(0, |(index, _)| index + 1);
+            *width = width_m(level) / 1000.0;
+        }
+        let context = Self {
+            cellwidth_km,
+            base_nxp,
+            step: report.deepest_level + 1,
+            density_reference_width_km: reference,
+            source: ADAPTIVE_REGION_PASS_DEMAND_V1.to_string(),
+        };
+        context.validate(mesh.w_points.len())?;
+        Ok(context)
+    }
+
     pub(crate) fn from_producer(
         mesh: &crate::UnstructuredMesh,
         cellwidth_km: Vec<f64>,
@@ -106,6 +179,13 @@ impl MpasGridfileContext {
         {
             return Err(invalid(
                 "unsupported HField MPAS demand version or level cap",
+            ));
+        }
+        if self.source.starts_with("adaptive_region_pass_w_demand_")
+            && (self.source != ADAPTIVE_REGION_PASS_DEMAND_V1 || self.step > 6)
+        {
+            return Err(invalid(
+                "unsupported adaptive region-pass MPAS demand version or level cap",
             ));
         }
         if self.cellwidth_km.len() != rows || rows == 0 {
