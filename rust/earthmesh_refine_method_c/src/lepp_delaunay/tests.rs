@@ -1042,6 +1042,118 @@ fn adaptive_hybrid_parallel_scan_is_thread_count_deterministic() {
 }
 
 #[test]
+fn adaptive_hybrid_report_keeps_resolved_targets_from_initial_mesh() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let mut state = original.clone();
+    let demand = AdaptiveHybridDemand::user_region("derived", adaptive_circle(&method_c, 1));
+    let expected = adaptive_hybrid_target_edge_from_level(&original, &demand.region)
+        .expect("initial resolved target");
+
+    let report = refine_adaptive_hybrid(
+        &mut state,
+        std::slice::from_ref(&demand),
+        &adaptive_config(&method_c, 1, 1),
+    )
+    .expect("adaptive hybrid");
+
+    assert_eq!(report.resolved_targets.len(), 1);
+    assert_eq!(report.resolved_targets[0].demand, demand);
+    assert_eq!(report.resolved_targets[0].demand.target_edge_m, None);
+    assert_eq!(report.resolved_targets[0].target_edge_m, expected);
+    assert!(
+        (report.target_radius_m - magnitude(original.vertices()[MESH_STATE_FIRST_ID])).abs() < 0.1,
+        "target radius {}",
+        report.target_radius_m
+    );
+    assert!(state.vertex_count() > original.vertex_count());
+}
+
+#[test]
+fn adaptive_hybrid_report_preserves_explicit_source_floor_and_all_resolved_targets() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let mut state = original.clone();
+    let mut demands = Vec::new();
+    for index in 0..=LEPP_REPORT_DETAIL_LIMIT {
+        let mut demand = AdaptiveHybridDemand::user_region(
+            format!("explicit-{index}"),
+            adaptive_circle(&method_c, 1),
+        );
+        demand.target_edge_m = Some(1.0e12 + index as f64);
+        demand.source_resolution_m = Some(1.0e12);
+        demands.push(demand);
+    }
+
+    let report = refine_adaptive_hybrid(&mut state, &demands, &adaptive_config(&method_c, 1, 1))
+        .expect("explicit targets");
+
+    assert_eq!(state, original);
+    assert_eq!(report.stop_reason, AdaptiveHybridStopReason::Satisfied);
+    assert_eq!(report.resolved_targets.len(), demands.len());
+    for (resolved, demand) in report.resolved_targets.iter().zip(&demands) {
+        assert_eq!(&resolved.demand, demand);
+        assert_eq!(Some(resolved.target_edge_m), demand.target_edge_m);
+        assert_eq!(resolved.demand.source_resolution_m, Some(1.0e12));
+    }
+}
+
+#[test]
+fn adaptive_hybrid_report_samples_nominal_targets_without_representative_faces() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let center = crate::xyz_to_lonlat_degrees(test_face_center(&original, MESH_STATE_FIRST_ID));
+    let mut state = original.clone();
+    let mut coarse = AdaptiveHybridDemand::user_region(
+        "coarse",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1_000_000.0,
+            level: 1,
+        },
+    );
+    coarse.target_edge_m = Some(400_000.0);
+    let mut fine = AdaptiveHybridDemand::user_region(
+        "fine",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1_000_000.0,
+            level: 1,
+        },
+    );
+    fine.target_edge_m = Some(200_000.0);
+    let mut tiny = AdaptiveHybridDemand::user_region(
+        "tiny-representative-only",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1.0,
+            level: 1,
+        },
+    );
+    tiny.target_edge_m = Some(100_000.0);
+
+    let report = refine_adaptive_hybrid(
+        &mut state,
+        &[coarse, fine, tiny],
+        &adaptive_config(&method_c, 1, 1),
+    )
+    .expect("sampler report");
+    let inside_field_outside_tiny =
+        LonLatDegrees::new(center.lon_degrees + 0.1, center.lat_degrees);
+    let samples = report
+        .nominal_target_edges_at(&[
+            inside_field_outside_tiny,
+            LonLatDegrees::new(-center.lon_degrees, -center.lat_degrees),
+        ])
+        .expect("sample nominal targets");
+
+    assert_eq!(samples, vec![Some(200_000.0), None]);
+    assert!(report
+        .nominal_target_edges_at(&[LonLatDegrees::new(f64::NAN, 0.0)])
+        .is_err());
+}
+
+#[test]
 fn constrained_lepp_splits_encroached_segment_before_terminal_boundary() {
     let mut state = mesh(
         vec![p(0.0, 0.0), p(60.0, 0.0), p(15.0, 5.0)],
@@ -1220,6 +1332,8 @@ fn adaptive_hybrid_report_bounds_details_but_keeps_the_exact_count() {
         initial_faces: 0,
         final_faces: 0,
         target_satisfaction: AdaptiveHybridTargetSatisfaction::default(),
+        resolved_targets: Vec::new(),
+        target_radius_m: 1.0,
         unresolved_demand_count: 0,
         unresolved_demands: Vec::new(),
         rejections: Vec::new(),

@@ -89,9 +89,9 @@ widths when W vertices are split. Width-only clean-ocean rewrites also retain OB
 Absent context stays absent; partial headers, wrong dimensions/types/units or
 invalid values fail rather than select a uniform fallback.
 
-Only producers retaining the HField or adaptive region-pass demand described
-below acquire these nominal-width contracts. Other Method-C routes and LEPP
-remain without context. Birth generations and measured polygon geometry never
+Producers retaining HField, adaptive region-pass or fully covered LEPP resolved
+demand acquire the nominal-width contracts below. Other Method-C routes remain
+without context. Birth generations and measured polygon geometry never
 substitute for a missing source or reconstruct legacy Spring interpolation.
 
 ### Effective spherical HField demand (not MPAS widths)
@@ -185,10 +185,44 @@ Direct named-only runs without an adaptive record, LEPP hybrid, Cartesian and
 native two-stage routes do not acquire this context. Cartesian Method-C with
 `&adaptive` is rejected before grid generation: its X/Y placeholders must not be
 interpreted as geographic demand sites. Cartesian HField remains unchanged.
-In particular LEPP's named
-region targets are resolved from its initial mesh internally and are not yet
-retained; substituting this base/level convention would misrepresent that
-producer. This contract changes no mesh construction or model-solver behavior.
+LEPP uses its separate resolved-target contract below; substituting the adaptive
+base/level convention would misrepresent that producer. Neither changes mesh
+construction or model-solver behavior.
+
+### LEPP resolved-region nominal W demand
+
+LEPP retains every resolved target and the initial sphere radius in its existing
+adaptive report. Explicit target edges are unchanged; named targets retain the
+initial-mesh region-local median (or representative-face fallback) divided by
+`2^level`, exactly as consumed by the algorithm. The diagnostic
+`method_c_lepp_report.json` records all original demands, resolved target edges,
+region shapes, levels, source-resolution floors and units in metres under
+`lepp_resolved_region_targets_v1`; it is not read by the final adapter.
+
+`lepp_resolved_region_w_demand_v1` samples these targets at final W sites using
+the same spatial region predicates, choosing the minimum in overlaps. It does
+**not** replay representative-face-only injection, apply size tolerance or source
+floors to the nominal edge, or infer targets from balance/quality operations.
+There is no LEPP background target: the producer writes native MPAS context only
+when every physical W in the global parent is spatially covered. Empty/partial
+coverage leaves context absent with a diagnostic, while native/CoLM generation
+remains available subject to its normal checks. Malformed targets fail instead
+of being treated as uncovered.
+
+The density reference is the minimum of **all** resolved target edges, including
+unsampled targets, converted to km. Crop/mask preserves this reference and the
+selected W widths. `step=max(region.level)+1` is provenance only; nominalMinDc
+uses the reference formula above, not an integer NXP/step approximation.
+Complete demand coverage is necessary, not sufficient, for MPAS delivery:
+5–7-sided cells, shared-edge winding, global/regional topology and Project final
+admission remain mandatory. Retained nominal targets do not certify achieved
+resolution or model-solver suitability.
+
+Known generation boundary: the NXP 6 global-bbox LEPP case with two insertions
+still produces two degree-4 W cells. Its resolved demand is retained, but final
+MPAS rejects the parent even when selected regional cells pass admission.
+Fixing the insertion/degree contract is separate from this metadata contract;
+no geometry or final gate is changed here.
 
 ### Native spherical W-ring construction
 
@@ -238,7 +272,7 @@ Density is `(producer_global_reference_width / final_W_width)^4`, aligned to
 physical rows with placeholders excluded. It is not renormalized to the cropped
 minimum. All other full/Simple/Ocean builder formulas and format conventions are
 retained. Legacy sources keep the integer `nominalMinDc` calculation; only the
-explicit HField and adaptive region-pass tags use their nominal reference as
+explicit HField, adaptive region-pass and LEPP resolved-region tags use their nominal reference as
 described above. Final full export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
 uses the existing physical-radius writer. Simple remains an incomplete mesh
 schema, not a solver-ready full mesh, and has no graph.

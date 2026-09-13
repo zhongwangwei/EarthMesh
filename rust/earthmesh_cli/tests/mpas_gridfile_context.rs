@@ -655,3 +655,249 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
     }
     let _ = fs::remove_dir_all(root);
 }
+
+fn lepp_report(
+    targets: Vec<earthmesh_refine_method_c::AdaptiveHybridResolvedTarget>,
+) -> earthmesh_refine_method_c::AdaptiveHybridReport {
+    earthmesh_refine_method_c::AdaptiveHybridReport {
+        resolved_targets: targets,
+        target_radius_m: earthmesh_core::EARTH_RADIUS_METERS,
+        cycles: 0,
+        insertions: Vec::new(),
+        insertion_counts: earthmesh_refine_method_c::AdaptiveHybridInsertionCounts::default(),
+        path_stats: earthmesh_refine_method_c::AdaptiveHybridPathStats::default(),
+        initial_vertices: 0,
+        final_vertices: 0,
+        initial_faces: 0,
+        final_faces: 0,
+        target_satisfaction: earthmesh_refine_method_c::AdaptiveHybridTargetSatisfaction::default(),
+        unresolved_demand_count: 0,
+        unresolved_demands: Vec::new(),
+        rejections: Vec::new(),
+        stop_reason: earthmesh_refine_method_c::AdaptiveHybridStopReason::Satisfied,
+    }
+}
+
+fn lepp_target(
+    id: &str,
+    region: earthmesh_mesh::RefinementRegion,
+    target_edge_m: f64,
+) -> earthmesh_refine_method_c::AdaptiveHybridResolvedTarget {
+    earthmesh_refine_method_c::AdaptiveHybridResolvedTarget {
+        demand: earthmesh_refine_method_c::AdaptiveHybridDemand::user_region(id, region),
+        target_edge_m,
+    }
+}
+
+fn lepp_site_circle(point: LonLatPoint, level: usize) -> earthmesh_mesh::RefinementRegion {
+    earthmesh_mesh::RefinementRegion::Circle {
+        center: earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat),
+        radius_meters: 1.0,
+        level,
+    }
+}
+
+fn lepp_complete_report(
+    mesh: &UnstructuredMesh,
+    first: usize,
+) -> earthmesh_refine_method_c::AdaptiveHybridReport {
+    let mut targets = mesh.w_points[first..]
+        .iter()
+        .enumerate()
+        .map(|(idx, point)| {
+            lepp_target(
+                &format!("site-{idx}"),
+                lepp_site_circle(*point, 1),
+                200_000.0,
+            )
+        })
+        .collect::<Vec<_>>();
+    targets.push(lepp_target(
+        "overlap",
+        lepp_site_circle(mesh.w_points[first], 2),
+        100_000.0,
+    ));
+    targets.push(lepp_target(
+        "unsampled-reference",
+        earthmesh_mesh::RefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(179.0, 80.0),
+            radius_meters: 1_000.0,
+            level: 3,
+        },
+        50_000.0,
+    ));
+    lepp_report(targets)
+}
+
+#[test]
+fn builds_mpas_context_from_complete_lepp_resolved_demand_and_roundtrips() {
+    for (name, mesh, first) in [
+        (
+            "zero_placeholder",
+            zero_placeholder_mesh(&canonical_hex_mesh()),
+            0_usize,
+        ),
+        ("one_placeholder", canonical_hex_mesh(), 1_usize),
+        (
+            "two_placeholder",
+            two_placeholder_mesh(&canonical_hex_mesh()),
+            2_usize,
+        ),
+    ] {
+        assert_eq!(first_physical_w_row(&mesh), first, "{name} layout changed");
+        let report = lepp_complete_report(&mesh, first);
+
+        let context = MpasGridfileContext::from_lepp_resolved_demand(&mesh, &report, 6)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
+        assert_eq!(context.base_nxp, 6);
+        assert_eq!(context.step, 4);
+        assert_eq!(context.density_reference_width_km, 50.0);
+        for width in &context.cellwidth_km[..first] {
+            assert_eq!(*width, 50.0, "{name} placeholder width");
+        }
+        assert_eq!(context.cellwidth_km[first], 100.0);
+        assert!(context.cellwidth_km[first + 1..]
+            .iter()
+            .all(|width| *width == 200.0));
+
+        let root = root(&format!("lepp_{name}"));
+        let output = root.join("grid.nc4");
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            &output,
+            &mesh,
+            MethodCGridfileMetadataSlices {
+                mpas: Some(&context),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(read_mpas_gridfile_context(&output).unwrap(), Some(context));
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version() {
+    let mesh = canonical_hex_mesh();
+    let first = first_physical_w_row(&mesh);
+    let empty = lepp_report(Vec::new());
+    assert_eq!(
+        MpasGridfileContext::from_lepp_resolved_demand(&mesh, &empty, 6).unwrap(),
+        None
+    );
+    let partial = lepp_report(vec![lepp_target(
+        "partial",
+        lepp_site_circle(mesh.w_points[first], 1),
+        200_000.0,
+    )]);
+    assert_eq!(
+        MpasGridfileContext::from_lepp_resolved_demand(&mesh, &partial, 6).unwrap(),
+        None
+    );
+
+    for case in [
+        "bad_radius",
+        "bad_scale",
+        "bad_site",
+        "bad_lat",
+        "bad_nxp",
+        "empty_physical_mesh",
+        "explicit_mismatch",
+        "level6",
+        "underflow_km",
+        "overflow_radius",
+        "bad_source_floor",
+    ] {
+        let mut local_mesh = mesh.clone();
+        let mut report = lepp_complete_report(&local_mesh, first);
+        let mut nxp = 6;
+        match case {
+            "bad_radius" => report.target_radius_m = 0.0,
+            "bad_scale" => report.resolved_targets[0].target_edge_m = f64::NAN,
+            "bad_site" => local_mesh.w_points[first].lon = f64::NAN,
+            "bad_lat" => local_mesh.w_points[first].lat = 91.0,
+            "bad_nxp" => nxp = 0,
+            "empty_physical_mesh" => local_mesh.w_points.truncate(first),
+            "explicit_mismatch" => report.resolved_targets[0].demand.target_edge_m = Some(123.0),
+            "level6" => {
+                report.resolved_targets[0].demand.region =
+                    lepp_site_circle(local_mesh.w_points[first], 6);
+            }
+            "underflow_km" => report.resolved_targets[0].target_edge_m = f64::from_bits(1),
+            "overflow_radius" => report.target_radius_m = f64::MAX,
+            "bad_source_floor" => {
+                report.resolved_targets[0].demand.source_resolution_m = Some(f64::NAN);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            MpasGridfileContext::from_lepp_resolved_demand(&local_mesh, &report, nxp).is_err(),
+            "case {case} should fail instead of silently returning None"
+        );
+    }
+
+    let root = root("reserved_lepp_source");
+    let output = root.join("bad.nc4");
+    let mut context = MpasGridfileContext::from_lepp_resolved_demand(
+        &mesh,
+        &lepp_complete_report(&mesh, first),
+        6,
+    )
+    .unwrap()
+    .unwrap();
+    context.source = "lepp_resolved_region_w_demand_v2".to_string();
+    let err =
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            &output,
+            &mesh,
+            MethodCGridfileMetadataSlices {
+                mpas: Some(&context),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("unsupported"), "{err}");
+
+    let mut valid = MpasGridfileContext::from_lepp_resolved_demand(
+        &mesh,
+        &lepp_complete_report(&mesh, first),
+        6,
+    )
+    .unwrap()
+    .unwrap();
+    valid.source = "lepp_resolved_region_w_demand_v1".to_string();
+    let native = root.join("native.nc4");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        &native,
+        &mesh,
+        MethodCGridfileMetadataSlices {
+            mpas: Some(&valid),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (case, source, step) in [
+        (
+            "unknown_source",
+            "lepp_resolved_region_w_demand_v2",
+            valid.step as i32,
+        ),
+        ("step7", valid.source.as_str(), 7_i32),
+    ] {
+        let bad = root.join(format!("{case}.nc4"));
+        fs::copy(&native, &bad).unwrap();
+        let mut file = netcdf::append(&bad).unwrap();
+        file.add_attribute("earthmesh_mpas_cellwidth_source", source)
+            .unwrap();
+        file.add_attribute("earthmesh_mpas_step", step).unwrap();
+        drop(file);
+        assert!(
+            read_mpas_gridfile_context(&bad).is_err(),
+            "case {case} should fail"
+        );
+    }
+    let _ = fs::remove_dir_all(root);
+}

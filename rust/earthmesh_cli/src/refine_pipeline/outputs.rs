@@ -83,6 +83,7 @@ pub(super) fn write_refined_outputs(
     metadata: Option<MethodCMetadataSlices<'_>>,
     hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive: Option<(&crate::refinement_demand::nest::AdaptiveNestReport, f64)>,
+    lepp: Option<&earthmesh_refine_method_c::AdaptiveHybridReport>,
     hard_center_demand: Option<&[bool]>,
     name_suffix: &str,
     native_cartesian_xy: bool,
@@ -96,15 +97,15 @@ pub(super) fn write_refined_outputs(
         oriented = oriented_spherical_native_w_rings(output_mesh)?;
         &oriented
     };
-    let mpas = match (hfield, adaptive) {
-        (Some(demand), None) => Some(
+    let mpas = match (hfield, adaptive, lepp) {
+        (Some(demand), None, None) => Some(
             crate::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
                 output_mesh,
                 demand,
                 nxp,
             )?,
         ),
-        (None, Some((report, base_m))) => Some(
+        (None, Some((report, base_m)), None) => Some(
             crate::mpas_gridfile_context::MpasGridfileContext::from_adaptive_region_demand(
                 output_mesh,
                 report,
@@ -112,8 +113,20 @@ pub(super) fn write_refined_outputs(
                 nxp,
             )?,
         ),
-        (None, None) => None,
-        (Some(_), Some(_)) => {
+        (None, None, Some(report)) => {
+            let context =
+                crate::mpas_gridfile_context::MpasGridfileContext::from_lepp_resolved_demand(
+                    output_mesh,
+                    report,
+                    nxp,
+                )?;
+            if context.is_none() {
+                eprintln!("earthmesh_cli: LEPP MPAS nominal context unavailable: resolved regions do not cover every parent W site; no background width was supplied");
+            }
+            context
+        }
+        (None, None, None) => None,
+        _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "refined output cannot have two competing MPAS demand producers",

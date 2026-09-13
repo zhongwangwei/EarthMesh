@@ -180,6 +180,10 @@ impl std::error::Error for AdaptiveHybridError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdaptiveHybridReport {
+    /// Complete resolved generation demand, never limited to diagnostic samples.
+    pub resolved_targets: Vec<AdaptiveHybridResolvedTarget>,
+    /// Initial mesh radius used to interpret the resolved spatial target regions.
+    pub target_radius_m: f64,
     pub cycles: usize,
     /// First sampled insertion reports only; counts and path stats stay exact.
     pub insertions: Vec<LeppInsertionReport>,
@@ -200,6 +204,74 @@ pub struct AdaptiveHybridReport {
 }
 
 impl AdaptiveHybridReport {
+    /// Nominal resolved-region field at geographic sites, not a replay of face
+    /// selection. Representative-face aids, tolerance, balance and quality do
+    /// not supply a spatial width. Uncovered sites deliberately remain None.
+    pub fn nominal_target_edges_at(
+        &self,
+        sites: &[LonLatDegrees],
+    ) -> Result<Vec<Option<f64>>, AdaptiveHybridError> {
+        let invalid = |message: &str| AdaptiveHybridError::InvalidConfig {
+            message: message.into(),
+        };
+        if !self.target_radius_m.is_finite() || self.target_radius_m <= 0.0 {
+            return Err(invalid(
+                "resolved target radius must be finite and positive",
+            ));
+        }
+        for target in &self.resolved_targets {
+            target
+                .demand
+                .region
+                .validate()
+                .map_err(|error| invalid(&error.to_string()))?;
+            if !target.target_edge_m.is_finite()
+                || target.target_edge_m <= 0.0
+                || target
+                    .demand
+                    .target_edge_m
+                    .is_some_and(|original| original != target.target_edge_m)
+                || target
+                    .demand
+                    .source_resolution_m
+                    .is_some_and(|source| !source.is_finite() || source <= 0.0)
+            {
+                return Err(invalid("resolved targets require finite positive scales and unchanged explicit targets"));
+            }
+        }
+        let lookup = TargetLookup::new(&self.resolved_targets, &[], self.target_radius_m);
+        sites
+            .iter()
+            .map(|site| {
+                if !site.lon_degrees.is_finite()
+                    || !site.lat_degrees.is_finite()
+                    || !(-90.0..=90.0).contains(&site.lat_degrees)
+                {
+                    return Err(invalid(
+                        "nominal target sites must be finite geographic coordinates",
+                    ));
+                }
+                let unit = lonlat_degrees_to_unit_xyz(*site);
+                let point = CartesianPoint::new(
+                    unit.x * self.target_radius_m,
+                    unit.y * self.target_radius_m,
+                    unit.z * self.target_radius_m,
+                );
+                let radius = magnitude(point);
+                if !radius.is_finite() || radius <= 0.0 {
+                    return Err(invalid(
+                        "resolved target radius cannot represent spherical sites",
+                    ));
+                }
+                Ok(lookup
+                    .matching_targets(&self.resolved_targets, 0, point, self.target_radius_m)
+                    .into_iter()
+                    .map(|index| self.resolved_targets[index].target_edge_m)
+                    .reduce(f64::min))
+            })
+            .collect()
+    }
+
     pub fn add_unresolved_demand(&mut self, demand: AdaptiveHybridUnresolvedDemand) {
         self.unresolved_demand_count += 1;
         push_unresolved_detail(&mut self.unresolved_demands, demand);
@@ -223,10 +295,10 @@ struct Candidate {
     kind: CandidateKind,
 }
 
-#[derive(Clone, Debug)]
-struct TargetSpec {
-    demand: AdaptiveHybridDemand,
-    target_edge: f64,
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdaptiveHybridResolvedTarget {
+    pub demand: AdaptiveHybridDemand,
+    pub target_edge_m: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -245,7 +317,11 @@ struct TargetLookup {
 }
 
 impl TargetLookup {
-    fn new(targets: &[TargetSpec], representative_faces: &[Option<FaceId>], radius: f64) -> Self {
+    fn new(
+        targets: &[AdaptiveHybridResolvedTarget],
+        representative_faces: &[Option<FaceId>],
+        radius: f64,
+    ) -> Self {
         let mut circles_by_latitude = Vec::new();
         let mut non_circles = Vec::new();
         let mut max_circle_radius = 0.0f64;
@@ -292,7 +368,7 @@ impl TargetLookup {
 
     fn matching_targets(
         &self,
-        targets: &[TargetSpec],
+        targets: &[AdaptiveHybridResolvedTarget],
         face: FaceId,
         center: CartesianPoint,
         radius: f64,
@@ -540,14 +616,16 @@ fn refine_adaptive_hybrid_impl(
                 Some(target) => target,
                 None => adaptive_hybrid_target_edge_from_level(&initial, &demand.region)?,
             };
-            Ok(TargetSpec {
-                target_edge,
+            Ok(AdaptiveHybridResolvedTarget {
+                target_edge_m: target_edge,
                 demand,
             })
         })
         .collect::<Result<Vec<_>, AdaptiveHybridError>>()?;
 
     let mut report = AdaptiveHybridReport {
+        resolved_targets: Vec::new(),
+        target_radius_m: mesh_radius(&initial)?,
         cycles: 0,
         insertions: Vec::new(),
         insertion_counts: AdaptiveHybridInsertionCounts::default(),
@@ -710,6 +788,7 @@ fn refine_adaptive_hybrid_impl(
     report.final_vertices = mesh.vertex_count();
     report.final_faces = mesh.triangle_count();
     update_path_distribution(&mut report.path_stats, &path_histogram);
+    report.resolved_targets = targets;
     Ok(report)
 }
 
@@ -801,7 +880,7 @@ fn validate_config(config: &AdaptiveHybridConfig) -> Result<(), AdaptiveHybridEr
 
 fn evaluate(
     mesh: &MeshState,
-    targets: &[TargetSpec],
+    targets: &[AdaptiveHybridResolvedTarget],
     config: &AdaptiveHybridConfig,
     rejected: &BTreeSet<(String, StableFaceId)>,
 ) -> Result<Evaluation, AdaptiveHybridError> {
@@ -833,7 +912,7 @@ fn evaluate_face(
     mesh: &MeshState,
     face: FaceId,
     radius: f64,
-    targets: &[TargetSpec],
+    targets: &[AdaptiveHybridResolvedTarget],
     lookup: &TargetLookup,
     config: &AdaptiveHybridConfig,
     rejected: &BTreeSet<(String, StableFaceId)>,
@@ -852,11 +931,11 @@ fn evaluate_face(
     for target_index in lookup.matching_targets(targets, face, center, radius) {
         let spec = &targets[target_index];
         satisfaction.target_faces += 1;
-        let violation = longest / (config.target_size_tolerance * spec.target_edge) - 1.0;
+        let violation = longest / (config.target_size_tolerance * spec.target_edge_m) - 1.0;
         if violation > 0.0 {
             satisfaction.unsatisfied_faces += 1;
             if let Some(source) = spec.demand.source_resolution_m {
-                if config.stop_at_source_resolution && spec.target_edge < source {
+                if config.stop_at_source_resolution && spec.target_edge_m < source {
                     unresolved.push(AdaptiveHybridUnresolvedDemand {
                         criterion_id: spec.demand.criterion_id.clone(),
                         face: Some(stable),
@@ -864,7 +943,7 @@ fn evaluate_face(
                         reason: AdaptiveHybridUnresolvedReason::SourceResolution,
                         message: format!(
                             "target edge {} is below source resolution {source}",
-                            spec.target_edge
+                            spec.target_edge_m
                         ),
                     });
                     continue;
@@ -947,7 +1026,7 @@ fn committed_kind(
 fn candidate_is_still_actionable(
     mesh: &MeshState,
     candidate: &Candidate,
-    targets: &[TargetSpec],
+    targets: &[AdaptiveHybridResolvedTarget],
     lookup: &TargetLookup,
     config: &AdaptiveHybridConfig,
     rejected: &BTreeSet<(String, StableFaceId)>,
@@ -1007,7 +1086,7 @@ fn better_candidate_order(left: &Candidate, right: &Candidate) -> Ordering {
 
 fn append_final_unresolved(
     mesh: &MeshState,
-    targets: &[TargetSpec],
+    targets: &[AdaptiveHybridResolvedTarget],
     config: &AdaptiveHybridConfig,
     report: &mut AdaptiveHybridReport,
 ) -> Result<(), AdaptiveHybridError> {
@@ -1030,12 +1109,12 @@ fn append_final_unresolved(
         };
         for target_index in lookup.matching_targets(targets, face, center, radius) {
             let spec = &targets[target_index];
-            let violation = longest / (config.target_size_tolerance * spec.target_edge) - 1.0;
+            let violation = longest / (config.target_size_tolerance * spec.target_edge_m) - 1.0;
             let already_source_limited = config.stop_at_source_resolution
                 && spec
                     .demand
                     .source_resolution_m
-                    .is_some_and(|source| spec.target_edge < source);
+                    .is_some_and(|source| spec.target_edge_m < source);
             if violation > 0.0 && !already_source_limited {
                 report.add_unresolved_demand(AdaptiveHybridUnresolvedDemand {
                     criterion_id: spec.demand.criterion_id.clone(),
@@ -1044,7 +1123,7 @@ fn append_final_unresolved(
                     reason: reason.clone(),
                     message: format!(
                         "face longest edge {longest} still exceeds target {}",
-                        spec.target_edge
+                        spec.target_edge_m
                     ),
                 });
             }
@@ -1079,7 +1158,7 @@ fn append_final_unresolved(
 
 fn representative_faces(
     mesh: &MeshState,
-    targets: &[TargetSpec],
+    targets: &[AdaptiveHybridResolvedTarget],
     radius: f64,
 ) -> Vec<Option<FaceId>> {
     let chunk_size = targets
@@ -1387,9 +1466,9 @@ mod tests {
         ]
         .into_iter()
         .enumerate()
-        .map(|(index, region)| TargetSpec {
+        .map(|(index, region)| AdaptiveHybridResolvedTarget {
             demand: AdaptiveHybridDemand::user_region(index.to_string(), region),
-            target_edge: 0.01,
+            target_edge_m: 0.01,
         })
         .collect::<Vec<_>>();
         let representatives = vec![Some(7), None, None];

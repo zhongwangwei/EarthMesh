@@ -25,8 +25,8 @@ pub use adaptive::{
     refine_adaptive_hybrid_constrained, refine_adaptive_hybrid_regions, AdaptiveHybridConfig,
     AdaptiveHybridDemand, AdaptiveHybridError, AdaptiveHybridInsertionCounts,
     AdaptiveHybridPathStats, AdaptiveHybridRejection, AdaptiveHybridReport,
-    AdaptiveHybridStopReason, AdaptiveHybridTargetSatisfaction, AdaptiveHybridUnresolvedDemand,
-    AdaptiveHybridUnresolvedReason,
+    AdaptiveHybridResolvedTarget, AdaptiveHybridStopReason, AdaptiveHybridTargetSatisfaction,
+    AdaptiveHybridUnresolvedDemand, AdaptiveHybridUnresolvedReason,
 };
 pub use insertion::{
     insert_lepp_terminal_midpoint, insert_lepp_terminal_midpoint_constrained,

@@ -433,42 +433,52 @@ fn exact_hfield_quantized_context(mesh: &UnstructuredMesh) -> MpasGridfileContex
 }
 
 #[test]
-fn final_mpas_delivery_uses_hfield_reference_for_nominal_only_on_exact_source() {
-    for format in [
-        ModelFormat::Mpas,
-        ModelFormat::MpasOcean,
-        ModelFormat::MpasSimple,
+fn final_mpas_delivery_uses_demand_reference_for_nominal_only_on_exact_source() {
+    // Adapter contract on a valid native fixture; not an assertion that current
+    // LEPP-generated parents pass the separate native topology admission.
+    for source in [
+        "method_c_hfield_quantized_w_demand_v1",
+        "adaptive_region_pass_w_demand_v1",
+        "lepp_resolved_region_w_demand_v1",
     ] {
-        let root = temp_root("exact_hfield_nominal");
-        let mesh = canonical_voronoi_fixture_mesh();
-        let context = exact_hfield_quantized_context(&mesh);
-        let gridfile = root.join("final_grid.nc4");
-        let out = root.join("mpas");
-        write_gridfile(&gridfile, &mesh, Some(&context));
+        for format in [
+            ModelFormat::Mpas,
+            ModelFormat::MpasOcean,
+            ModelFormat::MpasSimple,
+        ] {
+            let root = temp_root("exact_hfield_nominal");
+            let mesh = canonical_voronoi_fixture_mesh();
+            let mut context = exact_hfield_quantized_context(&mesh);
+            context.source = source.to_string();
+            let gridfile = root.join("final_grid.nc4");
+            let out = root.join("mpas");
+            write_gridfile(&gridfile, &mesh, Some(&context));
 
-        let (mesh_out, graph_out) =
-            earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
-                &gridfile, &out, format,
-            )
-            .unwrap();
+            let (mesh_out, graph_out) =
+                earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                    &gridfile, &out, format,
+                )
+                .unwrap();
 
-        assert_eq!(graph_out.is_some(), format != ModelFormat::MpasSimple);
-        assert_density_from_context(&mesh_out, &context);
-        assert_delivery_provenance(&mesh_out, &context);
-        if format != ModelFormat::MpasSimple {
-            let sphere_radius = if format == ModelFormat::MpasOcean {
-                MPAS_OCEAN_SPHERE_RADIUS_METERS
-            } else {
-                1.0
-            };
-            assert_close(scalar_attr_f64(&mesh_out, "sphere_radius"), sphere_radius);
-            assert_close(
-                read_f64(&mesh_out, "nominalMinDc")[0],
-                context.density_reference_width_km * 1000.0 / earthmesh_core::EARTH_RADIUS_METERS
-                    * sphere_radius,
-            );
+            assert_eq!(graph_out.is_some(), format != ModelFormat::MpasSimple);
+            assert_density_from_context(&mesh_out, &context);
+            assert_delivery_provenance(&mesh_out, &context);
+            if format != ModelFormat::MpasSimple {
+                let sphere_radius = if format == ModelFormat::MpasOcean {
+                    MPAS_OCEAN_SPHERE_RADIUS_METERS
+                } else {
+                    1.0
+                };
+                assert_close(scalar_attr_f64(&mesh_out, "sphere_radius"), sphere_radius);
+                assert_close(
+                    read_f64(&mesh_out, "nominalMinDc")[0],
+                    context.density_reference_width_km * 1000.0
+                        / earthmesh_core::EARTH_RADIUS_METERS
+                        * sphere_radius,
+                );
+            }
+            let _ = fs::remove_dir_all(&root);
         }
-        let _ = fs::remove_dir_all(&root);
     }
 }
 

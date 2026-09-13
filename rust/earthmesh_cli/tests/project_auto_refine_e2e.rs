@@ -677,3 +677,147 @@ fn project_adaptive_region_delivers_regional_mpas_with_parent_context() {
         let _ = fs::remove_dir_all(root);
     }
 }
+
+fn lepp_resolved_project() -> earthmesh_project::ProjectConfig {
+    use earthmesh_project::{
+        AdaptiveRefinementRecipe, DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset,
+        MethodCAlgorithm, ModelFormat, ProjectConfig, RegionShape, ResolutionSpec,
+        SpecifiedBboxRefinement, ViolationPolicy,
+    };
+
+    let mut project = ProjectConfig::scaffold(
+        "lepp_resolved_project",
+        MeshIntentPreset::Custom,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: -150.0,
+                e: -60.0,
+                s: -50.0,
+                n: 50.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(6),
+    );
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = false;
+    project.refinement.max_passes = 1;
+    project.refinement.backend = earthmesh_project::RefinementBackend::MethodC;
+    project.refinement.method_c.algorithm = MethodCAlgorithm::LeppDelaunay;
+    project.refinement.method_c.max_cycles = 1;
+    project.refinement.method_c.maximum_insertions_per_cycle = 2;
+    project.refinement.method_c.maximum_neighbor_size_ratio = 10.0;
+    project.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: -180.0,
+        e: 180.0,
+        s: -90.0,
+        n: 90.0,
+    });
+    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        enabled: true,
+        max_level: 0,
+        base_m: None,
+        coastline: false,
+    });
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.expert.niter = Some(1);
+    project.expert.niter_refine = Some(1);
+    project.expert.max_iter_spc = Some(1);
+    project.expert.max_iter_cal = Some(0);
+    project.expert.num_rc = Some(1);
+    project.expert.spring_global_type = Some(1);
+    project.expert.spring_regional_type = Some(0);
+    project.expert.halo = Some(vec![4, 4, 3, 0, 0, 0, 0, 0, 0]);
+    project.expert.max_transition_row = Some(vec![4, 4, 3, 0, 0, 0, 0, 0, 0]);
+    project.expert.openmp = Some(1);
+    project
+}
+
+#[test]
+fn project_lepp_resolved_region_rejects_degree_four_parent_after_selected_admission() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let project_path = root.join("lepp_inserting.yaml");
+    fs::write(
+        &project_path,
+        lepp_resolved_project().to_yaml().expect("project yaml"),
+    )
+    .unwrap();
+
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "200000",
+                "--quiet",
+            ]),
+    )
+    .expect("run inserting LEPP Project CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "inserting LEPP HEX still has a degree-4 parent"
+    );
+    assert!(
+        stderr.contains("project MPAS final delivery")
+            && stderr.contains("requires 5..=7")
+            && stderr.contains("degree 4"),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("mpas_mesh_input=") && !stdout.contains("mpas_graph_info="));
+    for name in ["mesh.nc4", "graph.info"] {
+        let mut artifacts = Vec::new();
+        find_named(&root, name, &mut artifacts);
+        assert!(
+            artifacts.is_empty(),
+            "no final artifact after rejection: {artifacts:?}"
+        );
+    }
+
+    let final_quality = Path::new(project_field(&stdout, "project_final_quality="));
+    let quality: serde_json::Value =
+        serde_json::from_slice(&fs::read(final_quality).unwrap()).unwrap();
+    assert_eq!(quality["verdict"], "pass");
+    assert_eq!(quality["topology"]["misoriented_shared_edge_count"], 0);
+
+    let mut reports = Vec::new();
+    find_named(&root, "method_c_lepp_report.json", &mut reports);
+    let report_path = reports
+        .first()
+        .unwrap_or_else(|| panic!("missing method_c_lepp_report.json under {}", root.display()));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["lepp_paths"]["committed"].as_u64(), Some(2));
+    let reference_km = report["resolved_targets"]
+        .as_array()
+        .expect("resolved targets")
+        .iter()
+        .map(|target| target["resolved_target_edge_m"].as_f64().unwrap() / 1000.0)
+        .fold(f64::INFINITY, f64::min);
+
+    let selected = Path::new(
+        report["output"]
+            .as_str()
+            .expect("LEPP report records selected native output"),
+    );
+    assert_eq!(quality["mesh_name"], report["output"]);
+    assert!(
+        selected.is_file(),
+        "LEPP selected missing: {}",
+        selected.display()
+    );
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(selected)
+        .unwrap()
+        .expect("LEPP selected must carry true resolved-demand context");
+    assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
+    assert_eq!(context.base_nxp, 6);
+    assert!((context.density_reference_width_km - reference_km).abs() < 1.0e-9);
+    let _ = fs::remove_dir_all(root);
+}

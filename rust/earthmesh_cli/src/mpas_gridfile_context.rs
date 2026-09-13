@@ -8,6 +8,7 @@ const NXP: &str = "earthmesh_mpas_base_nxp";
 const STEP: &str = "earthmesh_mpas_step";
 const REFERENCE: &str = "earthmesh_mpas_density_reference_width_km";
 const SOURCE: &str = "earthmesh_mpas_cellwidth_source";
+pub(crate) const LEPP_RESOLVED_REGION_DEMAND_V1: &str = "lepp_resolved_region_w_demand_v1";
 pub(crate) const ADAPTIVE_REGION_PASS_DEMAND_V1: &str = "adaptive_region_pass_w_demand_v1";
 pub(crate) const HFIELD_QUANTIZED_DEMAND_V1: &str = "method_c_hfield_quantized_w_demand_v1";
 
@@ -145,6 +146,60 @@ impl MpasGridfileContext {
         Ok(context)
     }
 
+    /// Resolved LEPP nominal region demand only. No target outside its regions
+    /// means no complete MPAS context, never a guessed background width.
+    pub fn from_lepp_resolved_demand(
+        mesh: &crate::UnstructuredMesh,
+        report: &earthmesh_refine_method_c::AdaptiveHybridReport,
+        base_nxp: usize,
+    ) -> io::Result<Option<Self>> {
+        let first =
+            crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
+        if first >= mesh.w_points.len() || base_nxp == 0 || i32::try_from(base_nxp).is_err() {
+            return Err(invalid(
+                "LEPP MPAS demand requires physical W cells and positive i32 NXP",
+            ));
+        }
+        let sites = mesh.w_points[first..]
+            .iter()
+            .map(|point| earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
+            .collect::<Vec<_>>();
+        let targets = report
+            .nominal_target_edges_at(&sites)
+            .map_err(|error| invalid(error.to_string()))?;
+        let reference = report
+            .resolved_targets
+            .iter()
+            .map(|target| target.target_edge_m / 1000.0)
+            .reduce(f64::min);
+        if reference.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+            return Err(invalid(
+                "LEPP MPAS target scale cannot be represented in km",
+            ));
+        }
+        let Some(widths) = targets.into_iter().collect::<Option<Vec<_>>>() else {
+            return Ok(None);
+        };
+        let reference = reference.ok_or_else(|| invalid("LEPP covered demand has no targets"))?;
+        let mut cellwidth_km = vec![reference; first];
+        cellwidth_km.extend(widths.into_iter().map(|width| width / 1000.0));
+        let context = Self {
+            cellwidth_km,
+            base_nxp,
+            step: report
+                .resolved_targets
+                .iter()
+                .map(|target| target.demand.region.level())
+                .max()
+                .unwrap_or(0)
+                + 1,
+            density_reference_width_km: reference,
+            source: LEPP_RESOLVED_REGION_DEMAND_V1.to_string(),
+        };
+        context.validate(mesh.w_points.len())?;
+        Ok(Some(context))
+    }
+
     pub(crate) fn from_producer(
         mesh: &crate::UnstructuredMesh,
         cellwidth_km: Vec<f64>,
@@ -186,6 +241,13 @@ impl MpasGridfileContext {
         {
             return Err(invalid(
                 "unsupported adaptive region-pass MPAS demand version or level cap",
+            ));
+        }
+        if self.source.starts_with("lepp_resolved_region_w_demand_")
+            && (self.source != LEPP_RESOLVED_REGION_DEMAND_V1 || self.step > 6)
+        {
+            return Err(invalid(
+                "unsupported LEPP resolved-region MPAS demand version or level cap",
             ));
         }
         if self.cellwidth_km.len() != rows || rows == 0 {

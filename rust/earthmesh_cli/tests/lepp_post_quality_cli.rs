@@ -227,6 +227,157 @@ fn cli_lepp_adaptive_hybrid_is_the_selected_method_c_production_path() {
     assert_eq!(report["mode"], "adaptive_hybrid");
     assert_eq!(report["canonical_method_c_compatible"], false);
     assert_eq!(report["insertions"]["physical"], 1);
+    assert_eq!(
+        report["resolved_target_semantics"],
+        "lepp_resolved_region_targets_v1"
+    );
+    let targets = report["resolved_targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0]["region"]["type"], "circle");
+    assert!(targets[0]["resolved_target_edge_m"].as_f64().unwrap() > 0.0);
+    assert!(
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&gridfile)
+            .unwrap()
+            .is_none(),
+        "partial coverage must not invent a background width"
+    );
+    assert!(stderr.contains("no background width was supplied"));
+    let error = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &gridfile,
+        root.join("unavailable"),
+        earthmesh_project::ModelFormat::Mpas,
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("missing persisted MPAS width context"));
+    assert!(!root.join("unavailable/mesh.nc4").exists());
 
     let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn cli_lepp_resolved_demand_retains_widths_but_rejects_invalid_hex_parent() {
+    use earthmesh_project::ModelFormat;
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("lepp_resolved_delivery");
+    let namelist = write_method_c_lepp_namelist(
+        &root, "lepp_resolved", "method_c",
+        "&method_c\n NL%algorithm='lepp_delaunay'\n NL%max_cycles=1\n NL%maximum_insertions_per_cycle=2\n NL%maximum_neighbor_size_ratio=10.0\n/",
+    );
+    let contents = fs::read_to_string(&namelist)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.contains("RL%mask_refine_spc_type=") {
+                " RL%mask_refine_spc_type='bbox'".to_string()
+            } else if line.contains("RL%mask_refine_spc_fprefix=") {
+                " RL%mask_refine_spc_fprefix='inline:bbox:w=-180,e=180,s=-90,n=90'".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&namelist, contents).unwrap();
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .arg(&namelist)
+            .args(["--max-tris", "20000", "--run-refine-passthrough"])
+            .current_dir(&root),
+    )
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parent = Path::new(stdout_value(&stdout, "gridfile"));
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(parent)
+        .unwrap()
+        .expect("covered LEPP must retain actual resolved width");
+    assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(stdout_value(&stdout, "lepp_adaptive_report")).unwrap())
+            .unwrap();
+    assert_eq!(report["lepp_paths"]["committed"], 2);
+    assert_eq!(
+        report["resolved_target_semantics"],
+        "lepp_resolved_region_targets_v1"
+    );
+    assert_eq!(report["resolved_target_units"], "m");
+    let targets = report["resolved_targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[0]["original_target_edge_m"],
+        serde_json::Value::Null
+    );
+    assert_eq!(targets[0]["source_resolution_m"], serde_json::Value::Null);
+    assert_eq!(targets[0]["region"]["type"], "bbox");
+    let expected = targets[0]["resolved_target_edge_m"].as_f64().unwrap();
+    let base_level_proxy =
+        2.0 * std::f64::consts::PI * earthmesh_core::EARTH_RADIUS_METERS / 30.0 / 2.0;
+    assert!((expected - base_level_proxy).abs() > 1000.0);
+    assert_eq!(context.density_reference_width_km, expected / 1000.0);
+    assert!(context.cellwidth_km.iter().all(|&w| w == expected / 1000.0));
+    let regional = root.join("regional.nc4");
+    let kept = earthmesh_cli::regional_gridfile_writers::write_regional_gridfile(
+        parent,
+        &regional,
+        &earthmesh_cli::coordinate_types::GridRegion::Bbox {
+            west: -150.0,
+            east: -60.0,
+            south: -50.0,
+            north: 50.0,
+        },
+        "hex",
+    )
+    .unwrap();
+    assert!(kept > 0 && kept < context.cellwidth_km.len() - 2);
+    let parent_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(parent).unwrap();
+    assert_eq!(parent_mesh.n_w_to_m.iter().filter(|&&n| n == 4).count(), 2);
+    let selected_mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&regional).unwrap();
+    earthmesh_cli::unstructured_mesh_support::validate_published_cell_degrees(
+        &selected_mesh,
+        "hex",
+    )
+    .unwrap();
+    let selected_context =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&regional)
+            .unwrap()
+            .unwrap();
+    assert_eq!(selected_context.source, context.source);
+    assert_eq!(
+        selected_context.density_reference_width_km,
+        context.density_reference_width_km
+    );
+    for format in [
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+    ] {
+        for (scope, grid) in [("global", parent), ("regional", regional.as_path())] {
+            let out = root.join(format!("{scope}_{format:?}"));
+            // Coverage does not waive the unchanged 5–7 polygon contract.
+            // The real two-insertion producer currently leaves two degree-4 W sites.
+            let error = if scope == "global" {
+                earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+                    grid, &out, format,
+                )
+            } else {
+                earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile_with_parent(
+                    grid, parent, &out, format,
+                )
+            }
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("requires 5..=7")
+                    && error.to_string().contains("degree 4"),
+                "{error}"
+            );
+            assert!(!out.join("mesh.nc4").exists());
+            assert!(!out.join("graph.info").exists());
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
 }

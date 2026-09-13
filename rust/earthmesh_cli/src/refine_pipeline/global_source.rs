@@ -1078,6 +1078,7 @@ pub fn run_refine_pipeline_namelist(
         adaptive_run
             .as_ref()
             .map(|(report, _, base_m, _)| (report, *base_m)),
+        lepp_adaptive_hybrid.as_ref(),
         hard_center_demand.as_deref(),
         "",
         native_cartesian_xy,
@@ -1110,6 +1111,37 @@ pub fn run_refine_pipeline_namelist(
         let report_json = serde_json::json!({
             "algorithm": "lepp_delaunay",
             "mode": "adaptive_hybrid",
+            "resolved_target_semantics": "lepp_resolved_region_targets_v1",
+            "resolved_target_units": "m",
+            "target_radius_m": report.target_radius_m,
+            "nominal_w_sampling": "region_containment_without_representative_faces",
+            "resolved_targets": report.resolved_targets.iter().map(|target| {
+                let region = &target.demand.region;
+                let geometry = match region {
+                    earthmesh_mesh::RefinementRegion::Circle { center, radius_meters, .. } => serde_json::json!({
+                        "type": "circle", "lon": center.lon_degrees, "lat": center.lat_degrees, "radius_m": radius_meters,
+                    }),
+                    earthmesh_mesh::RefinementRegion::Bbox { west_degrees, east_degrees, south_degrees, north_degrees, .. } => serde_json::json!({
+                        "type": "bbox", "w": west_degrees, "e": east_degrees, "s": south_degrees, "n": north_degrees,
+                    }),
+                    earthmesh_mesh::RefinementRegion::Corridor { points, radius_meters, .. } => serde_json::json!({
+                        "type": "corridor", "points": points.iter().map(|p| [p.lon_degrees, p.lat_degrees]).collect::<Vec<_>>(), "radius_m": radius_meters,
+                    }),
+                    earthmesh_mesh::RefinementRegion::Polygon { points, .. } => serde_json::json!({
+                        "type": "polygon", "points": points.iter().map(|p| [p.lon_degrees, p.lat_degrees]).collect::<Vec<_>>(),
+                    }),
+                };
+                serde_json::json!({
+                    "criterion_id": target.demand.criterion_id,
+                    "cause": format!("{:?}", target.demand.cause),
+                    "hard": target.demand.hard,
+                    "source_resolution_m": target.demand.source_resolution_m,
+                    "original_target_edge_m": target.demand.target_edge_m,
+                    "resolved_target_edge_m": target.target_edge_m,
+                    "level": region.level(),
+                    "region": geometry,
+                })
+            }).collect::<Vec<_>>(),
             "canonical_method_c_compatible": false,
             "transition_model": "lepp_natural_gradation",
             "stop_reason": format!("{:?}", report.stop_reason),
@@ -1204,6 +1236,7 @@ pub fn run_refine_pipeline_namelist(
             adaptive_run
                 .as_ref()
                 .map(|(report, _, base_m, _)| (report, *base_m)),
+            None,
             hard_center_demand.as_deref(),
             "_lepp",
             native_cartesian_xy,
