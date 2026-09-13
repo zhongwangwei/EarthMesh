@@ -78,19 +78,20 @@ pub fn run_mkgrd_regional_clip_base_namelist(
             config.mask_sea_ratio,
             &file_dir,
         )?;
-        let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
-        let obc_order = match &plan.obc_output {
-            Some(path) if path.exists() => read_obc_order_netcdf(path)?,
-            _ => Vec::new(),
-        };
-        let fvcom_2dm = write_fvcom_2dm_from_carved(
-            &carved,
-            &obc_order,
-            &fvcom_mesh_2dm_output_path(&file_dir),
-        )?;
+        if !config.defer_model_exports {
+            let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
+            let obc_order = match &plan.obc_output {
+                Some(path) if path.exists() => read_obc_order_netcdf(path)?,
+                _ => Vec::new(),
+            };
+            gridinit.fvcom_2dm = Some(write_fvcom_2dm_from_carved(
+                &carved,
+                &obc_order,
+                &fvcom_mesh_2dm_output_path(&file_dir),
+            )?);
+        }
         gridinit.raw_output = Some(gridinit.gridfile.clone());
         gridinit.gridfile = unstructured_mesh_write_report_from_file(&plan.result_gridfile)?;
-        gridinit.fvcom_2dm = Some(fvcom_2dm);
         return Ok(gridinit);
     }
 

@@ -41,6 +41,9 @@ pub struct EarthmeshConfig {
     pub mask_patch_type: String,
     pub mask_patch_fprefix: String,
     pub output_format: String,
+    /// Keep native products for a caller that owns final model admission/export.
+    /// Standalone namelists retain legacy model exports unless explicitly set.
+    pub defer_model_exports: bool,
     pub coupling_fraction_method: String,
     pub coupling_identify_coastline: bool,
     pub coupling_identify_river_mouth: bool,
@@ -77,6 +80,7 @@ impl Default for EarthmeshConfig {
             mask_patch_type: "/tmp".to_string(),
             mask_patch_fprefix: "/tmp".to_string(),
             output_format: "/tmp".to_string(),
+            defer_model_exports: false,
             coupling_fraction_method: "point_sample".to_string(),
             coupling_identify_coastline: false,
             coupling_identify_river_mouth: false,
@@ -142,6 +146,9 @@ impl EarthmeshConfig {
                 "mask_patch_type" => config.mask_patch_type = parse_canonical_string(value),
                 "mask_patch_fprefix" => config.mask_patch_fprefix = parse_canonical_string(value),
                 "output_format" => config.output_format = parse_canonical_string(value),
+                "defer_model_exports" => {
+                    config.defer_model_exports = parse_canonical_bool(field, value)?
+                }
                 "coupling_fraction_method" => {
                     config.coupling_fraction_method = parse_canonical_string(value)
                 }
@@ -249,6 +256,9 @@ impl EarthmeshConfig {
             "  NL%output_format = {}\n",
             q(&self.output_format)
         ));
+        if self.defer_model_exports {
+            out.push_str("  NL%defer_model_exports = .TRUE.\n");
+        }
         if self.mesh_type.trim() == "LOCmesh" {
             out.push_str(&format!(
                 "  NL%coupling_fraction_method = {}\n",

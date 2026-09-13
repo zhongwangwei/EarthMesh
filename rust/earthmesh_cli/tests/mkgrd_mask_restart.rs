@@ -297,6 +297,128 @@ fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
     var.put_values(values, ..).expect("cellwidth values");
 }
 
+#[test]
+fn binary_area_judge_defer_model_exports_keeps_atmos_native_gridfile_for_mpas_formats() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = std::env::temp_dir().join(format!(
+        "earthmesh_cli_mask_restart_defer_atmos_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+
+    for (case_name, mode_grid, output_format, source_mesh) in [
+        (
+            "case_defer_atmos_mpas",
+            "hex",
+            "MPAS",
+            restart_atmos_mpas_full_source_mesh(),
+        ),
+        (
+            "case_defer_atmos_mpas_simple",
+            "tri",
+            "MPAS-Simple",
+            restart_atmos_mpas_simple_source_mesh(),
+        ),
+    ] {
+        let case_dir = root.join(case_name);
+        fs::create_dir_all(case_dir.join("result")).expect("create result dir");
+        fs::create_dir_all(case_dir.join("contain")).expect("create contain dir");
+        earthmesh_cli::area_judge_grid_io::write_area_judge_grid_netcdf(
+            case_dir.join("result/IsInDmArea_grid.nc4"),
+            &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
+                bounds: earthmesh_mesh::AreaJudgeSourceBounds {
+                    minlon_source: 421,
+                    maxlon_source: 422,
+                    maxlat_source: 421,
+                    minlat_source: 422,
+                },
+                longitude: vec![-176.495_833_333_333_34, -176.487_5],
+                latitude: vec![86.495_833_333_333_34, 86.487_5],
+                is_in_area_select: vec![vec![1, 1], vec![1, 1]],
+                seaorland_select: Some(vec![vec![1, 0], vec![0, 0]]),
+            },
+        )
+        .expect("write restart domain");
+        let gridfile = case_dir.join(format!("result/gridfile_NXP0009_{mode_grid}.nc4"));
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
+            &gridfile,
+            &source_mesh,
+        )
+        .expect("write atmos source gridfile");
+
+        let namelist = root.join(format!("{case_name}.nml"));
+        let base_dir = format!("{}/", root.display());
+        fs::write(
+            &namelist,
+            format!(
+                "&mkgrd\n  NL%EXPNME='{case_name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='{mode_grid}'\n  NL%output_format='{output_format}'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n  NL%defer_model_exports=.true.\n/\n"
+            ),
+        )
+        .expect("write namelist");
+
+        let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
+        let output = support::output(
+            std::process::Command::new(exe)
+                .arg(&namelist)
+                .arg("--run-mask-restart-area-judge")
+                .arg("--mask-restart-max-iter")
+                .arg("7")
+                .arg("--source-gridnum-perdegree")
+                .arg("120")
+                .arg("--source-nlons")
+                .arg("480")
+                .arg("--source-nlats")
+                .arg("480")
+                .arg("--mask-postproc-num-vertex")
+                .arg("1")
+                .current_dir(&root),
+        )
+        .expect("run earthmesh_cli binary deferred atmos restart Area_judge path");
+
+        assert!(
+            output.status.success(),
+            "status={:?}\nstdout={}\nstderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "mask_restart_postproc_gridfile={}",
+                gridfile.display()
+            )),
+            "stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("mask_restart_model_exports=deferred"),
+            "stdout={stdout}"
+        );
+        assert!(
+            !stdout.contains("mask_restart_postproc_mpas="),
+            "stdout={stdout}"
+        );
+        assert!(
+            !stdout.contains("mask_restart_postproc_mpas_simple="),
+            "stdout={stdout}"
+        );
+        assert!(!case_dir.join("result/MPASOUT_NXP0009_global.nc4").exists());
+        assert!(!case_dir
+            .join("result/MPASOUT_NXP0009_global.graph.info")
+            .exists());
+        assert!(!case_dir
+            .join("result/MPASOUT_NXP0009_global_Simple.nc4")
+            .exists());
+        assert_eq!(
+            earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gridfile)
+                .expect("read native atmos gridfile"),
+            source_mesh
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn prepare_restart_ocean_inputs(root: &std::path::Path, case_name: &str, nxp: usize) {
     let case_dir = root.join(case_name);
     fs::create_dir_all(case_dir.join("result")).expect("create result dir");

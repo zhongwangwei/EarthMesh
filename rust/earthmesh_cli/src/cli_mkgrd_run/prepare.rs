@@ -126,6 +126,9 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
         ResolutionSpec::ApproxDegree(degrees) => degree_to_nxp(degrees),
     });
     let mut lowered = config.try_lower()?;
+    // Project owns model delivery after selecting and admitting the final mesh.
+    // Preserve the requested format and all native producer metadata.
+    lowered.mkgrd.defer_model_exports = true;
     if lowered.mkgrd.nxp != requested_nxp {
         eprintln!(
             "earthmesh_cli: Method-C local refinement adjusted NXP {requested_nxp} -> {} to preserve the stride-3 lattice",

@@ -119,6 +119,15 @@ pub(crate) fn print_mask_restart_area_judge_report(
                     println!("mask_restart_postproc_obcv2={}", obcv2.output.display());
                 }
             }
+            earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::AtmosNative(
+                postproc,
+            ) => {
+                println!(
+                    "mask_restart_postproc_gridfile={}",
+                    postproc.output.display()
+                );
+                println!("mask_restart_model_exports=deferred");
+            }
             earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
                 println!(
                     "mask_restart_postproc_mpas_simple={}",

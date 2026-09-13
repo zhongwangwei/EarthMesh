@@ -2798,7 +2798,8 @@ fn run_certified_pipeline(
         } else {
             "not_emitted"
         });
-    let fvcom_output_path = (is_domain_export
+    let fvcom_output_path = (!config.defer_model_exports
+        && is_domain_export
         && config.mesh_type.trim() == "oceanmesh"
         && config.mode_grid.trim() == "tri"
         && config.output_format.trim().eq_ignore_ascii_case("FVCOM"))
@@ -2810,7 +2811,8 @@ fn run_certified_pipeline(
     } else {
         ""
     };
-    let mpas_output_paths = (!is_domain_export
+    let mpas_output_paths = (!config.defer_model_exports
+        && !is_domain_export
         && matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
         && config.mode_grid.trim() == "hex"
         && config.output_format.trim().eq_ignore_ascii_case("MPAS"))

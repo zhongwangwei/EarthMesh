@@ -252,6 +252,11 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                 },
             )?)
         }
+        "atmos" | "atmosmesh" if config.defer_model_exports => {
+            MkgrdFinalDomainPostprocReport::AtmosNative(
+                crate::unstructured_mesh_write_report_from_file(source_gridfile)?,
+            )
+        }
         "atmos" | "atmosmesh" => match config.output_format.trim() {
             "MPAS" => {
                 MkgrdFinalDomainPostprocReport::AtmosFull(write_mask_postproc_atmos_mpas_netcdf(

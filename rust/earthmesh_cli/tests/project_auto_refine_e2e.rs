@@ -135,6 +135,11 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
         })
         .unwrap_or_else(|| panic!("missing pass-2 adapter under {}", root.display()));
     let adapter_text = fs::read_to_string(adapter).unwrap();
+    assert!(
+        earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&adapter_text)
+            .unwrap()
+            .defer_model_exports
+    );
     assert!(adapter_text.contains("RL%refine_spc = .TRUE."));
     assert!(adapter_text.contains("hfield_target_levels_json"));
     let mut quality_reports = Vec::new();

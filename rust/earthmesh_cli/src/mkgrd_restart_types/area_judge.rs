@@ -15,6 +15,8 @@ pub enum MkgrdFinalDomainPostprocReport {
     Earth(MaskPostprocEarthDomainReport),
     Land(MaskPostprocLandDomainReport),
     Ocean(MaskPostprocOceanDomainReport),
+    /// Native atmosphere mesh retained while a caller defers model export.
+    AtmosNative(crate::UnstructuredMeshWriteReport),
     Atmos(MpasSimpleMeshWriteReport),
     AtmosFull(MpasFullMeshPipelineReport),
 }

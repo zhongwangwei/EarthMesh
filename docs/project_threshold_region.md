@@ -58,14 +58,20 @@ not false connectivity failures; malformed boundary junctions still fail. Numeri
 geometry gates still follow `Warn` / `Block` / `AutoRefine`; final admission does
 not start another repair loop.
 
-This unifies **final Project admission**, not all model-export lifecycles.
-Low-level NML paths retain their own dispatch; internal CMRC certificates and
-legacy model artifacts remain separate from final admission. Some adapters still
-emit artifacts inside the engine pipeline; their
-existence does not mean the Project passed final admission. Refined MPAS still
-requires aligned producer-owned widths and global-parent context. Unsupported
-producer routes still fail instead of substituting uniform widths to pretend
-migration is complete.
+Project lowering defers specialized engine-side MPAS/FVCOM exports. Only the
+shared selected-final adapters publish the configured model files, after final
+admission. Native gridfiles, CMRC certificates/remaps, widths, lineage and OBC
+context remain available before that step; they do not establish Project final
+admission or external solver readiness.
+
+Standalone NML dispatch keeps its legacy exports by default. The internal
+`NL%defer_model_exports = .TRUE.` handoff suppresses those specialized exports
+without changing `output_format` or deleting files from earlier runs. It also
+retains native atmosphere output for standalone mask-restart; it does not add
+mask-restart support to Project or expose a skip-final-admission option.
+Refined MPAS still requires aligned producer-owned widths and global-parent
+context. Unsupported producer routes still fail instead of substituting uniform
+widths to pretend migration is complete.
 
 ### MPAS native width context
 
