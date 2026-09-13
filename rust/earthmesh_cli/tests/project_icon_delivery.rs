@@ -407,7 +407,9 @@ fn project_icon_regional_tri_delivers_selected_native_triangles_with_parent_geom
         .collect::<BTreeSet<_>>();
     let selected_cell_coords = selected_points
         .m_to_w
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .enumerate()
         .filter(|(_, row)| {
             row.iter().all(|&id| id > 0) && row[0] != row[1] && row[1] != row[2] && row[0] != row[2]
