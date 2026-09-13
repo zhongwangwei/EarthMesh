@@ -1314,3 +1314,71 @@ log("discrete mask is existing-project-only");
   check(html.includes("delivery: r.ok ? r.delivery || null : null") && html.includes('deliveryCard.textContent = ""; deliveryCard.style.display = "none";'), "actual delivery is captured only on success and cleared on restart");
   log("actual delivery renderer: final links, native-only, legacy, failure and bilingual text passed");
 }
+
+// Run the real async loaders with controlled IPC promises: no browser/test dependency.
+async function checkAnalysisOwnership() {
+  const names = ["meshViewKind", "readMeshQuality", "loadMeshMeritCells", "loadMeshPreview", "loadQualityAndMesh"];
+  const definitions = names.map(name => section(html,
+    new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name));
+  const harness = new Function(`
+    let runInfo=null,lastSummary=null,_lastQuality=null,_meshPreview=null,_meshPreviewToken=0,_meshGeojson=null,_hydroThresholds;
+    const events=[],pending=[],DEFAULT_MIN_ANGLE_DEG=25,MESH_VIEW_CELLS=50000,MERIT_SURFACE_PREVIEW_STRIDE=50;
+    const invoke=(command,args)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}));
+    const zh=()=>false,meshPreviewStride=()=>1,certifiedPreviewCellCount=()=>0;
+    const meshMeritLayer=s=>s&&s.merit,meshLandcoverLayer=()=>null;
+    const renderQualityCard=q=>events.push(['quality',q]),renderQualityNote=s=>events.push(['note',s]);
+    const logLine=s=>events.push(['log',s]),clearCoastalOverlay=()=>events.push(['clear']);
+    const applyCoastal=mesh=>events.push(['coastal',mesh]);
+    const applyMesh=mesh=>{_meshGeojson=mesh;events.push(['mesh',mesh]);};
+    ${definitions.join("\n")}
+    return {events,pending,
+      set(result,live){runInfo=result;lastSummary=live;_meshPreviewToken++;_lastQuality=null;_meshPreview=null;},
+      load(known){return loadQualityAndMesh(runInfo.gridfile,known);},
+      merit(){loadMeshMeritCells(runInfo.gridfile,meshViewKind(),runInfo);},
+      view:meshViewKind,quality(){return _lastQuality;}};
+  `);
+  const take = (h, command) => {
+    const index=h.pending.findIndex(p=>p.command===command);
+    check(index>=0, `missing ${command}`);
+    return h.pending.splice(index,1)[0];
+  };
+  const flush = () => new Promise(resolve=>setImmediate(resolve));
+  const old = {gridfile:"/old.nc",summary:{cell:"tri",min_angle_deg:32,on_violation:"warn"}};
+  const current = {gridfile:"/new.nc",summary:{cell:"hex",min_angle_deg:25,on_violation:"warn"}};
+  const mesh = JSON.stringify({features:[{id:"current"}]});
+  for (const outcome of ["resolve","reject"]) {
+    const h=harness();h.set(old,current.summary);h.load();
+    const delayed=take(h,"mesh_quality");
+    check(delayed.args.kind==="tri" && delayed.args.minAngleDeg===32 && delayed.args.onViolation==="warn", "analysis must use selected run snapshot, not live summary");
+    h.set(current,old.summary);h.load();
+    take(h,"mesh_quality").resolve({cell_count:92});await flush();
+    take(h,"mesh_cell_polygons").resolve(mesh);await flush();
+    const before=JSON.stringify(h.events);
+    delayed[outcome](outcome==="resolve"?{cell_count:180}:new Error("old quality"));await flush();
+    check(h.quality().cell_count===92 && JSON.stringify(h.events)===before && h.pending.length===0, "old quality must not repaint, start preview or log errors");
+
+    const p=harness();p.set(old);p.load({cell_count:180});
+    const stale=take(p,"mesh_cell_polygons");
+    p.set(current);p.load({cell_count:92});
+    take(p,"mesh_cell_polygons").resolve(mesh);await flush();
+    const previewBefore=JSON.stringify(p.events);
+    stale[outcome](outcome==="resolve"?JSON.stringify({features:[{id:"old"}]}):new Error("old preview"));await flush();
+    check(JSON.stringify(p.events)===previewBefore, "old preview must not repaint, classify or log errors");
+
+    const c=harness();
+    const withMerit=result=>({...result,summary:{...result.summary,merit:{path:"/merit"},bbox:[100,120,0,40]}});
+    c.set(withMerit(old));c.merit();const oldCoast=take(c,"mesh_merit_cells");
+    c.set(withMerit(current));c.merit();take(c,"mesh_merit_cells").resolve(mesh);await flush();
+    check(c.events.some(e=>e[0]==="coastal"), "current coastal result must still apply");
+    const coastBefore=JSON.stringify(c.events);
+    oldCoast[outcome](outcome==="resolve"?JSON.stringify({features:[{id:"old coast"}]}):new Error("old coast"));await flush();
+    check(JSON.stringify(c.events)===coastBefore, "old classification must not repaint, clear or log errors");
+  }
+  const h=harness();h.set({...current,delivery:{report:{target:{cell:"Tri"}}}},old.summary);
+  check(h.view()==="tri", "actual delivered target must outrank the summary");
+  h.load();take(h,"mesh_quality").reject(new Error("current quality"));await flush();
+  check(h.events.some(e=>e[0]==="note" && e[1].includes("current quality")), "current analysis errors must remain visible");
+  check(html.includes("summary: runSummary") && html.indexOf("runSummary = await api.summary(yaml)")<html.indexOf("const r = await api.runProject"), "snapshot run summary before awaiting engine completion");
+  log("analysis ownership: stale quality/preview/coastal success and error suppressed; selected view/snapshot/current errors passed");
+}
+checkAnalysisOwnership().catch(error => { console.error(error); process.exitCode=1; });

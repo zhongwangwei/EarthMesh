@@ -281,12 +281,17 @@ exist within this unique run directory after canonicalization. Only a successful
 child supplies an actual delivery card; restarting clears it. Keyboard-accessible
 buttons open the selected native mesh, model files, original final-quality
 report, and delivery record. The original admission report is distinct from the
-GUI's optional quality reanalysis. See the [CLI delivery contract](../docs/project_threshold_region.md).
+GUI's optional quality reanalysis. Analysis uses the selected run's cell view and
+configuration snapshot, not later edits to the project. Delayed quality, preview,
+and coastal-classification success/error responses from earlier runs are ignored.
+See the [CLI delivery contract](../docs/project_threshold_region.md).
 
 ### Bounded integration verification
 
 `make test-gui` includes dependency-free execution of the actual JS renderer and
-Rust record/capture regressions. An optional real-CLI smoke test covers Land/CoLM
+Rust record/capture regressions; controlled IPC promises also test stale quality,
+preview and coastal callbacks, selected-run settings, and visible current errors.
+An optional real-CLI smoke test covers Land/CoLM
 TRI and HEX, CoLM without raster opt-in, Atmosphere/MPAS, regional Ocean/FVCOM,
 and a legal TRI/MPAS native-only pairing. NXP3 uniform grids and synthetic constant
 masks make this a delivery-boundary check, not a realistic coastline,
@@ -297,6 +302,7 @@ repository root (no packages are installed by these checks):
 
 ```sh
 export EARTHMESH_GUI_E2E_ENGINE="$PWD/target/debug/earthmesh_cli"
+export EARTHMESH_MKGRD="$EARTHMESH_GUI_E2E_ENGINE"
 export EARTHMESH_GUI_E2E_OUTPUT="$(mktemp -d)"
 CARGO_TARGET_DIR=target cargo build --manifest-path rust/earthmesh_cli/Cargo.toml
 python3 - <<'PY'
@@ -319,9 +325,16 @@ CARGO_TARGET_DIR=target/gui cargo test --manifest-path gui-tauri/src-tauri/Cargo
 python3 scripts/check_gui_delivery_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
 ```
 
-The Python check feeds real CLI/Rust GUI results through **mocked Tauri
-transport** in headless Chromium: Chinese/English at 1400px and 1000px,
-file-link paths and keyboard activation, missing records, failed/pending runs,
-and inert diagnostic text. It does not emulate native map/quality commands or
-assert native WebView packaging or model-solver readiness. Regional CMRC Ocean
-uses its supported close-polygon path; unsupported bbox entry remains rejected.
+The Rust smoke executes real GUI quality and cell-polygon commands using the
+same CLI as generation. It checks cell counts, TRI/HEX view and angles against
+the original quality report, and verifies that analysis leaves the native mesh,
+original final-quality report and delivery record byte-identical.
+
+The Python check replays these real delivery/quality/polygon responses through
+**mocked Tauri transport** in headless Chromium: Chinese/English at 1400px and
+1000px, file-link keyboard activation, quality dashboard, OpenLayers cell IDs,
+legacy/failed/pending runs and inert diagnostic text. Delayed previous TRI
+quality success/error must not replace a newer HEX dashboard or preview.
+This is not native WebView packaging, live IPC, real MERIT classification or
+model-solver validation. Regional CMRC Ocean uses its supported close-polygon
+path; unsupported bbox entry remains rejected.

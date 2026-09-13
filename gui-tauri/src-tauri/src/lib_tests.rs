@@ -3755,6 +3755,12 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
     use earthmesh_project::{ColmMeshDeliveryConfig, MeshCellKind, RefinementBackend};
     let _guard = RUN_STATE_TEST_LOCK.lock().unwrap();
     let engine = env::var("EARTHMESH_GUI_E2E_ENGINE").expect("absolute CLI binary path");
+    let analysis_engine =
+        env::var("EARTHMESH_MKGRD").expect("set EARTHMESH_MKGRD to the same CLI for GUI analysis");
+    assert_eq!(
+        fs::canonicalize(&analysis_engine).unwrap(),
+        fs::canonicalize(&engine).unwrap()
+    );
     let root = PathBuf::from(env::var("EARTHMESH_GUI_E2E_OUTPUT").expect("artifact directory"));
     let mut records = Vec::new();
     for (name, kind, cell, format, colm, backend) in [
@@ -3907,7 +3913,64 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
         )
         .unwrap();
         assert_eq!(quality["mesh_name"], gridfile);
-        records.push(serde_json::json!({"name":name,"summary": project_summary(yaml).unwrap(), "quality":quality,
+        let selected = Path::new(&gridfile);
+        let final_quality_path = Path::new(
+            delivery["report"]["final_quality"]["report"]
+                .as_str()
+                .unwrap(),
+        );
+        let report_path = Path::new(delivery["report_path"].as_str().unwrap());
+        let originals =
+            [selected, final_quality_path, report_path].map(|path| fs::read(path).unwrap());
+        let view = if cell == MeshCellKind::Tri {
+            "tri"
+        } else {
+            "hex"
+        };
+        let gui_quality = mesh_outputs::mesh_quality(
+            gridfile.clone(),
+            Some(view.into()),
+            Some(cfg.quality.min_angle_deg),
+            Some("warn".into()),
+        )
+        .unwrap();
+        let gui_quality = serde_json::to_value(gui_quality).unwrap();
+        assert_eq!(gui_quality["cell_count"], quality["geometry"]["cell_count"]);
+        assert_eq!(gui_quality["cell_view"], view);
+        assert_eq!(
+            gui_quality["min_angle_deg"],
+            quality["geometry"]["min_angle_deg"]
+        );
+        assert_eq!(
+            gui_quality["max_angle_deg"],
+            quality["geometry"]["max_angle_deg"]
+        );
+        let preview = mesh_outputs::mesh_cell_polygons(
+            gridfile.clone(),
+            view.into(),
+            Some(0),
+            Some(50000),
+            Some(1),
+            None,
+        )
+        .unwrap();
+        let preview: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(
+            preview["features"].as_array().unwrap().len() as u64,
+            gui_quality["cell_count"].as_u64().unwrap()
+        );
+        for (path, original) in [selected, final_quality_path, report_path]
+            .into_iter()
+            .zip(originals)
+        {
+            assert_eq!(
+                fs::read(path).unwrap(),
+                original,
+                "GUI analysis modified {}",
+                path.display()
+            );
+        }
+        records.push(serde_json::json!({"name":name,"summary": project_summary(yaml).unwrap(), "quality":quality,"gui_quality":gui_quality,"preview":preview,
             "result":dto::RunResult {ok, code, outdir:dir.display().to_string(), gridfile:Some(gridfile), delivery:Some(delivery), certified:None, auto_refine_decisions:Vec::new()}}));
     }
     fs::write(

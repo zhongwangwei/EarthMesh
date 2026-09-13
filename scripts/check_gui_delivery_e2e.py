@@ -34,16 +34,25 @@ def main():
               return window.__case.result;
             }
             if(command==='open_path') return null;
-            if(command==='mesh_quality') throw new Error('headless transport: native quality recomputation not emulated');
+            if(command==='mesh_quality' || command==='mesh_cell_polygons') {
+              const record=window.__records.cases.find(c=>c.result.gridfile===args.gridfile);
+              if(!record || args.kind!==record.gui_quality.cell_view) throw new Error('wrong selected mesh/view');
+              if(command==='mesh_quality') {
+                if(window.__delayQuality) return new Promise((resolve,reject)=>window.__pendingQuality={resolve:()=>resolve(record.gui_quality),reject:()=>reject(new Error('delayed_previous_run'))});
+                return record.gui_quality;
+              }
+              return JSON.stringify(record.preview);
+            }
             return args.yaml || 'staged project';
           }}};""")
         page.goto((Path(__file__).resolve().parents[1] / "gui-tauri/dist/index.html").as_uri())
         page.wait_for_function("document.getElementById('logStatus').textContent.includes('Rust')")
         page.evaluate("() => {cur=6;renderStep(6);renderSteps();}")
         for case in records["cases"]:
-            page.evaluate("c => {window.__case=c;window.__calls=[];}", case)
+            page.evaluate("c => {window.__case=c;window.__calls=[];regional=!!c.summary.bbox;domainMode=regional?'regional':'global';if(regional)domBbox=c.summary.bbox;}", case)
             page.locator("#runBtn").click()
             page.wait_for_function("runInfo && runInfo.outdir === window.__case.result.outdir && !runInProgress")
+            page.wait_for_function("document.getElementById('qualityCells')?.textContent===String(window.__case.gui_quality.cell_count) && _meshGeojson?.features.length===window.__case.preview.features.length")
             report = case["result"]["delivery"]["report"]
             for language, width in ((1, 1400), (0, 1000)):
                 page.set_viewport_size({"width": width, "height": 900})
@@ -66,6 +75,26 @@ def main():
                 card.scroll_into_view_if_needed()
                 page.screenshot(path=str(source.parent / f"{case['name']}-{language}.png"))
             assert page.evaluate("window.__calls.some(c=>c.command==='mesh_quality' && c.args.gridfile===window.__case.result.gridfile)")
+            page.locator('#liveTabs button[data-pane="map"]').click()
+            page.wait_for_function("document.getElementById('mapsvg')._olmap?._meshSource.getFeatures().length>0")
+            cell_ids = page.evaluate("() => {const map=document.getElementById('mapsvg')._olmap;setOlBasemap(map,'none');map.renderSync();return [...new Set(map._meshSource.getFeatures().map(f=>f.get('cell_id')))];}")
+            assert set(cell_ids) == {feature["properties"]["cell_id"] for feature in case["preview"]["features"]}
+            page.locator("#mapsvg").screenshot(path=str(source.parent / f"{case['name']}-map.png"))
+        # A previous TRI run must never replace the newer HEX run's analysis.
+        for outcome in ("resolve", "reject"):
+            old = next(c for c in records["cases"] if c["name"] == "land_tri")
+            current = next(c for c in records["cases"] if c["name"] == "atmosphere")
+            page.evaluate("c=>{window.__case=c;window.__delayQuality=true;window.__pendingQuality=null;}", old)
+            page.locator("#runBtn").click()
+            page.wait_for_function("!!window.__pendingQuality")
+            page.evaluate("c=>{window.__case=c;window.__delayQuality=false;}", current)
+            page.locator("#runBtn").click()
+            page.wait_for_function("document.getElementById('qualityCells')?.textContent===String(window.__case.gui_quality.cell_count) && _meshGeojson?.features.length===window.__case.preview.features.length")
+            page.evaluate("async outcome=>{window.__pendingQuality[outcome]();await new Promise(resolve=>setTimeout(resolve,50));}", outcome)
+            page.screenshot(path=str(source.parent / f"late-quality-{outcome}.png"))
+            assert page.locator("#qualityCells").inner_text() == str(current["gui_quality"]["cell_count"]), "previous-run quality repainted the current run"
+            assert page.evaluate("_meshGeojson.features.length") == len(current["preview"]["features"]), "previous-run quality started a stale preview"
+            assert "delayed_previous_run" not in page.locator("#logbox").inner_text()
         page.evaluate("window.__holdRun=true")
         page.locator("#runBtn").click()
         page.wait_for_function("!!window.__finishRun")
@@ -97,7 +126,7 @@ def main():
             page.screenshot(path=str(source.parent / f"{state}.png"))
         assert not errors, errors
         browser.close()
-    print(json.dumps({"cases": len(records["cases"]), "languages": ["zh", "en"], "viewports": [1400, 1000], "legacy_failure_inert_text": "pass", "page_errors": errors, "transport": "mocked Tauri, real CLI/GUI result records"}))
+    print(json.dumps({"cases": len(records["cases"]), "languages": ["zh", "en"], "viewports": [1400, 1000], "legacy_failure_inert_text": "pass", "late_quality_success_error": "pass", "map_cell_ids": "match real polygons", "page_errors": errors, "transport": "mocked Tauri, real CLI/GUI delivery + quality + polygon responses"}))
 
 
 if __name__ == "__main__":

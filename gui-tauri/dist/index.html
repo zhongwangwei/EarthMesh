@@ -4036,14 +4036,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       for (;;) {
         let yaml;
         try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
-        try { lastSummary = await api.summary(yaml); } catch (e) {}
+        let runSummary = null;
+        try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
         logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
         const r = await api.runProject(yaml, outputPath || null);
         logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
                      : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
         setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
         const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
+        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
         if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
         break;
       }
@@ -4344,24 +4345,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   // After a successful run: parse mesh quality into the step-6 card, and overlay
-  // the generated mesh on the map using the ProjectSummary cell shape.
+  // the generated mesh using its delivered cell shape and run-time summary.
   function meshViewKind() {
-    return (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
+    const report = runInfo && runInfo.delivery && runInfo.delivery.report;
+    const summary = runInfo && runInfo.summary;
+    return String((report && report.target.cell) || (summary && summary.cell) || "").toLowerCase() === "tri" ? "tri" : "hex";
   }
   function readMeshQuality(gridfile) {
     const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
     const certifiedMinimum = certificate && certificate.angle_contract === "legacy_strict_40_to_80" ? 40
       : (certificate && certificate.angle_contract === "domain_quality_38_to_82_v1" ? 38 : NaN);
-    const projectMinimum = lastSummary && Number(lastSummary.min_angle_deg);
+    const summary = runInfo && runInfo.summary;
+    const projectMinimum = summary ? Number(summary.min_angle_deg) : NaN;
     return invoke("mesh_quality", {
       gridfile,
       kind: meshViewKind(),
       minAngleDeg: Number.isFinite(certifiedMinimum) ? certifiedMinimum : (Number.isFinite(projectMinimum) ? projectMinimum : DEFAULT_MIN_ANGLE_DEG),
-      onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((lastSummary && lastSummary.on_violation) || "warn")
+      onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((summary && summary.on_violation) || "warn")
     });
   }
-  function loadMeshMeritCells(gridfile, kind) {
-    const summary = lastSummary;
+  function loadMeshMeritCells(gridfile, kind, result) {
+    if (runInfo !== result) return;
+    const summary = result.summary;
     const merit = meshMeritLayer(summary);
     const landcover = meshLandcoverLayer(summary);
     const b = summary && summary.bbox;
@@ -4377,6 +4382,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
+        if (runInfo !== result) return;
         const classified = JSON.parse(txt);
         const fullCount = _meshGeojson && Array.isArray(_meshGeojson.features) ? _meshGeojson.features.length : 0;
         const classifiedCount = Array.isArray(classified.features) ? classified.features.length : 0;
@@ -4388,7 +4394,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         applyCoastal(classified, false);
         logLine(zh() ? "✓ 最终网格预览已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh preview classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
-      .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+      .catch((e) => { if (runInfo !== result) return; clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
   }
   function certifiedPreviewCellCount(kind) {
     const resources = runInfo && runInfo.certified && runInfo.certified.resources;
@@ -4421,8 +4427,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function loadMeshPreview(gridfile,kind,totalCells,bbox,doFit,quiet=false) {
     const token = ++_meshPreviewToken;
     const stride = meshPreviewStride(totalCells,bbox);
-    const text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell:0, maxCells:MESH_VIEW_CELLS, cellStride:stride, bbox });
-    if (token !== _meshPreviewToken) return;
+    let text;
+    try {
+      text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell:0, maxCells:MESH_VIEW_CELLS, cellStride:stride, bbox });
+    } catch (error) {
+      if (token === _meshPreviewToken) throw error;
+      return false;
+    }
+    if (token !== _meshPreviewToken) return false;
     const mesh = JSON.parse(text);
     applyMesh(mesh,doFit);
     if (!quiet) {
@@ -4430,21 +4442,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const scope = bbox ? (zh()?"当前视野":"current view") : (zh()?"全域":"global extent");
       logLine((zh()?"✓ 网格已叠加（":"✓ mesh overlaid (") + scope + ` LOD): ${shown.toLocaleString()} / ${totalCells.toLocaleString()}`);
     }
+    return true;
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
+    const result = runInfo;
+    if (!result || result.gridfile !== gridfile) return;
+    const current = () => runInfo === result;
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
-    const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
+    const kind = meshViewKind();
     const quality = knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile);
-    quality.then((q) => { _lastQuality = q; renderQualityCard(q); })
-      .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
+    quality.then((q) => { if (current()) { _lastQuality = q; renderQualityCard(q); } })
+      .catch((e) => { if (current()) renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e); });
     const knownCells = Number(knownQuality && knownQuality.cell_count) || certifiedPreviewCellCount(kind);
     const startPreview = (totalCells) => {
+      if (!current()) return false;
       _meshPreview = {gridfile,kind,totalCells,key:"global"};
       return loadMeshPreview(gridfile,kind,totalCells,null,true);
     };
     (knownCells > 0 ? startPreview(knownCells) : quality.then((q)=>startPreview(Number(q.cell_count)||MESH_VIEW_CELLS)))
-      .then(() => { if (!(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind); })
-      .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
+      .then((applied) => { if (applied && current() && !result.certified) loadMeshMeritCells(gridfile, kind, result); })
+      .catch((e) => { if (current()) logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e); });
   }
 
   // A distribution row: [min..max] track with the μ±σ band + mean tick.
