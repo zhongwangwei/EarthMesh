@@ -98,7 +98,13 @@ def main():
         page.evaluate("window.__holdRun=true")
         page.locator("#runBtn").click()
         page.wait_for_function("!!window.__finishRun")
-        assert page.locator("#deliveryCard").inner_text() == ""
+        page.evaluate("document.getElementById('work').scrollTop=0")
+        page.screenshot(path=str(source.parent / "pending-rerun.png"))
+        assert page.locator("#work .verdict").count() == 0, "pending rerun must not retain the previous DONE verdict"
+        assert page.locator("#qualityCells").count() == 0, "pending rerun must not retain previous quality"
+        assert page.locator("#deliveryCard button").count() == 0
+        assert page.locator("#runBtn").is_disabled() and page.locator("#killBtn").is_visible()
+        assert "Generating mesh" in page.locator("#work").inner_text()
         page.evaluate("() => {window.__holdRun=false;window.__finishRun();}")
         page.wait_for_function("runInfo && !runInProgress")
         # No record is unknown, failed runs cannot display stale success, and text stays inert.

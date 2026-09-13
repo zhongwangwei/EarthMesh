@@ -476,6 +476,8 @@ const STEPS=[
 ];
 let cur=0;
 let runInProgress=false;
+let runCompletion = null;
+let killInProgress = false;
 
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
@@ -859,8 +861,8 @@ function renderStep(i){
   else{
     html=head(STEPS[6].t[lang],lang?"点击下方「运行」生成网格；过程日志见右侧。完成后这里显示结果与质量指标。":"Click Run below to generate; live log on the right. Results and quality metrics appear here when it finishes.");
     if(!hasRun){
-      html+=`<div class="card"><h3>${lang?"准备生成":"Ready to generate"}</h3>
-        <div class="ch">${lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run."}</div>
+      html+=`<div class="card"><h3>${runInProgress?(lang?"正在生成":"Generating mesh"):(lang?"准备生成":"Ready to generate")}</h3>
+        <div class="ch">${runInProgress?(lang?"正在运行当前配置；完成后显示本次结果。":"Running the current configuration; results appear when it finishes."):(lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run.")}</div>
         <div class="grid2" style="margin-top:8px">
           ${field(lang?"输出模型":"Output model",`<b id="readyModelOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"质量模式":"Quality mode",`<b id="readyQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`)}
@@ -905,7 +907,7 @@ function renderStep(i){
   drawMap(); // keep the map's domain box in sync with regional/global + template
 }
 async function confirmStopForPageSwitch(){
-  if(!runInProgress) return true;
+  if(!runInProgress && !killInProgress) return true;
   const ok=confirm(lang
     ?"网格正在运行。切换页面前需要先终止当前运行，是否终止并切换？"
     :"A mesh run is in progress. Switching pages will stop the current run. Stop and switch?");
@@ -1805,28 +1807,34 @@ function setLogStatus(text, ok){
 }
 function setRunControls(on){
   runInProgress=!!on;
+  const busy=runInProgress || killInProgress;
   const runBtn=document.getElementById("runBtn"), killBtn=document.getElementById("killBtn");
   if(runBtn){
-    runBtn.disabled=on;
-    runBtn.style.opacity=on?"0.55":"";
-    runBtn.style.cursor=on?"not-allowed":"";
-    runBtn.textContent=on?(lang?"⏳ 运行中…":"⏳ Running…"):("▶ "+(lang?"运行":"Run"));
+    runBtn.disabled=busy;
+    runBtn.style.opacity=busy?"0.55":"";
+    runBtn.style.cursor=busy?"not-allowed":"";
+    runBtn.textContent=killInProgress?(lang?"⏳ 正在终止…":"⏳ Stopping…")
+      :busy?(lang?"⏳ 运行中…":"⏳ Running…"):("▶ "+(lang?"运行":"Run"));
   }
-  if(killBtn) killBtn.style.display=on?"inline-flex":"none";
+  if(killBtn){ killBtn.style.display=busy?"inline-flex":"none"; killBtn.disabled=killInProgress; }
 }
 async function killRun(){
+  if(killInProgress) return false;
   const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
   const lb=document.getElementById("logbox");
   const add=(s)=>{ if(lb){ const div=document.createElement("div"); div.textContent=s; lb.appendChild(div); lb.scrollTop=lb.scrollHeight; } };
   if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return false; }
+  const owner=runCompletion;
+  killInProgress=true;
+  setRunControls(runInProgress);
   try{
     const r = await inv("kill_run");
     add("■ "+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process")));
-    if(r){ setRunControls(false); }
-    else { setRunControls(false); }
-    const rt=document.getElementById("rtext"); if(rt) rt.textContent=r?(lang?"已终止":"killed"):(lang?"未在运行":"not running");
-    return true;
-  }catch(e){ add("✗ kill: "+e); return false; }
+    // Signalling the child does not settle its owning run_project command.
+    if(r && owner) await owner;
+    return !runInProgress;
+  }catch(e){ add("✗ kill: " + e); return false; }
+  finally{ killInProgress=false; setRunControls(runInProgress); }
 }
 
 /* ---------------- toggles ---------------- */
@@ -3404,6 +3412,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (runInfo) renderCertifiedRun(runInfo.certified);
     // Re-render the cached quality result when step 6 rebuilds its DOM.
     if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
+    setRunControls(runInProgress);
   }
 
   // renderStep is a function declaration => reassignable; wrap it to enhance
@@ -4019,6 +4028,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Run -> compose YAML -> spawn the mesh engine, stream logs, report status.
   async function doRun() {
+    if (runInProgress || killInProgress) return;
+    let completeRun;
+    runCompletion = new Promise(resolve => { completeRun = resolve; });
     const rtext = document.getElementById("rtext");
     const rdot = document.getElementById("rdot");
     const setStatus = (txt, done) => {
@@ -4027,41 +4039,43 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     setStatus(zh() ? "运行中…" : "running…", false);
     setRunControls(true);
-    clearRunArtifacts();
-    // show the Log pane because the Run button now lives inside the step footer
-    document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
-    document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
-    let finalQuality = null;
     try {
-      for (;;) {
-        let yaml;
-        try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
-        let runSummary = null;
-        try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
-        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
-        const r = await api.runProject(yaml, outputPath || null);
-        logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
-                     : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
-        setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
-        const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
-        if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
-        break;
-      }
+      clearRunArtifacts();
+      if (typeof cur !== "undefined" && cur === 6) renderStep(6);
+      // show the Log pane because the Run button now lives inside the step footer
+      document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
+      document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
+      const yaml = await composeYaml();
+      let runSummary = null;
+      try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
+      logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
+      const r = await api.runProject(yaml, outputPath || null);
+      logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
+                   : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
+      setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
+      const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
+      hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
+      if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
     } catch (e) {
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
       hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
-    }
-    setRunControls(false);
-    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
-      try { renderStep(6); }
-      catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
-    }
-    if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
-    else if (runInfo && runInfo.ok) {
-      logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
-      renderMissingGridfile();
+    } finally {
+      setRunControls(false);
+      try {
+        if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
+          try { renderStep(6); }
+          catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
+        }
+        if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile);
+        else if (runInfo && runInfo.ok) {
+          logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
+          renderMissingGridfile();
+        }
+      } finally {
+        runCompletion = null;
+        completeRun();
+      }
     }
   }
 

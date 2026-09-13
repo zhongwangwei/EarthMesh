@@ -836,7 +836,7 @@ log("CaMa label check passed");
       html.includes("_lastQuality = null;") &&
       html.includes("runInfo && runInfo.ok && _lastQuality") &&
       html.includes("function setRunControls") &&
-      html.includes("if(r){ setRunControls(false);") &&
+      html.includes("let runCompletion = null;") &&
       html.includes("function clearRunArtifacts") &&
       html.includes("applyMesh(null);") &&
       html.includes("await reflectProject(res);") &&
@@ -1382,3 +1382,62 @@ async function checkAnalysisOwnership() {
   log("analysis ownership: stale quality/preview/coastal success and error suppressed; selected view/snapshot/current errors passed");
 }
 checkAnalysisOwnership().catch(error => { console.error(error); process.exitCode=1; });
+
+// Exercise the actual run/stop handlers with delayed command completion.
+async function checkRunSettlement() {
+  const extract = (name, indent) => section(html, new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`), name);
+  const definitions = [extract("doRun", "  "), extract("enhanceRunStep", "  "), extract("setRunControls", ""), extract("killRun", ""), extract("confirmStopForPageSwitch", "")];
+  const harness = new Function(`
+    let runInProgress=false,runCompletion=null,killInProgress=false,hasRun=true,runInfo={ok:true,outdir:'/old'},_lastQuality=null,lastSummary=null,cur=6,lang=0,outputPath='';
+    const pending=[],events=[],elements={};
+    const element=()=>({textContent:'',style:{},classList:{toggle(){}},appendChild(node){events.push(['log',node.textContent]);}});
+    for(const id of ['runBtn','killBtn','rtext','rdot','logbox'])elements[id]=element();
+    const document={getElementById:id=>elements[id],querySelectorAll:()=>[],createElement:element};
+    const defer=command=>new Promise((resolve,reject)=>pending.push({command,resolve,reject}));
+    const invoke=command=>defer(command),window={__TAURI__:{core:{invoke}}};
+    const api={summary:async()=>({cell:'tri'}),runProject:()=>defer('run_project')};
+    let composeYaml=async()=>'yaml';
+    const zh=()=>false,confirm=()=>true,currentIntent=()=>'',currentResolutionLabel=()=>'';
+    const logLine=s=>events.push(['log',s]);
+    const clearRunArtifacts=()=>{hasRun=false;runInfo=null;};
+    const renderAutoRefineDecisions=()=>{},renderCertifiedRun=()=>{},renderProjectDelivery=()=>{},renderQualityCard=()=>{},renderMissingGridfile=()=>{};
+    const loadQualityAndMesh=path=>events.push(['load',path]);
+    const renderStep=()=>{events.push(['render',hasRun,runInfo]);elements.runBtn=element();elements.killBtn=element();enhanceRunStep();};
+    ${definitions.join("\n")}
+    return {pending,events,elements,start:doRun,kill:killRun,switchPage:confirmStopForPageSwitch,
+      redraw:renderStep,holdCompose(){composeYaml=()=>defer('compose');},
+      state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion};}};
+  `);
+  const flush = () => new Promise(resolve=>setImmediate(resolve));
+  const take = (h,command) => { const i=h.pending.findIndex(p=>p.command===command);check(i>=0, `missing run command ${command}`);return h.pending.splice(i,1)[0]; };
+  const done = outdir => ({ok:true,outdir,gridfile:outdir+'/mesh.nc',code:0});
+  for (const outcome of ['resolve','reject']) {
+    const h=harness(),first=h.start();await flush();const old=take(h,'run_project');
+    check(h.events.some(e=>e[0]==='render' && !e[1] && e[2]===null), 'starting a rerun must repaint without old results');
+    h.redraw();check(h.elements.runBtn.disabled && h.elements.killBtn.style.display==='inline-flex','redraw must preserve running controls');
+    h.start();await flush();check(h.pending.length===0,'duplicate Run must not create a second command');
+    let switched=false;const stop=h.switchPage().then(value=>{switched=value;});take(h,'kill_run').resolve(true);await flush();
+    check(!switched && h.state().busy && h.elements.runBtn.disabled,'stop must wait for its run owner before allowing retry/page switch');
+    h.start();await flush();check(h.pending.length===0,'retry must not overlap cancelled command settlement');
+    old[outcome](outcome==='resolve'?{ok:false,code:null,outdir:'/cancelled'}:new Error('cancelled command'));
+    await first;await stop;check(switched && !h.state().busy && !h.state().stopping,'settled cancellation must release navigation');
+    const next=h.start();await flush();take(h,'run_project').resolve(done('/new'));await next;
+    check(h.state().result.outdir==='/new' && h.events.filter(e=>e[0]==='load').map(e=>e[1]).join()==='/new/mesh.nc','recovery must load only its own successful mesh');
+  }
+  const early=harness();early.holdCompose();const composing=early.start();await flush();
+  const noChild=early.switchPage();take(early,'kill_run').resolve(false);
+  check(!await noChild && early.state().busy,'no child during startup is not a completed cancellation');
+  take(early,'compose').reject(new Error('invalid project'));await composing;
+  check(early.state().result?.ok===false && !early.state().busy && !early.state().completion,'compose failure must render failure and release its owner');
+
+  const late=harness(),run=late.start();await flush();const child=take(late,'run_project');
+  const stop=late.kill(),reply=take(late,'kill_run');child.resolve(done('/finished'));await run;
+  late.redraw();check(late.elements.runBtn.disabled,'pending kill reply must keep retry fenced after natural completion');
+  late.start();await flush();check(late.pending.length===0,'late stop must not race a newer child');
+  reply.resolve(false);await stop;check(!late.elements.runBtn.disabled && !late.state().stopping,'late no-child reply must release retry without erasing success');
+  check(late.state().result.outdir==='/finished','late stop reply must not replace completed result');
+  const retry=late.start();await flush();take(late,'run_project').resolve(done('/retry'));await retry;
+  check(late.state().result.outdir==='/retry','retry after late stop must succeed');
+  log('run settlement: pending redraw, duplicate Run, stop/page-switch fence, late kill, compose failure and recovery passed');
+}
+checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; });
