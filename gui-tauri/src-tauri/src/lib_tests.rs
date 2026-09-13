@@ -3574,6 +3574,30 @@ fn set_quality_rejects_an_empty_auto_refine_batch() {
 }
 
 #[test]
+fn refinement_commands_preserve_requested_depth_before_cli_quality_projection() {
+    let mut base = circle_project("requested_depth");
+    base.refinement.specified_close = Some(SpecifiedCloseRefinement {
+        path: "/opened/refine.nml".into(),
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    for algorithm in ["method_c", "red_green", "lepp_delaunay", "certified"] {
+        for policy in [ViolationPolicy::Warn, ViolationPolicy::AutoRefine] {
+            base.quality.on_violation = policy;
+            let yaml = set_refinement_backend(base.to_yaml().unwrap(), algorithm.into()).unwrap();
+            for passes in [3, METHOD_C_MAX_AUTO_REFINE_LEVEL] {
+                let edited = set_refinement(yaml.clone(), true, false, passes).unwrap();
+                assert_eq!(project_summary(edited.clone()).unwrap().max_passes, passes);
+                let lowered = ProjectConfig::from_yaml(&edited)
+                    .unwrap()
+                    .try_lower()
+                    .unwrap();
+                assert_eq!(lowered.refine.max_iter_spc, i32::from(passes));
+            }
+        }
+    }
+}
+
+#[test]
 fn set_refinement_rejects_too_many_passes() {
     let yaml = hydrology_yaml("refine_test");
     let err = set_refinement(yaml, true, true, 6).unwrap_err();

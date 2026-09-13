@@ -596,7 +596,6 @@ let DEFAULT_RELAX=STATIC_BROWSER_CAPABILITIES.default_relax;
 let DEFAULT_HFIELD_G=STATIC_BROWSER_CAPABILITIES.default_hfield_g;
 let METHOD_C_DEFAULTS=STATIC_BROWSER_CAPABILITIES.method_c_defaults;
 let CERTIFIED_DEFAULTS=STATIC_BROWSER_CAPABILITIES.certified_defaults;
-let METHOD_C_MIN_BASE_NXP=STATIC_BROWSER_CAPABILITIES.method_c_min_base_nxp;
 let METHOD_C_MAX_REFINEMENT_LEVEL=STATIC_BROWSER_CAPABILITIES.method_c_max_refinement_level;
 const MERIT_SURFACE_PREVIEW_STRIDE=50;
 var expertEdit = { springStrategy: null }; // fallback for static renderStep before Tauri bridge state exists
@@ -2031,7 +2030,6 @@ if(MAP_WINDOW_MODE){
     SPECIALIZED_CELLS = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.model_format, entry.specialized_cells]));
     DEFAULT_SEA_RATIO_PCT = capabilities.default_sea_ratio * 100;
     DEFAULT_MIN_ANGLE_DEG = capabilities.default_min_angle_deg;
-    METHOD_C_MIN_BASE_NXP = capabilities.method_c_min_base_nxp;
     METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level;
     DEFAULT_OPENMP = capabilities.default_openmp;
     DEFAULT_NITER = capabilities.default_niter;
@@ -2077,11 +2075,6 @@ if(MAP_WINDOW_MODE){
     if (nxp >= 192) return 3;
     if (nxp >= 64) return 2;
     return 1;
-  }
-  function regionalMethodCLevelCap(nxp) {
-    let cap = 1;
-    while (cap < METHOD_C_MAX_REFINEMENT_LEVEL && METHOD_C_MIN_BASE_NXP * Math.pow(2, cap + 1) <= nxp) cap++;
-    return cap;
   }
   function currentIntent() {
     try { return (TPL[tpl] && TPL[tpl].intent) || "Custom"; } catch (e) { return "Custom"; }
@@ -2297,7 +2290,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const summary = await invoke("project_summary", { yaml });
     const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
     const refinementEnabled = thresholdSourceEnabled || !!specifiedRefine.enabled;
-    const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
+    const maxRefinePasses = METHOD_C_MAX_REFINEMENT_LEVEL;
     const refinementPasses = refinementEnabled
       ? Math.min(maxRefinePasses, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
       : 0;
@@ -2903,7 +2896,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
 
     const regionalRefine = sum.domain === "regional";
-    const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
+    const nMax = METHOD_C_MAX_REFINEMENT_LEVEL;
     const refinementEnabled = (thresholdRefine.enabled && (hasEnabledThresholdLayer(sum) || hasEnabledHydroRefinement(sum))) || !!specifiedRefine.enabled;
     if (refinementEnabled) {
       if (maxPasses > nMax) maxPasses = nMax;

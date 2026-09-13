@@ -513,7 +513,6 @@ log("resolution slider ticks are self-describing");
       body.includes("capabilities.default_min_angle_deg") &&
       body.includes("capabilities.target_presets") &&
       body.includes("capabilities.target_compatibility") &&
-      body.includes("capabilities.method_c_min_base_nxp") &&
       body.includes("capabilities.method_c_max_refinement_level") &&
       body.includes("capabilities.default_surface_refine_spring_iterations") &&
       body.includes("capabilities.default_atmosphere_refine_spring_iterations") &&
@@ -1161,13 +1160,46 @@ check(
 );
 log("blank MERIT thresholds restore defaults; invalid values reach Rust validation");
 
-check(
-  html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level") &&
-    html.includes('const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;') &&
-    html.includes('const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;'),
-  "global and regional refinement controls must share the engine level cap",
-);
-log("Method-C refinement controls share the engine level cap");
+{
+  check(
+    html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level"),
+    "refinement controls must use the runtime schema limit",
+  );
+  const compose = section(html, /(const maxRefinePasses =[\s\S]*?\n      : 0;)/, "refinement compose limits");
+  const controls = section(html, /(const nMax =[\s\S]*?const shownCalPasses =[^\n]*;)/, "refinement control limits");
+  const legacyCap = html.match(/  function regionalMethodCLevelCap\(nxp\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  const probe = new Function("summary", "requested", "source", "algorithm", `
+    const METHOD_C_MAX_REFINEMENT_LEVEL=5, METHOD_C_MIN_BASE_NXP=10;
+    const currentNxp=()=>summary.effective_nxp;
+    ${legacyCap}
+    let maxPasses=requested;
+    const expertEdit={};
+    const thresholdRefine={enabled:source==="threshold"};
+    const specifiedRefine={enabled:source==="specified",algorithm};
+    const hasEnabledThresholdLayer=()=>source==="threshold";
+    const hasEnabledHydroRefinement=()=>false;
+    const refinementEnabled=source!=="off";
+    ${compose}
+    {
+      const sum=summary, regionalRefine=sum.domain==="regional";
+      ${controls}
+      return {composed:refinementPasses,afterPaint:maxPasses,nMax,shownPasses,shownSpcPasses,shownCalPasses};
+    }
+  `);
+  for (const algorithm of ["method_c", "red_green", "lepp_delaunay", "certified"])
+    for (const domain of ["global", "regional"])
+      for (const effective_nxp of [3, 40])
+        for (const source of ["specified", "threshold", "off"])
+          for (const requested of source === "off" ? [0, 3] : [1, 3, 5]) {
+            const actual = probe({domain,effective_nxp}, requested, source, algorithm);
+            check(actual.composed === (source === "off" ? 0 : requested) && actual.afterPaint === requested,
+              "compose/paint must preserve requested depth; AutoRefine projection belongs to the CLI",
+              {algorithm,domain,effective_nxp,source,requested,actual});
+            check(actual.nMax === 5 && actual.shownSpcPasses === Math.max(1, requested) && actual.shownCalPasses === Math.max(1, requested),
+              "pass controls must expose schema-valid requests without an NXP cap", actual);
+          }
+  log("refinement demand: actual compose/control snippets preserve requested depths and disabled zero across domains/algorithms");
+}
 
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
