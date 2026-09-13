@@ -126,12 +126,22 @@ pub fn run_mkgrd_gridinit_global_namelist(
             1,
             "gridinit_uniform_base",
         )?;
+        // Fresh snapshot identities survive whole-cell extraction. Imported
+        // mode files retain only their own metadata; do not invent ancestry.
+        let m_lineage = (1..=mesh.m_points.len())
+            .map(|row| row as i64)
+            .collect::<Vec<_>>();
+        let w_lineage = (1..=mesh.w_points.len())
+            .map(|row| row as i64)
+            .collect::<Vec<_>>();
         let gridfile =
             crate::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
                 output_path,
                 &mesh,
                 crate::MethodCGridfileMetadataSlices {
                     mpas: Some(&context),
+                    m_lineage: Some(&m_lineage),
+                    w_lineage: Some(&w_lineage),
                     ..Default::default()
                 },
             )?;
@@ -155,6 +165,7 @@ pub fn run_mkgrd_gridinit_global_namelist(
         config,
         runtime_state,
         workspace_mask,
+        raw_output: None,
         gridfile,
         fvcom_2dm: None,
     })

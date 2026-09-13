@@ -612,6 +612,41 @@ fn run_prepared_mkgrd(
                     "project_final_quality_verdict={}",
                     final_quality.verdict.as_str()
                 );
+                if spec.config.target.model_format == earthmesh_project::ModelFormat::Icon {
+                    if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
+                        let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
+                        let output = gridfile
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."))
+                            .join("standard")
+                            .join(format!("ICON_{stem}.nc4"));
+                        let nxp = usize::try_from(spec.config.try_lower()?.mkgrd.nxp)
+                            .map_err(|err| format!("project ICON NXP: {err}"))?;
+                        let parent = refinement_parent_gridfile(&report)
+                            .filter(|parent| *parent != gridfile);
+                        let icon = match parent {
+                            Some(parent) => {
+                                earthmesh_cli::write_icon_from_final_gridfile_with_parent(
+                                    gridfile, parent, &output, nxp,
+                                )
+                            }
+                            None => earthmesh_cli::write_icon_from_final_gridfile(
+                                gridfile, &output, nxp,
+                            ),
+                        }
+                        .map_err(|err| format!("project ICON final delivery: {err}"))?;
+                        if let Some(parent) = parent {
+                            println!("icon_parent_gridfile={}", parent.display());
+                        }
+                        println!("icon_mesh_input={}", icon.output.display());
+                        println!(
+                            "icon_cells={} icon_vertices={} icon_edges={} icon_global_grid={}",
+                            icon.cells, icon.vertices, icon.edges, icon.global_grid
+                        );
+                    } else {
+                        eprintln!("earthmesh_cli: ICON specialized export requires triangular cells; grid-only delivery");
+                    }
+                }
                 if spec.config.target.model_format == earthmesh_project::ModelFormat::Fvcom {
                     if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
                         let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
@@ -959,9 +994,13 @@ fn refinement_parent_gridfile(
         | DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
             Some(run.refinement_parent_gridfile())
         }
-        DefaultReport::Dispatch(DispatchReport::Gridinit(run)) => {
-            Some(run.gridfile.output.as_path())
-        }
+        DefaultReport::Dispatch(DispatchReport::Gridinit(run)) => Some(
+            run.raw_output
+                .as_ref()
+                .unwrap_or(&run.gridfile)
+                .output
+                .as_path(),
+        ),
         _ => None,
     }
 }

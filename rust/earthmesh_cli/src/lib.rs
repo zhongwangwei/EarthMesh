@@ -356,7 +356,10 @@ use mpas_simple_writer::{
     write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
 };
 mod icon_writer;
-pub use icon_writer::{write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS};
+pub use icon_writer::{
+    write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
+    write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS,
+};
 mod mpas_full_writer;
 pub use mpas_full_writer::{
     write_mpas_mesh_netcdf, write_mpas_ocean_mesh_netcdf, MPAS_OCEAN_SPHERE_RADIUS_METERS,

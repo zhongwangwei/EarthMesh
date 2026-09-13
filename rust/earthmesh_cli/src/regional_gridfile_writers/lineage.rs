@@ -35,12 +35,64 @@ pub(crate) fn verify_whole_cell_lineage(
     let original = crate::read_gridfile_mesh_points(source)?;
     quality_input_from_gridfile_hex_native(&original)?;
     quality_input_from_gridfile_hex_native(grid)?;
-    let lineage = read_gridfile_cell_lineages(output)?;
-    let parent_lineage = read_gridfile_cell_lineages(source)?;
     let m_layout = gridfile_m_row_layout(grid);
     let w_layout = gridfile_w_row_layout(grid);
     let source_m = gridfile_m_row_layout(&original);
     let source_w = gridfile_w_row_layout(&original);
+    let mut matched = match_parent_rows(source, output, grid, &original)?;
+    for (index, &parent_row) in matched[1].iter().enumerate() {
+        let row = w_layout.first_physical_row + index;
+        let count = grid.n_w[row] as usize; // native adapters validated count/indices
+        if original.n_w[parent_row] != grid.n_w[row] {
+            return Err(invalid(
+                "whole-cell delivery changed a parent's corner count",
+            ));
+        }
+        let source_start = parent_row * original.w_to_m_width;
+        let parent_ring = original.w_to_m[source_start..source_start + count]
+            .iter()
+            .map(|&id| {
+                let row = source_m
+                    .physical_row_for_canonical_id(id, original.m_lon.len())
+                    .ok_or_else(|| invalid("parent corner index is invalid"))?;
+                Ok(row as i64)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let ring = grid.w_to_m[row * grid.w_to_m_width..row * grid.w_to_m_width + count]
+            .iter()
+            .map(|&id| {
+                let row = m_layout
+                    .physical_row_for_canonical_id(id, grid.m_lon.len())
+                    .ok_or_else(|| invalid("selected corner index is invalid"))?;
+                Ok(matched[0][row - m_layout.first_physical_row] as i64)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if !same_cycle(&ring, &parent_ring) {
+            return Err(invalid(
+                "whole-cell delivery changed a parent's cyclic boundary",
+            ));
+        }
+    }
+    Ok(matched
+        .pop()
+        .unwrap()
+        .into_iter()
+        .map(|row| row - source_w.first_physical_row + 1)
+        .collect())
+}
+
+fn match_parent_rows(
+    source: &Path,
+    output: &Path,
+    grid: &GridfileMeshPoints,
+    original: &GridfileMeshPoints,
+) -> io::Result<Vec<Vec<usize>>> {
+    let lineage = read_gridfile_cell_lineages(output)?;
+    let parent_lineage = read_gridfile_cell_lineages(source)?;
+    let m_layout = gridfile_m_row_layout(grid);
+    let w_layout = gridfile_w_row_layout(grid);
+    let source_m = gridfile_m_row_layout(original);
+    let source_w = gridfile_w_row_layout(original);
     let mut matched = Vec::new();
     for (
         lon,
@@ -115,44 +167,52 @@ pub(crate) fn verify_whole_cell_lineage(
         }
         matched.push(rows);
     }
-    for (index, &parent_row) in matched[1].iter().enumerate() {
-        let row = w_layout.first_physical_row + index;
-        let count = grid.n_w[row] as usize; // native adapters validated count/indices
-        if original.n_w[parent_row] != grid.n_w[row] {
-            return Err(invalid(
-                "whole-cell delivery changed a parent's corner count",
-            ));
-        }
-        let source_start = parent_row * original.w_to_m_width;
-        let parent_ring = original.w_to_m[source_start..source_start + count]
+    Ok(matched)
+}
+
+/// Return parent M indices for complete native triangles, not truncated W duals.
+pub(crate) fn verify_whole_triangle_lineage(
+    source: &Path,
+    output: &Path,
+    grid: &GridfileMeshPoints,
+) -> io::Result<Vec<usize>> {
+    let original = crate::read_gridfile_mesh_points(source)?;
+    crate::grid_quality_pipeline::quality_input_from_gridfile(&original)?;
+    crate::grid_quality_pipeline::quality_input_from_gridfile(grid)?;
+    let m_layout = gridfile_m_row_layout(grid);
+    let w_layout = gridfile_w_row_layout(grid);
+    let source_m = gridfile_m_row_layout(&original);
+    let source_w = gridfile_w_row_layout(&original);
+    let matched = match_parent_rows(source, output, grid, &original)?;
+    for (index, &parent_row) in matched[0].iter().enumerate() {
+        let row = m_layout.first_physical_row + index;
+        let parent_corners = original.m_to_w[parent_row * 3..parent_row * 3 + 3]
             .iter()
             .map(|&id| {
-                let row = source_m
-                    .physical_row_for_canonical_id(id, original.m_lon.len())
-                    .ok_or_else(|| invalid("parent corner index is invalid"))?;
-                Ok(row as i64)
+                source_w
+                    .physical_row_for_canonical_id(id, original.w_lon.len())
+                    .map(|row| row as i64)
+                    .ok_or_else(|| invalid("parent triangle corner is invalid"))
             })
             .collect::<io::Result<Vec<_>>>()?;
-        let ring = grid.w_to_m[row * grid.w_to_m_width..row * grid.w_to_m_width + count]
+        let corners = grid.m_to_w[row * 3..row * 3 + 3]
             .iter()
             .map(|&id| {
-                let row = m_layout
-                    .physical_row_for_canonical_id(id, grid.m_lon.len())
-                    .ok_or_else(|| invalid("selected corner index is invalid"))?;
-                Ok(matched[0][row - m_layout.first_physical_row] as i64)
+                let row = w_layout
+                    .physical_row_for_canonical_id(id, grid.w_lon.len())
+                    .ok_or_else(|| invalid("selected triangle corner is invalid"))?;
+                Ok(matched[1][row - w_layout.first_physical_row] as i64)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        if !same_cycle(&ring, &parent_ring) {
+        if !same_cycle(&corners, &parent_corners) {
             return Err(invalid(
-                "whole-cell delivery changed a parent's cyclic boundary",
+                "whole-cell delivery changed a parent's triangle corners",
             ));
         }
     }
-    Ok(matched
-        .pop()
-        .unwrap()
-        .into_iter()
-        .map(|row| row - source_w.first_physical_row + 1)
+    Ok(matched[0]
+        .iter()
+        .map(|row| row - source_m.first_physical_row + 1)
         .collect())
 }
 

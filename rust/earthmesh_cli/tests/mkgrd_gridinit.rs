@@ -71,6 +71,15 @@ fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
     let file = netcdf::open(&report.gridfile.output).expect("open written gridfile");
     assert_eq!(file.dimension("sjx_points").expect("sjx_points").len(), 21);
     assert_eq!(file.dimension("lbx_points").expect("lbx_points").len(), 13);
+    for (name, count) in [("earthmesh_m_lineage", 21), ("earthmesh_w_lineage", 13)] {
+        assert_eq!(
+            file.variable(name)
+                .expect("fresh base snapshot lineage")
+                .get_values::<i64, _>(..)
+                .unwrap(),
+            (1..=count).collect::<Vec<i64>>()
+        );
+    }
 
     let _ = fs::remove_dir_all(&root);
 }

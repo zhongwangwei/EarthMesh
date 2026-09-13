@@ -28,8 +28,8 @@ This feature does not change validation contracts or algorithm kernels.
 
 The default `--project` workflow now sends the **selected final gridfile** from
 CMRC, canonical Method-C/HField, RedGreen or LEPP through the same final admission
-entry point after AutoRefine and hydro, before explicit CoLM mesh delivery or
-configured TRI/FVCOM or HEX/MPAS-family delivery.
+entry point after AutoRefine and hydro, before configured model delivery
+(explicit CoLM mesh, TRI/FVCOM or ICON, HEX/MPAS-family).
 `final_quality/quality_summary.json` records this check separately from candidate
 and hydro diagnostics, including a `final_mesh_admission` gate.
 
@@ -290,6 +290,58 @@ publication errors restore the previous files. This is not crash-atomic or
 concurrent-reader transaction isolation. Changing to Simple removes a stale
 graph in the same publication transaction. Solver execution, boundary forcing
 and model-specific initial conditions are outside mesh export validation.
+
+### ICON selected-final delivery
+
+For `target.cell: Tri` + `target.model_format: Icon`, Project now calls the
+existing ICON geometry/writer pipeline **after selected-file final admission**,
+independent of backend or intent. The authoritative artifact is
+`standard/ICON_<selected_gridfile_stem>.nc4`, identified by `icon_mesh_input`;
+stdout also records physical cell/vertex/edge counts and `icon_global_grid`.
+HEX/ICON retains the explicit grid-only contract.
+
+The explicit parent is checked as native M triangles: one closed sphere with
+Euler 2 and manifold, consistently wound connectivity. W vertex valence is not
+the HEX cell-degree contract; ICON checks the selected vertex fan against its
+existing format limit.
+
+The final adapter verifies the exact native M-center/triangle-corner sets,
+physical W coordinates, undirected edge set and boundary-edge count against
+the built ICON grid. The existing longitude/radian conversion and signed-zero
+equivalence are used, not proximity matching. Coincident physical vertices
+with ambiguous identity are rejected rather than merged. Output is staged,
+closed, reopened and atomically renamed using the shared single-file helper;
+errors leave an earlier output untouched. No native geometry is modified.
+
+This connects delivery; it does **not** broaden the existing ICON format:
+its `ne=6` vertex fan cannot encode degree-7 vertices that are otherwise legal
+in EarthMesh's 5–7-sided duals. Such outputs fail explicitly, without truncating
+fans or changing the refinement algorithm. `Full` in the target registry
+selects a specialized adapter, not guaranteed acceptance of arbitrary geometry.
+
+Regional whole-triangle selections use an **explicit same-run closed parent**
+from the producer report (`icon_parent_gridfile`), not filename inference. Fresh
+base generation records snapshot M/W identities; clipping retains the full
+parent and its metadata, as refined runs already do. Imported files without
+complete lineage are not assigned invented parent identities. Exact M/W
+ancestry, coordinates and optional levels must match; every selected triangle
+must retain its parent's corners. Parent M triangles are selected before ICON
+fan construction, so unsupported fans outside the selected domain do not cause
+rejection. Missing parents, incomplete/ambiguous identity or altered corners
+fail without replacing an existing output.
+
+Existing parent geometry supplies `cell_area` and `dual_area`. In particular,
+**boundary `dual_area` is the full parent dual area, not a clipped regional
+control volume**. NetCDF attributes `earthmesh_geometry_parent` and
+`earthmesh_dual_area_scope=full_parent_dual` record this contract. Existing open
+fans, boundary adjacency (`-1`) and zero missing-side distances are reused;
+no new boundary area formula, solver/forcing or nesting contract is asserted.
+
+The reused MPAS intermediate's density/nominal-width scalars are not ICON
+variables, and the adapter neither requires nor fabricates MPAS demand context.
+Existing ICON metric formulas and boundary controls are reused; only parent
+provenance metadata is added. Mesh export is not ICON solver, nested-grid or
+forcing validation.
 
 ### FVCOM selected-final delivery
 

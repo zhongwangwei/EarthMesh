@@ -2,11 +2,11 @@ use crate::fvcom_mesh_2dm_output_path;
 use crate::read_method_c_domain_region;
 use crate::read_obc_order_netcdf;
 use crate::read_unstructured_mesh_netcdf;
+use crate::regional_gridfile_writers::write_regional_gridfile;
 use crate::unstructured_mesh_write_report_from_file;
 use crate::write_clean_regional_ocean_gridfile;
 use crate::write_fvcom_2dm_from_carved;
 use crate::write_landtype_masked_gridfile_with_refine_levels;
-use crate::write_method_c_mesh_with_optional_domain;
 use crate::GridRegion;
 use crate::LonLatPoint;
 use crate::MkgrdGridinitRunReport;
@@ -88,29 +88,31 @@ pub fn run_mkgrd_regional_clip_base_namelist(
             &obc_order,
             &fvcom_mesh_2dm_output_path(&file_dir),
         )?;
+        gridinit.raw_output = Some(gridinit.gridfile.clone());
         gridinit.gridfile = unstructured_mesh_write_report_from_file(&plan.result_gridfile)?;
         gridinit.fvcom_2dm = Some(fvcom_2dm);
         return Ok(gridinit);
     }
 
     // 1) Optional geometric CLIP to the domain (regional bbox/circle/close): keep
-    // only the in-region cells. `mesh` is read into memory, so overwriting its
-    // result file with the subset is safe.
+    // only the in-region cells. Retain the exact full parent and its metadata
+    // before the shared regional writer replaces the selected result file.
     if let Some(region) = &region {
-        let mesh = read_unstructured_mesh_netcdf(&gridinit.gridfile.output)?;
         let raw_path = file_dir
             .join("tmpfile")
             .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"));
         crate::ensure_parent_dir(&raw_path)?;
         let output_path = gridinit.gridfile.output.clone();
-        let (_, clipped) = write_method_c_mesh_with_optional_domain(
-            &mesh,
-            &raw_path,
-            &output_path,
-            Some(region),
-            mode_grid,
-        )?;
-        gridinit.gridfile = clipped;
+        fs::copy(&output_path, &raw_path)?;
+        let kept = write_regional_gridfile(&raw_path, &output_path, region, mode_grid)?;
+        if kept == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Method-C domain mask kept no cells",
+            ));
+        }
+        gridinit.raw_output = Some(unstructured_mesh_write_report_from_file(&raw_path)?);
+        gridinit.gridfile = unstructured_mesh_write_report_from_file(&output_path)?;
     }
 
     // 2) Optional landcover CARVE: keep land cells (landmesh) / ocean cells
@@ -140,6 +142,9 @@ pub fn run_mkgrd_regional_clip_base_namelist(
                 None,
             )?;
             if kept > 0 {
+                if gridinit.raw_output.is_none() {
+                    gridinit.raw_output = Some(gridinit.gridfile.clone());
+                }
                 gridinit.gridfile = unstructured_mesh_write_report_from_file(&masked)?;
             }
         }

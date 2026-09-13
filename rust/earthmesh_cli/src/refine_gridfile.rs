@@ -121,54 +121,6 @@ pub(crate) fn unstructured_mesh_write_report_from_file(
     })
 }
 
-pub(crate) fn write_method_c_mesh_with_optional_domain(
-    mesh: &UnstructuredMesh,
-    raw_output_path: impl AsRef<Path>,
-    output_path: impl AsRef<Path>,
-    domain_region: Option<&GridRegion>,
-    mode_grid: &str,
-) -> io::Result<(
-    Option<UnstructuredMeshWriteReport>,
-    UnstructuredMeshWriteReport,
-)> {
-    write_method_c_mesh_with_optional_domain_and_refine_levels(
-        mesh,
-        raw_output_path,
-        output_path,
-        domain_region,
-        mode_grid,
-        None,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn write_method_c_mesh_with_optional_domain_and_refine_levels(
-    mesh: &UnstructuredMesh,
-    raw_output_path: impl AsRef<Path>,
-    output_path: impl AsRef<Path>,
-    domain_region: Option<&GridRegion>,
-    mode_grid: &str,
-    m_refine_level: Option<&[i32]>,
-    w_refine_level: Option<&[i32]>,
-) -> io::Result<(
-    Option<UnstructuredMeshWriteReport>,
-    UnstructuredMeshWriteReport,
-)> {
-    write_method_c_mesh_with_optional_domain_and_metadata(
-        mesh,
-        raw_output_path,
-        output_path,
-        domain_region,
-        mode_grid,
-        MethodCGridfileMetadataSlices {
-            m_refine_level,
-            w_refine_level,
-            ..Default::default()
-        },
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_method_c_mesh_with_optional_domain_and_metadata(
     mesh: &UnstructuredMesh,
