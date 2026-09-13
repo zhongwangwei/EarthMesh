@@ -84,6 +84,7 @@ pub mod hydro_delivery_refine_workflow;
 pub mod hydro_refinement_adapter;
 pub mod hydro_refinement_eval;
 pub mod hydro_sweep;
+pub mod project_delivery;
 pub mod project_hydro;
 pub mod project_hydro_closed_loop;
 pub mod project_quality;

@@ -598,6 +598,7 @@ fn run_prepared_mkgrd(
                     "project_final_quality_verdict={}",
                     final_quality.verdict.as_str()
                 );
+                let mut model_artifacts = std::collections::BTreeMap::new();
                 if spec.config.target.model_format == earthmesh_project::ModelFormat::Icon {
                     if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
                         let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
@@ -625,6 +626,7 @@ fn run_prepared_mkgrd(
                             println!("icon_parent_gridfile={}", parent.display());
                         }
                         println!("icon_mesh_input={}", icon.output.display());
+                        model_artifacts.insert("icon_mesh_input", icon.output);
                         println!(
                             "icon_cells={} icon_vertices={} icon_edges={} icon_global_grid={}",
                             icon.cells, icon.vertices, icon.edges, icon.global_grid
@@ -653,6 +655,7 @@ fn run_prepared_mkgrd(
                         };
                         println!("fvcom_boundary_status={boundary_status}");
                         println!("fvcom_mesh_input={}", fvcom.output.display());
+                        model_artifacts.insert("fvcom_mesh_input", fvcom.output);
                         println!(
                             "fvcom_triangles={} fvcom_nodes={} fvcom_boundary_segments={}",
                             fvcom.triangles, fvcom.nodes, fvcom.boundary_segments
@@ -693,8 +696,10 @@ fn run_prepared_mkgrd(
                             println!("mpas_parent_gridfile={}", parent.display());
                         }
                         println!("mpas_mesh_input={}", mesh.display());
+                        model_artifacts.insert("mpas_mesh_input", mesh);
                         if let Some(graph) = graph {
                             println!("mpas_graph_info={}", graph.display());
+                            model_artifacts.insert("mpas_graph_info", graph);
                         }
                     } else {
                         eprintln!("earthmesh_cli: MPAS specialized export requires hexagonal cells; grid-only delivery");
@@ -709,11 +714,24 @@ fn run_prepared_mkgrd(
                         .map(|delivery| delivery.pixels_per_degree)
                         .unwrap_or_default();
                     println!("colm_mesh_input={}", report.output.display());
+                    model_artifacts.insert("colm_mesh_input", report.output);
                     println!(
                         "colm_mesh_pixels_per_degree={} colm_mesh_shape={}x{} cells={} assigned_pixels={}",
                         pixels_per_degree, report.nlon, report.nlat, report.cells, report.assigned_pixels
                     );
                 }
+                let (delivery_path, delivery_status) =
+                    earthmesh_cli::project_delivery::write_project_delivery_report(
+                        &spec.config,
+                        gridfile,
+                        &out_dir.join("quality_summary.json"),
+                        final_quality.verdict,
+                        &model_artifacts,
+                    )
+                    .map_err(|err| format!("project delivery record: {err}"))?;
+                println!("project_delivery_report={}", delivery_path.display());
+                println!("project_model_delivery_status={delivery_status}");
+                println!("project_final_gridfile={}", gridfile.display());
             } else {
                 return Err("project final admission requires a selected gridfile".to_string());
             }

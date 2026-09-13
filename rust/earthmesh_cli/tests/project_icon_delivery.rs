@@ -328,6 +328,14 @@ fn project_icon_refined_tri_degree_seven_fails_closed_without_icon_artifact() {
             stderr.contains("ICON ne=6 cannot represent") && stderr.contains("degree 7"),
             "{label} must fail explicitly on ICON degree-7 schema, got:\n{stderr}"
         );
+        assert!(!stdout.contains("project_delivery_report="));
+        assert!(!stdout.contains("project_model_delivery_status="));
+        let quality = Path::new(field(&stdout, "project_final_quality="));
+        assert!(!quality
+            .parent()
+            .unwrap()
+            .join("project_delivery.json")
+            .exists());
         assert_no_icon_artifact(&root, &stdout);
         fs::remove_dir_all(root).unwrap();
     }

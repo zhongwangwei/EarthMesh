@@ -404,6 +404,22 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
         .expect("selected final admission report");
     let final_quality = fs::read_to_string(final_report).unwrap();
     assert_eq!(json_string(&final_quality, "mesh_name"), selected_gridfile);
+    let delivery_path = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("project_delivery_report="))
+        .unwrap();
+    let delivery: serde_json::Value =
+        serde_json::from_slice(&fs::read(delivery_path).unwrap()).unwrap();
+    assert_eq!(delivery["gridfile"], selected_gridfile);
+    assert_ne!(delivery["gridfile"], candidate_gridfile);
+    assert_eq!(delivery["final_quality"]["report"], final_report);
+    assert_eq!(
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("project_final_gridfile=")),
+        Some(selected_gridfile.as_str())
+    );
+
     assert!(final_quality.contains("final_mesh_admission"));
 
     for path in [&baseline_gridfile, &candidate_gridfile, &selected_gridfile] {

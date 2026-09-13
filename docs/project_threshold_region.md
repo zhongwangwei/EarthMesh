@@ -73,6 +73,33 @@ Refined MPAS still requires aligned producer-owned widths and global-parent
 context. Unsupported producer routes still fail instead of substituting uniform
 widths to pretend migration is complete.
 
+### Actual Project delivery outcome
+
+A successful Project run writes `final_quality/project_delivery.json` **after**
+selected-final admission and model adapters. It records the selected native
+`gridfile`, final-quality report/verdict, requested target, planned `capability`
+(`full` / `grid_only`), and the actual `model_delivery_status`:
+
+- `model_delivered`: `model_artifacts` contains paths returned by the successful
+  current-run adapter, including the MPAS graph when applicable.
+- `native_only`: the admitted native mesh is available, but no specialized model
+  file was requested or supported. `skipped_reason` explains the incompatible
+  cell shape or the absence of the optional CoLM mesh-raster request.
+
+Planned capability is not an execution result: CoLM has a supported adapter but
+without `delivery.colm_mesh` still completes as `native_only`. Legal grid-only
+pairings remain successful; they are not silently relabeled as model-delivered.
+The generic `run_manifest.status=completed` continues to describe process
+completion, not model compatibility or solver readiness.
+
+The CLI emits `project_delivery_report=`, `project_model_delivery_status=` and
+`project_final_gridfile=` even with `--quiet`, while retaining the existing
+format-specific output fields. The record is written atomically; failure to
+write it fails the run. Admission/adapter failures emit no new completion record.
+Artifacts come from adapter return values, never a scan of earlier files; rejected
+AutoRefine candidates and global parents are not the selected native output.
+This does not change standalone NML output or add a final-admission bypass.
+
 ### MPAS native width context
 
 Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units

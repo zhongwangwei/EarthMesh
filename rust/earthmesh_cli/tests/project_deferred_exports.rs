@@ -273,7 +273,12 @@ fn project_hfield_block_keeps_diagnostics_without_model_artifacts() {
         "{stderr}"
     );
     assert!(!stdout.contains("mpas_mesh_input="));
+    assert!(!stdout.contains("project_delivery_report="));
+    assert!(!stdout.contains("project_model_delivery_status="));
     let paths = files(&root);
+    assert!(!paths
+        .iter()
+        .any(|p| p.file_name().unwrap() == "project_delivery.json"));
     // This HField failure occurs before final-quality artifacts are written;
     // the existing failure cleanup keeps the run manifest and stderr diagnostic.
     let manifest: serde_json::Value =
@@ -284,5 +289,117 @@ fn project_hfield_block_keeps_diagnostics_without_model_artifacts() {
         let name = p.file_name().unwrap().to_string_lossy();
         name.starts_with("MPASOUT_") || name == "mesh.nc4" || name == "graph.info"
     }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_delivery_outcome_distinguishes_model_artifacts_from_native_only() {
+    let root = root("outcome");
+    for format in [
+        ModelFormat::CoLM,
+        ModelFormat::Mpas,
+        ModelFormat::MpasOcean,
+        ModelFormat::MpasSimple,
+        ModelFormat::Icon,
+        ModelFormat::Fvcom,
+    ] {
+        for cell in [MeshCellKind::Tri, MeshCellKind::Hex] {
+            for colm_enabled in [false, true] {
+                if colm_enabled && format != ModelFormat::CoLM {
+                    continue;
+                }
+                let case = root.join(format!("{format:?}_{cell:?}_{colm_enabled}"));
+                fs::create_dir(&case).unwrap();
+                let mut p = project();
+                p.target.kind = MeshDomainKind::Earth;
+                p.target.model_format = format;
+                p.target.cell = cell;
+                p.refinement.backend = RefinementBackend::MethodC;
+                if colm_enabled {
+                    p.delivery.colm_mesh = Some(earthmesh_project::ColmMeshDeliveryConfig {
+                        pixels_per_degree: 1,
+                    });
+                }
+                let output = run(&case, &p);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    output.status.success(),
+                    "{format:?}/{cell:?}: {stdout}\n{stderr}"
+                );
+                let path = Path::new(field(&stdout, "project_delivery_report="));
+                let delivery: serde_json::Value =
+                    serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                assert_eq!(delivery["kind"], "earthmesh_project_delivery");
+                assert_eq!(delivery["schema_version"], 1);
+                let quality_path = Path::new(field(&stdout, "project_final_quality="));
+                assert_eq!(path.parent(), quality_path.parent());
+                let quality: serde_json::Value =
+                    serde_json::from_slice(&fs::read(quality_path).unwrap()).unwrap();
+                assert_eq!(delivery["gridfile"], quality["mesh_name"]);
+                assert_eq!(
+                    delivery["gridfile"],
+                    field(&stdout, "project_final_gridfile=")
+                );
+                assert!(Path::new(delivery["gridfile"].as_str().unwrap()).is_file());
+                assert_eq!(
+                    delivery["final_quality"]["report"],
+                    quality_path.to_str().unwrap()
+                );
+                assert_eq!(
+                    delivery["final_quality"]["verdict"],
+                    field(&stdout, "project_final_quality_verdict=")
+                );
+                let target = earthmesh_project::ProjectTargetTriple::from(&p.target);
+                assert_eq!(delivery["target"], serde_json::to_value(target).unwrap());
+                assert_eq!(
+                    delivery["capability"],
+                    serde_json::to_value(target.output_delivery()).unwrap()
+                );
+                let expected: &[&str] = match (format, cell, colm_enabled) {
+                    (ModelFormat::CoLM, _, true) => &["colm_mesh_input"],
+                    (ModelFormat::Icon, MeshCellKind::Tri, _) => &["icon_mesh_input"],
+                    (ModelFormat::Fvcom, MeshCellKind::Tri, _) => &["fvcom_mesh_input"],
+                    (ModelFormat::MpasSimple, MeshCellKind::Hex, _) => &["mpas_mesh_input"],
+                    (ModelFormat::Mpas | ModelFormat::MpasOcean, MeshCellKind::Hex, _) => {
+                        &["mpas_mesh_input", "mpas_graph_info"]
+                    }
+                    _ => &[],
+                };
+                let artifacts = delivery["model_artifacts"].as_object().unwrap();
+                assert_eq!(artifacts.len(), expected.len());
+                let status = if expected.is_empty() {
+                    "native_only"
+                } else {
+                    "model_delivered"
+                };
+                assert_eq!(delivery["model_delivery_status"], status);
+                assert_eq!(field(&stdout, "project_model_delivery_status="), status);
+                if expected.is_empty() {
+                    let reason = delivery["skipped_reason"].as_str().unwrap();
+                    if let Some(expected) = target.skipped_adapter_reason() {
+                        assert_eq!(reason, expected);
+                    } else {
+                        assert_eq!(reason, "CoLM mesh raster delivery is not configured");
+                    }
+                } else {
+                    assert!(delivery["skipped_reason"].is_null());
+                }
+                for key in expected {
+                    let value = artifacts[*key].as_str().unwrap();
+                    assert!(Path::new(value).is_file());
+                    assert_eq!(value, field(&stdout, &format!("{key}=")));
+                    assert!(
+                        stdout.find(&format!("{key}=")).unwrap()
+                            < stdout.find("project_delivery_report=").unwrap()
+                    );
+                }
+                let manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(case.join("run_manifest.json")).unwrap())
+                        .unwrap();
+                assert_eq!(manifest["status"], "completed");
+            }
+        }
+    }
     fs::remove_dir_all(root).unwrap();
 }
