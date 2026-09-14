@@ -52,11 +52,20 @@ from filenames and does not convert between triangles and hexagons. Successful
 project runs print `colm_mesh_input=<path>` and write the file next to the final
 grid under `standard/CoLM_<grid_stem>_mesh.nc`.
 
-For regional CMRC land/CoLM projects, both `Tri` and `Hex` support a single
-close polygon. The triangle path coarsens the global mother mesh first, keeps
-only whole triangles inside the region, then applies the land mask. Published
+For regional CMRC land projects, both `Tri` and `Hex` support a single bbox,
+circle, or close polygon, independently of the requested model format. All use
+the same mother-first CMRC path and existing whole-cell regional selection,
+then apply the land mask. TRI requires the centre and all triangle vertices
+inside the region; HEX selects whole cells by centre, so their edges may extend
+outside the requested curve. Bboxes may cross the date line. No boundary
+vertices are moved or split to fit a circle or rectangle. Multiple-region unions
+remain unsupported by this CMRC publication path.
+
+The retained global parent, exact lineage and width metadata feed the existing
+CoLM/MPAS/ICON adapters where their cell contracts are supported. Published
 boundary/topology and triangle angle checks remain separate from the global
-closed-sphere certificate; the raster itself is not geometrically certified.
+closed-sphere certificate; the CoLM raster itself is not geometrically certified.
+The new land shapes do not extend the clean-ocean/OBC export route.
 
 **Independent threshold scope:** a regional output domain is not implicitly
 used as the threshold evaluation window. Configure `refinement.threshold_region`

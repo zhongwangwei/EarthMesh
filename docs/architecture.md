@@ -78,6 +78,11 @@ refinement algorithms. Backend capability limits remain explicit:
 - CMRC consumes certifiable named/threshold/hydro requirements, not Project's
   point-radius adaptive or canonical Method-C HField route. Its internal demand
   construction may still use an HField; that is not a public route substitution.
+  Regional land publication accepts a single bbox/circle/close region for TRI
+  or HEX, using the existing whole-cell selector and land mask after CMRC.
+  Regional ocean publication remains TRI + a single close polygon with the
+  existing clean-ocean boundary path. Regional Earth/atmosphere and multi-region
+  CMRC publication are not enabled by the land-shape extension.
 - Active statistical thresholds require an enabled consumer even without an
   independent threshold region. Turning adaptive off without selecting HField
   or CMRC is valid for named regions only, not for active statistical demands.

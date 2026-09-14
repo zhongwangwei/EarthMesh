@@ -44,7 +44,13 @@ pub(super) fn publish_regional_land(
     verify_whole_cell_lineage(source, output, &grid)?;
     let (topology, quality_topology, mut geometry) = audit_land_dual(&input)?;
     geometry["whole_cell_lineage_verified"] = true.into();
-    geometry["selection"] = "whole_cells_with_centres_inside_close_polygon_and_IGBP_land".into();
+    let shape = match region {
+        GridRegion::Bbox { .. } => "bbox",
+        GridRegion::Circle { .. } => "circle",
+        GridRegion::Close { .. } => "close_polygon",
+        GridRegion::Any(_) => "region_union",
+    };
+    geometry["selection"] = format!("whole_cells_with_centres_inside_{shape}_and_IGBP_land").into();
     geometry["boundary_clipping"] = false.into();
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output)?,
