@@ -86,7 +86,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
   margin:0 8px 10px;font-weight:700}
 .step{display:flex;gap:11px;align-items:flex-start;padding:9px 10px;border-radius:var(--r-md);
   position:relative;cursor:pointer;margin-bottom:1px;width:100%;border:0;background:transparent;text-align:left;line-height:inherit}
-.step:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.step:focus-visible,.project-pick:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .step:hover{background:var(--surface-2)}
 .step.active{background:var(--accent-weak)}
 .step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
@@ -122,6 +122,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .input:focus,.select:focus{outline:none;border-color:var(--accent)}
 .row{display:flex;gap:var(--s-md)}.row>*{flex:1}
 .browse{display:flex;gap:6px}.browse .input{flex:1}
+.project-pick{width:100%;border:0;padding:0;background:transparent;text-align:left;line-height:inherit}
 .btn-ghost{padding:7px 11px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg);white-space:nowrap}
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
 
@@ -783,7 +784,7 @@ function renderStep(i){
          ${field(lang?"项目名称":"Project name",`<input class="input" id="projectNameStep" value="earthmesh-project">`)}
          ${field(lang?"作者":"Author",`<input class="input" id="projectAuthor" value="">`)}
          ${field(lang?"描述":"Description",`<textarea class="input" id="projectDescription" rows="3"></textarea>`)}
-         ${field(lang?"输出路径":"Output folder",`<div class="browse" id="outPathBrowse" style="cursor:pointer"><span class="path" id="outPathText" style="max-width:none">${lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)"}</span></div>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
+         ${field(lang?"输出路径":"Output folder",`<button type="button" class="browse project-pick" id="outPathBrowse" aria-label="${lang?"选择输出目录":"Choose output folder"}" aria-describedby="outPathText"><span class="path" id="outPathText" style="max-width:none">${lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)"}</span></button>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
        </div>
        <div class="card"><h3>${lang?"最近项目":"Recent projects"}</h3><div class="ch">${lang?"保存或打开项目后会显示在这里":"Save or Open a project and it appears here"}</div></div></div>
        <div id="projSummary" style="margin-top:14px"></div>`;
@@ -3623,6 +3624,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
       if (typeof renderStep === "function") renderStep(typeof cur !== "undefined" ? cur : 0);
+      document.querySelector("#work h1")?.focus();
     } catch (e) { /* best-effort reflect */ }
     pushRecent(res.path, sum.name);
     logLine("✓ opened " + res.path + " — intent " + sum.intent + ", NXP " + (sum.effective_nxp ?? sum.nxp ?? "?"));
@@ -3952,17 +3954,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       card.appendChild(empty);
     } else {
       recents.forEach((r) => {
-        const div = document.createElement("div");
-        div.className = "browse";
-        div.style.cssText = "margin-bottom:8px;cursor:pointer";
-        div.title = r.path;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "browse project-pick";
+        button.style.marginBottom = "8px";
+        button.title = r.path;
         const label = document.createElement("span");
         label.className = "path";
         label.style.maxWidth = "none";
         label.textContent = "📄 " + (r.name || r.path);
-        div.appendChild(label);
-        div.onclick = () => openRecent(r.path);
-        card.appendChild(div);
+        button.appendChild(label);
+        button.onclick = () => openRecent(r.path);
+        card.appendChild(button);
       });
     }
     const ch = card.querySelector(".ch");

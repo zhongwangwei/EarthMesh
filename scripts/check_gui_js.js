@@ -1725,3 +1725,54 @@ async function checkWorkflowNavigation() {
   log('workflow accessibility: native bilingual steps, committed current state, destination focus and stop/page-switch guard passed');
 }
 checkWorkflowNavigation().catch(error=>{console.error(error);process.exitCode=1;});
+
+async function checkProjectControls() {
+  const extract=name=>section(html,new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`),name);
+  const picker=section(html,/(<(?:div|button)[^>\n]*id="outPathBrowse"[\s\S]*?<\/(?:div|button)>)/,'output folder picker');
+  const renderPicker=new Function('lang','return `'+picker+'`;');
+  for(const lang of [0,1]) {
+    const markup=renderPicker(lang);
+    check(markup.startsWith('<button type="button"')&&markup.includes(`aria-label="${lang?'选择输出目录':'Choose output folder'}"`)&&markup.includes('aria-describedby="outPathText"'),'output picker must be a named native button describing the current path');
+  }
+  const harness=new Function('chinese',`
+    let outputPath='/before',projectEditQueue=Promise.resolve(),project='before',pick=null,readFails=false;
+    let recents=[{path:'/a/<project>.yaml',name:'<img src=x onerror=bad>'}];
+    const logs=[],reads=[],saved=[],metadataEdit={},zh=()=>chinese,logLine=s=>logs.push(s);
+    const element=tag=>({tag,style:{},children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}});
+    const card=element('div'),hint=element('div'),folder=element('button'),pathText=element('span');
+    card.querySelector=s=>s==='h3'?{textContent:chinese?'最近项目':'Recent projects'}:hint;
+    card.querySelectorAll=()=>card.children.slice();
+    const document={createElement:element,getElementById:id=>({outPathBrowse:folder,outPathText:pathText})[id]||null,
+      querySelector:()=>null,querySelectorAll:()=>[card]};
+    const loadRecents=()=>recents,renderProjectSummary=()=>{},localStorage={setItem:(...args)=>saved.push(args)};
+    const api={pickDataFolder:async()=>{if(pick instanceof Error)throw pick;return pick;}};
+    const invoke=async(command,args)=>{reads.push([command,args]);if(readFails)throw new Error('missing project');return {yaml:'opened',path:args.path};};
+    const reflectProject=async res=>{project=res.yaml;};
+    ${extract('openRecent')}
+    ${extract('enhanceNewProjectStep')}
+    enhanceNewProjectStep();return {card,folder,pathText,logs,reads,saved,render:enhanceNewProjectStep,
+      pick(p){pick=p;return folder.onclick();},readFail(v){readFails=v;},empty(){recents=[];enhanceNewProjectStep();},
+      hold(){let release;projectEditQueue=new Promise(resolve=>{release=resolve;});return release;},state:()=>({outputPath,project})};
+  `);
+  for(const chinese of [false,true]) {
+    const h=harness(chinese),row=h.card.children[0];
+    check(row.tag==='button'&&row.type==='button','recent projects must be native non-submit buttons');
+    check(row.title==='/a/<project>.yaml'&&row.children[0].textContent==='📄 <img src=x onerror=bad>','recent names and paths must stay literal text');
+    h.render();check(h.card.children.length===1,'project page enhancement must not duplicate recent buttons');
+    const before=JSON.stringify(h.state());
+    await h.pick(null);await h.pick(new Error('picker failed'));
+    check(JSON.stringify(h.state())===before&&h.saved.length===0&&h.logs.some(s=>s.includes('picker failed')),'cancelled or failed picker must preserve output preference and report failure');
+    await h.pick('/selected/<folder>');
+    check(h.state().outputPath==='/selected/<folder>'&&h.pathText.textContent==='📁 /selected/<folder>'&&h.saved[0].join()==='em.outputPath,/selected/<folder>','accepted picker must update safe visible text and existing saved preference');
+    h.readFail(true);await h.card.children[0].onclick();
+    check(h.state().project==='before'&&h.logs.some(s=>s.includes('missing project')),'failed recent read must leave the current project unchanged');
+    h.readFail(false);const release=h.hold(),reads=h.reads.length,pending=h.card.children[0].onclick();
+    await new Promise(resolve=>setImmediate(resolve));check(h.reads.length===reads,'recent activation must wait for pending edits');
+    release();await pending;check(h.state().project==='opened'&&h.reads.at(-1)[1].path==='/a/<project>.yaml','accepted recent button must use the original shared read path');
+    h.empty();check(h.card.children.length===1&&h.card.children[0].className==='recent-empty','empty recents must keep the noninteractive placeholder');
+  }
+  const reflect=extract('reflectProject');
+  check(reflect.indexOf('document.querySelector("#work h1")?.focus();')>reflect.indexOf('renderStep(typeof cur'),'shared Open/recent reflection must restore heading focus after rerender');
+  log('project controls: native recent/folder buttons, safe text, picker cancel/failure, recent read failure and edit fence passed');
+}
+checkProjectControls().catch(error=>{console.error(error);process.exitCode=1;});
