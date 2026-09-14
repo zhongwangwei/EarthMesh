@@ -1,11 +1,12 @@
 use crate::{
     criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
-    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, MethodCAlgorithm,
-    MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
-    ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementRecipe, RegionShape,
-    ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ThresholdCriterionConfig, ThresholdField, ThresholdStatistic, LANDCOVER_CRITERION_ID,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION, SEA_RATIO_CRITERION_ID,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshTargetConfig,
+    MethodCAlgorithm, MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
+    ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementBackend, RefinementRecipe,
+    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
+    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ThresholdStatistic,
+    LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    SEA_RATIO_CRITERION_ID,
 };
 use std::collections::HashSet;
 
@@ -94,6 +95,7 @@ impl ProjectConfig {
                 );
             }
         }
+        self.validate_certified_regional_admission()?;
         self.expert.validate()?;
         self.validate_expert_refinement_levels()?;
         if let Some(hydro_coast) = &self.hydro_coast {
@@ -121,6 +123,42 @@ impl ProjectConfig {
             }
         }
         Ok(())
+    }
+
+    fn validate_certified_regional_admission(&self) -> Result<(), String> {
+        if !self.refinement.enabled || self.refinement.backend != RefinementBackend::Certified {
+            return Ok(());
+        }
+        let DomainConfig::Regional { shape, .. } = &self.domain else {
+            return Ok(());
+        };
+        if self.target.kind == MeshDomainKind::Coupled {
+            return Err(
+                "CMRC regional delivery does not support coupled targets; deliver land/ocean regions separately"
+                    .to_string(),
+            );
+        }
+        if self.target.kind != MeshDomainKind::Ocean {
+            return Ok(());
+        }
+        let supported_ocean_tri_close = self.target.cell == MeshCellKind::Tri
+            && matches!(
+                shape,
+                RegionShape::Shapefile { .. }
+                    | RegionShape::Close {
+                        boundary: crate::CloseBoundaryMode::Polyline
+                            | crate::CloseBoundaryMode::SphericalChaikin { .. },
+                        ..
+                    }
+            );
+        if supported_ocean_tri_close {
+            Ok(())
+        } else {
+            Err(
+                "CMRC regional ocean delivery supports only TRI shapefile/close polyline or spherical_chaikin domains; bbox, circle, enclosing_cap, and HEX ocean regions are rejected before run"
+                    .to_string(),
+            )
+        }
     }
 
     fn validate_data_layers(&self) -> Result<(), String> {

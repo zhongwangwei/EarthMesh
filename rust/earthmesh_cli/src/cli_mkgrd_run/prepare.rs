@@ -273,6 +273,17 @@ fn prepare_project_close_sources(
                         _ => unreachable!(),
                     }
                     .map_err(|err| format!("convert close domain {}: {err}", source.display()))?;
+                    if project.refinement.enabled
+                        && project.refinement.backend
+                            == earthmesh_project::RefinementBackend::Certified
+                        && project.target.kind == earthmesh_project::MeshDomainKind::Ocean
+                        && rings.len() != 1
+                    {
+                        return Err(format!(
+                            "CMRC regional ocean publication requires a single close polygon; {} contains {} polygons",
+                            source.display(), rings.len()
+                        ));
+                    }
                     let dir = ensure_stage_dir()?;
                     for (index, ring) in rings.iter().enumerate() {
                         write_close_mask_nml(
@@ -286,7 +297,18 @@ fn prepare_project_close_sources(
                         dir.join("domain_close_").to_string_lossy().into_owned();
                 }
                 CloseMaskFormat::Nml | CloseMaskFormat::Netcdf => {
-                    lowered.mkgrd.mask_domain_fprefix = source.to_string_lossy().into_owned();
+                    // Project paths name exact files; legacy prefix discovery must
+                    // not import same-prefix siblings or backups into this domain.
+                    let dir = ensure_stage_dir()?;
+                    let filename = if format == CloseMaskFormat::Nml {
+                        "domain_close_001.nml"
+                    } else {
+                        "domain_close_001.nc4"
+                    };
+                    let staged = dir.join(filename);
+                    fs::copy(&source, &staged)
+                        .map_err(|err| format!("stage close domain {}: {err}", source.display()))?;
+                    lowered.mkgrd.mask_domain_fprefix = staged.to_string_lossy().into_owned();
                 }
             }
         }
@@ -1016,6 +1038,87 @@ mod tests {
         let mut args = vec![path.to_string_lossy().into_owned()].into_iter();
         let prepared = compile_project_arg(&mut args).unwrap();
         assert_eq!(prepared.project.unwrap().config.refinement.max_passes, 2);
+    }
+
+    #[test]
+    fn project_native_close_domain_stages_exact_bytes_without_prefix_siblings() {
+        use earthmesh_cli::circle_close_mask_io::{parse_close_mask_nml, write_close_mask_netcdf};
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_project_exact_domain_{}_{}",
+            std::process::id(),
+            PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        write_close_mask_nml(
+            &root.join("domain.nml"),
+            &[(100., 10.), (102., 10.), (102., 12.), (100., 12.)],
+            0,
+        )
+        .unwrap();
+        let mask = parse_close_mask_nml(root.join("domain.nml"), usize::MAX)
+            .unwrap()
+            .unwrap();
+        write_close_mask_netcdf(root.join("domain.nc"), &mask).unwrap();
+        for (name, format) in [
+            ("domain.nml", CloseMaskFormat::Nml),
+            ("domain.nc", CloseMaskFormat::Netcdf),
+        ] {
+            let source = root.join(name);
+            let bytes = fs::read(&source).unwrap();
+            let sibling = root.join(format!("{name}.backup"));
+            fs::write(&sibling, b"unrelated backup").unwrap();
+            let second = root.join(format!(
+                "{name}.second.{}",
+                source.extension().unwrap().to_str().unwrap()
+            ));
+            fs::copy(&source, &second).unwrap();
+            // Raw NML retains prefix membership; Project must not inherit it.
+            assert_eq!(
+                earthmesh_cli::mask_source_discovery::discover_mask_sources(&source)
+                    .unwrap()
+                    .files
+                    .len(),
+                3
+            );
+            let mut project = ProjectConfig::scaffold(
+                "exact_domain",
+                MeshIntentPreset::Custom,
+                DomainConfig::Regional {
+                    shape: RegionShape::Close {
+                        path: name.into(),
+                        format,
+                        boundary: CloseBoundaryMode::Polyline,
+                    },
+                    sea_ratio: None,
+                },
+                ResolutionSpec::Nxp(6),
+            );
+            project.target.kind = earthmesh_project::MeshDomainKind::Earth;
+            project.refinement.enabled = false;
+            let mut lowered = project.try_lower().unwrap();
+            let stage_dir = root.join(format!("stage_{name}"));
+            prepare_project_close_sources(
+                &project,
+                &root.join("project.yaml"),
+                &stage_dir,
+                &mut lowered,
+            )
+            .unwrap();
+            let staged = PathBuf::from(&lowered.mkgrd.mask_domain_fprefix);
+            assert!(stage_dir.is_dir(), "native domain must have private inputs");
+            assert!(staged.starts_with(fs::canonicalize(&stage_dir).unwrap()));
+            assert_ne!(staged, source);
+            assert_eq!(fs::read(&staged).unwrap(), bytes);
+            assert_eq!(
+                earthmesh_cli::mask_source_discovery::discover_mask_sources(&staged)
+                    .unwrap()
+                    .files,
+                [staged]
+            );
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read(&sibling).unwrap(), b"unrelated backup");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -313,6 +313,17 @@ and isolated whole cells are allowed. The ordered subset preserves final W order
 parent metrics and density. Dropped stencil edges retain the existing zero-weight
 sentinel behavior; this is not a physical boundary-condition prescription.
 
+CMRC regional capability checks are separate from model-format admission.
+Shared Project validation rejects active ocean bbox/circle/HEX and close
+EnclosingCap configurations, and regional Coupled targets. Ocean requires TRI
+and one close polygon; multipart Shapefile/Close PolygonShp is rejected during
+compilation once its members are known. Project Close NML/NetCDF paths select
+one exact file, staged unchanged so same-prefix siblings/backups cannot enter
+the domain. Raw NML keeps its legacy prefix semantics. Single-close Polyline and SphericalChaikin remain eligible
+for the existing ocean path, which still performs runtime geometry/boundary
+checks. Disabled refinement preserves its stored backend settings. This does not
+restrict other backends or add ocean union/OBC support.
+
 Connected regional producers include CMRC whole-dual-cell selection for
 Earth/atmosphere/land (bbox/circle/close or unions of whole-cell selections,
 retaining the same global parent; land alone adds the landtype mask),

@@ -27,7 +27,7 @@ fn temp_root(name: &str) -> PathBuf {
     ))
 }
 
-fn write_all_land(path: &Path) {
+fn write_landtype_window(path: &Path, value: i8) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let ppd = 120_usize;
     let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
@@ -40,9 +40,13 @@ fn write_all_land(path: &Path) {
     let end_lon = ((160.0 + 180.0) * ppd as f64) as usize + 1;
     let start_lat = ((90.0 - 50.0) * ppd as f64) as usize;
     let end_lat = ((90.0 - 0.0) * ppd as f64) as usize + 1;
-    let values = vec![1_i8; (end_lon - start_lon) * (end_lat - start_lat)];
+    let values = vec![value; (end_lon - start_lon) * (end_lat - start_lat)];
     var.put_values(&values, (start_lon..end_lon, start_lat..end_lat))
         .unwrap();
+}
+
+fn write_all_land(path: &Path) {
+    write_landtype_window(path, 1);
 }
 
 fn closed_rect(w: f64, e: f64, s: f64, n: f64) -> Vec<(f64, f64)> {
@@ -142,12 +146,66 @@ fn domain(root: &Path, shape: &str) -> DomainConfig {
                 sea_ratio,
             }
         }
+        "close_cap" => {
+            let path = root.join("domain_close_cap.nml");
+            fs::write(
+                &path,
+                "close_num = 4
+close_refine = 0
+100 0
+160 0
+160 50
+100 50
+",
+            )
+            .unwrap();
+            DomainConfig::Regional {
+                shape: RegionShape::Close {
+                    path: path.display().to_string(),
+                    format: CloseMaskFormat::Nml,
+                    boundary: CloseBoundaryMode::EnclosingCap {
+                        margin_km: 0.0,
+                        max_radius_deg: 80.0,
+                        max_segment_angle_deg: 1.0,
+                    },
+                },
+                sea_ratio,
+            }
+        }
         "union" => DomainConfig::Regional {
             shape: RegionShape::Shapefile {
                 path: write_union_shapefile(root).display().to_string(),
             },
             sea_ratio,
         },
+        "union_close_shp" => DomainConfig::Regional {
+            shape: RegionShape::Close {
+                path: write_union_shapefile(root).display().to_string(),
+                format: CloseMaskFormat::PolygonShp,
+                boundary: CloseBoundaryMode::Polyline,
+            },
+            sea_ratio,
+        },
+        "native_multi_close" => {
+            let path = root.join("native_close.nml");
+            let text = "close_num = 4
+close_refine = 0
+100 0
+115 0
+115 20
+100 20
+";
+            fs::write(&path, text).unwrap();
+            fs::write(root.join("native_close.nml.extra"), text).unwrap();
+            DomainConfig::Regional {
+                shape: RegionShape::Close {
+                    path: path.display().to_string(),
+                    format: CloseMaskFormat::Nml,
+                    boundary: CloseBoundaryMode::Polyline,
+                },
+                sea_ratio,
+            }
+        }
         _ => panic!("unknown shape {shape}"),
     }
 }
@@ -229,6 +287,83 @@ fn run_project(root: &Path, p: &ProjectConfig) -> Output {
             ]),
     )
     .unwrap()
+}
+
+fn project_run_dirs(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".earthmesh-run-"))
+        })
+        .collect()
+}
+
+fn domain_source(project: &ProjectConfig) -> Option<PathBuf> {
+    match &project.domain {
+        DomainConfig::Regional {
+            shape: RegionShape::Shapefile { path } | RegionShape::Close { path, .. },
+            ..
+        } => Some(PathBuf::from(path)),
+        _ => None,
+    }
+}
+
+fn ocean_project(root: &Path, shape: &str, cell: MeshCellKind, active: bool) -> ProjectConfig {
+    let dummy_landtype = root.join("dummy_landtype_should_not_be_read.nc");
+    let mut p = project(
+        root,
+        shape,
+        MeshDomainKind::Ocean,
+        cell,
+        ModelFormat::Fvcom,
+        None,
+        None,
+    );
+    p.data_layers = vec![ProjectDataLayer {
+        id: "landtype".into(),
+        role: ProjectLayerRole::LandType,
+        path: dummy_landtype.display().to_string(),
+        enabled: true,
+        threshold_value: None,
+    }];
+    p.refinement.enabled = active;
+    p
+}
+
+fn assert_rejects_before_compile(root: &Path, case: &str, project: ProjectConfig) {
+    let sentinel = root.join("previous_output.sentinel");
+    fs::write(&sentinel, b"keep me").unwrap();
+    let source_before = domain_source(&project)
+        .filter(|path| path.is_file())
+        .map(|path| (path.clone(), fs::read(path).unwrap()));
+    let output = run_project(root, &project);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "{case} unexpectedly succeeded\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("CMRC regional"),
+        "{case} wrong error:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("compiled project ->"),
+        "{case} must fail before compiled project:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("project_delivery_report=") && !stdout.contains("certified_ready_marker="),
+        "{case} wrote delivery/ready stdout:\n{stdout}"
+    );
+    assert_eq!(fs::read(&sentinel).unwrap(), b"keep me");
+    if let Some((path, before)) = source_before {
+        assert_eq!(fs::read(path).unwrap(), before, "{case} source changed");
+    }
+    assert!(project_run_dirs(root).is_empty(), "{case} left run dirs");
 }
 
 fn stdout_path(stdout: &str, key: &str) -> PathBuf {
@@ -551,6 +686,112 @@ fn project_cmrc_unmasked_regional_shapes_deliver_model_artifacts() {
             );
         }
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_cmrc_ocean_unsupported_regions_reject_before_compile() {
+    for (case, shape, cell) in [
+        ("ocean_bbox_tri", "bbox", MeshCellKind::Tri),
+        ("ocean_circle_tri", "circle", MeshCellKind::Tri),
+        ("ocean_close_hex", "close", MeshCellKind::Hex),
+        ("ocean_close_cap_tri", "close_cap", MeshCellKind::Tri),
+        ("ocean_shapefile_union_tri", "union", MeshCellKind::Tri),
+        (
+            "ocean_close_polygon_shp_tri",
+            "union_close_shp",
+            MeshCellKind::Tri,
+        ),
+    ] {
+        let root = temp_root(case);
+        fs::create_dir_all(&root).unwrap();
+        let p = ocean_project(&root, shape, cell, true);
+        assert_rejects_before_compile(&root, case, p);
+        fs::remove_dir_all(root).ok();
+    }
+}
+
+#[test]
+fn project_cmrc_ocean_native_close_uses_exact_file_not_same_prefix_siblings() {
+    let root = temp_root("ocean_native_exact_close");
+    fs::create_dir_all(&root).unwrap();
+    let landtype = root.join("ocean_landtype.nc4");
+    write_landtype_window(&landtype, 0);
+    let mut p = project(
+        &root,
+        "native_multi_close",
+        MeshDomainKind::Ocean,
+        MeshCellKind::Tri,
+        ModelFormat::Fvcom,
+        None,
+        Some(&landtype),
+    );
+    p.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    let source = domain_source(&p).expect("native close source");
+    let source_before = fs::read(&source).unwrap();
+    let sibling = root.join("native_close.nml.extra");
+    let sibling_before = fs::read(&sibling).unwrap();
+    let output = run_project(&root, &p);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(&sibling).unwrap(), sibling_before);
+    let report = read_json(&stdout_path(&stdout, "project_delivery_report="));
+    assert_eq!(report["model_delivery_status"], "model_delivered");
+    assert_boundary_quality(&report);
+    assert!(PathBuf::from(
+        report["model_artifacts"]["fvcom_mesh_input"]
+            .as_str()
+            .unwrap()
+    )
+    .exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_cmrc_ocean_inactive_regional_still_compiles() {
+    let root = temp_root("ocean_inactive_bbox_compile");
+    fs::create_dir_all(&root).unwrap();
+    let p = ocean_project(&root, "bbox", MeshCellKind::Tri, false);
+    let output = run_project(&root, &p);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("compiled project ->"),
+        "inactive certified should still compile:\n{stderr}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_cmrc_ocean_single_close_tri_delivers_fvcom() {
+    let root = temp_root("ocean_single_close_tri_fvcom");
+    fs::create_dir_all(&root).unwrap();
+    let landtype = root.join("ocean_landtype.nc4");
+    write_landtype_window(&landtype, 0);
+    let mut p = project(
+        &root,
+        "close",
+        MeshDomainKind::Ocean,
+        MeshCellKind::Tri,
+        ModelFormat::Fvcom,
+        None,
+        Some(&landtype),
+    );
+    p.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    let output = run_project(&root, &p);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    let report = read_json(&stdout_path(&stdout, "project_delivery_report="));
+    assert_eq!(report["model_delivery_status"], "model_delivered");
+    assert_boundary_quality(&report);
+    assert!(PathBuf::from(
+        report["model_artifacts"]["fvcom_mesh_input"]
+            .as_str()
+            .unwrap()
+    )
+    .exists());
     fs::remove_dir_all(root).unwrap();
 }
 

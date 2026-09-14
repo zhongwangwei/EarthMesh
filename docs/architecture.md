@@ -91,6 +91,17 @@ refinement algorithms. Backend capability limits remain explicit:
   can omit cells crossing member seams, even if members overlap.
   Regional ocean publication remains TRI + a single close polygon with the
   existing clean-ocean boundary path; ocean unions remain unsupported.
+  Shared Project validation rejects known unsupported active CMRC regional
+  targets/shapes before GUI edits or CLI execution proceed: ocean requires TRI
+  and a close-polygon source without EnclosingCap; regional Coupled is not
+  implemented by this backend. The model format is not the deciding factor.
+  Source-dependent ocean multipart restrictions are checked during Project
+  compilation, before launching the algorithm. Native Project close-domain
+  NML/NetCDF files are staged exactly, for every backend, rather than discovering
+  unrelated same-prefix siblings. Raw NML keeps its prefix semantics.
+  Inactive CMRC settings remain
+  editable; these restrictions do not apply to base-only or other backend runs.
+  The raw NML runtime guard remains in place after actual region loading.
   Regional products retain the closed parent and scope remap/certification to it;
   only HEX may claim a certified dual-cell subset, while TRI claims a face subset.
 - Active statistical thresholds require an enabled consumer even without an

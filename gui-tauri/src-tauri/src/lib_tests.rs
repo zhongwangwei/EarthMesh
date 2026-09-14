@@ -4084,6 +4084,84 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.certified_search_budget, 12_000);
 }
 
+fn active_ocean_project_yaml(name: &str) -> String {
+    let yaml = preset_yaml(name, MeshIntentPreset::CoastalOcean);
+    let yaml = set_project_target(yaml, "ocean".to_string(), "fvcom".to_string())
+        .expect("ocean FVCOM target");
+    let yaml = set_target_cell(yaml, "tri".to_string()).expect("tri target");
+    let yaml = set_specified_refinement(
+        yaml,
+        true,
+        Some("bbox".to_string()),
+        None,
+        None,
+        None,
+        Some(100.0),
+        Some(160.0),
+        Some(0.0),
+        Some(50.0),
+        None,
+    )
+    .expect("specified bbox refinement");
+    set_refinement(yaml, true, true, 1).expect("active refinement")
+}
+
+#[test]
+fn certified_regional_ocean_admission_reaches_gui_edit_commands() {
+    let bbox = set_domain_bbox(
+        active_ocean_project_yaml("cmrc_ocean_bbox_backend"),
+        100.0,
+        160.0,
+        0.0,
+        50.0,
+        None,
+    )
+    .expect("bbox before CMRC");
+    let before = bbox.clone();
+    let error = set_refinement_backend(bbox, "certified".to_string())
+        .expect_err("CMRC ocean bbox must fail before run");
+    assert!(
+        error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{error}"
+    );
+    let parsed = ProjectConfig::from_yaml(&before).expect("original yaml still valid");
+    assert_eq!(
+        parsed.refinement.backend,
+        earthmesh_project::RefinementBackend::MethodC
+    );
+
+    let close = set_domain_close(
+        active_ocean_project_yaml("cmrc_ocean_close_supported"),
+        "./masks/domain_close.nml".to_string(),
+        "nml".to_string(),
+        None,
+    )
+    .expect("close domain");
+    let certified = set_refinement_backend(close, "certified".to_string())
+        .expect("single close TRI ocean route is supported");
+    let summary = project_summary(certified.clone()).expect("summary");
+    assert_eq!(summary.domain_shape, "close");
+    assert_eq!(summary.refinement_algorithm, "certified");
+
+    let domain_error = set_domain_circle(certified.clone(), 130.0, 25.0, 1_000.0, None)
+        .expect_err("switching active CMRC ocean close to circle must fail");
+    assert!(
+        domain_error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{domain_error}"
+    );
+    let still_close = project_summary(certified.clone()).expect("unchanged close summary");
+    assert_eq!(still_close.domain_shape, "close");
+
+    let target_error = set_target_cell(certified.clone(), "hex".to_string())
+        .expect_err("switching active CMRC ocean TRI to HEX must fail");
+    assert!(
+        target_error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{target_error}"
+    );
+    let still_tri = ProjectConfig::from_yaml(&certified).expect("original certified yaml");
+    assert_eq!(still_tri.target.cell, earthmesh_project::MeshCellKind::Tri);
+}
+
 /// Opt-in boundary smoke; runs the real CLI, not external model solvers.
 /// See scripts/check_gui_delivery_e2e.py for WebView transport/render verification.
 #[test]

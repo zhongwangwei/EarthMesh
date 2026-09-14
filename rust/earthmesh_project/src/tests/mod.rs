@@ -172,6 +172,7 @@ fn domain_export_quality_policy_round_trips_and_requires_certified_backend() {
         working_halo: DistanceSpec::GraphRings(5),
     };
     let mut project = sample();
+    project.domain = DomainConfig::Global;
     project.quality.quality_policy = QualityPolicy::DomainExport;
     project.quality.spatial_quality_domain = Some(domain.clone());
 
@@ -1492,6 +1493,184 @@ fn shapefile_domain_lowers_to_close_adapter_input() {
     assert_eq!(lowered.mkgrd.mask_domain_fprefix, "./watershed.shp");
 }
 
+fn certified_regional_project(
+    kind: MeshDomainKind,
+    cell: MeshCellKind,
+    model_format: ModelFormat,
+    shape: RegionShape,
+) -> ProjectConfig {
+    let mut p = sample();
+    p.target.kind = kind;
+    p.target.cell = cell;
+    p.target.model_format = model_format;
+    p.domain = DomainConfig::Regional {
+        shape,
+        sea_ratio: None,
+    };
+    p.refinement.backend = RefinementBackend::Certified;
+    p
+}
+
+const CMRC_REGIONAL_ADMISSION_ERROR: &str =
+    "CMRC regional ocean delivery supports only TRI shapefile/close polyline or spherical_chaikin domains";
+
+#[test]
+fn certified_regional_ocean_rejects_shapes_the_runtime_cannot_publish() {
+    for (name, cell, shape) in [
+        (
+            "bbox",
+            MeshCellKind::Tri,
+            RegionShape::Bbox {
+                w: 100.0,
+                e: 160.0,
+                s: 0.0,
+                n: 50.0,
+            },
+        ),
+        (
+            "circle",
+            MeshCellKind::Tri,
+            RegionShape::Circle {
+                lon: 130.0,
+                lat: 25.0,
+                radius_km: 1_000.0,
+            },
+        ),
+        (
+            "hex_close",
+            MeshCellKind::Hex,
+            RegionShape::Close {
+                path: "./masks/domain_close.nml".into(),
+                format: CloseMaskFormat::Nml,
+                boundary: CloseBoundaryMode::Polyline,
+            },
+        ),
+        (
+            "enclosing_cap",
+            MeshCellKind::Tri,
+            RegionShape::Close {
+                path: "./masks/domain_close.nml".into(),
+                format: CloseMaskFormat::Nml,
+                boundary: CloseBoundaryMode::EnclosingCap {
+                    margin_km: 20.0,
+                    max_radius_deg: 80.0,
+                    max_segment_angle_deg: 0.25,
+                },
+            },
+        ),
+    ] {
+        let project =
+            certified_regional_project(MeshDomainKind::Ocean, cell, ModelFormat::Fvcom, shape);
+        let error = project
+            .validate()
+            .expect_err(&format!("{name} should be refused"));
+        assert!(
+            error.contains(CMRC_REGIONAL_ADMISSION_ERROR),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn certified_regional_ocean_allows_single_close_tri_delivery_sources() {
+    for shape in [
+        RegionShape::Shapefile {
+            path: "./watershed.shp".into(),
+        },
+        RegionShape::Close {
+            path: "./masks/domain_close.nml".into(),
+            format: CloseMaskFormat::Nml,
+            boundary: CloseBoundaryMode::Polyline,
+        },
+        RegionShape::Close {
+            path: "./masks/domain_close.nml".into(),
+            format: CloseMaskFormat::Nml,
+            boundary: CloseBoundaryMode::SphericalChaikin {
+                iterations: 2,
+                max_segment_angle_deg: 0.25,
+            },
+        },
+    ] {
+        certified_regional_project(
+            MeshDomainKind::Ocean,
+            MeshCellKind::Tri,
+            ModelFormat::Fvcom,
+            shape,
+        )
+        .validate()
+        .expect("supported ocean CMRC regional source should validate");
+    }
+}
+
+#[test]
+fn certified_regional_admission_is_limited_to_active_certified_projects() {
+    let bbox = RegionShape::Bbox {
+        w: 100.0,
+        e: 160.0,
+        s: 0.0,
+        n: 50.0,
+    };
+    let mut inactive = certified_regional_project(
+        MeshDomainKind::Ocean,
+        MeshCellKind::Tri,
+        ModelFormat::Fvcom,
+        bbox.clone(),
+    );
+    inactive.refinement.enabled = false;
+    inactive
+        .validate()
+        .expect("inactive CMRC options must remain serializable");
+
+    let mut method_c = inactive.clone();
+    method_c.refinement.enabled = true;
+    method_c.refinement.backend = RefinementBackend::MethodC;
+    method_c
+        .validate()
+        .expect("non-CMRC route is not rejected by CMRC admission");
+
+    for kind in [
+        MeshDomainKind::Earth,
+        MeshDomainKind::Atmosphere,
+        MeshDomainKind::Land,
+    ] {
+        let project = certified_regional_project(
+            kind,
+            MeshCellKind::Hex,
+            if kind == MeshDomainKind::Atmosphere {
+                ModelFormat::Mpas
+            } else {
+                ModelFormat::CoLM
+            },
+            bbox.clone(),
+        );
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("{kind:?} regional CMRC must stay available: {error}"));
+    }
+}
+
+#[test]
+fn certified_regional_coupled_is_rejected_before_lowering() {
+    let project = certified_regional_project(
+        MeshDomainKind::Coupled,
+        MeshCellKind::Hex,
+        ModelFormat::CoLM,
+        RegionShape::Bbox {
+            w: 100.0,
+            e: 160.0,
+            s: 0.0,
+            n: 50.0,
+        },
+    );
+    let error = project
+        .validate()
+        .expect_err("regional LOCmesh CMRC is still rejected by runtime");
+    assert!(
+        error.contains("CMRC regional delivery does not support coupled targets"),
+        "{error}"
+    );
+}
+
 #[test]
 fn threshold_value_override_lowers_to_engine_arrays() {
     let mut p = sample();
@@ -2447,6 +2626,7 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
 
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
     project.refinement.backend = crate::RefinementBackend::Certified;
+    project.domain = DomainConfig::Global;
     project.quality.on_violation = ViolationPolicy::AutoRefine;
     assert_eq!(
         project.lower().mkgrd.nxp,
@@ -2458,6 +2638,7 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
 #[test]
 fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
     let mut project = sample();
+    project.target.kind = MeshDomainKind::Land;
     project.target.resolution = ResolutionSpec::Nxp(80);
     project.quality.on_violation = ViolationPolicy::Warn;
     project.refinement.backend = crate::RefinementBackend::Certified;
@@ -2857,6 +3038,7 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     // long before it is run. Without the refusal here, the GUI would happily
     // save a project whose only symptom is a run that dies.
     let mut p = sample();
+    p.domain = DomainConfig::Global;
     p.refinement.hfield = Some(crate::HfieldRefinementRecipe {
         enabled: true,
         ..Default::default()
@@ -3002,6 +3184,7 @@ fn method_c_lepp_algorithm_rejects_invalid_limits_and_post_quality_composition()
 #[test]
 fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     let mut project = sample();
+    project.domain = DomainConfig::Global;
     project.refinement.backend = crate::RefinementBackend::Certified;
     project.refinement.certified = crate::CertifiedRefinementRecipe {
         mode: crate::CertifiedMode::ReverseCoarsening,
@@ -3064,8 +3247,21 @@ fn statistical_thresholds_require_a_consumer_across_targets_and_backends() {
             ] {
                 let mut project = sample();
                 project.target.kind = kind;
+                if kind == MeshDomainKind::Ocean {
+                    project.target.cell = MeshCellKind::Tri;
+                    project.target.model_format = ModelFormat::Fvcom;
+                }
                 if global {
                     project.domain = DomainConfig::Global;
+                } else if kind == MeshDomainKind::Ocean && backend == RefinementBackend::Certified {
+                    project.domain = DomainConfig::Regional {
+                        shape: RegionShape::Close {
+                            path: "./masks/domain_close.nml".into(),
+                            format: CloseMaskFormat::Nml,
+                            boundary: CloseBoundaryMode::Polyline,
+                        },
+                        sea_ratio: None,
+                    };
                 }
                 project.refinement.backend = backend;
                 project.refinement.method_c.algorithm = algorithm;
