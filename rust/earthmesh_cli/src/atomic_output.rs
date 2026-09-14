@@ -8,7 +8,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-pub(crate) fn validate_output_path(input: &Path, output: &Path) -> io::Result<()> {
+pub(crate) fn validate_output_destination(output: &Path) -> io::Result<()> {
     crate::ensure_parent_dir(output)?;
     let parent = output
         .parent()
@@ -18,14 +18,25 @@ pub(crate) fn validate_output_path(input: &Path, output: &Path) -> io::Result<()
     if !parent_meta.is_dir() || parent_meta.file_type().is_symlink() {
         return Err(invalid("output parent must be a real directory"));
     }
-    if let Ok(meta) = std::fs::symlink_metadata(output) {
-        if meta.file_type().is_symlink() {
+    match fs::symlink_metadata(output) {
+        Ok(meta) if meta.file_type().is_symlink() => {
             return Err(invalid("output path must not be a symlink"));
         }
-        if meta.is_dir() {
+        Ok(meta) if meta.is_dir() => {
             return Err(invalid("output path must not be a directory"));
         }
+        Ok(meta) if !meta.is_file() => {
+            return Err(invalid("output path must be a regular file"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
+    Ok(())
+}
+
+pub(crate) fn validate_output_path(input: &Path, output: &Path) -> io::Result<()> {
+    validate_output_destination(output)?;
     if output.exists() && std::fs::canonicalize(input)? == std::fs::canonicalize(output)? {
         return Err(invalid("input and output must not be the same file"));
     }
@@ -85,6 +96,22 @@ pub(crate) fn atomic_write(
     Err(invalid("could not create exclusive temporary output"))
 }
 
+fn publish_with_restore_context(
+    error: io::Error,
+    backups: &[(PathBuf, PathBuf, bool)],
+) -> io::Error {
+    let publication_error = error.to_string();
+    match restore_backups(backups) {
+        Ok(()) => error,
+        Err(restore_error) => io::Error::new(
+            restore_error.kind(),
+            format!(
+                "publication failed ({publication_error}); rollback also failed ({restore_error})"
+            ),
+        ),
+    }
+}
+
 /// Publish staged files, restoring the previous generation on an I/O error.
 /// The last file is the readiness marker: withdraw it first and restore it last.
 /// ponytail: rollback is not crash-atomic or concurrent-reader isolation; use a
@@ -120,19 +147,18 @@ pub(crate) fn publish_artifacts(
     for (index, (final_path, is_ready)) in backup_targets.enumerate() {
         if final_path.exists() {
             if !final_path.is_file() {
-                restore_backups(&backups);
-                return Err(io::Error::new(
+                let error = io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!(
                         "artifact target is not a regular file: {}",
                         final_path.display()
                     ),
-                ));
+                );
+                return Err(publish_with_restore_context(error, &backups));
             }
             let backup = backup_path(final_path, index);
             if let Err(error) = fs::rename(final_path, &backup) {
-                restore_backups(&backups);
-                return Err(error);
+                return Err(publish_with_restore_context(error, &backups));
             }
             backups.push((final_path.to_path_buf(), backup, is_ready));
         }
@@ -144,8 +170,7 @@ pub(crate) fn publish_artifacts(
             for &published_index in published.iter().rev() {
                 let _ = fs::remove_file(publications[published_index].1);
             }
-            restore_backups(&backups);
-            return Err(error);
+            return Err(publish_with_restore_context(error, &backups));
         }
         published.push(index);
     }
@@ -155,18 +180,118 @@ pub(crate) fn publish_artifacts(
     Ok(())
 }
 
-fn restore_backups(backups: &[(PathBuf, PathBuf, bool)]) {
+fn restore_backups(backups: &[(PathBuf, PathBuf, bool)]) -> io::Result<()> {
     for (original, backup, _) in backups.iter().filter(|(_, _, is_ready)| !is_ready) {
-        let _ = fs::rename(backup, original);
+        fs::rename(backup, original).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to restore artifact backup {} -> {}: {error}",
+                    backup.display(),
+                    original.display()
+                ),
+            )
+        })?;
     }
     if let Some((original, backup, _)) = backups.iter().find(|(_, _, is_ready)| *is_ready) {
-        let _ = fs::rename(backup, original);
+        fs::rename(backup, original).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to restore readiness backup {} -> {}: {error}",
+                    backup.display(),
+                    original.display()
+                ),
+            )
+        })?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn output_destination_rejects_special_files() {
+        let dir =
+            std::env::temp_dir().join(format!("earthmesh-special-output-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("socket");
+        let socket = std::os::unix::net::UnixListener::bind(&output).unwrap();
+        assert!(validate_output_destination(&output)
+            .unwrap_err()
+            .to_string()
+            .contains("regular file"));
+        drop(socket);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_backups_keeps_ready_withdrawn_when_nonready_restore_fails() {
+        let dir =
+            std::env::temp_dir().join(format!("earthmesh-restore-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let live = dir.join("live");
+        fs::create_dir_all(&live).unwrap();
+        let data = live.join("data.nc");
+        let ready = live.join("ready.marker");
+        let data_backup = dir.join("data.backup");
+        let ready_backup = dir.join("ready.backup");
+        fs::write(&data_backup, "old data").unwrap();
+        fs::write(&ready_backup, "old ready").unwrap();
+        fs::remove_dir_all(&live).unwrap();
+
+        let error = restore_backups(&[
+            (data.clone(), data_backup.clone(), false),
+            (ready.clone(), ready_backup.clone(), true),
+        ])
+        .expect_err("non-ready restore must fail when destination parent is missing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to restore artifact backup"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            data_backup.exists(),
+            "failed non-ready backup must be retained"
+        );
+        assert!(
+            ready_backup.exists(),
+            "ready backup must not be restored early"
+        );
+        assert!(!ready.exists(), "readiness marker must remain withdrawn");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publication_error_reports_failed_restore_context() {
+        let dir =
+            std::env::temp_dir().join(format!("earthmesh-restore-context-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let missing_parent = dir.join("missing-parent");
+        let original = missing_parent.join("data.nc");
+        let backup = dir.join("data.backup");
+        fs::write(&backup, "old data").unwrap();
+
+        let error = publish_with_restore_context(
+            io::Error::new(io::ErrorKind::NotFound, "missing staged artifact"),
+            &[(original, backup.clone(), false)],
+        );
+
+        let message = error.to_string();
+        assert!(message.contains("publication failed (missing staged artifact)"));
+        assert!(message.contains("rollback also failed"));
+        assert!(
+            backup.exists(),
+            "failed backup must be retained for manual recovery"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn graph_first_mesh_last_failure_restores_both_outputs() {

@@ -13,6 +13,44 @@ fn source_mesh() -> UnstructuredMesh {
     .unwrap()
 }
 
+fn assert_no_delivery_staging(root: &Path) {
+    fn walk(path: &Path) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            assert!(
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".earthmesh-delivery-"),
+                "staging path leaked: {}",
+                path.display()
+            );
+            if path.is_dir() {
+                walk(&path);
+            }
+        }
+    }
+    if root.exists() {
+        walk(root);
+    }
+}
+
+fn seed_atmos_case(case: &Path, mode: &str) -> (PathBuf, PathBuf, UnstructuredMesh) {
+    let result = case.join("result");
+    fs::create_dir_all(&result).unwrap();
+    let mesh = source_mesh();
+    let grid = result.join(format!("gridfile_NXP0001_{mode}.nc4"));
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&grid, &mesh).unwrap();
+    let widths = (0..mesh.w_points.len())
+        .map(|i| 12.0 * (1 + i % 3) as f64)
+        .collect::<Vec<_>>();
+    let width_file = result.join("cellwidth_NXP0001_global.nc4");
+    write_cellwidth_fixture(&width_file, &widths);
+    (grid, width_file, mesh)
+}
+
 fn deliver(root: &Path, mode: &str, format: &str) -> std::io::Result<PathBuf> {
     if format == "MPAS-Simple" {
         earthmesh_cli::mask_postproc_atmos::write_mask_postproc_atmos_mpas_simple_netcdf(
@@ -173,8 +211,105 @@ fn atmos_final_admission_blocks_bad_native_w_rings_before_model_writes() {
             assert!(!result.join("MPASOUT_NXP0001_global.graph.info").exists());
             assert!(!result.join("MPASOUT_NXP0001_global_Simple.nc4").exists());
             assert_eq!(fs::read(&grid).unwrap(), original);
+            assert_no_delivery_staging(&case);
         }
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn atmos_adapter_failures_preserve_previous_model_files_and_live_diagnostics() {
+    let root = std::env::temp_dir().join(format!("legacy_atmos_preserve_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+
+    for format in ["MPAS", "MPAS-Simple"] {
+        let mode = "tri";
+        let case = root.join(format);
+        let (grid, width_file, _) = seed_atmos_case(&case, mode);
+        let output = deliver(&case, mode, format).unwrap();
+        let output_bytes = fs::read(&output).unwrap();
+        let graph = case.join("result/MPASOUT_NXP0001_global.graph.info");
+        let graph_bytes = graph.exists().then(|| fs::read(&graph).unwrap());
+        let grid_bytes = fs::read(&grid).unwrap();
+
+        write_cellwidth_fixture(&width_file, &[12.0]);
+        let bad_width_bytes = fs::read(&width_file).unwrap();
+        let error = deliver(&case, mode, format).unwrap_err().to_string();
+        assert!(error.contains("cellwidth"), "{error}");
+        assert_eq!(fs::read(&output).unwrap(), output_bytes);
+        if let Some(bytes) = graph_bytes {
+            assert_eq!(fs::read(&graph).unwrap(), bytes);
+        }
+        assert_eq!(fs::read(&grid).unwrap(), grid_bytes);
+        assert_eq!(fs::read(&width_file).unwrap(), bad_width_bytes);
+        let quality_dir = case.join("result/final_quality").join(format);
+        assert!(!quality_dir.join("legacy_delivery.json").exists());
+        assert!(quality_dir.join("quality_summary.json").is_file());
+        assert_no_delivery_staging(&case);
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn atmos_full_mpas_graph_failure_preserves_previous_mesh_output() {
+    let root = std::env::temp_dir().join(format!("legacy_atmos_graph_fail_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (grid, width_file, _) = seed_atmos_case(&root, "tri");
+    let output = deliver(&root, "tri", "MPAS").unwrap();
+    let output_bytes = fs::read(&output).unwrap();
+    let graph = root.join("result/MPASOUT_NXP0001_global.graph.info");
+    let graph_bytes = fs::read(&graph).unwrap();
+    let grid_bytes = fs::read(&grid).unwrap();
+    let width_bytes = fs::read(&width_file).unwrap();
+
+    fs::remove_file(&graph).unwrap();
+    fs::create_dir(&graph).unwrap();
+    let error = deliver(&root, "tri", "MPAS").unwrap_err().to_string();
+    assert!(
+        error.contains("graph") || error.contains("directory") || error.contains("Is a directory"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&output).unwrap(), output_bytes);
+    assert!(graph.is_dir());
+    assert_eq!(fs::read(&grid).unwrap(), grid_bytes);
+    assert_eq!(fs::read(&width_file).unwrap(), width_bytes);
+    let quality_dir = root.join("result/final_quality/MPAS");
+    assert!(!quality_dir.join("legacy_delivery.json").exists());
+    assert!(quality_dir.join("quality_summary.json").is_file());
+    assert_no_delivery_staging(&root);
+
+    fs::remove_dir(&graph).unwrap();
+    fs::write(&graph, graph_bytes).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn atmos_output_input_alias_rejects_after_retiring_readiness() {
+    let root =
+        std::env::temp_dir().join(format!("legacy_atmos_output_alias_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (grid, _, _) = seed_atmos_case(&root, "tri");
+    let output = root.join("result/MPASOUT_NXP0001_global_Simple.nc4");
+    std::fs::hard_link(&grid, &output).unwrap();
+    let grid_bytes = fs::read(&grid).unwrap();
+    let quality_dir = root.join("result/final_quality/MPAS-Simple");
+    fs::create_dir_all(&quality_dir).unwrap();
+    let marker = quality_dir.join("legacy_delivery.json");
+    fs::write(&marker, "old success").unwrap();
+
+    let error = deliver(&root, "tri", "MPAS-Simple")
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("input") || error.contains("alias") || error.contains("exists"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&grid).unwrap(), grid_bytes);
+    assert!(!marker.exists());
+    assert_no_delivery_staging(&root);
     fs::remove_dir_all(root).unwrap();
 }
 

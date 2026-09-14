@@ -165,7 +165,7 @@ pub fn write_project_quality_report_with_namelist(
     target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let spec = project_final_admission_spec(project)?;
-    write_quality_report_impl(&spec, gridfile, out_dir, target_namelist, false)
+    write_quality_report_impl(&spec, gridfile, gridfile, out_dir, target_namelist, false)
 }
 
 /// Final admission for a selected gridfile, after algorithm selection and
@@ -178,7 +178,16 @@ pub fn admit_final_gridfile(
     out_dir: &Path,
     target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
-    write_quality_report_impl(spec, gridfile, out_dir, target_namelist, true)
+    write_quality_report_impl(spec, gridfile, gridfile, out_dir, target_namelist, true)
+}
+
+pub(crate) fn admit_staged_final_gridfile(
+    spec: &FinalAdmissionSpec,
+    staged: &Path,
+    published: &Path,
+    out_dir: &Path,
+) -> Result<earthmesh_quality::MeshQualityReport, String> {
+    write_quality_report_impl(spec, staged, published, out_dir, None, true)
 }
 
 /// Final Project admission, after AutoRefine/hydro selection and before model delivery.
@@ -269,6 +278,7 @@ fn final_mesh_contract(
 fn write_quality_report_impl(
     spec: &FinalAdmissionSpec,
     gridfile: &Path,
+    report_gridfile: &Path,
     out_dir: &Path,
     target_namelist: Option<&Path>,
     final_admission: bool,
@@ -371,7 +381,7 @@ fn write_quality_report_impl(
                 }
             });
     }
-    report.mesh_name = gridfile.display().to_string();
+    report.mesh_name = report_gridfile.display().to_string();
     let cell_view = match spec.cell_kind {
         MeshCellKind::Hex => "hex",
         MeshCellKind::Tri => "tri",
@@ -438,7 +448,7 @@ fn write_quality_report_impl(
     admission.map_err(|reason| {
         format!(
             "final mesh admission failed for {}: {reason}; report={}",
-            gridfile.display(),
+            report_gridfile.display(),
             out_dir.join("quality_summary.json").display()
         )
     })?;
@@ -478,6 +488,56 @@ mod tests {
             },
             &QualityThresholds::default(),
         )
+    }
+
+    fn write_canonical_tri_gridfile(path: &Path) {
+        let state = earthmesh_mesh::gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 100).unwrap();
+        let mesh = crate::mesh_conversion_gridfile_state::gridfile_mesh_from_one_based_state(
+            &state.grid,
+            &state.tabs,
+        )
+        .unwrap();
+        crate::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh).unwrap();
+    }
+
+    #[test]
+    fn staged_final_admission_reads_staged_but_reports_published_mesh_name() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_staged_final_admission_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let staged = root.join("staged/final.nc4.tmp");
+        let published = root.join("published/final.nc4");
+        let out = root.join("quality");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        write_canonical_tri_gridfile(&staged);
+
+        let report = admit_staged_final_gridfile(
+            &FinalAdmissionSpec {
+                cell_kind: MeshCellKind::Tri,
+                expected_euler_characteristic: None,
+                thresholds: earthmesh_quality::QualityThresholds::default(),
+                repair_level_cap: None,
+            },
+            &staged,
+            &published,
+            &out,
+        )
+        .unwrap();
+
+        assert_eq!(report.mesh_name, published.display().to_string());
+        let summary = fs::read_to_string(out.join("quality_summary.json")).unwrap();
+        assert!(summary.contains(&published.display().to_string()));
+        assert!(
+            !summary.contains(&staged.display().to_string()),
+            "quality report must expose the final published path, not the staged path"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

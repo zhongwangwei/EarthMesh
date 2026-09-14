@@ -1,10 +1,10 @@
 //! Final-only legacy handoff. Candidate/preprocessor callers keep using the
 //! unchecked composition helpers; no domain-specific mesh algorithm lives here.
-// ponytail: native/sidecar writes are not a transaction; stage a bundle when rollback is added.
 use super::runners::{
     run_mask_postproc_earth_domain_checked, run_mask_postproc_land_domain_checked,
     run_mask_postproc_ocean_domain_checked,
 };
+use crate::project_delivery::LegacyDeliveryStage;
 use crate::{
     MaskPostprocDomainIoPlan, MaskPostprocEarthDomainReport, MaskPostprocEarthRunOptions,
     MaskPostprocLandDomainReport, MaskPostprocLandRunOptions, MaskPostprocOceanDomainReport,
@@ -12,8 +12,8 @@ use crate::{
 };
 use earthmesh_project::{MeshCellKind, MeshDomainKind};
 use std::{
-    collections::{BTreeMap, HashSet},
-    fs, io,
+    collections::BTreeMap,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -24,13 +24,20 @@ pub fn run_final_mask_postproc_earth_domain(
     options: MaskPostprocEarthRunOptions<'_>,
     expected_euler_characteristic: Option<isize>,
 ) -> io::Result<MaskPostprocEarthDomainReport> {
-    let quality_dir = begin_final_delivery(plan)?;
-    let (report, quality) = run_mask_postproc_earth_domain_checked(plan, options, |grid| {
-        admit(plan, grid, &quality_dir, expected_euler_characteristic)
-    })?;
+    let (stage, staged_plan, quality_dir) = begin_final_delivery(plan)?;
+    let (mut report, quality) =
+        run_mask_postproc_earth_domain_checked(&staged_plan, options, |grid| {
+            admit(plan, grid, &quality_dir, expected_euler_characteristic)
+        })?;
+    report.final_gridfile.output = plan.result_gridfile.clone();
+    report.patchtype.output = plan
+        .patchtype_output
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing patchtype output"))?;
+    report.earthmesh_info.output = plan.file_dir.join("result/earthmesh_info.nc4");
     record(
+        &stage,
         plan,
-        &quality_dir,
         &quality,
         &BTreeMap::from([
             ("patchtype", report.patchtype.output.clone()),
@@ -45,13 +52,19 @@ pub fn run_final_mask_postproc_land_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocLandRunOptions<'_>,
 ) -> io::Result<MaskPostprocLandDomainReport> {
-    let quality_dir = begin_final_delivery(plan)?;
-    let (report, quality) = run_mask_postproc_land_domain_checked(plan, options, |grid| {
-        admit(plan, grid, &quality_dir, None)
-    })?;
+    let (stage, staged_plan, quality_dir) = begin_final_delivery(plan)?;
+    let (mut report, quality) =
+        run_mask_postproc_land_domain_checked(&staged_plan, options, |grid| {
+            admit(plan, grid, &quality_dir, None)
+        })?;
+    report.final_gridfile.output = plan.result_gridfile.clone();
+    report.patchtype.output = plan
+        .patchtype_output
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing patchtype output"))?;
     record(
+        &stage,
         plan,
-        &quality_dir,
         &quality,
         &BTreeMap::from([("patchtype", report.patchtype.output.clone())]),
     )?;
@@ -63,18 +76,33 @@ pub fn run_final_mask_postproc_ocean_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocOceanRunOptions,
 ) -> io::Result<MaskPostprocOceanDomainReport> {
-    let quality_dir = begin_final_delivery(plan)?;
-    let (report, quality) = run_mask_postproc_ocean_domain_checked(plan, options, |grid| {
-        admit(plan, grid, &quality_dir, None)
-    })?;
+    let (stage, staged_plan, quality_dir) = begin_final_delivery(plan)?;
+    let (mut report, quality) =
+        run_mask_postproc_ocean_domain_checked(&staged_plan, options, |grid| {
+            admit(plan, grid, &quality_dir, None)
+        })?;
+    report.final_gridfile.output = plan.result_gridfile.clone();
     let mut auxiliary = BTreeMap::new();
-    if let Some(obc) = &report.obc {
-        auxiliary.insert("obc", obc.output.clone());
+    for (key, output, published) in [
+        (
+            "obc",
+            report.obc.as_mut().map(|r| &mut r.output),
+            &plan.obc_output,
+        ),
+        (
+            "obcv2",
+            report.obcv2.as_mut().map(|r| &mut r.output),
+            &plan.obcv2_output,
+        ),
+    ] {
+        if let Some(output) = output {
+            *output = published.clone().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, format!("missing {key} output"))
+            })?;
+            auxiliary.insert(key, output.clone());
+        }
     }
-    if let Some(obcv2) = &report.obcv2 {
-        auxiliary.insert("obcv2", obcv2.output.clone());
-    }
-    record(plan, &quality_dir, &quality, &auxiliary)?;
+    record(&stage, plan, &quality, &auxiliary)?;
     Ok(report)
 }
 
@@ -89,7 +117,9 @@ fn cell_kind(plan: &MaskPostprocDomainIoPlan) -> io::Result<MeshCellKind> {
     }
 }
 
-fn begin_final_delivery(plan: &MaskPostprocDomainIoPlan) -> io::Result<PathBuf> {
+fn begin_final_delivery(
+    plan: &MaskPostprocDomainIoPlan,
+) -> io::Result<(LegacyDeliveryStage, MaskPostprocDomainIoPlan, PathBuf)> {
     cell_kind(plan)?;
     let quality_dir = plan
         .result_gridfile
@@ -102,47 +132,55 @@ fn begin_final_delivery(plan: &MaskPostprocDomainIoPlan) -> io::Result<PathBuf> 
                 "final gridfile needs a filename",
             )
         })?);
-    crate::project_delivery::retire_delivery_record(&quality_dir.join("legacy_delivery.json"))?;
-    let mut outputs = vec![plan.result_gridfile.clone()];
-    outputs.extend(
-        [&plan.patchtype_output, &plan.obc_output, &plan.obcv2_output]
-            .into_iter()
-            .flatten()
-            .cloned(),
-    );
+    let earth_info = plan.file_dir.join("result/earthmesh_info.nc4");
+    let mut outputs = vec![plan.result_gridfile.as_path()];
+    if matches!(plan.mesh_type.as_str(), "earthmesh" | "landmesh") {
+        outputs.extend(plan.patchtype_output.as_deref());
+    }
     if plan.mesh_type == "earthmesh" {
-        outputs.push(plan.file_dir.join("result/earthmesh_info.nc4"));
+        outputs.push(&earth_info);
     }
-    let mut seen = HashSet::new();
-    for (index, output) in outputs.iter().enumerate() {
-        for input in [&plan.source_gridfile, &plan.contain_domain] {
-            crate::atomic_output::validate_output_path(input, output)?;
-        }
-        let resolved = fs::canonicalize(
-            output
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new(".")),
-        )?
-        .join(output.file_name().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "delivery output needs a filename",
-            )
-        })?);
-        if !seen.insert(resolved) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "final grid and auxiliary outputs must be distinct",
-            ));
-        }
-        for previous in &outputs[..index] {
-            if previous.exists() {
-                crate::atomic_output::validate_output_path(previous, output)?;
-            }
-        }
+    if plan.mesh_type == "oceanmesh" && plan.mode_grid == "tri" {
+        outputs.extend(plan.obc_output.as_deref());
+        outputs.extend(plan.obcv2_output.as_deref());
     }
-    Ok(quality_dir)
+    let stage = LegacyDeliveryStage::new(
+        &[&plan.source_gridfile, &plan.contain_domain],
+        &outputs,
+        &quality_dir,
+    )?;
+    let mut staged = plan.clone();
+    staged.result_gridfile = stage.path(&plan.result_gridfile)?;
+    if matches!(plan.mesh_type.as_str(), "earthmesh" | "landmesh") {
+        staged.patchtype_output = plan
+            .patchtype_output
+            .as_ref()
+            .map(|p| stage.path(p))
+            .transpose()?;
+    }
+    if plan.mesh_type == "earthmesh" {
+        // The existing Earth writer appends result/earthmesh_info.nc4 to file_dir.
+        // Redirect only that output root; explicit source/contain inputs stay unchanged.
+        staged.file_dir = stage
+            .path(&earth_info)?
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::other("invalid Earth delivery staging path"))?
+            .to_path_buf();
+    }
+    if plan.mesh_type == "oceanmesh" && plan.mode_grid == "tri" {
+        staged.obc_output = plan
+            .obc_output
+            .as_ref()
+            .map(|p| stage.path(p))
+            .transpose()?;
+        staged.obcv2_output = plan
+            .obcv2_output
+            .as_ref()
+            .map(|p| stage.path(p))
+            .transpose()?;
+    }
+    Ok((stage, staged, quality_dir))
 }
 
 fn admit(
@@ -157,13 +195,18 @@ fn admit(
         thresholds: earthmesh_quality::QualityThresholds::default(),
         repair_level_cap: None,
     };
-    crate::project_quality::admit_final_gridfile(&spec, &grid.output, quality_dir, None)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    crate::project_quality::admit_staged_final_gridfile(
+        &spec,
+        &grid.output,
+        &plan.result_gridfile,
+        quality_dir,
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn record(
+    stage: &LegacyDeliveryStage,
     plan: &MaskPostprocDomainIoPlan,
-    quality_dir: &Path,
     quality: &earthmesh_quality::MeshQualityReport,
     auxiliary: &BTreeMap<&str, PathBuf>,
 ) -> io::Result<()> {
@@ -174,7 +217,7 @@ fn record(
     };
     // Patch IDs, Earth info and OBC files accompany the native mesh; they are
     // not proof that a CoLM or FVCOM model-format adapter has run.
-    crate::project_delivery::write_delivery_record(
+    stage.publish(
         serde_json::json!({
             "kind": "earthmesh_legacy_delivery",
             "target": {"kind": kind, "cell": cell_kind(plan)?},
@@ -183,11 +226,9 @@ fn record(
             "skipped_reason": "Native grid and auxiliary files only; no specialized model adapter was run",
         }),
         &plan.result_gridfile,
-        &quality_dir.join("quality_summary.json"),
         quality.verdict,
         &BTreeMap::new(),
         auxiliary,
-        &quality_dir.join("legacy_delivery.json"),
     )?;
     Ok(())
 }

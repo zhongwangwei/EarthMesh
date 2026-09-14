@@ -241,16 +241,16 @@ The existing model filenames and cellwidth-derived densities remain unchanged.
 `result/final_quality/<MPAS|MPAS-Simple>/legacy_delivery.json` records the physical
 target, source mode, final quality and artifacts returned by this attempt only.
 The previous completion record is retired before a new final attempt, so an
-admission/adapter failure cannot leave a current success marker. These legacy
-writers are not yet transactionally published as a multi-file bundle.
+admission/adapter failure cannot leave a current success marker. MPAS mesh and
+graph files are staged and published together with that completion record last.
 
 The Earth/land/ocean restart final handoffs (including both ocean restart
 routes) also call shared admission. Earth requires a closed sphere only when
 `mask_domain_global && !mask_patch_on`; masked/regional Earth and land/ocean
 use boundary-aware checks without imposing χ=2. Physical cells follow
 `mode_grid`: TRI triangles or HEX 5–7-sided polygons. Final native mesh and
-embedded ocean boundary order are written first, then admitted, then patchtype,
-Earth-info and OBC sidecars are written. Completion is recorded under
+embedded ocean boundary order are staged first, then admitted, then patchtype,
+Earth-info and OBC sidecars are staged. Completion is recorded under
 `result/final_quality/<final-gridfile-stem>/legacy_delivery.json` only after
 these outputs succeed. Patchtype/info/OBC are `auxiliary_artifacts`, not proof
 that a CoLM/FVCOM adapter ran; delivery remains `native_only`.
@@ -258,11 +258,17 @@ that a CoLM/FVCOM adapter ran; delivery remains `native_only`.
 Public low-level composition helpers retain unchecked candidate/preprocessor
 use, including Project clean-ocean processing. `defer_model_exports` does not
 bypass native admission in the Earth/land/ocean final handoffs. Successful
-low-level outputs are unchanged, but their file-write ordering now follows the
-same native-before-sidecar sequence: failed admission or sidecar writing can
-leave a native mesh or diagnostics, not a new completion record. Old sidecars
-may also remain; consumers must not infer readiness from individual files.
-Multi-file transactional publication is still separate work.
+low-level outputs are unchanged. The final-only wrappers share
+`project_delivery::LegacyDeliveryStage`: private staging is on each output's
+filesystem, output/input/diagnostic aliases are rejected, and I/O publication
+failure restores previous native/model/auxiliary files. A completion path that
+aliases an input or output is rejected before retirement to protect its bytes.
+Quality files remain live **last-attempt diagnostics**, not transactional
+readiness; their mesh name refers to the intended published path. Consumers
+must use `legacy_delivery.json`, not the presence of individual files, as the
+completion signal. Rollback errors retain recovery backups and report their
+paths without restoring readiness prematurely. This is not crash-atomic
+publication or isolation for concurrent readers/writers.
 
 This is not blanket legacy parity: standalone native publication and other
 lower-level writers still need their own final-delivery seams connected. Do not
