@@ -117,7 +117,7 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
 
 /// Shared dispatcher with explicit final-base ownership. The CLI enables this
 /// only without Project; it is not inferred from `defer_model_exports`.
-/// Raw/refinement and specialized clean-ocean branches keep their existing handoffs.
+/// Raw/refinement and patch-preprocessing branches keep their existing handoffs.
 #[doc(hidden)]
 pub fn run_mkgrd_default_with_base_delivery(
     namelist_source: impl AsRef<Path>,

@@ -266,6 +266,154 @@ fn assert_no_delivery_staging(root: &Path) {
     }
 }
 
+fn write_clean_ocean_source_gridfile(path: &Path) {
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 113.6,
+                lat: 22.4,
+            },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 113.4,
+                lat: 22.6,
+            },
+        ],
+        w_points: vec![
+            earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 113.0,
+                lat: 22.0,
+            },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 114.0,
+                lat: 22.0,
+            },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 114.0,
+                lat: 23.0,
+            },
+            earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 113.0,
+                lat: 23.0,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4], [2, 4, 5]],
+        w_to_m: vec![vec![1], vec![1, 2], vec![1], vec![1, 2], vec![2]],
+        n_w_to_m: vec![0, 2, 1, 2, 1],
+    };
+    let context = earthmesh_cli::mpas_gridfile_context::MpasGridfileContext {
+        cellwidth_km: vec![900.0, 100.0, 125.0, 75.0, 50.0],
+        base_nxp: 9,
+        step: 3,
+        density_reference_width_km: 50.0,
+        source: "test_producer".into(),
+    };
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        path,
+        &mesh,
+        earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+            mpas: Some(&context),
+            m_refine_level: Some(&[0, 0, 1]),
+            w_refine_level: Some(&[0, 0, 1, 1, 0]),
+            ..Default::default()
+        },
+    )
+    .expect("write clean-ocean source gridfile");
+}
+
+fn write_clean_ocean_close(path: &Path) {
+    fs::write(
+        path,
+        "close_num = 4\nclose_refine = 0\n112.0 20.0\n116.0 20.0\n116.0 25.0\n112.0 25.0\n",
+    )
+    .expect("write clean-ocean close domain");
+}
+
+fn write_clean_ocean_namelist(
+    root: &Path,
+    case_name: &str,
+    source: &Path,
+    close: &Path,
+    landtype: &Path,
+    output_format: &str,
+    defer_model_exports: bool,
+) -> PathBuf {
+    write_clean_ocean_namelist_with_close_boundary(
+        root,
+        case_name,
+        source,
+        close,
+        landtype,
+        output_format,
+        defer_model_exports,
+        None,
+    )
+}
+
+fn write_clean_ocean_namelist_with_close_boundary(
+    root: &Path,
+    case_name: &str,
+    source: &Path,
+    close: &Path,
+    landtype: &Path,
+    output_format: &str,
+    defer_model_exports: bool,
+    close_boundary: Option<&str>,
+) -> PathBuf {
+    let namelist = root.join(format!("{case_name}.nml"));
+    let base_dir = format!("{}/", root.display());
+    let close_boundary = close_boundary
+        .map(|value| format!("  NL%mask_domain_close_boundary='{value}'\n"))
+        .unwrap_or_default();
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd
+  NL%EXPNME='{case_name}'
+  NL%base_dir='{base_dir}'
+  NL%NXP=7
+  NL%mesh_type='oceanmesh'
+  NL%mode_grid='tri'
+  NL%mode_file='{}'
+  NL%mode_file_description='EarthMesh'
+  NL%landtype_file='{}'
+  NL%gridnum_perdegree=120
+  NL%mask_sea_ratio=0.5
+  NL%refine=.false.
+  NL%niter=0
+  NL%beta=1.0
+  NL%relax=0.25
+  NL%mask_domain_global=.false.
+  NL%mask_domain_type='close'
+  NL%mask_domain_fprefix='{}'
+{close_boundary}  NL%mask_patch_on=.false.
+  NL%output_format='{output_format}'
+  NL%defer_model_exports={}
+/
+",
+            source.display(),
+            landtype.display(),
+            close.display(),
+            if defer_model_exports {
+                ".true."
+            } else {
+                ".false."
+            }
+        ),
+    )
+    .expect("write clean-ocean namelist");
+    namelist
+}
+
+fn artifact_path(record: &serde_json::Value, section: &str, key: &str) -> PathBuf {
+    PathBuf::from(
+        record[section][key]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {section}.{key} in {record}")),
+    )
+}
+
 fn one_point_earthmesh_source() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
     earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
         m_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 }],
@@ -966,6 +1114,347 @@ fn earthmesh_cli_binary_regional_base_landtype_carve_publishes_and_empty_rejects
     let selected =
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&ocean_grid).unwrap();
     assert!(mother.m_points.len() > selected.m_points.len());
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_clean_ocean_close_delivers_native_auxiliary_and_fvcom() {
+    let root = gridinit_temp_root("binary_clean_ocean_close_delivery");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let source = root.join("source.nc4");
+    let close = root.join("domain_close.nml");
+    let landtype = root.join("landtype.nc");
+    write_clean_ocean_source_gridfile(&source);
+    write_clean_ocean_close(&close);
+    write_landtype(&landtype, 0);
+    let namelist = write_clean_ocean_namelist(
+        &root,
+        "case_clean_ocean_fvcom",
+        &source,
+        &close,
+        &landtype,
+        "FVCOM",
+        false,
+    );
+    let source_before = fs::read(&source).unwrap();
+    let close_before = fs::read(&close).unwrap();
+    let landtype_before = fs::read(&landtype).unwrap();
+
+    let output = run_gridinit_cli(&root, &namelist);
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fvcom_2dm="), "stdout={stdout}");
+    let gridfile = stdout_field(&stdout, "gridfile=");
+    let record = delivery_record(&gridfile);
+    assert_eq!(record["model_delivery_status"], "model_delivered");
+    let model_artifacts = record["model_artifacts"].as_object().unwrap();
+    assert_eq!(
+        model_artifacts.len(),
+        1,
+        "unexpected model artifacts: {record}"
+    );
+    assert!(
+        model_artifacts.contains_key("fvcom_2dm"),
+        "missing fvcom_2dm in {record}"
+    );
+    for key in ["raw_parent", "obc", "obcv2"] {
+        assert!(
+            artifact_path(&record, "auxiliary_artifacts", key).is_file(),
+            "missing {key}"
+        );
+    }
+    let raw_parent = artifact_path(&record, "auxiliary_artifacts", "raw_parent");
+    assert!(
+        raw_parent.to_string_lossy().contains("/tmpfile/"),
+        "raw_parent should publish under tmpfile: {}",
+        raw_parent.display()
+    );
+    assert_eq!(fs::read(&raw_parent).unwrap(), source_before);
+    let fvcom = artifact_path(&record, "model_artifacts", "fvcom_2dm");
+    assert!(fvcom.is_file());
+    assert_regional_quality_not_closed_sphere(&gridfile);
+
+    let obc = artifact_path(&record, "auxiliary_artifacts", "obc");
+    let sidecar_obc =
+        earthmesh_cli::obc_boundary_io::read_obc_order_netcdf(&obc).expect("read OBC sidecar");
+    assert!(!sidecar_obc.is_empty());
+    assert_eq!(
+        earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&gridfile).unwrap(),
+        Some(sidecar_obc)
+    );
+
+    let final_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gridfile)
+        .expect("read clean-ocean final mesh");
+    let delayed = root.join("delayed.2dm");
+    let delivered = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &gridfile, &delayed,
+    )
+    .expect("write delayed FVCOM from admitted final");
+    let fvcom_text = fs::read_to_string(&fvcom).expect("read FVCOM output");
+    assert_eq!(
+        fvcom_text
+            .lines()
+            .filter(|line| line.starts_with("E3T "))
+            .count(),
+        delivered.triangles
+    );
+    assert_eq!(
+        fvcom_text
+            .lines()
+            .filter(|line| line.starts_with("ND "))
+            .count(),
+        delivered.nodes
+    );
+    assert_eq!(
+        delivered.triangles,
+        final_mesh.m_to_w.len().saturating_sub(2),
+        "FVCOM triangle count should match the physical clean-ocean mesh"
+    );
+    assert_eq!(fs::read_to_string(&delayed).unwrap(), fvcom_text);
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&gridfile)
+        .unwrap()
+        .expect("clean-ocean metadata context");
+    assert_eq!(context.source, "test_producer");
+    assert_eq!(context.density_reference_width_km, 50.0);
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(&close).unwrap(), close_before);
+    assert_eq!(fs::read(&landtype).unwrap(), landtype_before);
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_clean_ocean_non_model_exports_keep_native_auxiliary_only() {
+    for (
+        case_suffix,
+        output_format,
+        defer_model_exports,
+        close_boundary,
+        expected_reason,
+        expected_aux,
+    ) in [
+        (
+            "fvcom_deferred",
+            "FVCOM",
+            true,
+            None,
+            "deferred",
+            vec!["raw_parent", "obc", "obcv2"],
+        ),
+        (
+            "mpas_polyline",
+            "MPAS",
+            false,
+            None,
+            "no specialized model adapter",
+            vec!["raw_parent", "obc", "obcv2"],
+        ),
+        (
+            "fvcom_enclosing_cap",
+            "FVCOM",
+            false,
+            Some("enclosing_cap:margin_km=10,max_radius_deg=80,max_segment_angle_deg=0.25"),
+            "no specialized model adapter",
+            vec!["raw_parent"],
+        ),
+    ] {
+        let root = gridinit_temp_root(&format!("binary_clean_ocean_native_only_{case_suffix}"));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp root");
+        let source = root.join("source.nc4");
+        let close = root.join("domain_close.nml");
+        let landtype = root.join("landtype.nc");
+        write_clean_ocean_source_gridfile(&source);
+        write_clean_ocean_close(&close);
+        write_landtype(&landtype, 0);
+        let case_name = format!("case_clean_ocean_{case_suffix}");
+        let namelist = write_clean_ocean_namelist_with_close_boundary(
+            &root,
+            &case_name,
+            &source,
+            &close,
+            &landtype,
+            output_format,
+            defer_model_exports,
+            close_boundary,
+        );
+
+        let output = run_gridinit_cli(&root, &namelist);
+        assert!(
+            output.status.success(),
+            "stdout={}
+stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains("fvcom_2dm="), "stdout={stdout}");
+        let gridfile = stdout_field(&stdout, "gridfile=");
+        let record = delivery_record(&gridfile);
+        assert_eq!(record["requested_output_format"], output_format);
+        assert_eq!(record["model_delivery_status"], "native_only");
+        assert!(record["model_artifacts"].as_object().unwrap().is_empty());
+        assert!(
+            record["skipped_reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains(expected_reason)),
+            "unexpected skipped_reason in {record}"
+        );
+        let auxiliary = record["auxiliary_artifacts"].as_object().unwrap();
+        assert_eq!(
+            auxiliary.len(),
+            expected_aux.len(),
+            "unexpected auxiliary artifacts: {record}"
+        );
+        for key in expected_aux {
+            assert!(
+                artifact_path(&record, "auxiliary_artifacts", key).is_file(),
+                "missing {key}"
+            );
+        }
+        assert!(
+            !root.join(&case_name).join("result/fvcom.2dm").exists(),
+            "native-only delivery must not leave a canonical FVCOM artifact"
+        );
+        assert_no_delivery_staging(&root);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn earthmesh_cli_binary_clean_ocean_failures_preserve_previous_bundle_and_retire_marker() {
+    let root = gridinit_temp_root("binary_clean_ocean_failure_rollback");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let source = root.join("source.nc4");
+    let close = root.join("domain_close.nml");
+    let landtype = root.join("landtype.nc");
+    write_clean_ocean_source_gridfile(&source);
+    write_clean_ocean_close(&close);
+    write_landtype(&landtype, 0);
+    let case_name = "case_clean_ocean_failure";
+    let namelist =
+        write_clean_ocean_namelist(&root, case_name, &source, &close, &landtype, "FVCOM", false);
+
+    let success = run_gridinit_cli(&root, &namelist);
+    assert!(
+        success.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&success.stdout),
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let gridfile = stdout_field(&String::from_utf8_lossy(&success.stdout), "gridfile=");
+    let record = delivery_record(&gridfile);
+    let raw_parent = artifact_path(&record, "auxiliary_artifacts", "raw_parent");
+    let obc = artifact_path(&record, "auxiliary_artifacts", "obc");
+    let obcv2 = artifact_path(&record, "auxiliary_artifacts", "obcv2");
+    let fvcom = artifact_path(&record, "model_artifacts", "fvcom_2dm");
+    let native_before = fs::read(&gridfile).unwrap();
+    let raw_before = fs::read(&raw_parent).unwrap();
+    let obc_before = fs::read(&obc).unwrap();
+    let obcv2_before = fs::read(&obcv2).unwrap();
+    let fvcom_before = fs::read(&fvcom).unwrap();
+    let marker = legacy_delivery_record_for(&gridfile);
+    assert!(marker.exists());
+
+    let fvcom_backup = fvcom.with_extension("2dm.bak");
+    fs::rename(&fvcom, &fvcom_backup).expect("move old FVCOM output aside");
+    fs::create_dir(&fvcom).expect("block FVCOM output with directory");
+    let sentinel = fvcom.join("sentinel.txt");
+    fs::write(&sentinel, b"keep existing directory sentinel")
+        .expect("write FVCOM blocker sentinel");
+    let blocked = run_gridinit_cli(&root, &namelist);
+    assert!(
+        !blocked.status.success(),
+        "blocked FVCOM output must fail without replacing the bundle\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&blocked.stdout),
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), native_before);
+    assert_eq!(fs::read(&raw_parent).unwrap(), raw_before);
+    assert_eq!(fs::read(&obc).unwrap(), obc_before);
+    assert_eq!(fs::read(&obcv2).unwrap(), obcv2_before);
+    assert_eq!(fs::read(&fvcom_backup).unwrap(), fvcom_before);
+    assert_eq!(
+        fs::read(&sentinel).unwrap(),
+        b"keep existing directory sentinel"
+    );
+    assert!(
+        !marker.exists(),
+        "failed FVCOM publication must retire readiness"
+    );
+    fs::remove_dir_all(&fvcom).expect("remove FVCOM blocker directory");
+    fs::rename(&fvcom_backup, &fvcom).expect("restore old FVCOM output");
+
+    assert!(run_gridinit_cli(&root, &namelist).status.success());
+    assert!(marker.exists());
+    let native_before = fs::read(&gridfile).unwrap();
+    let raw_before = fs::read(&raw_parent).unwrap();
+    let obc_before = fs::read(&obc).unwrap();
+    let obcv2_before = fs::read(&obcv2).unwrap();
+    let fvcom_before = fs::read(&fvcom).unwrap();
+
+    fs::write(
+        &close,
+        "close_num = 2\nclose_refine = 0\n112.0 20.0\n116.0 20.0\n",
+    )
+    .expect("write invalid clean-ocean close domain");
+    let invalid_close = run_gridinit_cli(&root, &namelist);
+    assert!(
+        !invalid_close.status.success(),
+        "invalid close geometry must fail without replacing the bundle\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&invalid_close.stdout),
+        String::from_utf8_lossy(&invalid_close.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), native_before);
+    assert_eq!(fs::read(&raw_parent).unwrap(), raw_before);
+    assert_eq!(fs::read(&obc).unwrap(), obc_before);
+    assert_eq!(fs::read(&obcv2).unwrap(), obcv2_before);
+    assert_eq!(fs::read(&fvcom).unwrap(), fvcom_before);
+    assert!(
+        !marker.exists(),
+        "invalid clean-ocean close geometry must retire readiness"
+    );
+    assert_no_delivery_staging(&root);
+
+    write_clean_ocean_close(&close);
+    assert!(run_gridinit_cli(&root, &namelist).status.success());
+    assert!(marker.exists());
+    let native_before = fs::read(&gridfile).unwrap();
+    let raw_before = fs::read(&raw_parent).unwrap();
+    let obc_before = fs::read(&obc).unwrap();
+    let obcv2_before = fs::read(&obcv2).unwrap();
+    let fvcom_before = fs::read(&fvcom).unwrap();
+
+    write_landtype(&landtype, 1);
+    let empty =
+        write_clean_ocean_namelist(&root, case_name, &source, &close, &landtype, "FVCOM", true);
+    let failure = run_gridinit_cli(&root, &empty);
+    assert!(
+        !failure.status.success(),
+        "all-land clean-ocean carve must fail even when FVCOM is deferred\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&failure.stdout),
+        String::from_utf8_lossy(&failure.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), native_before);
+    assert_eq!(fs::read(&raw_parent).unwrap(), raw_before);
+    assert_eq!(fs::read(&obc).unwrap(), obc_before);
+    assert_eq!(fs::read(&obcv2).unwrap(), obcv2_before);
+    assert_eq!(fs::read(&fvcom).unwrap(), fvcom_before);
+    assert!(
+        !marker.exists(),
+        "failed clean-ocean carve must retire readiness"
+    );
     assert_no_delivery_staging(&root);
 
     let _ = fs::remove_dir_all(&root);

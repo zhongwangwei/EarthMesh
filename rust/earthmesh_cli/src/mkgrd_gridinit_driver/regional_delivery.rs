@@ -1,10 +1,13 @@
-//! Final-only simple clip/carve handoff. The mother is an unchecked carrier;
+//! Final-only regional base handoff. The mother is an unchecked carrier;
 //! regional admission applies only after whole-cell extraction.
 use super::{
     carrier::{generate_gridinit_carrier, gridinit_sizes},
     global::preserve_final_workspace,
     landtype::landtype_gridnum_perdegree,
-    regional::{apply_base_clip_and_carve, base_carve_path, base_raw_parent_path},
+    regional::{
+        apply_base_clip_and_carve, base_carve_path, base_raw_parent_path,
+        clean_regional_ocean_close_points,
+    },
 };
 use crate::{project_delivery::LegacyDeliveryStage, MkgrdGridinitRunReport};
 use earthmesh_core::EarthmeshConfig;
@@ -14,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) fn run_simple_final_base(
+pub(super) fn run_final_base(
     namelist_source: &Path,
     workdir: &Path,
     max_tris: usize,
@@ -50,10 +53,32 @@ pub(super) fn run_simple_final_base(
         inputs.extend(crate::discover_mask_sources(config.mask_domain_fprefix.trim())?.files);
     }
     let inputs = inputs.iter().map(PathBuf::as_path).collect::<Vec<_>>();
-    let outputs = [&published as &Path, &raw_parent];
+    // A configured close can become a cap/union. Only the actual polygon owns
+    // the clean-ocean boundary outputs. Delay parse errors until Stage retires
+    // readiness, without letting malformed geometry overwrite prior artifacts.
+    let region = crate::read_method_c_domain_region(config);
+    let clean_ocean = clean_regional_ocean_close_points(
+        region.as_ref().ok().and_then(Option::as_ref),
+        config.mesh_type.trim(),
+        mode_grid,
+        carve_landtype,
+    )
+    .is_some();
+    let mut auxiliary = BTreeMap::from([("raw_parent", raw_parent.clone())]);
+    if clean_ocean {
+        auxiliary.insert("obc", crate::obc_boundary_output_path(&file_dir, false));
+        auxiliary.insert("obcv2", crate::obcv2_boundary_output_path(&file_dir, false));
+    }
+    let fvcom =
+        (clean_ocean && config.output_format.trim() == "FVCOM" && !config.defer_model_exports)
+            .then(|| crate::fvcom_mesh_2dm_output_path(&file_dir));
+    let outputs = std::iter::once(published.as_path())
+        .chain(auxiliary.values().map(PathBuf::as_path))
+        .chain(fvcom.as_deref())
+        .collect::<Vec<_>>();
     let stage = LegacyDeliveryStage::new(&inputs, &outputs, &quality_dir)?;
     preserve_final_workspace(&mut plan, &inputs, &outputs, workdir)?;
-    let region = crate::read_method_c_domain_region(config)?;
+    let region = region?;
     let landtype_gpd = carve_landtype
         .then(|| landtype_gridnum_perdegree(Path::new(config.landtype_file.trim())))
         .transpose()?;
@@ -79,7 +104,33 @@ pub(super) fn run_simple_final_base(
         gridfile,
         fvcom_2dm: None,
     };
-    apply_base_clip_and_carve(&mut report, region.as_ref(), landtype_gpd, private_dir)?;
+    if let Some(close_points) = clean_regional_ocean_close_points(
+        region.as_ref(),
+        config.mesh_type.trim(),
+        mode_grid,
+        carve_landtype,
+    ) {
+        let clean = crate::write_clean_regional_ocean_gridfile(
+            &report.gridfile.output,
+            close_points,
+            Path::new(config.landtype_file.trim()),
+            nxp,
+            landtype_gpd.expect("clean ocean needs landtype resolution"),
+            config.mask_sea_ratio,
+            private_dir,
+        )?;
+        report.raw_output = Some(report.gridfile.clone());
+        report.gridfile = crate::unstructured_mesh_write_report_from_file(&clean.result_gridfile)?;
+        for (key, source) in [("obc", clean.obc_output), ("obcv2", clean.obcv2_output)] {
+            let source = source.expect("clean ocean TRI plan owns both boundary files");
+            let destination = stage.path(&auxiliary[key])?;
+            if source != destination {
+                fs::copy(source, destination)?;
+            }
+        }
+    } else {
+        apply_base_clip_and_carve(&mut report, region.as_ref(), landtype_gpd, private_dir)?;
+    }
     let raw = report
         .raw_output
         .as_mut()
@@ -107,17 +158,39 @@ pub(super) fn run_simple_final_base(
         &quality_dir,
     )
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut model_artifacts = BTreeMap::new();
+    if let Some(output) = fvcom {
+        // The clean writer has finished metadata rewrites and embedded OBC.
+        // Export exactly this admitted native, never its unchecked mother.
+        let mut model = crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+            &staged,
+            &stage.path(&output)?,
+        )?;
+        model.output = output.clone();
+        model_artifacts.insert("fvcom_2dm", output);
+        report.fvcom_2dm = Some(model);
+    }
+    let skipped_reason = if !model_artifacts.is_empty() {
+        None
+    } else if config.defer_model_exports {
+        Some("Model exports deferred; native admission and auxiliary delivery still required")
+    } else {
+        Some("Native regional base and auxiliaries only; no specialized model adapter was run")
+    };
     stage.publish(
         serde_json::json!({
             "kind": "earthmesh_legacy_delivery",
             "target": {"cell": cell_kind},
-            "capability": "native_and_auxiliary",
+            "capability": if model_artifacts.is_empty() { "native_and_auxiliary" } else { "full" },
+            "requested_output_format": config.output_format,
             "source_mesh_type": config.mesh_type,
             "source_mode_grid": config.mode_grid,
-            "skipped_reason": "Native clipped/carved base only; raw_parent is unchecked ancestry, not a model adapter result",
+            "skipped_reason": skipped_reason,
         }),
-        &published, quality.verdict, &BTreeMap::new(),
-        &BTreeMap::from([("raw_parent", raw_parent.clone())]),
+        &published,
+        quality.verdict,
+        &model_artifacts,
+        &auxiliary,
     )?;
     report.gridfile.output = published;
     raw.output = raw_parent;

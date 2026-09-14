@@ -54,15 +54,8 @@ pub(crate) fn run_mkgrd_regional_clip_base(
         && !landtype.is_empty()
         && landtype != "none"
         && landtype != "/tmp";
-    // Clean ocean close+landtype owns extra OBC/FVCOM outputs. Keep its raw
-    // handoff until those sidecars share the regional final transaction too.
-    let clean_ocean_candidate = !config.mask_domain_global
-        && mesh_type == "oceanmesh"
-        && config.mode_grid.trim() == "tri"
-        && config.mask_domain_type.trim() == "close"
-        && carve_landtype;
-    if final_delivery && !config.mask_patch_on && !clean_ocean_candidate {
-        return super::regional_delivery::run_simple_final_base(
+    if final_delivery && !config.mask_patch_on {
+        return super::regional_delivery::run_final_base(
             namelist_source,
             workdir,
             max_tris,
@@ -205,7 +198,7 @@ pub(super) fn base_carve_path(
         .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"))
 }
 
-fn clean_regional_ocean_close_points<'a>(
+pub(super) fn clean_regional_ocean_close_points<'a>(
     region: Option<&'a GridRegion>,
     mesh_type: &str,
     mode_grid: &str,

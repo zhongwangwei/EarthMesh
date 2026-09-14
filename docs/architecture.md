@@ -300,10 +300,18 @@ Empty clip/carve failures preserve the prior native and mother and withdraw
 readiness. Neither native-only completion nor raw-parent ancestry implies a
 model adapter ran.
 
-This is not blanket legacy parity: standalone clean-ocean TRI close+landtype
-(with its OBC/FVCOM sidecars), refined output, patch-preprocessing base output
-and other lower-level writers still need final-delivery seams. Configured
-regional ocean TRI close+landtype remains outside this slice even when a close
-boundary transform yields a cap rather than a polygon. Do not gate intermediate
-writers to simulate coverage or use closed-sphere checks on masked/Cartesian
-products.
+Standalone clean-ocean TRI close+landtype uses the same final-base handoff and
+the existing clean boundary algorithm in private staging. Native metadata and
+embedded OBC are completed before regional admission; native, unchecked raw
+parent, OBC/OBCv2 and any requested FVCOM output publish as one rollback bundle.
+Only `output_format='FVCOM' && !defer_model_exports` runs the final-file FVCOM
+adapter and records `model_delivered`; other/deferred formats record native and
+auxiliary delivery only. Historical model files are not evidence of this
+attempt's delivery. A close boundary transformed into a cap/union uses simple
+clip/carve, without inventing clean OBC context or claiming FVCOM delivery.
+
+This is not blanket legacy parity: standalone refined output,
+patch-preprocessing base output and other lower-level writers still need
+final-delivery seams. Raw public and Project clean-ocean composition stays
+unchanged. Do not gate intermediate writers to simulate coverage or use
+closed-sphere checks on masked/Cartesian products.
