@@ -230,6 +230,30 @@ pub fn run_refine_pipeline_namelist(
             "local updates require the certified backend",
         ));
     }
+    // Check active algorithm ownership before any backend can generate output.
+    let quality = QualityNamelist::from_quality_namelist(&contents)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
+    if quality.lepp_post_quality && backend != RefineBackend::MethodC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NL%lepp_post_quality requires NL%refine_backend='method_c'",
+        ));
+    }
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay
+        && backend != RefineBackend::MethodC
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "&method_c algorithm='lepp_delaunay' requires NL%refine_backend='method_c'",
+        ));
+    }
+    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay && quality.lepp_post_quality {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "LEPP AdaptiveHybrid and LEPP post-quality cannot both own the same Method-C run",
+        ));
+    }
     if backend == RefineBackend::Certified {
         return run_certified_pipeline(
             &contents,
@@ -239,9 +263,6 @@ pub fn run_refine_pipeline_namelist(
             max_tris,
         );
     }
-    let quality = QualityNamelist::from_quality_namelist(&contents)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(&contents)?;
     let native_deltax = read_native_grid_deltax(&contents)?;
@@ -497,31 +518,6 @@ pub fn run_refine_pipeline_namelist(
         ));
     }
 
-    // Named before anything dispatches on it, because the dispatch used to end
-    // in a `_ =>` arm that ran Method-C. Measured: misspellings
-    // `redgreen` and `method-c` produced a Method-C mesh and
-    // said nothing -- a user asking for one backend and silently getting
-    // another, which is the failure class guide 11.1 records.
-    if quality.lepp_post_quality && backend != RefineBackend::MethodC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "NL%lepp_post_quality requires NL%refine_backend='method_c'",
-        ));
-    }
-    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay
-        && backend != RefineBackend::MethodC
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "&method_c algorithm='lepp_delaunay' requires NL%refine_backend='method_c'",
-        ));
-    }
-    if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay && quality.lepp_post_quality {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LEPP AdaptiveHybrid and LEPP post-quality cannot both own the same Method-C run",
-        ));
-    }
     if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay && hfield_options.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,

@@ -242,6 +242,7 @@ pub(super) fn write_refined_outputs(
             hard_center_demand,
         )?;
         let masked_mesh = read_unstructured_mesh_netcdf(&output_path)?;
+        crate::validate_published_cell_degrees(&masked_mesh, config.mode_grid.trim())?;
         let output = UnstructuredMeshWriteReport {
             output: output_path.clone(),
             sjx_points: masked_mesh.m_points.len(),
@@ -309,6 +310,8 @@ pub(super) fn write_refined_outputs(
         )?;
         let land_mesh = read_unstructured_mesh_netcdf(&land_output_path)?;
         let ocean_mesh = read_unstructured_mesh_netcdf(&ocean_output_path)?;
+        crate::validate_published_cell_degrees(&land_mesh, config.mode_grid.trim())?;
+        crate::validate_published_cell_degrees(&ocean_mesh, config.mode_grid.trim())?;
         let land_output = UnstructuredMeshWriteReport {
             output: land_output_path,
             sjx_points: land_mesh.m_points.len(),

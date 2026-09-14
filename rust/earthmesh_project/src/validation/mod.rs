@@ -60,7 +60,7 @@ impl ProjectConfig {
         }
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
-        self.validate_threshold_region()?;
+        self.validate_statistical_refinement_route()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
             && self.refinement.backend != crate::RefinementBackend::Certified
@@ -326,11 +326,8 @@ impl ProjectConfig {
         }
     }
 
-    fn validate_threshold_region(&self) -> Result<(), String> {
-        if self.refinement.threshold_region.is_none()
-            || !self.refinement.enabled
-            || !self.refinement.threshold_enabled
-        {
+    fn validate_statistical_refinement_route(&self) -> Result<(), String> {
+        if !self.refinement.enabled || !self.refinement.threshold_enabled {
             return Ok(());
         }
         if !self
@@ -338,11 +335,17 @@ impl ProjectConfig {
             .iter()
             .any(|layer| self.layer_has_threshold_criterion(layer))
         {
-            return Err(
-                "refinement.threshold_region requires an active statistical threshold criterion"
-                    .into(),
-            );
+            return if self.refinement.threshold_region.is_some() {
+                Err("refinement.threshold_region requires an active statistical threshold criterion".into())
+            } else {
+                Ok(())
+            };
         }
+        let adaptive_enabled = self
+            .refinement
+            .adaptive
+            .as_ref()
+            .is_none_or(|recipe| recipe.enabled);
         let supported = match self.refinement.backend {
             crate::RefinementBackend::Certified => true,
             crate::RefinementBackend::MethodC
@@ -352,15 +355,18 @@ impl ProjectConfig {
                     .hfield
                     .as_ref()
                     .is_some_and(|recipe| recipe.enabled)
+                    || (self.refinement.threshold_region.is_none() && adaptive_enabled)
             }
-            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => self
-                .refinement
-                .adaptive
-                .as_ref()
-                .is_none_or(|recipe| recipe.enabled),
+            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => {
+                adaptive_enabled
+            }
         };
         if !supported {
-            return Err("refinement.threshold_region requires Certified, canonical MethodC with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled".into());
+            return Err(if self.refinement.threshold_region.is_some() {
+                "refinement.threshold_region requires Certified, canonical MethodC with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled"
+            } else {
+                "statistical threshold refinement requires Certified, canonical MethodC with hfield, or adaptive enabled; disable threshold refinement for named regions only"
+            }.into());
         }
         Ok(())
     }

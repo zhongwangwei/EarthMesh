@@ -22,8 +22,8 @@ earthmesh_cli         executable orchestration and file-format adapters
     ↑
 EarthMesh Studio      Tauri adapter and static frontend
 
-rust/earthmesh_refine_redgreen   compatibility port, depends on earthmesh_mesh,
-                                    depended on by nothing above
+rust/earthmesh_refine_redgreen   retained refinement backend, depends on
+                                    earthmesh_mesh, used by earthmesh_cli
 ```
 
 Arrows indicate the normal direction toward higher-level orchestration, not a
@@ -43,18 +43,65 @@ HARP-DV was retired before this active architecture contract: `harp_dv` backend
 names and `&harp_dv` namelist sections now fail explicitly instead of falling
 back to another backend.
 
-The difference that decides which retained backend to use is what happens to a
-marking the algorithm cannot take as given. Red-green's judge chain *grows* it
-until it is legal -- every error it can return is an input-validation error,
-never a refusal of a shape. Method-C refuses: its seed lattice steps three cells
-at a time, its perimeter has to be a multiple of three, and its transition patch
-reaches two faces beyond the mask. CMRC certifies a conservative coarsening
-state and refuses changes that would violate its primal/dual/physical/balance
-contracts.
+The backends consume shared demand data through algorithm-specific adapters;
+they do not promise identical admissible markings. Red-green grows the marked
+set to close refinement seams. Canonical Method-C additionally requires its
+stride-3 lattice and supported transition patches. CMRC refuses coarsening
+changes that violate its primal/dual/physical/balance contracts. Algorithm
+success alone does not establish that the final model product is valid.
 
-Method-C buys something for that: vertex degree stays in {5, 6, 7}, which is
-what keeps the *hexagonal dual* usable. A model that consumes the triangles
-directly, as FVCOM does, is not paying for it.
+Every published HEX product must have 5, 6, or 7 edges per physical cell,
+regardless of backend. TRI products publish 3-edge triangles; their intermediate
+W-point fans are not subject to the HEX degree contract. Raw mother grids and
+intermediate representations are distinct from published physical cells.
+
+## Requirement, algorithm, scope, and delivery
+
+The production GUI / `--project` route is:
+
+```text
+Project demand and source configuration
+  -> validation and shared lowering
+  -> selected refinement backend
+  -> final domain extraction / AutoRefine / hydro selection
+  -> final physical-cell, topology, geometry and policy admission
+  -> requested model-format adapter and explicit delivery report
+```
+
+`target.kind`, domain, data/threshold sources, and model format express the
+land/atmosphere/ocean differences; they do not select separate copies of the
+refinement algorithms. Backend capability limits remain explicit:
+
+- Canonical Method-C consumes its structured route or gradient-limited HField.
+- Method-C LEPP-Delaunay and Red-Green consume supported named/adaptive demands,
+  not the canonical Method-C HField route.
+- CMRC consumes certifiable named/threshold/hydro requirements, not Project's
+  point-radius adaptive or canonical Method-C HField route. Its internal demand
+  construction may still use an HField; that is not a public route substitution.
+- Active statistical thresholds require an enabled consumer even without an
+  independent threshold region. Turning adaptive off without selecting HField
+  or CMRC is valid for named regions only, not for active statistical demands.
+  Dormant algorithm parameters remain preserved for round-trip editing.
+- Active Method-C LEPP / post-quality ownership is checked before legacy backend
+  dispatch, including CMRC; another selected backend cannot silently ignore it.
+- `quality_policy=domain_export` remains preflight-only and is rejected by
+  lowering. Existing regional extraction/export adapters are a separate feature.
+
+Only unmasked global Earth/Atmosphere Projects require one closed sphere
+(Euler characteristic 2, no boundary edges). Regional and surface-masked outputs
+have their own boundary/component semantics. CMRC's closed mother-grid
+certificate does not replace checks on an extracted region.
+
+Project model writers run after `admit_project_final_gridfile`. ICON/FVCOM
+require TRI; MPAS-family delivery requires HEX. CoLM raster delivery supports
+either cell kind but must be configured explicitly. A `native_only` delivery
+report is not a claim that a specialized model artifact was produced.
+
+Direct legacy namelist and library entrypoints retain some local output
+orchestration. Their refined publication helpers reuse the physical HEX degree
+gate, but that alone is not Project's full final admission or delivery report.
+Keep raw/intermediate writers usable; do not claim entrypoint equivalence merely
+because both paths call the same mesh algorithm.
 
 ## Canonical execution paths
 
@@ -102,9 +149,10 @@ directly, as FVCOM does, is not paying for it.
 - Project hydro levels are clamped to Method-C's supported level 5. Final-grid
   Project quality is the only Block-policy gate for hydro runs; the coarse mesh
   is not accepted or rejected as though it were the final product.
-- Hex quality consumes the authoritative `itab_w%im`/`n_ngrwm` W-cell rings and
-  orders corners in a local spherical tangent plane, so antimeridian cells are
-  part of the topology report instead of being discarded by raw longitude.
+- Candidate HEX diagnostics may order corners in a local spherical tangent
+  plane. Final Project admission instead audits the stored `itab_w%im`/`n_ngrwm`
+  rings without per-cell reordering; a single whole-mesh winding conversion is
+  allowed, but mixed winding and shared-edge defects remain visible.
 - Bbox (including antimeridian), circle, shapefile, and close domains are
   supported. Multipart domains remain multipart; hole-bearing shapefile rings
   are rejected explicitly until the domain interface carries hole topology.

@@ -1753,12 +1753,22 @@ fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
     assert!(nml.contains("&hfield"), "{nml}");
     assert!(!nml.contains("&adaptive"), "{nml}");
 
-    // Turning the adaptive route off without asking for the h-field leaves the
-    // run on the plain region path.
+    // A plain named-region route has no reader for statistical thresholds.
     p.refinement.hfield = None;
     p.refinement.adaptive = Some(AdaptiveRefinementRecipe {
         enabled: false,
         ..AdaptiveRefinementRecipe::default()
+    });
+    assert!(p
+        .try_lower()
+        .unwrap_err()
+        .contains("statistical threshold refinement"));
+    p.refinement.threshold_enabled = false;
+    p.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: 112.0,
+        e: 115.0,
+        s: 21.0,
+        n: 24.0,
     });
     let nml = p.lower().to_namelist();
     assert!(!nml.contains("&adaptive"), "{nml}");
@@ -3036,4 +3046,78 @@ fn certified_rejects_the_unsupported_adaptive_route_before_runtime() {
         .validate()
         .expect_err("CMRC cannot consume &adaptive");
     assert!(error.contains("does not consume the &adaptive"));
+}
+
+#[test]
+fn statistical_thresholds_require_a_consumer_across_targets_and_backends() {
+    for kind in [
+        MeshDomainKind::Land,
+        MeshDomainKind::Atmosphere,
+        MeshDomainKind::Ocean,
+    ] {
+        for global in [false, true] {
+            for (backend, algorithm) in [
+                (RefinementBackend::MethodC, MethodCAlgorithm::Canonical),
+                (RefinementBackend::MethodC, MethodCAlgorithm::LeppDelaunay),
+                (RefinementBackend::RedGreen, MethodCAlgorithm::Canonical),
+                (RefinementBackend::Certified, MethodCAlgorithm::Canonical),
+            ] {
+                let mut project = sample();
+                project.target.kind = kind;
+                if global {
+                    project.domain = DomainConfig::Global;
+                }
+                project.refinement.backend = backend;
+                project.refinement.method_c.algorithm = algorithm;
+                project.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+                    w: 112.0,
+                    e: 115.0,
+                    s: 21.0,
+                    n: 24.0,
+                });
+                project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+                    enabled: false,
+                    ..Default::default()
+                });
+                let context = format!("{kind:?}/{global}/{backend:?}/{algorithm:?}");
+                if backend == RefinementBackend::Certified {
+                    project
+                        .try_lower()
+                        .unwrap_or_else(|err| panic!("{context}: {err}"));
+                    continue;
+                }
+                let err = project.try_lower().expect_err(&context);
+                assert!(
+                    err.contains("statistical threshold refinement"),
+                    "{context}: {err}"
+                );
+                // Named demand must not hide an unconsumed statistical demand.
+                project.refinement.threshold_enabled = false;
+                project
+                    .try_lower()
+                    .unwrap_or_else(|err| panic!("named only {context}: {err}"));
+                project.refinement.threshold_enabled = true;
+                project.refinement.enabled = false;
+                project
+                    .validate()
+                    .unwrap_or_else(|err| panic!("disabled {context}: {err}"));
+                project.refinement.enabled = true;
+                project.refinement.adaptive = None;
+                project
+                    .try_lower()
+                    .unwrap_or_else(|err| panic!("adaptive {context}: {err}"));
+                if backend == RefinementBackend::MethodC && algorithm == MethodCAlgorithm::Canonical
+                {
+                    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+                        enabled: false,
+                        ..Default::default()
+                    });
+                    project.refinement.hfield = Some(HfieldRefinementRecipe::default());
+                    project
+                        .try_lower()
+                        .unwrap_or_else(|err| panic!("HField {context}: {err}"));
+                }
+            }
+        }
+    }
 }

@@ -1610,3 +1610,42 @@ fn unsupported_mother_family_rejects_before_reading_threshold_data() {
     );
     assert!(!root.join("unsupported_before_thresholds/result").exists());
 }
+
+#[test]
+fn non_method_c_backends_reject_active_lepp_owners_before_generation() {
+    for backend in ["certified", "red_green"] {
+        for (owner, section) in [
+            (
+                "adaptive_hybrid",
+                "&method_c\n NL%algorithm='lepp_delaunay'\n/\n",
+            ),
+            (
+                "post_quality",
+                "&quality\n NL%lepp_post_quality=.true.\n/\n",
+            ),
+        ] {
+            let case = format!("wrong_owner_{backend}_{owner}");
+            let root = temp_root(&case);
+            let path = root.join("input.nml");
+            let input = namelist(&root, &case, 1, 1_000).replace(
+                "NL%refine_backend='certified'",
+                &format!("NL%refine_backend='{backend}'"),
+            );
+            fs::write(&path, format!("{input}{section}")).unwrap();
+            let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 10_000, None)
+                .expect_err("active LEPP cannot be silently ignored by another backend");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires NL%refine_backend='method_c'"),
+                "{case}: {error}"
+            );
+            assert_eq!(
+                fs::read_dir(&root).unwrap().count(),
+                1,
+                "{case}: reject before workspace/grid generation"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+}
