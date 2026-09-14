@@ -313,7 +313,12 @@ fn prepare_project_close_sources(
             }
         }
     }
-    if let Some(close) = &project.refinement.specified_close {
+    if let Some(close) = project
+        .refinement
+        .specified_close
+        .as_ref()
+        .filter(|_| project.refinement.enabled)
+    {
         let source = resolve(&close.path);
         let extension = source
             .extension()
@@ -339,7 +344,12 @@ fn prepare_project_close_sources(
             lowered.refine.mask_refine_spc_fprefix =
                 dir.join("specified_close_").to_string_lossy().into_owned();
         } else {
-            lowered.refine.mask_refine_spc_fprefix = source.to_string_lossy().into_owned();
+            // Native hard-demand files keep their stored levels and precision;
+            // a concrete Project path must not expand to same-prefix siblings.
+            let staged = ensure_stage_dir()?.join(format!("specified_close_001.{extension}"));
+            fs::copy(&source, &staged)
+                .map_err(|err| format!("stage specified close {}: {err}", source.display()))?;
+            lowered.refine.mask_refine_spc_fprefix = staged.to_string_lossy().into_owned();
         }
     }
     Ok(())
@@ -1041,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn project_native_close_domain_stages_exact_bytes_without_prefix_siblings() {
+    fn project_native_close_sources_stage_exact_bytes_without_prefix_siblings() {
         use earthmesh_cli::circle_close_mask_io::{parse_close_mask_nml, write_close_mask_netcdf};
         let root = std::env::temp_dir().join(format!(
             "earthmesh_project_exact_domain_{}_{}",
@@ -1052,16 +1062,20 @@ mod tests {
         write_close_mask_nml(
             &root.join("domain.nml"),
             &[(100., 10.), (102., 10.), (102., 12.), (100., 12.)],
-            0,
+            1,
         )
         .unwrap();
         let mask = parse_close_mask_nml(root.join("domain.nml"), usize::MAX)
             .unwrap()
             .unwrap();
         write_close_mask_netcdf(root.join("domain.nc"), &mask).unwrap();
+        fs::copy(root.join("domain.nc"), root.join("domain_alt.nc4")).unwrap();
+        fs::copy(root.join("domain.nml"), root.join("domain_upper.NML")).unwrap();
         for (name, format) in [
             ("domain.nml", CloseMaskFormat::Nml),
             ("domain.nc", CloseMaskFormat::Netcdf),
+            ("domain_alt.nc4", CloseMaskFormat::Netcdf),
+            ("domain_upper.NML", CloseMaskFormat::Nml),
         ] {
             let source = root.join(name);
             let bytes = fs::read(&source).unwrap();
@@ -1080,43 +1094,139 @@ mod tests {
                     .len(),
                 3
             );
-            let mut project = ProjectConfig::scaffold(
-                "exact_domain",
-                MeshIntentPreset::Custom,
-                DomainConfig::Regional {
-                    shape: RegionShape::Close {
-                        path: name.into(),
-                        format,
-                        boundary: CloseBoundaryMode::Polyline,
+            for specified in [false, true] {
+                let mut project = ProjectConfig::scaffold(
+                    "exact_domain",
+                    MeshIntentPreset::Custom,
+                    DomainConfig::Regional {
+                        shape: RegionShape::Close {
+                            path: name.into(),
+                            format,
+                            boundary: CloseBoundaryMode::Polyline,
+                        },
+                        sea_ratio: None,
                     },
-                    sea_ratio: None,
-                },
-                ResolutionSpec::Nxp(6),
-            );
-            project.target.kind = earthmesh_project::MeshDomainKind::Earth;
-            project.refinement.enabled = false;
-            let mut lowered = project.try_lower().unwrap();
-            let stage_dir = root.join(format!("stage_{name}"));
-            prepare_project_close_sources(
-                &project,
-                &root.join("project.yaml"),
-                &stage_dir,
-                &mut lowered,
-            )
-            .unwrap();
-            let staged = PathBuf::from(&lowered.mkgrd.mask_domain_fprefix);
-            assert!(stage_dir.is_dir(), "native domain must have private inputs");
-            assert!(staged.starts_with(fs::canonicalize(&stage_dir).unwrap()));
-            assert_ne!(staged, source);
-            assert_eq!(fs::read(&staged).unwrap(), bytes);
-            assert_eq!(
-                earthmesh_cli::mask_source_discovery::discover_mask_sources(&staged)
-                    .unwrap()
-                    .files,
-                [staged]
-            );
+                    ResolutionSpec::Nxp(6),
+                );
+                project.target.kind = earthmesh_project::MeshDomainKind::Earth;
+                project.refinement.enabled = false;
+                if specified {
+                    project.domain = DomainConfig::Global;
+                    project.refinement.enabled = true;
+                    project.refinement.backend = earthmesh_project::RefinementBackend::RedGreen;
+                    project.refinement.max_passes = 2;
+                    project.refinement.specified_close = Some(SpecifiedCloseRefinement {
+                        path: name.into(),
+                        boundary: CloseBoundaryMode::SphericalChaikin {
+                            iterations: 1,
+                            max_segment_angle_deg: 0.5,
+                        },
+                    });
+                }
+                let mut lowered = project.try_lower().unwrap();
+                let boundary = lowered.refine.mask_refine_spc_close_boundary.clone();
+                let stage_dir = root.join(format!("stage_{name}_{specified}"));
+                prepare_project_close_sources(
+                    &project,
+                    &root.join("project.yaml"),
+                    &stage_dir,
+                    &mut lowered,
+                )
+                .unwrap();
+                let staged = PathBuf::from(if specified {
+                    &lowered.refine.mask_refine_spc_fprefix
+                } else {
+                    &lowered.mkgrd.mask_domain_fprefix
+                });
+                assert_eq!(lowered.refine.mask_refine_spc_close_boundary, boundary);
+                assert!(stage_dir.is_dir(), "native source must have private inputs");
+                assert!(staged.starts_with(fs::canonicalize(&stage_dir).unwrap()));
+                assert_ne!(staged, source);
+                assert_eq!(fs::read(&staged).unwrap(), bytes);
+                assert_eq!(
+                    earthmesh_cli::mask_source_discovery::discover_mask_sources(&staged)
+                        .unwrap()
+                        .files,
+                    [staged]
+                );
+            }
             assert_eq!(fs::read(&source).unwrap(), bytes);
             assert_eq!(fs::read(&sibling).unwrap(), b"unrelated backup");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_specified_close_missing_exact_source_does_not_expand_siblings() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_project_missing_specified_{}_{}",
+            std::process::id(),
+            PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let sibling = root.join("missing.nml.other.nml");
+        fs::write(&sibling, b"unrequested sibling").unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "missing_specified",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(6),
+        );
+        project.target.kind = earthmesh_project::MeshDomainKind::Earth;
+        project.data_layers.clear();
+        project.refinement.enabled = true;
+        project.refinement.max_passes = 1;
+        project.refinement.specified_close = Some(SpecifiedCloseRefinement {
+            path: "missing.nml".into(),
+            boundary: CloseBoundaryMode::Polyline,
+        });
+        let before = fs::read_dir(&root).unwrap().count();
+        let error = compile_project_spec(&ProjectRunSpec {
+            path: root.join("project.yaml"),
+            config: project,
+        })
+        .unwrap_err();
+        assert!(error.contains("stage specified close"), "{error}");
+        assert!(error.contains("missing.nml"), "{error}");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), before);
+        assert_eq!(fs::read(sibling).unwrap(), b"unrequested sibling");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_disabled_specified_close_does_not_read_or_stage_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_project_dormant_specified_{}_{}",
+            std::process::id(),
+            PROJECT_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let mut project = ProjectConfig::scaffold(
+            "dormant_specified",
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(6),
+        );
+        project.target.kind = earthmesh_project::MeshDomainKind::Earth;
+        project.data_layers.clear();
+        project.refinement.enabled = false;
+        for extension in ["nml", "nc", "nc4", "txt", "csv", "shp"] {
+            let source = format!("missing.{extension}");
+            project.refinement.specified_close = Some(SpecifiedCloseRefinement {
+                path: source.clone(),
+                boundary: CloseBoundaryMode::Polyline,
+            });
+            let nml = compile_project_spec(&ProjectRunSpec {
+                path: root.join("project.yaml"),
+                config: project.clone(),
+            })
+            .unwrap();
+            let text = fs::read_to_string(&nml).unwrap();
+            let config = earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&text).unwrap();
+            assert!(!config.refine);
+            let run = Path::new(&nml).parent().unwrap();
+            assert!(!run.join("inputs").exists());
+            fs::remove_dir_all(run).unwrap();
         }
         fs::remove_dir_all(root).unwrap();
     }

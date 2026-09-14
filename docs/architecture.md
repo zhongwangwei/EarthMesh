@@ -96,9 +96,9 @@ refinement algorithms. Backend capability limits remain explicit:
   and a close-polygon source without EnclosingCap; regional Coupled is not
   implemented by this backend. The model format is not the deciding factor.
   Source-dependent ocean multipart restrictions are checked during Project
-  compilation, before launching the algorithm. Native Project close-domain
-  NML/NetCDF files are staged exactly, for every backend, rather than discovering
-  unrelated same-prefix siblings. Raw NML keeps its prefix semantics.
+  compilation, before launching the algorithm. Active CMRC `delivery=tri/hex`
+  must match `target.cell`; `delivery=coupled` allows either physical cell view
+  and is distinct from the land/ocean `target.kind=Coupled` setting.
   Inactive CMRC settings remain
   editable; these restrictions do not apply to base-only or other backend runs.
   The raw NML runtime guard remains in place after actual region loading.
@@ -112,6 +112,14 @@ refinement algorithms. Backend capability limits remain explicit:
   dispatch, including CMRC; another selected backend cannot silently ignore it.
 - `quality_policy=domain_export` remains preflight-only and is rejected by
   lowering. Existing regional extraction/export adapters are a separate feature.
+
+Project native close-domain, active `specified_close` and threshold-region
+imports name exact files, not legacy prefixes. All backends use run-owned copies
+that exclude unrelated same-prefix siblings. Native hard-demand imports retain
+their stored levels and boundary settings; staging does not rewrite the level to
+Project `max_passes`. Disabled specified refinement retains its configuration
+without reading or staging its source files. Text/shapefile multipart conversion
+and standalone NML prefix semantics remain unchanged.
 
 Only unmasked global Earth/Atmosphere Projects require one closed sphere
 (Euler characteristic 2, no boundary edges). Regional and surface-masked outputs

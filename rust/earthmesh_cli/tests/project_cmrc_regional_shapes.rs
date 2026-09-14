@@ -10,7 +10,8 @@ use earthmesh_project::{
     CertifiedDeliveryMode, CertifiedMode, CloseBoundaryMode, CloseMaskFormat,
     ColmMeshDeliveryConfig, DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset,
     ModelFormat, ProjectConfig, ProjectDataLayer, ProjectDeliveryConfig, ProjectLayerRole,
-    RefinementBackend, RegionShape, ResolutionSpec, SpecifiedBboxRefinement, ViolationPolicy,
+    RefinementBackend, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
+    SpecifiedCloseRefinement, ViolationPolicy,
 };
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -686,6 +687,74 @@ fn project_cmrc_unmasked_regional_shapes_deliver_model_artifacts() {
             );
         }
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_specified_close_uses_exact_file_not_same_prefix_siblings() {
+    let root = temp_root("specified_close_exact_source");
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("specified_close.nml");
+    fs::write(
+        &source,
+        "close_num = 4\nclose_refine = 1\n100 0\n115 0\n115 20\n100 20\n",
+    )
+    .unwrap();
+    let valid_sibling = root.join("specified_close.nml.second.nml");
+    fs::write(
+        &valid_sibling,
+        "close_num = 4\nclose_refine = 2\n145 30\n160 30\n160 50\n145 50\n",
+    )
+    .unwrap();
+    let junk_sibling = root.join("specified_close.nml.extra");
+    fs::write(&junk_sibling, b"unrequested backup").unwrap();
+    let source_before = fs::read(&source).unwrap();
+    let valid_sibling_before = fs::read(&valid_sibling).unwrap();
+    let junk_sibling_before = fs::read(&junk_sibling).unwrap();
+    let mut p = project(
+        &root,
+        "bbox",
+        MeshDomainKind::Atmosphere,
+        MeshCellKind::Hex,
+        ModelFormat::Mpas,
+        None,
+        None,
+    );
+    p.domain = DomainConfig::Global;
+    p.refinement.specified_bbox = None;
+    p.refinement.specified_close = Some(SpecifiedCloseRefinement {
+        path: source.display().to_string(),
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    p.refinement.certified.delivery = CertifiedDeliveryMode::Hex;
+    let output = run_project(&root, &p);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(&valid_sibling).unwrap(), valid_sibling_before);
+    assert_eq!(fs::read(&junk_sibling).unwrap(), junk_sibling_before);
+    let run_dir = project_run_dirs(&root).pop().expect("project run dir");
+    let staged = run_dir.join("inputs/specified_close_001.nml");
+    assert_eq!(fs::read(&staged).unwrap(), source_before);
+    let report = read_json(&stdout_path(&stdout, "project_delivery_report="));
+    assert_eq!(report["model_delivery_status"], "model_delivered");
+    let quality = quality_report(&report);
+    assert_eq!(quality["verdict"], "pass");
+    assert_eq!(quality["topology"]["euler_characteristic"], 2);
+    assert_eq!(quality["topology"]["expected_euler_characteristic"], 2);
+    assert_eq!(quality["topology"]["boundary_edge_count"], 0);
+    let mesh = PathBuf::from(
+        report["model_artifacts"]["mpas_mesh_input"]
+            .as_str()
+            .unwrap(),
+    );
+    let graph = PathBuf::from(
+        report["model_artifacts"]["mpas_graph_info"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_graph(&graph, &mesh);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -3218,6 +3218,50 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
 }
 
 #[test]
+fn certified_delivery_must_match_target_cell_when_backend_is_selected() {
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.target.kind = MeshDomainKind::Earth;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.backend = crate::RefinementBackend::Certified;
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Tri;
+    let error = yaml_err(&project);
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Hex;
+    yaml_round_trip(&project);
+
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Fvcom;
+    let error = yaml_err(&project);
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Coupled;
+    yaml_round_trip(&project);
+
+    project.refinement.enabled = false;
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Hex;
+    yaml_round_trip(&project);
+    assert!(!project
+        .try_lower()
+        .expect("inactive CMRC recipe lowers")
+        .to_namelist()
+        .contains("&certified"));
+
+    project.refinement.backend = crate::RefinementBackend::MethodC;
+    project.refinement.enabled = true;
+    yaml_round_trip(&project);
+}
+
+#[test]
 fn certified_rejects_the_unsupported_adaptive_route_before_runtime() {
     let mut project = sample();
     project.refinement.backend = crate::RefinementBackend::Certified;

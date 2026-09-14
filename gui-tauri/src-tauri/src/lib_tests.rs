@@ -4084,6 +4084,88 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.certified_search_budget, 12_000);
 }
 
+#[test]
+fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
+    let base = circle_project("CMRC delivery cell guard")
+        .to_yaml()
+        .expect("yaml");
+    let inactive =
+        crate::project_edits::set_refinement_backend(base.clone(), "certified".to_string())
+            .expect("CMRC backend");
+    let inactive_tri = crate::project_edits::set_certified_options(
+        inactive,
+        "reverse_coarsening".to_string(),
+        "tri".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect("inactive CMRC recipe remains editable and dormant");
+    let dormant = ProjectConfig::from_yaml(&inactive_tri).expect("inactive certified yaml");
+    assert_eq!(
+        dormant.refinement.certified.delivery,
+        earthmesh_project::CertifiedDeliveryMode::Tri
+    );
+
+    let active = set_specified_refinement(
+        base,
+        true,
+        Some("radius".to_string()),
+        Some(113.0),
+        Some(22.5),
+        Some(100.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("specified refinement");
+    let active = set_refinement(active, true, false, 3).expect("enable refinement");
+    let active = crate::project_edits::set_refinement_backend(active, "certified".to_string())
+        .expect("active CMRC backend");
+    let error = crate::project_edits::set_certified_options(
+        active.clone(),
+        "reverse_coarsening".to_string(),
+        "tri".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect_err("TRI delivery does not match the HEX target");
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+    let original = ProjectConfig::from_yaml(&active).expect("original certified yaml");
+    assert_eq!(
+        original.refinement.certified.delivery,
+        earthmesh_project::CertifiedDeliveryMode::Coupled
+    );
+
+    let hex_delivery = crate::project_edits::set_certified_options(
+        active,
+        "reverse_coarsening".to_string(),
+        "hex".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect("HEX delivery matches the HEX target");
+    let error = crate::project_edits::set_target_cell(hex_delivery, "tri".to_string())
+        .expect_err("switching the target cell would make CMRC delivery stale");
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+}
+
 fn active_ocean_project_yaml(name: &str) -> String {
     let yaml = preset_yaml(name, MeshIntentPreset::CoastalOcean);
     let yaml = set_project_target(yaml, "ocean".to_string(), "fvcom".to_string())

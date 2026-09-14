@@ -61,6 +61,7 @@ impl ProjectConfig {
         }
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
+        self.validate_certified_delivery_matches_target_cell()?;
         self.validate_statistical_refinement_route()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
@@ -123,6 +124,19 @@ impl ProjectConfig {
             }
         }
         Ok(())
+    }
+
+    fn validate_certified_delivery_matches_target_cell(&self) -> Result<(), String> {
+        if !self.refinement.enabled || self.refinement.backend != RefinementBackend::Certified {
+            return Ok(());
+        }
+        match (self.refinement.certified.delivery, self.target.cell) {
+            (crate::CertifiedDeliveryMode::Tri, MeshCellKind::Hex)
+            | (crate::CertifiedDeliveryMode::Hex, MeshCellKind::Tri) => {
+                Err("CMRC delivery must match target.cell unless delivery=coupled".to_string())
+            }
+            _ => Ok(()),
+        }
     }
 
     fn validate_certified_regional_admission(&self) -> Result<(), String> {
