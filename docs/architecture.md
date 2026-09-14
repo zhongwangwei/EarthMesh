@@ -78,11 +78,16 @@ refinement algorithms. Backend capability limits remain explicit:
 - CMRC consumes certifiable named/threshold/hydro requirements, not Project's
   point-radius adaptive or canonical Method-C HField route. Its internal demand
   construction may still use an HField; that is not a public route substitution.
-  Regional land publication accepts a single bbox/circle/close region for TRI
-  or HEX, using the existing whole-cell selector and land mask after CMRC.
+  Regional Earth/atmosphere/land publication accepts a single bbox/circle/close
+  region for TRI or HEX, using the same whole-cell selector after CMRC. The
+  publication stage requires landtype data only for surface-masked land/ocean
+  targets; unmasked regional Earth/atmosphere publication applies no land mask
+  (refinement data requirements remain independent). TRI retains its centre and
+  all vertices inside the region; HEX retains whole cells by centre.
   Regional ocean publication remains TRI + a single close polygon with the
-  existing clean-ocean boundary path. Regional Earth/atmosphere and multi-region
-  CMRC publication are not enabled by the land-shape extension.
+  existing clean-ocean boundary path. Multi-region CMRC publication is not enabled.
+  Regional products retain the closed parent and scope remap/certification to it;
+  only HEX may claim a certified dual-cell subset, while TRI claims a face subset.
 - Active statistical thresholds require an enabled consumer even without an
   independent threshold region. Turning adaptive off without selecting HField
   or CMRC is valid for named regions only, not for active statistical demands.
@@ -101,6 +106,8 @@ Project model writers run after `admit_project_final_gridfile`. ICON/FVCOM
 require TRI; MPAS-family delivery requires HEX. CoLM raster delivery supports
 either cell kind but must be configured explicitly. A `native_only` delivery
 report is not a claim that a specialized model artifact was produced.
+Regional MPAS/ICON mesh delivery does not supply atmospheric boundary forcing or
+validate a model solver run.
 
 Direct legacy namelist and library entrypoints retain some local output
 orchestration. Their refined publication helpers reuse the physical HEX degree

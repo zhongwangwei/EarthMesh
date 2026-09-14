@@ -1,4 +1,4 @@
-//! Whole certified Voronoi cells, selected by regional and land-type centres.
+//! Whole certified Voronoi cells, selected by region with an optional land mask.
 //! Regional W rings have open boundaries; their partial M view is not a triangle mesh.
 use super::global_source::CertifiedDomainPublication;
 use crate::grid_quality_inputs::quality_input_from_gridfile_hex_native;
@@ -13,36 +13,48 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-pub(super) fn publish_regional_land(
+pub(super) fn publish_regional_hex(
     source: &Path,
     output: &Path,
-    landtype: &Path,
-    gridnum_perdegree: usize,
+    landtype: Option<(&Path, usize)>,
     region: &GridRegion,
     workdir: &Path,
 ) -> io::Result<CertifiedDomainPublication> {
     fs::create_dir_all(workdir)?;
-    let regional = workdir.join("whole_regional_dual.nc4");
-    crate::regional_gridfile_writers::write_regional_gridfile(source, &regional, region, "hex")?;
-    let kept_cells = crate::regional_gridfile_writers::write_landtype_masked_gridfile(
-        &regional,
-        output,
-        landtype,
-        gridnum_perdegree,
-        "hex",
-        "landmesh",
+    let regional = if landtype.is_some() {
+        workdir.join("whole_regional_dual.nc4")
+    } else {
+        output.to_path_buf()
+    };
+    let selected = crate::regional_gridfile_writers::write_regional_gridfile(
+        source, &regional, region, "hex",
     )?;
+    let kept_cells = if let Some((landtype, gridnum_perdegree)) = landtype {
+        crate::regional_gridfile_writers::write_landtype_masked_gridfile(
+            &regional,
+            output,
+            landtype,
+            gridnum_perdegree,
+            "hex",
+            "landmesh",
+        )?
+    } else {
+        selected
+    };
     let grid = crate::read_gridfile_mesh_points(output)?;
     let input = quality_input_from_gridfile_hex_native(&grid)?;
     for row in gridfile_w_row_layout(&grid).first_physical_row..grid.w_lon.len() {
         if !region.contains(grid.w_lon[row], grid.w_lat[row]) {
             return Err(invalid(
-                "CMRC published land cell centre lies outside the region",
+                "CMRC published regional cell centre lies outside the region",
             ));
         }
     }
     verify_whole_cell_lineage(source, output, &grid)?;
-    let (topology, quality_topology, mut geometry) = audit_land_dual(&input)?;
+    let (mut topology, quality_topology, mut geometry) = audit_regional_dual(&input)?;
+    if landtype.is_some() {
+        topology["component_policy"] = "preserve_all_land_components".into();
+    }
     geometry["whole_cell_lineage_verified"] = true.into();
     let shape = match region {
         GridRegion::Bbox { .. } => "bbox",
@@ -50,7 +62,12 @@ pub(super) fn publish_regional_land(
         GridRegion::Close { .. } => "close_polygon",
         GridRegion::Any(_) => "region_union",
     };
-    geometry["selection"] = format!("whole_cells_with_centres_inside_{shape}_and_IGBP_land").into();
+    let mask = if landtype.is_some() {
+        "_and_IGBP_land"
+    } else {
+        ""
+    };
+    geometry["selection"] = format!("whole_cells_with_centres_inside_{shape}{mask}").into();
     geometry["boundary_clipping"] = false.into();
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output)?,
@@ -62,16 +79,16 @@ pub(super) fn publish_regional_land(
     })
 }
 
-type LandAudit = (
+type RegionalAudit = (
     serde_json::Value,
     (usize, Vec<serde_json::Value>),
     serde_json::Value,
 );
 
-fn audit_land_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<LandAudit> {
+fn audit_regional_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<RegionalAudit> {
     let mut issues = MeshTopologyValidator::new(input).validate_all();
     for issue in &mut issues {
-        // Land islands, including one-cell islands, are valid separate components.
+        // Regional islands, including one-cell islands, are valid separate components.
         // Retain their diagnostics; never suppress winding or manifold failures.
         if matches!(
             issue.issue_type,
@@ -87,7 +104,7 @@ fn audit_land_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<La
         .collect::<Vec<_>>();
     if !hard.is_empty() {
         return Err(invalid(format!(
-            "CMRC published land dual topology failed: {}",
+            "CMRC published regional dual topology failed: {}",
             hard.join("; ")
         )));
     }
@@ -96,7 +113,7 @@ fn audit_land_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<La
     let expected = topology::genus_zero_euler_expectation(input, &boundary);
     if expected != Some(euler) {
         return Err(invalid(
-            "CMRC published land dual has no valid regional Euler certificate",
+            "CMRC published regional dual has no valid regional Euler certificate",
         ));
     }
     let g = earthmesh_quality::compute(input, &Default::default()).geometry;
@@ -110,7 +127,7 @@ fn audit_land_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<La
         || !g.max_angle_deg.is_finite()
     {
         return Err(invalid(
-            "CMRC published land dual geometry failed native-ring validation",
+            "CMRC published regional dual geometry failed native-ring validation",
         ));
     }
     Ok((
@@ -118,7 +135,7 @@ fn audit_land_dual(input: &earthmesh_quality::QualityMeshInput) -> io::Result<La
             "cell_view": "hex", "boundary_loops": boundary.loops.len(),
             "boundary_vertex_degree_violations": boundary.invalid_vertex_degrees.len(),
             "euler": euler, "expected_euler": expected, "violations": [],
-            "component_policy": "preserve_all_land_components",
+            "component_policy": "preserve_all_regional_components",
         }),
         (topology::connected_component_count(input), issues.iter().map(|issue| serde_json::json!({
             "type": issue.issue_type.as_str(), "severity": issue.severity.as_str(), "message": issue.message,
@@ -150,7 +167,7 @@ mod tests {
         assert!(!same_cycle(&[], &[]));
     }
     #[test]
-    fn land_audit_preserves_islands_but_rejects_winding_and_vertex_contacts() {
+    fn regional_audit_preserves_islands_but_rejects_winding_and_vertex_contacts() {
         use earthmesh_geometry::Point;
         use earthmesh_quality::{QualityCell, QualityMeshInput};
         let mut input = QualityMeshInput {
@@ -169,7 +186,7 @@ mod tests {
                 neighbors: Vec::new(),
             });
         }
-        let (topology, (components, issues), _) = audit_land_dual(&input).unwrap();
+        let (topology, (components, issues), _) = audit_regional_dual(&input).unwrap();
         assert_eq!(components, 3);
         assert_eq!(topology["boundary_loops"], 3);
         assert_eq!(topology["euler"], 3);
@@ -177,13 +194,13 @@ mod tests {
         assert!(issues.iter().any(|issue| issue["type"] == "orphan_cell"));
         assert!(issues.iter().all(|issue| issue["severity"] == "warn"));
         input.cells[0].vertices.reverse();
-        assert!(audit_land_dual(&input)
+        assert!(audit_regional_dual(&input)
             .unwrap_err()
             .to_string()
             .contains("geometry"));
         input.cells[0].vertices.reverse();
         input.cells[1].vertices[0] = input.cells[0].vertices[0];
-        assert!(audit_land_dual(&input)
+        assert!(audit_regional_dual(&input)
             .unwrap_err()
             .to_string()
             .contains("topology"));

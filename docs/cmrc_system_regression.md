@@ -17,7 +17,7 @@
 | CMRC | 在全球母网格上进行受约束粗化 | NXP 必须属于已验证的母网格层级族；不按案例名称准入 |
 | 全球大气交付 | `publish_certified_atmos_mpas` | 闭球面拓扑、MPAS 几何/度量/密度与 graph 一致性 |
 | 区域海洋交付 | `publish_certified_domain_gridfile` | 全球粗化后取区域三角形，另查区域边界和 FVCOM 输出 |
-| 区域陆面交付 | `cmrc_land::publish_regional_land` | 全球粗化后取完整对偶单元，另查多边形拓扑、绕序和血缘 |
+| 区域陆面交付 | `cmrc_region::publish_regional_hex`（启用陆面掩膜） | 全球粗化后取完整对偶单元，另查多边形拓扑、绕序和血缘 |
 
 全球母网格认证不自动覆盖区域交付。区域输出没有闭球面 Euler=2 要求；
 三角形的 38–82° 窗口也不能直接施加到六边形内角。

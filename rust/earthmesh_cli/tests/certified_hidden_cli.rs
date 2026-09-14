@@ -144,7 +144,7 @@ fn assert_regional_triangles_are_whole_global_subset(
     assert_eq!(checked, regional.m_to_w.len() - first_m);
 }
 
-const CMRC_REGIONAL_SUPPORT_ERROR: &str = "CMRC regional publication supports landmesh/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only";
+const CMRC_REGIONAL_SUPPORT_ERROR: &str = "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only";
 
 fn regional_land_namelist(
     root: &std::path::Path,
@@ -163,6 +163,44 @@ fn regional_land_namelist(
         .replace(
             "NL%landtype_file='none'",
             &format!("NL%landtype_file='{}'", landtype.display()),
+        )
+        .replace(
+            "NL%mask_domain_global=.true.",
+            &format!(
+                "NL%mask_domain_global=.false.\n  NL%mask_domain_type='{domain_kind}'\n  NL%mask_domain_fprefix='{domain_source}'"
+            ),
+        )
+}
+
+fn regional_unmasked_namelist(
+    root: &std::path::Path,
+    case: &str,
+    mesh_type: &str,
+    mode_grid: &str,
+    output_format: &str,
+    domain_kind: &str,
+    domain_source: &str,
+) -> String {
+    namelist(root, case, 6, 1_000)
+        .replace(
+            "NL%mesh_type='earthmesh'",
+            &format!("NL%mesh_type='{mesh_type}'"),
+        )
+        .replace(
+            "NL%mode_grid='hex'",
+            &format!("NL%mode_grid='{mode_grid}'"),
+        )
+        .replace(
+            "NL%output_format='CoLM'",
+            &format!("NL%output_format='{output_format}'"),
+        )
+        .replace(
+            "NL%delivery='coupled'",
+            if mode_grid == "tri" {
+                "NL%delivery='tri'"
+            } else {
+                "NL%delivery='hex'"
+            },
         )
         .replace(
             "NL%mask_domain_global=.true.",
@@ -275,12 +313,110 @@ fn assert_point_in_inline_domain(lon: f64, lat: f64, domain_kind: &str, domain_s
             let distance_km = 2.0 * 6371.0 * a.sqrt().asin();
             distance_km <= radius_km + 1.0e-9
         }
+        "close" => {
+            let values = fs::read_to_string(domain_source)
+                .unwrap()
+                .lines()
+                .filter_map(|line| {
+                    let parts = line
+                        .split_whitespace()
+                        .filter_map(|part| part.parse::<f64>().ok())
+                        .collect::<Vec<_>>();
+                    if parts.len() == 2 {
+                        Some((parts[0], parts[1]))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            let (west, east) = values
+                .iter()
+                .map(|(lon, _)| *lon)
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), lon| {
+                    (min.min(lon), max.max(lon))
+                });
+            let (south, north) = values
+                .iter()
+                .map(|(_, lat)| *lat)
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), lat| {
+                    (min.min(lat), max.max(lat))
+                });
+            lon >= west && lon <= east && lat >= south && lat <= north + 5.0
+        }
         other => panic!("unsupported inline domain kind {other}"),
     };
     assert!(
         inside,
         "published point ({lon}, {lat}) outside {domain_source}"
     );
+}
+
+fn same_cycle_i64(left: &[i64], right: &[i64]) -> bool {
+    left.len() == right.len()
+        && !left.is_empty()
+        && (0..right.len()).any(|offset| {
+            left.iter()
+                .enumerate()
+                .all(|(index, value)| *value == right[(index + offset) % right.len()])
+        })
+}
+
+fn assert_regional_hex_cells_are_whole_global_subset(
+    regional: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+    lineages: &earthmesh_cli::unstructured_mesh_support::MethodCGridfileLineages,
+    global: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+) {
+    let global_m_two = has_two_placeholders(&global.m_points);
+    let global_w_two = has_two_placeholders(&global.w_points);
+    let regional_m_two = has_two_placeholders(&regional.m_points);
+    let first_w = if has_two_placeholders(&regional.w_points) {
+        2
+    } else {
+        1
+    };
+    assert_eq!(lineages.m.len(), regional.m_points.len());
+    assert_eq!(lineages.w.len(), regional.w_points.len());
+    let mut checked = 0usize;
+    for (w_row, corners) in regional.w_to_m.iter().enumerate().skip(first_w) {
+        let n = usize::try_from(regional.n_w_to_m[w_row]).unwrap();
+        if n == 0 {
+            continue;
+        }
+        let source_w_id = lineages.w[w_row];
+        assert!(source_w_id >= 2, "physical hex {w_row} lost its lineage");
+        let global_w_row = row_for_canonical_id(source_w_id, global.w_points.len(), global_w_two)
+            .expect("every physical hex has a valid global source");
+        assert_eq!(regional.w_points[w_row], global.w_points[global_w_row]);
+        let mapped_corners = corners
+            .iter()
+            .take(n)
+            .map(|&m_id| {
+                let row =
+                    row_for_canonical_id(m_id as i64, regional.m_points.len(), regional_m_two)
+                        .expect("regional M row");
+                assert!(
+                    lineages.m[row] >= 2,
+                    "physical corner {row} lost its lineage"
+                );
+                lineages.m[row]
+            })
+            .collect::<Vec<_>>();
+        let source_corners = global.w_to_m[global_w_row]
+            .iter()
+            .take(usize::try_from(global.n_w_to_m[global_w_row]).unwrap())
+            .map(|&m_id| {
+                row_for_canonical_id(m_id as i64, global.m_points.len(), global_m_two)
+                    .expect("global M row");
+                i64::from(m_id)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            same_cycle_i64(&mapped_corners, &source_corners),
+            "regional hex {w_row} corners {mapped_corners:?} are not a cyclic copy of global {source_corners:?}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
 }
 
 fn assert_published_centers_inside_domain(
@@ -1551,6 +1687,10 @@ fn certified_regional_land_bbox_circle_and_wrapped_bbox_publish_scoped_tri_hex()
 
             if mode_grid == "tri" {
                 assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+                assert_eq!(
+                    certificate["published_grid_is_certified_dual_cell_subset"],
+                    false
+                );
                 let regional = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
                     &run.output.output,
                 )
@@ -1635,6 +1775,224 @@ fn certified_regional_land_bbox_circle_and_wrapped_bbox_publish_scoped_tri_hex()
 }
 
 #[test]
+fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
+    let root = temp_root("regional_unmasked_shapes");
+    let close = root.join("domain.nml");
+    write_close_domain(&close);
+    let shapes = [
+        (
+            "bbox",
+            "bbox",
+            "inline:bbox:w=100,e=160,s=0,n=50".to_string(),
+        ),
+        (
+            "circle",
+            "circle",
+            "inline:circle:lon=130,lat=25,radius_km=2500".to_string(),
+        ),
+        ("close", "close", close.display().to_string()),
+    ];
+    let targets = [
+        ("earthmesh", "tri", "CoLM"),
+        ("earthmesh", "hex", "CoLM"),
+        ("atmosmesh", "tri", "CoLM"),
+        ("atmosmesh", "hex", "MPAS"),
+    ];
+    let mut rollback_case: Option<(PathBuf, String, Vec<(PathBuf, Vec<u8>)>)> = None;
+
+    for (shape_name, domain_kind, domain_source) in shapes {
+        for (mesh_type, mode_grid, output_format) in targets {
+            let case = format!("regional_unmasked_{mesh_type}_{shape_name}_{mode_grid}");
+            let path = root.join(format!("{case}.nml"));
+            let contents = regional_unmasked_namelist(
+                &root,
+                &case,
+                mesh_type,
+                mode_grid,
+                output_format,
+                domain_kind,
+                &domain_source,
+            );
+            fs::write(&path, &contents).unwrap();
+            let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+                .unwrap_or_else(|error| {
+                    panic!("{case} should publish scoped unmasked regional mesh: {error}")
+                });
+            let parent = run
+                .raw_output
+                .as_ref()
+                .expect("regional CMRC publication must retain a durable global parent");
+            assert_eq!(run.refinement_parent_gridfile(), parent.output);
+            let parent_cell_count = assert_parent_gridfile_is_closed_sphere(
+                &parent.output,
+                parent.lbx_points,
+                mode_grid,
+            );
+            let certified = run.certified_run.as_ref().expect("CMRC record");
+            assert!(certified.ready_marker.exists());
+            assert!(certified.remap.is_none());
+            assert!(certified
+                .pre_export_remap
+                .as_ref()
+                .is_some_and(|path| path.exists()));
+            let certificate: serde_json::Value =
+                serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+            assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+            assert_eq!(certificate["published_grid_remap_available"], false);
+            assert_eq!(
+                certificate["published_domain_geometry"]["cell_view"],
+                mode_grid
+            );
+            let resources: serde_json::Value =
+                serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+            assert!(resources["landtype_masked_cells"].is_null());
+            assert!(resources["landtype_kept_cells"].is_null());
+            assert_eq!(resources["remap_scope"], "pre_export_closed_sphere_voronoi");
+            assert_eq!(resources["published_grid_remap_available"], false);
+            assert_eq!(
+                resources["published_domain_topology"]["violations"],
+                serde_json::json!([])
+            );
+            let selected_cells = resources["published_domain_geometry"]["cells"]
+                .as_u64()
+                .unwrap();
+            assert!(selected_cells > 0, "{case} selected no cells");
+            assert!(
+                selected_cells < parent_cell_count as u64,
+                "{case} must be a proper regional subset of {parent_cell_count} parent {mode_grid} cells"
+            );
+            assert_published_centers_inside_domain(
+                &run.output.output,
+                mode_grid,
+                domain_kind,
+                &domain_source,
+            );
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+            assert_eq!(
+                manifest["global_parent_gridfile"],
+                parent.output.display().to_string()
+            );
+            assert!(manifest["remap"].is_null());
+            assert_eq!(
+                manifest["pre_export_remap"],
+                certified
+                    .pre_export_remap
+                    .as_ref()
+                    .unwrap()
+                    .display()
+                    .to_string()
+            );
+
+            let regional = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+                &run.output.output,
+            )
+            .unwrap();
+            let global =
+                earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&parent.output)
+                    .unwrap();
+            let lineages = earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(
+                &run.output.output,
+            )
+            .unwrap();
+            if mode_grid == "tri" {
+                assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+                assert_eq!(
+                    certificate["published_grid_is_certified_dual_cell_subset"],
+                    false
+                );
+                assert_eq!(
+                    certificate["published_domain_geometry"]["contract_pass"],
+                    true
+                );
+                assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &global);
+            } else {
+                assert_eq!(
+                    certificate["published_grid_is_certified_face_subset"],
+                    false
+                );
+                assert_eq!(
+                    certificate["published_grid_is_certified_dual_cell_subset"],
+                    true
+                );
+                assert_eq!(
+                    certificate["published_domain_geometry"]["geometry_pass"],
+                    true
+                );
+                assert_eq!(
+                    certificate["published_domain_geometry"]["whole_cell_lineage_verified"],
+                    true
+                );
+                assert_regional_hex_cells_are_whole_global_subset(&regional, &lineages, &global);
+                let grid = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(
+                    &run.output.output,
+                )
+                .unwrap();
+                let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(
+                    &run.output.output,
+                )
+                .unwrap()
+                .expect("regional HEX output must retain MPAS width context");
+                assert_eq!(context.cellwidth_km.len(), grid.w_lon.len());
+                assert_eq!(context.base_nxp, 6);
+            }
+
+            let result_dir = run.output.output.parent().unwrap();
+            let legacy_global_mpas = result_dir.join("MPASOUT_NXP0006_global.nc4");
+            if mesh_type == "atmosmesh" && mode_grid == "hex" {
+                assert!(!legacy_global_mpas.exists());
+                if let Some(mpas) = resources["mpas"].as_object() {
+                    let mesh = PathBuf::from(mpas["mesh"].as_str().unwrap());
+                    let graph = PathBuf::from(mpas["graph_info"].as_str().unwrap());
+                    assert!(mesh.exists(), "{case} MPAS mesh missing");
+                    assert!(graph.exists(), "{case} MPAS graph missing");
+                    assert!(
+                        !mesh
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .contains("_global"),
+                        "{case} must not label a regional MPAS artifact as global"
+                    );
+                    assert_mpas_unit_sphere(&mesh);
+                    assert_graph_header_matches_mesh(&graph, &mesh);
+                }
+            } else {
+                assert!(resources["mpas"].is_null());
+                assert!(!legacy_global_mpas.exists());
+            }
+
+            if rollback_case.is_none()
+                && mesh_type == "earthmesh"
+                && mode_grid == "hex"
+                && shape_name == "bbox"
+            {
+                rollback_case = Some((
+                    path.clone(),
+                    contents.clone(),
+                    snapshot_result_dir(result_dir),
+                ));
+            }
+        }
+    }
+
+    let (path, original_contents, snapshot) = rollback_case.expect("earth hex bbox rollback case");
+    fs::write(
+        &path,
+        original_contents.replace(
+            "inline:bbox:w=100,e=160,s=0,n=50",
+            "inline:bbox:w=130,e=130.001,s=25,n=25.001",
+        ),
+    )
+    .unwrap();
+    assert!(
+        earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err(),
+        "empty unmasked regional selection must fail closed"
+    );
+    assert_snapshot_unchanged(&snapshot);
+}
+
+#[test]
 fn certified_regional_land_multi_domain_is_rejected_without_publication() {
     let root = temp_root("regional_land_any_reject");
     let landtype = root.join("landtype.nc");
@@ -1672,21 +2030,38 @@ bbox_refine = 0
 }
 
 #[test]
-fn certified_regional_earthmesh_is_rejected_instead_of_published_global() {
-    let root = temp_root("regional_earthmesh_reject");
+fn certified_regional_unmasked_any_is_rejected_without_publication() {
+    let root = temp_root("regional_unmasked_any_reject");
+    let bbox = root.join("two_domains.nml");
+    fs::write(
+        &bbox,
+        "bbox_num = 2
+bbox_refine = 0
+100.0 130.0 30.0 0.0
+140.0 160.0 50.0 20.0
+",
+    )
+    .unwrap();
     let path = root.join("cmrc.nml");
-    let contents = namelist(&root, "regional_earthmesh_reject", 3, 1_000)
-        .replace(
-            "NL%mask_domain_global=.true.",
-            "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  NL%mask_domain_fprefix='inline:bbox:w=100,e=160,s=0,n=50'",
-        );
+    let contents = regional_unmasked_namelist(
+        &root,
+        "regional_unmasked_any_reject",
+        "earthmesh",
+        "hex",
+        "CoLM",
+        "bbox",
+        &bbox.display().to_string(),
+    );
     fs::write(&path, contents).unwrap();
 
     let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("regional earthmesh would otherwise ignore the selector");
+        .expect_err("multi-domain CMRC earthmesh publication must fail closed");
     assert!(error.to_string().contains(CMRC_REGIONAL_SUPPORT_ERROR));
-    assert!(!root
-        .join("regional_earthmesh_reject/result/gridfile_NXP0003_hex.nc4")
+    let result = root.join("regional_unmasked_any_reject/result");
+    assert!(!result.join("certified_ready").exists());
+    assert!(!result.join("gridfile_NXP0006_hex.nc4").exists());
+    assert!(!result
+        .join("gridfile_NXP0006_hex_global_parent.nc4")
         .exists());
 }
 

@@ -2112,90 +2112,110 @@ fn publish_certified_domain_gridfile(
     angle_contract: earthmesh_refine_certified::AngleContractId,
     fvcom_output: Option<&Path>,
 ) -> io::Result<CertifiedDomainPublication> {
-    let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(Path::new(
-        config.landtype_file.trim(),
-    ))?;
     let mode_grid = config.mode_grid.trim();
     let mesh_type = config.mesh_type.trim();
-    if let (Some(region), "landmesh", "hex") = (domain_region, mesh_type, mode_grid) {
-        return super::cmrc_land::publish_regional_land(
+    let (kept_cells, fvcom_2dm) = if let (Some(region), "earthmesh" | "atmos" | "atmosmesh") =
+        (domain_region, mesh_type)
+    {
+        if mode_grid == "hex" {
+            return super::cmrc_region::publish_regional_hex(
+                source_gridfile,
+                output_gridfile,
+                None,
+                region,
+                workdir,
+            );
+        }
+        let kept = crate::regional_gridfile_writers::write_regional_gridfile(
             source_gridfile,
             output_gridfile,
-            Path::new(config.landtype_file.trim()),
-            gridnum_perdegree,
             region,
-            workdir,
-        );
-    }
-    let clean_close = match (domain_region, mesh_type, mode_grid) {
-        (Some(GridRegion::Close { points }), "oceanmesh", "tri") => Some(points.as_slice()),
-        _ => None,
-    };
-
-    let (kept_cells, fvcom_2dm) = if let Some(close_points) = clean_close {
-        let plan = write_clean_regional_ocean_gridfile(
-            source_gridfile,
-            close_points,
-            Path::new(config.landtype_file.trim()),
-            base_nxp,
-            gridnum_perdegree,
-            config.mask_sea_ratio,
-            workdir,
-        )?;
-        fs::copy(&plan.result_gridfile, output_gridfile)?;
-        let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
-        let obc_order = match &plan.obc_output {
-            Some(path) if path.exists() => read_obc_order_netcdf(path)?,
-            _ => Vec::new(),
-        };
-        let fvcom = if let Some(output) = fvcom_output {
-            Some(write_fvcom_2dm_from_carved(&carved, &obc_order, output)?)
-        } else {
-            None
-        };
-        (None, fvcom)
-    } else if let (Some(region), "landmesh", "tri") = (domain_region, mesh_type, mode_grid) {
-        fs::create_dir_all(workdir)?;
-        let regional_gridfile = workdir.join("whole_regional_tri.nc4");
-        crate::regional_gridfile_writers::write_regional_gridfile(
-            source_gridfile,
-            &regional_gridfile,
-            region,
-            "tri",
-        )?;
-        let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
-            &regional_gridfile,
-            output_gridfile,
-            &config.landtype_file,
-            gridnum_perdegree,
-            "tri",
-            "landmesh",
-            None,
-            None,
-            false,
-            None,
+            mode_grid,
         )?;
         (Some(kept), None)
     } else {
-        let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
-            source_gridfile,
-            output_gridfile,
-            &config.landtype_file,
-            gridnum_perdegree,
-            mode_grid,
-            mesh_type,
-            None,
-            None,
-            config.isolated_ocean || mesh_type == "oceanmesh",
-            None,
+        let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
+            Path::new(config.landtype_file.trim()),
         )?;
-        let fvcom = if let Some(output) = fvcom_output {
-            let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
-            Some(write_fvcom_2dm_from_carved(&carved, &[], output)?)
-        } else {
-            None
+        if let (Some(region), "landmesh", "hex") = (domain_region, mesh_type, mode_grid) {
+            return super::cmrc_region::publish_regional_hex(
+                source_gridfile,
+                output_gridfile,
+                Some((Path::new(config.landtype_file.trim()), gridnum_perdegree)),
+                region,
+                workdir,
+            );
+        }
+        let clean_close = match (domain_region, mesh_type, mode_grid) {
+            (Some(GridRegion::Close { points }), "oceanmesh", "tri") => Some(points.as_slice()),
+            _ => None,
         };
-        (Some(kept), fvcom)
+
+        if let Some(close_points) = clean_close {
+            let plan = write_clean_regional_ocean_gridfile(
+                source_gridfile,
+                close_points,
+                Path::new(config.landtype_file.trim()),
+                base_nxp,
+                gridnum_perdegree,
+                config.mask_sea_ratio,
+                workdir,
+            )?;
+            fs::copy(&plan.result_gridfile, output_gridfile)?;
+            let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
+            let obc_order = match &plan.obc_output {
+                Some(path) if path.exists() => read_obc_order_netcdf(path)?,
+                _ => Vec::new(),
+            };
+            let fvcom = if let Some(output) = fvcom_output {
+                Some(write_fvcom_2dm_from_carved(&carved, &obc_order, output)?)
+            } else {
+                None
+            };
+            (None, fvcom)
+        } else if let (Some(region), "landmesh", "tri") = (domain_region, mesh_type, mode_grid) {
+            fs::create_dir_all(workdir)?;
+            let regional_gridfile = workdir.join("whole_regional_tri.nc4");
+            crate::regional_gridfile_writers::write_regional_gridfile(
+                source_gridfile,
+                &regional_gridfile,
+                region,
+                "tri",
+            )?;
+            let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+                &regional_gridfile,
+                output_gridfile,
+                &config.landtype_file,
+                gridnum_perdegree,
+                "tri",
+                "landmesh",
+                None,
+                None,
+                false,
+                None,
+            )?;
+            (Some(kept), None)
+        } else {
+            let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
+                source_gridfile,
+                output_gridfile,
+                &config.landtype_file,
+                gridnum_perdegree,
+                mode_grid,
+                mesh_type,
+                None,
+                None,
+                config.isolated_ocean || mesh_type == "oceanmesh",
+                None,
+            )?;
+            let fvcom = if let Some(output) = fvcom_output {
+                let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
+                Some(write_fvcom_2dm_from_carved(&carved, &[], output)?)
+            } else {
+                None
+            };
+            (Some(kept), fvcom)
+        }
     };
 
     let published = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
@@ -2210,6 +2230,13 @@ fn publish_certified_domain_gridfile(
         ));
     }
     let quality_mesh = crate::read_gridfile_mesh_points(output_gridfile)?;
+    if domain_region.is_some() && mesh_type != "oceanmesh" {
+        crate::regional_gridfile_writers::lineage::verify_whole_triangle_lineage(
+            source_gridfile,
+            output_gridfile,
+            &quality_mesh,
+        )?;
+    }
     let quality_input = crate::grid_quality_pipeline::quality_input_from_gridfile(&quality_mesh)?;
     let quality_report = earthmesh_quality::compute(
         &quality_input,
@@ -2234,8 +2261,8 @@ fn publish_certified_domain_gridfile(
     let component_count = earthmesh_quality::topology::connected_component_count(&quality_input);
     let mut quality_issues =
         earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input).validate_all();
-    if mesh_type == "landmesh" {
-        // As for land dual cells, retain islands (including one-cell islands)
+    if mesh_type == "landmesh" || (domain_region.is_some() && mesh_type != "oceanmesh") {
+        // As for regional dual cells, retain islands (including one-cell islands)
         // and their diagnostics without relaxing winding or manifold checks.
         for issue in &mut quality_issues {
             if matches!(
@@ -2348,15 +2375,18 @@ fn run_certified_pipeline(
         .then(|| read_method_c_domain_region(config))
         .transpose()?
         .flatten();
-    let is_domain_export = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
-    let regional_land = config.mesh_type.trim() == "landmesh"
-        && matches!(config.mode_grid.trim(), "hex" | "tri")
+    let is_surface_masked = matches!(config.mesh_type.trim(), "landmesh" | "oceanmesh");
+    let is_domain_export = is_surface_masked || regional_domain.is_some();
+    let regional_whole_cells = matches!(
+        config.mesh_type.trim(),
+        "earthmesh" | "atmos" | "atmosmesh" | "landmesh"
+    ) && matches!(config.mode_grid.trim(), "hex" | "tri")
         && matches!(
             regional_domain,
             Some(GridRegion::Bbox { .. } | GridRegion::Circle { .. } | GridRegion::Close { .. })
         );
     if regional_domain.is_some()
-        && !regional_land
+        && !regional_whole_cells
         && !matches!(
             (
                 config.mesh_type.trim(),
@@ -2367,9 +2397,9 @@ fn run_certified_pipeline(
         )
     {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "CMRC regional publication supports landmesh/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only"));
+            "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only"));
     }
-    if is_domain_export
+    if is_surface_masked
         && !(crate::namelist_sets_landtype_file(contents)
             && crate::landtype_file_is_real(&config.landtype_file))
     {
@@ -2808,13 +2838,13 @@ fn run_certified_pipeline(
         "remap_closure_errors": certificate.remap_closure_errors,
         "elastic_component_epochs": elastic_report_json,
     });
-    // Only the regional land adapter proves whole dual-cell lineage. Legacy
-    // global hex domain exports have not passed that audit; do not certify them.
+    // Only whole regional HEX publication proves dual-cell lineage. Neither
+    // TRI output nor legacy global surface masks carry that dual-view proof.
     certificate_document["published_grid_is_certified_dual_cell_subset"] =
-        if is_domain_export && requested_view == "hex" && !regional_land {
+        if is_domain_export && requested_view == "hex" && !regional_whole_cells {
             serde_json::Value::Null
         } else {
-            regional_land.into()
+            (regional_whole_cells && requested_view == "hex").into()
         };
     certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["published_grid_lineage_scope"] =
@@ -2876,7 +2906,7 @@ fn run_certified_pipeline(
         "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
         "fvcom_2dm": fvcom_output_path.as_ref().map(|path| path.display().to_string()),
         "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
-        "published_grid_remap_status": if is_domain_export { "not_available_after_landtype_subset" } else { "certified" },
+        "published_grid_remap_status": if is_surface_masked { "not_available_after_landtype_subset" } else if is_domain_export { "not_available_after_regional_subset" } else { "certified" },
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
@@ -2970,7 +3000,7 @@ fn run_certified_pipeline(
             let published = published?;
             (
                 published.report,
-                Some(published.kept_cells),
+                is_surface_masked.then_some(published.kept_cells),
                 Some(published.topology),
                 Some(published.quality_topology),
                 Some(published.geometry),

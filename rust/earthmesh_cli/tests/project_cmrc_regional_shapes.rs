@@ -87,31 +87,36 @@ fn domain(root: &Path, shape: &str) -> DomainConfig {
 
 fn project(
     root: &Path,
-    name: &str,
     shape: &str,
+    kind: MeshDomainKind,
     cell: MeshCellKind,
     model: ModelFormat,
     colm_ppd: Option<usize>,
-    landtype: &Path,
+    landtype: Option<&Path>,
 ) -> ProjectConfig {
     fs::create_dir_all(root).unwrap();
+    let name = root.file_name().unwrap().to_string_lossy();
     let mut p = ProjectConfig::scaffold(
-        name,
+        name.as_ref(),
         MeshIntentPreset::Custom,
         domain(root, shape),
         ResolutionSpec::Nxp(6),
     );
-    p.target.kind = MeshDomainKind::Land;
+    p.target.kind = kind;
     p.target.cell = cell;
     p.target.model_format = model;
     p.target.resolution = ResolutionSpec::Nxp(6);
-    p.data_layers = vec![ProjectDataLayer {
-        id: "landtype".into(),
-        role: ProjectLayerRole::LandType,
-        path: landtype.display().to_string(),
-        enabled: true,
-        threshold_value: None,
-    }];
+    p.data_layers = landtype
+        .map(|landtype| {
+            vec![ProjectDataLayer {
+                id: "landtype".into(),
+                role: ProjectLayerRole::LandType,
+                path: landtype.display().to_string(),
+                enabled: true,
+                threshold_value: None,
+            }]
+        })
+        .unwrap_or_default();
     p.refinement.enabled = true;
     p.refinement.threshold_enabled = false;
     p.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
@@ -237,16 +242,17 @@ fn assert_graph(graph: &Path, mesh: &Path) {
 fn run_case(
     root: &Path,
     shape: &str,
+    kind: MeshDomainKind,
     cell: MeshCellKind,
     model: ModelFormat,
     ppd: Option<usize>,
-    landtype: &Path,
+    landtype: Option<&Path>,
 ) {
-    let name = format!("{shape}_{cell:?}_{model:?}");
+    let name = format!("{shape}_{kind:?}_{cell:?}_{model:?}");
     let case_root = root.join(&name);
     let output = run_project(
         &case_root,
-        &project(&case_root, &name, shape, cell, model, ppd, landtype),
+        &project(&case_root, shape, kind, cell, model, ppd, landtype),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -294,11 +300,48 @@ fn run_case(
     }
 }
 
-fn standalone_nml(root: &Path, landtype: &Path) -> String {
+fn standalone_land_nml(root: &Path, landtype: &Path) -> String {
     format!(
         "&mkgrd\n  NL%EXPNME='standalone_bbox_mpas'\n  NL%base_dir='{}/'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='certified'\n  NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  NL%mask_domain_fprefix='inline:bbox:w=100,e=160,s=0,n=50'\n  NL%landtype_file='{}'\n  NL%openmp=1\n/\n&certified\n  NL%mode='safe_mother_only'\n  NL%delivery='hex'\n  NL%maximum_level=1\n  NL%maximum_cells=50000\n  NL%gradation_rings_per_level=3\n  NL%search_budget=100\n/\n",
         root.display(),
         landtype.display()
+    )
+}
+
+fn standalone_atmos_nml(root: &Path, case: &str, cell: MeshCellKind, model: ModelFormat) -> String {
+    let (mode_grid, output_format, delivery) = match (cell, model) {
+        (MeshCellKind::Hex, ModelFormat::Mpas) => ("hex", "MPAS", "hex"),
+        (MeshCellKind::Tri, ModelFormat::Icon) => ("tri", "ICON", "tri"),
+        _ => unreachable!(),
+    };
+    format!(
+        "&mkgrd
+  NL%EXPNME='{case}'
+  NL%base_dir='{}/'
+  NL%NXP=6
+  NL%mesh_type='atmosmesh'
+  NL%mode_grid='{mode_grid}'
+  NL%output_format='{output_format}'
+  NL%mode_file='none'
+  NL%mode_file_description='none'
+  NL%refine=.true.
+  NL%refine_backend='certified'
+  NL%mask_domain_global=.false.
+  NL%mask_domain_type='bbox'
+  NL%mask_domain_fprefix='inline:bbox:w=100,e=160,s=0,n=50'
+  NL%landtype_file='none'
+  NL%openmp=1
+/
+&certified
+  NL%mode='safe_mother_only'
+  NL%delivery='{delivery}'
+  NL%maximum_level=1
+  NL%maximum_cells=50000
+  NL%gradation_rings_per_level=3
+  NL%search_budget=100
+/
+",
+        root.display()
     )
 }
 
@@ -333,40 +376,134 @@ fn project_cmrc_land_regional_shapes_deliver_model_artifacts() {
         run_case(
             &root,
             shape,
+            MeshDomainKind::Land,
             MeshCellKind::Tri,
             ModelFormat::CoLM,
             Some(1),
-            &landtype,
+            Some(&landtype),
         );
         run_case(
             &root,
             shape,
+            MeshDomainKind::Land,
             MeshCellKind::Hex,
             ModelFormat::CoLM,
             Some(1),
-            &landtype,
+            Some(&landtype),
         );
     }
     for shape in ["bbox", "circle"] {
         run_case(
             &root,
             shape,
+            MeshDomainKind::Land,
             MeshCellKind::Hex,
             ModelFormat::Mpas,
             None,
-            &landtype,
+            Some(&landtype),
         );
         run_case(
             &root,
             shape,
+            MeshDomainKind::Land,
             MeshCellKind::Tri,
             ModelFormat::Icon,
             None,
-            &landtype,
+            Some(&landtype),
         );
     }
     assert_eq!(fs::metadata(&landtype).unwrap().len(), before);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_cmrc_unmasked_regional_shapes_deliver_model_artifacts() {
+    let root = temp_root("unmasked_matrix");
+    fs::create_dir_all(&root).unwrap();
+    for kind in [MeshDomainKind::Earth, MeshDomainKind::Atmosphere] {
+        for shape in ["bbox", "circle", "close"] {
+            run_case(
+                &root,
+                shape,
+                kind,
+                MeshCellKind::Hex,
+                ModelFormat::Mpas,
+                None,
+                None,
+            );
+            run_case(
+                &root,
+                shape,
+                kind,
+                MeshCellKind::Tri,
+                ModelFormat::Icon,
+                None,
+                None,
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn standalone_cmrc_atmos_bbox_uses_final_delivery_without_landtype() {
+    for (case, cell, model) in [
+        (
+            "standalone_atmos_bbox_mpas",
+            MeshCellKind::Hex,
+            ModelFormat::Mpas,
+        ),
+        (
+            "standalone_atmos_bbox_icon",
+            MeshCellKind::Tri,
+            ModelFormat::Icon,
+        ),
+    ] {
+        let root = temp_root(case);
+        fs::create_dir_all(&root).unwrap();
+        let nml = root.join("standalone.nml");
+        fs::write(&nml, standalone_atmos_nml(&root, case, cell, model)).unwrap();
+        let output = support::output(
+            Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([nml.to_str().unwrap(), "--max-tris", "100000", "--quiet"]),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{case}
+{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let marker = find_legacy_delivery(&root);
+        let record = read_json(&marker);
+        assert_eq!(record["model_delivery_status"], "model_delivered", "{case}");
+        assert_eq!(record["scope"], "regional_or_masked", "{case}");
+        assert_boundary_quality(&record);
+        match model {
+            ModelFormat::Mpas => {
+                let mesh = PathBuf::from(
+                    record["model_artifacts"]["mpas_mesh_input"]
+                        .as_str()
+                        .unwrap(),
+                );
+                let graph = PathBuf::from(
+                    record["model_artifacts"]["mpas_graph_info"]
+                        .as_str()
+                        .unwrap(),
+                );
+                assert_graph(&graph, &mesh);
+            }
+            ModelFormat::Icon => assert!(PathBuf::from(
+                record["model_artifacts"]["icon_mesh_input"]
+                    .as_str()
+                    .unwrap()
+            )
+            .exists()),
+            _ => unreachable!(),
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]
@@ -376,7 +513,7 @@ fn standalone_cmrc_land_bbox_uses_final_delivery_for_mpas() {
     let landtype = root.join("landtype_all_land.nc4");
     write_all_land(&landtype);
     let nml = root.join("standalone.nml");
-    fs::write(&nml, standalone_nml(&root, &landtype)).unwrap();
+    fs::write(&nml, standalone_land_nml(&root, &landtype)).unwrap();
     let output = support::output(
         Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
             .current_dir(&root)
