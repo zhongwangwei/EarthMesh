@@ -219,6 +219,18 @@ fn restart_ocean_postproc_source_mesh() -> UnstructuredMesh {
     }
 }
 
+// Direct postprocessing needs row 0 explicitly; GetContain normally inserts it.
+fn restart_ocean_direct_postproc_source_mesh() -> UnstructuredMesh {
+    let origin = LonLatPoint { lon: 0.0, lat: 0.0 };
+    let mut mesh = restart_ocean_postproc_source_mesh();
+    mesh.m_points.insert(0, origin);
+    mesh.w_points.insert(0, origin);
+    mesh.m_to_w.insert(0, [1, 1, 1]);
+    mesh.w_to_m.insert(0, vec![1]);
+    mesh.n_w_to_m.insert(0, 1);
+    mesh
+}
+
 fn restart_atmos_mpas_full_source_mesh() -> UnstructuredMesh {
     UnstructuredMesh {
         m_points: vec![
@@ -1253,15 +1265,15 @@ fn library_mask_restart_ocean_runner_can_infer_persisted_num_vertex_without_opti
     .expect("postproc io plan");
     write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_ocean_postproc_source_mesh(),
+        &restart_ocean_direct_postproc_source_mesh(),
     )
     .expect("write ocean postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
         &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0, 1], vec![1, 0, 1]],
-            ustr_ii: vec![vec![0, 0, 0]],
-            is_in_area_ustr: vec![0, 1],
+            ustr_id: vec![vec![0, 0, 1], vec![0, 0, 1], vec![1, 0, 1]],
+            ustr_ii: vec![vec![2, 2, 0]],
+            is_in_area_ustr: vec![0, 0, 1],
         },
     )
     .expect("write persisted ocean contain boundary");
