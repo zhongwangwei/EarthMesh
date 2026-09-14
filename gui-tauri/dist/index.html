@@ -85,16 +85,17 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .rail h4{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;
   margin:0 8px 10px;font-weight:700}
 .step{display:flex;gap:11px;align-items:flex-start;padding:9px 10px;border-radius:var(--r-md);
-  position:relative;cursor:pointer;margin-bottom:1px}
+  position:relative;cursor:pointer;margin-bottom:1px;width:100%;border:0;background:transparent;text-align:left;line-height:inherit}
+.step:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .step:hover{background:var(--surface-2)}
 .step.active{background:var(--accent-weak)}
 .step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
   font-size:12px;font-weight:700;border:1.5px solid var(--border);color:var(--muted);background:var(--bg);z-index:1}
 .step.active .num{background:var(--accent);border-color:var(--accent);color:#fff}
 .step .step-copy{min-width:0}
-.step .t{font-weight:620;line-height:1.35}
+.step .t{display:block;font-weight:620;line-height:1.35}
 .step.active .t{color:var(--accent-ink)}
-.step .d{color:var(--muted);font-size:11.5px;margin-top:1px}
+.step .d{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
 .step:not(:last-child)::after{content:"";position:absolute;left:22px;top:34px;bottom:-2px;
   width:1.5px;background:var(--border)}
 .rail .est{margin:14px 8px 0;padding:11px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg)}
@@ -483,12 +484,13 @@ let killInProgress = false;
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
   STEPS.forEach((s,i)=>{
-    const d=document.createElement("div");
+    const d=document.createElement("button"); d.type="button";
+    if(i===cur) d.setAttribute("aria-current","step");
     d.className="step"+(i===cur?" active":"");
-    const num=document.createElement("div"); num.className="num"; num.textContent=i+1;
-    const copy=document.createElement("div"); copy.className="step-copy";
-    const title=document.createElement("div"); title.className="t"; title.textContent=s.t[lang];
-    const desc=document.createElement("div"); desc.className="d"; desc.textContent=s.d[lang];
+    const num=document.createElement("span"); num.className="num"; num.textContent=i+1;
+    const copy=document.createElement("span"); copy.className="step-copy";
+    const title=document.createElement("span"); title.className="t"; title.textContent=s.t[lang];
+    const desc=document.createElement("span"); desc.className="d"; desc.textContent=s.d[lang];
     copy.append(title, desc);
     d.append(num, copy);
     d.onclick=async()=>{await go(i);};
@@ -767,7 +769,7 @@ function inp(v){return `<input class="input" value="${v}">`;}
 function renderStep(i){
   const w=document.getElementById("work");
   const head=(t,s)=>`<div class="work-head"><span class="kicker">STEP ${i+1} / 7</span></div>
-    <h1>${t}</h1><p class="sub">${s}</p>`;
+    <h1 tabindex="-1">${t}</h1><p class="sub">${s}</p>`;
   let html="";
   if(i===0){
     html=head(STEPS[0].t[lang],lang?"新建、打开或保存项目——所有设置都存进一个可重开的项目文件。":"Create, open or save a project — every setting lives in one reopenable project file.")
@@ -923,7 +925,9 @@ async function confirmStopForPageSwitch(){
 async function go(i){
   if(i===cur) return true;
   if(!await confirmStopForPageSwitch()) return false;
-  cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;
+  cur=i;renderSteps();renderStep(i);
+  const work=document.getElementById("work");
+  work.scrollTop=0;work.querySelector("h1")?.focus();
   return true;
 }
 

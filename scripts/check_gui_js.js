@@ -1672,3 +1672,56 @@ async function checkTemplateAdmission() {
   log('template admission: actual selector/compose rejects atomically, preserves common and same-intent state, applies O1/O2/O3 and waits for edits');
 }
 checkTemplateAdmission().catch(error=>{console.error(error);process.exitCode=1;});
+
+async function checkWorkflowNavigation() {
+  const extract=name=>section(html,new RegExp(`((?:async )?function ${name}\\([^\\n]*\\)\\{[\\s\\S]*?\\n\\})`),name);
+  const steps=section(html,/const STEPS=(\[[\s\S]*?\n\]);/,'workflow steps');
+  const harness=new Function('lang',`
+    const STEPS=${steps};let cur=0,runInProgress=false,killInProgress=false,answer=true,stop=null,focused=null;
+    const paints=[],prompts=[];
+    const element=tag=>({tag,attrs:{},children:[],setAttribute(k,v){this.attrs[k]=v;},
+      set textContent(v){this.text=v;this.children=[];},append(...nodes){this.children.push(...nodes);},
+      appendChild(node){this.append(node);},focus(){focused=this;}});
+    const rail=element('nav'),heading=element('h1'),work={scrollTop:100,querySelector:s=>s==='h1'?heading:null};
+    const document={createElement:element,getElementById:id=>id==='steps'?rail:work};
+    const confirm=message=>{prompts.push(message);return answer;};
+    const killRun=()=>new Promise(resolve=>{stop=ok=>{if(ok){runInProgress=false;killInProgress=false;}resolve(ok);};});
+    const renderStep=i=>paints.push(i);
+    ${extract('renderSteps')}
+    ${extract('confirmStopForPageSwitch')}
+    ${extract('go')}
+    renderSteps();return {STEPS,rail,heading,work,paints,prompts,go,
+      click(i){const b=rail.children[i];b.focus();return b.onclick();},
+      guard(running,accept,killing=false){runInProgress=running;answer=accept;killInProgress=killing;},
+      stop(ok){stop(ok);stop=null;},state:()=>({cur,focused,pending:!!stop})};
+  `);
+  for(const lang of [0,1]) {
+    const h=harness(lang);
+    check(h.rail.children.length===7,'workflow rail must expose every step');
+    h.rail.children.forEach((button,i)=>{
+      check(button.tag==='button'&&button.type==='button','workflow steps must be native non-submit buttons');
+      check(button.attrs['aria-current']===(i===0?'step':undefined),'workflow current state must match committed page');
+      const [number,copy]=button.children;
+      check(number.tag==='span'&&copy.tag==='span'&&copy.children.every(n=>n.tag==='span'),'workflow buttons must contain phrasing elements');
+      check(copy.children[0].text===h.STEPS[i].t[lang]&&copy.children[1].text===h.STEPS[i].d[lang],'workflow labels must retain bilingual safe text');
+    });
+    await h.click(3);
+    check(h.state().cur===3&&h.state().focused===h.heading&&h.work.scrollTop===0,'accepted navigation must focus the destination heading and reset scroll');
+    check(h.rail.children[3].attrs['aria-current']==='step'&&!h.rail.children[0].attrs['aria-current'],'only the committed step may be current');
+    const before=h.paints.length,oldButtons=h.rail.children;
+    h.guard(true,false);await h.click(1);
+    check(h.state().cur===3&&h.paints.length===before&&h.rail.children===oldButtons&&h.state().focused===oldButtons[1],'declined stop must preserve page and triggering focus');
+    for(const ok of [false,true]) {
+      h.guard(!ok,true,ok);const pending=h.click(1);await new Promise(resolve=>setImmediate(resolve));
+      check(h.state().pending&&h.state().cur===3&&h.paints.length===before,'navigation must await running or settling kill guard');
+      h.stop(ok);await pending;
+      check(h.state().cur===(ok?1:3)&&h.state().focused===(ok?h.heading:oldButtons[1]),'only successful stop may navigate and move focus');
+    }
+    const prompts=h.prompts.length;await h.click(1);check(h.prompts.length===prompts,'same-step activation must not request a stop');
+    check(await h.go(6)&&h.state().focused===h.heading,'footer shared go must use the same destination focus');
+  }
+  check(html.includes('<h1 tabindex="-1">${t}</h1>'),'workflow heading must support programmatic focus without adding a tab stop');
+  check(html.includes('b.onclick=()=>go(+b.dataset.go)'),'footer and rail must share the guarded go handler');
+  log('workflow accessibility: native bilingual steps, committed current state, destination focus and stop/page-switch guard passed');
+}
+checkWorkflowNavigation().catch(error=>{console.error(error);process.exitCode=1;});
