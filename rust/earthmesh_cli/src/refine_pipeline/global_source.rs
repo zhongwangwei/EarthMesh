@@ -211,7 +211,24 @@ pub fn run_refine_pipeline_namelist(
     max_tris: usize,
     source_gridnum_perdegree: Option<usize>,
 ) -> io::Result<RefinePipelineRunReport> {
-    let namelist_source = namelist_source.as_ref();
+    run_refine_pipeline_in_workspace(
+        namelist_source.as_ref(),
+        workdir.as_ref(),
+        max_tris,
+        source_gridnum_perdegree,
+        None,
+    )
+}
+
+/// Redirect producer outputs only. Configuration and data paths stay original;
+/// raw public/Project calls use None and keep their existing carrier semantics.
+pub(super) fn run_refine_pipeline_in_workspace(
+    namelist_source: &Path,
+    workdir: &Path,
+    max_tris: usize,
+    source_gridnum_perdegree: Option<usize>,
+    output_dir: Option<&Path>,
+) -> io::Result<RefinePipelineRunReport> {
     let contents = fs::read_to_string(namelist_source)?;
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
@@ -259,8 +276,9 @@ pub fn run_refine_pipeline_namelist(
             &contents,
             &config,
             read_certified_options(&contents)?,
-            workdir.as_ref(),
+            workdir,
             max_tris,
+            output_dir,
         );
     }
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
@@ -454,7 +472,16 @@ pub fn run_refine_pipeline_namelist(
     let backend_consumes_criteria =
         has_threshold_hfield_sources || (adaptive_options.is_some() && refine.refine_cal);
 
-    let gridinit = run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?;
+    let gridinit = match output_dir {
+        Some(directory) => super::final_delivery::generate_carrier(
+            namelist_source,
+            workdir,
+            max_tris,
+            &config,
+            directory,
+        )?,
+        None => run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?,
+    };
     let mut regions = native_regions;
     if refine.refine_spc {
         regions.extend(read_method_c_specified_refinement_regions(
@@ -643,7 +670,7 @@ pub fn run_refine_pipeline_namelist(
              refinement spring iteration(s) they ask for. certified refinement owns its geometry certificate, and a Laplacian spring on top of that would invalidate it. Use NL%refine_backend = method_c to run the spring instead.              This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
         );
     }
-    let file_dir = PathBuf::from(config.file_dir());
+    let file_dir = output_dir.map_or_else(|| PathBuf::from(config.file_dir()), Path::to_path_buf);
     // The choice of backend, at the one place where it is a choice. Method-C
     // continues as a `TriangularMesh` through the Voronoi/PCVT step; red-green's
     // mesh is already in lon/lat and skips it entirely. What the tail below
@@ -2308,6 +2335,7 @@ fn run_certified_pipeline(
     options: CertifiedRunOptions,
     workdir: &Path,
     max_tris: usize,
+    output_dir: Option<&Path>,
 ) -> io::Result<RefinePipelineRunReport> {
     let started = Instant::now();
     let timing_enabled = cmrc_timing_enabled();
@@ -2614,7 +2642,9 @@ fn run_certified_pipeline(
     );
 
     let configured_dir = PathBuf::from(config.file_dir());
-    let file_dir = if configured_dir.is_absolute() {
+    let file_dir = if let Some(directory) = output_dir {
+        directory.to_path_buf()
+    } else if configured_dir.is_absolute() {
         configured_dir
     } else {
         workdir.join(configured_dir)

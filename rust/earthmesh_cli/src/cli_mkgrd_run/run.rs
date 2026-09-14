@@ -872,11 +872,12 @@ fn run_prepared_mkgrd(
         })?;
         let refine_namelist =
             write_restart_refine_namelist(&namelist, &workdir, &initial_gridfile)?;
-        let report = earthmesh_cli::run_refine_pipeline_namelist(
+        let report = earthmesh_cli::run_refine_pipeline_with_delivery(
             &refine_namelist,
             &workdir,
             max_tris,
             source_gridnum_perdegree,
+            true,
         )
         .map_err(|err| err.to_string())?;
         let _ = source_first_triangle_id;
@@ -887,11 +888,12 @@ fn run_prepared_mkgrd(
     }
     if run_refine_landtype_source {
         let namelist_path = PathBuf::from(&namelist);
-        let report = earthmesh_cli::run_refine_pipeline_namelist(
+        let report = earthmesh_cli::run_refine_pipeline_with_delivery(
             &namelist_path,
             &workdir,
             max_tris,
             source_gridnum_perdegree,
+            true,
         )
         .map_err(|err| err.to_string())?;
         print_refine_pipeline_report(&report);
@@ -899,11 +901,12 @@ fn run_prepared_mkgrd(
     }
 
     if run_refine_passthrough {
-        let report = earthmesh_cli::run_refine_pipeline_namelist(
+        let report = earthmesh_cli::run_refine_pipeline_with_delivery(
             PathBuf::from(namelist),
             &workdir,
             max_tris,
             source_gridnum_perdegree,
+            true,
         )
         .map_err(|err| err.to_string())?;
         print_refine_pipeline_report(&report);

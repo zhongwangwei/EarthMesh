@@ -72,6 +72,8 @@ pub(crate) struct LegacyDeliveryStage {
     marker: PathBuf,
     staged: BTreeMap<PathBuf, PathBuf>,
     staging_roots: Vec<PathBuf>,
+    roots_by_parent: BTreeMap<PathBuf, PathBuf>,
+    publication_id: String,
 }
 
 impl LegacyDeliveryStage {
@@ -100,26 +102,71 @@ impl LegacyDeliveryStage {
             marker,
             staged: BTreeMap::new(),
             staging_roots: Vec::new(),
+            roots_by_parent: BTreeMap::new(),
+            publication_id,
         };
-        let mut roots_by_parent = BTreeMap::<PathBuf, PathBuf>::new();
-        for output in &final_outputs {
+        stage.register_outputs_unchecked(&final_outputs)?;
+
+        Ok(stage)
+    }
+
+    pub(crate) fn add_outputs(&mut self, inputs: &[&Path], outputs: &[&Path]) -> io::Result<()> {
+        let requested = outputs
+            .iter()
+            .map(|path| (*path).to_path_buf())
+            .collect::<Vec<_>>();
+        let mut final_outputs = self.staged.keys().cloned().collect::<Vec<_>>();
+        final_outputs.extend(requested.iter().cloned());
+        preflight_delivery_targets(inputs, &final_outputs, &self.quality_dir)?;
+        self.register_outputs_unchecked(&requested)
+    }
+
+    pub(crate) fn scratch_dir(&self) -> io::Result<PathBuf> {
+        let marker_root = self
+            .staged
+            .get(&self.marker)
+            .and_then(|path| path.parent())
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::other("legacy delivery marker staging root is unavailable"))?
+            .to_path_buf();
+        for attempt in 0..128u32 {
+            let name = if attempt == 0 {
+                "work".to_string()
+            } else {
+                format!("work-{attempt}")
+            };
+            let path = marker_root.join(name);
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not create private legacy delivery work directory",
+        ))
+    }
+
+    fn register_outputs_unchecked(&mut self, outputs: &[PathBuf]) -> io::Result<()> {
+        for output in outputs {
             let parent = output
                 .parent()
                 .filter(|path| !path.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
             crate::ensure_parent_dir(output)?;
             let canonical_parent = fs::canonicalize(parent)?;
-            let root = match roots_by_parent.get(&canonical_parent) {
+            let root = match self.roots_by_parent.get(&canonical_parent) {
                 Some(root) => root.clone(),
                 None => {
                     let root = create_staging_root(
                         &canonical_parent,
-                        &publication_id,
-                        stage.staging_roots.len(),
+                        &self.publication_id,
+                        self.staging_roots.len(),
                     )?;
-                    stage.staging_roots.push(root.clone());
+                    self.staging_roots.push(root.clone());
                     fs::create_dir(root.join("result"))?;
-                    roots_by_parent.insert(canonical_parent, root.clone());
+                    self.roots_by_parent.insert(canonical_parent, root.clone());
                     root
                 }
             };
@@ -130,15 +177,14 @@ impl LegacyDeliveryStage {
                 )
             })?;
             let staged_path = root.join("result").join(file_name);
-            if stage.staged.insert(output.clone(), staged_path).is_some() {
+            if self.staged.insert(output.clone(), staged_path).is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("delivery outputs must be distinct: {}", output.display()),
                 ));
             }
         }
-
-        Ok(stage)
+        Ok(())
     }
 
     pub(crate) fn path(&self, published: &Path) -> io::Result<PathBuf> {
@@ -603,6 +649,121 @@ mod tests {
         assert_eq!(fs::read(&marker).unwrap(), b"old ready");
         assert_eq!(fs::read(&output).unwrap(), b"old ready");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dynamic_outputs_can_be_registered_after_scratch_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "legacy-delivery-stage-dynamic-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input.nc4");
+        let quality = root.join("quality");
+        let grid = root.join("result/final.nc4");
+        fs::create_dir_all(&quality).unwrap();
+        fs::write(&input, b"input").unwrap();
+        let marker = quality.join("legacy_delivery.json");
+        fs::write(&marker, b"old ready").unwrap();
+
+        let mut stage = LegacyDeliveryStage::new(&[&input], &[], &quality).unwrap();
+        assert!(!marker.exists(), "constructor retires stale readiness");
+        let scratch = stage.scratch_dir().unwrap();
+        assert!(scratch.is_dir());
+        assert!(scratch
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains("work"));
+        assert!(scratch.starts_with(
+            stage
+                .path(&marker)
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+        ));
+
+        stage.add_outputs(&[&input], &[&grid]).unwrap();
+        let staged_grid = stage.path(&grid).unwrap();
+        assert_eq!(staged_grid.file_name().unwrap(), "final.nc4");
+        fs::write(&staged_grid, b"new grid").unwrap();
+        fs::write(quality.join("quality_summary.json"), b"quality").unwrap();
+        stage
+            .publish(
+                serde_json::json!({"kind": "test_dynamic_delivery"}),
+                &grid,
+                QualityLevel::Pass,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(fs::read(&grid).unwrap(), b"new grid");
+        assert!(marker.is_file());
+        drop(stage);
+        assert_no_stage_dirs(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dynamic_output_registration_rejects_quality_collision_and_duplicate() {
+        let root = std::env::temp_dir().join(format!(
+            "legacy-delivery-stage-dynamic-collision-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input.nc4");
+        let quality = root.join("quality");
+        fs::create_dir_all(&quality).unwrap();
+        fs::write(&input, b"input").unwrap();
+        let marker = quality.join("legacy_delivery.json");
+        fs::write(&marker, b"old ready").unwrap();
+
+        let mut stage = LegacyDeliveryStage::new(&[&input], &[], &quality).unwrap();
+        let quality_summary = quality.join("quality_summary.json");
+        let error = stage
+            .add_outputs(&[&input], &[&quality_summary])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("distinct"), "{error}");
+        assert!(
+            !marker.exists(),
+            "late validation must not restore stale readiness"
+        );
+
+        let output = root.join("result/final.nc4");
+        stage.add_outputs(&[&input], &[&output]).unwrap();
+        let duplicate = stage
+            .add_outputs(&[&input], &[&output])
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate.contains("distinct"), "{duplicate}");
+        drop(stage);
+        assert_no_stage_dirs(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn assert_no_stage_dirs(root: &Path) {
+        if !root.exists() {
+            return;
+        }
+        for entry in fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            assert!(
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".earthmesh-delivery-"),
+                "staging path leaked: {}",
+                path.display()
+            );
+            if path.is_dir() {
+                assert_no_stage_dirs(&path);
+            }
+        }
     }
 
     #[test]

@@ -54,7 +54,7 @@ pub(crate) fn run_mkgrd_regional_clip_base(
         && !landtype.is_empty()
         && landtype != "none"
         && landtype != "/tmp";
-    if final_delivery && !config.mask_patch_on {
+    if final_delivery {
         return super::regional_delivery::run_final_base(
             namelist_source,
             workdir,

@@ -459,5 +459,5 @@ pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
 mod refine_pipeline;
-pub use refine_pipeline::run_refine_pipeline_namelist;
+pub use refine_pipeline::{run_refine_pipeline_namelist, run_refine_pipeline_with_delivery};
 pub mod mkgrd_top_level_dispatch;

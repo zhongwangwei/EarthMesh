@@ -1,7 +1,7 @@
 use crate::plan_mkgrd_mask_restart_namelist;
 use crate::refine_pipeline_refine_dispatch_requested;
 use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
-use crate::run_refine_pipeline_namelist;
+use crate::run_refine_pipeline_with_delivery;
 use crate::MaskRestartAction;
 use crate::MkgrdDefaultRestartRefineHandoff;
 use crate::MkgrdTopLevelDefaultRestartRefineRunReport;
@@ -115,9 +115,9 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
     )
 }
 
-/// Shared dispatcher with explicit final-base ownership. The CLI enables this
+/// Shared dispatcher with explicit final-output ownership. The CLI enables this
 /// only without Project; it is not inferred from `defer_model_exports`.
-/// Raw/refinement and patch-preprocessing branches keep their existing handoffs.
+/// Public raw carrier APIs keep their existing handoffs.
 #[doc(hidden)]
 pub fn run_mkgrd_default_with_base_delivery(
     namelist_source: impl AsRef<Path>,
@@ -177,11 +177,12 @@ pub fn run_mkgrd_default_with_base_delivery(
         }
         if !config.mask_restart && refine_pipeline_refine_dispatch_requested(&contents, &config)? {
             let _ = source_first_triangle_id;
-            return run_refine_pipeline_namelist(
+            return run_refine_pipeline_with_delivery(
                 namelist_source,
                 workdir,
                 max_tris,
                 source_gridnum_perdegree,
+                final_base_delivery,
             )
             .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline);
         }
@@ -222,8 +223,14 @@ pub fn run_mkgrd_default_with_base_delivery(
         workdir,
         &handoff.initial_gridfile,
     )?;
-    run_refine_pipeline_namelist(&rewritten, workdir, max_tris, source_gridnum_perdegree)
-        .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
+    run_refine_pipeline_with_delivery(
+        &rewritten,
+        workdir,
+        max_tris,
+        source_gridnum_perdegree,
+        final_base_delivery,
+    )
+    .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
 }
 
 /// Rewrite the restart handoff fields in the single `&mkgrd` group.

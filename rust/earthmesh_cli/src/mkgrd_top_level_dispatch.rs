@@ -5,7 +5,7 @@ use crate::refine_pipeline_refine_dispatch_requested;
 use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
 use crate::run_mkgrd_mask_restart_ocean_namelist;
 use crate::run_mkgrd_mask_restart_patch_namelist;
-use crate::run_refine_pipeline_namelist;
+use crate::run_refine_pipeline_with_delivery;
 use crate::MaskPostprocOceanRunOptions;
 use crate::MaskRestartAction;
 use crate::MkgrdTopLevelDispatchRunReport;
@@ -102,15 +102,21 @@ pub(crate) fn run_mkgrd_top_level_with_base_delivery(
     }
 
     if refine_pipeline_refine_dispatch_requested(&contents, &config)? {
-        return run_refine_pipeline_namelist(namelist_source, workdir, max_tris, None)
-            .map(MkgrdTopLevelDispatchRunReport::RefinePipeline);
+        return run_refine_pipeline_with_delivery(
+            namelist_source,
+            workdir,
+            max_tris,
+            None,
+            final_base_delivery,
+        )
+        .map(MkgrdTopLevelDispatchRunReport::RefinePipeline);
     }
 
     crate::mkgrd_gridinit_driver::run_mkgrd_gridinit_global(
         namelist_source,
         workdir,
         max_tris,
-        final_base_delivery && config.mask_domain_global && !config.mask_patch_on,
+        final_base_delivery && config.mask_domain_global,
     )
     .map(MkgrdTopLevelDispatchRunReport::Gridinit)
 }

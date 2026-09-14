@@ -310,8 +310,37 @@ auxiliary delivery only. Historical model files are not evidence of this
 attempt's delivery. A close boundary transformed into a cap/union uses simple
 clip/carve, without inventing clean OBC context or claiming FVCOM delivery.
 
-This is not blanket legacy parity: standalone refined output,
-patch-preprocessing base output and other lower-level writers still need
-final-delivery seams. Raw public and Project clean-ocean composition stays
-unchanged. Do not gate intermediate writers to simulate coverage or use
-closed-sphere checks on masked/Cartesian products.
+Standalone **refined final output** now uses one final-only wrapper for
+Method-C (including HField, adaptive and LEPP), Red-Green and CMRC. The default
+CLI, restart-to-refine handoff and explicit refinement flags select it; raw
+public refinement APIs and Project candidate calls do not. Only producer output
+paths move into a private workspace: original demand configuration and source
+paths stay unchanged. Current returned native, raw-parent, coupled, LEPP and
+CMRC artifacts are staged together, with JSON references remapped to published
+paths. An unchecked initial carrier lives under `tmpfile/refine_source_*`, not
+over a previously admitted global base.
+
+The selected spherical product and any delivered land/ocean or LEPP native
+siblings pass shared physical-cell, topology and geometry admission. A full
+mother uses χ=2; regional/masked children use boundary-aware checks. Then the
+existing final-file adapters deliver only supported formats with actual
+producer context: MPAS needs persisted widths (and a parent for regional
+extraction), bounded FVCOM needs embedded OBC, and regional ICON needs a parent.
+Missing context is recorded as native-only, not invented. Legacy CoLM coupling
+files remain auxiliary metadata, not raster/model readiness. CMRC retains its
+own certificate and existing model products. `defer_model_exports` does not
+bypass native admission. The whole bundle publishes with
+`result/final_quality/refinement/legacy_delivery.json` last; a failed rerun
+preserves prior data bytes but withdraws that readiness record.
+
+Patch-on **base** delivery reuses the same global/regional final flows. Legacy
+Mask_make patch caches are staged as auxiliary files and explicitly labelled
+`patch_preprocessing_only`: they do not change base geometry. Such a global
+base still requires χ=2, rather than being misclassified as an extracted patch.
+
+This is not blanket certification of low-level APIs. Explicit preprocessing
+and raw public/Project composition remain unchecked carriers. Cartesian-XY
+refinement keeps transactional native output but does not run spherical
+admission or claim final/model readiness; it emits an explicit diagnostic and
+no `legacy_delivery.json`. Do not gate intermediate writers to simulate
+coverage or apply closed-sphere checks to masked/Cartesian products.

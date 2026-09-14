@@ -49,9 +49,22 @@ pub(super) fn run_final_base(
     if carve_landtype {
         inputs.push(PathBuf::from(config.landtype_file.trim()));
     }
-    if !config.mask_domain_global && !config.mask_domain_fprefix.trim().starts_with("inline:") {
-        inputs.extend(crate::discover_mask_sources(config.mask_domain_fprefix.trim())?.files);
+    let domain_sources = (!config.mask_domain_global
+        && !config.mask_domain_fprefix.trim().starts_with("inline:"))
+    .then(|| crate::discover_mask_sources(config.mask_domain_fprefix.trim()))
+    .transpose();
+    if let Ok(Some(sources)) = &domain_sources {
+        inputs.extend(sources.files.iter().cloned());
     }
+    let patch_sources = config
+        .mask_patch_on
+        .then(|| super::patch_delivery::discover_patch_sources(config))
+        .transpose();
+    if let Ok(Some(sources)) = &patch_sources {
+        inputs.extend(sources.iter().cloned());
+    }
+    inputs.sort();
+    inputs.dedup();
     let inputs = inputs.iter().map(PathBuf::as_path).collect::<Vec<_>>();
     // A configured close can become a cap/union. Only the actual polygon owns
     // the clean-ocean boundary outputs. Delay parse errors until Stage retires
@@ -76,8 +89,31 @@ pub(super) fn run_final_base(
         .chain(auxiliary.values().map(PathBuf::as_path))
         .chain(fvcom.as_deref())
         .collect::<Vec<_>>();
-    let stage = LegacyDeliveryStage::new(&inputs, &outputs, &quality_dir)?;
+    let mut stage = LegacyDeliveryStage::new(&inputs, &outputs, &quality_dir)?;
+    domain_sources?;
+    patch_sources?;
     preserve_final_workspace(&mut plan, &inputs, &outputs, workdir)?;
+    let patch_delivery = if config.mask_patch_on {
+        let patch = super::patch_delivery::stage_patch_preprocessing(
+            &mut stage,
+            &plan,
+            &file_dir,
+            namelist_source,
+            workdir,
+            &inputs,
+        )?;
+        if let Some(patch) = &patch {
+            let patch_outputs = patch
+                .outputs
+                .iter()
+                .map(PathBuf::as_path)
+                .collect::<Vec<_>>();
+            preserve_final_workspace(&mut plan, &inputs, &patch_outputs, workdir)?;
+        }
+        patch
+    } else {
+        None
+    };
     let region = region?;
     let landtype_gpd = carve_landtype
         .then(|| landtype_gridnum_perdegree(Path::new(config.landtype_file.trim())))
@@ -89,10 +125,17 @@ pub(super) fn run_final_base(
         ));
     }
     // The typed region above is the input to the shared clipping kernel.
-    // Legacy Mask_make caches are redundant here; raw callers still write them.
+    // Canonical workspace setup remains live, but final delivery has already
+    // staged patch caches privately; raw callers still write Mask_make caches.
     plan.mask_operations.clear();
-    let workspace_mask =
+    let mut workspace_mask =
         crate::apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
+    if let Some(patch) = &patch_delivery {
+        workspace_mask
+            .mask_reports
+            .extend(patch.mask_reports.clone());
+        workspace_mask.mask_counts = patch.mask_counts.clone();
+    }
     let staged = stage.path(&published)?;
     let private_dir = staged.parent().and_then(Path::parent).unwrap();
     let (gridfile, runtime_state) = generate_gridinit_carrier(config, private_dir, max_tris)?;
@@ -172,17 +215,32 @@ pub(super) fn run_final_base(
     }
     let skipped_reason = if !model_artifacts.is_empty() {
         None
+    } else if config.mask_patch_on {
+        Some("Native regional base, raw parent, and patch preprocessing caches; patch masks are Area_judge inputs and are not applied to base geometry")
     } else if config.defer_model_exports {
         Some("Model exports deferred; native admission and auxiliary delivery still required")
     } else {
         Some("Native regional base and auxiliaries only; no specialized model adapter was run")
     };
+    let patch_entries = patch_delivery
+        .as_ref()
+        .map(|patch| patch.auxiliary_entries())
+        .unwrap_or_default();
+    let mut delivery_auxiliary = BTreeMap::<&str, PathBuf>::new();
+    for (key, output) in &auxiliary {
+        delivery_auxiliary.insert(*key, output.clone());
+    }
+    for (key, output) in &patch_entries {
+        delivery_auxiliary.insert(key.as_str(), output.clone());
+    }
     stage.publish(
         serde_json::json!({
             "kind": "earthmesh_legacy_delivery",
             "target": {"cell": cell_kind},
             "capability": if model_artifacts.is_empty() { "native_and_auxiliary" } else { "full" },
             "requested_output_format": config.output_format,
+            "patch_preprocessing_only": config.mask_patch_on,
+            "patch_applied_to_geometry": false,
             "source_mesh_type": config.mesh_type,
             "source_mode_grid": config.mode_grid,
             "skipped_reason": skipped_reason,
@@ -190,7 +248,7 @@ pub(super) fn run_final_base(
         &published,
         quality.verdict,
         &model_artifacts,
-        &auxiliary,
+        &delivery_auxiliary,
     )?;
     report.gridfile.output = published;
     raw.output = raw_parent;

@@ -1,6 +1,8 @@
 mod carrier;
+pub(crate) use carrier::generate_gridinit_carrier;
 mod global;
 mod landtype;
+mod patch_delivery;
 mod regional;
 mod regional_delivery;
 

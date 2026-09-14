@@ -154,6 +154,21 @@ fn cli_lepp_post_quality_writes_separate_artifacts_without_replacing_canonical_g
     );
     assert_eq!(report["insertions"].as_array().map(Vec::len), Some(1));
 
+    let delivery: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(format!(
+            "{case_name}/result/final_quality/refinement/legacy_delivery.json"
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delivery["gridfile"], canonical.display().to_string());
+    assert_eq!(
+        delivery["auxiliary_artifacts"]["result/gridfile_NXP0006_hex_lepp.nc4"],
+        lepp_gridfile.display().to_string()
+    );
+    assert!(!delivery.to_string().contains(".earthmesh-delivery-"));
+    assert!(!report.to_string().contains(".earthmesh-delivery-"));
+
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -536,7 +551,13 @@ fn cli_lepp_post_quality_hex_zero_progress_rejects_unchanged_optimized_success()
     assert!(stderr.contains("5..=7"), "{stderr}");
     assert!(!optimized.exists());
     let canonical = root.join(format!("{case}/result/gridfile_NXP0006_hex.nc4"));
-    assert_hex_publication(&canonical);
+    // A failed standalone final attempt must not publish its unchecked carrier.
+    assert!(!canonical.exists());
+    assert!(!root
+        .join(format!(
+            "{case}/result/final_quality/refinement/legacy_delivery.json"
+        ))
+        .exists());
     fs::remove_dir_all(root).unwrap();
 }
 

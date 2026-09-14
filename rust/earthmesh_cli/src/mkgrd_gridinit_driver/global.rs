@@ -47,7 +47,7 @@ pub(crate) fn run_mkgrd_gridinit_global(
     let mut delivery = None;
     if final_delivery {
         // This branch publishes the full sphere, not the masked/refined carrier.
-        if !config.mask_domain_global || config.mask_patch_on {
+        if !config.mask_domain_global {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "final base delivery requires an unmasked global grid",
@@ -64,17 +64,47 @@ pub(crate) fn run_mkgrd_gridinit_global(
             .unwrap()
             .join("final_quality")
             .join(published.file_stem().unwrap());
-        let stage = crate::project_delivery::LegacyDeliveryStage::new(
-            &[namelist_source, &mode_file],
+        let mut inputs = vec![namelist_source.to_path_buf(), mode_file.clone()];
+        let patch_sources = config
+            .mask_patch_on
+            .then(|| super::patch_delivery::discover_patch_sources(&config))
+            .transpose();
+        if let Ok(Some(sources)) = &patch_sources {
+            inputs.extend(sources.iter().cloned());
+            inputs.sort();
+            inputs.dedup();
+        }
+        let input_refs = inputs.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+        let mut stage = crate::project_delivery::LegacyDeliveryStage::new(
+            &input_refs,
             &[&published],
             &quality_dir,
         )?;
-        preserve_final_workspace(
-            &mut plan,
-            &[namelist_source, &mode_file],
-            &[&published],
-            workdir,
-        )?;
+        patch_sources?;
+        preserve_final_workspace(&mut plan, &input_refs, &[&published], workdir)?;
+        let patch_delivery = if config.mask_patch_on {
+            let patch = super::patch_delivery::stage_patch_preprocessing(
+                &mut stage,
+                &plan,
+                &output_dir,
+                namelist_source,
+                workdir,
+                &input_refs,
+            )?;
+            if let Some(patch) = &patch {
+                let patch_outputs = patch
+                    .outputs
+                    .iter()
+                    .map(PathBuf::as_path)
+                    .collect::<Vec<_>>();
+                preserve_final_workspace(&mut plan, &input_refs, &patch_outputs, workdir)?;
+            }
+            plan.mask_operations
+                .retain(|operation| operation.mask_select != "mask_patch");
+            patch
+        } else {
+            None
+        };
         let staged = stage.path(&published)?;
         // Existing import converters append gridfile/<name> to file_dir.
         // Redirect only their output root; workspace and inputs stay canonical.
@@ -83,15 +113,21 @@ pub(crate) fn run_mkgrd_gridinit_global(
             .and_then(Path::parent)
             .unwrap()
             .to_path_buf();
-        delivery = Some((stage, published, staged, quality_dir));
+        delivery = Some((stage, published, staged, quality_dir, patch_delivery));
     }
-    let workspace_mask =
+    let mut workspace_mask =
         apply_workspace_and_mask_operations(&plan, namelist_source, workdir, 9, false)?;
 
     let (mut gridfile, runtime_state) =
         super::carrier::generate_gridinit_carrier(&config, &output_dir, max_tris)?;
 
-    if let Some((stage, published, staged, quality_dir)) = delivery {
+    if let Some((stage, published, staged, quality_dir, patch_delivery)) = delivery {
+        if let Some(patch) = &patch_delivery {
+            workspace_mask
+                .mask_reports
+                .extend(patch.mask_reports.clone());
+            workspace_mask.mask_counts = patch.mask_counts.clone();
+        }
         fs::rename(&gridfile.output, &staged)?;
         let cell_kind = if config.mode_grid == "tri" {
             earthmesh_project::MeshCellKind::Tri
@@ -110,16 +146,33 @@ pub(crate) fn run_mkgrd_gridinit_global(
             &quality_dir,
         )
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let patch_entries = patch_delivery
+            .as_ref()
+            .map(|patch| patch.auxiliary_entries())
+            .unwrap_or_default();
+        let mut auxiliary = BTreeMap::<&str, PathBuf>::new();
+        for (key, output) in &patch_entries {
+            auxiliary.insert(key.as_str(), output.clone());
+        }
         stage.publish(
             serde_json::json!({
                 "kind": "earthmesh_legacy_delivery",
                 "target": {"cell": cell_kind},
-                "capability": "native_only",
+                "capability": if auxiliary.is_empty() { "native_only" } else { "native_and_auxiliary" },
+                "patch_preprocessing_only": config.mask_patch_on,
+                "patch_applied_to_geometry": false,
                 "source_mesh_type": config.mesh_type,
                 "source_mode_grid": config.mode_grid,
-                "skipped_reason": "Native global base grid only; no specialized model adapter was run",
+                "skipped_reason": if config.mask_patch_on {
+                    "Native global base grid plus patch preprocessing caches; patch masks are Area_judge inputs and are not applied to base geometry"
+                } else {
+                    "Native global base grid only; no specialized model adapter was run"
+                },
             }),
-            &published, quality.verdict, &BTreeMap::new(), &BTreeMap::new(),
+            &published,
+            quality.verdict,
+            &BTreeMap::new(),
+            &auxiliary,
         )?;
         gridfile.output = published;
     }

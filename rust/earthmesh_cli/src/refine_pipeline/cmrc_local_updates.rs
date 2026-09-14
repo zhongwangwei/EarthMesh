@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use earthmesh_geometry::Point;
 use earthmesh_mesh::{lonlat_degrees_to_unit_xyz, CartesianPoint, LonLatDegrees, MeshState};
@@ -68,20 +68,7 @@ pub(super) fn apply(
     request_path: &Path,
     contract: AngleContractId,
 ) -> io::Result<Value> {
-    let request_text = std::fs::read_to_string(request_path).map_err(|error| {
-        invalid_input(format!(
-            "read local update request {}: {error}",
-            request_path.display()
-        ))
-    })?;
-    let request: Request = serde_json::from_str(&request_text).map_err(|error| {
-        invalid_input(format!(
-            "malformed local update request {}: {error}",
-            request_path.display()
-        ))
-    })?;
-    require_absolute("source_mpas", &request.source_mpas)?;
-    require_absolute("source_gridfile", &request.source_gridfile)?;
+    let request = read_request(request_path)?;
     if !request.flips.is_empty() {
         return Err(invalid_input(format!(
             "local CMRC update delivery accepts no flips; got {}",
@@ -180,6 +167,32 @@ pub(super) fn apply(
             "dual_after": metrics_json(after_dual)
         }
     }))
+}
+
+pub(super) fn input_paths(request_path: &Path) -> io::Result<[PathBuf; 2]> {
+    let request = read_request(request_path)?;
+    Ok([
+        PathBuf::from(request.source_mpas),
+        PathBuf::from(request.source_gridfile),
+    ])
+}
+
+fn read_request(request_path: &Path) -> io::Result<Request> {
+    let request_text = std::fs::read_to_string(request_path).map_err(|error| {
+        invalid_input(format!(
+            "read local update request {}: {error}",
+            request_path.display()
+        ))
+    })?;
+    let request: Request = serde_json::from_str(&request_text).map_err(|error| {
+        invalid_input(format!(
+            "malformed local update request {}: {error}",
+            request_path.display()
+        ))
+    })?;
+    require_absolute("source_mpas", &request.source_mpas)?;
+    require_absolute("source_gridfile", &request.source_gridfile)?;
+    Ok(request)
 }
 
 fn require_absolute(name: &str, path: &str) -> io::Result<()> {
@@ -976,6 +989,91 @@ mod tests {
                 aspect: 2.0,
             },
         )
+    }
+
+    fn request_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_cmrc_local_updates_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("request root");
+        root
+    }
+
+    fn write_request(
+        root: &Path,
+        source_mpas: &Path,
+        source_gridfile: &Path,
+        name: &str,
+    ) -> PathBuf {
+        let request_path = root.join(name);
+        std::fs::write(
+            &request_path,
+            serde_json::to_vec(&serde_json::json!({
+                "source_mpas": source_mpas.display().to_string(),
+                "source_gridfile": source_gridfile.display().to_string(),
+                "target_cell": 0,
+                "updates": [{"id": 0, "xyz": [1.0, 0.0, 0.0]}],
+                "flips": [],
+                "case": "unit"
+            }))
+            .expect("request json"),
+        )
+        .expect("write request");
+        request_path
+    }
+
+    #[test]
+    fn input_paths_returns_declared_absolute_sources() {
+        let root = request_root("input_paths_ok");
+        let source_mpas = root.join("source.mpasi.nc");
+        let source_gridfile = root.join("source.grid.nc");
+        std::fs::write(&source_mpas, b"mpas").expect("source mpas");
+        std::fs::write(&source_gridfile, b"grid").expect("source gridfile");
+        let request_path = write_request(&root, &source_mpas, &source_gridfile, "request.json");
+
+        let paths = input_paths(&request_path).expect("input paths");
+
+        assert_eq!(paths, [source_mpas, source_gridfile]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn input_paths_rejects_missing_or_relative_source_fields() {
+        let root = request_root("input_paths_bad");
+        let missing_source = root.join("missing_source.json");
+        std::fs::write(
+            &missing_source,
+            serde_json::to_vec(&serde_json::json!({
+                "source_gridfile": root.join("source.grid.nc").display().to_string(),
+                "target_cell": 0,
+                "updates": [{"id": 0, "xyz": [1.0, 0.0, 0.0]}]
+            }))
+            .expect("missing-source json"),
+        )
+        .expect("write missing source");
+        let err = input_paths(&missing_source).expect_err("missing source_mpas rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("malformed local update request"));
+
+        let relative_source = root.join("relative_source.json");
+        std::fs::write(
+            &relative_source,
+            serde_json::to_vec(&serde_json::json!({
+                "source_mpas": "relative.mpasi.nc",
+                "source_gridfile": root.join("source.grid.nc").display().to_string(),
+                "target_cell": 0,
+                "updates": [{"id": 0, "xyz": [1.0, 0.0, 0.0]}]
+            }))
+            .expect("relative-source json"),
+        )
+        .expect("write relative source");
+        let err = input_paths(&relative_source).expect_err("relative source_mpas rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("source_mpas must be absolute"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn duals() -> (GlobalMetrics, GlobalMetrics) {

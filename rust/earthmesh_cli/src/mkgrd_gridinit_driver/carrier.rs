@@ -48,7 +48,7 @@ pub(super) fn gridinit_sizes(config: &EarthmeshConfig) -> io::Result<(usize, usi
     Ok((nxp, niter))
 }
 
-pub(super) fn generate_gridinit_carrier(
+pub(crate) fn generate_gridinit_carrier(
     config: &EarthmeshConfig,
     output_dir: &Path,
     max_tris: usize,
