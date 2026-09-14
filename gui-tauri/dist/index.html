@@ -587,7 +587,7 @@ let SPECIALIZED_CELLS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_comp
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
 const DEFAULT_CIRCLE=[114,22,500]; // [lon, lat, geodesic radius km]
 let domCircle=[...DEFAULT_CIRCLE];
-let domCircleSeaRatio=null;
+let domainSeaRatios={}; // keep each regional draft when switching domain modes
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
 let runInfo=null;   // { ok, outdir, code, gridfile, autoRefineDecisions } from the last run
@@ -724,8 +724,9 @@ function estCells(){
     area=4*Math.PI*radius*radius*Math.sin(angle/2)**2;
   } else if(typeof regional!=="undefined" && regional){
     const b=(typeof domBbox!=="undefined")?domBbox:DEFAULT_BBOX;
-    const midLat=(b[2]+b[3])/2;
-    const dx=Math.abs(b[1]-b[0])*KM_PER_DEG_EQ*Math.cos(midLat*Math.PI/180);
+    if(bboxDomainError(b)) return 0;
+    const midLat=(b[2]+b[3])/2, span=b[0]>b[1]?b[1]+360-b[0]:b[1]-b[0];
+    const dx=span*KM_PER_DEG_EQ*Math.cos(midLat*Math.PI/180);
     const dy=Math.abs(b[3]-b[2])*KM_PER_DEG_EQ;
     area=Math.max(1,dx*dy);
   } else {
@@ -737,7 +738,7 @@ function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n
 function updateEstimate(){
   if(hiddenDomainShape){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   if(domainMode==="watershed" || domainMode==="close"){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
-  if(domainMode==="circle" && circleDomainError()){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
+  if((domainMode==="circle" && circleDomainError()) || (domainMode==="regional" && bboxDomainError(domBbox))){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   const est=estCells();
   const set=(id,v,prop)=>{const el=document.getElementById(id); if(el){ if(prop) el.style[prop]=v; else el.textContent=v; }};
   set("estCells","~"+fmtK(est));
@@ -835,12 +836,12 @@ function renderStep(i){
        <div class="pill-row" style="margin-bottom:14px"><button type="button" class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</button><button type="button" class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</button><button type="button" class="pill dom-mode ${domainMode==="circle"?"on":""}" data-mode="circle">${lang?"圆形":"Circle"}</button><button type="button" class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</button><button type="button" class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</button></div>
        ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
        :domainMode==="watershed"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">SHP</span></div>
-       ${field(lang?"流域边界文件":"Watershed boundary file",`<div class="browse" id="watershedBrowse" style="cursor:pointer"><span class="path" id="watershedPathText" style="max-width:none"></span></div>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       ${field(lang?"流域边界文件":"Watershed boundary file",`<button type="button" class="browse project-pick" id="watershedBrowse" style="width:100%;text-align:left"><span class="path" id="watershedPathText" style="max-width:none"></span></button>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
        <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"SHP 会自动转换为引擎 close 输入；支持 WGS84、Web Mercator 和 WGS84 UTM。":"SHP is converted automatically to the engine close input; WGS84, Web Mercator, and WGS84 UTM are supported."}</div>`
        :domainMode==="close"?`
-       ${field(lang?"闭合区域文件":"Close boundary file",`<div class="browse" id="closeBrowse" style="cursor:pointer"><span class="path" id="closePathText" style="max-width:none"></span></div>`)}
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       ${field(lang?"闭合区域文件":"Close boundary file",`<button type="button" class="browse project-pick" id="closeBrowse" style="width:100%;text-align:left"><span class="path" id="closePathText" style="max-width:none"></span></button>`)}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
        ${closeBoundaryControls("domain",domainCloseBoundary,lang)}
        <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"支持 .shp / .nml / .nc / .nc4 / .txt / .csv；SHP/TXT 会先转换为临时 NML。":"Supports .shp / .nml / .nc / .nc4 / .txt / .csv; SHP/TXT are converted to temporary NML first."}</div>`
        :domainMode==="circle"?`<div class="grid2">
@@ -851,10 +852,10 @@ function renderStep(i){
        ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" min="0" max="100" step="any" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :domainMode==="regional"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
-         ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
-         ${field(lang?"南纬度 (°)":"South lat (°)",inp(DEFAULT_BBOX[2].toFixed(1)))}${field(lang?"北纬度 (°)":"North lat (°)",inp(DEFAULT_BBOX[3].toFixed(1)))}
+         ${[["西经度 (°)","West lon (°)",180],["东经度 (°)","East lon (°)",180],["南纬度 (°)","South lat (°)",90],["北纬度 (°)","North lat (°)",90]].map(([cn,en,limit],j)=>field(lang?cn:en,`<input class="input" id="domainBbox${j}" type="number" required min="${-limit}" max="${limit}" step="any" aria-label="${lang?cn:en}" aria-describedby="domainBboxError" value="${Number.isFinite(domBbox[j])?domBbox[j]:""}">`)).join("")}
        </div>
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
+       <div id="domainBboxError" role="alert" style="color:var(--fail);font-size:12px;margin-bottom:8px"></div>
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"🌐 全球覆盖——无需设定边界，整个地球都会被网格化。":"🌐 Global coverage — no bounds needed; the whole planet is meshed."}</div>`}
      </div>`;
   }
@@ -1139,6 +1140,13 @@ function olGeojsonFrame(geojson){
   const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
   const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
 }
+function bboxDomainError(b){
+  if(!b.every(Number.isFinite)) return lang?"请填写有效的矩形框经纬度。":"Enter finite bounding-box coordinates.";
+  const [w,e,s,n]=b;
+  if(Math.abs(w)>180 || Math.abs(e)>180 || Math.abs(s)>90 || Math.abs(n)>90) return lang?"经度范围为 −180 至 180°，纬度范围为 −90 至 90°。":"Longitude must be −180…180° and latitude −90…90°.";
+  if(w===e || s>=n) return lang?"西、东经度必须不同，南纬度必须小于北纬度；支持跨日期变更线。":"West/east must differ and south must be below north; dateline crossing is supported.";
+  return "";
+}
 function circleDomainError(){
   const [lon,lat,radius]=domCircle;
   if(!domCircle.every(Number.isFinite)) return lang?"请填写有效的圆心经纬度和半径。":"Enter finite center coordinates and radius.";
@@ -1163,6 +1171,7 @@ function currentOlDomainFrame(){
     return {west,east,south,north,crossesDateline:east>180};
   }
   if((domainMode==="regional"||domainMode==="bbox")&&Array.isArray(domBbox)&&domBbox.length===4){
+    if(bboxDomainError(domBbox)) return null;
     const [west,e,south,north]=domBbox, east=west>e?e+360:e;
     return [west,east,south,north].every(Number.isFinite)?{west,east,south,north,crossesDateline:east>180}:null;
   }
@@ -2294,6 +2303,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml = await applyCloseBoundary(yaml, "domain", template ? normalizeCloseBoundary(null) : domainCloseBoundary);
     } else {
       const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
+      const error = bboxDomainError(b);
+      if (error) throw new Error(error);
       const seaRatio = domain && domain.kind === "bbox" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_bbox", { yaml, w: b[0], e: b[1], s: b[2], n: b[3], seaRatio });
     }
@@ -2506,7 +2517,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   let watershedBoundaryPath = "";
+  let watershedBoundaryVersion = 0;
   async function loadWatershedBoundary(path) {
+    const version = ++watershedBoundaryVersion;
     if (!path) {
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
@@ -2514,10 +2527,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     }
     if (path === watershedBoundaryPath && _domainGeojson) return;
     watershedBoundaryPath = path;
+    if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
     try {
       const geojson = await api.shapefileBoundary(path);
+      if (version !== watershedBoundaryVersion) return;
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(geojson, true);
     } catch (e) {
+      if (version !== watershedBoundaryVersion) return;
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
       logLine("✗ watershed boundary: " + e);
@@ -2723,146 +2739,73 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // ---- domain (step 2) -> DomainConfig --------------------------------------
   const num = (el) => parseFloat(String(el.value).replace(/[^\d.\-]/g, ""));
-  function readBbox() {
-    const ins = document.querySelectorAll("#work .grid2 input.input"); // [W,E,S,N]
-    if (ins.length < 4) return null;
-    const b = { w: num(ins[0]), e: num(ins[1]), s: num(ins[2]), n: num(ins[3]) };
-    return Object.values(b).every((x) => !isNaN(x)) ? b : null;
-  }
   function enhanceDomainStep() {
-    // Mirror the live domain mode without replacing an opened or invalid circle draft.
     if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
-    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    const mode = domainMode;
     const kind = mode === "regional" ? "bbox" : mode === "watershed" ? "shapefile" : mode;
     if (domainEdit && domainEdit.kind !== kind) clearRunArtifacts();
     if (mode === "global") { domainEdit = { kind: "global" }; loadWatershedBoundary(""); return; }
-    const ratio = document.getElementById("seaRatioInput");
-    const ratioText = document.getElementById("seaRatioText");
-    const readSeaRatio = () => {
-      if (!ratio) return (domainEdit && (domainEdit.kind === "bbox" || domainEdit.kind === "circle" || domainEdit.kind === "shapefile" || domainEdit.kind === "close")) ? domainEdit.seaRatio : null;
-      const v = parseFloat(ratio.value);
-      return isNaN(v) ? null : v / 100;
-    };
+    const ratio = document.getElementById("seaRatioInput"), ratioText = document.getElementById("seaRatioText");
+    domainSeaRatios[kind] ??= DEFAULT_SEA_RATIO_PCT / 100;
+    if (ratio) ratio.value = domainSeaRatios[kind] * 100;
     const paintSeaRatio = () => {
       if (ratioText && ratio) ratioText.textContent = ratio.value + "% " + (zh() ? "海洋" : "ocean");
     };
-    if (mode === "circle") {
+    if (ratio) ratio.addEventListener("input", () => {
+      domainSeaRatios[kind] = Number(ratio.value) / 100;
+      domainEdit.seaRatio = domainSeaRatios[kind];
+      paintSeaRatio();
+      clearRunArtifacts();
+    });
+    paintSeaRatio();
+    if (mode === "circle" || kind === "bbox") {
       loadWatershedBoundary("");
-      const inputs = [0,1,2].map((j) => document.getElementById(`domainCircle${j}`));
-      if (ratio) ratio.value = (domCircleSeaRatio ?? DEFAULT_SEA_RATIO_PCT / 100) * 100;
-      const syncCircle = (edited = false) => {
-        domCircle = inputs.map((input) => input.value.trim() === "" ? NaN : Number(input.value));
-        domCircleSeaRatio = readSeaRatio();
-        domainEdit = { kind: "circle", seaRatio: domCircleSeaRatio };
-        const error = circleDomainError();
-        const message = document.getElementById("domainCircleError");
+      const circle = mode === "circle", prefix = circle ? "domainCircle" : "domainBbox";
+      const inputs = (circle ? [0,1,2] : [0,1,2,3]).map((j) => document.getElementById(`${prefix}${j}`));
+      const sync = (edited = false) => {
+        const values = inputs.map((input) => input.value.trim() === "" ? NaN : Number(input.value));
+        if (circle) domCircle = values; else domBbox = values;
+        domainEdit = { kind, seaRatio: domainSeaRatios[kind] };
+        if (!circle) Object.assign(domainEdit, { w:values[0], e:values[1], s:values[2], n:values[3] });
+        const error = circle ? circleDomainError() : bboxDomainError(values);
+        const message = document.getElementById(`${prefix}Error`);
         if (message) message.textContent = error;
         inputs.forEach((input) => { input.setCustomValidity(error); input.setAttribute("aria-invalid", String(!!error)); });
-        paintSeaRatio();
         if (edited) clearRunArtifacts();
         updateEstimate();
         drawMap();
       };
-      inputs.forEach((input) => input.addEventListener("input", () => syncCircle(true)));
-      if (ratio) ratio.addEventListener("input", () => syncCircle(true));
-      syncCircle();
+      inputs.forEach((input) => input.addEventListener("input", () => sync(true)));
+      sync();
       return;
     }
-    if (mode === "watershed") {
-      const browse = document.getElementById("watershedBrowse");
-      const text = document.getElementById("watershedPathText");
-      const syncShape = () => {
-        const path = (typeof watershedPath !== "undefined" ? watershedPath : "") || "";
-        if (path) domainEdit = { kind: "shapefile", path, seaRatio: readSeaRatio() };
-        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择 .shp 文件" : "📄 Choose a .shp file");
-        paintSeaRatio();
-      };
-      if (domainEdit && domainEdit.kind === "shapefile") {
-        watershedPath = domainEdit.path || "";
-        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-      }
-      syncShape();
-      loadWatershedBoundary(watershedPath);
-      if (browse) browse.onclick = async () => {
-        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-        if (!p) return;
-        watershedPath = p;
-        domainEdit = { kind: "shapefile", path: p, seaRatio: readSeaRatio() };
-        clearRunArtifacts();
-        syncShape();
-        await loadWatershedBoundary(p);
-        await refreshSummary();
-      };
-      if (ratio) ratio.addEventListener("input", () => {
-        if (watershedPath) domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: readSeaRatio() };
-        paintSeaRatio();
-      });
-      return;
-    }
-    if (mode === "close") {
-      const browse = document.getElementById("closeBrowse");
-      const text = document.getElementById("closePathText");
-      const syncClose = () => {
-        const path = (typeof closePath !== "undefined" ? closePath : "") || "";
-        if (path) closeFormat = inferCloseFormat(path);
-        if (path) domainEdit = { kind: "close", path, format: closeFormat, seaRatio: readSeaRatio() };
-        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择文件" : "📄 Choose file");
-        paintSeaRatio();
-        loadWatershedBoundary(closeFormat === "polygon_shp" ? path : "");
-      };
-      if (domainEdit && domainEdit.kind === "close") {
-        closePath = domainEdit.path || "";
-        closeFormat = domainEdit.format || "nml";
-        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-      }
-      syncClose();
-      if (browse) browse.onclick = async () => {
-        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-        if (!p) return;
-        closePath = p;
-        closeFormat = inferCloseFormat(p);
-        if (!closeFormat) {
-          logLine("✗ " + (zh() ? "闭合区域支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Close domains support .shp / .nml / .nc / .nc4 / .txt / .csv"));
-          return;
-        }
-        domainEdit = { kind: "close", path: p, format: closeFormat, seaRatio: readSeaRatio() };
-        clearRunArtifacts();
-        syncClose();
-        await refreshSummary();
-      };
-      if (ratio) ratio.addEventListener("input", () => {
-        if (closePath) domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: readSeaRatio() };
-        paintSeaRatio();
-      });
-      bindCloseBoundaryControls(
-        "domain",
-        () => domainCloseBoundary,
-        (value) => { domainCloseBoundary = value; }
-      );
-      return;
-    }
-    const sync = () => {
-      loadWatershedBoundary("");
-      const b = readBbox();
-      if (b) {
-        domainEdit = Object.assign({ kind: "bbox", seaRatio: readSeaRatio() }, b);
-        domBbox = [b.w, b.e, b.s, b.n];
-        paintSeaRatio();
-        if (typeof updateEstimate === "function") updateEstimate();
-        if (typeof drawMap === "function") drawMap();
-        if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
-      }
+    const shapefile = mode === "watershed", id = shapefile ? "watershed" : "close";
+    const browse = document.getElementById(`${id}Browse`), text = document.getElementById(`${id}PathText`);
+    const syncFile = () => {
+      const path = shapefile ? watershedPath : closePath;
+      domainEdit = { kind, path, seaRatio: domainSeaRatios[kind] };
+      if (!shapefile) domainEdit.format = closeFormat;
+      if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择文件" : "📄 Choose file");
+      loadWatershedBoundary(shapefile || closeFormat === "polygon_shp" ? path : "");
     };
-    if (domainEdit && domainEdit.kind === "bbox") {
-      const ins = document.querySelectorAll("#work .grid2 input.input");
-      if (ins.length >= 4) { ins[0].value = domainEdit.w; ins[1].value = domainEdit.e; ins[2].value = domainEdit.s; ins[3].value = domainEdit.n; }
-      if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-    } else {
-      sync(); // initialize from the shown default inputs
-    }
-    document.querySelectorAll("#work .grid2 input.input").forEach((inp) => inp.addEventListener("input", sync));
-    if (ratio) ratio.addEventListener("input", sync);
-    paintSeaRatio();
+    syncFile();
+    if (browse) browse.onclick = async () => {
+      let path;
+      try { path = await api.pickDataFile(); }
+      catch (e) { if (document.getElementById(`${id}Browse`) === browse) logLine("✗ " + e); return; }
+      if (!path || document.getElementById(`${id}Browse`) !== browse) return;
+      const format = inferCloseFormat(path);
+      if (!format || (shapefile && format !== "polygon_shp")) {
+        logLine("✗ " + (shapefile ? (zh() ? "流域边界必须为 .shp 文件" : "Watershed boundary requires a .shp file") : (zh() ? "闭合区域支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Close domains support .shp / .nml / .nc / .nc4 / .txt / .csv")));
+        return;
+      }
+      if (shapefile) watershedPath = path;
+      else { closePath = path; closeFormat = format; }
+      clearRunArtifacts();
+      syncFile();
+      await refreshSummary();
+    };
+    if (!shapefile) bindCloseBoundaryControls("domain", () => domainCloseBoundary, (value) => { domainCloseBoundary = value; });
   }
 
   // ---- quality (step 5) -> QualityConfig ------------------------------------
@@ -3583,13 +3526,16 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       (sum.threshold_criteria || []).forEach((criterion) => {
         criterionEdits[criterion.id] = { enabled: !!criterion.enabled, value: criterion.value };
       });
+      domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE];
+      watershedPath = ""; closePath = ""; closeFormat = "nml";
+      domainSeaRatios = { [sum.domain_shape]: sum.sea_ratio ?? null };
       domainCloseBoundary = normalizeCloseBoundary(null);
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";
         regional = true;
         watershedPath = sum.watershed_path || "";
         domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary(watershedPath);
+        loadWatershedBoundary(watershedPath);
       } else if (sum.domain_shape === "close") {
         domainMode = "close";
         regional = true;
@@ -3597,30 +3543,29 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         closeFormat = sum.close_format || "nml";
         domainCloseBoundary = normalizeCloseBoundary(sum.domain_close_boundary);
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
+        loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
       } else if (sum.domain_shape === "circle" && Array.isArray(sum.circle) && sum.circle.length === 3) {
         domainMode = "circle";
         regional = true;
         domCircle = [...sum.circle];
-        domCircleSeaRatio = sum.sea_ratio ?? null;
         domainEdit = { kind: "circle", seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       } else if (sum.bbox) {
         domainMode = "regional";
         regional = true;
         domBbox = [sum.bbox[0], sum.bbox[1], sum.bbox[2], sum.bbox[3]];
         domainEdit = { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3], seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       } else if (isRegional) {
         domainMode = "regional";
         regional = true;
         domainEdit = { kind: "hidden", shape: sum.domain_shape || "regional" };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       } else {
         domainMode = "global";
         regional = false;
         domainEdit = { kind: "global" };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       }
       hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
       expertEdit = {
@@ -3735,7 +3680,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE]; domCircleSeaRatio = null; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE]; domainSeaRatios = {}; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();

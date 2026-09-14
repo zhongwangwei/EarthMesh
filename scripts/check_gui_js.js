@@ -1096,12 +1096,9 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 }
 
 {
-  const body = section(html, /const readSeaRatio = \(\) => \{([\s\S]*?)\n    \};/, "readSeaRatio body");
-  check(
-    body.includes("return isNaN(v) ? null : v / 100;") && !body.includes("Math.max(0, Math.min(100, v))"),
-    "frontend sea ratio must pass invalid input to Rust validation",
-  );
-  log("frontend sea ratio passes invalid input to Rust validation");
+  const body = section(html, /if \(ratio\) ratio\.addEventListener\("input", \(\) => \{([\s\S]*?)\n    \}\);/, "domain sea ratio handler");
+  check(body.includes("Number(ratio.value) / 100") && body.includes("clearRunArtifacts()") && !body.includes("Math.round"), "all domain ratios must retain precision and invalidate obsolete results");
+  log("domain sea ratio uses one unrounded draft handler");
 }
 
 {
@@ -1589,7 +1586,7 @@ checkProjectEditAdmission().catch(error => { console.error(error); process.exitC
 }
 
 async function checkTemplateAdmission() {
-  const extract=name=>{const indent=name==="selectTemplate"?"":"  ";return section(html,new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`),name);};
+  const extract=name=>{const indent=["selectTemplate","bboxDomainError"].includes(name)?"":"  ";return section(html,new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`),name);};
   const reset=section(html,/window\.resetTemplateDerivedState = function \(\) \{([\s\S]*?)\n  \};/,'template reset');
   const bridge=html.match(/  window\.commitTemplateEdit = [\s\S]*?\n  \};/)?.[0]||'';
   const commitYaml=html.includes('function commitProjectYaml(')?extract('commitProjectYaml'):'';
@@ -1633,6 +1630,8 @@ async function checkTemplateAdmission() {
       validate(cfg);return command==='project_summary'?cfg:JSON.stringify(cfg);
     }
     const api={summary:yaml=>invoke('project_summary',{yaml})};
+    let lang=0;
+    ${extract('bboxDomainError')}
     ${preset}
     ${extract('composeYaml')}
     ${commitYaml}
@@ -1784,14 +1783,15 @@ async function checkCircleDomain() {
   const compose=section(html,/async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/,'composeYaml');
   const domain=compose.slice(compose.indexOf('    const mode ='),compose.indexOf('    if (baseProjectYaml)'));
   const h=new Function(`
-    let domCircle=[179,20,750],domainMode='circle',regional=true,lang=0;
-    const KM_PER_DEG_EQ=2*Math.PI*6371.229/360,DEFAULT_BBOX=[108,120,18,26],domBbox=DEFAULT_BBOX;
+    let domCircle=[179,20,750],domBbox=[170,-170,-10,10],domainMode='circle',regional=true,lang=0;
+    const KM_PER_DEG_EQ=2*Math.PI*6371.229/360,DEFAULT_BBOX=[108,120,18,26];
     const cellKm=()=>100,olGeojsonFrame=()=>{throw Error('circle fell back to an old mesh frame');};
     ${extract('wrapOlLon')}
+    ${extract('bboxDomainError')}
     ${extract('circleDomainError')}
     ${extract('currentOlDomainFrame')}
     ${extract('estCells')}
-    return {set:c=>{domCircle=c;},error:circleDomainError,frame:currentOlDomainFrame,estimate:estCells,
+    return {set:c=>{domCircle=c;},setBbox:b=>{domainMode="regional";domBbox=b;},error:circleDomainError,frame:currentOlDomainFrame,estimate:estCells,
       compose:async()=>{const template=null,domain={kind:'circle',seaRatio:.47125},calls=[];let yaml='input';
         const invoke=async(cmd,args)=>{calls.push({cmd,args});return 'circle yaml';};
         ${domain}
@@ -1808,8 +1808,37 @@ async function checkCircleDomain() {
     let rejected=false;try{await h.compose();}catch{rejected=true;}check(rejected,'invalid draft must fail compose before any setter');
   }
   for(const lat of [-90,90]){h.set([0,lat,500]);const frame=h.frame();check(frame.west===-180&&frame.east===180,'polar circles cover all longitudes');}
+  h.setBbox([170,-170,-10,10]);const wrapped=h.estimate();h.setBbox([-10,10,-10,10]);check(h.estimate()===wrapped,'bbox estimate must use its dateline-safe short longitude span');
+  for(const bbox of [[NaN,120,0,20],[181,120,0,20],[10,10,0,20],[10,20,30,20]]){h.setBbox(bbox);check(h.frame()===null&&h.estimate()===0,'invalid bbox must not render old extents');let rejected=false;try{await h.compose();}catch{rejected=true;}check(rejected,'invalid bbox must fail before invoking the backend');}
   check(libRs.includes('set_domain_circle,')&&html.includes('domCircle = [...sum.circle]')&&html.includes('circle:domCircle')&&html.includes('if ("circle" in payload) domCircle = payload.circle;'),'circle command, open reflection and detached map state must remain wired');
   check(html.includes('data-mode="circle"')&&html.includes('aria-describedby="domainCircleHint domainCircleError"'),'circle editor needs a named, described native input');
   log('circle domain: actual compose/validation/dateline/pole/area and command/reflection/map state checks passed');
 }
 checkCircleDomain().catch(error=>{console.error(error);process.exitCode=1;});
+
+
+async function checkDomainBoundaryOwnership() {
+  const body=section(html, /  (async function loadWatershedBoundary\(path\) \{[\s\S]*?\n  \})/, 'domain boundary loader');
+  const h=new Function(`
+    let watershedBoundaryPath='',watershedBoundaryVersion=0,_domainGeojson=null;
+    const calls=[],logs=[];
+    const api={shapefileBoundary:path=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}))};
+    const applyDomainBoundary=g=>{_domainGeojson=g;},logLine=s=>logs.push(s);
+    ${body}
+    return {load:loadWatershedBoundary,calls,logs,view:()=>_domainGeojson};
+  `)();
+  const a=h.load('/a.shp'),b=h.load('/b.shp');
+  h.calls[1].resolve({id:'b'});await b;h.calls[0].reject(Error('old failure'));await a;
+  check(h.view().id==='b'&&h.logs.length===0,'old boundary failure must not clear the newer outline/log an unrelated error');
+  const c=h.load('/c.shp');check(h.view()===null,'new path must clear the old outline while loading');await h.load('');h.calls[2].resolve({id:'c'});await c;
+  check(h.view()===null,'cleared/global/circle domain must not repaint a stale shapefile response');
+  const first=h.load('/same.shp'),other=h.load('/other.shp'),latest=h.load('/same.shp');
+  h.calls[5].resolve({id:'latest'});await latest;h.calls[3].resolve({id:'first'});await first;h.calls[4].reject(Error('superseded'));await other;
+  check(h.view().id==='latest'&&h.logs.length===0,'A→B→A must honor request identity, not path equality');
+  const n=h.calls.length;await h.load('/same.shp');check(h.calls.length===n,'accepted outline must reuse existing cache');
+  const failed=h.load('/bad.shp');h.calls[n].reject(Error('current failure'));await failed;
+  check(h.view()===null&&h.logs.length===1&&h.logs[0].includes('current failure'),'current preview error must remain visible');
+  check(!section(html,/async function reflectProject\(res\) \{([\s\S]*?)\n  \}/,'reflect').includes('await loadWatershedBoundary'), 'project controls must not wait for an optional preview');
+  log('domain boundary ownership: stale success/error, A→B→A, cache, clear and current errors passed');
+}
+checkDomainBoundaryOwnership().catch(error=>{console.error(error);process.exitCode=1;});

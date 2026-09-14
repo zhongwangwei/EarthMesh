@@ -1378,23 +1378,113 @@ fn circle_project(name: &str) -> ProjectConfig {
     )
 }
 #[test]
-fn set_domain_bbox_accepts_antimeridian_and_rejects_degenerate_coordinates() {
+fn set_domain_bbox_accepts_antimeridian_and_rejects_invalid_coordinates() {
     let yaml = hydrology_yaml("bbox_test");
     let yaml = set_domain_bbox(yaml, 170.0, -170.0, 21.5, 23.5, None).expect("antimeridian bbox");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.bbox, Some([170.0, -170.0, 21.5, 23.5]));
-    let yaml = hydrology_yaml("bbox_test");
-    let err = set_domain_bbox(yaml, 112.0, 112.0, 21.5, 23.5, None).unwrap_err();
-    assert!(err.contains("bbox west and east must differ"));
-    let yaml = hydrology_yaml("bbox_test");
-    let err = set_domain_bbox(yaml, 112.0, 115.0, 21.5, 21.5, None).unwrap_err();
-    assert!(err.contains("bbox south must be < north"));
+
+    for (w, e, s, n, expected) in [
+        (112.0, 112.0, 21.5, 23.5, "bbox west and east must differ"),
+        (112.0, 115.0, 21.5, 21.5, "bbox south must be < north"),
+        (
+            f64::NAN,
+            115.0,
+            21.5,
+            23.5,
+            "bbox coordinates must be finite",
+        ),
+        (
+            181.0,
+            115.0,
+            21.5,
+            23.5,
+            "bbox longitudes must be between -180 and 180",
+        ),
+        (
+            112.0,
+            115.0,
+            -91.0,
+            23.5,
+            "bbox latitudes must be between -90 and 90",
+        ),
+    ] {
+        let err = set_domain_bbox(hydrology_yaml("bbox_test"), w, e, s, n, None).unwrap_err();
+        assert!(err.contains(expected), "{err}");
+    }
 }
 #[test]
 fn set_domain_bbox_rejects_invalid_sea_ratio() {
     let yaml = preset_yaml("sea_ratio_test", MeshIntentPreset::CoastalOcean);
     let err = set_domain_bbox(yaml, 112.0, 115.0, 21.5, 23.5, Some(1.5)).unwrap_err();
     assert!(err.contains("domain sea_ratio must be between 0 and 1"));
+}
+
+#[test]
+fn domain_setters_roundtrip_fractional_sea_ratio_without_quantizing() {
+    for (label, yaml) in [
+        (
+            "bbox",
+            set_domain_bbox(
+                hydrology_yaml("bbox_ratio"),
+                112.0,
+                115.0,
+                21.5,
+                23.5,
+                Some(0.125),
+            )
+            .expect("bbox ratio"),
+        ),
+        (
+            "circle",
+            set_domain_circle(
+                hydrology_yaml("circle_ratio"),
+                113.0,
+                22.0,
+                100.0,
+                Some(0.125),
+            )
+            .expect("circle ratio"),
+        ),
+        (
+            "shapefile",
+            set_domain_shapefile(
+                hydrology_yaml("shapefile_ratio"),
+                "input/watershed.shp".to_string(),
+                Some(0.125),
+            )
+            .expect("shapefile ratio"),
+        ),
+        (
+            "close",
+            set_domain_close(
+                hydrology_yaml("close_ratio"),
+                "input/domain.nc".to_string(),
+                "netcdf".to_string(),
+                Some(0.125),
+            )
+            .expect("close ratio"),
+        ),
+    ] {
+        let summary = project_summary(validate_project(yaml).expect("canonical yaml"))
+            .unwrap_or_else(|err| panic!("{label}: {err}"));
+        assert_eq!(summary.sea_ratio, Some(0.125), "{label}");
+    }
+}
+
+#[test]
+fn set_domain_close_rejects_format_extension_mismatch() {
+    let err = set_domain_close(
+        hydrology_yaml("close_format_mismatch"),
+        "input/ocean-domain.nml".to_string(),
+        "netcdf".to_string(),
+        Some(0.375),
+    )
+    .expect_err("close domain format must match the selected path extension");
+    assert!(
+        err.contains("close domain path extension does not match its format"),
+        "{err}"
+    );
 }
 
 #[test]

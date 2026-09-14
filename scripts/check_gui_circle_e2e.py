@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Circle editor/round-trip/map regression, using real GUI summary fixtures.
+"""Domain editor/round-trip/map regression, using real GUI summary fixtures.
 
 python3 scripts/check_gui_circle_e2e.py /path/to/gui-records.json
 Transport is mocked; Rust GUI tests separately exercise validation and real CLI delivery.
@@ -45,6 +45,8 @@ def main():
             if(command==='save_project') {window.__saved=JSON.parse(args.yaml);return '/saved-circle.yaml';}
             if(command==='run_project') {window.__run=JSON.parse(args.yaml);return {ok:false,code:2,outdir:'/mock-run',gridfile:null,delivery:null};}
             if(command==='validate_project') return [];
+            if(command==='pick_data_file') {if(window.__holdPicker)return new Promise((resolve,reject)=>window.__picker={resolve,reject});if(window.__pickError)throw Error('picker failed');return window.__pick??null;}
+            if(command==='shapefile_boundary_geojson') {if(window.__holdBoundary)return new Promise((resolve,reject)=>window.__boundaries.push({path:args.path,resolve,reject}));return {type:'FeatureCollection',features:[]};}
             if(command==='scaffold_project') return JSON.stringify(window.__opened);
             const cfg=args.yaml?JSON.parse(args.yaml):null;
             if(command==='project_summary') {const summary={...cfg};if(window.__legacySummary)delete summary.circle;return summary;}
@@ -53,6 +55,8 @@ def main():
             }
             if(command==='set_domain_circle')Object.assign(cfg,{domain:'regional',domain_shape:'circle',circle:[args.lon,args.lat,args.radiusKm],bbox:null,sea_ratio:args.seaRatio});
             if(command==='set_domain_bbox')Object.assign(cfg,{domain:'regional',domain_shape:'bbox',circle:null,bbox:[args.w,args.e,args.s,args.n],sea_ratio:args.seaRatio});
+            if(command==='set_domain_shapefile')Object.assign(cfg,{domain:'regional',domain_shape:'shapefile',circle:null,bbox:null,watershed_path:args.path,sea_ratio:args.seaRatio});
+            if(command==='set_domain_close')Object.assign(cfg,{domain:'regional',domain_shape:'close',circle:null,bbox:null,watershed_path:args.path,close_format:args.format,sea_ratio:args.seaRatio});
             if(command==='set_domain_global')Object.assign(cfg,{domain:'global',domain_shape:'global',circle:null,bbox:null,sea_ratio:null});
             return cfg?JSON.stringify(cfg):null;
           }}};
@@ -65,10 +69,10 @@ def main():
         def step(n):
             page.evaluate("n=>{cur=n;renderStep(n);renderSteps();}", n)
 
-        def open_project():
+        def open_project(mode="circle"):
             step(0)
             page.locator("#projOpen").click()
-            page.wait_for_function("domainMode==='circle' && !hiddenDomainShape")
+            page.wait_for_function("mode=>domainMode===mode && !hiddenDomainShape", arg=mode)
             step(2)
 
         def save():
@@ -78,7 +82,92 @@ def main():
             page.wait_for_function("!!window.__saved")
             return page.evaluate("window.__saved")
 
+        # Old domain forms must have the same draft/precision guarantees as Circle.
+        original = summary.copy()
+        bbox = [170, -170, -10, 10]
+        for shape, mode, extra in (("bbox", "regional", {"bbox": bbox}), ("shapefile", "watershed", {"watershed_path": "/valid.shp"}), ("close", "close", {"watershed_path": "/valid.nml", "close_format": "nml"})):
+            opened = {**original, "domain_shape": shape, "circle": None, "bbox": None, **extra}
+            page.evaluate("c=>{window.__opened=c;domainMode='global';}", opened)
+            open_project(mode)
+            page.screenshot(path=str(source.parent / f"{shape}-before-or-after.png"))
+            for language in (1, 0):
+                page.evaluate("l=>{lang=l;applyI18n();}", language)
+                assert float(page.locator("#seaRatioInput").input_value()) == 47.125, f"{shape} rounded sea ratio on render"
+                assert save()["sea_ratio"] == 0.47125, f"{shape} changed sea ratio on save"
+                step(2)
+            for other in ("global", "circle", "regional"):
+                page.locator(f'[data-mode="{other}"]').click()
+                page.locator(f'[data-mode="{mode}"]').click()
+                assert float(page.locator("#seaRatioInput").input_value()) == 47.125, f"{shape} lost sea ratio across mode switch"
+            if shape == "bbox":
+                fields = page.locator("#work .grid2 input.input")
+                assert [float(v) for v in fields.evaluate_all("es=>es.map(e=>e.value)")] == bbox
+                assert page.evaluate("estCells()") <= 2, "20 degree dateline bbox estimated as 340 degrees"
+                fields.nth(0).fill("1e1")
+                assert page.evaluate("domBbox[0]") == 10, "scientific notation must not become 11"
+                for index, value in ((0, ""), (0, "181"), (2, "91"), (1, "10"), (3, "-10")):
+                    fields.nth(index).fill(value)
+                    page.evaluate("window.__calls=[];document.getElementById('logbox').textContent=''")
+                    step(0)
+                    page.locator("#projSave").click()
+                    page.wait_for_function("document.getElementById('logbox').textContent.includes('save failed')")
+                    assert not page.evaluate("window.__calls.some(c=>c.command==='save_project')")
+                    step(2)
+                    assert fields.nth(index).input_value() == value, "invalid bbox draft lost on navigation"
+                    assert page.evaluate("currentOlDomainFrame()") is None
+                    fields.nth(index).fill(str([10, -170, -10, 10][index]))
+                fields.nth(0).fill("170")
+            if shape in ("shapefile", "close"):
+                id = "watershed" if shape == "shapefile" else "close"
+                button = page.locator(f"#{id}Browse")
+                assert button.evaluate("e=>e.tagName==='BUTTON'")
+                page.evaluate("window.__pickError=true")
+                button.click()
+                page.wait_for_function("document.getElementById('logbox').textContent.includes('picker failed')")
+                page.evaluate("window.__pickError=false")
+                assert save()["watershed_path"] == opened["watershed_path"]
+                step(2)
+                for bad in ("/invalid.pdf", "/invalid.nc" if shape == "shapefile" else "/invalid.bin"):
+                    page.evaluate("p=>window.__pick=p", bad)
+                    button.click()
+                    assert save()["watershed_path"] == opened["watershed_path"]
+                    step(2)
+                # A delayed native-picker result belongs to the old control, not the new mode.
+                page.evaluate("window.__holdPicker=true;window.__picker=null")
+                button.click()
+                page.wait_for_function("!!window.__picker")
+                page.locator('[data-mode="global"]').click()
+                page.evaluate("async()=>{window.__picker.resolve('/late.shp');window.__holdPicker=false;await Promise.resolve();}")
+                assert save()["domain_shape"] == "global"
+                step(2)
+                page.locator(f'[data-mode="{mode}"]').click()
+                assert save()["watershed_path"] == opened["watershed_path"]
+                step(2)
+            if shape == "shapefile":
+                page.evaluate("window.__holdBoundary=true;window.__boundaries=[];window.__pick='/pending.shp'")
+                page.locator("#watershedBrowse").click()
+                page.wait_for_function("window.__boundaries.length>0")
+                page.locator('[data-mode="global"]').click()
+                page.evaluate("async()=>{for(const b of window.__boundaries)b.resolve({type:'FeatureCollection',features:[{type:'Feature',properties:{old:true},geometry:{type:'Point',coordinates:[113,22]}}]});window.__holdBoundary=false;await Promise.resolve();}")
+                assert page.evaluate("_domainGeojson===null"), "old shapefile preview repainted after global switch"
+                page.locator(f'[data-mode="{mode}"]').click()
+            if shape == "close":
+                assert save()["close_format"] == "nml", "explicit close format replaced by filename inference"
+                step(2)
+                before = page.locator("#closePathText").inner_text()
+                for pick in (None, "/invalid.pdf"):
+                    page.evaluate("p=>window.__pick=p", pick)
+                    page.locator("#closeBrowse").click()
+                    assert page.locator("#closePathText").inner_text() == before
+                    assert save()["watershed_path"] == opened["watershed_path"]
+                    step(2)
+            page.evaluate("hasRun=true;runInfo={ok:true,outdir:'/old'}")
+            page.locator("#seaRatioInput").evaluate("e=>{e.value='32.125';e.dispatchEvent(new Event('input',{bubbles:true}));}")
+            assert page.evaluate("!hasRun && runInfo===null"), f"{shape} ratio edit retained old success"
+            assert save()["sea_ratio"] == 0.32125
+        page.evaluate("c=>window.__opened=c", original)
         open_project()
+        assert page.evaluate("JSON.stringify(domBbox)===JSON.stringify(DEFAULT_BBOX) && watershedPath==='' && closePath===''")
         assert [float(page.locator(f"#domainCircle{j}").input_value()) for j in range(3)] == summary["circle"]
         assert float(page.locator("#seaRatioInput").input_value()) == 47.125
         assert page.locator('[data-mode="circle"]').get_attribute("aria-pressed") == "true"
@@ -189,7 +278,7 @@ def main():
         assert not errors, errors
         browser.close()
         server.shutdown()
-    print(json.dumps({"circle_roundtrip": "pass", "invalid_drafts": 5, "geodesic_map_cases": 6, "languages": ["zh", "en"], "viewports": [1400, 1000], "detached_plane_globe": "pass", "page_errors": errors, "transport": "mocked Tauri; real Rust summary/capability fixture"}))
+    print(json.dumps({"circle_roundtrip": "pass", "invalid_drafts": {"circle": 5, "bbox": 5}, "domain_modes": ["bbox", "circle", "shapefile", "close"], "picker_and_preview_ownership": "pass", "geodesic_map_cases": 6, "languages": ["zh", "en"], "viewports": [1400, 1000], "detached_plane_globe": "pass", "page_errors": errors, "transport": "mocked Tauri; real Rust summary/capability fixture"}))
 
 
 if __name__ == "__main__":

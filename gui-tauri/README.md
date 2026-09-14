@@ -96,6 +96,7 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
+| `set_domain_circle` | `yaml, lon, lat, radiusKm, seaRatio?` | updated **YAML** (regional circle) |
 | `set_domain_shapefile` | `yaml, path, seaRatio?` | updated **YAML** (watershed SHP domain) |
 | `set_domain_close` | `yaml, path, format, seaRatio?` | updated **YAML** (close boundary source) |
 | `set_close_boundary` | `yaml, target, mode, iterations?, marginKm?, maxRadiusDeg?, maxSegmentAngleDeg?` | updated **YAML** (expert close boundary mode) |
@@ -231,7 +232,7 @@ automatically.
   is authoritative; legacy artifacts without `schema_version` remain readable
   with a warning, while unknown future versions are skipped rather than decoded
   against an incompatible DTO.
-- AutoRefine accepts global, regional bbox/close, and watershed domains. It can
+- AutoRefine accepts global, regional bbox/circle/close, and watershed domains. It can
   repair either an already-refined mesh or a uniform pass-zero baseline; its
   generated quality repair remains local and is accepted only when guarded
   quality metrics strictly improve.
@@ -245,6 +246,16 @@ The radius is positive and at most a hemisphere (about 10,008 km). Plane/globe
 previews use the engine sphere; the existing MapLibre polar-display limit still
 applies, not a computational-domain restriction. Older summaries without circle
 coordinates retain the preserved-shape fallback instead of replacing the domain.
+
+All regional domain editors retain geometry and the full-precision sea ratio
+when switching modes or languages. A blank/invalid bbox or circle draft remains
+invalid and blocks Save/Run rather than silently reusing old coordinates; bbox
+previews and estimates use the short longitude span across the dateline. Opening
+a different project resets alternate domain drafts. Boundary file selectors
+preserve the current request on cancel/error/unsupported extension; older picker
+and preview responses cannot overwrite a newer domain. Optional SHP previews do
+not delay reflecting an opened project's controls. The shared backend still
+requires each close-file extension to match its declared format.
 
 Known gaps: polygon domains need project-schema support first; release bundles still need a full
 platform icon set.

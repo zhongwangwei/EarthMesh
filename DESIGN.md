@@ -32,7 +32,7 @@ Use named inputs, keyboard-operable mode buttons, visible focus and selected sta
 Keep existing desktop split panes and wrapping controls. Verify at 1400 px and 1000 px widths in both languages; no new mobile layout.
 
 ## Interaction states
-Valid edits update map and estimate; invalid edits show an error and cannot save/run as an earlier valid request. Clear obsolete run results after domain edits. Opening and language/step changes retain values. Boundary previews are not delivered meshes.
+Each domain mode retains its geometry and full-precision sea ratio within a project; opening a different project resets its alternate drafts. Preview and picker responses belong to the current domain, never a superseded request. Valid edits update map and estimate; invalid edits show an error and cannot save/run as an earlier valid request. Clear obsolete run results after domain edits. Opening and language/step changes retain values. Boundary previews are not delivered meshes.
 
 ## Content voice
 Concise Chinese/English scientific terms. State geodesic radius and the minor-hemisphere limit; distinguish domain circle from refinement circle. Explain existing polar map-display limits without restricting the computational domain.
