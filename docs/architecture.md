@@ -270,7 +270,22 @@ completion signal. Rollback errors retain recovery backups and report their
 paths without restoring readiness prematurely. This is not crash-atomic
 publication or isolation for concurrent readers/writers.
 
-This is not blanket legacy parity: standalone native publication and other
-lower-level writers still need their own final-delivery seams connected. Do not
-gate intermediate grid writers to simulate that coverage or reuse closed-sphere
-checks on masked products.
+The standalone, no-Project default CLI now also admits and stages the **unmasked
+global base gridinit** output (generated or imported). Explicit final-base
+ownership is passed through the existing dispatcher, independently of
+`defer_model_exports`; raw library gridinit and Project candidate calls remain
+unchecked. This native-only handoff uses TRI/HEX physical cells and closed-sphere
+χ=2 admission, and writes `gridfile/final_quality/<stem>/legacy_delivery.json`
+last. It does not claim that the requested MPAS/FVCOM/etc. adapter ran.
+
+Workspace destinations are authorized before creating staging or retiring
+readiness. This final-base path preserves the previous workspace rather than
+deleting it, protects source/native files from `namelist.save` aliases, and
+redirects only converter/generator output paths into staging. Failure preserves
+previous native bytes and withdraws readiness; successful reports contain only
+published paths. Workspace setup and quality diagnostics are not transactional.
+
+This is not blanket legacy parity: standalone regional/clipped/refined output,
+patch-preprocessing base output and other lower-level writers still need their
+own final-delivery seams connected. Do not gate intermediate grid writers to
+simulate that coverage or reuse closed-sphere checks on masked/Cartesian products.

@@ -1,6 +1,111 @@
 mod support;
 
 use std::fs;
+use std::path::{Path, PathBuf};
+
+fn gridinit_temp_root(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("earthmesh_cli_{name}_{}", std::process::id()))
+}
+
+fn write_gridinit_namelist(
+    root: &Path,
+    case_name: &str,
+    mode_grid: &str,
+    output_format: &str,
+    mode_file: &Path,
+    defer_model_exports: bool,
+) -> PathBuf {
+    let namelist = root.join(format!("{case_name}.nml"));
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='{case_name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='{mode_grid}'\n  NL%mode_file='{}'\n  NL%mode_file_description='EarthMesh'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='{output_format}'\n  NL%defer_model_exports={}\n/\n",
+            mode_file.display(),
+            if defer_model_exports { ".true." } else { ".false." }
+        ),
+    )
+    .expect("write gridinit namelist");
+    namelist
+}
+
+fn run_gridinit_cli(root: &Path, namelist: &Path) -> std::process::Output {
+    let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
+    support::output(
+        std::process::Command::new(exe)
+            .arg(namelist)
+            .arg("--max-tris")
+            .arg("100")
+            .current_dir(root),
+    )
+    .expect("run earthmesh_cli gridinit binary")
+}
+
+fn gridinit_output(root: &Path, case_name: &str, mode_grid: &str) -> PathBuf {
+    root.join(case_name)
+        .join("gridfile")
+        .join(format!("gridfile_NXP0001_01_{mode_grid}.nc4"))
+}
+
+fn legacy_delivery_record_for(gridfile: &Path) -> PathBuf {
+    gridfile
+        .parent()
+        .unwrap()
+        .join("final_quality")
+        .join(gridfile.file_stem().unwrap())
+        .join("legacy_delivery.json")
+}
+
+fn assert_native_delivery_record(gridfile: &Path) {
+    let record_path = legacy_delivery_record_for(gridfile);
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(&record_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", record_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", record_path.display()));
+    assert_eq!(record["gridfile"], gridfile.to_str().unwrap());
+    assert_eq!(record["model_delivery_status"], "native_only");
+    assert!(record["model_artifacts"].as_object().unwrap().is_empty());
+    assert!(
+        !record.to_string().contains(".earthmesh-delivery-"),
+        "delivery record must expose published paths, not staging paths: {record}"
+    );
+}
+
+fn assert_no_delivery_staging(root: &Path) {
+    fn walk(path: &Path) {
+        for entry in fs::read_dir(path)
+            .unwrap_or_else(|error| panic!("read dir {}: {error}", path.display()))
+        {
+            let entry = entry.expect("read dir entry");
+            let path = entry.path();
+            assert!(
+                !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".earthmesh-delivery-")),
+                "delivery staging path leaked: {}",
+                path.display()
+            );
+            if path.is_dir() {
+                walk(&path);
+            }
+        }
+    }
+    if root.exists() {
+        walk(root);
+    }
+}
+
+fn one_point_earthmesh_source() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 }],
+        w_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 3.0 }],
+        m_to_w: vec![[1, 1, 1]],
+        w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1]],
+        n_w_to_m: vec![1],
+    }
+}
 
 #[test]
 fn run_mkgrd_gridinit_global_namelist_writes_initial_gridfile() {
@@ -138,6 +243,265 @@ fn regional_oceanmesh_missing_landtype_errors_before_gridfile() {
 }
 
 #[test]
+fn earthmesh_cli_binary_gridinit_admits_tri_and_hex_native_final_gridfiles() {
+    let root = gridinit_temp_root("binary_gridinit_final_admission");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+
+    for (case_name, mode_grid, output_format) in [
+        ("case_binary_final_tri", "tri", "FVCOM"),
+        ("case_binary_final_hex", "hex", "MPAS"),
+    ] {
+        let missing_mode_file = root.join(format!("missing_{mode_grid}.nc4"));
+        let namelist = write_gridinit_namelist(
+            &root,
+            case_name,
+            mode_grid,
+            output_format,
+            &missing_mode_file,
+            false,
+        );
+
+        let output = run_gridinit_cli(&root, &namelist);
+        assert!(
+            output.status.success(),
+            "status={:?}\nstdout={}\nstderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let gridfile = gridinit_output(&root, case_name, mode_grid);
+        assert!(
+            stdout.contains(&format!("gridfile={}", gridfile.display())),
+            "stdout={stdout}"
+        );
+        assert!(gridfile.exists(), "missing gridfile {}", gridfile.display());
+        assert_native_delivery_record(&gridfile);
+        assert!(
+            !stdout.contains(".earthmesh-delivery-"),
+            "stdout must not expose staging paths: {stdout}"
+        );
+
+        // An imported source inside the existing workspace must survive a rerun.
+        let imported = root.join(case_name).join("gridfile/source.nc4");
+        let original = fs::read(&gridfile).unwrap();
+        fs::write(&imported, &original).unwrap();
+        let namelist =
+            write_gridinit_namelist(&root, case_name, mode_grid, output_format, &imported, false);
+        let imported_run = run_gridinit_cli(&root, &namelist);
+        assert!(
+            imported_run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&imported_run.stderr)
+        );
+        assert_eq!(fs::read(&imported).unwrap(), original);
+        assert_eq!(fs::read(&gridfile).unwrap(), original);
+        assert_native_delivery_record(&gridfile);
+    }
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_gridinit_failed_import_preserves_native_and_retires_completion() {
+    let root = gridinit_temp_root("binary_gridinit_failed_import_rollback");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let case_name = "case_binary_failed_import";
+    let generated_namelist = write_gridinit_namelist(
+        &root,
+        case_name,
+        "hex",
+        "MPAS",
+        &root.join("missing_mode_file.nc4"),
+        false,
+    );
+
+    let success = run_gridinit_cli(&root, &generated_namelist);
+    assert!(
+        success.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        success.status.code(),
+        String::from_utf8_lossy(&success.stdout),
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let gridfile = gridinit_output(&root, case_name, "hex");
+    assert_native_delivery_record(&gridfile);
+    let previous_grid = fs::read(&gridfile).expect("snapshot published gridfile");
+    let marker = legacy_delivery_record_for(&gridfile);
+    assert!(marker.exists(), "success should publish completion marker");
+
+    let invalid_source = root.join("invalid_one_point_earthmesh.nc4");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
+        &invalid_source,
+        &one_point_earthmesh_source(),
+    )
+    .expect("write invalid imported EarthMesh source");
+    let invalid_namelist =
+        write_gridinit_namelist(&root, case_name, "hex", "MPAS", &invalid_source, false);
+
+    let failure = run_gridinit_cli(&root, &invalid_namelist);
+    assert!(
+        !failure.status.success(),
+        "invalid imported final mesh must fail admission\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&failure.stdout),
+        String::from_utf8_lossy(&failure.stderr)
+    );
+    assert_eq!(
+        fs::read(&gridfile).expect("read preserved gridfile"),
+        previous_grid,
+        "failed final admission must preserve the previous native gridfile bytes"
+    );
+    assert!(
+        !marker.exists(),
+        "failed final admission must retire the stale completion marker"
+    );
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_gridinit_defer_model_exports_still_requires_native_admission() {
+    let root = gridinit_temp_root("binary_gridinit_defer_still_admits");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let invalid_source = root.join("invalid_one_point_earthmesh.nc4");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
+        &invalid_source,
+        &one_point_earthmesh_source(),
+    )
+    .expect("write invalid imported EarthMesh source");
+    let namelist = write_gridinit_namelist(
+        &root,
+        "case_binary_defer_invalid_import",
+        "hex",
+        "MPAS",
+        &invalid_source,
+        true,
+    );
+
+    let output = run_gridinit_cli(&root, &namelist);
+    assert!(
+        !output.status.success(),
+        "defer_model_exports must not bypass native final admission\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!gridinit_output(&root, "case_binary_defer_invalid_import", "hex").exists());
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_gridinit_rejects_final_base_outside_workdir_without_touching_seeded_outputs(
+) {
+    let sandbox = gridinit_temp_root("binary_gridinit_outside_file_dir");
+    let _ = fs::remove_dir_all(&sandbox);
+    let root = sandbox.join("workdir");
+    let outside_case = sandbox.join("outside_case");
+    fs::create_dir_all(&root).expect("create workdir");
+    fs::create_dir_all(outside_case.join("gridfile")).expect("create outside gridfile dir");
+    let gridfile = outside_case.join("gridfile/gridfile_NXP0001_01_hex.nc4");
+    fs::write(&gridfile, b"old native sentinel").expect("seed outside native");
+    let marker = legacy_delivery_record_for(&gridfile);
+    fs::create_dir_all(marker.parent().unwrap()).expect("create outside quality dir");
+    fs::write(&marker, b"old completion sentinel").expect("seed outside marker");
+    let old_grid = fs::read(&gridfile).expect("snapshot outside native");
+    let old_marker = fs::read(&marker).expect("snapshot outside marker");
+
+    let namelist = root.join("outside_file_dir.nml");
+    let base_dir = format!("{}/", sandbox.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='outside_case'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='{}/missing_mode_file.nc4'\n  NL%mode_file_description='EarthMesh'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='MPAS'\n/\n",
+            root.display()
+        ),
+    )
+    .expect("write outside file_dir namelist");
+
+    let output = run_gridinit_cli(&root, &namelist);
+    assert!(
+        !output.status.success(),
+        "outside final-base file_dir must be rejected\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), old_grid);
+    assert_eq!(fs::read(&marker).unwrap(), old_marker);
+    assert_no_delivery_staging(&sandbox);
+
+    let _ = fs::remove_dir_all(&sandbox);
+}
+
+#[test]
+fn earthmesh_cli_binary_gridinit_rejects_namelist_save_aliases_without_touching_inputs_or_native() {
+    let sandbox = gridinit_temp_root("binary_gridinit_namelist_save_alias");
+    let _ = fs::remove_dir_all(&sandbox);
+
+    for alias_target in ["input", "native"] {
+        let root = sandbox.join(alias_target);
+        fs::create_dir_all(&root).expect("create alias root");
+        let case_name = format!("case_alias_{alias_target}");
+        let namelist = write_gridinit_namelist(
+            &root,
+            &case_name,
+            "hex",
+            "MPAS",
+            &root.join("missing_mode_file.nc4"),
+            false,
+        );
+        let case_dir = root.join(&case_name);
+        let save = case_dir.join("result/namelist.save");
+        fs::create_dir_all(save.parent().unwrap()).expect("create result dir");
+
+        if alias_target == "input" {
+            fs::hard_link(&namelist, &save).expect("alias saved namelist to input namelist");
+            let old_input = fs::read(&namelist).expect("snapshot input namelist");
+
+            let output = run_gridinit_cli(&root, &namelist);
+            assert!(
+                !output.status.success(),
+                "namelist.save input alias must be rejected\nstdout={}\nstderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read(&namelist).unwrap(), old_input);
+            assert!(!gridinit_output(&root, &case_name, "hex").exists());
+        } else {
+            let success = run_gridinit_cli(&root, &namelist);
+            assert!(
+                success.status.success(),
+                "status={:?}\nstdout={}\nstderr={}",
+                success.status.code(),
+                String::from_utf8_lossy(&success.stdout),
+                String::from_utf8_lossy(&success.stderr)
+            );
+            let gridfile = gridinit_output(&root, &case_name, "hex");
+            let old_native = fs::read(&gridfile).expect("snapshot native gridfile");
+            fs::remove_file(&save).expect("replace saved namelist with native alias");
+            fs::hard_link(&gridfile, &save).expect("alias saved namelist to native gridfile");
+
+            let output = run_gridinit_cli(&root, &namelist);
+            assert!(
+                !output.status.success(),
+                "namelist.save native alias must be rejected\nstdout={}\nstderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read(&gridfile).unwrap(), old_native);
+        }
+        assert_no_delivery_staging(&root);
+    }
+
+    let _ = fs::remove_dir_all(&sandbox);
+}
+
+#[test]
 fn earthmesh_cli_binary_runs_gridinit_namelist() {
     let root = std::env::temp_dir().join(format!(
         "earthmesh_cli_binary_gridinit_{}",
@@ -192,13 +556,7 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("create temp root");
     let mode_file = root.join("source_mode.nc4");
-    let source_mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
-        m_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 1.0 }],
-        w_points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 2.0, lat: 3.0 }],
-        m_to_w: vec![[1, 1, 1]],
-        w_to_m: vec![vec![1, 1, 1, 1, 1, 1, 1]],
-        n_w_to_m: vec![1],
-    };
+    let source_mesh = one_point_earthmesh_source();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&mode_file, &source_mesh)
         .expect("write source EarthMesh mode file");
 
@@ -247,6 +605,10 @@ fn run_mkgrd_gridinit_global_copies_existing_earthmesh_mode_file() {
     assert_eq!(
         fs::read(&report.gridfile.output).unwrap(),
         fs::read(&mode_file).unwrap()
+    );
+    assert!(
+        !legacy_delivery_record_for(&report.gridfile.output).exists(),
+        "raw gridinit API should not publish a standalone CLI completion record"
     );
 
     let _ = fs::remove_dir_all(&root);

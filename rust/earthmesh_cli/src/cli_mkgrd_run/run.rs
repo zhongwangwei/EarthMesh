@@ -233,7 +233,7 @@ fn run_prepared_mkgrd(
                 (Ok(report), Some(path))
             } else {
                 (
-                    earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
+                    earthmesh_cli::mkgrd_default_restart_handoff::run_mkgrd_default_with_base_delivery(
                         PathBuf::from(&namelist),
                         &workdir,
                         max_tris,
@@ -242,6 +242,7 @@ fn run_prepared_mkgrd(
                         source_gridnum_perdegree,
                         source_first_triangle_id,
                         mask_postproc_num_vertex,
+                        project.is_none(),
                     ),
                     None,
                 )
