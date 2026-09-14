@@ -652,8 +652,7 @@ async function selectTemplate(k){
     return;
   }
   if(typeof window.waitForProjectEdits==="function") await window.waitForProjectEdits();
-  const changed=next!==tpl;
-  if(changed){
+  const apply = () => {
     tpl=next;
     domainMode=TPL[tpl].global ? "global" : "regional";
     regional=domainMode!=="global";
@@ -662,6 +661,11 @@ async function selectTemplate(k){
     closeFormat="nml";
     hiddenDomainShape=null;
     if(typeof window.resetTemplateDerivedState==="function") window.resetTemplateDerivedState();
+  };
+  if(next!==tpl){
+    if(typeof window.commitTemplateEdit==="function"){
+      if(!await window.commitTemplateEdit(next, apply)) return;
+    } else apply(); // standalone browser has no backend admission
   }
   cur = 1;
   renderSteps();
@@ -2207,43 +2211,47 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return hydroConfigured && !!meshMeritLayer(summary) && (hydroRefine.riverWidthEnabled || hydroRefine.riverUpstreamAreaEnabled || (hydroRefine.coastEnabled && (hydroRefine.coastLandEnabled || hydroRefine.coastOceanEnabled)));
   }
 
-  async function composeYaml() {
+  async function composeYaml(template = null) {
     if (backendReady) await backendReady;
-    const resolution = currentResolution();
+    const resolution = template && template.nxp
+      ? { nxp: template.nxp, approxKm: null, approxDegree: null } : currentResolution();
+    const refine = template ? templateSpecifiedRefinement(template) : specifiedRefine;
+    const domain = template ? null : domainEdit;
     let yaml = await invoke("scaffold_project",
-      { name: projectName(), intent: currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
+      { name: projectName(), intent: template ? template.intent : currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
     yaml = await invoke("set_project_metadata",
       { yaml, name: projectName(), authors: metadataEdit.authors || [], description: metadataEdit.description || "" });
     // Derive the domain from the LIVE mode + controls — not a stale domainEdit
     // (template cards flip `regional`/`domainMode` without updating domainEdit).
-    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    const mode = template ? (template.domainMode || (template.global ? "global" : "regional"))
+      : ((typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global"));
     if (mode === "global") {
       yaml = await invoke("set_domain_global", { yaml });
     } else if (mode === "watershed") {
-      const path = (domainEdit && domainEdit.kind === "shapefile" ? domainEdit.path : watershedPath) || "";
-      const seaRatio = domainEdit && domainEdit.kind === "shapefile" ? (domainEdit.seaRatio ?? null) : null;
+      const path = (domain && domain.kind === "shapefile" ? domain.path : watershedPath) || "";
+      const seaRatio = domain && domain.kind === "shapefile" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_shapefile", { yaml, path, seaRatio });
     } else if (mode === "close") {
-      const path = (domainEdit && domainEdit.kind === "close" ? domainEdit.path : closePath) || "";
-      const format = (domainEdit && domainEdit.kind === "close" ? domainEdit.format : closeFormat) || "nml";
-      const seaRatio = domainEdit && domainEdit.kind === "close" ? (domainEdit.seaRatio ?? null) : null;
+      const path = template ? (template.closePath || "") : (domain && domain.kind === "close" ? domain.path : closePath) || "";
+      const format = template ? (template.closeFormat || inferCloseFormat(template.closePath)) : (domain && domain.kind === "close" ? domain.format : closeFormat) || "nml";
+      const seaRatio = domain && domain.kind === "close" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_close", { yaml, path, format, seaRatio });
-      yaml = await applyCloseBoundary(yaml, "domain", domainCloseBoundary);
+      yaml = await applyCloseBoundary(yaml, "domain", template ? normalizeCloseBoundary(null) : domainCloseBoundary);
     } else {
       const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
-      const seaRatio = domainEdit && domainEdit.kind === "bbox" ? (domainEdit.seaRatio ?? null) : null;
+      const seaRatio = domain && domain.kind === "bbox" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_bbox", { yaml, w: b[0], e: b[1], s: b[2], n: b[3], seaRatio });
     }
     if (baseProjectYaml) {
-      yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
+      yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !template && !!hiddenDomainShape });
     }
-    if (targetEdit) {
+    if (!template && targetEdit) {
       yaml = await invoke("set_project_target", { yaml, kind: targetEdit.kind, modelFormat: targetEdit.modelFormat });
     }
-    if (cellEdit) {
+    if (!template && cellEdit) {
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
-    const selectedModelForDelivery = (targetEdit && targetEdit.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
+    const selectedModelForDelivery = (!template && targetEdit && targetEdit.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
     const colmDeliveryEnabled = selectedModelForDelivery === "CoLM" && !!colmMeshDelivery.enabled;
     if (colmDeliveryEnabled && !(Number.isInteger(colmMeshDelivery.pixelsPerDegree) && colmMeshDelivery.pixelsPerDegree > 0)) {
       throw new Error(zh() ? "CoLM mesh 栅格分辨率必须为正整数" : "CoLM mesh pixels/degree must be a positive integer");
@@ -2292,63 +2300,64 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
     const summary = await invoke("project_summary", { yaml });
     const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
-    const refinementEnabled = thresholdSourceEnabled || !!specifiedRefine.enabled;
+    const refinementEnabled = thresholdSourceEnabled || !!refine.enabled;
     const maxRefinePasses = METHOD_C_MAX_REFINEMENT_LEVEL;
+    const requestedPasses = template && template.maxPasses != null ? template.maxPasses : maxPasses;
     const refinementPasses = refinementEnabled
-      ? Math.min(maxRefinePasses, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
+      ? Math.min(maxRefinePasses, Math.max(1, requestedPasses == null ? (summary.max_passes || 1) : requestedPasses))
       : 0;
     yaml = await invoke("set_specified_refinement", {
-      yaml, enabled: !!specifiedRefine.enabled,
-      kind: specifiedRefine.kind || "radius",
-      lon: specifiedRefine.lon, lat: specifiedRefine.lat, radiusKm: specifiedRefine.radiusKm,
-      w: specifiedRefine.w, e: specifiedRefine.e, s: specifiedRefine.s, n: specifiedRefine.n,
-      path: specifiedRefine.path
+      yaml, enabled: !!refine.enabled,
+      kind: refine.kind || "radius",
+      lon: refine.lon, lat: refine.lat, radiusKm: refine.radiusKm,
+      w: refine.w, e: refine.e, s: refine.s, n: refine.n,
+      path: refine.path
     });
-    if (specifiedRefine.enabled && specifiedRefine.kind === "close") {
-      yaml = await applyCloseBoundary(yaml, "specified", specifiedRefine.closeBoundary);
+    if (refine.enabled && refine.kind === "close") {
+      yaml = await applyCloseBoundary(yaml, "specified", refine.closeBoundary);
     }
     yaml = await invoke("set_adaptive_refinement", {
-      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "adaptive",
-      maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
-      coastline: specifiedRefine.adaptiveCoastline !== false
+      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "adaptive",
+      maxLevel: refine.adaptiveMaxLevel ?? null,
+      coastline: refine.adaptiveCoastline !== false
     });
     yaml = await invoke("set_hfield_refinement", {
-      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "hfield",
-      g: specifiedRefine.hfieldG ?? null,
-      maxLevel: specifiedRefine.hfieldMaxLevel ?? null,
-      baseM: specifiedRefine.hfieldBaseM ?? null
+      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "hfield",
+      g: refine.hfieldG ?? null,
+      maxLevel: refine.hfieldMaxLevel ?? null,
+      baseM: refine.hfieldBaseM ?? null
     });
     yaml = await invoke("set_refinement_backend", {
-      yaml, backend: specifiedRefine.algorithm || "method_c"
+      yaml, backend: refine.algorithm || "method_c"
     });
     // Validate active demands only after their consuming route is configured.
     yaml = await invoke("set_refinement", {
       yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
       maxPasses: refinementPasses
     });
-    if (specifiedRefine.algorithm === "lepp_delaunay") {
+    if (refine.algorithm === "lepp_delaunay") {
       yaml = await invoke("set_method_c_algorithm_options", {
         yaml,
-        maxCycles: specifiedRefine.leppMaxCycles,
-        targetSizeTolerance: specifiedRefine.leppTargetSizeTolerance,
-        maximumNeighborSizeRatio: specifiedRefine.leppMaximumNeighborSizeRatio,
-        maximumVertices: specifiedRefine.leppMaximumVertices,
-        maximumInsertionsPerCycle: specifiedRefine.leppMaximumInsertionsPerCycle,
-        maximumPathLength: specifiedRefine.leppMaximumPathLength,
-        stopAtSourceResolution: specifiedRefine.leppStopAtSourceResolution,
-        minimumTriangleAngleDeg: specifiedRefine.leppMinimumTriangleAngleDeg
+        maxCycles: refine.leppMaxCycles,
+        targetSizeTolerance: refine.leppTargetSizeTolerance,
+        maximumNeighborSizeRatio: refine.leppMaximumNeighborSizeRatio,
+        maximumVertices: refine.leppMaximumVertices,
+        maximumInsertionsPerCycle: refine.leppMaximumInsertionsPerCycle,
+        maximumPathLength: refine.leppMaximumPathLength,
+        stopAtSourceResolution: refine.leppStopAtSourceResolution,
+        minimumTriangleAngleDeg: refine.leppMinimumTriangleAngleDeg
       });
     }
-    if (specifiedRefine.algorithm === "certified") {
+    if (refine.algorithm === "certified") {
       yaml = await invoke("set_certified_options", {
         yaml,
-        mode: specifiedRefine.certifiedMode,
-        delivery: specifiedRefine.certifiedDelivery,
-        angleContract: specifiedRefine.certifiedAngleContract,
-        maximumLevel: specifiedRefine.certifiedMaximumLevel,
-        maximumCells: specifiedRefine.certifiedMaximumCells,
-        gradationRingsPerLevel: specifiedRefine.certifiedGradationRingsPerLevel,
-        searchBudget: specifiedRefine.certifiedSearchBudget
+        mode: refine.certifiedMode,
+        delivery: refine.certifiedDelivery,
+        angleContract: refine.certifiedAngleContract,
+        maximumLevel: refine.certifiedMaximumLevel,
+        maximumCells: refine.certifiedMaximumCells,
+        gradationRingsPerLevel: refine.certifiedGradationRingsPerLevel,
+        searchBudget: refine.certifiedSearchBudget
       });
     }
     if (baseProjectYaml) {
@@ -2387,15 +2396,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Validate before committing: rejected edits must not poison the next compose.
   function commitProjectEdit(editYaml) {
+    return commitProjectYaml(async () => editYaml(await composeYaml()));
+  }
+
+  function commitProjectYaml(candidateYaml, onCommit) {
     const result = projectEditQueue.then(async () => {
       let yaml, summary;
       try {
-        yaml = await editYaml(await composeYaml());
+        yaml = await candidateYaml();
         summary = await api.summary(yaml);
       } catch (e) {
         logLine("✗ " + (zh() ? "修改未应用：" : "Edit not applied: ") + e);
         return false;
       }
+      if (onCommit) onCommit();
       baseProjectYaml = yaml;
       lastSummary = { ...summary, _valid: true, _err: null };
       targetEdit = { kind: summary.target_kind, modelFormat: summary.model_format };
@@ -2477,6 +2491,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
   }
 
+  // Only the O3 card overrides the specified demand; other cards keep user edits.
+  function templateSpecifiedRefinement(t) {
+    return t.specifiedClosePath ? { ...defaultAlgorithmControls(), enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null } : specifiedRefine;
+  }
+
+  window.commitTemplateEdit = (next, apply) => {
+    return commitProjectYaml(() => composeYaml(TPL[next]), apply);
+  };
+
   window.resetTemplateDerivedState = function () {
       domainEdit = null;
       domainCloseBoundary = normalizeCloseBoundary(null);
@@ -2495,11 +2518,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: null };
       }
       if (t.maxPasses != null) maxPasses = t.maxPasses;
-      if (t.specifiedClosePath) {
-        specifiedRefine = { ...defaultAlgorithmControls(), enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
-      }
-      if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
-      clearRunArtifacts();
+      specifiedRefine = templateSpecifiedRefinement(t);
   };
 
   // ---- live data-layer panel ------------------------------------------------

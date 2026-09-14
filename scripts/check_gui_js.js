@@ -557,7 +557,7 @@ check(
 log("CoLM mesh delivery command is wired and model-gated");
 
 {
-  const compose = section(html, /async function composeYaml\(\) \{([\s\S]*?)\n  \}/, "composeYaml body");
+  const compose = section(html, /async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/, "composeYaml body");
   const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   const wire = section(html, /async function wireExpertTargetStep\(\) \{([\s\S]*?)\n  \}/, "wireExpertTargetStep body");
   check(
@@ -814,7 +814,7 @@ log("CaMa label check passed");
     readme.includes("domain_shape") &&
       html.includes("hiddenDomainShape") &&
       html.includes('kind: "hidden"') &&
-      html.includes("preserveDomain: !!hiddenDomainShape") &&
+      html.includes("preserveDomain: !template && !!hiddenDomainShape") &&
       html.includes("function domainLabel") &&
       html.includes("hiddenDomainShapeText") &&
       html.includes("readyDomain.textContent=domainLabel();") &&
@@ -1180,7 +1180,7 @@ log("blank MERIT thresholds restore defaults; invalid values reach Rust validati
     const specifiedRefine={enabled:source==="specified",algorithm};
     const hasEnabledThresholdLayer=()=>source==="threshold";
     const hasEnabledHydroRefinement=()=>false;
-    const refinementEnabled=source!=="off";
+    const refinementEnabled=source!=="off",template=null;
     ${compose}
     {
       const sum=summary, regionalRefine=sum.domain==="regional";
@@ -1482,6 +1482,7 @@ checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; 
 // Exercise the real target callbacks and candidate commit, not a second UI implementation.
 async function checkProjectEditAdmission() {
   const extract = name => section(html, new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name);
+  const commitYaml = html.includes('function commitProjectYaml(') ? extract('commitProjectYaml') : '';
   const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
   const harness = new Function(`
     let projectEditQueue=Promise.resolve(),baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
@@ -1519,6 +1520,7 @@ async function checkProjectEditAdmission() {
     }
     function paintTargetOutputs(s){if(s){elements.targetKindOutput.value=s.target_kind;elements.targetModelOutput.value=s.model_format;elements.targetCellOutput.value=s.cell;}}
     ${extract('refreshSummary')}
+    ${commitYaml}
     ${commit}
     ${extract('enhanceTargetOutputStep')}
     return {init:enhanceTargetOutputStep,logs,elements,composeYaml,
@@ -1567,3 +1569,85 @@ async function checkProjectEditAdmission() {
   log('project edit admission: rejected target/source recovery, canonical migrations, exclusivity, model/cell and serialized commits passed');
 }
 checkProjectEditAdmission().catch(error => { console.error(error); process.exitCode=1; });
+
+async function checkTemplateAdmission() {
+  const extract=name=>{const indent=name==="selectTemplate"?"":"  ";return section(html,new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`),name);};
+  const reset=section(html,/window\.resetTemplateDerivedState = function \(\) \{([\s\S]*?)\n  \};/,'template reset');
+  const bridge=html.match(/  window\.commitTemplateEdit = [\s\S]*?\n  \};/)?.[0]||'';
+  const commitYaml=html.includes('function commitProjectYaml(')?extract('commitProjectYaml'):'';
+  const preset=html.includes('function templateSpecifiedRefinement(')?extract('templateSpecifiedRefinement'):'';
+  const harness=new Function(`
+    const TPL=${section(html,/const TPL=(\[[\s\S]*?\n\]);/,'template cards')};
+    let tpl=0,domainMode='global',regional=false,watershedPath='',closePath='',closeFormat='nml',hiddenDomainShape=null;
+    let domainEdit=null,domainCloseBoundary={},resUnitIdx=1,resVal=3,maxPasses=3,targetEdit=null,cellEdit=null;
+    let specifiedRefine={enabled:false,algorithm:'certified',route:'discrete'},colmMeshDelivery={enabled:false,pixelsPerDegree:240};
+    let projectEditQueue=Promise.resolve(),backendReady=null,cur=1,clears=0,paints=0;
+    const layerEdits={},thresholdEdits={},criterionEdits={},metadataEdit={authors:['author'],description:'keep'};
+    const qualityEdit={minAngle:31,policy:'warn',batchCells:1},expertEdit={},hydroRefine={},thresholdRefine={enabled:false};
+    const DEFAULT_BBOX=[108,120,18,26],domBbox=[110,118,20,25],METHOD_C_MAX_REFINEMENT_LEVEL=5;
+    let baseProjectYaml=JSON.stringify({intent:'AtmosphereMpas',target_kind:'atmosphere',cell:'hex',model_format:'MPAS',domain:'global',layers:[],hidden:'keep'});
+    let lastSummary={...JSON.parse(baseProjectYaml),_valid:true,_err:null};
+    const logs=[],calls=[],window={},zh=()=>false,logLine=s=>logs.push(s);
+    const currentIntent=()=>TPL[tpl].intent,currentResolution=()=>({nxp:resVal,approxKm:null,approxDegree:null}),projectName=()=>'template-test';
+    const normalizeCloseBoundary=()=>({mode:'polyline'}),defaultAlgorithmControls=()=>({}),inferCloseFormat=()=>'nml';
+    const clearCoastalOverlay=()=>{},clearRunArtifacts=()=>{clears++;},renderSteps=()=>{},renderStep=()=>{paints++;};
+    const springTypesFor=()=>({}),hasEnabledThresholdLayer=()=>false,hasEnabledHydroRefinement=()=>false;
+    const applyCloseBoundary=async yaml=>yaml;
+    function validate(cfg){if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('landtype required');return JSON.stringify(cfg);}
+    async function invoke(command,args){
+      calls.push([command,args]);let cfg=args.yaml?JSON.parse(args.yaml):null;
+      if(command==='scaffold_project')return validate({intent:args.intent,target_kind:args.intent==='AtmosphereMpas'?'atmosphere':args.intent==='CoastalOcean'?'ocean':'land',cell:args.intent==='CoastalOcean'?'tri':'hex',model_format:args.intent==='AtmosphereMpas'?'MPAS':args.intent==='CoastalOcean'?'FVCOM':'CoLM',domain:'global',nxp:args.nxp,layers:[{id:'landcover',enabled:true,path:'/preset.nc'}]});
+      if(command==='preserve_unexposed_project_fields'){
+        const base=JSON.parse(args.baseYaml);cfg.layers=base.layers.length?base.layers:[{id:'landcover',enabled:false,path:''}];cfg.hidden=base.hidden;
+        if(base.intent===cfg.intent)for(const k of ['target_kind','cell','model_format'])cfg[k]=base[k];
+      }else if(command==='set_project_target'){cfg.target_kind=args.kind;cfg.model_format=args.modelFormat;}
+      else if(command==='set_target_cell')cfg.cell=args.cell;
+      else if(command==='set_domain_global')cfg.domain='global';
+      else if(command==='set_domain_bbox'){cfg.domain='regional';cfg.bbox=[args.w,args.e,args.s,args.n];}
+      else if(command==='set_domain_close'){cfg.domain='regional';cfg.close=args.path;}
+      else if(command==='set_layer_path'){const l=cfg.layers.find(l=>l.id===args.id);if(!l)throw new Error('missing source');Object.assign(l,{path:args.path,enabled:args.enabled});}
+      else if(command==='set_specified_refinement')cfg.specified=args.enabled?{kind:args.kind,path:args.path}:null;
+      else if(command==='set_refinement_backend')cfg.backend=args.backend;
+      else if(command==='set_refinement')cfg.max_passes=args.maxPasses;
+      else if(command==='set_quality')cfg.min_angle_deg=args.minAngleDeg;
+      else if(command==='set_project_metadata')cfg.description=args.description;
+      validate(cfg);return command==='project_summary'?cfg:JSON.stringify(cfg);
+    }
+    const api={summary:yaml=>invoke('project_summary',{yaml})};
+    ${preset}
+    ${extract('composeYaml')}
+    ${commitYaml}
+    ${extract('commitProjectEdit')}
+    window.waitForProjectEdits=()=>projectEditQueue;
+    window.resetTemplateDerivedState=function(){${reset}};
+    ${bridge}
+    ${extract('selectTemplate')}
+    return {choose:selectTemplate,compose:composeYaml,logs,calls,
+      source(){const cfg=JSON.parse(baseProjectYaml);cfg.layers=[{id:'landcover',enabled:true,path:'/chosen.nc'}];baseProjectYaml=validate(cfg);lastSummary={...cfg,_valid:true,_err:null};},
+      customize(){const cfg=JSON.parse(baseProjectYaml);Object.assign(cfg,{target_kind:'atmosphere',model_format:'ICON',cell:'tri'});baseProjectYaml=validate(cfg);targetEdit={kind:'atmosphere',modelFormat:'ICON'};cellEdit='tri';},
+      hold(){let release;projectEditQueue=new Promise(resolve=>{release=resolve;});return release;},
+      state:()=>JSON.stringify({tpl,domainMode,regional,watershedPath,closePath,closeFormat,hiddenDomainShape,domainEdit,domainCloseBoundary,resUnitIdx,resVal,maxPasses,targetEdit,cellEdit,specifiedRefine,baseProjectYaml,lastSummary,layerEdits,clears,paints})};
+  `);
+  const empty=harness(),before=empty.state();
+  for(const card of [1,2,7,8,9]){
+    await empty.choose(card);
+    check(empty.state()===before,'rejected template must preserve original domain, source/target state, resolution, refinement and results');
+    check(JSON.parse(await empty.compose()).target_kind==='atmosphere','rejected template must leave project composable');
+  }
+  check(empty.logs.some(s=>s.includes('landtype required')),'template rejection must expose backend reason');
+  const h=harness();h.source();await h.choose(1);
+  let cfg=JSON.parse(await h.compose());check(cfg.target_kind==='land'&&cfg.layers[0].path==='/chosen.nc','different-intent template must use preset target and preserve chosen source');
+  h.customize();await h.choose(4);cfg=JSON.parse(await h.compose());
+  check(cfg.domain==='regional'&&cfg.target_kind==='atmosphere'&&cfg.model_format==='ICON'&&cfg.cell==='tri','same-intent regional preset must retain canonical target overrides');
+  for(const [card,nxp] of [[7,80],[8,768],[9,192]]){
+    await h.choose(card);cfg=JSON.parse(await h.compose());
+    check(cfg.nxp===nxp&&cfg.close==='input/Ocean/Ocean_ChinaSea_boundary.nml','close templates must apply their own resolution and domain only after admission');
+    check(cfg.layers[0].path==='/chosen.nc'&&cfg.hidden==='keep'&&cfg.min_angle_deg===31&&cfg.description==='keep','templates must preserve common source/hidden/quality/metadata fields');
+    if(card===9)check(cfg.max_passes===2&&cfg.specified?.path==='input/Ocean/refine_spc_close01.nml','O3 specified-close and passes must survive next compose');
+  }
+  const blocked=harness(),release=blocked.hold(),initial=blocked.state(),pending=blocked.choose(3);
+  await new Promise(resolve=>setImmediate(resolve));check(blocked.state()===initial,'template selection must not mutate while earlier edit is pending');
+  release();await pending;check(JSON.parse(await blocked.compose()).domain==='regional','template must apply after earlier edit settles');
+  log('template admission: actual selector/compose rejects atomically, preserves common and same-intent state, applies O1/O2/O3 and waits for edits');
+}
+checkTemplateAdmission().catch(error=>{console.error(error);process.exitCode=1;});
