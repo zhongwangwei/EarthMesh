@@ -1570,6 +1570,24 @@ async function checkProjectEditAdmission() {
 }
 checkProjectEditAdmission().catch(error => { console.error(error); process.exitCode=1; });
 
+{
+  const TPL = new Function('return '+section(html,/const TPL=(\[[\s\S]*?\n\]);/,'template cards'))();
+  const gallery = section(html,/(<div class="tpl">[\s\S]*?)\n      <div class="grid2">/,'template gallery');
+  const render = new Function('TPL','tpl','lang','return `'+gallery+'`;');
+  for (const lang of [0,1]) for (const selected of [0,TPL.length-1]) {
+    const markup = render(TPL,selected,lang);
+    const buttons = [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)];
+    check(buttons.length===TPL.length,'every template card must be a native keyboard-accessible button');
+    buttons.forEach(([,attrs,body],k)=>{
+      check(attrs.includes('type="button"')&&attrs.includes(`data-tpl="${k}"`)&&
+        attrs.includes(`aria-pressed="${k===selected}"`)&&attrs.includes(`aria-label="${TPL[k].nm[lang]}"`),
+        'template buttons must expose their name and committed selection, without submitting forms');
+      check(!/<(?:div|button|input|select|a)\b/.test(body),'template button content must be noninteractive phrasing content');
+    });
+  }
+  log('template accessibility: native buttons expose bilingual names and committed selection');
+}
+
 async function checkTemplateAdmission() {
   const extract=name=>{const indent=name==="selectTemplate"?"":"  ";return section(html,new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`),name);};
   const reset=section(html,/window\.resetTemplateDerivedState = function \(\) \{([\s\S]*?)\n  \};/,'template reset');
@@ -1581,13 +1599,14 @@ async function checkTemplateAdmission() {
     let tpl=0,domainMode='global',regional=false,watershedPath='',closePath='',closeFormat='nml',hiddenDomainShape=null;
     let domainEdit=null,domainCloseBoundary={},resUnitIdx=1,resVal=3,maxPasses=3,targetEdit=null,cellEdit=null;
     let specifiedRefine={enabled:false,algorithm:'certified',route:'discrete'},colmMeshDelivery={enabled:false,pixelsPerDegree:240};
-    let projectEditQueue=Promise.resolve(),backendReady=null,cur=1,clears=0,paints=0;
+    let projectEditQueue=Promise.resolve(),backendReady=null,cur=1,clears=0,paints=0,focused=null;
     const layerEdits={},thresholdEdits={},criterionEdits={},metadataEdit={authors:['author'],description:'keep'};
     const qualityEdit={minAngle:31,policy:'warn',batchCells:1},expertEdit={},hydroRefine={},thresholdRefine={enabled:false};
     const DEFAULT_BBOX=[108,120,18,26],domBbox=[110,118,20,25],METHOD_C_MAX_REFINEMENT_LEVEL=5;
     let baseProjectYaml=JSON.stringify({intent:'AtmosphereMpas',target_kind:'atmosphere',cell:'hex',model_format:'MPAS',domain:'global',layers:[],hidden:'keep'});
     let lastSummary={...JSON.parse(baseProjectYaml),_valid:true,_err:null};
     const logs=[],calls=[],window={},zh=()=>false,logLine=s=>logs.push(s);
+    const document={querySelector:selector=>({focus(){focused=selector;}})};
     const currentIntent=()=>TPL[tpl].intent,currentResolution=()=>({nxp:resVal,approxKm:null,approxDegree:null}),projectName=()=>'template-test';
     const normalizeCloseBoundary=()=>({mode:'polyline'}),defaultAlgorithmControls=()=>({}),inferCloseFormat=()=>'nml';
     const clearCoastalOverlay=()=>{},clearRunArtifacts=()=>{clears++;},renderSteps=()=>{},renderStep=()=>{paints++;};
@@ -1626,7 +1645,7 @@ async function checkTemplateAdmission() {
       source(){const cfg=JSON.parse(baseProjectYaml);cfg.layers=[{id:'landcover',enabled:true,path:'/chosen.nc'}];baseProjectYaml=validate(cfg);lastSummary={...cfg,_valid:true,_err:null};},
       customize(){const cfg=JSON.parse(baseProjectYaml);Object.assign(cfg,{target_kind:'atmosphere',model_format:'ICON',cell:'tri'});baseProjectYaml=validate(cfg);targetEdit={kind:'atmosphere',modelFormat:'ICON'};cellEdit='tri';},
       hold(){let release;projectEditQueue=new Promise(resolve=>{release=resolve;});return release;},
-      state:()=>JSON.stringify({tpl,domainMode,regional,watershedPath,closePath,closeFormat,hiddenDomainShape,domainEdit,domainCloseBoundary,resUnitIdx,resVal,maxPasses,targetEdit,cellEdit,specifiedRefine,baseProjectYaml,lastSummary,layerEdits,clears,paints})};
+      state:()=>JSON.stringify({tpl,domainMode,regional,watershedPath,closePath,closeFormat,hiddenDomainShape,domainEdit,domainCloseBoundary,resUnitIdx,resVal,maxPasses,targetEdit,cellEdit,specifiedRefine,baseProjectYaml,lastSummary,layerEdits,clears,paints,focused})};
   `);
   const empty=harness(),before=empty.state();
   for(const card of [1,2,7,8,9]){
@@ -1636,6 +1655,8 @@ async function checkTemplateAdmission() {
   }
   check(empty.logs.some(s=>s.includes('landtype required')),'template rejection must expose backend reason');
   const h=harness();h.source();await h.choose(1);
+  check(JSON.parse(h.state()).focused==='[data-tpl="1"]','accepted template must restore focus after replacing its button');
+  await h.choose(1);check(JSON.parse(h.state()).focused==='[data-tpl="1"]','reselecting the active template must retain keyboard focus');
   let cfg=JSON.parse(await h.compose());check(cfg.target_kind==='land'&&cfg.layers[0].path==='/chosen.nc','different-intent template must use preset target and preserve chosen source');
   h.customize();await h.choose(4);cfg=JSON.parse(await h.compose());
   check(cfg.domain==='regional'&&cfg.target_kind==='atmosphere'&&cfg.model_format==='ICON'&&cfg.cell==='tri','same-intent regional preset must retain canonical target overrides');

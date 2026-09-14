@@ -127,12 +127,13 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 /* template cards */
 .tpl{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md)}
 .tcard{border:1.5px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated);
-  cursor:pointer;transition:.12s;position:relative}
+  cursor:pointer;transition:.12s;position:relative;text-align:left;display:flex;flex-direction:column}
+.tcard:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .tcard:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:var(--shadow)}
 .tcard.on{border-color:var(--accent);background:var(--accent-weak)}
 .tcard .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:16px;margin-bottom:9px}
-.tcard .nm{font-weight:680;font-size:13px}
-.tcard .meta{color:var(--muted);font-size:11px;margin-top:2px}
+.tcard .nm{display:block;font-weight:680;font-size:13px}
+.tcard .meta{display:block;color:var(--muted);font-size:11px;margin-top:2px}
 .tcard .tags{margin-top:9px;display:flex;flex-wrap:wrap;gap:4px}
 .tag{font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface-2);color:var(--muted);font-weight:600}
 .tcard.on .check{position:absolute;top:10px;right:10px;color:var(--accent);font-weight:800}
@@ -670,6 +671,7 @@ async function selectTemplate(k){
   cur = 1;
   renderSteps();
   renderStep(1);
+  document.querySelector(`[data-tpl="${tpl}"]`)?.focus();
 }
 
 /* ---------------- resolution control (value + ticked slider) ---------------- */
@@ -787,11 +789,11 @@ function renderStep(i){
   else if(i===1){
     html=head(STEPS[1].t[lang],lang?"选一个目标模板——自动填好网格类型、输出格式、默认判据和数据图层；后续步骤继续设置域、数据与质量门限。":"Pick a target template — it fills mesh type, output format, default criteria and data layers; later steps set domain, data and quality gates.")
     +`<div class="card"><h3>${lang?"目标模板":"Target template"}</h3><div class="ch">${lang?"模板会映射到后端 intent 预设":"Templates map to backend intent presets"}</div>
-      <div class="tpl">${TPL.map((t,k)=>`<div class="tcard ${k===tpl?"on":""}" data-tpl="${k}">
+      <div class="tpl">${TPL.map((t,k)=>`<button type="button" class="tcard ${k===tpl?"on":""}" data-tpl="${k}" aria-pressed="${k===tpl}" aria-label="${t.nm[lang]}">
         ${k===tpl?'<span class="check">✓</span>':""}
-        <div class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</div>
-        <div class="nm">${t.nm[lang]}</div><div class="meta">${t.meta[lang]}</div>
-        <div class="tags">${t.tags.map(g=>`<span class="tag">${g[lang]}</span>`).join("")}</div></div>`).join("")}</div></div>
+        <span class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</span>
+        <span class="nm">${t.nm[lang]}</span><span class="meta">${t.meta[lang]}</span>
+        <span class="tags">${t.tags.map(g=>`<span class="tag">${g[lang]}</span>`).join("")}</span></button>`).join("")}</div></div>
       <div class="grid2">
         <div class="card" style="display:flex;flex-direction:column"><h3>${lang?"分辨率":"Resolution"}</h3>
           <div style="margin:auto 0">${resControl(lang)}</div>
