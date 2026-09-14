@@ -239,6 +239,19 @@ automatically.
 - The quality dashboard treats polygon side counts as observed cell makeup, not
   topology failures; failures come from gates and topology issues.
 
+Open/recent/New requests use latest-request ownership, including summary and
+validation callbacks. A slow older request cannot replace the newer project;
+an already-started save keeps its original recent-project name without repainting
+another project.
+
+Specified refinement keeps invalid required numeric drafts visible across page,
+language and source changes. Save/Run reject them while the source is enabled;
+disabled/other-source drafts are not sent as active geometry. Threshold fields
+still use their documented blank-to-default behavior. Circle chains show a
+read-only first circle and preserve all members when saving that radius source;
+edit the YAML to change any member. Changing refinement source replaces the chain. Refinement-circle radii are positive, without the domain-only
+hemisphere bound below.
+
 Circle domains are editable in the Domain step: center longitude/latitude,
 geodesic radius (km), and sea ratio round-trip through the shared Project
 validation and lowering. Domain circles are independent of refinement circles.

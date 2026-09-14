@@ -2185,6 +2185,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
   let projectEditQueue = Promise.resolve();
+  let projectLoadEpoch = 0;
   window.waitForProjectEdits = () => projectEditQueue;
   let backendReady = null;   // capability/catalog gate for every compose/save/run path
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
@@ -2270,11 +2271,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return hydroConfigured && !!meshMeritLayer(summary) && (hydroRefine.riverWidthEnabled || hydroRefine.riverUpstreamAreaEnabled || (hydroRefine.coastEnabled && (hydroRefine.coastLandEnabled || hydroRefine.coastOceanEnabled)));
   }
 
+  function specifiedRefinementError(r) {
+    if (!r.enabled) return "";
+    if (r.kind === "bbox") return bboxDomainError([r.w ?? DEFAULT_BBOX[0], r.e ?? DEFAULT_BBOX[1], r.s ?? DEFAULT_BBOX[2], r.n ?? DEFAULT_BBOX[3]]);
+    if (r.kind === "close") return r.path && inferCloseFormat(r.path) ? "" : (zh() ? "请选择有效的指定细化闭合区域文件。" : "Choose a supported specified-refinement close file.");
+    const lon = r.lon ?? 0, lat = r.lat ?? 0, radius = r.radiusKm ?? 100;
+    if (![lon, lat, radius].every(Number.isFinite)) return zh() ? "请填写指定细化的圆心经纬度和半径。" : "Enter finite specified-refinement center coordinates and radius.";
+    if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return zh() ? "经度范围为 −180 至 180°，纬度范围为 −90 至 90°。" : "Longitude must be −180…180° and latitude −90…90°.";
+    if (radius <= 0) return zh() ? "指定细化半径必须大于 0。" : "Specified-refinement radius must be positive.";
+    return "";
+  }
+
   async function composeYaml(template = null) {
     if (backendReady) await backendReady;
     const resolution = template && template.nxp
       ? { nxp: template.nxp, approxKm: null, approxDegree: null } : currentResolution();
     const refine = template ? templateSpecifiedRefinement(template) : specifiedRefine;
+    const refinementError = specifiedRefinementError(refine);
+    if (refinementError) throw new Error(refinementError);
     const domain = template ? null : domainEdit;
     let yaml = await invoke("scaffold_project",
       { name: projectName(), intent: template ? template.intent : currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
@@ -2375,8 +2389,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     yaml = await invoke("set_specified_refinement", {
       yaml, enabled: !!refine.enabled,
       kind: refine.kind || "radius",
-      lon: refine.lon, lat: refine.lat, radiusKm: refine.radiusKm,
-      w: refine.w, e: refine.e, s: refine.s, n: refine.n,
+      ...(refine.enabled && (refine.kind || "radius") === "radius" ? { lon: refine.lon ?? 0, lat: refine.lat ?? 0, radiusKm: refine.radiusKm ?? 100 } : {}),
+      ...(refine.enabled && refine.kind === "bbox" ? { w: refine.w ?? DEFAULT_BBOX[0], e: refine.e ?? DEFAULT_BBOX[1], s: refine.s ?? DEFAULT_BBOX[2], n: refine.n ?? DEFAULT_BBOX[3] } : {}),
       path: refine.path
     });
     if (refine.enabled && refine.kind === "close") {
@@ -2858,9 +2872,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function enhanceRefinementStep() {
     const critCard = document.querySelector("#work .card");
     if (!critCard) return;
-    let sum, cat;
-    try { sum = await api.summary(await composeYaml()); cat = await api.listCriteria(); }
+    let sum, cat, draftError = "";
+    try { sum = await api.summary(await composeYaml()); }
+    catch (e) {
+      draftError = String(e);
+      logLine("✗ refinement: " + e);
+      // An invalid draft must remain editable. Only the editor's data catalogue
+      // uses the accepted project (or new-project scaffold); Save/Run never do.
+      try {
+        const yaml = baseProjectYaml || await invoke("scaffold_project", { name: projectName(), intent: currentIntent(), ...currentResolution() });
+        sum = await api.summary(yaml);
+      } catch (error) { logLine("✗ refinement: " + error); return; }
+    }
+    try { cat = await api.listCriteria(); }
     catch (e) { logLine("✗ refinement: " + e); return; }
+    if (document.querySelector("#work .card") !== critCard) return;
     if (maxPasses == null) maxPasses = sum.max_passes;
     const merit = (sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null || sum.hydro_river_upstream_area_threshold_km2 != null)
       ? meshMeritLayer(sum)
@@ -2964,22 +2990,23 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div class="grid2">
         ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合掩膜":"Close mask"}</option></select>`)}
       </div>
-      ${(specifiedRefine.circleCount ?? 0) > 1 ? `<div style="margin-top:10px;color:var(--faint);font-size:11px">${z ? `本工程用 ${specifiedRefine.circleCount} 个圆组成的圆链细化；下面显示的是链首，其余成员只能在工程文件里编辑。` : `This project refines with a chain of ${specifiedRefine.circleCount} circles. The fields below show the first one; the rest can only be edited in the project file.`}</div>` : ""}
+      ${(specifiedRefine.circleCount ?? 0) > 1 ? `<div style="margin-top:10px;color:var(--faint);font-size:11px">${z ? `本工程用 ${specifiedRefine.circleCount} 个圆组成的圆链细化；下面只读显示链首。修改任一圆请编辑工程文件。保留半径形式时保存完整圆链；切换形式会替换它。` : `This project refines with a chain of ${specifiedRefine.circleCount} circles. The first circle is shown read-only. Edit any circle in the project file. Saving the radius source preserves the full chain; changing source replaces it.`}</div>` : ""}
       <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
-        ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" min="0.001" step="1" value="${specifiedRefine.radiusKm ?? 100}">`)}
-        ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" min="-180" max="180" step="0.01" value="${specifiedRefine.lon ?? 0}">`)}
-        ${field(z?"中心纬度":"Center lat",`<input class="input" type="number" id="specifiedLat" min="-90" max="90" step="0.01" value="${specifiedRefine.lat ?? 0}">`)}
+        ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="0" step="any" value="${specifiedRefine.radiusKm ?? 100}">`)}
+        ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="-180" max="180" step="any" value="${specifiedRefine.lon ?? 0}">`)}
+        ${field(z?"中心纬度":"Center lat",`<input class="input" type="number" id="specifiedLat" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="-90" max="90" step="any" value="${specifiedRefine.lat ?? 0}">`)}
       </div>
       <div class="grid2" id="specifiedBboxFields" style="margin-top:10px">
-        ${field(z?"西经度":"West lon",`<input class="input" type="number" id="specifiedW" min="-180" max="180" step="0.01" value="${specifiedRefine.w ?? DEFAULT_BBOX[0]}">`)}
-        ${field(z?"东经度":"East lon",`<input class="input" type="number" id="specifiedE" min="-180" max="180" step="0.01" value="${specifiedRefine.e ?? DEFAULT_BBOX[1]}">`)}
-        ${field(z?"南纬度":"South lat",`<input class="input" type="number" id="specifiedS" min="-90" max="90" step="0.01" value="${specifiedRefine.s ?? DEFAULT_BBOX[2]}">`)}
-        ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="0.01" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
+        ${field(z?"西经度":"West lon",`<input class="input" type="number" id="specifiedW" min="-180" max="180" step="any" value="${specifiedRefine.w ?? DEFAULT_BBOX[0]}">`)}
+        ${field(z?"东经度":"East lon",`<input class="input" type="number" id="specifiedE" min="-180" max="180" step="any" value="${specifiedRefine.e ?? DEFAULT_BBOX[1]}">`)}
+        ${field(z?"南纬度":"South lat",`<input class="input" type="number" id="specifiedS" min="-90" max="90" step="any" value="${specifiedRefine.s ?? DEFAULT_BBOX[2]}">`)}
+        ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="any" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
       </div>
       <div id="specifiedCloseFields" style="margin-top:10px">
-        ${field(z?"闭合区域文件":"Close region file",`<div class="browse" id="specifiedCloseBrowse" style="cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none"></span></div>`)}
+        ${field(z?"闭合区域文件":"Close region file",`<button type="button" class="browse" id="specifiedCloseBrowse" style="width:100%;cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none"></span></button>`)}
         ${closeBoundaryControls("specified",specifiedRefine.closeBoundary,z)}
       </div>
+      <div id="specifiedRefinementError" role="alert" style="color:var(--fail);font-size:12px;margin-top:10px"></div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
           <div><span style="font-weight:650">${z ? "指定细化次数" : "Specified refinement passes"}</span>
@@ -3172,6 +3199,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         + (thresholdRefine.enabled ? threshold : "")
         + (strategyEnabled ? hfieldBlock : "");
       anchor.insertAdjacentHTML("afterend", mp);
+      if (draftError) {
+        const notice = document.createElement("p");
+        notice.style.cssText = "color:var(--muted);font-size:12px";
+        notice.textContent = z ? "当前草稿未通过检查（详见日志）；暂显示已接受配置的数据图层，仍可修正字段。保存和运行会重新校验。" : "The draft did not pass checks (see log). Showing data layers from the accepted configuration so fields remain editable; Save and Run will revalidate.";
+        anchor.after(notice);
+      }
       const rows = document.getElementById("thresholdRows");
       if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));
       const specifiedCloseText = document.getElementById("specifiedClosePathText");
@@ -3384,9 +3417,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const specCloseBrowse = document.getElementById("specifiedCloseBrowse");
     const specCloseText = document.getElementById("specifiedClosePathText");
     const readNum = (el) => {
-      if (!el || !el.value.trim()) return null;
-      const n = parseFloat(el.value);
-      return Number.isFinite(n) ? n : null;
+      if (!el) return null;
+      return el.value.trim() ? Number(el.value) : "";
     };
     const paintSpecifiedKind = (kind) => {
       const radiusFields = document.getElementById("specifiedRadiusFields");
@@ -3396,6 +3428,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (bboxFields) bboxFields.style.display = kind === "bbox" ? "" : "none";
       if (closeFields) closeFields.style.display = kind === "close" ? "" : "none";
       if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 SHP/NML/NetCDF/TXT":"📄 Choose SHP/NML/NetCDF/TXT");
+      const error = specifiedRefinementError(specifiedRefine);
+      const message = document.getElementById("specifiedRefinementError");
+      if (message) message.textContent = error;
+      [specLon, specLat, specRadius, specW, specE, specS, specN].forEach((el) => {
+        if (!el) return;
+        const active = kind === (el === specLon || el === specLat || el === specRadius ? "radius" : "bbox");
+        el.setCustomValidity(active ? error : "");
+        el.setAttribute("aria-invalid", String(active && !!error));
+        el.setAttribute("aria-describedby", "specifiedRefinementError");
+        el.setAttribute("aria-label", el.closest(".field").querySelector("label").textContent);
+      });
     };
     if (specOn) specOn.onchange = () => {
       specifiedRefine.enabled = specOn.checked;
@@ -3424,8 +3467,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (el) el.addEventListener("change", syncSpecified);
     });
     if (specCloseBrowse) specCloseBrowse.onclick = async () => {
-      let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-      if (!p) return;
+      let p; try { p = await api.pickDataFile(); }
+      catch (e) { if (document.getElementById("specifiedCloseBrowse") === specCloseBrowse) logLine("✗ " + e); return; }
+      if (!p || document.getElementById("specifiedCloseBrowse") !== specCloseBrowse) return;
       if (!inferCloseFormat(p)) {
         logLine("✗ " + (z ? "指定闭合细化支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Specified close refinement supports .shp / .nml / .nc / .nc4 / .txt / .csv"));
         return;
@@ -3494,16 +3538,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   // Reflect a loaded + validated project into the UI (shared by Open and recents).
-  async function reflectProject(res) {
+  async function reflectProject(res, epoch = ++projectLoadEpoch) {
     await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let sum;
-    try { sum = await api.summary(res.yaml); } catch (e) { logLine("✗ " + e); return; }
+    try { sum = await api.summary(res.yaml); }
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
+    try { await api.validate(res.yaml); sum._valid = true; sum._err = null; }
+    catch (e) { sum._valid = false; sum._err = String(e); }
+    if (epoch !== projectLoadEpoch) return;
     projectActive = true;
     baseProjectYaml = res.yaml;
     lastSummary = sum;
     clearRunArtifacts();
-    try { await api.validate(res.yaml); lastSummary._valid = true; lastSummary._err = null; }
-    catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
     try {
       const nameEl = document.querySelector(".proj-name");
       if (nameEl) nameEl.value = sum.name;
@@ -3654,27 +3702,37 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   async function onSave() {
+    const epoch = projectLoadEpoch;
     try {
       await projectEditQueue;
+      if (epoch !== projectLoadEpoch) return;
+      const savedName = projectName();
       const yaml = await composeYaml();
+      if (epoch !== projectLoadEpoch) return;
       const path = await api.saveProject(yaml);
       if (path) {
+        pushRecent(path, savedName);
+        logLine("✓ saved " + path);
+        if (epoch !== projectLoadEpoch) return;
         projectActive = true;
         await refreshSummary();
-        pushRecent(path, projectName());
+        if (epoch !== projectLoadEpoch) return;
         renderProjectSummary();
-        logLine("✓ saved " + path);
       }
-      else logLine("save cancelled");
+      else if (epoch === projectLoadEpoch) logLine("save cancelled");
     } catch (e) { logLine("✗ save failed: " + e); }
   }
 
   async function onOpen() {
+    const epoch = ++projectLoadEpoch;
     await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let res;
-    try { res = await api.openProject(); } catch (e) { logLine("✗ open failed: " + e); return; }
+    try { res = await api.openProject(); }
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ open failed: " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
     if (!res) { logLine("open cancelled"); return; }
-    await reflectProject(res);
+    await reflectProject(res, epoch);
   }
 
   // Reset to a clean default project (matches first-load state). Keep the chosen
@@ -3704,13 +3762,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Compute the summary (+ validation) for the current UI state.
   async function refreshSummary() {
+    const epoch = projectLoadEpoch, base = baseProjectYaml;
+    const current = () => epoch === projectLoadEpoch && base === baseProjectYaml;
     try {
       const yaml = await composeYaml();
-      lastSummary = await api.summary(yaml);
-      try { await api.validate(yaml); lastSummary._valid = true; lastSummary._err = null; }
-      catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
-      return lastSummary;
-    } catch (e) { lastSummary = null; return null; }
+      if (!current()) return null;
+      const sum = await api.summary(yaml);
+      if (!current()) return null;
+      try { await api.validate(yaml); sum._valid = true; sum._err = null; }
+      catch (e) { sum._valid = false; sum._err = String(e); }
+      if (!current()) return null;
+      lastSummary = sum;
+      return sum;
+    } catch (e) { if (current()) lastSummary = null; return null; }
   }
 
   function cellShapeLabel(cell) {
@@ -3917,21 +3981,27 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function onNew() {
     if (!confirm(zh() ? "新建会清空当前项目编辑，确定继续？（如需保留请先用 💾 保存）" : "Start a new project? Current edits will be cleared (use 💾 Save first to keep them).")) return;
+    const epoch = ++projectLoadEpoch;
     await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     resetProject();
     projectActive = true;
     await refreshSummary();
+    if (epoch !== projectLoadEpoch) return;
     if (typeof renderSteps === "function") renderSteps();
     if (typeof renderStep === "function") renderStep(0);
     logLine(zh() ? "✓ 新建项目" : "✓ new project");
   }
 
   async function openRecent(path) {
+    const epoch = ++projectLoadEpoch;
     await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let res;
     try { res = await invoke("read_project", { path }); }
-    catch (e) { logLine("✗ open " + path + ": " + e); return; }
-    await reflectProject(res);
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ open " + path + ": " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
+    await reflectProject(res, epoch);
   }
 
   // ---- New Project (step 0): output-folder picker + real recent list --------

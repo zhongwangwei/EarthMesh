@@ -53,6 +53,13 @@ def main():
             if(command==='preserve_unexposed_project_fields' && args.preserveDomain){
               const old=JSON.parse(args.baseYaml);for(const key of ['domain','domain_shape','circle','bbox','sea_ratio'])cfg[key]=old[key];
             }
+            if(command==='set_specified_refinement'){
+              for(const key of ['lon','lat','radiusKm','w','e','s','n'])if(args[key]!=null && (typeof args[key]!=='number' || !Number.isFinite(args[key])))throw Error('invalid numeric argument '+key);
+              cfg.specified_refine_enabled=args.enabled;cfg.specified_refine_kind=args.kind;
+              if(args.kind==='radius')Object.assign(cfg,{specified_refine_lon:args.lon??0,specified_refine_lat:args.lat??0,specified_refine_radius_km:args.radiusKm??100});
+              if(args.kind==='bbox')cfg.specified_refine_bbox=[args.w??0,args.e??1,args.s??0,args.n??1];
+              if(args.kind==='close')cfg.specified_refine_path=args.path;
+            }
             if(command==='set_domain_circle')Object.assign(cfg,{domain:'regional',domain_shape:'circle',circle:[args.lon,args.lat,args.radiusKm],bbox:null,sea_ratio:args.seaRatio});
             if(command==='set_domain_bbox')Object.assign(cfg,{domain:'regional',domain_shape:'bbox',circle:null,bbox:[args.w,args.e,args.s,args.n],sea_ratio:args.seaRatio});
             if(command==='set_domain_shapefile')Object.assign(cfg,{domain:'regional',domain_shape:'shapefile',circle:null,bbox:null,watershed_path:args.path,sea_ratio:args.seaRatio});
@@ -81,6 +88,105 @@ def main():
             page.locator("#projSave").click()
             page.wait_for_function("!!window.__saved")
             return page.evaluate("window.__saved")
+
+        # Specified geometry is a required draft, not optional threshold/default input.
+        opened = {**summary, "specified_refine_enabled": True, "specified_refine_kind": "radius",
+                  "specified_refine_lon": 113.125, "specified_refine_lat": 22.5,
+                  "specified_refine_radius_km": 150, "specified_refine_circle_count": 1}
+        page.evaluate("c=>window.__opened=c", opened)
+        open_project()
+        step(4)
+        page.locator("#specifiedLon").wait_for()
+        page.locator("#specifiedRefinementPanel").screenshot(path=str(source.parent / "specified-before-or-after.png"))
+        for kind, fields in (("radius", (("specifiedLon", "113.125"), ("specifiedLat", "22.5"), ("specifiedRadius", "150"))),
+                             ("bbox", (("specifiedW", "170"), ("specifiedE", "-170"), ("specifiedS", "-10"), ("specifiedN", "10")))):
+            page.select_option("#specifiedKind", kind)
+            for control, value in fields:
+                page.locator(f"#{control}").fill(value)
+            for control, value in fields:
+                page.locator(f"#{control}").fill("")
+                step(0)
+                page.evaluate("window.__saved=null")
+                page.locator("#projSave").click()
+                page.wait_for_timeout(150)
+                assert page.evaluate("window.__saved===null"), f"blank {control} silently saved a default"
+                step(4)
+                page.locator(f"#{control}").wait_for()
+                assert page.locator(f"#{control}").input_value() == "", f"lost invalid {control} draft on navigation"
+                page.evaluate("lang=1;applyI18n()")
+                page.locator(f"#{control}").wait_for()
+                assert page.locator(f"#{control}").input_value() == ""
+                assert page.locator("#specifiedRefinementError").inner_text(), f"missing {control} error"
+                assert page.locator(f"#{control}").get_attribute("aria-invalid") == "true"
+                if control in ("specifiedLon", "specifiedW"):
+                    # Inactive invalid geometry must not leak a string into Tauri Option<f64>.
+                    page.locator("#specifiedRefineOn").uncheck()
+                    assert not save()["specified_refine_enabled"]
+                    step(4)
+                    page.locator("#specifiedRefineOn").check()
+                    page.locator(f"#{control}").wait_for()
+                    assert page.locator(f"#{control}").input_value() == ""
+                    page.select_option("#specifiedKind", "bbox" if kind == "radius" else "radius")
+                    assert save()["specified_refine_enabled"]
+                    step(4)
+                    page.select_option("#specifiedKind", kind)
+                    assert page.locator(f"#{control}").input_value() == ""
+                    step(6)
+                    page.evaluate("window.__run=null")
+                    page.locator("#runBtn").click()
+                    page.wait_for_function("!runInProgress")
+                    assert page.evaluate("window.__run===null"), "invalid specified geometry reached run_project"
+                    step(4)
+                    page.locator(f"#{control}").wait_for()
+                page.locator("#specifiedRefinementPanel").screenshot(path=str(source.parent / f"{kind}-invalid-zh.png"))
+                page.locator(f"#{control}").fill(value)
+                page.evaluate("lang=0;applyI18n()")
+                page.locator(f"#{control}").wait_for()
+            assert all(page.locator(f"#{control}").evaluate("el=>el.checkValidity()") for control, _ in fields)
+            saved = save()
+            if kind == "radius":
+                assert [saved[k] for k in ("specified_refine_lon", "specified_refine_lat", "specified_refine_radius_km")] == [113.125, 22.5, 150]
+            else:
+                assert saved["specified_refine_bbox"] == [170, -170, -10, 10]
+            step(4)
+            page.locator("#specifiedKind").wait_for()
+        # Refinement circles must NOT inherit the domain-only hemisphere limit.
+        page.select_option("#specifiedKind", "radius")
+        page.locator("#specifiedRadius").fill("0.0001")
+        assert page.locator("#specifiedRadius").evaluate("el=>el.checkValidity()"), "native step/min rejects backend-valid radius"
+        assert save()["specified_refine_radius_km"] == 0.0001
+        step(4)
+        page.locator("#specifiedRadius").fill("2e4")
+        assert save()["specified_refine_radius_km"] == 20000
+        step(4)
+        page.select_option("#specifiedKind", "close")
+        assert page.locator("#specifiedCloseBrowse").evaluate("el=>el.tagName") == "BUTTON"
+        page.evaluate("window.__holdPicker=true")
+        page.locator("#specifiedCloseBrowse").click()
+        page.wait_for_function("!!window.__picker")
+        step(0)
+        page.evaluate("window.__picker.resolve('/obsolete.nml');window.__holdPicker=false")
+        step(4)
+        assert '/obsolete.nml' not in page.locator("#specifiedClosePathText").inner_text()
+        page.evaluate("window.__pick='/accepted.nml'")
+        page.locator("#specifiedCloseBrowse").focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function("document.getElementById('specifiedClosePathText').textContent.includes('/accepted.nml')")
+        assert save()["specified_refine_path"] == "/accepted.nml"
+        # The existing backend preserves the full chain; this single-head editor is read-only.
+        page.evaluate("c=>window.__opened=c", {**opened, "specified_refine_circle_count": 3})
+        open_project()
+        step(4)
+        for language, width in ((1, 1000), (0, 1400)):
+            page.set_viewport_size({"width": width, "height": 900})
+            page.evaluate("l=>{lang=l;applyI18n();}", language)
+            for control in ("specifiedLon", "specifiedLat", "specifiedRadius"):
+                assert page.locator(f"#{control}").evaluate("el=>el.readOnly")
+            panel = page.locator("#specifiedRefinementPanel")
+            assert panel.evaluate("el=>el.scrollWidth<=el.clientWidth+1"), "specified controls overflow the card"
+            panel.screenshot(path=str(source.parent / f"specified-chain-{width}.png"))
+        assert save()["specified_refine_circle_count"] == 3
+        page.evaluate("c=>window.__opened=c", summary)
 
         # Old domain forms must have the same draft/precision guarantees as Circle.
         original = summary.copy()
@@ -278,7 +384,7 @@ def main():
         assert not errors, errors
         browser.close()
         server.shutdown()
-    print(json.dumps({"circle_roundtrip": "pass", "invalid_drafts": {"circle": 5, "bbox": 5}, "domain_modes": ["bbox", "circle", "shapefile", "close"], "picker_and_preview_ownership": "pass", "geodesic_map_cases": 6, "languages": ["zh", "en"], "viewports": [1400, 1000], "detached_plane_globe": "pass", "page_errors": errors, "transport": "mocked Tauri; real Rust summary/capability fixture"}))
+    print(json.dumps({"specified_drafts": "7 required fields; inactive isolation; save/run blocking; reopen and language", "specified_chain": "read-only head preserved", "circle_roundtrip": "pass", "invalid_drafts": {"circle": 5, "bbox": 5}, "domain_modes": ["bbox", "circle", "shapefile", "close"], "picker_and_preview_ownership": "pass", "geodesic_map_cases": 6, "languages": ["zh", "en"], "viewports": [1400, 1000], "detached_plane_globe": "pass", "page_errors": errors, "transport": "mocked Tauri; real Rust summary/capability fixture"}))
 
 
 if __name__ == "__main__":

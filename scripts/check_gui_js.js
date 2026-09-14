@@ -558,7 +558,7 @@ log("CoLM mesh delivery command is wired and model-gated");
 
 {
   const compose = section(html, /async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/, "composeYaml body");
-  const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   const wire = section(html, /async function wireExpertTargetStep\(\) \{([\s\S]*?)\n  \}/, "wireExpertTargetStep body");
   check(
     compose.includes("yaml, nxp: expertEdit.nxp") &&
@@ -827,7 +827,7 @@ log("CaMa label check passed");
 }
 
 {
-  const unawaitedReflect = /(^|\n)\s*(?!await\s+)reflectProject\(res\);/.test(html);
+  const unawaitedReflect = /(^|\n)\s*(?!await\s+)reflectProject\(res(?:,[^)]*)?\);/.test(html);
   check(
     html.includes("renderMissingGridfile") &&
       html.includes("engine did not report gridfile") &&
@@ -838,7 +838,7 @@ log("CaMa label check passed");
       html.includes("let runCompletion = null;") &&
       html.includes("function clearRunArtifacts") &&
       html.includes("applyMesh(null);") &&
-      html.includes("await reflectProject(res);") &&
+      (html.includes("await reflectProject(res);") || html.includes("await reflectProject(res, epoch);")) &&
       html.includes('runOut.textContent=parts.join(" \u00b7 ");') &&
       !html.includes('${runInfo&&runInfo.outdir?(lang?"\u8f93\u51fa\u76ee\u5f55\uff1a":"output: ")+runInfo.outdir') &&
       !unawaitedReflect,
@@ -1049,7 +1049,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
   const current = section(html, /function currentResolution\(\) \{([\s\S]*?)\n  \}/, "currentResolution body");
   const nxp = section(html, /function currentNxp\(\) \{([\s\S]*?)\n  \}/, "currentNxp body");
   const res = section(html, /function resInput\(src\)\{([\s\S]*?)\n\}/, "resInput body");
-  const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   check(
     current.includes("if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null") &&
       current.includes("return { nxp: null, approxKm: resVal") &&
@@ -1116,7 +1116,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 }
 
 {
-  const body = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const body = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   check(body.includes("maxPasses = sum.max_passes;") && !body.includes("if (sum.max_passes)"), "opened project max_passes must not truthy-filter zero");
   log("opened project max_passes preserves zero");
 }
@@ -1482,7 +1482,7 @@ async function checkProjectEditAdmission() {
   const commitYaml = html.includes('function commitProjectYaml(') ? extract('commitProjectYaml') : '';
   const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
   const harness = new Function(`
-    let projectEditQueue=Promise.resolve(),baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
+    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
     let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0;
     const layerEdits={},logs=[],elements={targetKindOutput:{value:'atmosphere'},targetModelOutput:{value:'MPAS'},targetCellOutput:{value:'hex'}};
     const document={getElementById:id=>elements[id]},zh=()=>false,logLine=s=>logs.push(s);
@@ -1632,6 +1632,7 @@ async function checkTemplateAdmission() {
     const api={summary:yaml=>invoke('project_summary',{yaml})};
     let lang=0;
     ${extract('bboxDomainError')}
+    ${extract('specifiedRefinementError')}
     ${preset}
     ${extract('composeYaml')}
     ${commitYaml}
@@ -1734,7 +1735,7 @@ async function checkProjectControls() {
     check(markup.startsWith('<button type="button"')&&markup.includes(`aria-label="${lang?'选择输出目录':'Choose output folder'}"`)&&markup.includes('aria-describedby="outPathText"'),'output picker must be a named native button describing the current path');
   }
   const harness=new Function('chinese',`
-    let outputPath='/before',projectEditQueue=Promise.resolve(),project='before',pick=null,readFails=false;
+    let outputPath='/before',projectEditQueue=Promise.resolve(),projectLoadEpoch=0,project='before',pick=null,readFails=false;
     let recents=[{path:'/a/<project>.yaml',name:'<img src=x onerror=bad>'}];
     const logs=[],reads=[],saved=[],metadataEdit={},zh=()=>chinese,logLine=s=>logs.push(s);
     const element=tag=>({tag,style:{},children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}});
@@ -1774,6 +1775,165 @@ async function checkProjectControls() {
   check(reflect.indexOf('document.querySelector("#work h1")?.focus();')>reflect.indexOf('renderStep(typeof cur'),'shared Open/recent reflection must restore heading focus after rerender');
   log('project controls: native recent/folder buttons, safe text, picker cancel/failure, recent read failure and edit fence passed');
 }
+
+async function checkProjectReplacementOwnership() {
+  const extract=name=>{
+    let start=html.indexOf(`function ${name}(`);
+    check(start>=0, `missing ${name}`);
+    if(html.slice(Math.max(0,start-6),start)==='async ') start-=6;
+    const open=html.indexOf('{',start);
+    let depth=0,quote=null,escape=false;
+    for(let i=open;i<html.length;i++){
+      const c=html[i];
+      if(quote){
+        if(escape){escape=false;continue;}
+        if(c==='\\'){escape=true;continue;}
+        if(c===quote){quote=null;continue;}
+        continue;
+      }
+      if(c==='"'||c==="'"||c==='`'){quote=c;continue;}
+      if(c==='{')depth++;
+      else if(c==='}'){depth--;if(depth===0)return html.slice(start,i+1);}
+    }
+    check(false, `unterminated ${name}`);
+  };
+  const harness=new Function(`
+    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,projectActive=true,baseProjectYaml='accepted',lastSummary=null;
+    let outputPath='',metadataEdit={},domainEdit=null,domainMode='global',regional=false,tpl=0;
+    let targetEdit=null,cellEdit=null,colmMeshDelivery={enabled:false,pixelsPerDegree:240},qualityEdit=null,maxPasses=null;
+    let domBbox=[],domCircle=[],domainSeaRatios={},watershedPath='',closePath='',closeFormat='nml',domainCloseBoundary=null,hiddenDomainShape=null;
+    let expertEdit={},specifiedRefine={},hydroRefine={},thresholdRefine={},_hydroThresholds={};
+    const DEFAULT_TPL=0,DEFAULT_BBOX=[108,120,18,26],DEFAULT_CIRCLE=[114,22,500],layerEdits={},thresholdEdits={},criterionEdits={};
+    const TPL=[{intent:'Custom',global:true}],RES_UNITS=[{def:100}],logs=[],renders=[],recentWrites=[],pushed=[],saves=[];
+    const normalizeCloseBoundary=()=>null,defaultAlgorithmControls=()=>({}),defaultHydroRefine=()=>({}),springStrategyFromTypes=()=>null,expertEnabled=()=>false;
+    const setExpertMode=()=>{},clearCoastalOverlay=()=>{},clearRunArtifacts=()=>{},loadWatershedBoundary=()=>{},renderSteps=()=>renders.push('steps'),renderStep=i=>renders.push('step:'+i),renderProjectSummary=()=>renders.push('summary');
+    let visibleName='accepted-name'; const zh=()=>false,logLine=s=>logs.push(String(s)),projectName=()=>visibleName,confirm=()=>true;
+    const nameEl={value:'earthmesh-project'},heading={focus(){renders.push('focus');}};
+    function element(tag){return {tag,type:'',className:'',style:{},title:'',children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);},querySelector(sel){return sel==='h3'?{textContent:'Recent projects'}:{textContent:''};},querySelectorAll(){return this.children.slice();}};}
+    const recentCard=element('div');
+    const document={createElement:element,getElementById:()=>null,querySelector:sel=>sel==='.proj-name'?nameEl:sel==='#work h1'?heading:null,querySelectorAll:sel=>sel==='#work .card'?[recentCard]:[]};
+    let recents=[{path:'/A.yaml',name:'A'},{path:'/B.yaml',name:'B'}];
+    const localStorage={getItem:key=>key==='em.recents'?JSON.stringify(recents):null,setItem:(key,value)=>recentWrites.push([key,value])};
+    function loadRecents(){return recents;}
+    function defer(){let resolve,reject;const promise=new Promise((res,rej)=>{resolve=res;reject=rej;});return {promise,resolve,reject};}
+    const reads=new Map(),opens=[],summaries=[],validations=[];
+    let summaryCalls=0;
+    function summaryOf(yaml){return {name:String(yaml),intent:'Custom',domain:'global',domain_shape:'global',target_kind:'land',model_format:'CoLM',cell:'hex',layers:[],max_passes:0};}
+    async function composeYaml(){return baseProjectYaml || 'new-default';}
+    async function invoke(command,args){
+      if(command!=='read_project')throw new Error(command);
+      const d=defer();reads.set(args.path,d);return d.promise;
+    }
+    const api={
+      openProject:async()=>{const d=defer();opens.push(d);return d.promise;},
+      saveProject:async yaml=>{const d=defer();saves.push({yaml,d});return d.promise;},
+      summary:async yaml=>{summaryCalls++;if(yaml==='new-default')return summaryOf(yaml);const d=defer();summaries.push({yaml,d});return d.promise;},
+      validate:async yaml=>{if(yaml==='new-default')return true;const d=defer();validations.push({yaml,d});return d.promise;},
+    };
+    function pushRecent(path,name){pushed.push([path,name]);}
+    ${extract('reflectProject')}
+    ${extract('openRecent')}
+    ${extract('onOpen')}
+    ${extract('resetProject')}
+    ${extract('refreshSummary')}
+    ${extract('onSave')}
+    ${extract('onNew')}
+    ${extract('enhanceNewProjectStep')}
+    function finishSummary(yaml){const item=summaries.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing summary '+yaml);item.done=true;item.d.resolve(summaryOf(yaml));}
+    function failSummary(yaml,message='summary failed'){const item=summaries.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing summary '+yaml);item.done=true;item.d.reject(new Error(message));}
+    function finishValidate(yaml){const item=validations.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing validate '+yaml);item.done=true;item.d.resolve(true);}
+    function failValidate(yaml,message='validate failed'){const item=validations.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing validate '+yaml);item.done=true;item.d.reject(new Error(message));}
+    enhanceNewProjectStep();
+    return {recentCard,logs,reads,opens,summaries,validations,renders,pushed,saves,
+      openRecent,onOpen,onNew,onSave,render:enhanceNewProjectStep,
+      resolveRead(path,yaml=path){reads.get(path).resolve({yaml,path});},rejectRead(path,message='read failed'){reads.get(path).reject(new Error(message));},
+      resolveOpen(res){opens.at(-1).resolve(res);},rejectOpen(message='open failed'){opens.at(-1).reject(new Error(message));},
+      resolveSave(path='/saved.yaml'){saves.at(-1).d.resolve(path);},rejectSave(message='save failed'){saves.at(-1).d.reject(new Error(message));},setName(name){visibleName=name;nameEl.value=name;},
+      finishSummary,failSummary,finishValidate,failValidate,
+      setRecents(next){recents=next;enhanceNewProjectStep();},refreshSummary,
+      state:()=>({baseProjectYaml,last:lastSummary&&lastSummary.name,valid:lastSummary&&lastSummary._valid,err:lastSummary&&lastSummary._err,projectActive,logs:[...logs],renders:[...renders],pushed:[...pushed],summaryCalls,saveCalls:saves.length})};
+  `);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  const settleReflect=async(h,yaml)=>{if(!h.summaries.some(x=>x.yaml===yaml&&!x.done))return false;h.finishSummary(yaml);await flush();if(h.validations.some(x=>x.yaml===yaml&&!x.done)){h.finishValidate(yaml);await flush();}return true;};
+
+  // A then B: B's quicker read/summary/validate is the user's latest accepted replacement.
+  // A must not overwrite it when its older async work finally returns.
+  const h=harness();
+  const a=h.recentCard.children[0].onclick();
+  await flush();
+  const b=h.recentCard.children[1].onclick();
+  await flush();
+  h.resolveRead('/B.yaml');await flush();await settleReflect(h,'/B.yaml');await b;
+  check(h.state().baseProjectYaml==='/B.yaml'&&h.state().last==='/B.yaml','latest recent project must win after B resolves first');
+  if(h.reads.has('/A.yaml')){h.resolveRead('/A.yaml');await flush();await settleReflect(h,'/A.yaml');}
+  await a;
+  check(h.state().baseProjectYaml==='/B.yaml'&&h.state().last==='/B.yaml','stale earlier recent response must not overwrite the latest project');
+
+  // Candidate replacement must not partially commit after summary while validate is still pending.
+  // A parseable candidate with validation errors is still atomically accepted as repairable.
+  const v=harness();
+  const first=v.openRecent('/A.yaml');await flush();v.resolveRead('/A.yaml');await flush();await settleReflect(v,'/A.yaml');await first;
+  const second=v.openRecent('/B.yaml');await flush();v.resolveRead('/B.yaml');await flush();v.finishSummary('/B.yaml');await flush();
+  check(v.state().baseProjectYaml==='/A.yaml'&&v.state().last==='/A.yaml','replacement must not commit globals while validation is still pending');
+  v.failValidate('/B.yaml','bad candidate');await second;
+  check(v.state().baseProjectYaml==='/B.yaml'&&v.state().last==='/B.yaml'&&v.state().valid===false&&String(v.state().err).includes('bad candidate'),'validation-failed replacement must be atomically accepted with invalid summary state');
+
+  // A stale validation result must not touch a newer accepted summary.
+  const sv=harness();
+  const old=sv.openRecent('/A.yaml');await flush();sv.resolveRead('/A.yaml');await flush();sv.finishSummary('/A.yaml');await flush();
+  const latest=sv.openRecent('/B.yaml');await flush();sv.resolveRead('/B.yaml');await flush();await settleReflect(sv,'/B.yaml');await latest;
+  sv.failValidate('/A.yaml','stale invalid');await old;
+  check(sv.state().baseProjectYaml==='/B.yaml'&&sv.state().last==='/B.yaml'&&sv.state().valid===true,'stale validation failure must not overwrite newer accepted project summary');
+
+  // A pending refreshSummary compose/summary/validate must not overwrite a newer replacement.
+  const r=harness();
+  const accepted=r.openRecent('/A.yaml');await flush();r.resolveRead('/A.yaml');await flush();await settleReflect(r,'/A.yaml');await accepted;
+  const refresh=r.refreshSummary();await flush();r.finishSummary('/A.yaml');await flush();
+  const newer=r.openRecent('/B.yaml');await flush();r.resolveRead('/B.yaml');await flush();await settleReflect(r,'/B.yaml');await newer;
+  r.failValidate('/A.yaml','stale refresh invalid');await refresh;
+  check(r.state().baseProjectYaml==='/B.yaml'&&r.state().last==='/B.yaml'&&r.state().valid===true,'stale refreshSummary validation must not overwrite newer replacement');
+
+  // A pending recent load must be invalidated by New; stale success/failure must not repaint or log.
+  const n=harness();
+  const stale=n.openRecent('/A.yaml');await flush();
+  await n.onNew();
+  check(n.state().last==='new-default'&&n.state().baseProjectYaml===null,'New must become the active project while an older recent read is pending');
+  if(n.reads.has('/A.yaml')){n.resolveRead('/A.yaml');await flush();await settleReflect(n,'/A.yaml');}
+  await stale;
+  check(n.state().last==='new-default'&&n.state().baseProjectYaml===null,'stale recent success must not overwrite New');
+  const staleFail=n.openRecent('/B.yaml');await flush();await n.onNew();if(n.reads.has('/B.yaml'))n.rejectRead('/B.yaml','obsolete missing');await staleFail;
+  check(!n.state().logs.some(line=>line.includes('obsolete missing')),'obsolete recent failures must not be logged after New invalidates them');
+
+  // Save must remember the YAML/name at dialog start, and stale save completion after New/Open
+  // must not foreground-refresh or repaint the current project.
+  const s=harness();
+  s.setName('saved-original');
+  const saving=s.onSave();await flush();
+  check(s.saves.length===1&&s.saves[0].yaml==='accepted','Save must compose the currently accepted project before opening the native save dialog');
+  s.setName('new-visible-name');
+  await s.onNew();
+  const beforeSaveReturn=s.state();
+  s.resolveSave('/saved-original.yaml');await saving;
+  const afterSaveReturn=s.state();
+  check(afterSaveReturn.pushed.some(([path,name])=>path==='/saved-original.yaml'&&name==='saved-original'),'completed stale Save must keep the original project name in recents');
+  check(afterSaveReturn.last===beforeSaveReturn.last&&afterSaveReturn.summaryCalls===beforeSaveReturn.summaryCalls&&afterSaveReturn.renders.length===beforeSaveReturn.renders.length,'obsolete Save completion must not refresh or repaint after New/Open replaced the project');
+  const cancel=harness(),cancelSave=cancel.onSave();await flush();cancel.resolveSave(null);await cancelSave;
+  check(cancel.state().baseProjectYaml==='accepted'&&cancel.state().logs.some(line=>line.includes('save cancelled')),'current Save cancellation must preserve accepted project and remain visible');
+  const fail=harness(),failedSave=fail.onSave();await flush();fail.rejectSave('disk full');await failedSave;
+  check(fail.state().baseProjectYaml==='accepted'&&fail.state().logs.some(line=>line.includes('save failed')&&line.includes('disk full')),'current Save failure must preserve accepted project and report the error');
+
+  // Current cancellation/failure still preserves the accepted project and reports only current errors.
+  const c=harness();
+  const before=c.state();
+  const cancelled=c.onOpen();await flush();c.resolveOpen(null);await cancelled;
+  const afterCancel=c.state();
+  check(afterCancel.baseProjectYaml===before.baseProjectYaml&&afterCancel.last===before.last&&!afterCancel.logs.some(line=>line.includes('✗')),'cancelled Open may log cancellation but must preserve accepted state without an error');
+  const failed=c.openRecent('/A.yaml');await flush();c.rejectRead('/A.yaml','current missing');await failed;
+  check(c.state().baseProjectYaml==='accepted'&&c.state().logs.some(line=>line.includes('current missing')),'current recent failure must preserve accepted project and remain visible');
+  log('project replacement ownership: Open/recent/New latest response, local validation and current-error handling passed');
+}
+checkProjectReplacementOwnership().catch(error=>{console.error(error);process.exitCode=1;});
+
 checkProjectControls().catch(error=>{console.error(error);process.exitCode=1;});
 
 // Exercise the real circle validation/frame/estimate and domain compose branch
@@ -1838,7 +1998,7 @@ async function checkDomainBoundaryOwnership() {
   const n=h.calls.length;await h.load('/same.shp');check(h.calls.length===n,'accepted outline must reuse existing cache');
   const failed=h.load('/bad.shp');h.calls[n].reject(Error('current failure'));await failed;
   check(h.view()===null&&h.logs.length===1&&h.logs[0].includes('current failure'),'current preview error must remain visible');
-  check(!section(html,/async function reflectProject\(res\) \{([\s\S]*?)\n  \}/,'reflect').includes('await loadWatershedBoundary'), 'project controls must not wait for an optional preview');
+  check(!section(html,/async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/,'reflect').includes('await loadWatershedBoundary'), 'project controls must not wait for an optional preview');
   log('domain boundary ownership: stale success/error, A→B→A, cache, clear and current errors passed');
 }
 checkDomainBoundaryOwnership().catch(error=>{console.error(error);process.exitCode=1;});
