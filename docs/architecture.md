@@ -220,3 +220,30 @@ an architecture goal.
   spherical compactness are exact spherical metrics at every valid scale.
   Euclidean triangle eta/NSR remain explicitly local compatibility metrics and
   are excluded when any cell edge exceeds 15 degrees.
+
+### Legacy final-delivery boundary
+
+`project_quality::admit_final_gridfile` shares the stored physical-cell,
+geometry, topology, and domain-scope checks without constructing or lowering a
+Project. Project retains its own quality policy, candidate diagnostics and
+AutoRefine loop. Raw restart carriers and preprocessing outputs are not final
+products and are not admitted by this API automatically.
+
+The legacy atmosphere restart MPAS and MPAS-Simple adapters now call this gate
+before reading cellwidth or writing model files. They deliver **W polygons**,
+even when the legacy source filename uses `mode_grid='tri'`; admission therefore
+checks HEX 5–7-sided cells on one closed sphere. This does not change Project's
+TRI + MPAS native-only capability. Open/regional products must use the regional
+adapter with its parent-mesh context, not these `_global` adapters.
+
+The existing model filenames and cellwidth-derived densities remain unchanged.
+`result/final_quality/<MPAS|MPAS-Simple>/legacy_delivery.json` records the physical
+target, source mode, final quality and artifacts returned by this attempt only.
+The previous completion record is retired before a new final attempt, so an
+admission/adapter failure cannot leave a current success marker. These legacy
+writers are not yet transactionally published as a multi-file bundle.
+
+This is not blanket legacy parity: Earth/land/ocean restart final producers,
+standalone native publication and other lower-level writers still need their
+own final-delivery seams connected. Do not gate intermediate grid writers to
+simulate that coverage or reuse closed-sphere checks on masked products.

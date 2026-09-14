@@ -126,6 +126,35 @@ pub fn write_project_quality_report(
     write_project_quality_report_with_namelist(project, gridfile, out_dir, None)
 }
 
+/// Project-independent final admission parameters.
+///
+/// Model/project delivery paths derive this from their public requirements, but
+/// legacy producers can use the same final contract without fabricating a
+/// [`ProjectConfig`].
+#[derive(Clone, Copy, Debug)]
+pub struct FinalAdmissionSpec {
+    pub cell_kind: MeshCellKind,
+    pub expected_euler_characteristic: Option<isize>,
+    pub thresholds: earthmesh_quality::QualityThresholds,
+    pub repair_level_cap: Option<u8>,
+}
+
+fn project_final_admission_spec(project: &ProjectConfig) -> Result<FinalAdmissionSpec, String> {
+    let target_nxp = project.try_lower()?.mkgrd.nxp;
+    let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
+    Ok(FinalAdmissionSpec {
+        cell_kind: project.target.cell,
+        expected_euler_characteristic: project.expected_euler_characteristic(),
+        thresholds: earthmesh_quality::QualityThresholds {
+            min_angle_warn_deg: project.quality.min_angle_deg,
+            repair_batch_limit: project.quality.auto_refine_batch_cells,
+            repair_level_cap: Some(u32::from(repair_level_cap)),
+            ..earthmesh_quality::QualityThresholds::default()
+        },
+        repair_level_cap: Some(repair_level_cap),
+    })
+}
+
 /// Project quality with the engine namelist describing the complete target
 /// field for `gridfile`. Incremental adapters carry the union of original
 /// Project demands and new absolute targets in that same namelist.
@@ -135,7 +164,21 @@ pub fn write_project_quality_report_with_namelist(
     out_dir: &Path,
     target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
-    write_project_quality_report_impl(project, gridfile, out_dir, target_namelist, false)
+    let spec = project_final_admission_spec(project)?;
+    write_quality_report_impl(&spec, gridfile, out_dir, target_namelist, false)
+}
+
+/// Final admission for a selected gridfile, after algorithm selection and
+/// before model delivery. Unlike candidate diagnostics, this audits stored HEX
+/// rings without repair/reordering. Structural validity and physical cell/domain
+/// contracts are hard final contracts, independent of Project policy.
+pub fn admit_final_gridfile(
+    spec: &FinalAdmissionSpec,
+    gridfile: &Path,
+    out_dir: &Path,
+    target_namelist: Option<&Path>,
+) -> Result<earthmesh_quality::MeshQualityReport, String> {
+    write_quality_report_impl(spec, gridfile, out_dir, target_namelist, true)
 }
 
 /// Final Project admission, after AutoRefine/hydro selection and before model delivery.
@@ -147,7 +190,10 @@ pub fn admit_project_final_gridfile(
     out_dir: &Path,
     target_namelist: Option<&Path>,
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
-    write_project_quality_report_impl(project, gridfile, out_dir, target_namelist, true)
+    let spec = project_final_admission_spec(project)?;
+    let report = admit_final_gridfile(&spec, gridfile, out_dir, target_namelist)?;
+    enforce_project_quality_policy(project.quality.on_violation, report.verdict)?;
+    Ok(report)
 }
 
 pub fn enforce_project_quality_policy(
@@ -166,25 +212,25 @@ pub fn enforce_project_quality_policy(
 }
 
 fn final_mesh_contract(
-    project: &ProjectConfig,
+    spec: &FinalAdmissionSpec,
     input: &earthmesh_quality::QualityMeshInput,
     report: &earthmesh_quality::MeshQualityReport,
 ) -> Result<(), String> {
     for (cell, polygon) in input.cells.iter().enumerate() {
         let edges = polygon.vertices.len();
-        let valid = match project.target.cell {
+        let valid = match spec.cell_kind {
             MeshCellKind::Hex => (5..=7).contains(&edges),
             MeshCellKind::Tri => edges == 3,
         };
         if !valid {
             return Err(format!(
                 "physical {:?} cell {cell} has {edges} edges; HEX requires 5..=7, TRI requires 3",
-                project.target.cell
+                spec.cell_kind
             ));
         }
     }
     let topology = &report.topology;
-    if project.expected_euler_characteristic() == Some(2)
+    if spec.expected_euler_characteristic == Some(2)
         && (topology.euler_characteristic != 2
             || topology.boundary_edge_count != 0
             || topology.connected_component_count != 1)
@@ -220,8 +266,8 @@ fn final_mesh_contract(
     Ok(())
 }
 
-fn write_project_quality_report_impl(
-    project: &ProjectConfig,
+fn write_quality_report_impl(
+    spec: &FinalAdmissionSpec,
     gridfile: &Path,
     out_dir: &Path,
     target_namelist: Option<&Path>,
@@ -229,7 +275,7 @@ fn write_project_quality_report_impl(
 ) -> Result<earthmesh_quality::MeshQualityReport, String> {
     let mesh = crate::grid_quality_pipeline::read_gridfile_mesh_points(gridfile)
         .map_err(|err| format!("project quality read {}: {err}", gridfile.display()))?;
-    let mut input = match project.target.cell {
+    let mut input = match spec.cell_kind {
         MeshCellKind::Hex if final_admission => {
             crate::grid_quality_pipeline::quality_input_from_gridfile_hex_native(&mesh)
         }
@@ -270,22 +316,14 @@ fn write_project_quality_report_impl(
                 .map_err(|err| format!("project quality read {}: {err}", path.display()))
         })
         .transpose()?;
-    let target_nxp = project.try_lower()?.mkgrd.nxp;
-    let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
-    let thresholds = earthmesh_quality::QualityThresholds {
-        min_angle_warn_deg: project.quality.min_angle_deg,
-        repair_batch_limit: project.quality.auto_refine_batch_cells,
-        repair_level_cap: Some(u32::from(repair_level_cap)),
-        ..earthmesh_quality::QualityThresholds::default()
-    };
     let mut report = earthmesh_quality::compute_with_options(
         &input,
-        &thresholds,
+        &spec.thresholds,
         earthmesh_quality::QualityComputationOptions {
-            expected_euler_characteristic: project.expected_euler_characteristic(),
+            expected_euler_characteristic: spec.expected_euler_characteristic,
         },
     );
-    if final_admission && project.expected_euler_characteristic().is_none() {
+    if final_admission && spec.expected_euler_characteristic.is_none() {
         // Disconnected islands (including complete single-cell islands) are
         // legitimate in regional/surface-masked products. Keep the diagnostics,
         // but do not apply the standalone validator's connected-mesh contract.
@@ -334,7 +372,7 @@ fn write_project_quality_report_impl(
             });
     }
     report.mesh_name = gridfile.display().to_string();
-    let cell_view = match project.target.cell {
+    let cell_view = match spec.cell_kind {
         MeshCellKind::Hex => "hex",
         MeshCellKind::Tri => "tri",
     };
@@ -359,7 +397,7 @@ fn write_project_quality_report_impl(
         .map_err(|err| format!("project quality attach point+radius diagnostics: {err}"))?;
     }
     let admission = if final_admission {
-        let admission = final_mesh_contract(project, &input, &report);
+        let admission = final_mesh_contract(spec, &input, &report);
         report.gates.push(earthmesh_quality::GateResult {
             metric: "final_mesh_admission".to_string(),
             value: f64::from(admission.is_err()),
@@ -382,21 +420,28 @@ fn write_project_quality_report_impl(
     };
     earthmesh_quality::io::write_all(&report, out_dir)
         .map_err(|err| format!("project quality write report: {err}"))?;
-    fs::write(
-        out_dir.join("quality_repair_plan.json"),
-        earthmesh_quality::io::to_quality_repair_plan_json_capped(&report, repair_level_cap),
-    )
-    .map_err(|err| format!("project quality write capped repair plan: {err}"))?;
+    let repair_plan_path = out_dir.join("quality_repair_plan.json");
+    if let Some(repair_level_cap) = spec.repair_level_cap {
+        fs::write(
+            &repair_plan_path,
+            earthmesh_quality::io::to_quality_repair_plan_json_capped(&report, repair_level_cap),
+        )
+        .map_err(|err| format!("project quality write capped repair plan: {err}"))?;
+    } else if repair_plan_path.exists() {
+        fs::remove_file(&repair_plan_path).map_err(|err| {
+            format!(
+                "final admission remove non-capped repair plan {}: {err}",
+                repair_plan_path.display()
+            )
+        })?;
+    }
     admission.map_err(|reason| {
         format!(
-            "project final mesh admission failed for {}: {reason}; report={}",
+            "final mesh admission failed for {}: {reason}; report={}",
             gridfile.display(),
             out_dir.join("quality_summary.json").display()
         )
     })?;
-    if final_admission {
-        enforce_project_quality_policy(project.quality.on_violation, report.verdict)?;
-    }
     Ok(report)
 }
 

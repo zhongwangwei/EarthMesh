@@ -1,5 +1,10 @@
-use std::io;
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use earthmesh_project::{MeshCellKind, MeshDomainKind, ModelFormat, ProjectTargetTriple};
 
 use crate::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
@@ -53,7 +58,17 @@ pub fn write_mask_postproc_atmos_mpas_simple_netcdf(
         .join("result")
         .join(format!("MPASOUT_NXP{nxpc}_global_Simple.nc4"));
 
-    write_mpas_simple_mesh_from_netcdf_inputs(gridfile, cellwidth, output)
+    let (quality_dir, quality) = admit_atmos_final_gridfile(&gridfile, output_format)?;
+    let report = write_mpas_simple_mesh_from_netcdf_inputs(&gridfile, cellwidth, output)?;
+    record_atmos_delivery(
+        &gridfile,
+        mode_grid,
+        ModelFormat::MpasSimple,
+        &quality_dir,
+        quality.verdict,
+        &BTreeMap::from([("mpas_mesh_input", report.output.clone())]),
+    )?;
+    Ok(report)
 }
 
 /// Rust entry point for the `mask_postproc_Atmos` branch when
@@ -107,5 +122,93 @@ pub fn write_mask_postproc_atmos_mpas_netcdf(
         .join("result")
         .join(format!("MPASOUT_NXP{nxpc}_global.graph.info"));
 
-    write_mpas_mesh_from_netcdf_inputs(gridfile, cellwidth, mesh_output, graph_output, nxp, step)
+    let (quality_dir, quality) = admit_atmos_final_gridfile(&gridfile, output_format)?;
+    let report = write_mpas_mesh_from_netcdf_inputs(
+        &gridfile,
+        cellwidth,
+        mesh_output,
+        graph_output,
+        nxp,
+        step,
+    )?;
+    record_atmos_delivery(
+        &gridfile,
+        mode_grid,
+        ModelFormat::Mpas,
+        &quality_dir,
+        quality.verdict,
+        &BTreeMap::from([
+            ("mpas_mesh_input", report.mesh.output.clone()),
+            ("mpas_graph_info", report.graph_info.output.clone()),
+        ]),
+    )?;
+    Ok(report)
+}
+
+fn admit_atmos_final_gridfile(
+    gridfile: &Path,
+    output_format: &str,
+) -> io::Result<(PathBuf, earthmesh_quality::MeshQualityReport)> {
+    let out_dir = gridfile
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("final_quality")
+        .join(output_format.trim());
+    // A prior success is not evidence for this attempt, including failures
+    // while reading the input or in the downstream cellwidth/model adapter.
+    let completion = out_dir.join("legacy_delivery.json");
+    match fs::symlink_metadata(&completion) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "legacy delivery record must be a regular file",
+            ));
+        }
+        Ok(_) => fs::remove_file(&completion)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // Legacy mode_grid selects a source filename; BOTH MPAS adapters export
+    // physical dual-W polygons, even from a source labelled tri. Do not check
+    // M triangles here, and do not broaden Project's TRI+MPAS capabilities.
+    let spec = crate::project_quality::FinalAdmissionSpec {
+        cell_kind: MeshCellKind::Hex,
+        expected_euler_characteristic: Some(2),
+        thresholds: earthmesh_quality::QualityThresholds::default(),
+        repair_level_cap: None, // This delivery adapter does not run AutoRefine.
+    };
+    let report = crate::project_quality::admit_final_gridfile(&spec, gridfile, &out_dir, None)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok((out_dir, report))
+}
+
+fn record_atmos_delivery(
+    gridfile: &Path,
+    source_mode_grid: &str,
+    format: ModelFormat,
+    quality_dir: &Path,
+    verdict: earthmesh_quality::QualityLevel,
+    artifacts: &BTreeMap<&str, PathBuf>,
+) -> io::Result<()> {
+    let target = ProjectTargetTriple {
+        kind: MeshDomainKind::Atmosphere,
+        cell: MeshCellKind::Hex,
+        model_format: format,
+    };
+    crate::project_delivery::write_delivery_record(
+        serde_json::json!({
+            "kind": "earthmesh_legacy_delivery",
+            "target": target,
+            "capability": target.output_delivery(),
+            "source_mode_grid": source_mode_grid,
+            "scope": "closed_sphere",
+            "skipped_reason": null,
+        }),
+        gridfile,
+        &quality_dir.join("quality_summary.json"),
+        verdict,
+        artifacts,
+        &quality_dir.join("legacy_delivery.json"),
+    )?;
+    Ok(())
 }

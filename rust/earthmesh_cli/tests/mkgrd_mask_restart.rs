@@ -287,6 +287,17 @@ fn restart_atmos_mpas_full_source_mesh(
     }
 }
 
+// Final adapter tests need physical cells; the small synthetic carrier meshes
+// above intentionally remain available for restart/preprocessor-only coverage.
+fn admitted_atmos_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    let state = earthmesh_mesh::gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 100).unwrap();
+    earthmesh_cli::mesh_conversion_gridfile_state::gridfile_mesh_from_one_based_state(
+        &state.grid,
+        &state.tabs,
+    )
+    .unwrap()
+}
+
 fn write_cellwidth_fixture(path: &std::path::Path, values: &[f64]) {
     let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create cellwidth fixture");
     file.add_dimension("num_dbx", values.len())
@@ -1313,15 +1324,13 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
         },
     )
     .expect("write restart domain");
-    let gridfile = case_dir.join("result/gridfile_NXP0009_tri.nc4");
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
-        &gridfile,
-        &restart_atmos_mpas_simple_source_mesh(),
-    )
-    .expect("write atmos source gridfile");
+    let gridfile = case_dir.join("result/gridfile_NXP0001_tri.nc4");
+    let mesh = admitted_atmos_source_mesh();
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
+        .expect("write atmos source gridfile");
     write_cellwidth_fixture(
-        &case_dir.join("result/cellwidth_NXP0009_global.nc4"),
-        &[12.0, 24.0, 48.0],
+        &case_dir.join("result/cellwidth_NXP0001_global.nc4"),
+        &vec![24.0; mesh.w_points.len()],
     );
 
     let namelist = root.join("mkgrd_default_restart_atmos_postproc.nml");
@@ -1329,7 +1338,7 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_atmos_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='tri'\n  NL%output_format='MPAS-Simple'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_atmos_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='tri'\n  NL%output_format='MPAS-Simple'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1357,19 +1366,22 @@ fn default_restart_dispatch_runs_atmos_mpas_simple_final_postproc_when_num_verte
     let postproc = report.postproc.expect("final postproc report");
     assert_eq!(
         postproc.contain.output,
-        case_dir.join("contain/contain_atmosmesh_domain_NXP0009_tri.nc4")
+        case_dir.join("contain/contain_atmosmesh_domain_NXP0001_tri.nc4")
     );
     match postproc.postproc {
         earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::Atmos(postproc) => {
             assert_eq!(
                 postproc.output,
-                case_dir.join("result/MPASOUT_NXP0009_global_Simple.nc4")
+                case_dir.join("result/MPASOUT_NXP0001_global_Simple.nc4")
             );
             assert!(postproc.output.exists());
         }
         other => panic!("expected atmos postproc report, got {other:?}"),
     }
 
+    assert!(case_dir
+        .join("result/final_quality/MPAS-Simple/legacy_delivery.json")
+        .is_file());
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -1402,12 +1414,12 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
         },
     )
     .expect("write restart domain");
-    let gridfile = case_dir.join("result/gridfile_NXP0009_hex.nc4");
-    let mesh = restart_atmos_mpas_full_source_mesh();
+    let gridfile = case_dir.join("result/gridfile_NXP0001_hex.nc4");
+    let mesh = admitted_atmos_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&gridfile, &mesh)
         .expect("write atmos source gridfile");
     earthmesh_cli::mesh_metric_writers::write_cellwidth_netcdf(
-        case_dir.join("result/cellwidth_NXP0009_global.nc4"),
+        case_dir.join("result/cellwidth_NXP0001_global.nc4"),
         &earthmesh_cli::mesh_metric_writers::CellwidthMesh {
             cell_points: mesh.w_points.clone(),
             cellwidth: vec![100.0; mesh.w_points.len()],
@@ -1420,7 +1432,7 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_default_restart_atmos_mpas_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=9\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_default_restart_atmos_mpas_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=1\n  NL%mesh_type='atmosmesh'\n  NL%mode_grid='hex'\n  NL%output_format='MPAS'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1448,17 +1460,17 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
     let postproc = report.postproc.expect("final postproc report");
     assert_eq!(
         postproc.contain.output,
-        case_dir.join("contain/contain_atmosmesh_domain_NXP0009_hex.nc4")
+        case_dir.join("contain/contain_atmosmesh_domain_NXP0001_hex.nc4")
     );
     match postproc.postproc {
         earthmesh_cli::mkgrd_restart_types::MkgrdFinalDomainPostprocReport::AtmosFull(postproc) => {
             assert_eq!(
                 postproc.mesh.output,
-                case_dir.join("result/MPASOUT_NXP0009_global.nc4")
+                case_dir.join("result/MPASOUT_NXP0001_global.nc4")
             );
             assert_eq!(
                 postproc.graph_info.output,
-                case_dir.join("result/MPASOUT_NXP0009_global.graph.info")
+                case_dir.join("result/MPASOUT_NXP0001_global.graph.info")
             );
             assert!(postproc.mesh.output.exists());
             assert!(postproc.graph_info.output.exists());
@@ -1466,6 +1478,9 @@ fn default_restart_dispatch_runs_atmos_mpas_final_postproc_when_num_vertex_is_su
         other => panic!("expected full atmos postproc report, got {other:?}"),
     }
 
+    assert!(case_dir
+        .join("result/final_quality/MPAS/legacy_delivery.json")
+        .is_file());
     let _ = fs::remove_dir_all(&root);
 }
 

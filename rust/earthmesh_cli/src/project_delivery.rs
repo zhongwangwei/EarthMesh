@@ -1,4 +1,4 @@
-//! Completion record for the selected, admitted Project mesh and its model files.
+//! Completion records for selected, admitted meshes and their model files.
 //! This records current adapter results; it neither validates a mesh nor scans
 //! output directories to infer success from historical artifacts.
 
@@ -19,11 +19,6 @@ pub fn write_project_delivery_report(
     model_artifacts: &BTreeMap<&str, PathBuf>,
 ) -> io::Result<(PathBuf, &'static str)> {
     let target = ProjectTargetTriple::from(&config.target);
-    let status = if model_artifacts.is_empty() {
-        "native_only"
-    } else {
-        "model_delivered"
-    };
     let skipped_reason = if model_artifacts.is_empty() {
         Some(
             target
@@ -40,37 +35,63 @@ pub fn write_project_delivery_report(
     } else {
         None
     };
-    for path in [gridfile, quality_report]
-        .into_iter()
-        .chain(model_artifacts.values().map(PathBuf::as_path))
-    {
-        if !path.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Project delivery artifact is missing: {}", path.display()),
-            ));
-        }
-    }
     let output = quality_report
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("project_delivery.json");
-    crate::atomic_output::validate_output_path(gridfile, &output)?;
-    crate::atomic_output::validate_output_path(quality_report, &output)?;
-    let document = serde_json::json!({
-        "schema_version": 1,
-        "kind": "earthmesh_project_delivery",
-        "target": target,
-        "capability": target.output_delivery(),
-        "gridfile": gridfile,
-        "final_quality": { "report": quality_report, "verdict": verdict.as_str() },
-        "model_delivery_status": status,
-        "model_artifacts": model_artifacts,
-        "skipped_reason": skipped_reason,
-    });
+    write_delivery_record(
+        serde_json::json!({
+            "kind": "earthmesh_project_delivery",
+            "target": target,
+            "capability": target.output_delivery(),
+            "skipped_reason": skipped_reason,
+        }),
+        gridfile,
+        quality_report,
+        verdict,
+        model_artifacts,
+        &output,
+    )
+}
+
+/// Common artifact checks and serialization; each entry point supplies its
+/// actual target metadata and keeps its own adapter capability policy.
+pub(crate) fn write_delivery_record(
+    mut document: serde_json::Value,
+    gridfile: &Path,
+    quality_report: &Path,
+    verdict: QualityLevel,
+    model_artifacts: &BTreeMap<&str, PathBuf>,
+    output: &Path,
+) -> io::Result<(PathBuf, &'static str)> {
+    let status = if model_artifacts.is_empty() {
+        "native_only"
+    } else {
+        "model_delivered"
+    };
+    let paths = [gridfile, quality_report]
+        .into_iter()
+        .chain(model_artifacts.values().map(PathBuf::as_path));
+    for path in paths.clone() {
+        if !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("delivery artifact is missing: {}", path.display()),
+            ));
+        }
+    }
+    for path in paths {
+        crate::atomic_output::validate_output_path(path, output)?;
+    }
+    document["schema_version"] = 1.into();
+    document["gridfile"] = serde_json::json!(gridfile);
+    document["final_quality"] =
+        serde_json::json!({ "report": quality_report, "verdict": verdict.as_str() });
+    document["model_delivery_status"] = status.into();
+    document["model_artifacts"] = serde_json::json!(model_artifacts);
     let bytes = serde_json::to_vec_pretty(&document).map_err(io::Error::other)?;
-    crate::atomic_output::atomic_write(&output, |temporary| fs::write(temporary, &bytes))?;
-    Ok((output, status))
+    crate::atomic_output::atomic_write(output, |temporary| fs::write(temporary, &bytes))?;
+    Ok((output.to_path_buf(), status))
 }
 
 #[cfg(test)]

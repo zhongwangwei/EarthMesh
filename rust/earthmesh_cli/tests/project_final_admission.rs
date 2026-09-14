@@ -1,6 +1,8 @@
 mod support;
 
-use earthmesh_cli::project_quality::admit_project_final_gridfile as admit;
+use earthmesh_cli::project_quality::{
+    admit_final_gridfile, admit_project_final_gridfile as admit, FinalAdmissionSpec,
+};
 use earthmesh_project::{
     DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, ProjectConfig, RefinementBackend,
     RegionShape, ResolutionSpec, ViolationPolicy,
@@ -189,6 +191,106 @@ fn grid(path: &Path, kind: MeshCellKind, vertices: &[(f64, f64)], cells: &[Vec<u
         .put_values(&counts, ..)
         .unwrap();
     f.close().unwrap();
+}
+
+fn final_spec(
+    kind: MeshCellKind,
+    expected_euler_characteristic: Option<isize>,
+) -> FinalAdmissionSpec {
+    FinalAdmissionSpec {
+        cell_kind: kind,
+        expected_euler_characteristic,
+        thresholds: earthmesh_quality::QualityThresholds::default(),
+        repair_level_cap: None,
+    }
+}
+
+#[test]
+fn direct_final_admission_matches_project_final_contract_without_project_config() {
+    let root = std::env::temp_dir().join(format!("direct_final_admission_{}", std::process::id()));
+    if root.exists() {
+        fs::remove_dir_all(&root).unwrap();
+    }
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("final.nc4");
+    let out = root.join("direct_quality");
+    let vertices = [
+        (100., 20.),
+        (100., 22.),
+        (102., 23.),
+        (104., 22.),
+        (104., 20.),
+        (102., 19.),
+        (106., 23.),
+        (108., 22.),
+        (108., 20.),
+        (106., 19.),
+    ];
+    let cells = vec![vec![0, 1, 2, 3, 4, 5], vec![4, 3, 6, 7, 8, 9]];
+    let regional_hex = final_spec(MeshCellKind::Hex, None);
+    grid(&file, MeshCellKind::Hex, &vertices, &cells);
+    let direct = admit_final_gridfile(&regional_hex, &file, &out, None).unwrap();
+    assert_eq!(direct.cell_view, "hex");
+    assert_eq!(direct.topology.misoriented_shared_edge_count, 0);
+    assert!(out.join("quality_summary.json").is_file());
+    assert!(
+        !out.join("quality_repair_plan.json").exists(),
+        "direct legacy admission must not imply an AutoRefine repair cap"
+    );
+
+    let reversed = cells
+        .iter()
+        .map(|c| c.iter().copied().rev().collect())
+        .collect::<Vec<Vec<usize>>>();
+    grid(&file, MeshCellKind::Hex, &vertices, &reversed);
+    assert!(admit_final_gridfile(&regional_hex, &file, &out, None).is_ok());
+
+    let mut islands = vertices.to_vec();
+    islands.extend(vertices.iter().map(|&(x, y)| (x + 15., y)));
+    let mut island_cells = cells.clone();
+    island_cells.extend(
+        cells
+            .iter()
+            .map(|c| c.iter().map(|v| v + vertices.len()).collect::<Vec<_>>()),
+    );
+    grid(&file, MeshCellKind::Hex, &islands, &island_cells);
+    let regional_islands = admit_final_gridfile(&regional_hex, &file, &out, None).unwrap();
+    assert_eq!(regional_islands.topology.connected_component_count, 2);
+    assert_ne!(
+        regional_islands.verdict,
+        earthmesh_quality::QualityLevel::Fail
+    );
+    let global_hex = final_spec(MeshCellKind::Hex, Some(2));
+    let err = admit_final_gridfile(&global_hex, &file, &out, None).unwrap_err();
+    assert!(err.contains("closed sphere"), "{err}");
+    assert!(out.join("quality_summary.json").is_file());
+
+    grid(&file, MeshCellKind::Hex, &vertices, &[vec![0, 1, 3, 4]]);
+    let err = admit_final_gridfile(&regional_hex, &file, &out, None).unwrap_err();
+    assert!(err.contains("5..=7"), "{err}");
+
+    let tri = final_spec(MeshCellKind::Tri, None);
+    grid(
+        &file,
+        MeshCellKind::Tri,
+        &vertices,
+        &[vec![0, 1, 3], vec![0, 3, 4]],
+    );
+    let direct_tri = admit_final_gridfile(&tri, &file, &out, None).unwrap();
+    assert_eq!(direct_tri.cell_view, "tri");
+
+    let mut p = project(MeshCellKind::Tri);
+    p.quality.on_violation = ViolationPolicy::Warn;
+    let project_report = admit(&p, &file, &root.join("project_quality"), None).unwrap();
+    assert_eq!(
+        direct_tri.topology.boundary_edge_count,
+        project_report.topology.boundary_edge_count
+    );
+    assert_eq!(
+        direct_tri.topology.misoriented_shared_edge_count,
+        project_report.topology.misoriented_shared_edge_count
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
