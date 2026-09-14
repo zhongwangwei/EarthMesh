@@ -17,6 +17,7 @@ use super::levels::{final_method_c_metadata_for_mask_postproc, refine_levels_fro
 /// gridfile's leading placeholder (Canonical id 1 / array index 0) is preserved.
 /// Returns the number of cells kept. `mode_grid` selects the primal cells
 /// (`hex` -> hexagons / W cells, `tri` -> triangles / M cells).
+/// Region unions combine per-member whole-cell selections, not polygon geometry.
 pub fn write_regional_gridfile(
     global_gridfile: impl AsRef<Path>,
     regional_gridfile: impl AsRef<Path>,
@@ -89,6 +90,13 @@ fn regional_cell_inside(
     region: &GridRegion,
     mode_grid: &str,
 ) -> bool {
+    if let GridRegion::Any(regions) = region {
+        // A TRI's centre and corners must share one member to avoid gap bridges.
+        // ponytail: member seams stay conservative; exact union needs geometry merging.
+        return regions
+            .iter()
+            .any(|member| regional_cell_inside(layout, cell, member, mode_grid));
+    }
     let Some(center) = layout.center_points.get(cell) else {
         return false;
     };
@@ -175,5 +183,46 @@ mod tests {
     fn tri_regional_clip_keeps_cells_with_center_and_vertices_inside() {
         let layout = layout_with_vertices([(110.0, 20.0), (120.0, 20.0), (115.0, 30.0)]);
         assert!(regional_cell_inside(&layout, 2, &close_region(), "tri"));
+    }
+
+    #[test]
+    fn union_selects_whole_cells_without_joining_triangles_across_members() {
+        let layout = layout_with_vertices([(110.0, 20.0), (120.0, 20.0), (115.0, 30.0)]);
+        let separated = GridRegion::Any(vec![
+            GridRegion::Bbox {
+                west: 109.0,
+                east: 116.0,
+                south: 19.0,
+                north: 31.0,
+            },
+            GridRegion::Bbox {
+                west: 119.0,
+                east: 121.0,
+                south: 19.0,
+                north: 21.0,
+            },
+        ]);
+        // All sample points belong to the union, but no member contains the
+        // whole triangle: its edges would bridge the gap between the regions.
+        assert!(separated.contains(115.0, 25.0));
+        for point in &layout.vertex_points[2..] {
+            assert!(separated.contains(point.lon, point.lat));
+        }
+        assert!(!regional_cell_inside(&layout, 2, &separated, "tri"));
+        assert!(regional_cell_inside(&layout, 2, &separated, "hex"));
+        let nested = GridRegion::Any(vec![separated, close_region(), close_region()]);
+        assert!(regional_cell_inside(&layout, 2, &nested, "tri"));
+        assert!(!regional_cell_inside(
+            &layout,
+            2,
+            &GridRegion::Any(vec![]),
+            "tri"
+        ));
+        assert!(!regional_cell_inside(
+            &layout,
+            2,
+            &GridRegion::Any(vec![]),
+            "hex"
+        ));
     }
 }

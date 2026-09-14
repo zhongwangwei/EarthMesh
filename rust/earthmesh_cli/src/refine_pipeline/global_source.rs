@@ -2383,7 +2383,12 @@ fn run_certified_pipeline(
     ) && matches!(config.mode_grid.trim(), "hex" | "tri")
         && matches!(
             regional_domain,
-            Some(GridRegion::Bbox { .. } | GridRegion::Circle { .. } | GridRegion::Close { .. })
+            Some(
+                GridRegion::Bbox { .. }
+                    | GridRegion::Circle { .. }
+                    | GridRegion::Close { .. }
+                    | GridRegion::Any(_)
+            )
         );
     if regional_domain.is_some()
         && !regional_whole_cells
@@ -2397,7 +2402,7 @@ fn run_certified_pipeline(
         )
     {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only"));
+            "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with bbox, circle or close regions, or oceanmesh/tri with a single close polygon only"));
     }
     if is_surface_masked
         && !(crate::namelist_sets_landtype_file(contents)

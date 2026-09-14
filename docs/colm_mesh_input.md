@@ -52,14 +52,18 @@ from filenames and does not convert between triangles and hexagons. Successful
 project runs print `colm_mesh_input=<path>` and write the file next to the final
 grid under `standard/CoLM_<grid_stem>_mesh.nc`.
 
-For regional CMRC land projects, both `Tri` and `Hex` support a single bbox,
-circle, or close polygon, independently of the requested model format. All use
-the same mother-first CMRC path and existing whole-cell regional selection,
-then apply the land mask. TRI requires the centre and all triangle vertices
-inside the region; HEX selects whole cells by centre, so their edges may extend
-outside the requested curve. Bboxes may cross the date line. No boundary
-vertices are moved or split to fit a circle or rectangle. Multiple-region unions
-remain unsupported by this CMRC publication path.
+For regional CMRC land projects, both `Tri` and `Hex` support bbox, circle,
+close polygon, or unions of their whole-cell selections, independently of the
+requested model format. All use the same mother-first CMRC path and existing
+whole-cell regional selection, then apply the land mask. TRI requires the centre
+and all triangle vertices
+inside the same region member; HEX selects whole cells by centre, so their
+edges may extend outside the requested curve. Bboxes may cross the date line.
+No boundary vertices are moved or split to fit a circle or rectangle. Multipart Shapefile
+(or Close PolygonShp) boundary sources use the existing Project/GUI file input
+to select multiple members without duplicate cells. This combines per-member
+whole-cell selections, not polygon geometry; TRI cells crossing member seams
+may be omitted even when members overlap.
 
 The retained global parent, exact lineage and width metadata feed the existing
 CoLM/MPAS/ICON adapters where their cell contracts are supported. Published

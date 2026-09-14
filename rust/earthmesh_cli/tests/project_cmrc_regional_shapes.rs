@@ -45,6 +45,67 @@ fn write_all_land(path: &Path) {
         .unwrap();
 }
 
+fn closed_rect(w: f64, e: f64, s: f64, n: f64) -> Vec<(f64, f64)> {
+    vec![(w, s), (e, s), (e, n), (w, n), (w, s)]
+}
+
+fn write_polygon_shp(path: &Path, parts: &[Vec<(f64, f64)>]) {
+    let total_points: usize = parts.iter().map(Vec::len).sum();
+    let mut xmin = f64::INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    for (x, y) in parts.iter().flatten() {
+        xmin = xmin.min(*x);
+        ymin = ymin.min(*y);
+        xmax = xmax.max(*x);
+        ymax = ymax.max(*y);
+    }
+    let content_len = 44 + parts.len() * 4 + total_points * 16;
+    let file_len = 100 + 8 + content_len;
+    let mut file = Vec::with_capacity(file_len);
+    file.extend(9994_i32.to_be_bytes());
+    file.extend([0_u8; 20]);
+    file.extend(((file_len / 2) as i32).to_be_bytes());
+    file.extend(1000_i32.to_le_bytes());
+    file.extend(5_i32.to_le_bytes());
+    for value in [xmin, ymin, xmax, ymax, 0.0, 0.0, 0.0, 0.0] {
+        file.extend(value.to_le_bytes());
+    }
+    file.extend(1_i32.to_be_bytes());
+    file.extend(((content_len / 2) as i32).to_be_bytes());
+    file.extend(5_i32.to_le_bytes());
+    for value in [xmin, ymin, xmax, ymax] {
+        file.extend(value.to_le_bytes());
+    }
+    file.extend((parts.len() as i32).to_le_bytes());
+    file.extend((total_points as i32).to_le_bytes());
+    let mut start = 0_i32;
+    for part in parts {
+        file.extend(start.to_le_bytes());
+        start += part.len() as i32;
+    }
+    for part in parts {
+        for (x, y) in part {
+            file.extend(x.to_le_bytes());
+            file.extend(y.to_le_bytes());
+        }
+    }
+    fs::write(path, file).unwrap();
+}
+
+fn write_union_shapefile(root: &Path) -> PathBuf {
+    let path = root.join("domain_union.shp");
+    write_polygon_shp(
+        &path,
+        &[
+            closed_rect(100.0, 115.0, 0.0, 20.0),
+            closed_rect(145.0, 160.0, 30.0, 50.0),
+        ],
+    );
+    path
+}
+
 fn domain(root: &Path, shape: &str) -> DomainConfig {
     let sea_ratio = Some(0.5);
     match shape {
@@ -81,6 +142,12 @@ fn domain(root: &Path, shape: &str) -> DomainConfig {
                 sea_ratio,
             }
         }
+        "union" => DomainConfig::Regional {
+            shape: RegionShape::Shapefile {
+                path: write_union_shapefile(root).display().to_string(),
+            },
+            sea_ratio,
+        },
         _ => panic!("unknown shape {shape}"),
     }
 }
@@ -178,11 +245,36 @@ fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 
+fn quality_report(report: &serde_json::Value) -> serde_json::Value {
+    read_json(&PathBuf::from(
+        report["final_quality"]["report"].as_str().unwrap(),
+    ))
+}
+
 fn assert_boundary_quality(report: &serde_json::Value) {
-    let path = PathBuf::from(report["final_quality"]["report"].as_str().unwrap());
-    let q = read_json(&path);
+    let q = quality_report(report);
     assert_eq!(q["verdict"], "pass");
     assert!(q["topology"]["boundary_edge_count"].as_u64().unwrap() > 0);
+}
+
+fn assert_union_quality(report: &serde_json::Value) {
+    let q = quality_report(report);
+    assert!(
+        matches!(q["verdict"].as_str(), Some("pass" | "warn")),
+        "union final quality must not hard-fail: {q}"
+    );
+    assert!(q["topology"]["boundary_edge_count"].as_u64().unwrap() > 0);
+    assert!(
+        q["topology"]["connected_component_count"]
+            .as_u64()
+            .unwrap_or_default()
+            > 1
+            || q["topology"]["boundary_loop_count"]
+                .as_u64()
+                .unwrap_or_default()
+                > 1,
+        "union should expose multiple regional components or boundary loops: {q}"
+    );
 }
 
 fn assert_colm(path: &Path, ppd: usize) {
@@ -263,7 +355,11 @@ fn run_case(
     assert!(stdout_path(&stdout, "project_final_gridfile=").exists());
     let report = read_json(&stdout_path(&stdout, "project_delivery_report="));
     assert_eq!(report["model_delivery_status"], "model_delivered");
-    assert_boundary_quality(&report);
+    if shape == "union" {
+        assert_union_quality(&report);
+    } else {
+        assert_boundary_quality(&report);
+    }
     match model {
         ModelFormat::CoLM => assert_colm(
             &PathBuf::from(
@@ -342,6 +438,19 @@ fn standalone_atmos_nml(root: &Path, case: &str, cell: MeshCellKind, model: Mode
 /
 ",
         root.display()
+    )
+}
+
+fn standalone_atmos_multi_bbox_nml(root: &Path, bbox: &Path) -> String {
+    standalone_atmos_nml(
+        root,
+        "standalone_atmos_multi_bbox_mpas",
+        MeshCellKind::Hex,
+        ModelFormat::Mpas,
+    )
+    .replace(
+        "inline:bbox:w=100,e=160,s=0,n=50",
+        &bbox.display().to_string(),
     )
 }
 
@@ -442,6 +551,95 @@ fn project_cmrc_unmasked_regional_shapes_deliver_model_artifacts() {
             );
         }
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_cmrc_region_union_shapes_deliver_model_artifacts() {
+    let root = temp_root("union_matrix");
+    fs::create_dir_all(&root).unwrap();
+    let landtype = root.join("landtype_all_land.nc4");
+    write_all_land(&landtype);
+    for kind in [MeshDomainKind::Earth, MeshDomainKind::Atmosphere] {
+        run_case(
+            &root,
+            "union",
+            kind,
+            MeshCellKind::Hex,
+            ModelFormat::Mpas,
+            None,
+            None,
+        );
+        run_case(
+            &root,
+            "union",
+            kind,
+            MeshCellKind::Tri,
+            ModelFormat::Icon,
+            None,
+            None,
+        );
+    }
+    run_case(
+        &root,
+        "union",
+        MeshDomainKind::Land,
+        MeshCellKind::Tri,
+        ModelFormat::CoLM,
+        Some(1),
+        Some(&landtype),
+    );
+    run_case(
+        &root,
+        "union",
+        MeshDomainKind::Land,
+        MeshCellKind::Hex,
+        ModelFormat::CoLM,
+        Some(1),
+        Some(&landtype),
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn standalone_cmrc_atmos_multi_bbox_uses_final_delivery() {
+    let root = temp_root("standalone_atmos_multi_bbox_mpas");
+    fs::create_dir_all(&root).unwrap();
+    let bbox = root.join("domain_bbox.nml");
+    fs::write(
+        &bbox,
+        "bbox_num = 2\nbbox_refine = 0\n100 115 20 0\n145 160 50 30\n",
+    )
+    .unwrap();
+    let nml = root.join("standalone.nml");
+    fs::write(&nml, standalone_atmos_multi_bbox_nml(&root, &bbox)).unwrap();
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([nml.to_str().unwrap(), "--max-tris", "100000", "--quiet"]),
+    )
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let marker = find_legacy_delivery(&root);
+    let record = read_json(&marker);
+    assert_eq!(record["model_delivery_status"], "model_delivered");
+    assert_eq!(record["scope"], "regional_or_masked");
+    assert_union_quality(&record);
+    let mesh = PathBuf::from(
+        record["model_artifacts"]["mpas_mesh_input"]
+            .as_str()
+            .unwrap(),
+    );
+    let graph = PathBuf::from(
+        record["model_artifacts"]["mpas_graph_info"]
+            .as_str()
+            .unwrap(),
+    );
+    assert_graph(&graph, &mesh);
     fs::remove_dir_all(root).unwrap();
 }
 

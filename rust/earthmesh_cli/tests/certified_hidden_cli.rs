@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::PathBuf,
+};
 
 fn temp_root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("earthmesh_cmrc_{name}_{}", std::process::id()));
@@ -144,7 +148,7 @@ fn assert_regional_triangles_are_whole_global_subset(
     assert_eq!(checked, regional.m_to_w.len() - first_m);
 }
 
-const CMRC_REGIONAL_SUPPORT_ERROR: &str = "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with a single bbox, circle or close region, or oceanmesh/tri with a single close polygon only";
+const CMRC_REGIONAL_SUPPORT_ERROR: &str = "CMRC regional publication supports {earthmesh,atmos,atmosmesh,landmesh}/{hex,tri} with bbox, circle or close regions, or oceanmesh/tri with a single close polygon only";
 
 fn regional_land_namelist(
     root: &std::path::Path,
@@ -208,6 +212,48 @@ fn regional_unmasked_namelist(
                 "NL%mask_domain_global=.false.\n  NL%mask_domain_type='{domain_kind}'\n  NL%mask_domain_fprefix='{domain_source}'"
             ),
         )
+}
+
+fn regional_any_namelist(
+    root: &std::path::Path,
+    case: &str,
+    landtype: Option<&std::path::Path>,
+    mesh_type: &str,
+    mode_grid: &str,
+    domain_file: &std::path::Path,
+) -> String {
+    let text = if let Some(landtype) = landtype {
+        regional_land_namelist(
+            root,
+            case,
+            landtype,
+            mode_grid,
+            "bbox",
+            &domain_file.display().to_string(),
+        )
+    } else {
+        regional_unmasked_namelist(
+            root,
+            case,
+            mesh_type,
+            mode_grid,
+            "CoLM",
+            "bbox",
+            &domain_file.display().to_string(),
+        )
+    };
+    text.replace(
+        "NL%mesh_type='landmesh'",
+        &format!("NL%mesh_type='{mesh_type}'"),
+    )
+}
+
+fn write_bbox_domain(path: &std::path::Path, boxes: &[(f64, f64, f64, f64)]) {
+    let mut contents = format!("bbox_num = {}\nbbox_refine = 0\n", boxes.len());
+    for &(west, east, south, north) in boxes {
+        contents.push_str(&format!("{west} {east} {north} {south}\n"));
+    }
+    fs::write(path, contents).unwrap();
 }
 
 fn snapshot_result_dir(result_dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
@@ -417,6 +463,17 @@ fn assert_regional_hex_cells_are_whole_global_subset(
         checked += 1;
     }
     assert!(checked > 0);
+}
+
+fn published_lineage_ids(gridfile: &std::path::Path, mode_grid: &str) -> BTreeSet<i64> {
+    let lineages =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(gridfile).unwrap();
+    let ids = if mode_grid == "tri" {
+        lineages.m
+    } else {
+        lineages.w
+    };
+    ids.into_iter().filter(|id| *id >= 2).collect()
 }
 
 fn assert_published_centers_inside_domain(
@@ -1993,76 +2050,235 @@ fn certified_regional_unmasked_bbox_circle_close_publish_scoped_tri_hex() {
 }
 
 #[test]
-fn certified_regional_land_multi_domain_is_rejected_without_publication() {
-    let root = temp_root("regional_land_any_reject");
+fn certified_regional_any_bbox_unions_publish_deduped_whole_cells() {
+    let root = temp_root("regional_any_bbox");
     let landtype = root.join("landtype.nc");
     write_landtype(&landtype);
-    let bbox = root.join("two_domains.nml");
-    fs::write(
-        &bbox,
-        "bbox_num = 2
-bbox_refine = 0
-100.0 130.0 30.0 0.0
-140.0 160.0 50.0 20.0
-",
-    )
-    .unwrap();
-    let path = root.join("cmrc.nml");
-    let contents = regional_land_namelist(
-        &root,
-        "regional_land_any_reject",
-        &landtype,
-        "hex",
-        "bbox",
-        &bbox.display().to_string(),
-    );
-    fs::write(&path, contents).unwrap();
+    let boxes = BTreeMap::from([
+        ("west", (100.0, 140.0, 0.0, 35.0)),
+        ("east", (145.0, 175.0, 10.0, 45.0)),
+        ("overlap", (120.0, 160.0, 15.0, 50.0)),
+    ]);
+    for (name, bbox) in &boxes {
+        write_bbox_domain(&root.join(format!("{name}.nml")), &[*bbox]);
+    }
+    let union_specs = [
+        ("disjoint", vec!["west", "east"]),
+        ("overlap", vec!["west", "overlap"]),
+        ("duplicate", vec!["west", "west"]),
+        ("reordered", vec!["east", "west"]),
+    ];
+    let targets = [
+        ("earthmesh", "tri", None),
+        ("earthmesh", "hex", None),
+        ("atmosmesh", "tri", None),
+        ("atmosmesh", "hex", None),
+        ("landmesh", "tri", Some(landtype.as_path())),
+        ("landmesh", "hex", Some(landtype.as_path())),
+    ];
+    let mut rollback_case: Option<(PathBuf, PathBuf, Vec<(PathBuf, Vec<u8>)>)> = None;
 
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("multi-domain CMRC land publication must fail closed");
-    assert!(error.to_string().contains(CMRC_REGIONAL_SUPPORT_ERROR));
-    let result = root.join("regional_land_any_reject/result");
-    assert!(!result.join("certified_ready").exists());
-    assert!(!result.join("gridfile_NXP0006_hex_landmesh.nc4").exists());
-    assert!(!result
-        .join("gridfile_NXP0006_hex_landmesh_global_parent.nc4")
-        .exists());
+    for (mesh_type, mode_grid, landtype) in targets {
+        let mut single_ids = BTreeMap::new();
+        for name in boxes.keys() {
+            let case = format!("regional_any_{mesh_type}_{mode_grid}_single_{name}");
+            let path = root.join(format!("{case}.nml"));
+            let domain = root.join(format!("{name}.nml"));
+            fs::write(
+                &path,
+                regional_any_namelist(&root, &case, landtype, mesh_type, mode_grid, &domain),
+            )
+            .unwrap();
+            let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+                .unwrap_or_else(|error| panic!("{case} single member should publish: {error}"));
+            assert!(
+                run.certified_run.as_ref().unwrap().ready_marker.exists(),
+                "{case} missing ready marker"
+            );
+            single_ids.insert(*name, published_lineage_ids(&run.output.output, mode_grid));
+        }
+
+        let mut disjoint_ids: Option<BTreeSet<i64>> = None;
+        for (variant, members) in &union_specs {
+            let case = format!("regional_any_{mesh_type}_{mode_grid}_{variant}");
+            let domain = root.join(format!("{case}_bbox.nml"));
+            let bboxes = members
+                .iter()
+                .map(|name| *boxes.get(name).unwrap())
+                .collect::<Vec<_>>();
+            write_bbox_domain(&domain, &bboxes);
+            let path = root.join(format!("{case}.nml"));
+            let contents =
+                regional_any_namelist(&root, &case, landtype, mesh_type, mode_grid, &domain);
+            fs::write(&path, &contents).unwrap();
+            let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+                .unwrap_or_else(|error| panic!("{case} union should publish: {error}"));
+            let parent = run
+                .raw_output
+                .as_ref()
+                .expect("regional union must retain a durable global parent");
+            let parent_cell_count = assert_parent_gridfile_is_closed_sphere(
+                &parent.output,
+                parent.lbx_points,
+                mode_grid,
+            );
+            let certified = run.certified_run.as_ref().expect("CMRC record");
+            assert!(certified.ready_marker.exists());
+            assert!(certified.remap.is_none());
+            assert!(certified
+                .pre_export_remap
+                .as_ref()
+                .is_some_and(|path| path.exists()));
+            let certificate: serde_json::Value =
+                serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+            let resources: serde_json::Value =
+                serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+            assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+            assert_eq!(resources["remap_scope"], "pre_export_closed_sphere_voronoi");
+            assert_eq!(
+                resources["published_domain_geometry"]["cell_view"],
+                mode_grid
+            );
+            let selected_cells = resources["published_domain_geometry"]["cells"]
+                .as_u64()
+                .unwrap();
+            assert!(selected_cells > 0, "{case} selected no cells");
+            assert!(
+                selected_cells < parent_cell_count as u64,
+                "{case} must be a proper regional subset"
+            );
+            let expected = members
+                .iter()
+                .flat_map(|name| single_ids.get(name).unwrap().iter().copied())
+                .collect::<BTreeSet<_>>();
+            let actual = published_lineage_ids(&run.output.output, mode_grid);
+            assert_eq!(
+                actual.len() as u64,
+                selected_cells,
+                "{case} published duplicate physical lineage IDs"
+            );
+            assert_eq!(
+                actual, expected,
+                "{case} must publish exactly the de-duplicated union of separately cropped members"
+            );
+            let regional = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+                &run.output.output,
+            )
+            .unwrap();
+            let global =
+                earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&parent.output)
+                    .unwrap();
+            let lineages = earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(
+                &run.output.output,
+            )
+            .unwrap();
+            if mode_grid == "tri" {
+                assert_eq!(certificate["published_grid_is_certified_face_subset"], true);
+                assert_eq!(
+                    certificate["published_grid_is_certified_dual_cell_subset"],
+                    false
+                );
+                assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &global);
+            } else {
+                assert_eq!(
+                    certificate["published_grid_is_certified_face_subset"],
+                    false
+                );
+                assert_eq!(
+                    certificate["published_grid_is_certified_dual_cell_subset"],
+                    true
+                );
+                assert_eq!(
+                    certificate["published_domain_geometry"]["whole_cell_lineage_verified"],
+                    true
+                );
+                assert_regional_hex_cells_are_whole_global_subset(&regional, &lineages, &global);
+                let grid = earthmesh_cli::grid_quality_pipeline::read_gridfile_mesh_points(
+                    &run.output.output,
+                )
+                .unwrap();
+                let physical_counts = grid
+                    .n_w
+                    .iter()
+                    .copied()
+                    .filter(|count| *count > 0)
+                    .collect::<Vec<_>>();
+                assert!(
+                    physical_counts.iter().all(|count| (5..=7).contains(count)),
+                    "{case} published HEX cells outside 5..=7: {physical_counts:?}"
+                );
+            }
+            if *variant == "disjoint" {
+                disjoint_ids = Some(actual.clone());
+            } else if *variant == "reordered" {
+                assert_eq!(
+                    &actual,
+                    disjoint_ids
+                        .as_ref()
+                        .expect("disjoint case runs before reordered"),
+                    "{case} changed disjoint union order"
+                );
+            }
+            if rollback_case.is_none() && mesh_type == "earthmesh" && mode_grid == "hex" {
+                rollback_case = Some((
+                    path.clone(),
+                    domain.clone(),
+                    snapshot_result_dir(run.output.output.parent().unwrap()),
+                ));
+            }
+        }
+    }
+
+    let (path, domain, snapshot) = rollback_case.expect("earth hex union rollback case");
+    write_bbox_domain(
+        &domain,
+        &[
+            (130.0, 130.001, 25.0, 25.001),
+            (130.0, 130.001, 25.0, 25.001),
+        ],
+    );
+    assert!(
+        earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).is_err(),
+        "empty regional union must fail closed"
+    );
+    assert_snapshot_unchanged(&snapshot);
 }
 
 #[test]
-fn certified_regional_unmasked_any_is_rejected_without_publication() {
-    let root = temp_root("regional_unmasked_any_reject");
-    let bbox = root.join("two_domains.nml");
-    fs::write(
-        &bbox,
-        "bbox_num = 2
-bbox_refine = 0
-100.0 130.0 30.0 0.0
-140.0 160.0 50.0 20.0
-",
-    )
-    .unwrap();
-    let path = root.join("cmrc.nml");
-    let contents = regional_unmasked_namelist(
-        &root,
-        "regional_unmasked_any_reject",
-        "earthmesh",
-        "hex",
-        "CoLM",
-        "bbox",
-        &bbox.display().to_string(),
+fn certified_regional_ocean_any_remains_rejected_without_publication() {
+    let root = temp_root("regional_ocean_any_reject");
+    let landtype = root.join("ocean.nc");
+    write_all_ocean(&landtype);
+    let domain = root.join("two_domains.nml");
+    write_bbox_domain(
+        &domain,
+        &[(100.0, 130.0, 0.0, 30.0), (140.0, 160.0, 20.0, 50.0)],
     );
+    let path = root.join("cmrc.nml");
+    let contents = namelist(&root, "regional_ocean_any_reject", 6, 1_000)
+        .replace("NL%mesh_type='earthmesh'", "NL%mesh_type='oceanmesh'")
+        .replace("NL%mode_grid='hex'", "NL%mode_grid='tri'")
+        .replace("NL%output_format='CoLM'", "NL%output_format='FVCOM'")
+        .replace(
+            "NL%landtype_file='none'",
+            &format!("NL%landtype_file='{}'", landtype.display()),
+        )
+        .replace(
+            "NL%mask_domain_global=.true.",
+            &format!(
+                "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  NL%mask_domain_fprefix='{}'",
+                domain.display()
+            ),
+        );
     fs::write(&path, contents).unwrap();
 
     let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("multi-domain CMRC earthmesh publication must fail closed");
+        .expect_err("ocean Any must remain fail-closed");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     assert!(error.to_string().contains(CMRC_REGIONAL_SUPPORT_ERROR));
-    let result = root.join("regional_unmasked_any_reject/result");
+    let result = root.join("regional_ocean_any_reject/result");
     assert!(!result.join("certified_ready").exists());
-    assert!(!result.join("gridfile_NXP0006_hex.nc4").exists());
-    assert!(!result
-        .join("gridfile_NXP0006_hex_global_parent.nc4")
-        .exists());
+    assert!(!result.join("gridfile_NXP0006_tri_oceanmesh.nc4").exists());
 }
 
 #[test]

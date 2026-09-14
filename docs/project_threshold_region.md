@@ -314,8 +314,8 @@ parent metrics and density. Dropped stencil edges retain the existing zero-weigh
 sentinel behavior; this is not a physical boundary-condition prescription.
 
 Connected regional producers include CMRC whole-dual-cell selection for
-Earth/atmosphere/land (single bbox/circle/close, retaining the same global parent;
-land alone adds the landtype mask),
+Earth/atmosphere/land (bbox/circle/close or unions of whole-cell selections,
+retaining the same global parent; land alone adds the landtype mask),
 spherical Method-C HField, and canonical Method-C/RedGreen adaptive whole-cell
 crops, independent of model format. Other
 producers may use the same adapter only when they supply its complete

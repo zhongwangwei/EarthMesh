@@ -78,14 +78,19 @@ refinement algorithms. Backend capability limits remain explicit:
 - CMRC consumes certifiable named/threshold/hydro requirements, not Project's
   point-radius adaptive or canonical Method-C HField route. Its internal demand
   construction may still use an HField; that is not a public route substitution.
-  Regional Earth/atmosphere/land publication accepts a single bbox/circle/close
-  region for TRI or HEX, using the same whole-cell selector after CMRC. The
-  publication stage requires landtype data only for surface-masked land/ocean
-  targets; unmasked regional Earth/atmosphere publication applies no land mask
+  Regional Earth/atmosphere/land publication accepts bbox/circle/close regions
+  and unions of their whole-cell selections for TRI or HEX, using the same
+  selector after CMRC. The publication stage requires landtype data only for
+  surface-masked land/ocean targets; unmasked regional Earth/atmosphere
+  publication applies no land mask
   (refinement data requirements remain independent). TRI retains its centre and
-  all vertices inside the region; HEX retains whole cells by centre.
+  all vertices inside the same member; HEX retains whole cells by centre.
+  Overlapping or repeated members do not duplicate cells. Project/GUI inputs
+  reuse multipart Shapefile (or Close PolygonShp) boundary sources; no separate
+  union editor is required. This is not polygon Boolean merging: TRI selection
+  can omit cells crossing member seams, even if members overlap.
   Regional ocean publication remains TRI + a single close polygon with the
-  existing clean-ocean boundary path. Multi-region CMRC publication is not enabled.
+  existing clean-ocean boundary path; ocean unions remain unsupported.
   Regional products retain the closed parent and scope remap/certification to it;
   only HEX may claim a certified dual-cell subset, while TRI claims a face subset.
 - Active statistical thresholds require an enabled consumer even without an
