@@ -1,9 +1,9 @@
+use crate::mask_postproc_domain::run_final_mask_postproc_earth_domain;
+use crate::mask_postproc_domain::run_final_mask_postproc_land_domain;
+use crate::mask_postproc_domain::run_final_mask_postproc_ocean_domain;
 use crate::plan_mask_postproc_domain_io;
 use crate::read_unstructured_mesh_netcdf;
 use crate::run_getcontain_refine_file_one_based;
-use crate::run_mask_postproc_earth_domain;
-use crate::run_mask_postproc_land_domain;
-use crate::run_mask_postproc_ocean_domain;
 use crate::run_mkgrd_mask_restart_area_judge_namelist;
 use crate::write_mask_postproc_atmos_mpas_netcdf;
 use crate::write_mask_postproc_atmos_mpas_simple_netcdf;
@@ -204,7 +204,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
             let postproc_plan = require_mask_postproc_plan(postproc_plan.as_ref(), mesh_type)?;
             let source_mesh = read_unstructured_mesh_netcdf(&postproc_plan.source_gridfile)?;
             let num_mp_step = vec![source_mesh.m_points.len()];
-            MkgrdFinalDomainPostprocReport::Earth(run_mask_postproc_earth_domain(
+            MkgrdFinalDomainPostprocReport::Earth(run_final_mask_postproc_earth_domain(
                 postproc_plan,
                 MaskPostprocEarthRunOptions {
                     mask_sea_ratio: config.mask_sea_ratio,
@@ -219,6 +219,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                     num_mp_step: &num_mp_step,
                     sjx_points: source_mesh.m_points.len(),
                 },
+                (config.mask_domain_global && !config.mask_patch_on).then_some(2),
             )?)
         }
         "landmesh" => {
@@ -227,7 +228,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
                 &restart.area.seaorland.seaorland,
                 bounds,
             )?;
-            MkgrdFinalDomainPostprocReport::Land(run_mask_postproc_land_domain(
+            MkgrdFinalDomainPostprocReport::Land(run_final_mask_postproc_land_domain(
                 postproc_plan,
                 MaskPostprocLandRunOptions {
                     seaorland: &selected_seaorland,
@@ -244,7 +245,7 @@ pub fn run_mkgrd_mask_restart_area_judge_postproc_namelist(
         }
         "oceanmesh" => {
             let postproc_plan = require_mask_postproc_plan(postproc_plan.as_ref(), mesh_type)?;
-            MkgrdFinalDomainPostprocReport::Ocean(run_mask_postproc_ocean_domain(
+            MkgrdFinalDomainPostprocReport::Ocean(run_final_mask_postproc_ocean_domain(
                 postproc_plan,
                 MaskPostprocOceanRunOptions {
                     mask_sea_ratio: config.mask_sea_ratio,

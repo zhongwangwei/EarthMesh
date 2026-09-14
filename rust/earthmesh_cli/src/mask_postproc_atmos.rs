@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -157,17 +157,7 @@ fn admit_atmos_final_gridfile(
     // A prior success is not evidence for this attempt, including failures
     // while reading the input or in the downstream cellwidth/model adapter.
     let completion = out_dir.join("legacy_delivery.json");
-    match fs::symlink_metadata(&completion) {
-        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "legacy delivery record must be a regular file",
-            ));
-        }
-        Ok(_) => fs::remove_file(&completion)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
+    crate::project_delivery::retire_delivery_record(&completion)?;
     // Legacy mode_grid selects a source filename; BOTH MPAS adapters export
     // physical dual-W polygons, even from a source labelled tri. Do not check
     // M triangles here, and do not broaden Project's TRI+MPAS capabilities.
@@ -208,6 +198,7 @@ fn record_atmos_delivery(
         &quality_dir.join("quality_summary.json"),
         verdict,
         artifacts,
+        &BTreeMap::new(),
         &quality_dir.join("legacy_delivery.json"),
     )?;
     Ok(())

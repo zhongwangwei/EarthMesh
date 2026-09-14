@@ -18,6 +18,7 @@ use crate::MaskPostprocLandRunOptions;
 use crate::MaskPostprocOceanDomainReport;
 use crate::MaskPostprocOceanRunOptions;
 use crate::UnstructuredMesh;
+use crate::UnstructuredMeshWriteReport;
 use std::collections::HashSet;
 use std::io;
 
@@ -33,6 +34,17 @@ pub fn run_mask_postproc_earth_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocEarthRunOptions<'_>,
 ) -> io::Result<MaskPostprocEarthDomainReport> {
+    run_mask_postproc_earth_domain_checked(plan, options, |_| Ok(())).map(|(report, ())| report)
+}
+
+pub(super) fn run_mask_postproc_earth_domain_checked<Q, F>(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocEarthRunOptions<'_>,
+    before_artifacts: F,
+) -> io::Result<(MaskPostprocEarthDomainReport, Q)>
+where
+    F: FnOnce(&UnstructuredMeshWriteReport) -> io::Result<Q>,
+{
     if plan.mesh_type != "earthmesh" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -52,6 +64,9 @@ pub fn run_mask_postproc_earth_domain(
         options.nlons_dm_select,
         options.nlats_dm_select,
     )?;
+    let final_gridfile =
+        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
+    let callback_result = before_artifacts(&final_gridfile)?;
     let patchtype = write_mask_postproc_patchtype_netcdf(
         plan,
         patchtypes.patchtypes_select.clone(),
@@ -62,8 +77,6 @@ pub fn run_mask_postproc_earth_domain(
         options.lon_i,
         options.lat_i,
     )?;
-    let final_gridfile =
-        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
     let earthmesh_info = write_mask_postproc_earth_info_netcdf(
         plan,
         options.num_mp_step,
@@ -73,12 +86,15 @@ pub fn run_mask_postproc_earth_domain(
         &patchtypes.seaorland_ustr,
     )?;
 
-    Ok(MaskPostprocEarthDomainReport {
-        patchtypes,
-        patchtype,
-        final_gridfile,
-        earthmesh_info,
-    })
+    Ok((
+        MaskPostprocEarthDomainReport {
+            patchtypes,
+            patchtype,
+            final_gridfile,
+            earthmesh_info,
+        },
+        callback_result,
+    ))
 }
 
 /// File-backed composition of the current
@@ -91,6 +107,17 @@ pub fn run_mask_postproc_land_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocLandRunOptions<'_>,
 ) -> io::Result<MaskPostprocLandDomainReport> {
+    run_mask_postproc_land_domain_checked(plan, options, |_| Ok(())).map(|(report, ())| report)
+}
+
+pub(super) fn run_mask_postproc_land_domain_checked<Q, F>(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocLandRunOptions<'_>,
+    before_artifacts: F,
+) -> io::Result<(MaskPostprocLandDomainReport, Q)>
+where
+    F: FnOnce(&UnstructuredMeshWriteReport) -> io::Result<Q>,
+{
     if plan.mesh_type != "landmesh" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -110,6 +137,9 @@ pub fn run_mask_postproc_land_domain(
         options.nlons_dm_select,
         options.nlats_dm_select,
     )?;
+    let final_gridfile =
+        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
+    let callback_result = before_artifacts(&final_gridfile)?;
     let patchtype = write_mask_postproc_patchtype_netcdf(
         plan,
         patchtypes.patchtypes_select.clone(),
@@ -120,14 +150,15 @@ pub fn run_mask_postproc_land_domain(
         options.lon_i,
         options.lat_i,
     )?;
-    let final_gridfile =
-        write_mask_postproc_final_gridfile(plan, &inputs.layout, &inputs.is_in_domain_ustr)?;
 
-    Ok(MaskPostprocLandDomainReport {
-        patchtypes,
-        patchtype,
-        final_gridfile,
-    })
+    Ok((
+        MaskPostprocLandDomainReport {
+            patchtypes,
+            patchtype,
+            final_gridfile,
+        },
+        callback_result,
+    ))
 }
 
 /// File-backed composition of the current
@@ -140,6 +171,17 @@ pub fn run_mask_postproc_ocean_domain(
     plan: &MaskPostprocDomainIoPlan,
     options: MaskPostprocOceanRunOptions,
 ) -> io::Result<MaskPostprocOceanDomainReport> {
+    run_mask_postproc_ocean_domain_checked(plan, options, |_| Ok(())).map(|(report, ())| report)
+}
+
+pub(super) fn run_mask_postproc_ocean_domain_checked<Q, F>(
+    plan: &MaskPostprocDomainIoPlan,
+    options: MaskPostprocOceanRunOptions,
+    before_artifacts: F,
+) -> io::Result<(MaskPostprocOceanDomainReport, Q)>
+where
+    F: FnOnce(&UnstructuredMeshWriteReport) -> io::Result<Q>,
+{
     if plan.mesh_type != "oceanmesh" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -287,15 +329,8 @@ pub fn run_mask_postproc_ocean_domain(
     };
 
     let mut boundary_orders = None;
-    let mut obc = None;
-    let mut obcv2 = None;
+    let mut tri_sidecar_paths = None;
     if plan.mode_grid == "tri" {
-        let boundary = renewal.boundary.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "tri ocean renewal did not produce boundary connection metadata",
-            )
-        })?;
         let isolated = renewal.isolated.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -308,8 +343,12 @@ pub fn run_mask_postproc_ocean_domain(
                 "tri ocean plan is missing obcv2 output path",
             )
         })?;
-        obcv2 = Some(write_obcv2_boundary_netcdf(obcv2_output, boundary)?);
-
+        let obc_output = plan.obc_output.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean plan is missing obc output path",
+            )
+        })?;
         let orders = classify_boundary_orders_one_based(
             isolated.num_bdy_long,
             &isolated.bdy_long_order,
@@ -319,26 +358,44 @@ pub fn run_mask_postproc_ocean_domain(
             &renewal.is_in_domain_ustr,
         )?;
         let orders = split_disconnected_obc_segments(orders, &finalization.mesh);
-        let obc_output = plan.obc_output.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "tri ocean plan is missing obc output path",
-            )
-        })?;
-        obc = Some(write_obc_boundary_netcdf(obc_output, &orders)?);
         crate::obc_boundary_io::write_gridfile_obc_order(&plan.result_gridfile, &orders.obc_order)?;
         boundary_orders = Some(orders);
+        tri_sidecar_paths = Some((obcv2_output, obc_output));
     }
 
-    Ok(MaskPostprocOceanDomainReport {
-        renewal,
-        finalization,
-        final_gridfile,
-        boundary_orders,
-        obc,
-        obcv2,
-        boundary_topology,
-    })
+    let callback_result = before_artifacts(&final_gridfile)?;
+
+    let mut obc = None;
+    let mut obcv2 = None;
+    if let Some((obcv2_output, obc_output)) = tri_sidecar_paths {
+        let boundary = renewal.boundary.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean renewal did not produce boundary connection metadata",
+            )
+        })?;
+        let orders = boundary_orders.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tri ocean finalization did not produce boundary order metadata",
+            )
+        })?;
+        obcv2 = Some(write_obcv2_boundary_netcdf(obcv2_output, boundary)?);
+        obc = Some(write_obc_boundary_netcdf(obc_output, orders)?);
+    }
+
+    Ok((
+        MaskPostprocOceanDomainReport {
+            renewal,
+            finalization,
+            final_gridfile,
+            boundary_orders,
+            obc,
+            obcv2,
+            boundary_topology,
+        },
+        callback_result,
+    ))
 }
 
 fn split_disconnected_obc_segments(

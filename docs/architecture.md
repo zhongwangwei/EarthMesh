@@ -100,7 +100,8 @@ report is not a claim that a specialized model artifact was produced.
 Direct legacy namelist and library entrypoints retain some local output
 orchestration. Their refined publication helpers reuse the physical HEX degree
 gate, but that alone is not Project's full final admission or delivery report.
-Keep raw/intermediate writers usable; do not claim entrypoint equivalence merely
+The restart final handoffs now share full native admission as described below;
+this does not cover every standalone producer. Keep raw/intermediate writers usable; do not claim entrypoint equivalence merely
 because both paths call the same mesh algorithm.
 
 ## Canonical execution paths
@@ -243,7 +244,27 @@ The previous completion record is retired before a new final attempt, so an
 admission/adapter failure cannot leave a current success marker. These legacy
 writers are not yet transactionally published as a multi-file bundle.
 
-This is not blanket legacy parity: Earth/land/ocean restart final producers,
-standalone native publication and other lower-level writers still need their
-own final-delivery seams connected. Do not gate intermediate grid writers to
-simulate that coverage or reuse closed-sphere checks on masked products.
+The Earth/land/ocean restart final handoffs (including both ocean restart
+routes) also call shared admission. Earth requires a closed sphere only when
+`mask_domain_global && !mask_patch_on`; masked/regional Earth and land/ocean
+use boundary-aware checks without imposing χ=2. Physical cells follow
+`mode_grid`: TRI triangles or HEX 5–7-sided polygons. Final native mesh and
+embedded ocean boundary order are written first, then admitted, then patchtype,
+Earth-info and OBC sidecars are written. Completion is recorded under
+`result/final_quality/<final-gridfile-stem>/legacy_delivery.json` only after
+these outputs succeed. Patchtype/info/OBC are `auxiliary_artifacts`, not proof
+that a CoLM/FVCOM adapter ran; delivery remains `native_only`.
+
+Public low-level composition helpers retain unchecked candidate/preprocessor
+use, including Project clean-ocean processing. `defer_model_exports` does not
+bypass native admission in the Earth/land/ocean final handoffs. Successful
+low-level outputs are unchanged, but their file-write ordering now follows the
+same native-before-sidecar sequence: failed admission or sidecar writing can
+leave a native mesh or diagnostics, not a new completion record. Old sidecars
+may also remain; consumers must not infer readiness from individual files.
+Multi-file transactional publication is still separate work.
+
+This is not blanket legacy parity: standalone native publication and other
+lower-level writers still need their own final-delivery seams connected. Do not
+gate intermediate grid writers to simulate that coverage or reuse closed-sphere
+checks on masked products.

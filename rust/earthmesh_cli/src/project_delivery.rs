@@ -50,6 +50,7 @@ pub fn write_project_delivery_report(
         quality_report,
         verdict,
         model_artifacts,
+        &BTreeMap::new(),
         &output,
     )
 }
@@ -62,6 +63,7 @@ pub(crate) fn write_delivery_record(
     quality_report: &Path,
     verdict: QualityLevel,
     model_artifacts: &BTreeMap<&str, PathBuf>,
+    auxiliary_artifacts: &BTreeMap<&str, PathBuf>,
     output: &Path,
 ) -> io::Result<(PathBuf, &'static str)> {
     let status = if model_artifacts.is_empty() {
@@ -71,7 +73,8 @@ pub(crate) fn write_delivery_record(
     };
     let paths = [gridfile, quality_report]
         .into_iter()
-        .chain(model_artifacts.values().map(PathBuf::as_path));
+        .chain(model_artifacts.values().map(PathBuf::as_path))
+        .chain(auxiliary_artifacts.values().map(PathBuf::as_path));
     for path in paths.clone() {
         if !path.is_file() {
             return Err(io::Error::new(
@@ -89,9 +92,25 @@ pub(crate) fn write_delivery_record(
         serde_json::json!({ "report": quality_report, "verdict": verdict.as_str() });
     document["model_delivery_status"] = status.into();
     document["model_artifacts"] = serde_json::json!(model_artifacts);
+    if !auxiliary_artifacts.is_empty() {
+        document["auxiliary_artifacts"] = serde_json::json!(auxiliary_artifacts);
+    }
     let bytes = serde_json::to_vec_pretty(&document).map_err(io::Error::other)?;
     crate::atomic_output::atomic_write(output, |temporary| fs::write(temporary, &bytes))?;
     Ok((output.to_path_buf(), status))
+}
+
+/// A previous completion is not evidence for a new final attempt.
+pub(crate) fn retire_delivery_record(completion: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(completion) {
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "legacy delivery record must be a regular file",
+        )),
+        Ok(_) => fs::remove_file(completion),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

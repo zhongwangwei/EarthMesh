@@ -1,6 +1,6 @@
 mod support;
 
-use std::fs;
+use std::{fs, path::Path};
 
 static NETCDF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -127,99 +127,177 @@ fn run_mask_restart_patch_namelist_executes_patch_mask_make_and_continues_mkgrd(
     let _ = fs::remove_dir_all(&root);
 }
 
-fn restart_ocean_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
-    let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 8];
-    for (idx, point) in m_points.iter_mut().enumerate() {
-        point.lon = idx as f64;
-        point.lat = idx as f64 * 0.5;
-    }
-    let mut w_points =
-        vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }; 14];
-    for (idx, point) in w_points.iter_mut().enumerate() {
-        point.lon = 100.0 + idx as f64;
-        point.lat = 40.0 + idx as f64 * 0.25;
-    }
-    let mut m_to_w = vec![[1, 1, 1]; 8];
-    m_to_w[2] = [10, 11, 2];
-    m_to_w[3] = [11, 12, 3];
-    m_to_w[4] = [12, 13, 4];
-    m_to_w[5] = [13, 10, 5];
-    let mut w_to_m = vec![vec![1; 7]; 14];
-    w_to_m[2] = vec![2, 1, 1, 1, 1, 1, 1];
-    w_to_m[3] = vec![3, 1, 1, 1, 1, 1, 1];
-    w_to_m[4] = vec![4, 1, 1, 1, 1, 1, 1];
-    w_to_m[5] = vec![5, 1, 1, 1, 1, 1, 1];
-    w_to_m[10] = vec![2, 5, 6, 7, 1, 1, 1];
-    w_to_m[11] = vec![2, 3, 6, 7, 1, 1, 1];
-    w_to_m[12] = vec![3, 4, 6, 7, 1, 1, 1];
-    w_to_m[13] = vec![4, 5, 6, 7, 1, 1, 1];
-    let mut n_w_to_m = vec![0; 14];
-    n_w_to_m[2] = 1;
-    n_w_to_m[3] = 1;
-    n_w_to_m[4] = 1;
-    n_w_to_m[5] = 1;
-    n_w_to_m[10] = 5;
-    n_w_to_m[11] = 5;
-    n_w_to_m[12] = 5;
-    n_w_to_m[13] = 5;
+fn restart_domain_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    use earthmesh_cli::coordinate_types::LonLatPoint;
+    let origin = LonLatPoint { lon: 0.0, lat: 0.0 };
     earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
-        m_points,
-        w_points,
-        m_to_w,
-        w_to_m,
-        n_w_to_m,
+        m_points: vec![
+            origin,
+            origin,
+            LonLatPoint {
+                lon: 45.0,
+                lat: -35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: -45.0,
+                lat: 35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: 135.0,
+                lat: 35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: -135.0,
+                lat: -35.264_389_682_754_66,
+            },
+        ],
+        w_points: vec![
+            origin,
+            origin,
+            LonLatPoint {
+                lon: 45.0,
+                lat: 35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: -45.0,
+                lat: -35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: 135.0,
+                lat: -35.264_389_682_754_66,
+            },
+            LonLatPoint {
+                lon: -135.0,
+                lat: 35.264_389_682_754_66,
+            },
+        ],
+        m_to_w: vec![
+            [1, 1, 1],
+            [1, 1, 1],
+            [2, 3, 4],
+            [2, 5, 3],
+            [2, 4, 5],
+            [3, 5, 4],
+        ],
+        w_to_m: vec![
+            vec![1],
+            vec![1],
+            vec![2, 3, 4],
+            vec![2, 3, 5],
+            vec![2, 4, 5],
+            vec![3, 4, 5],
+        ],
+        n_w_to_m: vec![1, 1, 3, 3, 3, 3],
+    }
+}
+
+fn restart_ocean_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    restart_domain_source_mesh()
+}
+
+fn restart_area_judge_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+    use earthmesh_cli::coordinate_types::LonLatPoint;
+    let origin = LonLatPoint { lon: 0.0, lat: 0.0 };
+    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points: vec![
+            origin,
+            LonLatPoint {
+                lon: -176.49,
+                lat: 86.49,
+            },
+        ],
+        w_points: vec![
+            origin,
+            LonLatPoint {
+                lon: -176.505,
+                lat: 86.480,
+            },
+            LonLatPoint {
+                lon: -176.475,
+                lat: 86.480,
+            },
+            LonLatPoint {
+                lon: -176.496,
+                lat: 86.499,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
     }
 }
 
 fn restart_land_postproc_source_mesh() -> earthmesh_cli::unstructured_mesh_support::UnstructuredMesh
 {
-    earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
-        m_points: vec![
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.497,
-                lat: 86.497,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.497,
-                lat: 86.497,
-            },
-        ],
-        w_points: vec![
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.497,
-                lat: 86.497,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.494,
-                lat: 86.497,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.496,
-                lat: 86.494,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.497,
-                lat: 86.497,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.494,
-                lat: 86.497,
-            },
-            earthmesh_cli::coordinate_types::LonLatPoint {
-                lon: -176.496,
-                lat: 86.494,
-            },
-        ],
-        m_to_w: vec![[1, 2, 3], [4, 5, 6]],
-        w_to_m: vec![
-            vec![1, 1],
-            vec![1, 1],
-            vec![1, 1],
-            vec![2, 2],
-            vec![2, 2],
-            vec![2, 2],
-        ],
-        n_w_to_m: vec![2, 2, 2, 2, 2, 2],
+    restart_area_judge_source_mesh()
+}
+
+fn restart_ocean_contain_for_mesh(
+    mesh: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+) -> earthmesh_cli::contain_io::ContainMesh {
+    let mut ustr_id = vec![vec![0, 0, 1]; mesh.m_points.len()];
+    let mut is_in_area_ustr = vec![0; mesh.m_points.len()];
+    for row in 2..mesh.m_points.len() {
+        ustr_id[row] = vec![1, 0, 1];
+        is_in_area_ustr[row] = 1;
+    }
+    earthmesh_cli::contain_io::ContainMesh {
+        ustr_id,
+        ustr_ii: vec![vec![421, 421]],
+        is_in_area_ustr,
+    }
+}
+
+fn restart_land_contain_for_mesh(
+    mesh: &earthmesh_cli::unstructured_mesh_support::UnstructuredMesh,
+) -> earthmesh_cli::contain_io::ContainMesh {
+    let mut ustr_id = vec![vec![0, 0]; mesh.m_points.len()];
+    let mut is_in_area_ustr = vec![0; mesh.m_points.len()];
+    if ustr_id.len() > 2 {
+        ustr_id[2] = vec![1, 1];
+    }
+    for row in 2..mesh.m_points.len() {
+        is_in_area_ustr[row] = 1;
+    }
+    earthmesh_cli::contain_io::ContainMesh {
+        ustr_id,
+        ustr_ii: vec![vec![421, 421]],
+        is_in_area_ustr,
+    }
+}
+
+fn assert_native_legacy_delivery_record(gridfile: &Path, expected_auxiliary: &[&str]) {
+    let record_path = gridfile
+        .parent()
+        .unwrap()
+        .join("final_quality")
+        .join(gridfile.file_stem().unwrap())
+        .join("legacy_delivery.json");
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(&record_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", record_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", record_path.display()));
+    assert_eq!(record["gridfile"], gridfile.to_str().unwrap());
+    assert_eq!(record["model_delivery_status"], "native_only");
+    assert!(record["model_artifacts"].as_object().unwrap().is_empty());
+    let auxiliary = record["auxiliary_artifacts"].as_object();
+    assert_eq!(
+        auxiliary.map_or(0, |entries| entries.len()),
+        expected_auxiliary.len(),
+        "unexpected auxiliary artifacts in {}: {}",
+        record_path.display(),
+        record
+    );
+    for &key in expected_auxiliary {
+        let path = auxiliary
+            .and_then(|entries| entries.get(key))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("missing auxiliary artifact {key} in {record}"));
+        assert!(
+            Path::new(path).is_file(),
+            "missing auxiliary artifact {key}: {path}"
+        );
     }
 }
 
@@ -442,27 +520,15 @@ fn prepare_restart_ocean_inputs(root: &std::path::Path, case_name: &str, nxp: us
         false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_ocean_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_ocean_source_mesh(),
+        &source_mesh,
     )
     .expect("write source gridfile");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-            ],
-            ustr_ii: vec![vec![0, 0, 0]],
-            is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
-        },
+        &restart_ocean_contain_for_mesh(&source_mesh),
     )
     .expect("write contain domain");
 }
@@ -497,27 +563,15 @@ fn run_mask_restart_ocean_namelist_executes_postproc_outputs() {
         false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_ocean_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_ocean_source_mesh(),
+        &source_mesh,
     )
     .expect("write source gridfile");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-            ],
-            ustr_ii: vec![vec![0, 0, 0]],
-            is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
-        },
+        &restart_ocean_contain_for_mesh(&source_mesh),
     )
     .expect("write contain domain");
 
@@ -543,6 +597,7 @@ fn run_mask_restart_ocean_namelist_executes_postproc_outputs() {
     assert!(io_plan.result_gridfile.exists());
     assert!(io_plan.obc_output.unwrap().exists());
     assert!(io_plan.obcv2_output.unwrap().exists());
+    assert_native_legacy_delivery_record(&io_plan.result_gridfile, &["obc", "obcv2"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1018,18 +1073,15 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
         &case_dir, 16, "tri", "landmesh", true,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
@@ -1080,6 +1132,7 @@ fn top_level_dispatch_runs_patch_on_area_judge_final_postproc_from_persisted_con
         }
         other => panic!("expected land postproc report, got {other:?}"),
     }
+    assert_native_legacy_delivery_record(&io_plan.result_gridfile, &["patchtype"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1102,15 +1155,15 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
         &restart_input,
         &earthmesh_cli::area_judge_grid_io::AreaJudgeGridPayload {
             bounds: earthmesh_mesh::AreaJudgeSourceBounds {
-                minlon_source: 421,
-                maxlon_source: 422,
-                maxlat_source: 421,
-                minlat_source: 422,
+                minlon_source: 26881,
+                maxlon_source: 27121,
+                maxlat_source: 6481,
+                minlat_source: 6721,
             },
-            longitude: vec![-176.495_833_333_333_34, -176.487_5],
-            latitude: vec![86.495_833_333_333_34, 86.487_5],
-            is_in_area_select: vec![vec![1, 1], vec![1, 1]],
-            seaorland_select: Some(vec![vec![1, 1], vec![1, 1]]),
+            longitude: vec![45.0; 241],
+            latitude: vec![35.0; 241],
+            is_in_area_select: vec![vec![1; 241]; 241],
+            seaorland_select: Some(vec![vec![1; 241]; 241]),
         },
     )
     .expect("write restart domain");
@@ -1122,27 +1175,15 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
         true,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_area_judge_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_ocean_source_mesh(),
+        &source_mesh,
     )
     .expect("write ocean postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-            ],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
-        },
+        &restart_ocean_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
@@ -1151,10 +1192,10 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
         &earthmesh_cli::bbox_mask_io::BBoxMask {
             refine_degree: 0,
             points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
-                west: -177.0,
-                east: -176.0,
-                north: 87.0,
-                south: 86.0,
+                west: 44.0,
+                east: 46.0,
+                north: 36.0,
+                south: 34.0,
             }],
         },
     )
@@ -1193,6 +1234,7 @@ fn top_level_dispatch_runs_patch_on_ocean_area_judge_final_postproc_from_persist
         }
         other => panic!("expected ocean postproc report, got {other:?}"),
     }
+    assert_native_legacy_delivery_record(&io_plan.result_gridfile, &["obc", "obcv2"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1270,7 +1312,7 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
         "final Get_Contain(0) should write current mesh cell count back to runtime state"
     );
     assert_eq!(
-        runtime_state.num_wp_step[0], 6,
+        runtime_state.num_wp_step[0], 4,
         "final Get_Contain(0) should write current mesh vertex count back to runtime state"
     );
 
@@ -1291,6 +1333,7 @@ fn default_restart_dispatch_runs_non_ocean_area_judge_final_postproc_when_num_ve
         }
         other => panic!("expected land postproc report, got {other:?}"),
     }
+    assert_native_legacy_delivery_record(&io_plan.result_gridfile, &["patchtype"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1519,18 +1562,15 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
         &case_dir, 16, "tri", "landmesh", false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
 
@@ -1561,7 +1601,7 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
         "default dispatch runtime state should include final Get_Contain(0) cell-count writeback"
     );
     assert_eq!(
-        runtime_state.num_wp_step[0], 6,
+        runtime_state.num_wp_step[0], 4,
         "default dispatch runtime state should include final Get_Contain(0) vertex-count writeback"
     );
 
@@ -1583,6 +1623,7 @@ fn default_restart_dispatch_infers_non_ocean_area_judge_postproc_num_vertex_from
         }
         other => panic!("expected land postproc report, got {other:?}"),
     }
+    assert_native_legacy_delivery_record(&io_plan.result_gridfile, &["patchtype"]);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1621,18 +1662,15 @@ fn default_restart_dispatch_runs_patch_on_area_judge_final_postproc_from_persist
         &case_dir, 16, "tri", "landmesh", true,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
@@ -1724,18 +1762,15 @@ fn binary_default_entry_reports_patch_on_area_judge_final_postproc_outputs() {
         &case_dir, 16, "tri", "landmesh", true,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
     let patch_source = root.join("patch_source.nc4");
@@ -1841,18 +1876,15 @@ fn binary_default_entry_reports_inferred_non_ocean_area_judge_final_postproc_out
         &case_dir, 16, "tri", "landmesh", false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
 
@@ -1942,18 +1974,15 @@ fn binary_explicit_area_judge_reports_inferred_non_ocean_final_postproc_outputs(
         &case_dir, 16, "tri", "landmesh", false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
 
@@ -2040,18 +2069,15 @@ fn binary_explicit_area_judge_source_override_reports_inferred_non_ocean_final_p
         &case_dir, 16, "tri", "landmesh", false,
     )
     .expect("postproc io plan");
+    let source_mesh = restart_land_postproc_source_mesh();
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_land_postproc_source_mesh(),
+        &source_mesh,
     )
     .expect("write postproc source mesh");
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
-        &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0], vec![1, 1]],
-            ustr_ii: vec![vec![421, 421]],
-            is_in_area_ustr: vec![0, 1],
-        },
+        &restart_land_contain_for_mesh(&source_mesh),
     )
     .expect("write persisted contain boundary");
 

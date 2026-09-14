@@ -189,53 +189,33 @@ fn restart_hex_postproc_source_mesh() -> UnstructuredMesh {
 }
 
 fn restart_ocean_postproc_source_mesh() -> UnstructuredMesh {
-    let mut m_points = vec![
-        LonLatPoint {
-            lon: -176.0,
-            lat: 86.0
-        };
-        8
-    ];
-    for point in m_points.iter_mut().take(5).skip(1) {
-        point.lon = -178.0;
-        point.lat = 88.0;
-    }
-    let mut w_points = vec![
-        LonLatPoint {
-            lon: -176.0,
-            lat: 86.0
-        };
-        14
-    ];
-    for vertex_id in [2_usize, 3, 4, 5, 6, 10, 11, 12, 13] {
-        w_points[vertex_id - 1] = LonLatPoint {
-            lon: -178.8 + (vertex_id % 3) as f64 * 0.7,
-            lat: 88.8 - (vertex_id % 2) as f64 * 0.8,
-        };
-    }
-    let mut m_to_w = vec![[1, 1, 1]; 8];
-    m_to_w[1] = [2, 10, 11];
-    m_to_w[2] = [10, 11, 3];
-    m_to_w[3] = [11, 12, 4];
-    m_to_w[4] = [12, 13, 5];
-    m_to_w[5] = [13, 10, 6];
-    let mut w_to_m = vec![vec![1; 7]; 14];
-    w_to_m[1] = vec![2, 1, 1, 1, 1, 1, 1];
-    w_to_m[2] = vec![3, 1, 1, 1, 1, 1, 1];
-    w_to_m[3] = vec![4, 1, 1, 1, 1, 1, 1];
-    w_to_m[4] = vec![5, 1, 1, 1, 1, 1, 1];
-    w_to_m[5] = vec![6, 1, 1, 1, 1, 1, 1];
-    w_to_m[9] = vec![2, 3, 6, 7, 1, 1, 1];
-    w_to_m[10] = vec![2, 3, 6, 7, 1, 1, 1];
-    w_to_m[11] = vec![3, 4, 6, 7, 1, 1, 1];
-    w_to_m[12] = vec![4, 5, 6, 7, 1, 1, 1];
-    let n_w_to_m = vec![5; 14];
+    let origin = LonLatPoint { lon: 0.0, lat: 0.0 };
     UnstructuredMesh {
-        m_points,
-        w_points,
-        m_to_w,
-        w_to_m,
-        n_w_to_m,
+        m_points: vec![
+            origin,
+            LonLatPoint {
+                lon: -178.0,
+                lat: 88.0,
+            },
+        ],
+        w_points: vec![
+            origin,
+            LonLatPoint {
+                lon: -178.10,
+                lat: 87.90,
+            },
+            LonLatPoint {
+                lon: -177.90,
+                lat: 87.90,
+            },
+            LonLatPoint {
+                lon: -178.00,
+                lat: 88.10,
+            },
+        ],
+        m_to_w: vec![[1, 1, 1], [2, 3, 4]],
+        w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+        n_w_to_m: vec![1, 1, 1, 1],
     }
 }
 
@@ -930,9 +910,9 @@ fn binary_mask_restart_area_judge_ocean_inferrs_final_postproc_boundary_from_per
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
         &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![vec![0, 0, 1], vec![1, 0, 1], vec![1, 0, 1], vec![0, 0, 1]],
+            ustr_id: vec![vec![0, 0, 1], vec![1, 0, 1]],
             ustr_ii: vec![vec![2, 2, 0]],
-            is_in_area_ustr: vec![0, 1, 1, -1],
+            is_in_area_ustr: vec![0, 1],
         },
     )
     .expect("write persisted ocean contain boundary");
@@ -1030,7 +1010,7 @@ fn binary_mask_restart_area_judge_can_generate_earth_final_postproc_outputs() {
     .expect("postproc io plan");
     write_unstructured_mesh_netcdf(
         &io_plan.source_gridfile,
-        &restart_ocean_postproc_source_mesh(),
+        &restart_land_postproc_source_mesh(),
     )
     .expect("write earth postproc source mesh");
 
@@ -1039,7 +1019,7 @@ fn binary_mask_restart_area_judge_can_generate_earth_final_postproc_outputs() {
     fs::write(
         &namelist,
         format!(
-            "&mkgrd\n  NL%EXPNME='case_restart_area_judge_earth_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n"
+            "&mkgrd\n  NL%EXPNME='case_restart_area_judge_earth_postproc'\n  NL%base_dir='{base_dir}'\n  NL%NXP=16\n  NL%mesh_type='earthmesh'\n  NL%mode_grid='tri'\n  NL%output_format='CoLM'\n  NL%gridnum_perdegree=120\n  NL%mask_restart=.true.\n  NL%mask_domain_global=.false.\n  NL%mask_patch_on=.false.\n  NL%mask_sea_ratio=0.4\n/\n"
         ),
     )
     .expect("write namelist");
@@ -1082,8 +1062,34 @@ fn binary_mask_restart_area_judge_can_generate_earth_final_postproc_outputs() {
     );
     assert!(io_plan.contain_domain.exists());
     assert!(io_plan.result_gridfile.exists());
-    assert!(io_plan.patchtype_output.clone().unwrap().exists());
-    assert!(case_dir.join("result/earthmesh_info.nc4").exists());
+    let patchtype = io_plan.patchtype_output.clone().unwrap();
+    let earthmesh_info = case_dir.join("result/earthmesh_info.nc4");
+    assert!(patchtype.exists());
+    assert!(earthmesh_info.exists());
+    let quality_dir = io_plan
+        .result_gridfile
+        .parent()
+        .unwrap()
+        .join("final_quality")
+        .join(io_plan.result_gridfile.file_stem().unwrap());
+    let delivery: serde_json::Value = serde_json::from_slice(
+        &fs::read(quality_dir.join("legacy_delivery.json")).expect("read final delivery record"),
+    )
+    .expect("parse final delivery record");
+    assert_eq!(
+        delivery["gridfile"],
+        io_plan.result_gridfile.to_str().unwrap()
+    );
+    assert_eq!(delivery["model_delivery_status"], "native_only");
+    assert!(delivery["model_artifacts"].as_object().unwrap().is_empty());
+    assert_eq!(
+        delivery["auxiliary_artifacts"]["patchtype"],
+        patchtype.to_str().unwrap()
+    );
+    assert_eq!(
+        delivery["auxiliary_artifacts"]["earthmesh_info"],
+        earthmesh_info.to_str().unwrap()
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1253,18 +1259,9 @@ fn library_mask_restart_ocean_runner_can_infer_persisted_num_vertex_without_opti
     earthmesh_cli::contain_io::write_contain_netcdf(
         &io_plan.contain_domain,
         &earthmesh_cli::contain_io::ContainMesh {
-            ustr_id: vec![
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![1, 0, 1],
-                vec![0, 0, 1],
-                vec![0, 0, 1],
-            ],
+            ustr_id: vec![vec![0, 0, 1], vec![1, 0, 1]],
             ustr_ii: vec![vec![0, 0, 0]],
-            is_in_area_ustr: vec![0, -1, 1, 1, 1, 1, -1, -1],
+            is_in_area_ustr: vec![0, 1],
         },
     )
     .expect("write persisted ocean contain boundary");
