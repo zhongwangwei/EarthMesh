@@ -645,12 +645,13 @@ function springStrategyFromTypes(globalType,regionalType){
   return null;
 }
 
-function selectTemplate(k){
+async function selectTemplate(k){
   const next=Number(k);
   if(!Number.isInteger(next) || !TPL[next]){
     console.warn("invalid template index", k);
     return;
   }
+  if(typeof window.waitForProjectEdits==="function") await window.waitForProjectEdits();
   const changed=next!==tpl;
   if(changed){
     tpl=next;
@@ -2116,10 +2117,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   });
   let specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
-  let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
+  let baseProjectYaml = null; // last accepted YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
+  let projectEditQueue = Promise.resolve();
+  window.waitForProjectEdits = () => projectEditQueue;
   let backendReady = null;   // capability/catalog gate for every compose/save/run path
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
 
@@ -2382,6 +2385,31 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     runProject:   (yaml, outdir) => invoke("run_project", { yaml, outdir: outdir || null }),
   };
 
+  // Validate before committing: rejected edits must not poison the next compose.
+  function commitProjectEdit(editYaml) {
+    const result = projectEditQueue.then(async () => {
+      let yaml, summary;
+      try {
+        yaml = await editYaml(await composeYaml());
+        summary = await api.summary(yaml);
+      } catch (e) {
+        logLine("✗ " + (zh() ? "修改未应用：" : "Edit not applied: ") + e);
+        return false;
+      }
+      baseProjectYaml = yaml;
+      lastSummary = { ...summary, _valid: true, _err: null };
+      targetEdit = { kind: summary.target_kind, modelFormat: summary.model_format };
+      cellEdit = String(summary.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
+      colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 };
+      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      (summary.layers || []).forEach((l) => { layerEdits[l.id] = { path: l.path || "", enabled: l.enabled }; });
+      clearRunArtifacts();
+      return true;
+    });
+    projectEditQueue = result;
+    return result;
+  }
+
   function clearCoastalOverlay() {
     if (typeof applyCoastal === "function") applyCoastal(null, false);
   }
@@ -2489,15 +2517,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       try { folder = await api.pickDataFolder(); }
       catch (e) { logLine("✗ " + e); return; }
       if (!folder) return;
-      let yaml, next;
-      try {
-        yaml = await api.autofillLayers(await composeYaml(), folder);
-        next = await api.summary(yaml);
-      } catch (e) { logLine("✗ " + e); return; }
-      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
-      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
-      logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
-      enhanceLayerStep();
+      if (await commitProjectEdit(yaml => api.autofillLayers(yaml, folder))) {
+        logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
+      }
+      await enhanceLayerStep();
     };
     let sum;
     try { sum = await api.summary(await composeYaml()); }
@@ -2516,16 +2539,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     clearCoastalOverlay();
     tbody.textContent = "";
     const layers = sum.layers || [];
-    const selectExclusiveSource = (id, path) => {
-      const selected = layers.find((layer) => layer.id === id);
-      if (selected && selected.source_field) {
-        layers.forEach((sibling) => {
-          if (sibling.id !== id && sibling.source_field === selected.source_field) {
-            layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };
-          }
-        });
-      }
-      layerEdits[id] = { path, enabled: true };
+    const editLayer = async (id, path, enabled) => {
+      await commitProjectEdit(yaml => invoke("set_layer_path", { yaml, id, path, enabled }));
+      await enhanceLayerStep();
     };
     if (!layers.length) {
       const tr = document.createElement("tr");
@@ -2605,28 +2621,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         try { p = await (folder ? api.pickDataFolder() : api.pickDataFile()); }
         catch (e) { logLine("✗ " + e); return; }
         if (!p) return;
-        selectExclusiveSource(id, p);
-        enhanceLayerStep();
+        await editLayer(id, p, true);
       };
     });
     tbody.querySelectorAll(".em-clear").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = async () => {
         const id = b.closest("[data-layer]").dataset.layer;
-        layerEdits[id] = { path: "", enabled: false };
-        enhanceLayerStep();
+        await editLayer(id, "", false);
       };
     });
     // on/off switch: enable/disable a layer that already has a file set
     tbody.querySelectorAll("tr[data-layer] .sw").forEach((sw) => {
-      sw.onclick = () => {
+      sw.onclick = async () => {
         const tr = sw.closest("[data-layer]");
         const id = tr.dataset.layer;
         const path = tr.dataset.path || "";
         if (!path) return; // nothing to toggle without a file
         const enabled = tr.dataset.enabled !== "1";
-        if (enabled) selectExclusiveSource(id, path);
-        else layerEdits[id] = { path, enabled: false };
-        enhanceLayerStep();
+        await editLayer(id, path, enabled);
       };
     });
     const card = table.closest(".card");
@@ -3443,6 +3455,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Reflect a loaded + validated project into the UI (shared by Open and recents).
   async function reflectProject(res) {
+    await projectEditQueue;
     let sum;
     try { sum = await api.summary(res.yaml); } catch (e) { logLine("✗ " + e); return; }
     projectActive = true;
@@ -3592,6 +3605,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function onSave() {
     try {
+      await projectEditQueue;
       const yaml = await composeYaml();
       const path = await api.saveProject(yaml);
       if (path) {
@@ -3606,6 +3620,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   async function onOpen() {
+    await projectEditQueue;
     let res;
     try { res = await api.openProject(); } catch (e) { logLine("✗ open failed: " + e); return; }
     if (!res) { logLine("open cancelled"); return; }
@@ -3810,10 +3825,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const kind = kindIn.value;
         const models = compatibleTargetModels();
         const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
-        targetEdit = { kind: kind, modelFormat: currentModel };
-        if (currentModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, currentModel));
+        paintTargetOutputs(lastSummary);
       };
     }
     if (modelIn) {
@@ -3821,17 +3834,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
         const models = compatibleTargetModels();
         const nextModel = models.includes(modelIn.value) ? modelIn.value : models[0];
-        targetEdit = { kind: kind, modelFormat: nextModel };
-        if (nextModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, nextModel));
+        paintTargetOutputs(lastSummary);
       };
     }
     if (cellIn) {
       cellIn.onchange = async () => {
-        cellEdit = cellIn.value === "tri" ? "tri" : "hex";
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        const cell = cellIn.value === "tri" ? "tri" : "hex";
+        await commitProjectEdit(yaml => api.setTargetCell(yaml, cell));
+        paintTargetOutputs(lastSummary);
       };
     }
     const colmEnabled = document.getElementById("colmMeshEnabled");
@@ -3856,6 +3867,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function onNew() {
     if (!confirm(zh() ? "新建会清空当前项目编辑，确定继续？（如需保留请先用 💾 保存）" : "Start a new project? Current edits will be cleared (use 💾 Save first to keep them).")) return;
+    await projectEditQueue;
     resetProject();
     projectActive = true;
     await refreshSummary();
@@ -3865,6 +3877,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   async function openRecent(path) {
+    await projectEditQueue;
     let res;
     try { res = await invoke("read_project", { path }); }
     catch (e) { logLine("✗ open " + path + ": " + e); return; }
@@ -4033,6 +4046,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     setStatus(zh() ? "运行中…" : "running…", false);
     setRunControls(true);
     try {
+      await projectEditQueue;
       clearRunArtifacts();
       if (typeof cur !== "undefined" && cur === 6) renderStep(6);
       // show the Log pane because the Run button now lives inside the step footer

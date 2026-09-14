@@ -550,7 +550,7 @@ check(
     html.includes("setColmMeshDelivery:") &&
     html.includes("selectedModelForDelivery === \"CoLM\"") &&
     html.includes("Number.isInteger(colmMeshDelivery.pixelsPerDegree)") &&
-    html.includes('if (nextModel !== "CoLM") colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 }') &&
+    html.includes('colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 }') &&
     libRs.includes("set_colm_mesh_delivery,"),
   "CoLM mesh delivery UI must be backed by a registered Tauri IPC command",
 );
@@ -905,10 +905,12 @@ check(
   html.includes('tr.dataset.path = l.path || "";') &&
     html.includes('tr.dataset.enabled = l.enabled ? "1" : "0";') &&
     html.includes('tr.dataset.sourceField = l.source_field || "";') &&
-    html.includes("const selectExclusiveSource = (id, path) => {") &&
-    html.includes("sibling.source_field === selected.source_field") &&
-    html.includes('layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };') &&
-    html.includes("if (enabled) selectExclusiveSource(id, path);") &&
+    html.includes('commitProjectEdit(yaml => invoke("set_layer_path", { yaml, id, path, enabled }))') &&
+    html.includes('await editLayer(id, p, true);') &&
+    html.includes('await editLayer(id, "", false);') &&
+    html.includes('await editLayer(id, path, enabled);') &&
+    html.includes('commitProjectEdit(yaml => api.autofillLayers(yaml, folder))') &&
+    !html.includes('selectExclusiveSource') &&
     !html.includes("const e = layerEdits[id];\n        if (!e || !e.path) return;"),
   "layer toggles must preserve paths and keep same-field sources exclusive",
 );
@@ -1428,7 +1430,7 @@ async function checkRunSettlement() {
     const defer=command=>new Promise((resolve,reject)=>pending.push({command,resolve,reject}));
     const invoke=command=>defer(command),window={__TAURI__:{core:{invoke}}};
     const api={summary:async()=>({cell:'tri'}),runProject:()=>defer('run_project')};
-    let composeYaml=async()=>'yaml';
+    let composeYaml=async()=>'yaml',projectEditQueue=Promise.resolve();
     const zh=()=>false,confirm=()=>true,currentIntent=()=>'',currentResolutionLabel=()=>'';
     const logLine=s=>events.push(['log',s]);
     const clearRunArtifacts=()=>{hasRun=false;runInfo=null;};
@@ -1437,7 +1439,7 @@ async function checkRunSettlement() {
     const renderStep=()=>{events.push(['render',hasRun,runInfo]);elements.runBtn=element();elements.killBtn=element();enhanceRunStep();};
     ${definitions.join("\n")}
     return {pending,events,elements,start:doRun,kill:killRun,switchPage:confirmStopForPageSwitch,
-      redraw:renderStep,holdCompose(){composeYaml=()=>defer('compose');},
+      redraw:renderStep,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},
       state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion};}};
   `);
   const flush = () => new Promise(resolve=>setImmediate(resolve));
@@ -1456,6 +1458,9 @@ async function checkRunSettlement() {
     const next=h.start();await flush();take(h,'run_project').resolve(done('/new'));await next;
     check(h.state().result.outdir==='/new' && h.events.filter(e=>e[0]==='load').map(e=>e[1]).join()==='/new/mesh.nc','recovery must load only its own successful mesh');
   }
+  const editing=harness();editing.holdEdit();const waiting=editing.start();await flush();
+  check(editing.state().busy && editing.pending.length===1,'Run must own startup but not compose before pending edits settle');
+  take(editing,'edit').resolve();await flush();take(editing,'run_project').resolve(done('/after-edit'));await waiting;
   const early=harness();early.holdCompose();const composing=early.start();await flush();
   const noChild=early.switchPage();take(early,'kill_run').resolve(false);
   check(!await noChild && early.state().busy,'no child during startup is not a completed cancellation');
@@ -1473,3 +1478,92 @@ async function checkRunSettlement() {
   log('run settlement: pending redraw, duplicate Run, stop/page-switch fence, late kill, compose failure and recovery passed');
 }
 checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; });
+
+// Exercise the real target callbacks and candidate commit, not a second UI implementation.
+async function checkProjectEditAdmission() {
+  const extract = name => section(html, new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name);
+  const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
+  const harness = new Function(`
+    let projectEditQueue=Promise.resolve(),baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
+    let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0;
+    const layerEdits={},logs=[],elements={targetKindOutput:{value:'atmosphere'},targetModelOutput:{value:'MPAS'},targetCellOutput:{value:'hex'}};
+    const document={getElementById:id=>elements[id]},zh=()=>false,logLine=s=>logs.push(s);
+    const compatibleTargetModels=()=>['MPAS','CoLM','FVCOM'],selectedTarget=()=>targetEdit||{kind:'atmosphere'};
+    const wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;};
+    const initial={target_kind:'atmosphere',model_format:'MPAS',cell:'hex',layers:['a','b'].map(id=>({id,path:'',enabled:false,source_field:'landtype'}))};
+    function validate(cfg){
+      if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('LandType required');
+      if(cfg.layers.some(l=>l.enabled&&!l.path))throw new Error('empty source');
+      return JSON.stringify(cfg);
+    }
+    const api={
+      setProjectTarget:async(yaml,kind,model)=>validate({...JSON.parse(yaml),target_kind:kind,model_format:model,colm_mesh_enabled:false}),
+      setTargetCell:async(yaml,cell)=>{if(!['tri','hex'].includes(cell))throw new Error('bad cell');return validate({...JSON.parse(yaml),cell});},
+      summary:async yaml=>{if(rejectSummary)throw new Error('summary unavailable');validate(JSON.parse(yaml));return JSON.parse(yaml);},
+      validate:async yaml=>validate(JSON.parse(yaml))
+    };
+    async function invoke(command,{yaml,id,path,enabled}){
+      if(command!=='set_layer_path')throw new Error(command);
+      const cfg=JSON.parse(yaml),selected=cfg.layers.find(l=>l.id===id);
+      if(!selected)throw new Error('unknown source');
+      if(enabled)cfg.layers.forEach(l=>{if(l.source_field===selected.source_field)l.enabled=false;});
+      Object.assign(selected,{path,enabled});return validate(cfg);
+    }
+    async function composeYaml(){
+      let yaml=baseProjectYaml||validate(initial);
+      if(targetEdit)yaml=await api.setProjectTarget(yaml,targetEdit.kind,targetEdit.modelFormat);
+      if(cellEdit)yaml=await api.setTargetCell(yaml,cellEdit);
+      for(const id of Object.keys(layerEdits).sort((a,b)=>Number(layerEdits[b].enabled)-Number(layerEdits[a].enabled)))
+        yaml=await invoke('set_layer_path',{yaml,id,...layerEdits[id]});
+      return yaml;
+    }
+    function paintTargetOutputs(s){if(s){elements.targetKindOutput.value=s.target_kind;elements.targetModelOutput.value=s.model_format;elements.targetCellOutput.value=s.cell;}}
+    ${extract('refreshSummary')}
+    ${commit}
+    ${extract('enhanceTargetOutputStep')}
+    return {init:enhanceTargetOutputStep,logs,elements,composeYaml,
+      change:async(id,value)=>{elements[id].value=value;await elements[id].onchange();},
+      edit:fn=>commitProjectEdit(fn),source:(id,path,enabled)=>commitProjectEdit(yaml=>invoke('set_layer_path',{yaml,id,path,enabled})),
+      failSummary:value=>{rejectSummary=value;},
+      state:()=>JSON.stringify({baseProjectYaml,lastSummary,targetEdit,cellEdit,colmMeshDelivery,layerEdits,clears})};
+  `);
+  for(const [name,after] of [['onSave','composeYaml()'],['onOpen','api.openProject()'],['reflectProject','api.summary(res.yaml)'],['onNew','resetProject()'],['openRecent','invoke("read_project"']]) {
+    const body=extract(name);
+    check(body.indexOf('await projectEditQueue;')>=0&&body.indexOf('await projectEditQueue;')<body.indexOf(after),name+' must wait for pending edits before consuming/replacing project');
+  }
+  const template=section(html,/async function selectTemplate\(k\)\{([\s\S]*?)\n\}/,'template edit fence');
+  check(template.indexOf('await window.waitForProjectEdits()')>=0&&template.indexOf('await window.waitForProjectEdits()')<template.indexOf('tpl=next;'),'template change must wait for pending edits');
+  const h=harness();await h.init();
+  const before=h.state();
+  for(const kind of ['land','ocean']){
+    await h.change('targetKindOutput',kind);
+    check(h.state()===before && h.elements.targetKindOutput.value==='atmosphere','rejected target edit must keep the valid project, summary and target selection');
+  }
+  check(h.logs.some(s=>s.includes('LandType required')),'rejected edit must report backend reason');
+  for(const kind of ['land','ocean']){
+    check(await h.source('a','/land-a.nc',true),'adding source should succeed before target migration');
+    await h.change('targetKindOutput',kind);
+    check(JSON.parse(await h.composeYaml()).target_kind===kind,'accepted source must survive target-before-source composition');
+    const withSource=h.state();
+    check(!await h.source('a','',false)&&h.state()===withSource,'required-source clear must leave valid state unchanged');
+    check(!await h.source('a','/land-a.nc',false)&&h.state()===withSource,'required-source disable must leave valid state unchanged');
+    check(await h.source('b','/land-b.nc',true),'exclusive source replacement should succeed');
+    const replaced=JSON.parse(await h.composeYaml());
+    check(replaced.layers.filter(l=>l.enabled).map(l=>l.id).join()==='b','backend exclusivity must survive compose');
+    await h.change('targetKindOutput','atmosphere');
+    check(await h.source('b','',false),'source removal should succeed after leaving a required-source target');
+    check(JSON.parse(await h.composeYaml()).layers.every(l=>!l.enabled),'removed sources must not revive from original base');
+  }
+  await h.change('targetModelOutput','CoLM');await h.change('targetCellOutput','tri');
+  check(JSON.parse(await h.composeYaml()).cell==='tri'&&h.elements.targetModelOutput.value==='CoLM','model and cell handlers must commit validated candidates');
+  const valid=h.state();h.failSummary(true);
+  check(!await h.source('a','/candidate.nc',true)&&h.state()===valid,'summary failure must not partially commit candidate');
+  h.failSummary(false);
+  let release;const blocked=new Promise(resolve=>{release=resolve;});let secondStarted=false;
+  const first=h.edit(async yaml=>{await blocked;return yaml;});
+  const second=h.edit(async yaml=>{secondStarted=true;return yaml;});
+  await new Promise(resolve=>setImmediate(resolve));check(!secondStarted,'project edits must serialize');
+  release();check(await first&&await second&&secondStarted,'serialized edits must settle and remain usable after rejection');
+  log('project edit admission: rejected target/source recovery, canonical migrations, exclusivity, model/cell and serialized commits passed');
+}
+checkProjectEditAdmission().catch(error => { console.error(error); process.exitCode=1; });
