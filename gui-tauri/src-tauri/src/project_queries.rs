@@ -171,8 +171,8 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         ),
         DomainConfig::Regional {
             shape: RegionShape::Circle { .. },
-            ..
-        } => ("regional", "circle", None, None, None, None),
+            sea_ratio,
+        } => ("regional", "circle", None, None, None, *sea_ratio),
         DomainConfig::Regional {
             shape: RegionShape::Shapefile { path },
             sea_ratio,
@@ -195,6 +195,18 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
             Some(close_format_id(*format).to_string()),
             *sea_ratio,
         ),
+    };
+    let circle = match &cfg.domain {
+        DomainConfig::Regional {
+            shape:
+                RegionShape::Circle {
+                    lon,
+                    lat,
+                    radius_km,
+                },
+            ..
+        } => Some([*lon, *lat, *radius_km]),
+        _ => None,
     };
     let cell = cfg.target.cell.engine_str().to_string();
     let quality_mode = if cell == "tri" {
@@ -321,6 +333,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         approx_degree,
         effective_nxp: cfg.try_lower()?.mkgrd.nxp,
         bbox,
+        circle,
         watershed_path,
         close_format,
         domain_close_boundary,

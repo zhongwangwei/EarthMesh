@@ -124,6 +124,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) effective_nxp: i32,
     /// `[w, e, s, n]` when the domain is a regional bounding box, else `None`.
     pub(crate) bbox: Option<[f64; 4]>,
+    /// `[lon, lat, radius_km]` when the domain is a regional circle, else `None`.
+    pub(crate) circle: Option<[f64; 3]>,
     pub(crate) watershed_path: Option<String>,
     pub(crate) close_format: Option<String>,
     pub(crate) domain_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,

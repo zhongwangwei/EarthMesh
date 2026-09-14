@@ -355,6 +355,28 @@ pub(crate) fn set_domain_bbox(
     validated_yaml(cfg)
 }
 
+/// Set the domain to a regional circle, returning the updated YAML.
+#[tauri::command]
+pub(crate) fn set_domain_circle(
+    yaml: String,
+    lon: f64,
+    lat: f64,
+    radius_km: f64,
+    sea_ratio: Option<f64>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.domain = DomainConfig::Regional {
+        shape: RegionShape::Circle {
+            lon,
+            lat,
+            radius_km,
+        },
+        sea_ratio: Some(sea_ratio.unwrap_or_else(default_mask_sea_ratio)),
+    };
+    cfg.quality.lepp_post_quality = None;
+    validated_yaml(cfg)
+}
+
 /// Set the domain to a watershed shapefile, returning the updated YAML.
 #[tauri::command]
 pub(crate) fn set_domain_shapefile(

@@ -1776,3 +1776,40 @@ async function checkProjectControls() {
   log('project controls: native recent/folder buttons, safe text, picker cancel/failure, recent read failure and edit fence passed');
 }
 checkProjectControls().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Exercise the real circle validation/frame/estimate and domain compose branch
+// without a browser dependency, so this boundary also runs in the regular CI gate.
+async function checkCircleDomain() {
+  const extract=name=>section(html,new RegExp(`(function ${name}\\([^\\n]*\\)\\{[\\s\\S]*?\\n\\})`),name);
+  const compose=section(html,/async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/,'composeYaml');
+  const domain=compose.slice(compose.indexOf('    const mode ='),compose.indexOf('    if (baseProjectYaml)'));
+  const h=new Function(`
+    let domCircle=[179,20,750],domainMode='circle',regional=true,lang=0;
+    const KM_PER_DEG_EQ=2*Math.PI*6371.229/360,DEFAULT_BBOX=[108,120,18,26],domBbox=DEFAULT_BBOX;
+    const cellKm=()=>100,olGeojsonFrame=()=>{throw Error('circle fell back to an old mesh frame');};
+    ${extract('wrapOlLon')}
+    ${extract('circleDomainError')}
+    ${extract('currentOlDomainFrame')}
+    ${extract('estCells')}
+    return {set:c=>{domCircle=c;},error:circleDomainError,frame:currentOlDomainFrame,estimate:estCells,
+      compose:async()=>{const template=null,domain={kind:'circle',seaRatio:.47125},calls=[];let yaml='input';
+        const invoke=async(cmd,args)=>{calls.push({cmd,args});return 'circle yaml';};
+        ${domain}
+        return {yaml,calls};}};
+  `)();
+  check(h.frame().crossesDateline && h.frame().east-h.frame().west<20,'circle frame must use the short dateline span');
+  const {yaml,calls}=await h.compose();
+  check(yaml==='circle yaml'&&calls.length===1&&calls[0].cmd==='set_domain_circle','circle must reach its shared setter, not bbox');
+  check(JSON.stringify(calls[0].args)===JSON.stringify({yaml:'input',lon:179,lat:20,radiusKm:750,seaRatio:.47125}),'circle coordinates/radius/sea ratio must retain precision');
+  const radius=6371.229,area=4*Math.PI*radius**2*Math.sin(750/radius/2)**2;
+  check(h.estimate()===Math.round(area/(100*100*.866)),'circle estimate must use spherical-cap area');
+  for(const circle of [[NaN,20,750],[181,20,750],[0,91,750],[0,0,0],[0,0,10009]]){
+    h.set(circle);check(h.error()&&h.frame()===null&&h.estimate()===0,'invalid circle must not show an old mesh extent/estimate');
+    let rejected=false;try{await h.compose();}catch{rejected=true;}check(rejected,'invalid draft must fail compose before any setter');
+  }
+  for(const lat of [-90,90]){h.set([0,lat,500]);const frame=h.frame();check(frame.west===-180&&frame.east===180,'polar circles cover all longitudes');}
+  check(libRs.includes('set_domain_circle,')&&html.includes('domCircle = [...sum.circle]')&&html.includes('circle:domCircle')&&html.includes('if ("circle" in payload) domCircle = payload.circle;'),'circle command, open reflection and detached map state must remain wired');
+  check(html.includes('data-mode="circle"')&&html.includes('aria-describedby="domainCircleHint domainCircleError"'),'circle editor needs a named, described native input');
+  log('circle domain: actual compose/validation/dateline/pole/area and command/reflection/map state checks passed');
+}
+checkCircleDomain().catch(error=>{console.error(error);process.exitCode=1;});

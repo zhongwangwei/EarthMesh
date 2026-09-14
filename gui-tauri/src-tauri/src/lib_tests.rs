@@ -1396,6 +1396,107 @@ fn set_domain_bbox_rejects_invalid_sea_ratio() {
     let err = set_domain_bbox(yaml, 112.0, 115.0, 21.5, 23.5, Some(1.5)).unwrap_err();
     assert!(err.contains("domain sea_ratio must be between 0 and 1"));
 }
+
+#[test]
+fn set_domain_circle_sets_regional_circle_default_sea_ratio_and_clears_lepp() {
+    let mut cfg = ProjectConfig::scaffold(
+        "circle_domain",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    cfg.refinement.enabled = true;
+    cfg.refinement.max_passes = 1;
+    cfg.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+        earthmesh_project::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.0,
+            radius_km: 80.0,
+        },
+    ));
+    cfg.quality.lepp_post_quality = Some(earthmesh_project::LeppPostQualityConfig {
+        maximum_insertions: 77,
+        maximum_edge_km: None,
+    });
+    let yaml = set_domain_circle(cfg.to_yaml().unwrap(), 113.5, 22.25, 150.0, None)
+        .expect("set circle domain");
+    let updated = ProjectConfig::from_yaml(&yaml).expect("valid circle yaml");
+    assert!(updated.quality.lepp_post_quality.is_none());
+    assert!(matches!(
+        updated.domain,
+        DomainConfig::Regional {
+            shape: RegionShape::Circle {
+                lon: 113.5,
+                lat: 22.25,
+                radius_km: 150.0,
+            },
+            sea_ratio: Some(ratio),
+        } if ratio == default_mask_sea_ratio()
+    ));
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.domain, "regional");
+    assert_eq!(summary.domain_shape, "circle");
+    assert_eq!(summary.circle, Some([113.5, 22.25, 150.0]));
+    assert_eq!(summary.bbox, None);
+    assert_eq!(summary.sea_ratio, Some(default_mask_sea_ratio()));
+}
+
+#[test]
+fn set_domain_circle_accepts_explicit_sea_ratio_and_global_switch_clears_shape() {
+    let yaml = hydrology_yaml("circle_switch");
+    let yaml = set_domain_circle(yaml, -60.0, 10.0, 500.0, Some(0.3)).expect("set circle domain");
+    let summary = project_summary(yaml.clone()).expect("circle summary");
+    assert_eq!(summary.circle, Some([-60.0, 10.0, 500.0]));
+    assert_eq!(summary.sea_ratio, Some(0.3));
+
+    let global = set_domain_global(yaml).expect("set global");
+    let summary = project_summary(global).expect("global summary");
+    assert_eq!(summary.domain, "global");
+    assert_eq!(summary.domain_shape, "global");
+    assert_eq!(summary.circle, None);
+    assert_eq!(summary.sea_ratio, None);
+}
+
+#[test]
+fn set_domain_circle_rejects_invalid_values() {
+    for (lon, lat, radius_km, expected) in [
+        (
+            f64::NAN,
+            22.0,
+            100.0,
+            "circle coordinates and radius must be finite",
+        ),
+        (
+            181.0,
+            22.0,
+            100.0,
+            "circle longitude must be between -180 and 180",
+        ),
+        (
+            113.0,
+            -91.0,
+            100.0,
+            "circle latitude must be between -90 and 90",
+        ),
+        (113.0, 22.0, 0.0, "circle radius_km must be > 0"),
+        (113.0, 22.0, 11_000.0, "circle radius_km must be <="),
+    ] {
+        let err = set_domain_circle(hydrology_yaml("invalid_circle"), lon, lat, radius_km, None)
+            .unwrap_err();
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn set_domain_circle_rejects_invalid_sea_ratio() {
+    let yaml = preset_yaml("circle_sea_ratio_test", MeshIntentPreset::CoastalOcean);
+    let err = set_domain_circle(yaml, 112.0, 21.5, 100.0, Some(f64::INFINITY)).unwrap_err();
+    assert!(err.contains("domain sea_ratio must be finite"));
+    let yaml = preset_yaml("circle_sea_ratio_test", MeshIntentPreset::CoastalOcean);
+    let err = set_domain_circle(yaml, 112.0, 21.5, 100.0, Some(-0.1)).unwrap_err();
+    assert!(err.contains("domain sea_ratio must be between 0 and 1"));
+}
+
 #[test]
 fn project_summary_reports_regional_sea_ratio() {
     let yaml = preset_yaml("sea_ratio_test", MeshIntentPreset::CoastalOcean);
@@ -1489,6 +1590,20 @@ fn project_summary_reports_hidden_regional_shape() {
     assert_eq!(summary.domain, "regional");
     assert_eq!(summary.domain_shape, "circle");
     assert_eq!(summary.bbox, None);
+    assert_eq!(summary.circle, Some([113.0, 22.5, 100.0]));
+    assert_eq!(summary.sea_ratio, None);
+}
+
+#[test]
+fn validate_project_preserves_circle_domain_and_unexposed_fields() {
+    let mut cfg = circle_project("circle_preserve");
+    cfg.expert.openmp = Some(3);
+    let yaml = validate_project(cfg.to_yaml().unwrap()).expect("validate circle project");
+    let reopened = ProjectConfig::from_yaml(&yaml).expect("valid yaml");
+    assert_eq!(reopened.domain, cfg.domain);
+    assert_eq!(reopened.expert.openmp, Some(3));
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.circle, Some([113.0, 22.5, 100.0]));
 }
 
 #[test]
@@ -3895,7 +4010,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
     );
     let root = PathBuf::from(env::var("EARTHMESH_GUI_E2E_OUTPUT").expect("artifact directory"));
     let mut records = Vec::new();
-    for (name, kind, cell, format, colm, backend) in [
+    for (name, kind, cell, format, colm, backend, circle_domain) in [
         (
             "land_tri",
             MeshDomainKind::Land,
@@ -3903,6 +4018,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::CoLM,
             true,
             RefinementBackend::Certified,
+            false,
         ),
         (
             "land_hex",
@@ -3911,6 +4027,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::CoLM,
             true,
             RefinementBackend::MethodC,
+            false,
         ),
         (
             "land_native",
@@ -3919,6 +4036,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::CoLM,
             false,
             RefinementBackend::RedGreen,
+            false,
         ),
         (
             "atmosphere",
@@ -3927,6 +4045,16 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::Mpas,
             false,
             RefinementBackend::Certified,
+            false,
+        ),
+        (
+            "regional_circle_grid_only",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Tri,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::MethodC,
+            true,
         ),
         (
             "ocean",
@@ -3935,6 +4063,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::Fvcom,
             false,
             RefinementBackend::Certified,
+            false,
         ),
         (
             "grid_only",
@@ -3943,6 +4072,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             ModelFormat::Mpas,
             false,
             RefinementBackend::MethodC,
+            false,
         ),
     ] {
         let mut cfg = ProjectConfig::scaffold(
@@ -3975,6 +4105,18 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
                 enabled: true,
                 threshold_value: None,
             });
+        }
+        if circle_domain {
+            cfg.domain = DomainConfig::Regional {
+                shape: RegionShape::Circle {
+                    lon: 113.0,
+                    lat: 22.0,
+                    // NXP=3 is intentionally coarse for this real-engine smoke;
+                    // use a broad circle so the regional mask keeps cells.
+                    radius_km: 8_000.0,
+                },
+                sea_ratio: Some(default_mask_sea_ratio()),
+            };
         }
         if kind == MeshDomainKind::Ocean {
             let close = root.join("ocean-domain.nml");
@@ -4029,7 +4171,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
         .unwrap();
         assert_eq!(
             delivery["report"]["model_delivery_status"],
-            if name == "land_native" || name == "grid_only" {
+            if name == "land_native" || name == "grid_only" || name == "regional_circle_grid_only" {
                 "native_only"
             } else {
                 "model_delivered"

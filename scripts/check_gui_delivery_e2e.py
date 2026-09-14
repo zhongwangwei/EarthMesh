@@ -49,7 +49,7 @@ def main():
         page.wait_for_function("document.getElementById('logStatus').textContent.includes('Rust')")
         page.evaluate("() => {cur=6;renderStep(6);renderSteps();}")
         for case in records["cases"]:
-            page.evaluate("c => {window.__case=c;window.__calls=[];regional=!!c.summary.bbox;domainMode=regional?'regional':'global';if(regional)domBbox=c.summary.bbox;}", case)
+            page.evaluate("c => {window.__case=c;window.__calls=[];regional=c.summary.domain==='regional';domainMode=c.summary.domain_shape==='circle'?'circle':c.summary.bbox?'regional':c.summary.domain_shape==='close'?'close':'global';if(c.summary.bbox)domBbox=c.summary.bbox;if(c.summary.circle)domCircle=c.summary.circle;}", case)
             page.locator("#runBtn").click()
             page.wait_for_function("runInfo && runInfo.outdir === window.__case.result.outdir && !runInProgress")
             page.wait_for_function("document.getElementById('qualityCells')?.textContent===String(window.__case.gui_quality.cell_count) && _meshGeojson?.features.length===window.__case.preview.features.length")

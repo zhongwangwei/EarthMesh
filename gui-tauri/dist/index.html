@@ -86,7 +86,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
   margin:0 8px 10px;font-weight:700}
 .step{display:flex;gap:11px;align-items:flex-start;padding:9px 10px;border-radius:var(--r-md);
   position:relative;cursor:pointer;margin-bottom:1px;width:100%;border:0;background:transparent;text-align:left;line-height:inherit}
-.step:focus-visible,.project-pick:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.step:focus-visible,.project-pick:focus-visible,.dom-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .step:hover{background:var(--surface-2)}
 .step.active{background:var(--accent-weak)}
 .step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
@@ -529,7 +529,7 @@ const TPL=[
 const DEFAULT_TPL=6; // "Coastal zone"
 let tpl=DEFAULT_TPL;
 let regional=true; // domain mode: true=regional (bbox), false=global (no bounds)
-let domainMode="regional"; // global | regional | watershed | close
+let domainMode="regional"; // global | regional (bbox) | circle | watershed | close
 let watershedPath="";
 let closePath="";
 let closeFormat="nml";
@@ -585,6 +585,9 @@ const STATIC_BROWSER_CAPABILITIES={
 let TARGET_PRESETS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_presets.map((p)=>[p.intent,p]));
 let SPECIALIZED_CELLS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.model_format,p.specialized_cells]));
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
+const DEFAULT_CIRCLE=[114,22,500]; // [lon, lat, geodesic radius km]
+let domCircle=[...DEFAULT_CIRCLE];
+let domCircleSeaRatio=null;
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
 let runInfo=null;   // { ok, outdir, code, gridfile, autoRefineDecisions } from the last run
@@ -701,6 +704,7 @@ function domainLabel(){
   if(hiddenDomainShape) return lang ? "保留隐藏区域："+hiddenDomainShape : "Preserved regional: "+hiddenDomainShape;
   if(domainMode==="watershed") return lang ? "流域" : "Watershed";
   if(domainMode==="close") return lang ? "闭合区域" : "Close domain";
+  if(domainMode==="circle") return lang ? "圆形区域" : "Circle domain";
   return regional ? (lang ? "区域" : "Regional") : (lang ? "全球" : "Global");
 }
 // ---- cell-count estimate (updates live with resolution + domain) ----
@@ -714,7 +718,11 @@ function estCells(){
   const km=cellKm(); if(!(km>0)) return 0;
   if(domainMode==="watershed" || domainMode==="close") return 0;
   let area;
-  if(typeof regional!=="undefined" && regional){
+  if(regional && domainMode==="circle"){
+    if(circleDomainError()) return 0;
+    const radius=KM_PER_DEG_EQ*180/Math.PI, angle=domCircle[2]/radius;
+    area=4*Math.PI*radius*radius*Math.sin(angle/2)**2;
+  } else if(typeof regional!=="undefined" && regional){
     const b=(typeof domBbox!=="undefined")?domBbox:DEFAULT_BBOX;
     const midLat=(b[2]+b[3])/2;
     const dx=Math.abs(b[1]-b[0])*KM_PER_DEG_EQ*Math.cos(midLat*Math.PI/180);
@@ -729,6 +737,7 @@ function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n
 function updateEstimate(){
   if(hiddenDomainShape){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   if(domainMode==="watershed" || domainMode==="close"){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
+  if(domainMode==="circle" && circleDomainError()){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   const est=estCells();
   const set=(id,v,prop)=>{const el=document.getElementById(id); if(el){ if(prop) el.style[prop]=v; else el.textContent=v; }};
   set("estCells","~"+fmtK(est));
@@ -821,9 +830,9 @@ function renderStep(i){
   }
   else if(i===2){
     const hiddenDomain = hiddenDomainShape;
-    html=head(STEPS[2].t[lang],lang?"设全球、区域矩形框、流域 SHP 或闭合区域；右侧地图实时反映边界。":"Set a global, regional bbox, watershed SHP, or close domain; the map reflects the boundary live.")
+    html=head(STEPS[2].t[lang],lang?"设全球、矩形框、圆形、流域 SHP 或闭合区域；右侧地图实时反映边界。":"Set a global, bbox, circle, watershed SHP, or close domain; the map reflects the boundary live.")
     +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
-       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span><span class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</span><span class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</span></div>
+       <div class="pill-row" style="margin-bottom:14px"><button type="button" class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</button><button type="button" class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</button><button type="button" class="pill dom-mode ${domainMode==="circle"?"on":""}" data-mode="circle">${lang?"圆形":"Circle"}</button><button type="button" class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</button><button type="button" class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</button></div>
        ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
        :domainMode==="watershed"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">SHP</span></div>
        ${field(lang?"流域边界文件":"Watershed boundary file",`<div class="browse" id="watershedBrowse" style="cursor:pointer"><span class="path" id="watershedPathText" style="max-width:none"></span></div>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
@@ -834,6 +843,12 @@ function renderStep(i){
        ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
        ${closeBoundaryControls("domain",domainCloseBoundary,lang)}
        <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"支持 .shp / .nml / .nc / .nc4 / .txt / .csv；SHP/TXT 会先转换为临时 NML。":"Supports .shp / .nml / .nc / .nc4 / .txt / .csv; SHP/TXT are converted to temporary NML first."}</div>`
+       :domainMode==="circle"?`<div class="grid2">
+         ${[ ["圆心经度 (°)","Center longitude (°)",-180,180], ["圆心纬度 (°)","Center latitude (°)",-90,90], ["球面半径 (km)","Geodesic radius (km)",0,90*KM_PER_DEG_EQ] ].map(([cn,en,min,max],j)=>field(lang?cn:en,`<input class="input" id="domainCircle${j}" aria-label="${lang?cn:en}" aria-describedby="domainCircleHint domainCircleError" type="number" required min="${min}" max="${max}" step="any" value="${Number.isFinite(domCircle[j])?domCircle[j]:""}">`)).join("")}
+       </div>
+       <div id="domainCircleHint" style="color:var(--muted);font-size:12px;line-height:1.5">${lang?"沿球面量测；半径须大于 0，且不超过半球（约 10,008 km）。圆形计算域与指定圆形细化互相独立。":"Measured along the sphere; radius must be positive and no larger than a hemisphere (about 10,008 km). Domain and refinement circles are independent."}</div>
+       <div id="domainCircleError" role="alert" style="color:var(--fail);font-size:12px;margin-top:8px"></div>
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" min="0" max="100" step="any" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :domainMode==="regional"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
          ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
@@ -905,7 +920,10 @@ function renderStep(i){
   w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   w.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(+b.dataset.go));
   // domain mode pills (global hides the bbox section)
-  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);});
+  w.querySelectorAll(".dom-mode").forEach(p=>{
+    p.setAttribute("aria-pressed",String(p.classList.contains("on")));
+    p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);w.querySelector(`.dom-mode[data-mode="${domainMode}"]`)?.focus();};
+  });
   const resNum=document.getElementById("resNum"); if(resNum) resNum.oninput=()=>resInput("num");
   const resUnit=document.getElementById("resUnit"); if(resUnit) resUnit.onchange=()=>resInput("unit");
   const resRange=document.getElementById("resRange"); if(resRange) resRange.oninput=()=>resInput("range");
@@ -1121,8 +1139,29 @@ function olGeojsonFrame(geojson){
   const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
   const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
 }
+function circleDomainError(){
+  const [lon,lat,radius]=domCircle;
+  if(!domCircle.every(Number.isFinite)) return lang?"请填写有效的圆心经纬度和半径。":"Enter finite center coordinates and radius.";
+  if(Math.abs(lon)>180 || Math.abs(lat)>90) return lang?"经度范围为 −180 至 180°，纬度范围为 −90 至 90°。":"Longitude must be −180…180° and latitude −90…90°.";
+  if(radius<=0 || radius>90*KM_PER_DEG_EQ) return lang?"半径必须大于 0，且不超过半球范围。":"Radius must be positive and no larger than a hemisphere.";
+  return "";
+}
+function circleDomainRing(){
+  if(circleDomainError() || !window.ol) return null;
+  // Reuse the vendored geodesic helper with the engine's sphere, not OL's default radius.
+  return unwrapGlobeLine(ol.geom.Polygon.circular(domCircle.slice(0,2),domCircle[2]*1000,128,KM_PER_DEG_EQ*180/Math.PI*1000).getCoordinates()[0]);
+}
 function currentOlDomainFrame(){
   if(!regional) return null;
+  if(domainMode==="circle"){
+    if(circleDomainError()) return null;
+    const [lon,lat,radius]=domCircle, angle=radius/KM_PER_DEG_EQ;
+    const south=Math.max(-90,lat-angle), north=Math.min(90,lat+angle);
+    if(south===-90 || north===90) return {west:-180,east:180,south,north,crossesDateline:false};
+    const delta=Math.asin(Math.min(1,Math.sin(angle*Math.PI/180)/Math.cos(lat*Math.PI/180)))*180/Math.PI;
+    const west=wrapOlLon(lon-delta), east=west+2*delta;
+    return {west,east,south,north,crossesDateline:east>180};
+  }
   if((domainMode==="regional"||domainMode==="bbox")&&Array.isArray(domBbox)&&domBbox.length===4){
     const [west,e,south,north]=domBbox, east=west>e?e+360:e;
     return [west,east,south,north].every(Number.isFinite)?{west,east,south,north,crossesDateline:east>180}:null;
@@ -1241,7 +1280,9 @@ function setOlSource(map,key,source,geojson){
 function olDomainRectangle(map){
   if(!regional || domainMode==="watershed" || domainMode==="close") return null;
   const frame=currentOlDomainFrame(); if(!frame) return null;
-  const feature=new ol.Feature(new ol.geom.Polygon([[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]));
+  const feature=new ol.Feature(domainMode==="circle"
+    ? new ol.geom.LineString(circleDomainRing())
+    : new ol.geom.Polygon([[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]));
   feature.getGeometry().transform("EPSG:4326",olProjectionCode(map));
   return feature;
 }
@@ -1327,10 +1368,11 @@ function globeStyle(){
   return {version:8,projection:{type:"vertical-perspective"},sky:{"atmosphere-blend":["interpolate",["linear"],["zoom"],0,1,5,1,7,0]},sources,layers};
 }
 function globeDomainGeojson(map){
-  const frame=currentOlDomainFrame(), key=JSON.stringify([regional,domainMode,frame]);
+  const frame=currentOlDomainFrame(), key=JSON.stringify([regional,domainMode,domCircle,frame]);
   if(map._globeDomainKey===key) return map._globeDomainGeojson;
   map._globeDomainKey=key;
   map._globeDomainGeojson=(!frame||domainMode==="watershed"||domainMode==="close")?GLOBE_EMPTY_GEOJSON:{type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]}}]};
+  if(frame && domainMode==="circle") map._globeDomainGeojson={type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"LineString",coordinates:circleDomainRing()}}]};
   return map._globeDomainGeojson;
 }
 function setGlobeLayerVisible(map,key,visible){
@@ -1490,7 +1532,7 @@ function updateOlMap(map,doFit){
   if(map._meshStyleMode!==styleMode){ map._meshStyleMode=styleMode; map._meshLayer.setStyle(classified?olMeshStyle:OL_DEFAULT_MESH_STYLE); }
   setOlSource(map,"boundary",map._boundarySource,_domainGeojson);
   setOlSource(map,"mesh",map._meshSource,mesh);
-  const domainKey=JSON.stringify([regional,domainMode,domBbox,olProjectionCode(map)]);
+  const domainKey=JSON.stringify([regional,domainMode,domBbox,domCircle,olProjectionCode(map)]);
   let fitChangedRectangle=false;
   if(map._domainKey!==domainKey){
     map._domainKey=domainKey; map._domainSource.clear(true);
@@ -1651,7 +1693,7 @@ function ensureOlMap(elId){
   const graticule=new ol.layer.Graticule({zIndex:2,showLabels:true,wrapX:true,visible:_olMapPrefs.graticule===true,strokeStyle:new ol.style.Stroke({color:"rgba(148,163,184,.45)",width:1,lineDash:[3,5]})});
   const meshSource=new ol.source.Vector({wrapX:true}), domainSource=new ol.source.Vector({wrapX:true}), boundarySource=new ol.source.Vector({wrapX:true}), measureSource=new ol.source.Vector({wrapX:false});
   const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,visible:_olMapPrefs.mesh!==false,opacity:Number(_olMapPrefs.meshOpacity??1),style:OL_DEFAULT_MESH_STYLE});
-  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})});
+  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:[new ol.style.Style({stroke:new ol.style.Stroke({color:"#1f2328",width:4,lineDash:[6,4]})}),new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})]});
   const boundaryLayer=new ol.layer.Vector({source:boundarySource,zIndex:21,visible:_olMapPrefs.boundary!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.2,lineDash:[5,3]}),fill:new ol.style.Fill({color:"rgba(250,204,21,.08)"})})});
   const measureLayer=new ol.layer.Vector({source:measureSource,zIndex:30,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.5}),fill:new ol.style.Fill({color:"rgba(250,204,21,.18)"}),image:new ol.style.Circle({radius:5,fill:new ol.style.Fill({color:"#facc15"}),stroke:new ol.style.Stroke({color:"#713f12",width:1})})})});
   baseLayer.setOpacity(Number(_olMapPrefs.baseOpacity??1));
@@ -1980,6 +2022,7 @@ if(MAP_WINDOW_MODE){
       if ("regional" in payload) regional = payload.regional;
       if ("domainMode" in payload) domainMode = payload.domainMode;
       if ("bbox" in payload) domBbox = payload.bbox;
+      if ("circle" in payload) domCircle = payload.circle;
       if ("theme" in payload) document.documentElement.setAttribute("data-theme", payload.theme);
       if ("language" in payload) { lang=payload.language; applyI18n(); }
       const map = ensureOlMap("mapsvgModal");
@@ -2001,7 +2044,7 @@ if(MAP_WINDOW_MODE){
     if(selected.has("domain")) payload.domain=_domainGeojson;
     if(selected.has("coastal")) payload.coastal=_coastalGeojson;
     if(selected.has("settings")) Object.assign(payload,{
-      hydroThresholds:_hydroThresholds,regional,domainMode,bbox:domBbox,
+      hydroThresholds:_hydroThresholds,regional,domainMode,bbox:domBbox,circle:domCircle,
       theme:document.documentElement.getAttribute("data-theme")||"light",language:lang,
     });
     return payload;
@@ -2234,6 +2277,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       : ((typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global"));
     if (mode === "global") {
       yaml = await invoke("set_domain_global", { yaml });
+    } else if (mode === "circle") {
+      const error = circleDomainError();
+      if (error) throw new Error(error);
+      const seaRatio = domain && domain.kind === "circle" ? (domain.seaRatio ?? null) : null;
+      yaml = await invoke("set_domain_circle", { yaml, lon: domCircle[0], lat: domCircle[1], radiusKm: domCircle[2], seaRatio });
     } else if (mode === "watershed") {
       const path = (domain && domain.kind === "shapefile" ? domain.path : watershedPath) || "";
       const seaRatio = domain && domain.kind === "shapefile" ? (domain.seaRatio ?? null) : null;
@@ -2682,21 +2730,44 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return Object.values(b).every((x) => !isNaN(x)) ? b : null;
   }
   function enhanceDomainStep() {
-    // The base UI owns the Global/Regional toggle (var `regional`) and only
-    // renders the bbox inputs in regional mode; we mirror that into domainEdit.
+    // Mirror the live domain mode without replacing an opened or invalid circle draft.
     if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
     const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    const kind = mode === "regional" ? "bbox" : mode === "watershed" ? "shapefile" : mode;
+    if (domainEdit && domainEdit.kind !== kind) clearRunArtifacts();
     if (mode === "global") { domainEdit = { kind: "global" }; loadWatershedBoundary(""); return; }
     const ratio = document.getElementById("seaRatioInput");
     const ratioText = document.getElementById("seaRatioText");
     const readSeaRatio = () => {
-      if (!ratio) return (domainEdit && (domainEdit.kind === "bbox" || domainEdit.kind === "shapefile" || domainEdit.kind === "close")) ? domainEdit.seaRatio : null;
+      if (!ratio) return (domainEdit && (domainEdit.kind === "bbox" || domainEdit.kind === "circle" || domainEdit.kind === "shapefile" || domainEdit.kind === "close")) ? domainEdit.seaRatio : null;
       const v = parseFloat(ratio.value);
       return isNaN(v) ? null : v / 100;
     };
     const paintSeaRatio = () => {
       if (ratioText && ratio) ratioText.textContent = ratio.value + "% " + (zh() ? "海洋" : "ocean");
     };
+    if (mode === "circle") {
+      loadWatershedBoundary("");
+      const inputs = [0,1,2].map((j) => document.getElementById(`domainCircle${j}`));
+      if (ratio) ratio.value = (domCircleSeaRatio ?? DEFAULT_SEA_RATIO_PCT / 100) * 100;
+      const syncCircle = (edited = false) => {
+        domCircle = inputs.map((input) => input.value.trim() === "" ? NaN : Number(input.value));
+        domCircleSeaRatio = readSeaRatio();
+        domainEdit = { kind: "circle", seaRatio: domCircleSeaRatio };
+        const error = circleDomainError();
+        const message = document.getElementById("domainCircleError");
+        if (message) message.textContent = error;
+        inputs.forEach((input) => { input.setCustomValidity(error); input.setAttribute("aria-invalid", String(!!error)); });
+        paintSeaRatio();
+        if (edited) clearRunArtifacts();
+        updateEstimate();
+        drawMap();
+      };
+      inputs.forEach((input) => input.addEventListener("input", () => syncCircle(true)));
+      if (ratio) ratio.addEventListener("input", () => syncCircle(true));
+      syncCircle();
+      return;
+    }
     if (mode === "watershed") {
       const browse = document.getElementById("watershedBrowse");
       const text = document.getElementById("watershedPathText");
@@ -3527,6 +3598,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domainCloseBoundary = normalizeCloseBoundary(sum.domain_close_boundary);
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: sum.sea_ratio ?? null };
         await loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
+      } else if (sum.domain_shape === "circle" && Array.isArray(sum.circle) && sum.circle.length === 3) {
+        domainMode = "circle";
+        regional = true;
+        domCircle = [...sum.circle];
+        domCircleSeaRatio = sum.sea_ratio ?? null;
+        domainEdit = { kind: "circle", seaRatio: sum.sea_ratio ?? null };
+        await loadWatershedBoundary("");
       } else if (sum.bbox) {
         domainMode = "regional";
         regional = true;
@@ -3657,7 +3735,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE]; domCircleSeaRatio = null; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
@@ -3987,6 +4065,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       ? ((z ? "流域 SHP：" : "watershed SHP: ") + (s.watershed_path || "—"))
       : s.domain_shape === "close"
       ? ((z ? "闭合区域：" : "close domain: ") + (s.watershed_path || "—"))
+      : s.domain_shape === "circle" && s.circle
+      ? `${z ? "圆形区域" : "circle domain"}: ${s.circle[0]}°, ${s.circle[1]}° · ${s.circle[2]} km`
       : s.domain_shape === "bbox" && s.bbox
       ? (z ? "区域矩形框" : "regional bbox")
       : (s.domain_shape === "global"

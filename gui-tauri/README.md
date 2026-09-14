@@ -238,8 +238,15 @@ automatically.
 - The quality dashboard treats polygon side counts as observed cell makeup, not
   topology failures; failures come from gates and topology issues.
 
-Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
-domains need project-schema support first; release bundles still need a full
+Circle domains are editable in the Domain step: center longitude/latitude,
+geodesic radius (km), and sea ratio round-trip through the shared Project
+validation and lowering. Domain circles are independent of refinement circles.
+The radius is positive and at most a hemisphere (about 10,008 km). Plane/globe
+previews use the engine sphere; the existing MapLibre polar-display limit still
+applies, not a computational-domain restriction. Older summaries without circle
+coordinates retain the preserved-shape fallback instead of replacing the domain.
+
+Known gaps: polygon domains need project-schema support first; release bundles still need a full
 platform icon set.
 
 ## Caveats
@@ -293,7 +300,9 @@ Rust record/capture regressions; controlled IPC promises also test stale quality
 preview and coastal callbacks, selected-run settings, and visible current errors.
 An optional real-CLI smoke test covers Land/CoLM
 TRI and HEX, CoLM without raster opt-in, Atmosphere/MPAS, regional Ocean/FVCOM,
-and a legal TRI/MPAS native-only pairing. NXP3 uniform grids and synthetic constant
+and legal TRI/MPAS native-only pairings (global and circle domain). The circle
+smoke uses an 8,000 km radius to retain cells on the very coarse NXP3 parent.
+NXP3 uniform grids and synthetic constant
 masks make this a delivery-boundary check, not a realistic coastline,
 refinement-quality, performance, or solver benchmark.
 
@@ -323,6 +332,7 @@ for name, value in [("land", 1), ("ocean", 0)]:
 PY
 CARGO_TARGET_DIR=target/gui cargo test --manifest-path gui-tauri/src-tauri/Cargo.toml --lib gui_real_project_delivery_land_atmosphere_ocean -- --ignored
 python3 scripts/check_gui_delivery_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
+python3 scripts/check_gui_circle_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
 ```
 
 The Rust smoke executes real GUI quality and cell-polygon commands using the

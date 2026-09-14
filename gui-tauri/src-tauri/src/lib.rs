@@ -55,6 +55,7 @@ pub fn run() {
             set_colm_mesh_delivery,
             set_domain_global,
             set_domain_bbox,
+            set_domain_circle,
             set_domain_shapefile,
             set_domain_close,
             set_close_boundary,
