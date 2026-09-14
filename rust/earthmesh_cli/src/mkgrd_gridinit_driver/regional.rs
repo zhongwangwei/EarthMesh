@@ -36,18 +36,41 @@ pub fn run_mkgrd_regional_clip_base_namelist(
     workdir: impl AsRef<Path>,
     max_tris: usize,
 ) -> io::Result<MkgrdGridinitRunReport> {
-    let namelist_source = namelist_source.as_ref();
-    let workdir = workdir.as_ref();
+    run_mkgrd_regional_clip_base(namelist_source.as_ref(), workdir.as_ref(), max_tris, false)
+}
+
+pub(crate) fn run_mkgrd_regional_clip_base(
+    namelist_source: &Path,
+    workdir: &Path,
+    max_tris: usize,
+    final_delivery: bool,
+) -> io::Result<MkgrdGridinitRunReport> {
     let contents = fs::read_to_string(namelist_source)?;
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let region = read_method_c_domain_region(&config)?; // None ⇒ global (no geometric clip)
     let mesh_type = config.mesh_type.trim().to_string();
     let landtype = config.landtype_file.trim().to_string();
     let carve_landtype = matches!(mesh_type.as_str(), "landmesh" | "oceanmesh")
         && !landtype.is_empty()
         && landtype != "none"
         && landtype != "/tmp";
+    // Clean ocean close+landtype owns extra OBC/FVCOM outputs. Keep its raw
+    // handoff until those sidecars share the regional final transaction too.
+    let clean_ocean_candidate = !config.mask_domain_global
+        && mesh_type == "oceanmesh"
+        && config.mode_grid.trim() == "tri"
+        && config.mask_domain_type.trim() == "close"
+        && carve_landtype;
+    if final_delivery && !config.mask_patch_on && !clean_ocean_candidate {
+        return super::regional_delivery::run_simple_final_base(
+            namelist_source,
+            workdir,
+            max_tris,
+            &config,
+            carve_landtype,
+        );
+    }
+    let region = read_method_c_domain_region(&config)?; // None ⇒ global (no geometric clip)
     if region.is_none() && !carve_landtype {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -95,13 +118,28 @@ pub fn run_mkgrd_regional_clip_base_namelist(
         return Ok(gridinit);
     }
 
+    apply_base_clip_and_carve(&mut gridinit, region.as_ref(), landtype_gpd, &file_dir)?;
+    Ok(gridinit)
+}
+
+/// The same clip/carve kernel serves raw callers and staged final handoffs.
+pub(super) fn apply_base_clip_and_carve(
+    gridinit: &mut MkgrdGridinitRunReport,
+    region: Option<&GridRegion>,
+    landtype_gpd: Option<usize>,
+    file_dir: &Path,
+) -> io::Result<()> {
+    let config = &gridinit.config;
+    let nxp = usize::try_from(config.nxp)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
+    let mode_grid = config.mode_grid.trim();
+    let mesh_type = config.mesh_type.trim();
+    let landtype = config.landtype_file.trim();
     // 1) Optional geometric CLIP to the domain (regional bbox/circle/close): keep
     // only the in-region cells. Retain the exact full parent and its metadata
     // before the shared regional writer replaces the selected result file.
-    if let Some(region) = &region {
-        let raw_path = file_dir
-            .join("tmpfile")
-            .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"));
+    if let Some(region) = region {
+        let raw_path = base_raw_parent_path(file_dir, nxp, mode_grid);
         crate::ensure_parent_dir(&raw_path)?;
         let output_path = gridinit.gridfile.output.clone();
         fs::copy(&output_path, &raw_path)?;
@@ -119,22 +157,19 @@ pub fn run_mkgrd_regional_clip_base_namelist(
     // 2) Optional landcover CARVE: keep land cells (landmesh) / ocean cells
     // (oceanmesh) by sampling each cell centre against the landtype file — the
     // same land/sea masking the compatibility egui did. Runs on the current result
-    // gridfile (post-clip when regional). Kept==0 leaves the mesh untouched.
-    if carve_landtype {
+    // gridfile (post-clip when regional). The shared writer rejects an empty carve.
+    if let Some(gpd) = landtype_gpd {
         // Sample resolution must equal the landcover file's own grid, NOT
         // NL%gridnum_perdegree (which need not match it).
-        let gpd = landtype_gpd.expect("carve landtype preflight should provide grid resolution");
         if gpd > 0 {
-            let masked = file_dir
-                .join("result")
-                .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"));
+            let masked = base_carve_path(file_dir, nxp, mode_grid, mesh_type);
             let kept = write_landtype_masked_gridfile_with_refine_levels(
                 &gridinit.gridfile.output,
                 &masked,
-                &landtype,
+                landtype,
                 gpd,
                 mode_grid,
-                &mesh_type,
+                mesh_type,
                 None,
                 None,
                 config.isolated_ocean,
@@ -150,7 +185,24 @@ pub fn run_mkgrd_regional_clip_base_namelist(
             }
         }
     }
-    Ok(gridinit)
+    Ok(())
+}
+
+pub(super) fn base_raw_parent_path(file_dir: &Path, nxp: usize, mode_grid: &str) -> PathBuf {
+    file_dir
+        .join("tmpfile")
+        .join(format!("gridfile_NXP{nxp:04}_clip_raw_{mode_grid}.nc4"))
+}
+
+pub(super) fn base_carve_path(
+    file_dir: &Path,
+    nxp: usize,
+    mode_grid: &str,
+    mesh_type: &str,
+) -> PathBuf {
+    file_dir
+        .join("result")
+        .join(format!("gridfile_NXP{nxp:04}_{mode_grid}_{mesh_type}.nc4"))
 }
 
 fn clean_regional_ocean_close_points<'a>(

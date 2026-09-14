@@ -35,7 +35,7 @@ fn run_gridinit_cli(root: &Path, namelist: &Path) -> std::process::Output {
         std::process::Command::new(exe)
             .arg(namelist)
             .arg("--max-tris")
-            .arg("100")
+            .arg("2000")
             .current_dir(root),
     )
     .expect("run earthmesh_cli gridinit binary")
@@ -45,6 +45,180 @@ fn gridinit_output(root: &Path, case_name: &str, mode_grid: &str) -> PathBuf {
     root.join(case_name)
         .join("gridfile")
         .join(format!("gridfile_NXP0001_01_{mode_grid}.nc4"))
+}
+
+fn gridinit_output_nxp(root: &Path, case_name: &str, nxp: usize, mode_grid: &str) -> PathBuf {
+    root.join(case_name)
+        .join("gridfile")
+        .join(format!("gridfile_NXP{nxp:04}_01_{mode_grid}.nc4"))
+}
+
+fn stdout_field(stdout: &str, key: &str) -> PathBuf {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("missing {key}: {stdout}"))
+}
+
+fn delivery_record(gridfile: &Path) -> serde_json::Value {
+    let record_path = legacy_delivery_record_for(gridfile);
+    serde_json::from_slice(
+        &fs::read(&record_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", record_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", record_path.display()))
+}
+
+fn raw_parent_from_delivery_record(gridfile: &Path) -> PathBuf {
+    let record = delivery_record(gridfile);
+    let raw_parent = record["auxiliary_artifacts"]["raw_parent"]
+        .as_str()
+        .unwrap_or_else(|| panic!("missing raw_parent auxiliary artifact in {record}"));
+    assert!(
+        !raw_parent.contains(".earthmesh-delivery-"),
+        "raw_parent must be published path, not staging path: {record}"
+    );
+    let raw_parent = PathBuf::from(raw_parent);
+    assert!(
+        raw_parent.is_file(),
+        "raw_parent does not exist: {}",
+        raw_parent.display()
+    );
+    raw_parent
+}
+
+fn assert_regional_quality_not_closed_sphere(gridfile: &Path) {
+    let quality = gridfile
+        .parent()
+        .unwrap()
+        .join("final_quality")
+        .join(gridfile.file_stem().unwrap())
+        .join("quality_summary.json");
+    let quality: serde_json::Value = serde_json::from_slice(
+        &fs::read(&quality).unwrap_or_else(|error| panic!("read {}: {error}", quality.display())),
+    )
+    .expect("parse regional quality summary");
+    assert_ne!(
+        quality["topology"]["euler_characteristic"]
+            .as_i64()
+            .expect("numeric Euler characteristic"),
+        2,
+        "regional base quality must not require closed-sphere χ=2: {quality}"
+    );
+    assert_eq!(
+        quality["topology"].get("expected_euler_characteristic"),
+        Some(&serde_json::Value::Null)
+    );
+    assert!(
+        quality["topology"]["boundary_edge_count"]
+            .as_u64()
+            .expect("boundary count")
+            > 0
+    );
+}
+
+fn write_global_gridinit_namelist_nxp(
+    root: &Path,
+    case_name: &str,
+    nxp: usize,
+    mesh_type: &str,
+    mode_grid: &str,
+    output_format: &str,
+    defer_model_exports: bool,
+) -> PathBuf {
+    let namelist = root.join(format!("{case_name}.nml"));
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='{case_name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP={nxp}\n  NL%mesh_type='{mesh_type}'\n  NL%mode_grid='{mode_grid}'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%landtype_file='none'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='{output_format}'\n  NL%defer_model_exports={}\n/\n",
+            if defer_model_exports { ".true." } else { ".false." }
+        ),
+    )
+    .expect("write global gridinit namelist");
+    namelist
+}
+
+fn write_landtype_gridinit_namelist(
+    root: &Path,
+    case_name: &str,
+    nxp: usize,
+    mesh_type: &str,
+    mode_grid: &str,
+    output_format: &str,
+    landtype: &Path,
+    defer_model_exports: bool,
+) -> PathBuf {
+    let namelist = root.join(format!("{case_name}.nml"));
+    let base_dir = format!("{}/", root.display());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='{case_name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP={nxp}\n  NL%mesh_type='{mesh_type}'\n  NL%mode_grid='{mode_grid}'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%landtype_file='{}'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='{output_format}'\n  NL%defer_model_exports={}\n/\n",
+            landtype.display(),
+            if defer_model_exports { ".true." } else { ".false." }
+        ),
+    )
+    .expect("write landtype gridinit namelist");
+    namelist
+}
+
+fn write_regional_gridinit_namelist(
+    root: &Path,
+    case_name: &str,
+    nxp: usize,
+    mesh_type: &str,
+    mode_grid: &str,
+    output_format: &str,
+    domain_type: &str,
+    domain_source: &Path,
+    landtype: Option<&Path>,
+    defer_model_exports: bool,
+) -> PathBuf {
+    let namelist = root.join(format!("{case_name}.nml"));
+    let base_dir = format!("{}/", root.display());
+    let landtype = landtype
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='{case_name}'\n  NL%base_dir='{base_dir}'\n  NL%NXP={nxp}\n  NL%mesh_type='{mesh_type}'\n  NL%mode_grid='{mode_grid}'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%landtype_file='{landtype}'\n  NL%refine=.false.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%mask_domain_global=.false.\n  NL%mask_domain_type='{domain_type}'\n  NL%mask_domain_fprefix='{}'\n  NL%mask_patch_on=.false.\n  NL%output_format='{output_format}'\n  NL%defer_model_exports={}\n/\n",
+            domain_source.display(),
+            if defer_model_exports { ".true." } else { ".false." }
+        ),
+    )
+    .expect("write regional gridinit namelist");
+    namelist
+}
+
+fn write_landtype(path: &Path, value: i8) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).expect("create landtype file");
+    file.add_dimension("longitude", 360).expect("longitude dim");
+    file.add_dimension("latitude", 180).expect("latitude dim");
+    let mut variable = file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .expect("landtype variable");
+    variable
+        .put_values(&vec![value; 360 * 180], (.., ..))
+        .expect("write landtype");
+}
+
+fn write_bbox_domain(path: &Path, west: f64, east: f64, south: f64, north: f64) {
+    earthmesh_cli::bbox_mask_io::write_bbox_mask_netcdf(
+        path,
+        &earthmesh_cli::bbox_mask_io::BBoxMask {
+            refine_degree: 0,
+            points: vec![earthmesh_cli::bbox_mask_io::BBoxPoint {
+                west,
+                east,
+                north,
+                south,
+            }],
+        },
+    )
+    .expect("write bbox domain");
 }
 
 fn legacy_delivery_record_for(gridfile: &Path) -> PathBuf {
@@ -57,12 +231,7 @@ fn legacy_delivery_record_for(gridfile: &Path) -> PathBuf {
 }
 
 fn assert_native_delivery_record(gridfile: &Path) {
-    let record_path = legacy_delivery_record_for(gridfile);
-    let record: serde_json::Value = serde_json::from_slice(
-        &fs::read(&record_path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", record_path.display())),
-    )
-    .unwrap_or_else(|error| panic!("parse {}: {error}", record_path.display()));
+    let record = delivery_record(gridfile);
     assert_eq!(record["gridfile"], gridfile.to_str().unwrap());
     assert_eq!(record["model_delivery_status"], "native_only");
     assert!(record["model_artifacts"].as_object().unwrap().is_empty());
@@ -499,6 +668,307 @@ fn earthmesh_cli_binary_gridinit_rejects_namelist_save_aliases_without_touching_
     }
 
     let _ = fs::remove_dir_all(&sandbox);
+}
+
+#[test]
+fn earthmesh_cli_binary_regional_base_geometry_clips_publish_native_with_raw_parent() {
+    let root = gridinit_temp_root("binary_regional_base_geometry_delivery");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create source dir");
+
+    let bbox = sources.join("domain_bbox.nc4");
+    write_bbox_domain(&bbox, -90.0, 90.0, -90.0, 90.0);
+    let circle = sources.join("domain_circle.nc4");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        &circle,
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 0,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }],
+            radius_km: vec![10_000.0],
+        },
+    )
+    .expect("write circle domain");
+    let close = sources.join("domain_close.nml");
+    fs::write(
+        &close,
+        "close_num = 4\nclose_refine = 0\n-90.0 -80.0\n90.0 -80.0\n90.0 80.0\n-90.0 80.0\n",
+    )
+    .expect("write close domain");
+
+    for (case_name, mode_grid, output_format, domain_type, domain) in [
+        (
+            "case_regional_bbox_tri",
+            "tri",
+            "FVCOM",
+            "bbox",
+            bbox.as_path(),
+        ),
+        (
+            "case_regional_circle_hex",
+            "hex",
+            "MPAS",
+            "circle",
+            circle.as_path(),
+        ),
+        (
+            "case_regional_close_tri",
+            "tri",
+            "FVCOM",
+            "close",
+            close.as_path(),
+        ),
+    ] {
+        let domain_before = fs::read(domain).expect("snapshot domain source");
+        let namelist = write_regional_gridinit_namelist(
+            &root,
+            case_name,
+            3,
+            "atmosmesh",
+            mode_grid,
+            output_format,
+            domain_type,
+            domain,
+            None,
+            false,
+        );
+        let output = run_gridinit_cli(&root, &namelist);
+        assert!(
+            output.status.success(),
+            "{case_name}\nstatus={:?}\nstdout={}\nstderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let gridfile = gridinit_output_nxp(&root, case_name, 3, mode_grid);
+        assert!(
+            stdout.contains(&format!("gridfile={}", gridfile.display())),
+            "stdout={stdout}"
+        );
+        assert!(
+            gridfile.is_file(),
+            "missing regional gridfile {}",
+            gridfile.display()
+        );
+        assert_native_delivery_record(&gridfile);
+        let raw_parent = raw_parent_from_delivery_record(&gridfile);
+        assert_ne!(
+            raw_parent, gridfile,
+            "regional delivery should retain full raw parent"
+        );
+        assert_regional_quality_not_closed_sphere(&gridfile);
+        let full = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&raw_parent)
+            .unwrap();
+        let clipped =
+            earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gridfile).unwrap();
+        let (full_cells, clipped_cells) = if mode_grid == "tri" {
+            (full.m_points.len(), clipped.m_points.len())
+        } else {
+            (full.w_points.len(), clipped.w_points.len())
+        };
+        assert!(
+            full_cells > clipped_cells,
+            "raw_parent must retain the full mother"
+        );
+        let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&raw_parent)
+            .unwrap()
+            .expect("mother producer scale");
+        assert_eq!(context.base_nxp, 3);
+        assert_eq!(
+            fs::read(domain).unwrap(),
+            domain_before,
+            "domain source mutated"
+        );
+    }
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_regional_base_empty_clip_preserves_native_raw_parent_and_retires_marker() {
+    let root = gridinit_temp_root("binary_regional_empty_clip_rollback");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let domain = root.join("domain_bbox.nc4");
+    write_bbox_domain(&domain, -90.0, 90.0, -90.0, 90.0);
+    let case_name = "case_regional_empty_clip";
+    let namelist = write_regional_gridinit_namelist(
+        &root,
+        case_name,
+        3,
+        "atmosmesh",
+        "tri",
+        "FVCOM",
+        "bbox",
+        &domain,
+        None,
+        false,
+    );
+    let success = run_gridinit_cli(&root, &namelist);
+    assert!(
+        success.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&success.stdout),
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let gridfile = gridinit_output_nxp(&root, case_name, 3, "tri");
+    assert_native_delivery_record(&gridfile);
+    let raw_parent = raw_parent_from_delivery_record(&gridfile);
+    let old_native = fs::read(&gridfile).expect("snapshot regional native");
+    let old_raw = fs::read(&raw_parent).expect("snapshot raw parent");
+    let marker = legacy_delivery_record_for(&gridfile);
+    assert!(marker.exists());
+
+    // File-backed geometry is also an immutable input during workspace setup.
+    let saved = root.join(case_name).join("result/namelist.save");
+    fs::remove_file(&saved).unwrap();
+    fs::hard_link(&domain, &saved).unwrap();
+    let domain_bytes = fs::read(&domain).unwrap();
+    let alias_failure = run_gridinit_cli(&root, &namelist);
+    assert!(!alias_failure.status.success());
+    assert_eq!(fs::read(&domain).unwrap(), domain_bytes);
+    assert_eq!(fs::read(&gridfile).unwrap(), old_native);
+    assert_eq!(fs::read(&raw_parent).unwrap(), old_raw);
+    assert!(!marker.exists());
+    assert_no_delivery_staging(&root);
+    fs::remove_file(&saved).unwrap();
+    assert!(run_gridinit_cli(&root, &namelist).status.success());
+    assert!(marker.exists());
+    let old_native = fs::read(&gridfile).unwrap();
+    let old_raw = fs::read(&raw_parent).unwrap();
+
+    write_bbox_domain(&domain, 170.0, 171.0, 80.0, 81.0);
+    let failure = run_gridinit_cli(&root, &namelist);
+    assert!(
+        !failure.status.success(),
+        "empty regional clip must fail\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&failure.stdout),
+        String::from_utf8_lossy(&failure.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), old_native);
+    assert_eq!(fs::read(&raw_parent).unwrap(), old_raw);
+    assert!(
+        !marker.exists(),
+        "failed empty clip must withdraw readiness marker"
+    );
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn earthmesh_cli_binary_regional_base_landtype_carve_publishes_and_empty_rejects() {
+    let root = gridinit_temp_root("binary_regional_landtype_carve_delivery");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create temp root");
+    let landtype = root.join("landtype.nc");
+    write_landtype(&landtype, 1);
+    let case_name = "case_landtype_carve";
+
+    let global =
+        write_global_gridinit_namelist_nxp(&root, case_name, 3, "landmesh", "hex", "CoLM", false);
+    let global_success = run_gridinit_cli(&root, &global);
+    assert!(
+        global_success.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&global_success.stdout),
+        String::from_utf8_lossy(&global_success.stderr)
+    );
+    let global_base = gridinit_output_nxp(&root, case_name, 3, "hex");
+    assert_native_delivery_record(&global_base);
+    let old_global_base = fs::read(&global_base).expect("snapshot global base native");
+    let global_marker = legacy_delivery_record_for(&global_base);
+    let old_global_marker = fs::read(&global_marker).expect("snapshot global base marker");
+
+    let namelist = write_landtype_gridinit_namelist(
+        &root, case_name, 3, "landmesh", "hex", "CoLM", &landtype, false,
+    );
+    let success = run_gridinit_cli(&root, &namelist);
+    assert!(
+        success.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&success.stdout),
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&success.stdout);
+    let gridfile = stdout_field(&stdout, "gridfile=");
+    assert!(gridfile.is_file());
+    assert_ne!(
+        gridfile, global_base,
+        "carved final must not reuse canonical global base path"
+    );
+    assert_native_delivery_record(&gridfile);
+    let raw_parent = raw_parent_from_delivery_record(&gridfile);
+    assert!(
+        raw_parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "gridfile_NXP0003_clip_raw_hex.nc4"),
+        "global landtype carve must publish a raw_parent copy under tmpfile: {}",
+        raw_parent.display()
+    );
+    assert_eq!(fs::read(&global_base).unwrap(), old_global_base);
+    assert_eq!(fs::read(&global_marker).unwrap(), old_global_marker);
+    let old_native = fs::read(&gridfile).expect("snapshot landtype native");
+    let old_raw = fs::read(&raw_parent).expect("snapshot landtype raw parent");
+    let marker = legacy_delivery_record_for(&gridfile);
+    assert!(marker.exists());
+
+    write_landtype(&landtype, 0);
+    let failing = write_landtype_gridinit_namelist(
+        &root, case_name, 3, "landmesh", "hex", "CoLM", &landtype, true,
+    );
+    let failure = run_gridinit_cli(&root, &failing);
+    assert!(
+        !failure.status.success(),
+        "empty landtype carve must fail even when model exports are deferred\nstdout={}\nstderr={}",
+        String::from_utf8_lossy(&failure.stdout),
+        String::from_utf8_lossy(&failure.stderr)
+    );
+    assert_eq!(fs::read(&gridfile).unwrap(), old_native);
+    assert_eq!(fs::read(&raw_parent).unwrap(), old_raw);
+    assert_eq!(fs::read(&global_base).unwrap(), old_global_base);
+    assert_eq!(fs::read(&global_marker).unwrap(), old_global_marker);
+    assert!(
+        !marker.exists(),
+        "failed empty carve must withdraw readiness marker"
+    );
+    // The same handoff handles a TRI ocean clip followed by the opposite mask.
+    let ocean_domain = root.join("ocean_bbox.nc4");
+    write_bbox_domain(&ocean_domain, -90.0, 90.0, -90.0, 90.0);
+    let ocean = write_regional_gridinit_namelist(
+        &root,
+        "case_ocean_carve",
+        3,
+        "oceanmesh",
+        "tri",
+        "FVCOM",
+        "bbox",
+        &ocean_domain,
+        Some(&landtype),
+        false,
+    );
+    let ocean_run = run_gridinit_cli(&root, &ocean);
+    assert!(
+        ocean_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ocean_run.stderr)
+    );
+    let ocean_grid = stdout_field(&String::from_utf8_lossy(&ocean_run.stdout), "gridfile=");
+    assert_native_delivery_record(&ocean_grid);
+    assert_regional_quality_not_closed_sphere(&ocean_grid);
+    let ocean_raw = raw_parent_from_delivery_record(&ocean_grid);
+    let mother =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&ocean_raw).unwrap();
+    let selected =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&ocean_grid).unwrap();
+    assert!(mother.m_points.len() > selected.m_points.len());
+    assert_no_delivery_staging(&root);
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 #[test]

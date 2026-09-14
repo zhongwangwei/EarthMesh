@@ -1,7 +1,6 @@
 use crate::plan_mkgrd_mask_restart_namelist;
 use crate::refine_pipeline_refine_dispatch_requested;
 use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
-use crate::run_mkgrd_regional_clip_base_namelist;
 use crate::run_refine_pipeline_namelist;
 use crate::MaskRestartAction;
 use crate::MkgrdDefaultRestartRefineHandoff;
@@ -118,7 +117,7 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
 
 /// Shared dispatcher with explicit final-base ownership. The CLI enables this
 /// only without Project; it is not inferred from `defer_model_exports`.
-/// Regional/refinement branches still retain their existing handoff semantics.
+/// Raw/refinement and specialized clean-ocean branches keep their existing handoffs.
 #[doc(hidden)]
 pub fn run_mkgrd_default_with_base_delivery(
     namelist_source: impl AsRef<Path>,
@@ -197,9 +196,14 @@ pub fn run_mkgrd_default_with_base_delivery(
                 !lt.is_empty() && lt != "none" && lt != "/tmp"
             };
         if regional_clip_source || landtype_carve {
-            return run_mkgrd_regional_clip_base_namelist(namelist_source, workdir, max_tris)
-                .map(MkgrdTopLevelDispatchRunReport::Gridinit)
-                .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+            return crate::mkgrd_gridinit_driver::run_mkgrd_regional_clip_base(
+                namelist_source,
+                workdir,
+                max_tris,
+                final_base_delivery,
+            )
+            .map(MkgrdTopLevelDispatchRunReport::Gridinit)
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
         }
         return crate::mkgrd_top_level_dispatch::run_mkgrd_top_level_with_base_delivery(
             namelist_source,

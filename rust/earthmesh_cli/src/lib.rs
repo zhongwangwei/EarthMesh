@@ -452,9 +452,7 @@ pub(crate) use refine_gridfile::*;
 mod refine_controls;
 pub(crate) use refine_controls::*;
 pub mod mkgrd_gridinit_driver;
-use mkgrd_gridinit_driver::{
-    run_mkgrd_gridinit_global_namelist, run_mkgrd_regional_clip_base_namelist,
-};
+use mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist;
 
 mod hfield_refine;
 pub use hfield_refine::{

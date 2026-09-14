@@ -285,7 +285,25 @@ redirects only converter/generator output paths into staging. Failure preserves
 previous native bytes and withdraws readiness; successful reports contain only
 published paths. Workspace setup and quality diagnostics are not transactional.
 
-This is not blanket legacy parity: standalone regional/clipped/refined output,
-patch-preprocessing base output and other lower-level writers still need their
-own final-delivery seams connected. Do not gate intermediate grid writers to
-simulate that coverage or reuse closed-sphere checks on masked/Cartesian products.
+Standalone simple **regional base** clipping (bbox/circle/close) and land/sea
+centre-sample carving now use that same explicit final ownership. Generation
+and import share one raw carrier helper with the original input config; the
+existing clip/carve kernel runs privately before boundary-aware admission
+(`expected_euler_characteristic=None`). The full mother is retained as an
+unchecked `raw_parent` auxiliary under `tmpfile/*_clip_raw_*.nc4`, including
+pure landtype carving: it must not overwrite an already admitted global base
+or leave that base's completion record certifying unchecked replacement bytes.
+Only selected native + raw parent are published together, with readiness last.
+The typed region reader consumes domain files directly, so this final-only
+path omits redundant legacy Mask_make caches; raw APIs retain their preprocessing.
+Empty clip/carve failures preserve the prior native and mother and withdraw
+readiness. Neither native-only completion nor raw-parent ancestry implies a
+model adapter ran.
+
+This is not blanket legacy parity: standalone clean-ocean TRI close+landtype
+(with its OBC/FVCOM sidecars), refined output, patch-preprocessing base output
+and other lower-level writers still need final-delivery seams. Configured
+regional ocean TRI close+landtype remains outside this slice even when a close
+boundary transform yields a cap rather than a polygon. Do not gate intermediate
+writers to simulate coverage or use closed-sphere checks on masked/Cartesian
+products.
