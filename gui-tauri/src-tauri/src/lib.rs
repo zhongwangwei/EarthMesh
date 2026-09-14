@@ -19,6 +19,7 @@ mod mesh_paths;
 mod mesh_process;
 mod mesh_runner;
 mod project_commands;
+mod project_delivery;
 mod project_edits;
 mod project_queries;
 mod quality;
@@ -51,8 +52,10 @@ pub fn run() {
             autofill_data_layers_from_folder,
             set_project_target,
             set_target_cell,
+            set_colm_mesh_delivery,
             set_domain_global,
             set_domain_bbox,
+            set_domain_circle,
             set_domain_shapefile,
             set_domain_close,
             set_close_boundary,
@@ -62,7 +65,6 @@ pub fn run() {
             set_adaptive_refinement,
             set_refinement_backend,
             set_method_c_algorithm_options,
-            set_harp_dv_options,
             set_certified_options,
             set_hfield_refinement,
             set_expert,

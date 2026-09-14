@@ -111,3 +111,96 @@ pub fn write_standard_fvcom_from_gridfile(
     let mesh = read_unstructured_mesh_netcdf(gridfile)?;
     write_fvcom_mesh_2dm(output_2dm, &mesh, &[])
 }
+
+/// Model-format adapter for an admitted final TRI gridfile. Boundary context
+/// belongs to the file; an absent context is allowed only for a closed mesh.
+/// This exports mesh geometry/OBC, not bathymetry or model forcing.
+pub fn write_fvcom_from_final_gridfile(
+    gridfile: &Path,
+    output: &Path,
+) -> io::Result<FvcomMesh2dmWriteReport> {
+    use crate::grid_quality_pipeline::{quality_input_from_gridfile, read_gridfile_mesh_points};
+    use std::collections::{HashMap, HashSet};
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    let points = read_gridfile_mesh_points(gridfile)?;
+    let input = quality_input_from_gridfile(&points)?;
+    let layout = crate::gridfile_w_row_layout(&points);
+    let mut edge_counts = HashMap::new();
+    let key = |a: usize, b: usize| (a.min(b), a.max(b));
+    for cell in &input.cells {
+        for (a, b) in cell
+            .vertices
+            .iter()
+            .zip(cell.vertices.iter().cycle().skip(1))
+        {
+            *edge_counts.entry(key(*a, *b)).or_insert(0_usize) += 1;
+        }
+    }
+    let boundary_edges = edge_counts
+        .iter()
+        .filter_map(|(&edge, &count)| (count == 1).then_some(edge))
+        .collect::<HashSet<_>>();
+    let boundary_vertices = boundary_edges
+        .iter()
+        .flat_map(|&(a, b)| [a, b])
+        .collect::<HashSet<_>>();
+    let obc = match crate::obc_boundary_io::read_gridfile_obc_order(gridfile)? {
+        Some(order) => order,
+        None if boundary_edges.is_empty() => Vec::new(),
+        None => return Err(invalid("FVCOM final delivery requires embedded OBC context for a mesh with boundary edges; cannot substitute an empty boundary".to_string())),
+    };
+    if !obc.is_empty() && obc[0] != 1 {
+        return Err(invalid(
+            "FVCOM OBC order must start with the canonical placeholder 1".to_string(),
+        ));
+    }
+    let mut previous = None;
+    for &id in &obc {
+        if id == 1 {
+            previous = None;
+            continue;
+        }
+        let row = i32::try_from(id)
+            .ok()
+            .and_then(|id| layout.physical_row_for_canonical_id(id, points.w_lon.len()))
+            .filter(|row| boundary_vertices.contains(row))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "FVCOM OBC id {id} is not a physical boundary vertex"
+                ))
+            })?;
+        if let Some(prev) = previous {
+            if !boundary_edges.contains(&key(prev, row)) {
+                return Err(invalid(format!(
+                    "FVCOM OBC consecutive nodes are not a boundary edge: rows {prev}, {row}"
+                )));
+            }
+        }
+        previous = Some(row);
+    }
+    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
+    crate::atomic_output::validate_output_path(gridfile, output)?;
+    let mut report = None;
+    crate::atomic_output::atomic_write(output, |temporary| {
+        let mut written = write_fvcom_2dm_from_carved(&mesh, &obc, temporary)?;
+        let expected_nodes = input
+            .cells
+            .iter()
+            .flat_map(|cell| cell.vertices.iter().copied())
+            .collect::<HashSet<_>>()
+            .len();
+        if written.triangles != input.cells.len() || written.nodes != expected_nodes {
+            return Err(invalid(format!(
+                "FVCOM adapter changed physical counts: triangles {} -> {}, nodes {} -> {}",
+                input.cells.len(),
+                written.triangles,
+                expected_nodes,
+                written.nodes
+            )));
+        }
+        written.output = output.to_path_buf();
+        report = Some(written);
+        Ok(())
+    })?;
+    report.ok_or_else(|| invalid("FVCOM publication produced no report".to_string()))
+}

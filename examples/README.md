@@ -11,6 +11,7 @@ regression tests.
 | Path | Target | Notes |
 |------|--------|-------|
 | `00_quickstart_n16.nml` | Quickstart global mesh (NXP=16) | Tiny synthetic; default smoke case loaded by the GUI. |
+| `cmrc_atmosphere_a3.nml` | CMRC variable-resolution atmosphere → MPAS | NXP64; two circle levels; case-specific five-ring transition. See [measured tradeoffs](../docs/cmrc_atmos_delivery_quality_20260909.md). |
 | `projects/quickstart.yaml` | Project-layer quickstart | Parsed, validated, lowered, and namelist-smoked by `earthmesh_project` tests. |
 | `projects/auto_refine.yaml` | Regional atmosphere + local quality repair | Full CLI regression: quality report -> HField repair -> Method-C rerun -> recheck. |
 | `default/atmosphere_hex_global.nml` | Global hex atmosphere → MPAS | Base-mesh only. |

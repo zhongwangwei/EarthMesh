@@ -1,5 +1,11 @@
 # EarthMesh v3.0.0-alpha5 深度审计报告
 
+> Historical audit of alpha5, not the current backend inventory. HARP-DV has
+> since been retired; its entries below are historical evidence only. The
+> shared specified-refinement, lineage, and threshold findings remain useful.
+> See `docs/architecture.md` for the retained backends.
+
+
 审计日期：2026-08-26（Asia/Shanghai）
 
 审计分支：`v3.0.0-alpha5`

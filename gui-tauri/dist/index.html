@@ -85,16 +85,17 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .rail h4{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;
   margin:0 8px 10px;font-weight:700}
 .step{display:flex;gap:11px;align-items:flex-start;padding:9px 10px;border-radius:var(--r-md);
-  position:relative;cursor:pointer;margin-bottom:1px}
+  position:relative;cursor:pointer;margin-bottom:1px;width:100%;border:0;background:transparent;text-align:left;line-height:inherit}
+.step:focus-visible,.project-pick:focus-visible,.dom-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .step:hover{background:var(--surface-2)}
 .step.active{background:var(--accent-weak)}
 .step .num{flex:none;width:25px;height:25px;border-radius:50%;display:grid;place-items:center;
   font-size:12px;font-weight:700;border:1.5px solid var(--border);color:var(--muted);background:var(--bg);z-index:1}
 .step.active .num{background:var(--accent);border-color:var(--accent);color:#fff}
 .step .step-copy{min-width:0}
-.step .t{font-weight:620;line-height:1.35}
+.step .t{display:block;font-weight:620;line-height:1.35}
 .step.active .t{color:var(--accent-ink)}
-.step .d{color:var(--muted);font-size:11.5px;margin-top:1px}
+.step .d{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
 .step:not(:last-child)::after{content:"";position:absolute;left:22px;top:34px;bottom:-2px;
   width:1.5px;background:var(--border)}
 .rail .est{margin:14px 8px 0;padding:11px;border:1px solid var(--border);border-radius:var(--r-md);background:var(--bg)}
@@ -121,18 +122,20 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .input:focus,.select:focus{outline:none;border-color:var(--accent)}
 .row{display:flex;gap:var(--s-md)}.row>*{flex:1}
 .browse{display:flex;gap:6px}.browse .input{flex:1}
+.project-pick{width:100%;border:0;padding:0;background:transparent;text-align:left;line-height:inherit}
 .btn-ghost{padding:7px 11px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg);white-space:nowrap}
 .btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
 
 /* template cards */
 .tpl{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s-md)}
 .tcard{border:1.5px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated);
-  cursor:pointer;transition:.12s;position:relative}
+  cursor:pointer;transition:.12s;position:relative;text-align:left;display:flex;flex-direction:column}
+.tcard:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .tcard:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:var(--shadow)}
 .tcard.on{border-color:var(--accent);background:var(--accent-weak)}
 .tcard .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:16px;margin-bottom:9px}
-.tcard .nm{font-weight:680;font-size:13px}
-.tcard .meta{color:var(--muted);font-size:11px;margin-top:2px}
+.tcard .nm{display:block;font-weight:680;font-size:13px}
+.tcard .meta{display:block;color:var(--muted);font-size:11px;margin-top:2px}
 .tcard .tags{margin-top:9px;display:flex;flex-wrap:wrap;gap:4px}
 .tag{font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface-2);color:var(--muted);font-weight:600}
 .tcard.on .check{position:absolute;top:10px;right:10px;color:var(--accent);font-weight:800}
@@ -476,16 +479,19 @@ const STEPS=[
 ];
 let cur=0;
 let runInProgress=false;
+let runCompletion = null;
+let killInProgress = false;
 
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
   STEPS.forEach((s,i)=>{
-    const d=document.createElement("div");
+    const d=document.createElement("button"); d.type="button";
+    if(i===cur) d.setAttribute("aria-current","step");
     d.className="step"+(i===cur?" active":"");
-    const num=document.createElement("div"); num.className="num"; num.textContent=i+1;
-    const copy=document.createElement("div"); copy.className="step-copy";
-    const title=document.createElement("div"); title.className="t"; title.textContent=s.t[lang];
-    const desc=document.createElement("div"); desc.className="d"; desc.textContent=s.d[lang];
+    const num=document.createElement("span"); num.className="num"; num.textContent=i+1;
+    const copy=document.createElement("span"); copy.className="step-copy";
+    const title=document.createElement("span"); title.className="t"; title.textContent=s.t[lang];
+    const desc=document.createElement("span"); desc.className="d"; desc.textContent=s.d[lang];
     copy.append(title, desc);
     d.append(num, copy);
     d.onclick=async()=>{await go(i);};
@@ -523,7 +529,7 @@ const TPL=[
 const DEFAULT_TPL=6; // "Coastal zone"
 let tpl=DEFAULT_TPL;
 let regional=true; // domain mode: true=regional (bbox), false=global (no bounds)
-let domainMode="regional"; // global | regional | watershed | close
+let domainMode="regional"; // global | regional (bbox) | circle | watershed | close
 let watershedPath="";
 let closePath="";
 let closeFormat="nml";
@@ -572,7 +578,6 @@ const STATIC_BROWSER_CAPABILITIES={
   default_relax:0.04,
   default_hfield_g:0.2,
   method_c_defaults:{max_cycles:8,target_size_tolerance:1.2,maximum_neighbor_size_ratio:1.75,maximum_vertices:5000000,maximum_insertions_per_cycle:500000,maximum_path_length:100000,stop_at_source_resolution:true,minimum_triangle_angle_deg:0},
-  harp_dv_defaults:{max_cycles:60,minimum_cell_width_m:1000,maximum_cells:5000000,maximum_patch_cells:10000,maximum_neighbor_scale_ratio:1.75,minimum_candidate_separation_m:1,maximum_vertex_degree:7,minimum_triangle_angle_deg:0,criterion_minimum_angle_deg:0},
   certified_defaults:{mode:"reverse_coarsening",delivery:"coupled",angle_contract:"domain_quality_38_to_82_v1",maximum_level:8,maximum_cells:10000000,gradation_rings_per_level:3,search_budget:100000},
   method_c_spring_nxp1_km:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM,
   km_per_degree_equator:STATIC_BROWSER_METHOD_C_SPRING_NXP1_KM/72,
@@ -580,6 +585,9 @@ const STATIC_BROWSER_CAPABILITIES={
 let TARGET_PRESETS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_presets.map((p)=>[p.intent,p]));
 let SPECIALIZED_CELLS=Object.fromEntries(STATIC_BROWSER_CAPABILITIES.target_compatibility.map((p)=>[p.model_format,p.specialized_cells]));
 let DEFAULT_SEA_RATIO_PCT=STATIC_BROWSER_CAPABILITIES.default_sea_ratio*100;
+const DEFAULT_CIRCLE=[114,22,500]; // [lon, lat, geodesic radius km]
+let domCircle=[...DEFAULT_CIRCLE];
+let domainSeaRatios={}; // keep each regional draft when switching domain modes
 let domBbox=[...DEFAULT_BBOX]; // current regional bbox, used by the cell-count estimate
 let hasRun=false;   // step 6 shows the results dashboard only after a real run
 let runInfo=null;   // { ok, outdir, code, gridfile, autoRefineDecisions } from the last run
@@ -594,9 +602,7 @@ let DEFAULT_BETA=STATIC_BROWSER_CAPABILITIES.default_beta;
 let DEFAULT_RELAX=STATIC_BROWSER_CAPABILITIES.default_relax;
 let DEFAULT_HFIELD_G=STATIC_BROWSER_CAPABILITIES.default_hfield_g;
 let METHOD_C_DEFAULTS=STATIC_BROWSER_CAPABILITIES.method_c_defaults;
-let HARP_DV_DEFAULTS=STATIC_BROWSER_CAPABILITIES.harp_dv_defaults;
 let CERTIFIED_DEFAULTS=STATIC_BROWSER_CAPABILITIES.certified_defaults;
-let METHOD_C_MIN_BASE_NXP=STATIC_BROWSER_CAPABILITIES.method_c_min_base_nxp;
 let METHOD_C_MAX_REFINEMENT_LEVEL=STATIC_BROWSER_CAPABILITIES.method_c_max_refinement_level;
 const MERIT_SURFACE_PREVIEW_STRIDE=50;
 var expertEdit = { springStrategy: null }; // fallback for static renderStep before Tauri bridge state exists
@@ -646,14 +652,14 @@ function springStrategyFromTypes(globalType,regionalType){
   return null;
 }
 
-function selectTemplate(k){
+async function selectTemplate(k){
   const next=Number(k);
   if(!Number.isInteger(next) || !TPL[next]){
     console.warn("invalid template index", k);
     return;
   }
-  const changed=next!==tpl;
-  if(changed){
+  if(typeof window.waitForProjectEdits==="function") await window.waitForProjectEdits();
+  const apply = () => {
     tpl=next;
     domainMode=TPL[tpl].global ? "global" : "regional";
     regional=domainMode!=="global";
@@ -662,10 +668,16 @@ function selectTemplate(k){
     closeFormat="nml";
     hiddenDomainShape=null;
     if(typeof window.resetTemplateDerivedState==="function") window.resetTemplateDerivedState();
+  };
+  if(next!==tpl){
+    if(typeof window.commitTemplateEdit==="function"){
+      if(!await window.commitTemplateEdit(next, apply)) return;
+    } else apply(); // standalone browser has no backend admission
   }
   cur = 1;
   renderSteps();
   renderStep(1);
+  document.querySelector(`[data-tpl="${tpl}"]`)?.focus();
 }
 
 /* ---------------- resolution control (value + ticked slider) ---------------- */
@@ -692,6 +704,7 @@ function domainLabel(){
   if(hiddenDomainShape) return lang ? "保留隐藏区域："+hiddenDomainShape : "Preserved regional: "+hiddenDomainShape;
   if(domainMode==="watershed") return lang ? "流域" : "Watershed";
   if(domainMode==="close") return lang ? "闭合区域" : "Close domain";
+  if(domainMode==="circle") return lang ? "圆形区域" : "Circle domain";
   return regional ? (lang ? "区域" : "Regional") : (lang ? "全球" : "Global");
 }
 // ---- cell-count estimate (updates live with resolution + domain) ----
@@ -705,10 +718,15 @@ function estCells(){
   const km=cellKm(); if(!(km>0)) return 0;
   if(domainMode==="watershed" || domainMode==="close") return 0;
   let area;
-  if(typeof regional!=="undefined" && regional){
+  if(regional && domainMode==="circle"){
+    if(circleDomainError()) return 0;
+    const radius=KM_PER_DEG_EQ*180/Math.PI, angle=domCircle[2]/radius;
+    area=4*Math.PI*radius*radius*Math.sin(angle/2)**2;
+  } else if(typeof regional!=="undefined" && regional){
     const b=(typeof domBbox!=="undefined")?domBbox:DEFAULT_BBOX;
-    const midLat=(b[2]+b[3])/2;
-    const dx=Math.abs(b[1]-b[0])*KM_PER_DEG_EQ*Math.cos(midLat*Math.PI/180);
+    if(bboxDomainError(b)) return 0;
+    const midLat=(b[2]+b[3])/2, span=b[0]>b[1]?b[1]+360-b[0]:b[1]-b[0];
+    const dx=span*KM_PER_DEG_EQ*Math.cos(midLat*Math.PI/180);
     const dy=Math.abs(b[3]-b[2])*KM_PER_DEG_EQ;
     area=Math.max(1,dx*dy);
   } else {
@@ -720,6 +738,7 @@ function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n
 function updateEstimate(){
   if(hiddenDomainShape){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   if(domainMode==="watershed" || domainMode==="close"){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
+  if((domainMode==="circle" && circleDomainError()) || (domainMode==="regional" && bboxDomainError(domBbox))){ const el=document.getElementById("estCells"); if(el) el.textContent="—"; return; }
   const est=estCells();
   const set=(id,v,prop)=>{const el=document.getElementById(id); if(el){ if(prop) el.style[prop]=v; else el.textContent=v; }};
   set("estCells","~"+fmtK(est));
@@ -761,7 +780,7 @@ function inp(v){return `<input class="input" value="${v}">`;}
 function renderStep(i){
   const w=document.getElementById("work");
   const head=(t,s)=>`<div class="work-head"><span class="kicker">STEP ${i+1} / 7</span></div>
-    <h1>${t}</h1><p class="sub">${s}</p>`;
+    <h1 tabindex="-1">${t}</h1><p class="sub">${s}</p>`;
   let html="";
   if(i===0){
     html=head(STEPS[0].t[lang],lang?"新建、打开或保存项目——所有设置都存进一个可重开的项目文件。":"Create, open or save a project — every setting lives in one reopenable project file.")
@@ -775,7 +794,7 @@ function renderStep(i){
          ${field(lang?"项目名称":"Project name",`<input class="input" id="projectNameStep" value="earthmesh-project">`)}
          ${field(lang?"作者":"Author",`<input class="input" id="projectAuthor" value="">`)}
          ${field(lang?"描述":"Description",`<textarea class="input" id="projectDescription" rows="3"></textarea>`)}
-         ${field(lang?"输出路径":"Output folder",`<div class="browse" id="outPathBrowse" style="cursor:pointer"><span class="path" id="outPathText" style="max-width:none">${lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)"}</span></div>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
+         ${field(lang?"输出路径":"Output folder",`<button type="button" class="browse project-pick" id="outPathBrowse" aria-label="${lang?"选择输出目录":"Choose output folder"}" aria-describedby="outPathText"><span class="path" id="outPathText" style="max-width:none">${lang?"📁 点击选择…（默认临时目录）":"📁 Choose…  (default: temp dir)"}</span></button>`,lang?"所有输出存到 <输出路径>/<项目名>/":"outputs go to <folder>/<project name>/")}
        </div>
        <div class="card"><h3>${lang?"最近项目":"Recent projects"}</h3><div class="ch">${lang?"保存或打开项目后会显示在这里":"Save or Open a project and it appears here"}</div></div></div>
        <div id="projSummary" style="margin-top:14px"></div>`;
@@ -783,11 +802,11 @@ function renderStep(i){
   else if(i===1){
     html=head(STEPS[1].t[lang],lang?"选一个目标模板——自动填好网格类型、输出格式、默认判据和数据图层；后续步骤继续设置域、数据与质量门限。":"Pick a target template — it fills mesh type, output format, default criteria and data layers; later steps set domain, data and quality gates.")
     +`<div class="card"><h3>${lang?"目标模板":"Target template"}</h3><div class="ch">${lang?"模板会映射到后端 intent 预设":"Templates map to backend intent presets"}</div>
-      <div class="tpl">${TPL.map((t,k)=>`<div class="tcard ${k===tpl?"on":""}" data-tpl="${k}">
+      <div class="tpl">${TPL.map((t,k)=>`<button type="button" class="tcard ${k===tpl?"on":""}" data-tpl="${k}" aria-pressed="${k===tpl}" aria-label="${t.nm[lang]}">
         ${k===tpl?'<span class="check">✓</span>':""}
-        <div class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</div>
-        <div class="nm">${t.nm[lang]}</div><div class="meta">${t.meta[lang]}</div>
-        <div class="tags">${t.tags.map(g=>`<span class="tag">${g[lang]}</span>`).join("")}</div></div>`).join("")}</div></div>
+        <span class="ic" style="background:color-mix(in srgb,${t.c} 18%,transparent);color:${t.c}">${t.ic}</span>
+        <span class="nm">${t.nm[lang]}</span><span class="meta">${t.meta[lang]}</span>
+        <span class="tags">${t.tags.map(g=>`<span class="tag">${g[lang]}</span>`).join("")}</span></button>`).join("")}</div></div>
       <div class="grid2">
         <div class="card" style="display:flex;flex-direction:column"><h3>${lang?"分辨率":"Resolution"}</h3>
           <div style="margin:auto 0">${resControl(lang)}</div>
@@ -797,6 +816,8 @@ function renderStep(i){
           ${field(lang?"输出模型":"Output model",`<select class="select" id="targetModelOutput"></select>`,lang?"所有模型均可选择；不兼容时仍保存通用网格":"all models remain selectable; incompatible adapters fall back to grid-only")}
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
           ${field(lang?"交付状态":"Delivery",`<b id="targetDeliveryOutput" style="font-size:15px"></b>`,lang?"通用 EarthMesh gridfile 始终保存":"canonical EarthMesh gridfile is always saved")}
+          <div id="colmMeshDeliveryControls">${field(lang?"CoLM 网格输入":"CoLM mesh input",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="colmMeshEnabled"> <span>${lang?"导出 CoLM mesh NetCDF":"Export CoLM mesh NetCDF"}</span></label>`,lang?"显式开启；不从阈值源分辨率推断":"explicit opt-in; not inferred from threshold source resolution")}
+          ${field(lang?"栅格分辨率 (像素/度)":"Raster resolution (px/degree)",`<input class="input" id="colmMeshPixelsPerDegree" type="number" min="1" step="1" value="240">`,lang?"建议 240；开启后必须为正整数":"suggested 240; required positive integer when enabled")}</div>
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 基础网格构造":"EXPERT — base mesh construction"}</span>
@@ -810,25 +831,31 @@ function renderStep(i){
   }
   else if(i===2){
     const hiddenDomain = hiddenDomainShape;
-    html=head(STEPS[2].t[lang],lang?"设全球、区域矩形框、流域 SHP 或闭合区域；右侧地图实时反映边界。":"Set a global, regional bbox, watershed SHP, or close domain; the map reflects the boundary live.")
+    html=head(STEPS[2].t[lang],lang?"设全球、矩形框、圆形、流域 SHP 或闭合区域；右侧地图实时反映边界。":"Set a global, bbox, circle, watershed SHP, or close domain; the map reflects the boundary live.")
     +`<div class="card"><h3>${lang?"计算域":"Domain"}</h3>
-       <div class="pill-row" style="margin-bottom:14px"><span class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</span><span class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</span><span class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</span><span class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</span></div>
+       <div class="pill-row" style="margin-bottom:14px"><button type="button" class="pill dom-mode ${(domainMode==="global" && !hiddenDomain)?"on":""}" data-mode="global">${lang?"全球":"Global"}</button><button type="button" class="pill dom-mode ${(domainMode==="regional" || hiddenDomain)?"on":""}" data-mode="regional">${lang?"区域":"Regional"}</button><button type="button" class="pill dom-mode ${domainMode==="circle"?"on":""}" data-mode="circle">${lang?"圆形":"Circle"}</button><button type="button" class="pill dom-mode ${domainMode==="watershed"?"on":""}" data-mode="watershed">${lang?"流域 SHP":"Watershed SHP"}</button><button type="button" class="pill dom-mode ${domainMode==="close"?"on":""}" data-mode="close">${lang?"闭合区域":"Close"}</button></div>
        ${hiddenDomain?`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"此项目使用当前界面尚未编辑的区域形状（":"This project uses a regional shape not edited by this screen ("}<span id="hiddenDomainShapeText"></span>${lang?"）；保存/运行会保留它。切换到「区域」会改为矩形框。":"); Save/Run preserves it. Switch to Regional to replace it with a bounding box."}</div>`
        :domainMode==="watershed"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">SHP</span></div>
-       ${field(lang?"流域边界文件":"Watershed boundary file",`<div class="browse" id="watershedBrowse" style="cursor:pointer"><span class="path" id="watershedPathText" style="max-width:none"></span></div>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       ${field(lang?"流域边界文件":"Watershed boundary file",`<button type="button" class="browse project-pick" id="watershedBrowse" style="width:100%;text-align:left"><span class="path" id="watershedPathText" style="max-width:none"></span></button>`,lang?"保存到 ProjectConfig.domain.shape.Shapefile":"saved to ProjectConfig.domain.shape.Shapefile")}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
        <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"SHP 会自动转换为引擎 close 输入；支持 WGS84、Web Mercator 和 WGS84 UTM。":"SHP is converted automatically to the engine close input; WGS84, Web Mercator, and WGS84 UTM are supported."}</div>`
        :domainMode==="close"?`
-       ${field(lang?"闭合区域文件":"Close boundary file",`<div class="browse" id="closeBrowse" style="cursor:pointer"><span class="path" id="closePathText" style="max-width:none"></span></div>`)}
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
+       ${field(lang?"闭合区域文件":"Close boundary file",`<button type="button" class="browse project-pick" id="closeBrowse" style="width:100%;text-align:left"><span class="path" id="closePathText" style="max-width:none"></span></button>`)}
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}
        ${closeBoundaryControls("domain",domainCloseBoundary,lang)}
        <div style="color:var(--muted);font-size:12px;line-height:1.5;margin-top:8px">${lang?"支持 .shp / .nml / .nc / .nc4 / .txt / .csv；SHP/TXT 会先转换为临时 NML。":"Supports .shp / .nml / .nc / .nc4 / .txt / .csv; SHP/TXT are converted to temporary NML first."}</div>`
+       :domainMode==="circle"?`<div class="grid2">
+         ${[ ["圆心经度 (°)","Center longitude (°)",-180,180], ["圆心纬度 (°)","Center latitude (°)",-90,90], ["球面半径 (km)","Geodesic radius (km)",0,90*KM_PER_DEG_EQ] ].map(([cn,en,min,max],j)=>field(lang?cn:en,`<input class="input" id="domainCircle${j}" aria-label="${lang?cn:en}" aria-describedby="domainCircleHint domainCircleError" type="number" required min="${min}" max="${max}" step="any" value="${Number.isFinite(domCircle[j])?domCircle[j]:""}">`)).join("")}
+       </div>
+       <div id="domainCircleHint" style="color:var(--muted);font-size:12px;line-height:1.5">${lang?"沿球面量测；半径须大于 0，且不超过半球（约 10,008 km）。圆形计算域与指定圆形细化互相独立。":"Measured along the sphere; radius must be positive and no larger than a hemisphere (about 10,008 km). Domain and refinement circles are independent."}</div>
+       <div id="domainCircleError" role="alert" style="color:var(--fail);font-size:12px;margin-top:8px"></div>
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" min="0" max="100" step="any" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :domainMode==="regional"?`<div class="pill-row" style="margin-bottom:16px"><span class="pill on">${lang?"矩形框":"Bounding box"}</span></div>
        <div class="grid2">
-         ${field(lang?"西经度 (°)":"West lon (°)",inp(DEFAULT_BBOX[0].toFixed(1)))}${field(lang?"东经度 (°)":"East lon (°)",inp(DEFAULT_BBOX[1].toFixed(1)))}
-         ${field(lang?"南纬度 (°)":"South lat (°)",inp(DEFAULT_BBOX[2].toFixed(1)))}${field(lang?"北纬度 (°)":"North lat (°)",inp(DEFAULT_BBOX[3].toFixed(1)))}
+         ${[["西经度 (°)","West lon (°)",180],["东经度 (°)","East lon (°)",180],["南纬度 (°)","South lat (°)",90],["北纬度 (°)","North lat (°)",90]].map(([cn,en,limit],j)=>field(lang?cn:en,`<input class="input" id="domainBbox${j}" type="number" required min="${-limit}" max="${limit}" step="any" aria-label="${lang?cn:en}" aria-describedby="domainBboxError" value="${Number.isFinite(domBbox[j])?domBbox[j]:""}">`)).join("")}
        </div>
-       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
+       <div id="domainBboxError" role="alert" style="color:var(--fail);font-size:12px;margin-bottom:8px"></div>
+       ${field(lang?"海陆占比":"Sea/land ratio",`<input type="range" id="seaRatioInput" aria-label="${lang?"海洋占比 (%)":"Ocean fraction (%)"}" step="any" min="0" max="100" value="${DEFAULT_SEA_RATIO_PCT}"><div id="seaRatioText" style="color:var(--muted);font-size:11px">${DEFAULT_SEA_RATIO_PCT}% ${lang?"海洋":"ocean"}</div>`)}`
        :`<div style="color:var(--muted);font-size:13px;padding:8px 2px;line-height:1.6">${lang?"🌐 全球覆盖——无需设定边界，整个地球都会被网格化。":"🌐 Global coverage — no bounds needed; the whole planet is meshed."}</div>`}
      </div>`;
   }
@@ -859,8 +886,8 @@ function renderStep(i){
   else{
     html=head(STEPS[6].t[lang],lang?"点击下方「运行」生成网格；过程日志见右侧。完成后这里显示结果与质量指标。":"Click Run below to generate; live log on the right. Results and quality metrics appear here when it finishes.");
     if(!hasRun){
-      html+=`<div class="card"><h3>${lang?"准备生成":"Ready to generate"}</h3>
-        <div class="ch">${lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run."}</div>
+      html+=`<div class="card"><h3>${runInProgress?(lang?"正在生成":"Generating mesh"):(lang?"准备生成":"Ready to generate")}</h3>
+        <div class="ch">${runInProgress?(lang?"正在运行当前配置；完成后显示本次结果。":"Running the current configuration; results appear when it finishes."):(lang?"网格尚未生成——确认下面的配置后点击「运行」。":"No mesh yet — review the config, then click Run.")}</div>
         <div class="grid2" style="margin-top:8px">
           ${field(lang?"输出模型":"Output model",`<b id="readyModelOutput" style="font-size:15px">—</b>`)}
           ${field(lang?"质量模式":"Quality mode",`<b id="readyQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`)}
@@ -870,10 +897,11 @@ function renderStep(i){
         </div></div>`;
     } else {
       const ok=runInfo&&runInfo.ok;
-      html+=`<div class="verdict"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
-        <div><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
+      html+=`<div class="verdict" style="${ok?'':'background:rgba(229,72,77,.08);border-color:#e5484d'}"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
+        <div style="min-width:0;overflow-wrap:anywhere"><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
         <div class="vs" id="runOutputSummary"></div></div></div>
         ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
+        <div class="card" id="deliveryCard" style="margin-top:16px;overflow-wrap:anywhere"></div>
         <div class="card" id="certifiedCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="autoRefineCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="qualityCard" style="margin-top:16px"><h3>${lang?"质量指标":"Quality metrics"}</h3>
@@ -893,7 +921,10 @@ function renderStep(i){
   w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   w.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(+b.dataset.go));
   // domain mode pills (global hides the bbox section)
-  w.querySelectorAll(".dom-mode").forEach(p=>p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);});
+  w.querySelectorAll(".dom-mode").forEach(p=>{
+    p.setAttribute("aria-pressed",String(p.classList.contains("on")));
+    p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);w.querySelector(`.dom-mode[data-mode="${domainMode}"]`)?.focus();};
+  });
   const resNum=document.getElementById("resNum"); if(resNum) resNum.oninput=()=>resInput("num");
   const resUnit=document.getElementById("resUnit"); if(resUnit) resUnit.onchange=()=>resInput("unit");
   const resRange=document.getElementById("resRange"); if(resRange) resRange.oninput=()=>resInput("range");
@@ -904,7 +935,7 @@ function renderStep(i){
   drawMap(); // keep the map's domain box in sync with regional/global + template
 }
 async function confirmStopForPageSwitch(){
-  if(!runInProgress) return true;
+  if(!runInProgress && !killInProgress) return true;
   const ok=confirm(lang
     ?"网格正在运行。切换页面前需要先终止当前运行，是否终止并切换？"
     :"A mesh run is in progress. Switching pages will stop the current run. Stop and switch?");
@@ -914,7 +945,9 @@ async function confirmStopForPageSwitch(){
 async function go(i){
   if(i===cur) return true;
   if(!await confirmStopForPageSwitch()) return false;
-  cur=i;renderSteps();renderStep(i);document.getElementById("work").scrollTop=0;
+  cur=i;renderSteps();renderStep(i);
+  const work=document.getElementById("work");
+  work.scrollTop=0;work.querySelector("h1")?.focus();
   return true;
 }
 
@@ -1107,9 +1140,38 @@ function olGeojsonFrame(geojson){
   const west=start>180?start-360:start, east=west+Math.max(0,360-largestGap);
   const frame={west,east,south,north,crossesDateline:east>180}; _olGeoFrameCache.set(geojson,frame); return frame;
 }
+function bboxDomainError(b){
+  if(!b.every(Number.isFinite)) return lang?"请填写有效的矩形框经纬度。":"Enter finite bounding-box coordinates.";
+  const [w,e,s,n]=b;
+  if(Math.abs(w)>180 || Math.abs(e)>180 || Math.abs(s)>90 || Math.abs(n)>90) return lang?"经度范围为 −180 至 180°，纬度范围为 −90 至 90°。":"Longitude must be −180…180° and latitude −90…90°.";
+  if(w===e || s>=n) return lang?"西、东经度必须不同，南纬度必须小于北纬度；支持跨日期变更线。":"West/east must differ and south must be below north; dateline crossing is supported.";
+  return "";
+}
+function circleDomainError(){
+  const [lon,lat,radius]=domCircle;
+  if(!domCircle.every(Number.isFinite)) return lang?"请填写有效的圆心经纬度和半径。":"Enter finite center coordinates and radius.";
+  if(Math.abs(lon)>180 || Math.abs(lat)>90) return lang?"经度范围为 −180 至 180°，纬度范围为 −90 至 90°。":"Longitude must be −180…180° and latitude −90…90°.";
+  if(radius<=0 || radius>90*KM_PER_DEG_EQ) return lang?"半径必须大于 0，且不超过半球范围。":"Radius must be positive and no larger than a hemisphere.";
+  return "";
+}
+function circleDomainRing(){
+  if(circleDomainError() || !window.ol) return null;
+  // Reuse the vendored geodesic helper with the engine's sphere, not OL's default radius.
+  return unwrapGlobeLine(ol.geom.Polygon.circular(domCircle.slice(0,2),domCircle[2]*1000,128,KM_PER_DEG_EQ*180/Math.PI*1000).getCoordinates()[0]);
+}
 function currentOlDomainFrame(){
   if(!regional) return null;
+  if(domainMode==="circle"){
+    if(circleDomainError()) return null;
+    const [lon,lat,radius]=domCircle, angle=radius/KM_PER_DEG_EQ;
+    const south=Math.max(-90,lat-angle), north=Math.min(90,lat+angle);
+    if(south===-90 || north===90) return {west:-180,east:180,south,north,crossesDateline:false};
+    const delta=Math.asin(Math.min(1,Math.sin(angle*Math.PI/180)/Math.cos(lat*Math.PI/180)))*180/Math.PI;
+    const west=wrapOlLon(lon-delta), east=west+2*delta;
+    return {west,east,south,north,crossesDateline:east>180};
+  }
   if((domainMode==="regional"||domainMode==="bbox")&&Array.isArray(domBbox)&&domBbox.length===4){
+    if(bboxDomainError(domBbox)) return null;
     const [west,e,south,north]=domBbox, east=west>e?e+360:e;
     return [west,east,south,north].every(Number.isFinite)?{west,east,south,north,crossesDateline:east>180}:null;
   }
@@ -1227,7 +1289,9 @@ function setOlSource(map,key,source,geojson){
 function olDomainRectangle(map){
   if(!regional || domainMode==="watershed" || domainMode==="close") return null;
   const frame=currentOlDomainFrame(); if(!frame) return null;
-  const feature=new ol.Feature(new ol.geom.Polygon([[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]));
+  const feature=new ol.Feature(domainMode==="circle"
+    ? new ol.geom.LineString(circleDomainRing())
+    : new ol.geom.Polygon([[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]));
   feature.getGeometry().transform("EPSG:4326",olProjectionCode(map));
   return feature;
 }
@@ -1313,10 +1377,11 @@ function globeStyle(){
   return {version:8,projection:{type:"vertical-perspective"},sky:{"atmosphere-blend":["interpolate",["linear"],["zoom"],0,1,5,1,7,0]},sources,layers};
 }
 function globeDomainGeojson(map){
-  const frame=currentOlDomainFrame(), key=JSON.stringify([regional,domainMode,frame]);
+  const frame=currentOlDomainFrame(), key=JSON.stringify([regional,domainMode,domCircle,frame]);
   if(map._globeDomainKey===key) return map._globeDomainGeojson;
   map._globeDomainKey=key;
   map._globeDomainGeojson=(!frame||domainMode==="watershed"||domainMode==="close")?GLOBE_EMPTY_GEOJSON:{type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:[[[frame.west,frame.south],[frame.east,frame.south],[frame.east,frame.north],[frame.west,frame.north],[frame.west,frame.south]]]}}]};
+  if(frame && domainMode==="circle") map._globeDomainGeojson={type:"FeatureCollection",features:[{type:"Feature",properties:{},geometry:{type:"LineString",coordinates:circleDomainRing()}}]};
   return map._globeDomainGeojson;
 }
 function setGlobeLayerVisible(map,key,visible){
@@ -1476,7 +1541,7 @@ function updateOlMap(map,doFit){
   if(map._meshStyleMode!==styleMode){ map._meshStyleMode=styleMode; map._meshLayer.setStyle(classified?olMeshStyle:OL_DEFAULT_MESH_STYLE); }
   setOlSource(map,"boundary",map._boundarySource,_domainGeojson);
   setOlSource(map,"mesh",map._meshSource,mesh);
-  const domainKey=JSON.stringify([regional,domainMode,domBbox,olProjectionCode(map)]);
+  const domainKey=JSON.stringify([regional,domainMode,domBbox,domCircle,olProjectionCode(map)]);
   let fitChangedRectangle=false;
   if(map._domainKey!==domainKey){
     map._domainKey=domainKey; map._domainSource.clear(true);
@@ -1637,7 +1702,7 @@ function ensureOlMap(elId){
   const graticule=new ol.layer.Graticule({zIndex:2,showLabels:true,wrapX:true,visible:_olMapPrefs.graticule===true,strokeStyle:new ol.style.Stroke({color:"rgba(148,163,184,.45)",width:1,lineDash:[3,5]})});
   const meshSource=new ol.source.Vector({wrapX:true}), domainSource=new ol.source.Vector({wrapX:true}), boundarySource=new ol.source.Vector({wrapX:true}), measureSource=new ol.source.Vector({wrapX:false});
   const meshLayer=new ol.layer.VectorImage({source:meshSource,zIndex:10,imageRatio:1.4,visible:_olMapPrefs.mesh!==false,opacity:Number(_olMapPrefs.meshOpacity??1),style:OL_DEFAULT_MESH_STYLE});
-  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})});
+  const domainLayer=new ol.layer.Vector({source:domainSource,zIndex:20,visible:_olMapPrefs.domain!==false,style:[new ol.style.Style({stroke:new ol.style.Stroke({color:"#1f2328",width:4,lineDash:[6,4]})}),new ol.style.Style({stroke:new ol.style.Stroke({color:"#ffffff",width:2,lineDash:[6,4]})})]});
   const boundaryLayer=new ol.layer.Vector({source:boundarySource,zIndex:21,visible:_olMapPrefs.boundary!==false,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.2,lineDash:[5,3]}),fill:new ol.style.Fill({color:"rgba(250,204,21,.08)"})})});
   const measureLayer=new ol.layer.Vector({source:measureSource,zIndex:30,style:new ol.style.Style({stroke:new ol.style.Stroke({color:"#facc15",width:2.5}),fill:new ol.style.Fill({color:"rgba(250,204,21,.18)"}),image:new ol.style.Circle({radius:5,fill:new ol.style.Fill({color:"#facc15"}),stroke:new ol.style.Stroke({color:"#713f12",width:1})})})});
   baseLayer.setOpacity(Number(_olMapPrefs.baseOpacity??1));
@@ -1804,28 +1869,34 @@ function setLogStatus(text, ok){
 }
 function setRunControls(on){
   runInProgress=!!on;
+  const busy=runInProgress || killInProgress;
   const runBtn=document.getElementById("runBtn"), killBtn=document.getElementById("killBtn");
   if(runBtn){
-    runBtn.disabled=on;
-    runBtn.style.opacity=on?"0.55":"";
-    runBtn.style.cursor=on?"not-allowed":"";
-    runBtn.textContent=on?(lang?"⏳ 运行中…":"⏳ Running…"):("▶ "+(lang?"运行":"Run"));
+    runBtn.disabled=busy;
+    runBtn.style.opacity=busy?"0.55":"";
+    runBtn.style.cursor=busy?"not-allowed":"";
+    runBtn.textContent=killInProgress?(lang?"⏳ 正在终止…":"⏳ Stopping…")
+      :busy?(lang?"⏳ 运行中…":"⏳ Running…"):("▶ "+(lang?"运行":"Run"));
   }
-  if(killBtn) killBtn.style.display=on?"inline-flex":"none";
+  if(killBtn){ killBtn.style.display=busy?"inline-flex":"none"; killBtn.disabled=killInProgress; }
 }
 async function killRun(){
+  if(killInProgress) return false;
   const inv = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
   const lb=document.getElementById("logbox");
   const add=(s)=>{ if(lb){ const div=document.createElement("div"); div.textContent=s; lb.appendChild(div); lb.scrollTop=lb.scrollHeight; } };
   if(!inv){ add("✗ "+(lang?"无法连接后端":"backend unavailable")); return false; }
+  const owner=runCompletion;
+  killInProgress=true;
+  setRunControls(runInProgress);
   try{
     const r = await inv("kill_run");
     add("■ "+(r?(lang?"已终止正在运行的引擎":"killed the running engine"):(lang?"当前没有正在运行的程序":"no running process")));
-    if(r){ setRunControls(false); }
-    else { setRunControls(false); }
-    const rt=document.getElementById("rtext"); if(rt) rt.textContent=r?(lang?"已终止":"killed"):(lang?"未在运行":"not running");
-    return true;
-  }catch(e){ add("✗ kill: "+e); return false; }
+    // Signalling the child does not settle its owning run_project command.
+    if(r && owner) await owner;
+    return !runInProgress;
+  }catch(e){ add("✗ kill: " + e); return false; }
+  finally{ killInProgress=false; setRunControls(runInProgress); }
 }
 
 /* ---------------- toggles ---------------- */
@@ -1960,6 +2031,7 @@ if(MAP_WINDOW_MODE){
       if ("regional" in payload) regional = payload.regional;
       if ("domainMode" in payload) domainMode = payload.domainMode;
       if ("bbox" in payload) domBbox = payload.bbox;
+      if ("circle" in payload) domCircle = payload.circle;
       if ("theme" in payload) document.documentElement.setAttribute("data-theme", payload.theme);
       if ("language" in payload) { lang=payload.language; applyI18n(); }
       const map = ensureOlMap("mapsvgModal");
@@ -1981,7 +2053,7 @@ if(MAP_WINDOW_MODE){
     if(selected.has("domain")) payload.domain=_domainGeojson;
     if(selected.has("coastal")) payload.coastal=_coastalGeojson;
     if(selected.has("settings")) Object.assign(payload,{
-      hydroThresholds:_hydroThresholds,regional,domainMode,bbox:domBbox,
+      hydroThresholds:_hydroThresholds,regional,domainMode,bbox:domBbox,circle:domCircle,
       theme:document.documentElement.getAttribute("data-theme")||"light",language:lang,
     });
     return payload;
@@ -2022,7 +2094,6 @@ if(MAP_WINDOW_MODE){
     SPECIALIZED_CELLS = Object.fromEntries((capabilities.target_compatibility || []).map((entry) => [entry.model_format, entry.specialized_cells]));
     DEFAULT_SEA_RATIO_PCT = capabilities.default_sea_ratio * 100;
     DEFAULT_MIN_ANGLE_DEG = capabilities.default_min_angle_deg;
-    METHOD_C_MIN_BASE_NXP = capabilities.method_c_min_base_nxp;
     METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level;
     DEFAULT_OPENMP = capabilities.default_openmp;
     DEFAULT_NITER = capabilities.default_niter;
@@ -2032,7 +2103,6 @@ if(MAP_WINDOW_MODE){
     DEFAULT_RELAX = capabilities.default_relax;
     DEFAULT_HFIELD_G = capabilities.default_hfield_g;
     METHOD_C_DEFAULTS = capabilities.method_c_defaults;
-    HARP_DV_DEFAULTS = capabilities.harp_dv_defaults;
     CERTIFIED_DEFAULTS = capabilities.certified_defaults;
     METHOD_C_SPRING_NXP1_KM = capabilities.method_c_spring_nxp1_km;
     KM_PER_DEG_EQ = capabilities.km_per_degree_equator;
@@ -2070,11 +2140,6 @@ if(MAP_WINDOW_MODE){
     if (nxp >= 64) return 2;
     return 1;
   }
-  function regionalMethodCLevelCap(nxp) {
-    let cap = 1;
-    while (cap < METHOD_C_MAX_REFINEMENT_LEVEL && METHOD_C_MIN_BASE_NXP * Math.pow(2, cap + 1) <= nxp) cap++;
-    return cap;
-  }
   function currentIntent() {
     try { return (TPL[tpl] && TPL[tpl].intent) || "Custom"; } catch (e) { return "Custom"; }
   }
@@ -2094,6 +2159,7 @@ if(MAP_WINDOW_MODE){
   let hydroRefine = defaultHydroRefine();
   let domainEdit = null;   // null | {kind:'global'} | {kind:'bbox', w,e,s,n,seaRatio} | {kind:'hidden', shape}
   let qualityEdit = null;  // null | { minAngle, policy, batchCells }
+  let colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
 let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
   const defaultAlgorithmControls = () => ({
     leppMaxCycles: METHOD_C_DEFAULTS.max_cycles,
@@ -2104,15 +2170,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     leppMaximumPathLength: METHOD_C_DEFAULTS.maximum_path_length,
     leppStopAtSourceResolution: METHOD_C_DEFAULTS.stop_at_source_resolution,
     leppMinimumTriangleAngleDeg: METHOD_C_DEFAULTS.minimum_triangle_angle_deg,
-    harpMaxCycles: HARP_DV_DEFAULTS.max_cycles,
-    harpMinimumCellWidthM: HARP_DV_DEFAULTS.minimum_cell_width_m,
-    harpMaximumCells: HARP_DV_DEFAULTS.maximum_cells,
-    harpMaximumPatchCells: HARP_DV_DEFAULTS.maximum_patch_cells,
-    harpMaximumNeighborScaleRatio: HARP_DV_DEFAULTS.maximum_neighbor_scale_ratio,
-    harpMinimumCandidateSeparationM: HARP_DV_DEFAULTS.minimum_candidate_separation_m,
-    harpMaximumVertexDegree: HARP_DV_DEFAULTS.maximum_vertex_degree,
-    harpMinimumTriangleAngleDeg: HARP_DV_DEFAULTS.minimum_triangle_angle_deg,
-    harpCriterionMinimumAngleDeg: HARP_DV_DEFAULTS.criterion_minimum_angle_deg,
     certifiedMode: CERTIFIED_DEFAULTS.mode,
     certifiedDelivery: CERTIFIED_DEFAULTS.delivery,
     certifiedAngleContract: CERTIFIED_DEFAULTS.angle_contract,
@@ -2123,10 +2180,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   });
   let specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
-  let baseProjectYaml = null; // opened YAML; preserves fields the UI does not expose yet
+  let baseProjectYaml = null; // last accepted YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
+  let projectEditQueue = Promise.resolve();
+  let projectLoadEpoch = 0;
+  window.waitForProjectEdits = () => projectEditQueue;
   let backendReady = null;   // capability/catalog gate for every compose/save/run path
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
 
@@ -2211,42 +2271,76 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return hydroConfigured && !!meshMeritLayer(summary) && (hydroRefine.riverWidthEnabled || hydroRefine.riverUpstreamAreaEnabled || (hydroRefine.coastEnabled && (hydroRefine.coastLandEnabled || hydroRefine.coastOceanEnabled)));
   }
 
-  async function composeYaml() {
+  function specifiedRefinementError(r) {
+    if (!r.enabled) return "";
+    if (r.kind === "bbox") return bboxDomainError([r.w ?? DEFAULT_BBOX[0], r.e ?? DEFAULT_BBOX[1], r.s ?? DEFAULT_BBOX[2], r.n ?? DEFAULT_BBOX[3]]);
+    if (r.kind === "close") return r.path && inferCloseFormat(r.path) ? "" : (zh() ? "请选择有效的指定细化闭合区域文件。" : "Choose a supported specified-refinement close file.");
+    const lon = r.lon ?? 0, lat = r.lat ?? 0, radius = r.radiusKm ?? 100;
+    if (![lon, lat, radius].every(Number.isFinite)) return zh() ? "请填写指定细化的圆心经纬度和半径。" : "Enter finite specified-refinement center coordinates and radius.";
+    if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return zh() ? "经度范围为 −180 至 180°，纬度范围为 −90 至 90°。" : "Longitude must be −180…180° and latitude −90…90°.";
+    if (radius <= 0) return zh() ? "指定细化半径必须大于 0。" : "Specified-refinement radius must be positive.";
+    return "";
+  }
+
+  async function composeYaml(template = null) {
     if (backendReady) await backendReady;
-    const resolution = currentResolution();
+    const resolution = template && template.nxp
+      ? { nxp: template.nxp, approxKm: null, approxDegree: null } : currentResolution();
+    const refine = template ? templateSpecifiedRefinement(template) : specifiedRefine;
+    const refinementError = specifiedRefinementError(refine);
+    if (refinementError) throw new Error(refinementError);
+    const domain = template ? null : domainEdit;
     let yaml = await invoke("scaffold_project",
-      { name: projectName(), intent: currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
+      { name: projectName(), intent: template ? template.intent : currentIntent(), nxp: resolution.nxp, approxKm: resolution.approxKm, approxDegree: resolution.approxDegree });
     yaml = await invoke("set_project_metadata",
       { yaml, name: projectName(), authors: metadataEdit.authors || [], description: metadataEdit.description || "" });
     // Derive the domain from the LIVE mode + controls — not a stale domainEdit
     // (template cards flip `regional`/`domainMode` without updating domainEdit).
-    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    const mode = template ? (template.domainMode || (template.global ? "global" : "regional"))
+      : ((typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global"));
     if (mode === "global") {
       yaml = await invoke("set_domain_global", { yaml });
+    } else if (mode === "circle") {
+      const error = circleDomainError();
+      if (error) throw new Error(error);
+      const seaRatio = domain && domain.kind === "circle" ? (domain.seaRatio ?? null) : null;
+      yaml = await invoke("set_domain_circle", { yaml, lon: domCircle[0], lat: domCircle[1], radiusKm: domCircle[2], seaRatio });
     } else if (mode === "watershed") {
-      const path = (domainEdit && domainEdit.kind === "shapefile" ? domainEdit.path : watershedPath) || "";
-      const seaRatio = domainEdit && domainEdit.kind === "shapefile" ? (domainEdit.seaRatio ?? null) : null;
+      const path = (domain && domain.kind === "shapefile" ? domain.path : watershedPath) || "";
+      const seaRatio = domain && domain.kind === "shapefile" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_shapefile", { yaml, path, seaRatio });
     } else if (mode === "close") {
-      const path = (domainEdit && domainEdit.kind === "close" ? domainEdit.path : closePath) || "";
-      const format = (domainEdit && domainEdit.kind === "close" ? domainEdit.format : closeFormat) || "nml";
-      const seaRatio = domainEdit && domainEdit.kind === "close" ? (domainEdit.seaRatio ?? null) : null;
+      const path = template ? (template.closePath || "") : (domain && domain.kind === "close" ? domain.path : closePath) || "";
+      const format = template ? (template.closeFormat || inferCloseFormat(template.closePath)) : (domain && domain.kind === "close" ? domain.format : closeFormat) || "nml";
+      const seaRatio = domain && domain.kind === "close" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_close", { yaml, path, format, seaRatio });
-      yaml = await applyCloseBoundary(yaml, "domain", domainCloseBoundary);
+      yaml = await applyCloseBoundary(yaml, "domain", template ? normalizeCloseBoundary(null) : domainCloseBoundary);
     } else {
       const b = (typeof domBbox !== "undefined" && domBbox) ? domBbox : DEFAULT_BBOX;
-      const seaRatio = domainEdit && domainEdit.kind === "bbox" ? (domainEdit.seaRatio ?? null) : null;
+      const error = bboxDomainError(b);
+      if (error) throw new Error(error);
+      const seaRatio = domain && domain.kind === "bbox" ? (domain.seaRatio ?? null) : null;
       yaml = await invoke("set_domain_bbox", { yaml, w: b[0], e: b[1], s: b[2], n: b[3], seaRatio });
     }
     if (baseProjectYaml) {
-      yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !!hiddenDomainShape });
+      yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !template && !!hiddenDomainShape });
     }
-    if (targetEdit) {
+    if (!template && targetEdit) {
       yaml = await invoke("set_project_target", { yaml, kind: targetEdit.kind, modelFormat: targetEdit.modelFormat });
     }
-    if (cellEdit) {
+    if (!template && cellEdit) {
       yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
     }
+    const selectedModelForDelivery = (!template && targetEdit && targetEdit.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
+    const colmDeliveryEnabled = selectedModelForDelivery === "CoLM" && !!colmMeshDelivery.enabled;
+    if (colmDeliveryEnabled && !(Number.isInteger(colmMeshDelivery.pixelsPerDegree) && colmMeshDelivery.pixelsPerDegree > 0)) {
+      throw new Error(zh() ? "CoLM mesh 栅格分辨率必须为正整数" : "CoLM mesh pixels/degree must be a positive integer");
+    }
+    yaml = await invoke("set_colm_mesh_delivery", {
+      yaml,
+      enabled: colmDeliveryEnabled,
+      pixelsPerDegree: colmDeliveryEnabled ? colmMeshDelivery.pixelsPerDegree : null
+    });
     const layerIds = Object.keys(layerEdits).sort((a,b) => Number(!!layerEdits[b].enabled) - Number(!!layerEdits[a].enabled));
     for (const id of layerIds) {
       const e = layerEdits[id];
@@ -2286,76 +2380,64 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
     const summary = await invoke("project_summary", { yaml });
     const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
-    const refinementEnabled = thresholdSourceEnabled || !!specifiedRefine.enabled;
-    const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
+    const refinementEnabled = thresholdSourceEnabled || !!refine.enabled;
+    const maxRefinePasses = METHOD_C_MAX_REFINEMENT_LEVEL;
+    const requestedPasses = template && template.maxPasses != null ? template.maxPasses : maxPasses;
     const refinementPasses = refinementEnabled
-      ? Math.min(maxRefinePasses, Math.max(1, maxPasses == null ? (summary.max_passes || 1) : maxPasses))
+      ? Math.min(maxRefinePasses, Math.max(1, requestedPasses == null ? (summary.max_passes || 1) : requestedPasses))
       : 0;
     yaml = await invoke("set_specified_refinement", {
-      yaml, enabled: !!specifiedRefine.enabled,
-      kind: specifiedRefine.kind || "radius",
-      lon: specifiedRefine.lon, lat: specifiedRefine.lat, radiusKm: specifiedRefine.radiusKm,
-      w: specifiedRefine.w, e: specifiedRefine.e, s: specifiedRefine.s, n: specifiedRefine.n,
-      path: specifiedRefine.path
+      yaml, enabled: !!refine.enabled,
+      kind: refine.kind || "radius",
+      ...(refine.enabled && (refine.kind || "radius") === "radius" ? { lon: refine.lon ?? 0, lat: refine.lat ?? 0, radiusKm: refine.radiusKm ?? 100 } : {}),
+      ...(refine.enabled && refine.kind === "bbox" ? { w: refine.w ?? DEFAULT_BBOX[0], e: refine.e ?? DEFAULT_BBOX[1], s: refine.s ?? DEFAULT_BBOX[2], n: refine.n ?? DEFAULT_BBOX[3] } : {}),
+      path: refine.path
     });
-    if (specifiedRefine.enabled && specifiedRefine.kind === "close") {
-      yaml = await applyCloseBoundary(yaml, "specified", specifiedRefine.closeBoundary);
+    if (refine.enabled && refine.kind === "close") {
+      yaml = await applyCloseBoundary(yaml, "specified", refine.closeBoundary);
     }
+    yaml = await invoke("set_adaptive_refinement", {
+      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "adaptive",
+      maxLevel: refine.adaptiveMaxLevel ?? null,
+      coastline: refine.adaptiveCoastline !== false
+    });
+    yaml = await invoke("set_hfield_refinement", {
+      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "hfield",
+      g: refine.hfieldG ?? null,
+      maxLevel: refine.hfieldMaxLevel ?? null,
+      baseM: refine.hfieldBaseM ?? null
+    });
+    yaml = await invoke("set_refinement_backend", {
+      yaml, backend: refine.algorithm || "method_c"
+    });
+    // Validate active demands only after their consuming route is configured.
     yaml = await invoke("set_refinement", {
       yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
       maxPasses: refinementPasses
     });
-    yaml = await invoke("set_adaptive_refinement", {
-      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "adaptive",
-      maxLevel: specifiedRefine.adaptiveMaxLevel ?? null,
-      coastline: specifiedRefine.adaptiveCoastline !== false
-    });
-    yaml = await invoke("set_hfield_refinement", {
-      yaml, enabled: specifiedRefine.algorithm !== "certified" && (specifiedRefine.route || "adaptive") === "hfield",
-      g: specifiedRefine.hfieldG ?? null,
-      maxLevel: specifiedRefine.hfieldMaxLevel ?? null,
-      baseM: specifiedRefine.hfieldBaseM ?? null
-    });
-    yaml = await invoke("set_refinement_backend", {
-      yaml, backend: specifiedRefine.algorithm || "method_c"
-    });
-    if (specifiedRefine.algorithm === "lepp_delaunay") {
+    if (refine.algorithm === "lepp_delaunay") {
       yaml = await invoke("set_method_c_algorithm_options", {
         yaml,
-        maxCycles: specifiedRefine.leppMaxCycles,
-        targetSizeTolerance: specifiedRefine.leppTargetSizeTolerance,
-        maximumNeighborSizeRatio: specifiedRefine.leppMaximumNeighborSizeRatio,
-        maximumVertices: specifiedRefine.leppMaximumVertices,
-        maximumInsertionsPerCycle: specifiedRefine.leppMaximumInsertionsPerCycle,
-        maximumPathLength: specifiedRefine.leppMaximumPathLength,
-        stopAtSourceResolution: specifiedRefine.leppStopAtSourceResolution,
-        minimumTriangleAngleDeg: specifiedRefine.leppMinimumTriangleAngleDeg
+        maxCycles: refine.leppMaxCycles,
+        targetSizeTolerance: refine.leppTargetSizeTolerance,
+        maximumNeighborSizeRatio: refine.leppMaximumNeighborSizeRatio,
+        maximumVertices: refine.leppMaximumVertices,
+        maximumInsertionsPerCycle: refine.leppMaximumInsertionsPerCycle,
+        maximumPathLength: refine.leppMaximumPathLength,
+        stopAtSourceResolution: refine.leppStopAtSourceResolution,
+        minimumTriangleAngleDeg: refine.leppMinimumTriangleAngleDeg
       });
     }
-    if (specifiedRefine.algorithm === "harp_dv") {
-      yaml = await invoke("set_harp_dv_options", {
-        yaml,
-        maxCycles: specifiedRefine.harpMaxCycles,
-        minimumCellWidthM: specifiedRefine.harpMinimumCellWidthM,
-        maximumCells: specifiedRefine.harpMaximumCells,
-        maximumPatchCells: specifiedRefine.harpMaximumPatchCells,
-        maximumNeighborScaleRatio: specifiedRefine.harpMaximumNeighborScaleRatio,
-        minimumCandidateSeparationM: specifiedRefine.harpMinimumCandidateSeparationM,
-        maximumVertexDegree: specifiedRefine.harpMaximumVertexDegree,
-        minimumTriangleAngleDeg: specifiedRefine.harpMinimumTriangleAngleDeg,
-        criterionMinimumAngleDeg: specifiedRefine.harpCriterionMinimumAngleDeg
-      });
-    }
-    if (specifiedRefine.algorithm === "certified") {
+    if (refine.algorithm === "certified") {
       yaml = await invoke("set_certified_options", {
         yaml,
-        mode: specifiedRefine.certifiedMode,
-        delivery: specifiedRefine.certifiedDelivery,
-        angleContract: specifiedRefine.certifiedAngleContract,
-        maximumLevel: specifiedRefine.certifiedMaximumLevel,
-        maximumCells: specifiedRefine.certifiedMaximumCells,
-        gradationRingsPerLevel: specifiedRefine.certifiedGradationRingsPerLevel,
-        searchBudget: specifiedRefine.certifiedSearchBudget
+        mode: refine.certifiedMode,
+        delivery: refine.certifiedDelivery,
+        angleContract: refine.certifiedAngleContract,
+        maximumLevel: refine.certifiedMaximumLevel,
+        maximumCells: refine.certifiedMaximumCells,
+        gradationRingsPerLevel: refine.certifiedGradationRingsPerLevel,
+        searchBudget: refine.certifiedSearchBudget
       });
     }
     if (baseProjectYaml) {
@@ -2375,6 +2457,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     summary:    (yaml) => invoke("project_summary", { yaml }),
     setProjectTarget: (yaml, kind, modelFormat) => invoke("set_project_target", { yaml, kind, modelFormat }),
     setTargetCell: (yaml, cell) => invoke("set_target_cell", { yaml, cell }),
+    setColmMeshDelivery: (yaml, enabled, pixelsPerDegree) => invoke("set_colm_mesh_delivery", { yaml, enabled, pixelsPerDegree }),
     setThresholdCriterion: (yaml, id, enabled, value) => invoke("set_threshold_criterion", { yaml, id, enabled, value }),
     setDomainShapefile: (yaml, path, seaRatio) => invoke("set_domain_shapefile", { yaml, path, seaRatio }),
     setDomainClose: (yaml, path, format, seaRatio) => invoke("set_domain_close", { yaml, path, format, seaRatio }),
@@ -2390,6 +2473,36 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     saveProject:  (yaml) => invoke("save_project", { yaml }),
     runProject:   (yaml, outdir) => invoke("run_project", { yaml, outdir: outdir || null }),
   };
+
+  // Validate before committing: rejected edits must not poison the next compose.
+  function commitProjectEdit(editYaml) {
+    return commitProjectYaml(async () => editYaml(await composeYaml()));
+  }
+
+  function commitProjectYaml(candidateYaml, onCommit) {
+    const result = projectEditQueue.then(async () => {
+      let yaml, summary;
+      try {
+        yaml = await candidateYaml();
+        summary = await api.summary(yaml);
+      } catch (e) {
+        logLine("✗ " + (zh() ? "修改未应用：" : "Edit not applied: ") + e);
+        return false;
+      }
+      if (onCommit) onCommit();
+      baseProjectYaml = yaml;
+      lastSummary = { ...summary, _valid: true, _err: null };
+      targetEdit = { kind: summary.target_kind, modelFormat: summary.model_format };
+      cellEdit = String(summary.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
+      colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 };
+      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
+      (summary.layers || []).forEach((l) => { layerEdits[l.id] = { path: l.path || "", enabled: l.enabled }; });
+      clearRunArtifacts();
+      return true;
+    });
+    projectEditQueue = result;
+    return result;
+  }
 
   function clearCoastalOverlay() {
     if (typeof applyCoastal === "function") applyCoastal(null, false);
@@ -2418,7 +2531,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   let watershedBoundaryPath = "";
+  let watershedBoundaryVersion = 0;
   async function loadWatershedBoundary(path) {
+    const version = ++watershedBoundaryVersion;
     if (!path) {
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
@@ -2426,10 +2541,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     }
     if (path === watershedBoundaryPath && _domainGeojson) return;
     watershedBoundaryPath = path;
+    if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
     try {
       const geojson = await api.shapefileBoundary(path);
+      if (version !== watershedBoundaryVersion) return;
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(geojson, true);
     } catch (e) {
+      if (version !== watershedBoundaryVersion) return;
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
       logLine("✗ watershed boundary: " + e);
@@ -2445,6 +2563,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function clearRunArtifacts() {
     hasRun = false;
     runInfo = null;
+    const deliveryCard = document.getElementById("deliveryCard");
+    if (deliveryCard) { deliveryCard.textContent = ""; deliveryCard.style.display = "none"; }
     _lastQuality = null;
     _meshPreview = null;
     _meshPreviewToken++;
@@ -2455,6 +2575,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .forEach((b) => { b.textContent = "—"; b.style.color = "var(--muted)"; });
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
   }
+
+  // Only the O3 card overrides the specified demand; other cards keep user edits.
+  function templateSpecifiedRefinement(t) {
+    return t.specifiedClosePath ? { ...defaultAlgorithmControls(), enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null } : specifiedRefine;
+  }
+
+  window.commitTemplateEdit = (next, apply) => {
+    return commitProjectYaml(() => composeYaml(TPL[next]), apply);
+  };
 
   window.resetTemplateDerivedState = function () {
       domainEdit = null;
@@ -2474,11 +2603,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: null };
       }
       if (t.maxPasses != null) maxPasses = t.maxPasses;
-      if (t.specifiedClosePath) {
-        specifiedRefine = { ...defaultAlgorithmControls(), enabled: true, kind: "close", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: t.specifiedClosePath, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
-      }
-      if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
-      clearRunArtifacts();
+      specifiedRefine = templateSpecifiedRefinement(t);
   };
 
   // ---- live data-layer panel ------------------------------------------------
@@ -2496,15 +2621,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       try { folder = await api.pickDataFolder(); }
       catch (e) { logLine("✗ " + e); return; }
       if (!folder) return;
-      let yaml, next;
-      try {
-        yaml = await api.autofillLayers(await composeYaml(), folder);
-        next = await api.summary(yaml);
-      } catch (e) { logLine("✗ " + e); return; }
-      for (const k of Object.keys(layerEdits)) delete layerEdits[k];
-      (next.layers || []).forEach((l) => { if (l.path) layerEdits[l.id] = { path: l.path, enabled: l.enabled }; });
-      logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
-      enhanceLayerStep();
+      if (await commitProjectEdit(yaml => api.autofillLayers(yaml, folder))) {
+        logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
+      }
+      await enhanceLayerStep();
     };
     let sum;
     try { sum = await api.summary(await composeYaml()); }
@@ -2523,16 +2643,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     clearCoastalOverlay();
     tbody.textContent = "";
     const layers = sum.layers || [];
-    const selectExclusiveSource = (id, path) => {
-      const selected = layers.find((layer) => layer.id === id);
-      if (selected && selected.source_field) {
-        layers.forEach((sibling) => {
-          if (sibling.id !== id && sibling.source_field === selected.source_field) {
-            layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };
-          }
-        });
-      }
-      layerEdits[id] = { path, enabled: true };
+    const editLayer = async (id, path, enabled) => {
+      await commitProjectEdit(yaml => invoke("set_layer_path", { yaml, id, path, enabled }));
+      await enhanceLayerStep();
     };
     if (!layers.length) {
       const tr = document.createElement("tr");
@@ -2612,28 +2725,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         try { p = await (folder ? api.pickDataFolder() : api.pickDataFile()); }
         catch (e) { logLine("✗ " + e); return; }
         if (!p) return;
-        selectExclusiveSource(id, p);
-        enhanceLayerStep();
+        await editLayer(id, p, true);
       };
     });
     tbody.querySelectorAll(".em-clear").forEach((b) => {
-      b.onclick = () => {
+      b.onclick = async () => {
         const id = b.closest("[data-layer]").dataset.layer;
-        layerEdits[id] = { path: "", enabled: false };
-        enhanceLayerStep();
+        await editLayer(id, "", false);
       };
     });
     // on/off switch: enable/disable a layer that already has a file set
     tbody.querySelectorAll("tr[data-layer] .sw").forEach((sw) => {
-      sw.onclick = () => {
+      sw.onclick = async () => {
         const tr = sw.closest("[data-layer]");
         const id = tr.dataset.layer;
         const path = tr.dataset.path || "";
         if (!path) return; // nothing to toggle without a file
         const enabled = tr.dataset.enabled !== "1";
-        if (enabled) selectExclusiveSource(id, path);
-        else layerEdits[id] = { path, enabled: false };
-        enhanceLayerStep();
+        await editLayer(id, path, enabled);
       };
     });
     const card = table.closest(".card");
@@ -2644,123 +2753,73 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // ---- domain (step 2) -> DomainConfig --------------------------------------
   const num = (el) => parseFloat(String(el.value).replace(/[^\d.\-]/g, ""));
-  function readBbox() {
-    const ins = document.querySelectorAll("#work .grid2 input.input"); // [W,E,S,N]
-    if (ins.length < 4) return null;
-    const b = { w: num(ins[0]), e: num(ins[1]), s: num(ins[2]), n: num(ins[3]) };
-    return Object.values(b).every((x) => !isNaN(x)) ? b : null;
-  }
   function enhanceDomainStep() {
-    // The base UI owns the Global/Regional toggle (var `regional`) and only
-    // renders the bbox inputs in regional mode; we mirror that into domainEdit.
     if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
-    const mode = (typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global");
+    const mode = domainMode;
+    const kind = mode === "regional" ? "bbox" : mode === "watershed" ? "shapefile" : mode;
+    if (domainEdit && domainEdit.kind !== kind) clearRunArtifacts();
     if (mode === "global") { domainEdit = { kind: "global" }; loadWatershedBoundary(""); return; }
-    const ratio = document.getElementById("seaRatioInput");
-    const ratioText = document.getElementById("seaRatioText");
-    const readSeaRatio = () => {
-      if (!ratio) return (domainEdit && (domainEdit.kind === "bbox" || domainEdit.kind === "shapefile" || domainEdit.kind === "close")) ? domainEdit.seaRatio : null;
-      const v = parseFloat(ratio.value);
-      return isNaN(v) ? null : v / 100;
-    };
+    const ratio = document.getElementById("seaRatioInput"), ratioText = document.getElementById("seaRatioText");
+    domainSeaRatios[kind] ??= DEFAULT_SEA_RATIO_PCT / 100;
+    if (ratio) ratio.value = domainSeaRatios[kind] * 100;
     const paintSeaRatio = () => {
       if (ratioText && ratio) ratioText.textContent = ratio.value + "% " + (zh() ? "海洋" : "ocean");
     };
-    if (mode === "watershed") {
-      const browse = document.getElementById("watershedBrowse");
-      const text = document.getElementById("watershedPathText");
-      const syncShape = () => {
-        const path = (typeof watershedPath !== "undefined" ? watershedPath : "") || "";
-        if (path) domainEdit = { kind: "shapefile", path, seaRatio: readSeaRatio() };
-        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择 .shp 文件" : "📄 Choose a .shp file");
-        paintSeaRatio();
-      };
-      if (domainEdit && domainEdit.kind === "shapefile") {
-        watershedPath = domainEdit.path || "";
-        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-      }
-      syncShape();
-      loadWatershedBoundary(watershedPath);
-      if (browse) browse.onclick = async () => {
-        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-        if (!p) return;
-        watershedPath = p;
-        domainEdit = { kind: "shapefile", path: p, seaRatio: readSeaRatio() };
-        clearRunArtifacts();
-        syncShape();
-        await loadWatershedBoundary(p);
-        await refreshSummary();
-      };
-      if (ratio) ratio.addEventListener("input", () => {
-        if (watershedPath) domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: readSeaRatio() };
-        paintSeaRatio();
-      });
-      return;
-    }
-    if (mode === "close") {
-      const browse = document.getElementById("closeBrowse");
-      const text = document.getElementById("closePathText");
-      const syncClose = () => {
-        const path = (typeof closePath !== "undefined" ? closePath : "") || "";
-        if (path) closeFormat = inferCloseFormat(path);
-        if (path) domainEdit = { kind: "close", path, format: closeFormat, seaRatio: readSeaRatio() };
-        if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择文件" : "📄 Choose file");
-        paintSeaRatio();
-        loadWatershedBoundary(closeFormat === "polygon_shp" ? path : "");
-      };
-      if (domainEdit && domainEdit.kind === "close") {
-        closePath = domainEdit.path || "";
-        closeFormat = domainEdit.format || "nml";
-        if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-      }
-      syncClose();
-      if (browse) browse.onclick = async () => {
-        let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-        if (!p) return;
-        closePath = p;
-        closeFormat = inferCloseFormat(p);
-        if (!closeFormat) {
-          logLine("✗ " + (zh() ? "闭合区域支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Close domains support .shp / .nml / .nc / .nc4 / .txt / .csv"));
-          return;
-        }
-        domainEdit = { kind: "close", path: p, format: closeFormat, seaRatio: readSeaRatio() };
-        clearRunArtifacts();
-        syncClose();
-        await refreshSummary();
-      };
-      if (ratio) ratio.addEventListener("input", () => {
-        if (closePath) domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: readSeaRatio() };
-        paintSeaRatio();
-      });
-      bindCloseBoundaryControls(
-        "domain",
-        () => domainCloseBoundary,
-        (value) => { domainCloseBoundary = value; }
-      );
-      return;
-    }
-    const sync = () => {
-      loadWatershedBoundary("");
-      const b = readBbox();
-      if (b) {
-        domainEdit = Object.assign({ kind: "bbox", seaRatio: readSeaRatio() }, b);
-        domBbox = [b.w, b.e, b.s, b.n];
-        paintSeaRatio();
-        if (typeof updateEstimate === "function") updateEstimate();
-        if (typeof drawMap === "function") drawMap();
-        if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
-      }
-    };
-    if (domainEdit && domainEdit.kind === "bbox") {
-      const ins = document.querySelectorAll("#work .grid2 input.input");
-      if (ins.length >= 4) { ins[0].value = domainEdit.w; ins[1].value = domainEdit.e; ins[2].value = domainEdit.s; ins[3].value = domainEdit.n; }
-      if (ratio && domainEdit.seaRatio != null) ratio.value = Math.round(domainEdit.seaRatio * 100);
-    } else {
-      sync(); // initialize from the shown default inputs
-    }
-    document.querySelectorAll("#work .grid2 input.input").forEach((inp) => inp.addEventListener("input", sync));
-    if (ratio) ratio.addEventListener("input", sync);
+    if (ratio) ratio.addEventListener("input", () => {
+      domainSeaRatios[kind] = Number(ratio.value) / 100;
+      domainEdit.seaRatio = domainSeaRatios[kind];
+      paintSeaRatio();
+      clearRunArtifacts();
+    });
     paintSeaRatio();
+    if (mode === "circle" || kind === "bbox") {
+      loadWatershedBoundary("");
+      const circle = mode === "circle", prefix = circle ? "domainCircle" : "domainBbox";
+      const inputs = (circle ? [0,1,2] : [0,1,2,3]).map((j) => document.getElementById(`${prefix}${j}`));
+      const sync = (edited = false) => {
+        const values = inputs.map((input) => input.value.trim() === "" ? NaN : Number(input.value));
+        if (circle) domCircle = values; else domBbox = values;
+        domainEdit = { kind, seaRatio: domainSeaRatios[kind] };
+        if (!circle) Object.assign(domainEdit, { w:values[0], e:values[1], s:values[2], n:values[3] });
+        const error = circle ? circleDomainError() : bboxDomainError(values);
+        const message = document.getElementById(`${prefix}Error`);
+        if (message) message.textContent = error;
+        inputs.forEach((input) => { input.setCustomValidity(error); input.setAttribute("aria-invalid", String(!!error)); });
+        if (edited) clearRunArtifacts();
+        updateEstimate();
+        drawMap();
+      };
+      inputs.forEach((input) => input.addEventListener("input", () => sync(true)));
+      sync();
+      return;
+    }
+    const shapefile = mode === "watershed", id = shapefile ? "watershed" : "close";
+    const browse = document.getElementById(`${id}Browse`), text = document.getElementById(`${id}PathText`);
+    const syncFile = () => {
+      const path = shapefile ? watershedPath : closePath;
+      domainEdit = { kind, path, seaRatio: domainSeaRatios[kind] };
+      if (!shapefile) domainEdit.format = closeFormat;
+      if (text) text.textContent = path ? "📄 " + path : (zh() ? "📄 点击选择文件" : "📄 Choose file");
+      loadWatershedBoundary(shapefile || closeFormat === "polygon_shp" ? path : "");
+    };
+    syncFile();
+    if (browse) browse.onclick = async () => {
+      let path;
+      try { path = await api.pickDataFile(); }
+      catch (e) { if (document.getElementById(`${id}Browse`) === browse) logLine("✗ " + e); return; }
+      if (!path || document.getElementById(`${id}Browse`) !== browse) return;
+      const format = inferCloseFormat(path);
+      if (!format || (shapefile && format !== "polygon_shp")) {
+        logLine("✗ " + (shapefile ? (zh() ? "流域边界必须为 .shp 文件" : "Watershed boundary requires a .shp file") : (zh() ? "闭合区域支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Close domains support .shp / .nml / .nc / .nc4 / .txt / .csv")));
+        return;
+      }
+      if (shapefile) watershedPath = path;
+      else { closePath = path; closeFormat = format; }
+      clearRunArtifacts();
+      syncFile();
+      await refreshSummary();
+    };
+    if (!shapefile) bindCloseBoundaryControls("domain", () => domainCloseBoundary, (value) => { domainCloseBoundary = value; });
   }
 
   // ---- quality (step 5) -> QualityConfig ------------------------------------
@@ -2813,9 +2872,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function enhanceRefinementStep() {
     const critCard = document.querySelector("#work .card");
     if (!critCard) return;
-    let sum, cat;
-    try { sum = await api.summary(await composeYaml()); cat = await api.listCriteria(); }
+    let sum, cat, draftError = "";
+    try { sum = await api.summary(await composeYaml()); }
+    catch (e) {
+      draftError = String(e);
+      logLine("✗ refinement: " + e);
+      // An invalid draft must remain editable. Only the editor's data catalogue
+      // uses the accepted project (or new-project scaffold); Save/Run never do.
+      try {
+        const yaml = baseProjectYaml || await invoke("scaffold_project", { name: projectName(), intent: currentIntent(), ...currentResolution() });
+        sum = await api.summary(yaml);
+      } catch (error) { logLine("✗ refinement: " + error); return; }
+    }
+    try { cat = await api.listCriteria(); }
     catch (e) { logLine("✗ refinement: " + e); return; }
+    if (document.querySelector("#work .card") !== critCard) return;
     if (maxPasses == null) maxPasses = sum.max_passes;
     const merit = (sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null || sum.hydro_river_upstream_area_threshold_km2 != null)
       ? meshMeritLayer(sum)
@@ -2903,7 +2974,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
 
     const regionalRefine = sum.domain === "regional";
-    const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;
+    const nMax = METHOD_C_MAX_REFINEMENT_LEVEL;
     const refinementEnabled = (thresholdRefine.enabled && (hasEnabledThresholdLayer(sum) || hasEnabledHydroRefinement(sum))) || !!specifiedRefine.enabled;
     if (refinementEnabled) {
       if (maxPasses > nMax) maxPasses = nMax;
@@ -2919,22 +2990,23 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div class="grid2">
         ${field(z?"形式":"Type",`<select class="select" id="specifiedKind"><option value="radius" ${specifiedRefine.kind === "radius" ? "selected" : ""}>${z?"半径":"Radius"}</option><option value="bbox" ${specifiedRefine.kind === "bbox" ? "selected" : ""}>${z?"指定区域":"Region"}</option><option value="close" ${specifiedRefine.kind === "close" ? "selected" : ""}>${z?"闭合掩膜":"Close mask"}</option></select>`)}
       </div>
-      ${(specifiedRefine.circleCount ?? 0) > 1 ? `<div style="margin-top:10px;color:var(--faint);font-size:11px">${z ? `本工程用 ${specifiedRefine.circleCount} 个圆组成的圆链细化；下面显示的是链首，其余成员只能在工程文件里编辑。` : `This project refines with a chain of ${specifiedRefine.circleCount} circles. The fields below show the first one; the rest can only be edited in the project file.`}</div>` : ""}
+      ${(specifiedRefine.circleCount ?? 0) > 1 ? `<div style="margin-top:10px;color:var(--faint);font-size:11px">${z ? `本工程用 ${specifiedRefine.circleCount} 个圆组成的圆链细化；下面只读显示链首。修改任一圆请编辑工程文件。保留半径形式时保存完整圆链；切换形式会替换它。` : `This project refines with a chain of ${specifiedRefine.circleCount} circles. The first circle is shown read-only. Edit any circle in the project file. Saving the radius source preserves the full chain; changing source replaces it.`}</div>` : ""}
       <div class="grid2" id="specifiedRadiusFields" style="margin-top:10px">
-        ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" min="0.001" step="1" value="${specifiedRefine.radiusKm ?? 100}">`)}
-        ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" min="-180" max="180" step="0.01" value="${specifiedRefine.lon ?? 0}">`)}
-        ${field(z?"中心纬度":"Center lat",`<input class="input" type="number" id="specifiedLat" min="-90" max="90" step="0.01" value="${specifiedRefine.lat ?? 0}">`)}
+        ${field(z?"半径 km":"Radius km",`<input class="input" type="number" id="specifiedRadius" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="0" step="any" value="${specifiedRefine.radiusKm ?? 100}">`)}
+        ${field(z?"中心经度":"Center lon",`<input class="input" type="number" id="specifiedLon" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="-180" max="180" step="any" value="${specifiedRefine.lon ?? 0}">`)}
+        ${field(z?"中心纬度":"Center lat",`<input class="input" type="number" id="specifiedLat" ${(specifiedRefine.circleCount ?? 0) > 1 ? "readonly" : ""} min="-90" max="90" step="any" value="${specifiedRefine.lat ?? 0}">`)}
       </div>
       <div class="grid2" id="specifiedBboxFields" style="margin-top:10px">
-        ${field(z?"西经度":"West lon",`<input class="input" type="number" id="specifiedW" min="-180" max="180" step="0.01" value="${specifiedRefine.w ?? DEFAULT_BBOX[0]}">`)}
-        ${field(z?"东经度":"East lon",`<input class="input" type="number" id="specifiedE" min="-180" max="180" step="0.01" value="${specifiedRefine.e ?? DEFAULT_BBOX[1]}">`)}
-        ${field(z?"南纬度":"South lat",`<input class="input" type="number" id="specifiedS" min="-90" max="90" step="0.01" value="${specifiedRefine.s ?? DEFAULT_BBOX[2]}">`)}
-        ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="0.01" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
+        ${field(z?"西经度":"West lon",`<input class="input" type="number" id="specifiedW" min="-180" max="180" step="any" value="${specifiedRefine.w ?? DEFAULT_BBOX[0]}">`)}
+        ${field(z?"东经度":"East lon",`<input class="input" type="number" id="specifiedE" min="-180" max="180" step="any" value="${specifiedRefine.e ?? DEFAULT_BBOX[1]}">`)}
+        ${field(z?"南纬度":"South lat",`<input class="input" type="number" id="specifiedS" min="-90" max="90" step="any" value="${specifiedRefine.s ?? DEFAULT_BBOX[2]}">`)}
+        ${field(z?"北纬度":"North lat",`<input class="input" type="number" id="specifiedN" min="-90" max="90" step="any" value="${specifiedRefine.n ?? DEFAULT_BBOX[3]}">`)}
       </div>
       <div id="specifiedCloseFields" style="margin-top:10px">
-        ${field(z?"闭合区域文件":"Close region file",`<div class="browse" id="specifiedCloseBrowse" style="cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none"></span></div>`)}
+        ${field(z?"闭合区域文件":"Close region file",`<button type="button" class="browse" id="specifiedCloseBrowse" style="width:100%;cursor:pointer"><span class="path" id="specifiedClosePathText" style="max-width:none"></span></button>`)}
         ${closeBoundaryControls("specified",specifiedRefine.closeBoundary,z)}
       </div>
+      <div id="specifiedRefinementError" role="alert" style="color:var(--fail);font-size:12px;margin-top:10px"></div>
       <div style="margin-top:12px">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:8px">
           <div><span style="font-weight:650">${z ? "指定细化次数" : "Specified refinement passes"}</span>
@@ -2959,9 +3031,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       red_green: z
         ? "Red-Green：把标记三角形四分并闭合悬挂边；适合任意判据形状，最终邻接度由质量检查约束。"
         : "Red-Green: quarters marked triangles and closes hanging edges; accepts arbitrary criterion shapes, with final vertex degree enforced by quality checks.",
-      harp_dv: z
-        ? "HARP-DV：每轮在当前 Voronoi 单元上重新检查目标尺度，只提交满足拓扑和最小角约束的局部事务。"
-        : "HARP-DV: re-evaluates target scales on current Voronoi cells each cycle and commits only local transactions that preserve topology and minimum angle.",
       certified: z
         ? "CMRC：从认证二十面体母网格反向粗化；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交。"
         : "CMRC: builds a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; failed or unfinished compression retains the certified finer grid."
@@ -2970,7 +3039,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       <div class="grid2">
-        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="harp_dv" ${algorithmFamily==="harp_dv"?"selected":""}>HARP-DV</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC、Red-Green 和 HARP-DV 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC, Red-Green, and HARP-DV are peer backends.")}
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
@@ -3004,21 +3073,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"弱凹消除":"Weak-concavity elimination",`<select class="select" id="expertWeakConcav"><option value="">${z?"引擎默认（开）":"engine default (on)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭（可能超过 7 邻接）":"Off (may exceed degree 7)"}</option></select>`)}
       </div>
     </div>`;
-    const harpOptions = `<div id="harpDvOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
-      <div style="font-weight:700;margin-bottom:10px">HARP-DV · ${z?"专属参数":"specific parameters"}</div>
-      <div class="grid2">
-        ${field(z?"最大循环数":"Max cycles",`<input class="input" type="number" id="harpMaxCycles" min="1" step="1" value="${specifiedRefine.harpMaxCycles}">`)}
-        ${field(z?"最小单元宽度 (m)":"Minimum cell width (m)",`<input class="input" type="number" id="harpMinimumCellWidthM" min="0.001" step="100" value="${specifiedRefine.harpMinimumCellWidthM}">`)}
-        ${field(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="harpMaximumCells" min="1" step="1" value="${specifiedRefine.harpMaximumCells}">`)}
-        ${field(z?"最大事务补丁三角形数":"Maximum patch triangles",`<input class="input" type="number" id="harpMaximumPatchCells" min="1" step="1" value="${specifiedRefine.harpMaximumPatchCells}">`,z?"schema 保留 maximum_patch_cells 名称，实际单位为三角形":"schema keeps maximum_patch_cells; the actual unit is triangles")}
-        ${field(z?"最大邻胞尺度比":"Max neighbor-scale ratio",`<input class="input" type="number" id="harpMaximumNeighborScaleRatio" min="1.0001" step="0.05" value="${specifiedRefine.harpMaximumNeighborScaleRatio}">`)}
-        ${field(z?"候选点最小间距 (m)":"Candidate minimum separation (m)",`<input class="input" type="number" id="harpMinimumCandidateSeparationM" min="0.001" step="0.1" value="${specifiedRefine.harpMinimumCandidateSeparationM}">`)}
-        ${field(z?"最大顶点邻接度":"Maximum vertex degree",`<input class="input" type="number" id="harpMaximumVertexDegree" min="3" max="7" step="1" value="${specifiedRefine.harpMaximumVertexDegree}">`,z?"gridfile 上限为 7":"gridfile limit is 7")}
-        ${field(z?"事务最小角硬门 (°)":"Transaction minimum-angle gate (°)",`<input class="input" type="number" id="harpMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.harpMinimumTriangleAngleDeg}">`,z?"默认 0°（关闭）；质量报告仍按 25° 告警":"Defaults to 0° (off); the quality report still warns below 25°")}
-        ${field(z?"Ruppert 最小角需求 (°)":"Ruppert minimum-angle criterion (°)",`<input class="input" type="number" id="harpCriterionMinimumAngleDeg" min="0" max="20.7" step="0.1" value="${specifiedRefine.harpCriterionMinimumAngleDeg}">`,z?"0 关闭；≤20.7° 保持终止性边界":"0 disables it; ≤20.7° preserves the termination bound")}
-        ${field(z?"执行约束":"Execution invariants",`<input class="input" value="${z?"确定性单线程；闭合球面":"deterministic single-thread; closed surface"}" disabled>`,z?"当前实现只有这一种有效模式，因此不伪造无效开关":"the implementation has only this valid mode, so no fake switches are exposed")}
-      </div>
-    </div>`;
     const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
       <div class="grid2">
@@ -3036,13 +3090,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       method_c: canonicalMethodCOptions,
       lepp_delaunay: leppOptions,
       red_green: redGreenOptions,
-      harp_dv: harpOptions,
       certified: certifiedOptions
     }[algorithm];
     // Only the canonical nested algorithm serves the h-field. The others refuse a run
     // that configures one, so offering it beside them builds a project that
-    // cannot run -- and before they grew the refusal, HARP-DV took the pair and
-    // quietly produced a mesh having never read the field.
+    // cannot run.
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
       <div class="grid2" style="margin-top:10px">
@@ -3061,12 +3113,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
-    const springControls = algorithm === "harp_dv" || algorithm === "certified"
-      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${algorithm === "certified" ? (z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate.") : (z?"HARP-DV 使用带 Delaunay 合法化和质量验收的事务式点位调整；固定拓扑的通用弹簧不适用于该后端。":"HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance; the fixed-topology generic spring does not apply to this backend.")}</div>`
+    const springControls = algorithm === "certified"
+      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate."}</div>`
       : `${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
         ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
     const expertRefine = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${algorithm === "certified" ? "CMRC" : (algorithm === "harp_dv" ? (z ? "HARP-DV 后处理" : "HARP-DV post-processing") : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)"))}</span>
+      <span class="expert-tag">⚙ ${algorithm === "certified" ? "CMRC" : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)")}</span>
       <div class="grid2" style="margin-top:10px">
         ${springControls}
         ${field("NL%isolated_ocean",`<select class="select" id="expertIsolatedOcean"><option value="">${z?"自动（海洋网格开启）":"Auto (on for ocean meshes)"}</option><option value="on">${z?"开启":"On"}</option><option value="off">${z?"关闭":"Off"}</option></select>`,z?"通用输出清理：仅保留最大连通水体":"common output cleanup: keep only the largest connected water body")}
@@ -3147,6 +3199,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         + (thresholdRefine.enabled ? threshold : "")
         + (strategyEnabled ? hfieldBlock : "");
       anchor.insertAdjacentHTML("afterend", mp);
+      if (draftError) {
+        const notice = document.createElement("p");
+        notice.style.cssText = "color:var(--muted);font-size:12px";
+        notice.textContent = z ? "当前草稿未通过检查（详见日志）；暂显示已接受配置的数据图层，仍可修正字段。保存和运行会重新校验。" : "The draft did not pass checks (see log). Showing data layers from the accepted configuration so fields remain editable; Save and Run will revalidate.";
+        anchor.after(notice);
+      }
       const rows = document.getElementById("thresholdRows");
       if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));
       const specifiedCloseText = document.getElementById("specifiedClosePathText");
@@ -3224,15 +3282,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ["leppMaximumInsertionsPerCycle","leppMaximumInsertionsPerCycle",true],
         ["leppMaximumPathLength","leppMaximumPathLength",true],
         ["leppMinimumTriangleAngleDeg","leppMinimumTriangleAngleDeg",false],
-        ["harpMaxCycles","harpMaxCycles",true],
-        ["harpMinimumCellWidthM","harpMinimumCellWidthM",false],
-        ["harpMaximumCells","harpMaximumCells",true],
-        ["harpMaximumPatchCells","harpMaximumPatchCells",true],
-        ["harpMaximumNeighborScaleRatio","harpMaximumNeighborScaleRatio",false],
-        ["harpMinimumCandidateSeparationM","harpMinimumCandidateSeparationM",false],
-        ["harpMaximumVertexDegree","harpMaximumVertexDegree",true],
-        ["harpMinimumTriangleAngleDeg","harpMinimumTriangleAngleDeg",false],
-        ["harpCriterionMinimumAngleDeg","harpCriterionMinimumAngleDeg",false],
         ["certifiedMaximumLevel","certifiedMaximumLevel",true],
         ["certifiedMaximumCells","certifiedMaximumCells",true],
         ["certifiedGradationRingsPerLevel","certifiedGradationRingsPerLevel",true],
@@ -3368,9 +3417,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const specCloseBrowse = document.getElementById("specifiedCloseBrowse");
     const specCloseText = document.getElementById("specifiedClosePathText");
     const readNum = (el) => {
-      if (!el || !el.value.trim()) return null;
-      const n = parseFloat(el.value);
-      return Number.isFinite(n) ? n : null;
+      if (!el) return null;
+      return el.value.trim() ? Number(el.value) : "";
     };
     const paintSpecifiedKind = (kind) => {
       const radiusFields = document.getElementById("specifiedRadiusFields");
@@ -3380,6 +3428,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (bboxFields) bboxFields.style.display = kind === "bbox" ? "" : "none";
       if (closeFields) closeFields.style.display = kind === "close" ? "" : "none";
       if (specCloseText) specCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z?"📄 点击选择 SHP/NML/NetCDF/TXT":"📄 Choose SHP/NML/NetCDF/TXT");
+      const error = specifiedRefinementError(specifiedRefine);
+      const message = document.getElementById("specifiedRefinementError");
+      if (message) message.textContent = error;
+      [specLon, specLat, specRadius, specW, specE, specS, specN].forEach((el) => {
+        if (!el) return;
+        const active = kind === (el === specLon || el === specLat || el === specRadius ? "radius" : "bbox");
+        el.setCustomValidity(active ? error : "");
+        el.setAttribute("aria-invalid", String(active && !!error));
+        el.setAttribute("aria-describedby", "specifiedRefinementError");
+        el.setAttribute("aria-label", el.closest(".field").querySelector("label").textContent);
+      });
     };
     if (specOn) specOn.onchange = () => {
       specifiedRefine.enabled = specOn.checked;
@@ -3408,8 +3467,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (el) el.addEventListener("change", syncSpecified);
     });
     if (specCloseBrowse) specCloseBrowse.onclick = async () => {
-      let p; try { p = await api.pickDataFile(); } catch (e) { logLine("✗ " + e); return; }
-      if (!p) return;
+      let p; try { p = await api.pickDataFile(); }
+      catch (e) { if (document.getElementById("specifiedCloseBrowse") === specCloseBrowse) logLine("✗ " + e); return; }
+      if (!p || document.getElementById("specifiedCloseBrowse") !== specCloseBrowse) return;
       if (!inferCloseFormat(p)) {
         logLine("✗ " + (z ? "指定闭合细化支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Specified close refinement supports .shp / .nml / .nc / .nc4 / .txt / .csv"));
         return;
@@ -3437,9 +3497,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (runInfo && runInfo.outdir) invoke("open_path", { path: runInfo.outdir }).catch((e) => logLine("✗ " + e));
     };
     if (runInfo) renderAutoRefineDecisions(runInfo.autoRefineDecisions || []);
+    renderProjectDelivery(runInfo);
     if (runInfo) renderCertifiedRun(runInfo.certified);
     // Re-render the cached quality result when step 6 rebuilds its DOM.
     if (runInfo && runInfo.ok && _lastQuality) renderQualityCard(_lastQuality);
+    setRunControls(runInProgress);
   }
 
   // renderStep is a function declaration => reassignable; wrap it to enhance
@@ -3476,15 +3538,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   // Reflect a loaded + validated project into the UI (shared by Open and recents).
-  async function reflectProject(res) {
+  async function reflectProject(res, epoch = ++projectLoadEpoch) {
+    await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let sum;
-    try { sum = await api.summary(res.yaml); } catch (e) { logLine("✗ " + e); return; }
+    try { sum = await api.summary(res.yaml); }
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
+    try { await api.validate(res.yaml); sum._valid = true; sum._err = null; }
+    catch (e) { sum._valid = false; sum._err = String(e); }
+    if (epoch !== projectLoadEpoch) return;
     projectActive = true;
     baseProjectYaml = res.yaml;
     lastSummary = sum;
     clearRunArtifacts();
-    try { await api.validate(res.yaml); lastSummary._valid = true; lastSummary._err = null; }
-    catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
     try {
       const nameEl = document.querySelector(".proj-name");
       if (nameEl) nameEl.value = sum.name;
@@ -3495,6 +3562,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (matchingTpl >= 0) tpl = matchingTpl;
       targetEdit = { kind: sum.target_kind, modelFormat: sum.model_format };
       cellEdit = String(sum.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
+      colmMeshDelivery = { enabled: !!sum.colm_mesh_enabled, pixelsPerDegree: sum.colm_mesh_pixels_per_degree || 240 };
       if (sum.nxp != null) { resUnitIdx = 1; resVal = sum.nxp; }
       else if (sum.approx_degree != null) { resUnitIdx = 2; resVal = sum.approx_degree; }
       else if (sum.approx_km != null) { resUnitIdx = 0; resVal = sum.approx_km; }
@@ -3506,13 +3574,16 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       (sum.threshold_criteria || []).forEach((criterion) => {
         criterionEdits[criterion.id] = { enabled: !!criterion.enabled, value: criterion.value };
       });
+      domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE];
+      watershedPath = ""; closePath = ""; closeFormat = "nml";
+      domainSeaRatios = { [sum.domain_shape]: sum.sea_ratio ?? null };
       domainCloseBoundary = normalizeCloseBoundary(null);
       if (sum.domain_shape === "shapefile") {
         domainMode = "watershed";
         regional = true;
         watershedPath = sum.watershed_path || "";
         domainEdit = { kind: "shapefile", path: watershedPath, seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary(watershedPath);
+        loadWatershedBoundary(watershedPath);
       } else if (sum.domain_shape === "close") {
         domainMode = "close";
         regional = true;
@@ -3520,23 +3591,29 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         closeFormat = sum.close_format || "nml";
         domainCloseBoundary = normalizeCloseBoundary(sum.domain_close_boundary);
         domainEdit = { kind: "close", path: closePath, format: closeFormat, seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
+        loadWatershedBoundary(closeFormat === "polygon_shp" ? closePath : "");
+      } else if (sum.domain_shape === "circle" && Array.isArray(sum.circle) && sum.circle.length === 3) {
+        domainMode = "circle";
+        regional = true;
+        domCircle = [...sum.circle];
+        domainEdit = { kind: "circle", seaRatio: sum.sea_ratio ?? null };
+        loadWatershedBoundary("");
       } else if (sum.bbox) {
         domainMode = "regional";
         regional = true;
         domBbox = [sum.bbox[0], sum.bbox[1], sum.bbox[2], sum.bbox[3]];
         domainEdit = { kind: "bbox", w: sum.bbox[0], e: sum.bbox[1], s: sum.bbox[2], n: sum.bbox[3], seaRatio: sum.sea_ratio ?? null };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       } else if (isRegional) {
         domainMode = "regional";
         regional = true;
         domainEdit = { kind: "hidden", shape: sum.domain_shape || "regional" };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       } else {
         domainMode = "global";
         regional = false;
         domainEdit = { kind: "global" };
-        await loadWatershedBoundary("");
+        loadWatershedBoundary("");
       }
       hiddenDomainShape = domainEdit.kind === "hidden" ? domainEdit.shape : null;
       expertEdit = {
@@ -3582,15 +3659,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         leppMaximumPathLength: sum.method_c_lepp_maximum_path_length ?? algorithmDefaults.leppMaximumPathLength,
         leppStopAtSourceResolution: sum.method_c_lepp_stop_at_source_resolution ?? algorithmDefaults.leppStopAtSourceResolution,
         leppMinimumTriangleAngleDeg: sum.method_c_lepp_minimum_triangle_angle_deg ?? algorithmDefaults.leppMinimumTriangleAngleDeg,
-        harpMaxCycles: sum.harp_dv_max_cycles ?? algorithmDefaults.harpMaxCycles,
-        harpMinimumCellWidthM: sum.harp_dv_minimum_cell_width_m ?? algorithmDefaults.harpMinimumCellWidthM,
-        harpMaximumCells: sum.harp_dv_maximum_cells ?? algorithmDefaults.harpMaximumCells,
-        harpMaximumPatchCells: sum.harp_dv_maximum_patch_cells ?? algorithmDefaults.harpMaximumPatchCells,
-        harpMaximumNeighborScaleRatio: sum.harp_dv_maximum_neighbor_scale_ratio ?? algorithmDefaults.harpMaximumNeighborScaleRatio,
-        harpMinimumCandidateSeparationM: sum.harp_dv_minimum_candidate_separation_m ?? algorithmDefaults.harpMinimumCandidateSeparationM,
-        harpMaximumVertexDegree: sum.harp_dv_maximum_vertex_degree ?? algorithmDefaults.harpMaximumVertexDegree,
-        harpMinimumTriangleAngleDeg: sum.harp_dv_minimum_triangle_angle_deg ?? algorithmDefaults.harpMinimumTriangleAngleDeg,
-        harpCriterionMinimumAngleDeg: sum.harp_dv_criterion_minimum_angle_deg ?? algorithmDefaults.harpCriterionMinimumAngleDeg,
         certifiedMode: sum.certified_mode ?? algorithmDefaults.certifiedMode,
         certifiedDelivery: sum.certified_delivery ?? algorithmDefaults.certifiedDelivery,
         certifiedAngleContract: sum.certified_angle_contract ?? algorithmDefaults.certifiedAngleContract,
@@ -3627,37 +3695,50 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       maxPasses = sum.max_passes;
       if (typeof renderSteps === "function") renderSteps();
       if (typeof renderStep === "function") renderStep(typeof cur !== "undefined" ? cur : 0);
+      document.querySelector("#work h1")?.focus();
     } catch (e) { /* best-effort reflect */ }
     pushRecent(res.path, sum.name);
     logLine("✓ opened " + res.path + " — intent " + sum.intent + ", NXP " + (sum.effective_nxp ?? sum.nxp ?? "?"));
   }
 
   async function onSave() {
+    const epoch = projectLoadEpoch;
     try {
+      await projectEditQueue;
+      if (epoch !== projectLoadEpoch) return;
+      const savedName = projectName();
       const yaml = await composeYaml();
+      if (epoch !== projectLoadEpoch) return;
       const path = await api.saveProject(yaml);
       if (path) {
+        pushRecent(path, savedName);
+        logLine("✓ saved " + path);
+        if (epoch !== projectLoadEpoch) return;
         projectActive = true;
         await refreshSummary();
-        pushRecent(path, projectName());
+        if (epoch !== projectLoadEpoch) return;
         renderProjectSummary();
-        logLine("✓ saved " + path);
       }
-      else logLine("save cancelled");
+      else if (epoch === projectLoadEpoch) logLine("save cancelled");
     } catch (e) { logLine("✗ save failed: " + e); }
   }
 
   async function onOpen() {
+    const epoch = ++projectLoadEpoch;
+    await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let res;
-    try { res = await api.openProject(); } catch (e) { logLine("✗ open failed: " + e); return; }
+    try { res = await api.openProject(); }
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ open failed: " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
     if (!res) { logLine("open cancelled"); return; }
-    await reflectProject(res);
+    await reflectProject(res, epoch);
   }
 
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
-    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
+    tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE]; domainSeaRatios = {}; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
@@ -3667,6 +3748,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     for (const k of Object.keys(criterionEdits)) delete criterionEdits[k];
     baseProjectYaml = null;
     domainEdit = null; qualityEdit = null;
+    colmMeshDelivery = { enabled: false, pixelsPerDegree: 240 };
     thresholdRefine = { enabled: false };
     hydroRefine = defaultHydroRefine();
     expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRefine: null, maxIterSpc: null, maxIterCal: null, halo: null, maxTransitionRow: null, setDisType: null, numRc: null, vertexPretectLayers: null, springStrategy: null, beta: null, relax: null, weakConcavEliminate: null, isolatedOcean: null };
@@ -3680,13 +3762,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Compute the summary (+ validation) for the current UI state.
   async function refreshSummary() {
+    const epoch = projectLoadEpoch, base = baseProjectYaml;
+    const current = () => epoch === projectLoadEpoch && base === baseProjectYaml;
     try {
       const yaml = await composeYaml();
-      lastSummary = await api.summary(yaml);
-      try { await api.validate(yaml); lastSummary._valid = true; lastSummary._err = null; }
-      catch (e) { lastSummary._valid = false; lastSummary._err = String(e); }
-      return lastSummary;
-    } catch (e) { lastSummary = null; return null; }
+      if (!current()) return null;
+      const sum = await api.summary(yaml);
+      if (!current()) return null;
+      try { await api.validate(yaml); sum._valid = true; sum._err = null; }
+      catch (e) { sum._valid = false; sum._err = String(e); }
+      if (!current()) return null;
+      lastSummary = sum;
+      return sum;
+    } catch (e) { if (current()) lastSummary = null; return null; }
   }
 
   function cellShapeLabel(cell) {
@@ -3753,6 +3841,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         : (zh() ? `仅 EarthMesh 网格（跳过 ${model} 专用输出）` : `EarthMesh grid only (${model} adapter skipped)`);
       deliveryIn.title = status === "full" ? "" : (skipped || "");
     }
+    const colmControls = document.getElementById("colmMeshDeliveryControls");
+    const colmEnabled = document.getElementById("colmMeshEnabled");
+    const colmPpd = document.getElementById("colmMeshPixelsPerDegree");
+    if (colmControls) colmControls.style.display = model === "CoLM" ? "" : "none";
+    if (colmEnabled) colmEnabled.checked = !!colmMeshDelivery.enabled;
+    if (colmPpd) { colmPpd.value = colmMeshDelivery.pixelsPerDegree ?? 240; colmPpd.disabled = !colmMeshDelivery.enabled; colmPpd.setCustomValidity(""); }
     if (modeIn) modeIn.textContent = qualityModeLabel(mode, cell);
     if (ready) ready.textContent = model;
     if (readyMode) readyMode.textContent = qualityModeLabel(mode, cell);
@@ -3845,27 +3939,41 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const kind = kindIn.value;
         const models = compatibleTargetModels();
         const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
-        targetEdit = { kind: kind, modelFormat: currentModel };
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, currentModel));
+        paintTargetOutputs(lastSummary);
       };
     }
     if (modelIn) {
       modelIn.onchange = async () => {
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
         const models = compatibleTargetModels();
-        targetEdit = { kind: kind, modelFormat: models.includes(modelIn.value) ? modelIn.value : models[0] };
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        const nextModel = models.includes(modelIn.value) ? modelIn.value : models[0];
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, nextModel));
+        paintTargetOutputs(lastSummary);
       };
     }
     if (cellIn) {
       cellIn.onchange = async () => {
-        cellEdit = cellIn.value === "tri" ? "tri" : "hex";
-        clearRunArtifacts();
-        paintTargetOutputs(await refreshSummary());
+        const cell = cellIn.value === "tri" ? "tri" : "hex";
+        await commitProjectEdit(yaml => api.setTargetCell(yaml, cell));
+        paintTargetOutputs(lastSummary);
       };
     }
+    const colmEnabled = document.getElementById("colmMeshEnabled");
+    const colmPpd = document.getElementById("colmMeshPixelsPerDegree");
+    const syncColm = async () => {
+      const enabled = !!(colmEnabled && colmEnabled.checked);
+      const text = colmPpd ? colmPpd.value.trim() : "240";
+      const value = Number(text);
+      const valid = Number.isInteger(value) && value > 0;
+      if (colmPpd) colmPpd.setCustomValidity(enabled && !valid ? (zh()?"请输入正整数":"Enter a positive integer") : "");
+      colmMeshDelivery = { enabled, pixelsPerDegree: valid ? value : null };
+      clearRunArtifacts();
+      if (enabled && !valid) return;
+      paintTargetOutputs(await refreshSummary());
+    };
+    if (colmEnabled) colmEnabled.onchange = syncColm;
+    if (colmPpd) { colmPpd.oninput = syncColm; colmPpd.onchange = syncColm; }
     const s = await refreshSummary();
     paintTargetOutputs(s);
     wireExpertTargetStep();
@@ -3873,19 +3981,27 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function onNew() {
     if (!confirm(zh() ? "新建会清空当前项目编辑，确定继续？（如需保留请先用 💾 保存）" : "Start a new project? Current edits will be cleared (use 💾 Save first to keep them).")) return;
+    const epoch = ++projectLoadEpoch;
+    await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     resetProject();
     projectActive = true;
     await refreshSummary();
+    if (epoch !== projectLoadEpoch) return;
     if (typeof renderSteps === "function") renderSteps();
     if (typeof renderStep === "function") renderStep(0);
     logLine(zh() ? "✓ 新建项目" : "✓ new project");
   }
 
   async function openRecent(path) {
+    const epoch = ++projectLoadEpoch;
+    await projectEditQueue;
+    if (epoch !== projectLoadEpoch) return;
     let res;
     try { res = await invoke("read_project", { path }); }
-    catch (e) { logLine("✗ open " + path + ": " + e); return; }
-    await reflectProject(res);
+    catch (e) { if (epoch === projectLoadEpoch) logLine("✗ open " + path + ": " + e); return; }
+    if (epoch !== projectLoadEpoch) return;
+    await reflectProject(res, epoch);
   }
 
   // ---- New Project (step 0): output-folder picker + real recent list --------
@@ -3931,17 +4047,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       card.appendChild(empty);
     } else {
       recents.forEach((r) => {
-        const div = document.createElement("div");
-        div.className = "browse";
-        div.style.cssText = "margin-bottom:8px;cursor:pointer";
-        div.title = r.path;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "browse project-pick";
+        button.style.marginBottom = "8px";
+        button.title = r.path;
         const label = document.createElement("span");
         label.className = "path";
         label.style.maxWidth = "none";
         label.textContent = "📄 " + (r.name || r.path);
-        div.appendChild(label);
-        div.onclick = () => openRecent(r.path);
-        card.appendChild(div);
+        button.appendChild(label);
+        button.onclick = () => openRecent(r.path);
+        card.appendChild(button);
       });
     }
     const ch = card.querySelector(".ch");
@@ -3963,6 +4080,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       ? ((z ? "流域 SHP：" : "watershed SHP: ") + (s.watershed_path || "—"))
       : s.domain_shape === "close"
       ? ((z ? "闭合区域：" : "close domain: ") + (s.watershed_path || "—"))
+      : s.domain_shape === "circle" && s.circle
+      ? `${z ? "圆形区域" : "circle domain"}: ${s.circle[0]}°, ${s.circle[1]}° · ${s.circle[2]} km`
       : s.domain_shape === "bbox" && s.bbox
       ? (z ? "区域矩形框" : "regional bbox")
       : (s.domain_shape === "global"
@@ -4038,6 +4157,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   // Run -> compose YAML -> spawn the mesh engine, stream logs, report status.
   async function doRun() {
+    if (runInProgress || killInProgress) return;
+    let completeRun;
+    runCompletion = new Promise(resolve => { completeRun = resolve; });
     const rtext = document.getElementById("rtext");
     const rdot = document.getElementById("rdot");
     const setStatus = (txt, done) => {
@@ -4046,52 +4168,112 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     setStatus(zh() ? "运行中…" : "running…", false);
     setRunControls(true);
-    clearRunArtifacts();
-    // show the Log pane because the Run button now lives inside the step footer
-    document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
-    document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
-    let finalQuality = null;
     try {
-      for (;;) {
-        let yaml;
-        try { yaml = await composeYaml(); } catch (e) { logLine("✗ " + e); setStatus(zh() ? "运行失败" : "failed", true); setRunControls(false); return; }
-        try { lastSummary = await api.summary(yaml); } catch (e) {}
-        logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
-        const r = await api.runProject(yaml, outputPath || null);
-        logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
-                     : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
-        setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
-        const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-        hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, certified: r.certified || null, autoRefineDecisions: decisions };
-        if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
-        break;
-      }
+      await projectEditQueue;
+      clearRunArtifacts();
+      if (typeof cur !== "undefined" && cur === 6) renderStep(6);
+      // show the Log pane because the Run button now lives inside the step footer
+      document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
+      document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
+      const yaml = await composeYaml();
+      let runSummary = null;
+      try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
+      logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
+      const r = await api.runProject(yaml, outputPath || null);
+      logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
+                   : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
+      setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
+      const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
+      hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
+      if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
     } catch (e) {
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
       hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
-    }
-    setRunControls(false);
-    if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
-      try { renderStep(6); }
-      catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
-    }
-    if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile, finalQuality);
-    else if (runInfo && runInfo.ok) {
-      logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
-      renderMissingGridfile();
+    } finally {
+      setRunControls(false);
+      try {
+        if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
+          try { renderStep(6); }
+          catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
+        }
+        if (runInfo && runInfo.ok && runInfo.gridfile) loadQualityAndMesh(runInfo.gridfile);
+        else if (runInfo && runInfo.ok) {
+          logLine(zh() ? "⚠ 引擎未报告 gridfile；跳过质量分析和地图叠加。" : "⚠ engine did not report gridfile; skipping quality and map overlay.");
+          renderMissingGridfile();
+        }
+      } finally {
+        runCompletion = null;
+        completeRun();
+      }
     }
   }
 
   const openButton = (label, path) => {
     if (!path) return null;
-    const button = document.createElement("span");
+    const button = document.createElement("button");
+    button.type = "button";
     button.className = "btn-ghost";
     button.style.cssText = "cursor:pointer;margin-right:8px;display:inline-block;margin-top:8px";
     button.textContent = label;
     button.onclick = () => invoke("open_path", { path }).catch((e) => logLine("✗ " + e));
     return button;
   };
+
+  function renderProjectDelivery(result) {
+    const card = document.getElementById("deliveryCard");
+    if (!card) return;
+    card.style.display = "";
+    card.textContent = "";
+    const title = document.createElement("h3");
+    title.textContent = zh() ? "实际交付结果" : "Actual delivery";
+    card.appendChild(title);
+    const summary = document.createElement("div");
+    summary.className = "ch";
+    card.appendChild(summary);
+    if (!result || !result.ok) {
+      summary.textContent = zh() ? "运行失败，未确认模型文件交付。" : "Run failed; model delivery is not confirmed.";
+      return;
+    }
+    const bundle = result.delivery;
+    if (!bundle || !bundle.report) {
+      summary.textContent = zh() ? "引擎未报告实际交付结果；无法确认模型文件已交付。" : "This engine did not report actual delivery; model files are unconfirmed.";
+      return;
+    }
+    const report = bundle.report;
+    const delivered = report.model_delivery_status === "model_delivered";
+    summary.textContent = delivered
+      ? (zh() ? "模型文件已交付（不代表已通过模型试运行）。" : "Model files delivered (not a model solver validation).")
+      : (zh() ? "仅生成通用网格；未交付模型文件。" : "Native mesh only; no model files delivered.");
+    const target = document.createElement("p");
+    target.className = "ch";
+    target.textContent = [report.target.kind, report.target.cell, report.target.model_format].join(" / ")
+      + " · " + (zh() ? "计划能力：" : "Planned capability: ") + report.capability
+      + " · " + (zh() ? "最终质量判定：" : "Final quality verdict: ") + report.final_quality.verdict.toUpperCase();
+    card.appendChild(target);
+    if (report.skipped_reason) {
+      const reason = document.createElement("p");
+      reason.className = "ch"; reason.textContent = report.skipped_reason;
+      card.appendChild(reason);
+    }
+    const files = document.createElement("details");
+    const label = document.createElement("summary");
+    label.textContent = zh() ? "文件与检查报告" : "Files and check reports";
+    files.appendChild(label);
+    const paths = [
+      [zh()?"最终选定网格":"Selected final mesh", report.gridfile],
+      [zh()?"最终质量报告":"Final quality report", report.final_quality.report],
+      [zh()?"交付清单":"Delivery record", bundle.report_path],
+      ...Object.entries(report.model_artifacts),
+    ];
+    paths.forEach(([name, path]) => {
+      const row = document.createElement("div");
+      const text = document.createElement("div");
+      text.className = "ch"; text.textContent = path;
+      row.append(openButton(name, path), text); files.appendChild(row);
+    });
+    card.appendChild(files);
+  }
 
   function renderCertifiedRun(bundle) {
     const card = document.getElementById("certifiedCard");
@@ -4307,24 +4489,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   // After a successful run: parse mesh quality into the step-6 card, and overlay
-  // the generated mesh on the map using the ProjectSummary cell shape.
+  // the generated mesh using its delivered cell shape and run-time summary.
   function meshViewKind() {
-    return (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
+    const report = runInfo && runInfo.delivery && runInfo.delivery.report;
+    const summary = runInfo && runInfo.summary;
+    return String((report && report.target.cell) || (summary && summary.cell) || "").toLowerCase() === "tri" ? "tri" : "hex";
   }
   function readMeshQuality(gridfile) {
     const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
     const certifiedMinimum = certificate && certificate.angle_contract === "legacy_strict_40_to_80" ? 40
       : (certificate && certificate.angle_contract === "domain_quality_38_to_82_v1" ? 38 : NaN);
-    const projectMinimum = lastSummary && Number(lastSummary.min_angle_deg);
+    const summary = runInfo && runInfo.summary;
+    const projectMinimum = summary ? Number(summary.min_angle_deg) : NaN;
     return invoke("mesh_quality", {
       gridfile,
       kind: meshViewKind(),
       minAngleDeg: Number.isFinite(certifiedMinimum) ? certifiedMinimum : (Number.isFinite(projectMinimum) ? projectMinimum : DEFAULT_MIN_ANGLE_DEG),
-      onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((lastSummary && lastSummary.on_violation) || "warn")
+      onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((summary && summary.on_violation) || "warn")
     });
   }
-  function loadMeshMeritCells(gridfile, kind) {
-    const summary = lastSummary;
+  function loadMeshMeritCells(gridfile, kind, result) {
+    if (runInfo !== result) return;
+    const summary = result.summary;
     const merit = meshMeritLayer(summary);
     const landcover = meshLandcoverLayer(summary);
     const b = summary && summary.bbox;
@@ -4340,6 +4526,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
+        if (runInfo !== result) return;
         const classified = JSON.parse(txt);
         const fullCount = _meshGeojson && Array.isArray(_meshGeojson.features) ? _meshGeojson.features.length : 0;
         const classifiedCount = Array.isArray(classified.features) ? classified.features.length : 0;
@@ -4351,7 +4538,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         applyCoastal(classified, false);
         logLine(zh() ? "✓ 最终网格预览已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh preview classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
-      .catch((e) => { clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+      .catch((e) => { if (runInfo !== result) return; clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
   }
   function certifiedPreviewCellCount(kind) {
     const resources = runInfo && runInfo.certified && runInfo.certified.resources;
@@ -4384,8 +4571,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   async function loadMeshPreview(gridfile,kind,totalCells,bbox,doFit,quiet=false) {
     const token = ++_meshPreviewToken;
     const stride = meshPreviewStride(totalCells,bbox);
-    const text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell:0, maxCells:MESH_VIEW_CELLS, cellStride:stride, bbox });
-    if (token !== _meshPreviewToken) return;
+    let text;
+    try {
+      text = await invoke("mesh_cell_polygons", { gridfile, kind, startCell:0, maxCells:MESH_VIEW_CELLS, cellStride:stride, bbox });
+    } catch (error) {
+      if (token === _meshPreviewToken) throw error;
+      return false;
+    }
+    if (token !== _meshPreviewToken) return false;
     const mesh = JSON.parse(text);
     applyMesh(mesh,doFit);
     if (!quiet) {
@@ -4393,21 +4586,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const scope = bbox ? (zh()?"当前视野":"current view") : (zh()?"全域":"global extent");
       logLine((zh()?"✓ 网格已叠加（":"✓ mesh overlaid (") + scope + ` LOD): ${shown.toLocaleString()} / ${totalCells.toLocaleString()}`);
     }
+    return true;
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
+    const result = runInfo;
+    if (!result || result.gridfile !== gridfile) return;
+    const current = () => runInfo === result;
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
-    const kind = (lastSummary && String(lastSummary.cell || "").toLowerCase() === "tri") ? "tri" : "hex";
+    const kind = meshViewKind();
     const quality = knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile);
-    quality.then((q) => { _lastQuality = q; renderQualityCard(q); })
-      .catch((e) => renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e));
+    quality.then((q) => { if (current()) { _lastQuality = q; renderQualityCard(q); } })
+      .catch((e) => { if (current()) renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e); });
     const knownCells = Number(knownQuality && knownQuality.cell_count) || certifiedPreviewCellCount(kind);
     const startPreview = (totalCells) => {
+      if (!current()) return false;
       _meshPreview = {gridfile,kind,totalCells,key:"global"};
       return loadMeshPreview(gridfile,kind,totalCells,null,true);
     };
     (knownCells > 0 ? startPreview(knownCells) : quality.then((q)=>startPreview(Number(q.cell_count)||MESH_VIEW_CELLS)))
-      .then(() => { if (!(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind); })
-      .catch((e) => logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e));
+      .then((applied) => { if (applied && current() && !result.certified) loadMeshMeritCells(gridfile, kind, result); })
+      .catch((e) => { if (current()) logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e); });
   }
 
   // A distribution row: [min..max] track with the μ±σ band + mean tick.

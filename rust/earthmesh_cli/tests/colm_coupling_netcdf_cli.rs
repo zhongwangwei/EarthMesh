@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -24,16 +26,17 @@ case_delta,C002,2,114.5,23.4,COAST,false,,0.0,,true,COAST_OCEAN,0.75,5000.0,0.00
     .expect("write CoLM coupling CSV");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = Command::new(exe)
-        .arg("--colm-coupling-csv-to-netcdf")
-        .arg(&input_csv)
-        .arg(&output_nc)
-        .arg("--case-name")
-        .arg("case_delta")
-        .arg("--delivery-manifest")
-        .arg(&delivery_manifest)
-        .output()
-        .expect("run earthmesh_cli CoLM coupling NetCDF export");
+    let output = support::output(
+        Command::new(exe)
+            .arg("--colm-coupling-csv-to-netcdf")
+            .arg(&input_csv)
+            .arg(&output_nc)
+            .arg("--case-name")
+            .arg("case_delta")
+            .arg("--delivery-manifest")
+            .arg(&delivery_manifest),
+    )
+    .expect("run earthmesh_cli CoLM coupling NetCDF export");
 
     assert!(
         output.status.success(),
@@ -145,16 +148,17 @@ case_delta,C003,3,115.5,24.4,OCEAN,false,,0.0,,false,,0.0,6000.0,0.0003,m2\n",
     .expect("write CoLM coupling CSV");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = Command::new(exe)
-        .arg("--colm-coupling-csv-to-netcdf")
-        .arg(&input_csv)
-        .arg(&output_nc)
-        .arg("--case-name")
-        .arg("case_delta")
-        .arg("--restart-template-netcdf")
-        .arg(&restart_nc)
-        .output()
-        .expect("run earthmesh_cli CoLM restart template export");
+    let output = support::output(
+        Command::new(exe)
+            .arg("--colm-coupling-csv-to-netcdf")
+            .arg(&input_csv)
+            .arg(&output_nc)
+            .arg("--case-name")
+            .arg("case_delta")
+            .arg("--restart-template-netcdf")
+            .arg(&restart_nc),
+    )
+    .expect("run earthmesh_cli CoLM restart template export");
 
     assert!(
         output.status.success(),
@@ -226,16 +230,17 @@ case_delta,C003,3,115.5,24.4,OCEAN,false,,0.0,,false,,0.0,6000.0,0.0003,m2\n",
     .expect("write CoLM coupling CSV");
 
     let exe = std::env::var("CARGO_BIN_EXE_earthmesh_cli").expect("binary path from cargo");
-    let output = Command::new(exe)
-        .arg("--colm-coupling-csv-to-netcdf")
-        .arg(&input_csv)
-        .arg(&output_nc)
-        .arg("--case-name")
-        .arg("case_delta")
-        .arg("--forcing-template-netcdf")
-        .arg(&forcing_nc)
-        .output()
-        .expect("run earthmesh_cli CoLM forcing template export");
+    let output = support::output(
+        Command::new(exe)
+            .arg("--colm-coupling-csv-to-netcdf")
+            .arg(&input_csv)
+            .arg(&output_nc)
+            .arg("--case-name")
+            .arg("case_delta")
+            .arg("--forcing-template-netcdf")
+            .arg(&forcing_nc),
+    )
+    .expect("run earthmesh_cli CoLM forcing template export");
 
     assert!(
         output.status.success(),

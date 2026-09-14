@@ -2,11 +2,10 @@ use crate::infer_mask_restart_ocean_num_vertex_from_config;
 use crate::maybe_infer_mask_restart_non_ocean_num_vertex_from_config;
 use crate::plan_mkgrd_mask_restart_namelist;
 use crate::refine_pipeline_refine_dispatch_requested;
-use crate::run_mkgrd_gridinit_global_namelist;
 use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
 use crate::run_mkgrd_mask_restart_ocean_namelist;
 use crate::run_mkgrd_mask_restart_patch_namelist;
-use crate::run_refine_pipeline_namelist;
+use crate::run_refine_pipeline_with_delivery;
 use crate::MaskPostprocOceanRunOptions;
 use crate::MaskRestartAction;
 use crate::MkgrdTopLevelDispatchRunReport;
@@ -28,8 +27,22 @@ pub fn run_mkgrd_top_level_namelist(
     max_tris: usize,
     mask_restart_max_iter: i32,
 ) -> io::Result<MkgrdTopLevelDispatchRunReport> {
-    let namelist_source = namelist_source.as_ref();
-    let workdir = workdir.as_ref();
+    run_mkgrd_top_level_with_base_delivery(
+        namelist_source.as_ref(),
+        workdir.as_ref(),
+        max_tris,
+        mask_restart_max_iter,
+        false,
+    )
+}
+
+pub(crate) fn run_mkgrd_top_level_with_base_delivery(
+    namelist_source: &Path,
+    workdir: &Path,
+    max_tris: usize,
+    mask_restart_max_iter: i32,
+    final_base_delivery: bool,
+) -> io::Result<MkgrdTopLevelDispatchRunReport> {
     let contents = fs::read_to_string(namelist_source)?;
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
@@ -89,10 +102,21 @@ pub fn run_mkgrd_top_level_namelist(
     }
 
     if refine_pipeline_refine_dispatch_requested(&contents, &config)? {
-        return run_refine_pipeline_namelist(namelist_source, workdir, max_tris, None)
-            .map(MkgrdTopLevelDispatchRunReport::RefinePipeline);
+        return run_refine_pipeline_with_delivery(
+            namelist_source,
+            workdir,
+            max_tris,
+            None,
+            final_base_delivery,
+        )
+        .map(MkgrdTopLevelDispatchRunReport::RefinePipeline);
     }
 
-    run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)
-        .map(MkgrdTopLevelDispatchRunReport::Gridinit)
+    crate::mkgrd_gridinit_driver::run_mkgrd_gridinit_global(
+        namelist_source,
+        workdir,
+        max_tris,
+        final_base_delivery && config.mask_domain_global,
+    )
+    .map(MkgrdTopLevelDispatchRunReport::Gridinit)
 }

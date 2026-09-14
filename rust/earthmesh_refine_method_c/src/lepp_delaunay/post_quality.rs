@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use earthmesh_mesh::{dot, magnitude, CartesianPoint, FaceId as StableFaceId, MeshState};
 
-use super::insertion::insert_lepp_terminal_midpoint_with_postcondition;
+use super::insertion::insert_lepp_terminal_batch;
 use super::{
     push_report_detail, spherical_edge_length, FaceId, LeppInsertionError, LeppInsertionGates,
     LeppInsertionReport, LeppSearchConfig,
@@ -122,34 +122,44 @@ pub fn improve_lepp_post_quality(
             stop_reason = LeppPostQualityStopReason::NoCommittableInsertion;
             break;
         };
-        attempted += 1;
         let baseline = objective(mesh, config)?;
         let objective_error = RefCell::new(None);
-        let insertion = insert_lepp_terminal_midpoint_with_postcondition(
+        let batch = insert_lepp_terminal_batch(
             mesh,
+            None,
             candidate.face,
             &config.search,
             &config.gates,
-            |state, _| match objective(state, config) {
-                Ok(candidate) => strictly_improves(candidate, baseline),
-                Err(error) => {
-                    objective_error.replace(Some(error));
-                    false
+            config.maximum_insertions - committed,
+            |state| {
+                if objective_error.borrow().is_some() {
+                    return false;
+                }
+                match objective(state, config) {
+                    Ok(candidate) => strictly_improves(candidate, baseline),
+                    Err(error) => {
+                        objective_error.replace(Some(error));
+                        false
+                    }
                 }
             },
         );
+        attempted += batch.attempted;
         if let Some(error) = objective_error.into_inner() {
             return Err(error);
         }
-        match insertion {
-            Ok(report) => {
-                committed += 1;
-                push_report_detail(&mut insertions, report);
+        match batch.result {
+            Ok(reports) => {
+                committed += reports.len();
+                rejected += batch.attempted - reports.len();
+                for report in reports {
+                    push_report_detail(&mut insertions, report);
+                }
                 skipped.clear();
                 after = quality_snapshot(mesh, config)?;
             }
             Err(error) => {
-                rejected += 1;
+                rejected += batch.attempted;
                 skipped.insert(candidate.id);
                 push_report_detail(
                     &mut rejections,
@@ -233,9 +243,11 @@ fn validate_config(config: &LeppPostQualityConfig) -> Result<(), LeppPostQuality
             message: "search config is invalid".to_string(),
         });
     }
-    if config.gates.maximum_vertex_degree < 3 {
+    if config.gates.maximum_vertex_degree < 3
+        || config.gates.minimum_vertex_degree > config.gates.maximum_vertex_degree
+    {
         return Err(LeppPostQualityError::InvalidConfig {
-            message: "maximum_vertex_degree must be at least three".to_string(),
+            message: "maximum_vertex_degree must be at least three and not less than minimum_vertex_degree".to_string(),
         });
     }
     Ok(())

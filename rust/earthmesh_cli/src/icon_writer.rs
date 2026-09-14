@@ -54,9 +54,223 @@ pub fn write_icon_grid_netcdf(
     mesh: &MpasMesh,
 ) -> io::Result<IconGridWriteReport> {
     validate_mpas_mesh(mesh)?;
-    let output = output.as_ref();
-    crate::ensure_parent_dir(output)?;
     let grid = build_icon_grid(mesh)?;
+    write_icon_grid(output.as_ref(), &grid, None)
+}
+
+/// Export an admitted native TRI mesh without dropping cells to satisfy the
+/// existing ICON dual-builder/ne=6 limitations. No model solver is run.
+pub fn write_icon_from_final_gridfile(
+    gridfile: &Path,
+    output: &Path,
+    nxp: usize,
+) -> io::Result<IconGridWriteReport> {
+    write_icon_final(gridfile, None, output, nxp)
+}
+
+/// Export a whole-triangle selection with metrics from its explicit closed
+/// parent. Boundary dual_area retains the full parent dual, not a clipped volume.
+pub fn write_icon_from_final_gridfile_with_parent(
+    gridfile: &Path,
+    parent: &Path,
+    output: &Path,
+    nxp: usize,
+) -> io::Result<IconGridWriteReport> {
+    write_icon_final(gridfile, Some(parent), output, nxp)
+}
+
+fn write_icon_final(
+    gridfile: &Path,
+    parent: Option<&Path>,
+    output: &Path,
+    nxp: usize,
+) -> io::Result<IconGridWriteReport> {
+    let points = crate::read_gridfile_mesh_points(gridfile)?;
+    let input = crate::grid_quality_pipeline::quality_input_from_gridfile(&points)?;
+    let selected = parent
+        .map(|parent| {
+            let original = crate::read_gridfile_mesh_points(parent)?;
+            validate_closed_triangle_parent(&original)?;
+            crate::regional_gridfile_writers::lineage::verify_whole_triangle_lineage(
+                parent, gridfile, &points,
+            )
+        })
+        .transpose()?;
+    let mesh = crate::read_unstructured_mesh_netcdf(parent.unwrap_or(gridfile))?;
+    // ICON consumes only geometry/connectivity from this existing intermediate:
+    // neither its MPAS density nor nominalMinDc is exported as ICON demand.
+    let cellwidth = vec![1.0; mesh.w_points.len()];
+    let mpas = crate::build_mpas_mesh_from_unstructured_one_based(&mesh, &cellwidth, nxp, 1)?;
+    validate_mpas_mesh(&mpas)?;
+    let grid = build_icon_grid_selection(&mpas, selected.as_deref())?;
+    validate_selected_triangles(&points, &input, &grid)?;
+    crate::atomic_output::validate_output_path(gridfile, output)?;
+    if let Some(parent) = parent {
+        crate::atomic_output::validate_output_path(parent, output)?;
+    }
+    let mut report = None;
+    crate::atomic_output::atomic_write(output, |temporary| {
+        let mut written = write_icon_grid(temporary, &grid, parent)?;
+        crate::open_netcdf(temporary)
+            .map_err(netcdf_to_io_error)?
+            .close()
+            .map_err(netcdf_to_io_error)?;
+        written.output = output.to_path_buf();
+        report = Some(written);
+        Ok(())
+    })?;
+    report.ok_or_else(|| io::Error::other("ICON publication returned no report"))
+}
+
+// ICON represents M triangles; a legal degree-four W fan is not a HEX cell.
+fn validate_closed_triangle_parent(points: &crate::GridfileMeshPoints) -> io::Result<()> {
+    use earthmesh_quality::topology::{
+        boundary_topology, connected_component_count, euler_characteristic, MeshTopologyValidator,
+        Severity,
+    };
+    let input = crate::grid_quality_pipeline::quality_input_from_gridfile(points)?;
+    if boundary_topology(&input).edge_count != 0
+        || euler_characteristic(&input) != 2
+        || connected_component_count(&input) != 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "ICON regional delivery requires one closed triangular sphere as explicit parent",
+        ));
+    }
+    if let Some(issue) = MeshTopologyValidator::new(&input)
+        .validate_all()
+        .into_iter()
+        .find(|issue| issue.severity == Severity::Fail)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ICON parent topology {}: {}",
+                issue.issue_type.as_str(),
+                issue.message
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_selected_triangles(
+    points: &crate::GridfileMeshPoints,
+    input: &earthmesh_quality::QualityMeshInput,
+    grid: &IconGrid,
+) -> io::Result<()> {
+    let invalid = || {
+        io::Error::new(io::ErrorKind::InvalidData,
+        "ICON adapter changed the selected native triangle/vertex/edge set; the existing dual adapter cannot represent this selection")
+    };
+    // Exact coordinate identities, with signed zero equivalent. Coincident
+    // physical vertices are ambiguous: reject rather than merge their topology.
+    let bits = |x: f64| if x == 0.0 { 0 } else { x.to_bits() };
+    let key = |lon: f64, lat: f64| [bits(lon), bits(lat)];
+    let radians = |lon: &[f64], lat: &[f64]| {
+        let points = lon
+            .iter()
+            .zip(lat)
+            .map(|(&lon_degrees, &lat_degrees)| crate::LonLatDegrees {
+                lon_degrees,
+                lat_degrees,
+            })
+            .collect::<Vec<_>>();
+        crate::mpas_lat_lon_radians(&points)
+    };
+    let (lat, lon) = radians(&points.w_lon, &points.w_lat);
+    let used = input
+        .cells
+        .iter()
+        .flat_map(|c| c.vertices.iter().copied())
+        .collect::<BTreeSet<_>>();
+    let expected_vertices = used
+        .iter()
+        .map(|&i| key(lon[i], lat[i]))
+        .collect::<BTreeSet<_>>();
+    let vertices = grid
+        .vlon
+        .iter()
+        .zip(&grid.vlat)
+        .map(|(&x, &y)| key(x, y))
+        .collect::<Vec<_>>();
+    if expected_vertices.len() != used.len()
+        || vertices.len() != used.len()
+        || vertices.iter().copied().collect::<BTreeSet<_>>() != expected_vertices
+    {
+        return Err(invalid());
+    }
+    let (mlat, mlon) = radians(&points.m_lon, &points.m_lat);
+    let first = crate::gridfile_m_row_layout(points).first_physical_row;
+    let mut expected_cells = input
+        .cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut corners = c
+                .vertices
+                .iter()
+                .map(|&j| key(lon[j], lat[j]))
+                .collect::<Vec<_>>();
+            corners.sort_unstable();
+            (key(mlon[first + i], mlat[first + i]), corners)
+        })
+        .collect::<Vec<_>>();
+    let mut cells = grid
+        .vertex_of_cell
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut corners = c
+                .iter()
+                .map(|&j| vertices[j as usize - 1])
+                .collect::<Vec<_>>();
+            corners.sort_unstable();
+            (key(grid.clon[i], grid.clat[i]), corners)
+        })
+        .collect::<Vec<_>>();
+    expected_cells.sort_unstable();
+    cells.sort_unstable();
+    if cells != expected_cells {
+        return Err(invalid());
+    }
+    let edge = |a, b| if a < b { (a, b) } else { (b, a) };
+    let mut expected_edges = BTreeMap::new();
+    for cell in &input.cells {
+        for i in 0..3 {
+            let a = cell.vertices[i];
+            let b = cell.vertices[(i + 1) % 3];
+            *expected_edges
+                .entry(edge(key(lon[a], lat[a]), key(lon[b], lat[b])))
+                .or_insert(0) += 1;
+        }
+    }
+    let mut edges = grid
+        .edge_vertices
+        .iter()
+        .map(|e| edge(vertices[e[0] as usize - 1], vertices[e[1] as usize - 1]))
+        .collect::<Vec<_>>();
+    edges.sort_unstable();
+    if edges != expected_edges.keys().copied().collect::<Vec<_>>()
+        || grid
+            .adjacent_cell_of_edge
+            .iter()
+            .filter(|e| e[1] < 1)
+            .count()
+            != expected_edges.values().filter(|&&n| n == 1).count()
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn write_icon_grid(
+    output: &Path,
+    grid: &IconGrid,
+    parent: Option<&Path>,
+) -> io::Result<IconGridWriteReport> {
+    crate::ensure_parent_dir(output)?;
     let global_grid = grid.adjacent_cell_of_edge.iter().all(|row| row[1] > 0);
 
     let mut file = crate::create_netcdf(output).map_err(netcdf_to_io_error)?;
@@ -327,6 +541,16 @@ pub fn write_icon_grid_netcdf(
         .map_err(netcdf_to_io_error)?;
     file.add_attribute("global_grid", i32::from(global_grid))
         .map_err(netcdf_to_io_error)?;
+    if let Some(parent) = parent {
+        file.add_attribute(
+            "earthmesh_geometry_parent",
+            parent.to_string_lossy().as_ref(),
+        )
+        .map_err(netcdf_to_io_error)?;
+        file.add_attribute("earthmesh_dual_area_scope", "full_parent_dual")
+            .map_err(netcdf_to_io_error)?;
+    }
+    file.close().map_err(netcdf_to_io_error)?;
 
     Ok(IconGridWriteReport {
         output: output.to_path_buf(),
@@ -338,10 +562,32 @@ pub fn write_icon_grid_netcdf(
 }
 
 fn build_icon_grid(mesh: &MpasMesh) -> io::Result<IconGrid> {
+    build_icon_grid_selection(mesh, None)
+}
+
+fn build_icon_grid_selection(mesh: &MpasMesh, selected: Option<&[usize]>) -> io::Result<IconGrid> {
     let cells_on_vertex = derive_cells_on_vertex(mesh)?;
-    let valid_cells = (1..cells_on_vertex.len())
-        .filter(|&id| cells_on_vertex[id].len() == 3)
-        .collect::<Vec<_>>();
+    let valid_cells = if let Some(selected) = selected {
+        let mut seen = BTreeSet::new();
+        for &id in selected {
+            if id == 0
+                || !seen.insert(id)
+                || cells_on_vertex
+                    .get(id)
+                    .is_none_or(|corners| corners.len() != 3)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ICON selection requires unique complete parent triangles",
+                ));
+            }
+        }
+        selected.to_vec()
+    } else {
+        (1..cells_on_vertex.len())
+            .filter(|&id| cells_on_vertex[id].len() == 3)
+            .collect::<Vec<_>>()
+    };
     if valid_cells.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1211,6 +1457,62 @@ fn index_error(error: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn degree_seven_is_rejected_instead_of_truncated_to_ne_six() {
+        let vertices = (0..7)
+            .map(|i| vec![1, i + 2, (i + 1) % 7 + 2])
+            .collect::<Vec<_>>();
+        let cell_edges = (0..7)
+            .map(|i| vec![i + 1, i + 8, (i + 1) % 7 + 1])
+            .collect::<Vec<_>>();
+        let mut edges = (0..7)
+            .map(|i| ([1, i + 2], [(i + 6) % 7 + 1, i + 1]))
+            .collect::<Vec<_>>();
+        edges.extend((0..7).map(|i| ([i + 2, (i + 1) % 7 + 2], [i + 1, -1])));
+        let err = build_icon_vertex_fans(8, &vertices, &cell_edges, &edges).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("ICON ne=6 cannot represent EarthMesh vertex 1 with degree 7"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn selected_triangle_guard_rejects_changed_sets_even_with_equal_counts() {
+        let path = std::env::temp_dir().join(format!("icon_set_guard_{}.nc4", std::process::id()));
+        let state = earthmesh_mesh::gridinit_voronoi_state_canonical(1, 0, 1.0, 0.25, 100).unwrap();
+        let mesh = crate::gridfile_mesh_from_one_based_state(&state.grid, &state.tabs).unwrap();
+        crate::write_unstructured_mesh_netcdf(&path, &mesh).unwrap();
+        let points = crate::read_gridfile_mesh_points(&path).unwrap();
+        let input = crate::grid_quality_pipeline::quality_input_from_gridfile(&points).unwrap();
+        let mpas = crate::build_mpas_mesh_from_unstructured_one_based(
+            &mesh,
+            &vec![1.0; mesh.w_points.len()],
+            1,
+            1,
+        )
+        .unwrap();
+        let grid = build_icon_grid(&mpas).unwrap();
+        validate_selected_triangles(&points, &input, &grid).unwrap();
+        for case in 0..5 {
+            let mut changed = grid.clone();
+            match case {
+                0 => {
+                    changed.vertex_of_cell.pop();
+                }
+                1 => changed.vertex_of_cell[0] = changed.vertex_of_cell[1].clone(),
+                2 => changed.vlon[0] += 0.01,
+                3 => changed.edge_vertices[0] = changed.edge_vertices[1].clone(),
+                _ => changed.adjacent_cell_of_edge[0][1] = -1,
+            }
+            assert!(
+                validate_selected_triangles(&points, &input, &changed).is_err(),
+                "case {case}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn boundary_vertex_fan_keeps_cell_between_its_two_edges() {

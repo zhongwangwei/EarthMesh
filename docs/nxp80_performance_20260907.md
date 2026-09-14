@@ -222,7 +222,7 @@ The reliable isolated speedup claims remain the same-process helper/remap tests.
 The exact tested binary was atomically staged into the local GUI sidecar, with
 its predecessor backed up. Engine SHA-256:
 `1c6561efc932443dc63947b4c1601b4fcdab517f5584851b21c3c83fc9c92a8c`.
-Protocol is `earthmesh-studio-engine/3`; NetCDF is statically linked. Source-checkout
+Protocol was `earthmesh-studio-engine/3`; NetCDF is statically linked. Source-checkout
 GUI runs select this sidecar and refresh their temporary copy on the next launch.
 Build provenance, source hashes, logs, memory samples and per-file comparison
 results are retained in `.omx/artifacts/ring-full-validation/`.

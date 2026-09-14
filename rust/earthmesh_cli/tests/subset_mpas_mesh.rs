@@ -134,3 +134,16 @@ fn keeping_one_cell_collapses_dropped_canonicals_to_zero() {
         }
     }
 }
+
+#[test]
+fn ordered_subset_preserves_requested_rows_and_rejects_bad_ids() {
+    let g = two_cell_global();
+    let subset = earthmesh_cli::mpas_topology::subset_mpas_mesh_in_cell_order(&g, &[2, 1]).unwrap();
+    assert_eq!(subset.lat_cell, vec![0.0, 22.0, 11.0]);
+    assert_eq!(subset.area_cell, vec![0.0, 2.2, 1.1]);
+    assert_eq!(subset.cells_on_edge[1], [2, 1]);
+    assert_eq!(subset.cells_on_cell[1], vec![2, 0, 0]);
+    for ids in [&[0][..], &[3], &[1, 1]] {
+        assert!(earthmesh_cli::mpas_topology::subset_mpas_mesh_in_cell_order(&g, ids).is_err());
+    }
+}

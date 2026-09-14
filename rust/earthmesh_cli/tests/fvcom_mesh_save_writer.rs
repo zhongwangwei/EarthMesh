@@ -184,3 +184,109 @@ fn sample_mesh_with_nodes(nodes: usize) -> UnstructuredMesh {
     mesh.n_w_to_m = vec![0; nodes + 1];
     mesh
 }
+
+#[test]
+fn final_fvcom_delivery_keeps_embedded_obc_and_rejects_missing_or_invalid_context_atomically() {
+    let root = std::env::temp_dir().join(format!("earthmesh_fvcom_final_{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("selected.nc4");
+    let output = root.join("final.2dm");
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&input, &sample_mesh())
+        .unwrap();
+    fs::write(&output, "old delivery").unwrap();
+    let write = || {
+        earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(&input, &output)
+    };
+    let missing = write().unwrap_err();
+    assert!(missing.to_string().contains("OBC"), "{missing}");
+    assert_eq!(fs::read_to_string(&output).unwrap(), "old delivery");
+    for order in [
+        vec![1, 2, 999, 1],
+        vec![1, 2, 4, 1],
+        vec![1, -2, 1],
+        vec![2, 3, 1],
+    ] {
+        let mut file = netcdf::append(&input).unwrap();
+        file.add_attribute("earthmesh_fvcom_obc_order", order)
+            .unwrap();
+        file.close().unwrap();
+        assert!(write().is_err());
+        assert_eq!(fs::read_to_string(&output).unwrap(), "old delivery");
+    }
+    let mut wrong_type = netcdf::append(&input).unwrap();
+    wrong_type
+        .add_attribute("earthmesh_fvcom_obc_order", "not integer context")
+        .unwrap();
+    wrong_type.close().unwrap();
+    assert!(write().is_err());
+    assert_eq!(fs::read_to_string(&output).unwrap(), "old delivery");
+    let mut file = netcdf::append(&input).unwrap();
+    file.add_attribute("earthmesh_fvcom_obc_order", vec![1_i32, 2, 3, 1, 5])
+        .unwrap();
+    file.close().unwrap();
+    // Empty-but-present records no classified open chains, not complete BCs;
+    // it must survive a byte copy and stay distinct from missing metadata.
+    let empty = root.join("closed_coast.nc4");
+    fs::copy(&input, &empty).unwrap();
+    let mut file = netcdf::append(&empty).unwrap();
+    file.add_attribute("earthmesh_fvcom_obc_order", Vec::<i32>::new())
+        .unwrap();
+    file.close().unwrap();
+    let copied = root.join("closed_coast_copy.nc4");
+    fs::copy(&empty, &copied).unwrap();
+    assert_eq!(
+        earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&copied).unwrap(),
+        Some(Vec::new())
+    );
+    let empty_report = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &copied,
+        &root.join("closed_coast.2dm"),
+    )
+    .unwrap();
+    assert_eq!(empty_report.boundary_segments, 0);
+    let before = fs::read(&input).unwrap();
+    let report = write().unwrap();
+    assert_eq!(report.triangles, 2);
+    assert_eq!(report.nodes, 4);
+    assert_eq!(report.boundary_segments, 2);
+    let text = fs::read_to_string(&output).unwrap();
+    assert!(text.contains("NS 1 -2 1\n") && text.contains("NS -4 2\n"));
+    // An unused physical node reaches the post-write count guard. Even after
+    // creating a temporary .2dm, failure must preserve the prior delivery.
+    let extra_input = root.join("extra_node.nc4");
+    let mut extra = sample_mesh();
+    extra.w_points.push(LonLatPoint {
+        lon: 115.,
+        lat: 24.,
+    });
+    extra.w_to_m.push(Vec::new());
+    extra.n_w_to_m.push(0);
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(&extra_input, &extra)
+        .unwrap();
+    let mut file = netcdf::append(&extra_input).unwrap();
+    file.add_attribute("earthmesh_fvcom_obc_order", vec![1_i32, 2, 3, 1, 5])
+        .unwrap();
+    file.close().unwrap();
+    let error = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &extra_input,
+        &output,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("changed physical counts"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(&output).unwrap(), text);
+    assert_eq!(fs::read(&input).unwrap(), before);
+    assert!(
+        earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(&input, &input)
+            .is_err()
+    );
+    assert_eq!(fs::read(&input).unwrap(), before);
+    assert!(!fs::read_dir(&root).unwrap().any(|p| p
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .contains(".tmp-")));
+    fs::remove_dir_all(root).unwrap();
+}

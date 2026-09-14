@@ -25,20 +25,7 @@ pub fn apply_read_nl_workspace_plan(
 ) -> io::Result<WorkspaceApplyReport> {
     let mut report = WorkspaceApplyReport::default();
     let workdir_for_io = workdir.to_path_buf();
-    let canonical_workdir = workdir.canonicalize()?;
-    let mut allowed_roots = vec![canonical_workdir.clone()];
-    if let Some(parent) = namelist_source.parent() {
-        // A bare filename (e.g. `mkgrd.x case.nml` run from the case dir) has an
-        // empty parent; canonicalizing "" errors with ENOENT. Treat it as cwd.
-        let parent = if parent.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            parent
-        };
-        allowed_roots.push(parent.canonicalize()?);
-    }
-    allowed_roots.sort();
-    allowed_roots.dedup();
+    let (canonical_workdir, allowed_roots) = workspace_roots(namelist_source, workdir)?;
     let file_dir = workspace_bound_path(
         &plan.file_dir,
         &canonical_workdir,
@@ -91,6 +78,44 @@ pub fn apply_read_nl_workspace_plan(
     report.copied_namelist_to = Some(namelist_save_path);
 
     Ok(report)
+}
+
+fn workspace_roots(namelist_source: &Path, workdir: &Path) -> io::Result<(PathBuf, Vec<PathBuf>)> {
+    let canonical_workdir = workdir.canonicalize()?;
+    let mut allowed_roots = vec![canonical_workdir.clone()];
+    if let Some(parent) = namelist_source.parent() {
+        // A bare filename (e.g. `mkgrd.x case.nml` run from the case dir) has an
+        // empty parent; canonicalizing "" errors with ENOENT. Treat it as cwd.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        allowed_roots.push(parent.canonicalize()?);
+    }
+    allowed_roots.sort();
+    allowed_roots.dedup();
+    Ok((canonical_workdir, allowed_roots))
+}
+
+/// Check workspace destinations without creating or retiring any delivery files.
+pub(crate) fn validate_read_nl_workspace_plan(
+    plan: &MkgrdWorkspacePlan,
+    namelist_source: &Path,
+    workdir: &Path,
+) -> io::Result<PathBuf> {
+    let (root, allowed) = workspace_roots(namelist_source, workdir)?;
+    let file_dir = workspace_bound_path(&plan.file_dir, &root, &allowed, "file_dir")?;
+    for directory in &plan.directories_to_create {
+        workspace_bound_path(directory, &root, &allowed, "directory")?;
+    }
+    workspace_bound_path(
+        &plan.namelist_save_path,
+        &root,
+        &allowed,
+        "namelist_save_path",
+    )?;
+    Ok(file_dir)
 }
 
 fn workspace_bound_path(

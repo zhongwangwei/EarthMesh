@@ -1,5 +1,7 @@
 //! EarthMesh execution pipelines, format adapters, and CLI-facing reports.
 
+mod atomic_output;
+
 use earthmesh_core::MkgrdWorkspacePlan;
 use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 
@@ -11,8 +13,6 @@ pub mod coordinate_types;
 use coordinate_types::{GridRegion, LonLatPoint};
 mod certified_options;
 mod fs_support;
-mod harp_dv_options;
-mod harp_trace;
 pub(crate) use fs_support::ensure_parent_dir;
 #[doc(hidden)]
 pub use fs_support::resolve_project_path;
@@ -31,7 +31,7 @@ use global_source_axes::build_global_source_axes_one_based;
 pub mod unstructured_mesh_support;
 pub(crate) use unstructured_mesh_support::{
     gridfile_m_row_layout, gridfile_w_row_layout, mesh_row_for_canonical_id, unstructured_dimc,
-    validate_unstructured_mesh, GridfileRowLayout,
+    validate_published_cell_degrees, validate_unstructured_mesh, GridfileRowLayout,
 };
 use unstructured_mesh_support::{
     GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
@@ -84,6 +84,7 @@ pub mod hydro_delivery_refine_workflow;
 pub mod hydro_refinement_adapter;
 pub mod hydro_refinement_eval;
 pub mod hydro_sweep;
+pub mod project_delivery;
 pub mod project_hydro;
 pub mod project_hydro_closed_loop;
 pub mod project_quality;
@@ -106,6 +107,7 @@ use colm_types::{
 mod colm_coupling_csv;
 mod colm_coupling_netcdf;
 mod colm_manifest_writer;
+pub mod colm_mesh_input;
 mod colm_surface_reader;
 mod colm_template_writers;
 mod netcdf_io;
@@ -161,7 +163,6 @@ pub mod mode_file_io;
 use mode_file_io::{
     convert_fvcom_mode_file_to_earthmesh, convert_iap_ocean_mode_file_to_earthmesh,
     convert_mpas_mode_file_to_earthmesh, copy_existing_earthmesh_mode_file,
-    write_gridfile_from_one_based_state,
 };
 pub mod contain_io;
 pub(crate) use contain_io::validate_contain_mesh;
@@ -183,7 +184,6 @@ pub mod unstructured_mesh_io;
 use unstructured_mesh_io::{
     gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
     write_unstructured_mesh_netcdf_with_method_c_metadata,
-    write_unstructured_mesh_netcdf_with_refine_levels,
 };
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{
@@ -321,10 +321,7 @@ use mask_postproc_layout::{
     read_mask_postproc_domain_inputs, write_mask_postproc_final_gridfile,
 };
 pub mod mask_postproc_domain;
-use mask_postproc_domain::{
-    plan_mask_postproc_domain_io, run_mask_postproc_earth_domain, run_mask_postproc_land_domain,
-    run_mask_postproc_ocean_domain,
-};
+use mask_postproc_domain::{plan_mask_postproc_domain_io, run_mask_postproc_ocean_domain};
 pub mod mesh_metric_writers;
 use mesh_metric_writers::{
     read_cellwidth_netcdf, write_cellwidth_netcdf, write_dists_on_edge_netcdf, CellwidthMesh,
@@ -357,7 +354,10 @@ use mpas_simple_writer::{
     write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
 };
 mod icon_writer;
-pub use icon_writer::{write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS};
+pub use icon_writer::{
+    write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
+    write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS,
+};
 mod mpas_full_writer;
 pub use mpas_full_writer::{
     write_mpas_mesh_netcdf, write_mpas_ocean_mesh_netcdf, MPAS_OCEAN_SPHERE_RADIUS_METERS,
@@ -370,6 +370,8 @@ pub mod gridfile_output_writers;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
+pub mod hfield_gridfile_context;
+pub mod mpas_gridfile_context;
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{
@@ -450,15 +452,12 @@ pub(crate) use refine_gridfile::*;
 mod refine_controls;
 pub(crate) use refine_controls::*;
 pub mod mkgrd_gridinit_driver;
-use mkgrd_gridinit_driver::{
-    run_mkgrd_gridinit_global_namelist, run_mkgrd_regional_clip_base_namelist,
-};
+use mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist;
 
 mod hfield_refine;
 pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
 mod refine_pipeline;
-pub use refine_pipeline::run_refine_pipeline_namelist;
+pub use refine_pipeline::{run_refine_pipeline_namelist, run_refine_pipeline_with_delivery};
 pub mod mkgrd_top_level_dispatch;
-use mkgrd_top_level_dispatch::run_mkgrd_top_level_namelist;

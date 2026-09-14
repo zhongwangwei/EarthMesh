@@ -33,7 +33,6 @@ pub(crate) struct ProjectCapabilities {
     pub(crate) default_relax: f64,
     pub(crate) default_hfield_g: f64,
     pub(crate) method_c_defaults: earthmesh_project::MethodCRefinementRecipe,
-    pub(crate) harp_dv_defaults: earthmesh_project::HarpDvRefinementRecipe,
     pub(crate) certified_defaults: earthmesh_project::CertifiedRefinementRecipe,
     pub(crate) method_c_spring_nxp1_km: f64,
     pub(crate) km_per_degree_equator: f64,
@@ -113,6 +112,10 @@ pub(crate) struct ProjectSummary {
     pub(crate) delivery_status: String,
     /// Why the specialized writer is skipped, when it is.
     pub(crate) delivery_skipped_reason: Option<String>,
+    /// Project-level opt-in CoLM mesh raster handoff.
+    pub(crate) colm_mesh_enabled: bool,
+    /// Explicit CoLM mesh raster pixels per degree when enabled.
+    pub(crate) colm_mesh_pixels_per_degree: Option<usize>,
     pub(crate) domain: String,
     pub(crate) domain_shape: String,
     pub(crate) nxp: Option<i32>,
@@ -121,6 +124,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) effective_nxp: i32,
     /// `[w, e, s, n]` when the domain is a regional bounding box, else `None`.
     pub(crate) bbox: Option<[f64; 4]>,
+    /// `[lon, lat, radius_km]` when the domain is a regional circle, else `None`.
+    pub(crate) circle: Option<[f64; 3]>,
     pub(crate) watershed_path: Option<String>,
     pub(crate) close_format: Option<String>,
     pub(crate) domain_close_boundary: Option<earthmesh_project::CloseBoundaryMode>,
@@ -143,15 +148,6 @@ pub(crate) struct ProjectSummary {
     pub(crate) method_c_lepp_maximum_path_length: usize,
     pub(crate) method_c_lepp_stop_at_source_resolution: bool,
     pub(crate) method_c_lepp_minimum_triangle_angle_deg: f64,
-    pub(crate) harp_dv_max_cycles: u32,
-    pub(crate) harp_dv_minimum_cell_width_m: f64,
-    pub(crate) harp_dv_maximum_cells: usize,
-    pub(crate) harp_dv_maximum_patch_cells: usize,
-    pub(crate) harp_dv_maximum_neighbor_scale_ratio: f64,
-    pub(crate) harp_dv_minimum_candidate_separation_m: f64,
-    pub(crate) harp_dv_maximum_vertex_degree: usize,
-    pub(crate) harp_dv_minimum_triangle_angle_deg: f64,
-    pub(crate) harp_dv_criterion_minimum_angle_deg: f64,
     pub(crate) certified_mode: String,
     pub(crate) certified_delivery: String,
     pub(crate) certified_angle_contract: String,
@@ -221,12 +217,14 @@ pub(crate) struct RunResult {
     pub(crate) ok: bool,
     pub(crate) code: Option<i32>,
     pub(crate) outdir: String,
-    /// The gridfile the engine reported (`gridfile=<path>` on stdout), so the GUI
+    /// The selected final gridfile (legacy `gridfile=` if unavailable), so the GUI
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
     /// CMRC certificate, manifest, and resource evidence from the reported
     /// gridfile's result directory. None for non-CMRC runs.
     pub(crate) certified: Option<serde_json::Value>,
+    /// Validated current-run completion report and path; None for failed/legacy engines.
+    pub(crate) delivery: Option<serde_json::Value>,
     /// Every candidate-selection decision produced by the shared AutoRefine
     /// loop, ordered by pass and artifact path. Empty for non-AutoRefine runs.
     pub(crate) auto_refine_decisions: Vec<AutoRefineDecision>,

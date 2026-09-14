@@ -71,3 +71,36 @@ pub fn run_springjustment_global_from_unstructured_mesh(
         mesh,
     })
 }
+
+/// Persist the global adapter's updated native mesh with its exact core widths.
+/// `base_cellwidth` uses the existing MPAS kilometre convention. No width is
+/// invented if the caller ran the core without cellwidth calculation.
+pub fn write_springjustment_global_gridfile(
+    output: impl AsRef<Path>,
+    report: &SpringjustmentGlobalGridfileReport,
+    nxp: usize,
+    step: usize,
+) -> io::Result<crate::UnstructuredMeshWriteReport> {
+    let context = report
+        .core
+        .cellwidth
+        .as_ref()
+        .map(|widths| {
+            crate::mpas_gridfile_context::MpasGridfileContext::from_producer(
+                &report.mesh,
+                widths.clone(),
+                nxp,
+                step,
+                "spring_global_distance_layers",
+            )
+        })
+        .transpose()?;
+    crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        output,
+        &report.mesh,
+        crate::MethodCGridfileMetadataSlices {
+            mpas: context.as_ref(),
+            ..Default::default()
+        },
+    )
+}

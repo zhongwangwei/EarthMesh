@@ -1,0 +1,514 @@
+# Independent threshold evaluation region
+
+Project configuration separates three different spatial requests:
+
+1. `refinement.threshold_region`: where statistical support centers are eligible
+   for threshold evaluation. Selected supports retain their full sample footprint.
+2. `refinement.specified_*`: hard, named refinement requirements.
+3. `domain`: which mesh is delivered after construction and applicable masking.
+
+These regions need not coincide. A threshold window is not a crop, does not
+request refinement by itself, and does not constrain separately requested hard
+regions, geometric coastline refinement or hydro demands. Gradation/transition
+cells can extend outside the threshold window. The statistical support scale
+is independent of both input raster sampling and CoLM delivery sampling.
+
+The configuration-to-engine sequence is:
+
+**data and thresholds + evaluation scope → resolution requirements → selected
+algorithm → applicable domain/surface extraction → checks for actual topology
+and cell shape → requested model delivery.**
+
+An unmasked global Earth/atmosphere mesh is a closed sphere. Regional and
+land/ocean-masked meshes may instead have boundaries, holes and multiple
+components; those checks are not interchangeable with closed-sphere checks.
+This feature does not change validation contracts or algorithm kernels.
+
+## Project final admission
+
+The default `--project` workflow now sends the **selected final gridfile** from
+CMRC, canonical Method-C/HField, RedGreen or LEPP through the same final admission
+entry point after AutoRefine and hydro, before configured model delivery
+(explicit CoLM mesh, TRI/FVCOM or ICON, HEX/MPAS-family).
+`final_quality/quality_summary.json` records this check separately from candidate
+and hydro diagnostics, including a `final_mesh_admission` gate.
+
+`--project` cannot be combined with explicit low-level execution switches
+(`--run-refine-*` or `--run-mask-restart-*`): those dispatch paths do not select
+and admit the final Project mesh. This applies to all model formats, cell kinds
+and quality policies, including grid-only delivery and CoLM without an optional
+raster export. Remove the switch to run the full Project workflow; use a
+standalone `mkgrd.nml` for intentional low-level execution. Normal Project
+options such as `--quiet`, `--max-tris` and source-grid overrides remain available.
+
+Admission uses physical M triangles for TRI and the stored W rings for HEX:
+TRI cells require 3 edges; HEX cells require 5–7 edges, independent of backend.
+It does not sort corners or repair individual rings. Native producers use both
+winding conventions; one whole-mesh reversal can translate clockwise into the
+quality library's counter-clockwise convention. The report records this choice;
+mixed winding, misoriented shared edges and self-intersections remain detectable.
+The source gridfile is unchanged.
+
+Invalid connectivity, malformed polygons and the physical cell contract cannot
+be waived with `Warn`. Unmasked global Earth/atmosphere additionally requires
+Euler 2, no boundary edges and exactly one connected component. Regional and
+surface-masked meshes may have manifold boundaries and multiple components.
+Disconnected components and isolated complete cells remain visible as warnings,
+not false connectivity failures; malformed boundary junctions still fail. Numerical
+geometry gates still follow `Warn` / `Block` / `AutoRefine`; final admission does
+not start another repair loop.
+
+Project lowering defers specialized engine-side MPAS/FVCOM exports. Only the
+shared selected-final adapters publish the configured model files, after final
+admission. Native gridfiles, CMRC certificates/remaps, widths, lineage and OBC
+context remain available before that step; they do not establish Project final
+admission or external solver readiness.
+
+Standalone NML dispatch keeps its legacy exports by default. The internal
+`NL%defer_model_exports = .TRUE.` handoff suppresses those specialized exports
+without changing `output_format` or deleting files from earlier runs. It also
+retains native atmosphere output for standalone mask-restart; it does not add
+mask-restart support to Project or expose a skip-final-admission option.
+Refined MPAS still requires aligned producer-owned widths and global-parent
+context. Unsupported producer routes still fail instead of substituting uniform
+widths to pretend migration is complete.
+
+### Actual Project delivery outcome
+
+A successful Project run writes `final_quality/project_delivery.json` **after**
+selected-final admission and model adapters. It records the selected native
+`gridfile`, final-quality report/verdict, requested target, planned `capability`
+(`full` / `grid_only`), and the actual `model_delivery_status`:
+
+- `model_delivered`: `model_artifacts` contains paths returned by the successful
+  current-run adapter, including the MPAS graph when applicable.
+- `native_only`: the admitted native mesh is available, but no specialized model
+  file was requested or supported. `skipped_reason` explains the incompatible
+  cell shape or the absence of the optional CoLM mesh-raster request.
+
+Planned capability is not an execution result: CoLM has a supported adapter but
+without `delivery.colm_mesh` still completes as `native_only`. Legal grid-only
+pairings remain successful; they are not silently relabeled as model-delivered.
+The generic `run_manifest.status=completed` continues to describe process
+completion, not model compatibility or solver readiness.
+
+The CLI emits `project_delivery_report=`, `project_model_delivery_status=` and
+`project_final_gridfile=` even with `--quiet`, while retaining the existing
+format-specific output fields. The record is written atomically; failure to
+write it fails the run. Admission/adapter failures emit no new completion record.
+Artifacts come from adapter return values, never a scan of earlier files; rejected
+AutoRefine candidates and global parents are not the selected native output.
+This does not change standalone NML output or add a final-admission bypass.
+
+The GUI Run / Results card now consumes this actual record, validates its
+selected-mesh/final-quality linkage and run-scoped artifact paths, and exposes
+native/model/report file links. Older engines without a record remain explicitly
+unconfirmed; failed runs never show a model-delivered result. This does not change
+planned capability or turn legitimate native-only delivery into an error.
+
+### MPAS native width context
+
+Native gridfiles can carry `earthmesh_w_cellwidth_km` (f64, `lbx_points`, units
+`km`) together with `earthmesh_mpas_base_nxp`, `earthmesh_mpas_step`,
+`earthmesh_mpas_density_reference_width_km` and `earthmesh_mpas_cellwidth_source`.
+The vector follows every native W row, including placeholders. The reference
+width is the producer-global reference defined by its source, not a later crop minimum;
+removing the finest cells must not renormalize `meshDensity`.
+
+Newly generated, unrefined base grids record their known uniform `7680/NXP` km
+width with step 1; imported grids do not acquire invented widths. This W-row
+metadata is retained for both TRI and HEX native files: the native file stores
+both views, and the standalone MPAS adapter always consumes W polygons. It does
+not override the Project TRI/MPAS grid-only contract.
+CMRC records its existing delivered-W-level width formula for all native output
+formats. Its legacy MPAS export consumes those same values. CMRC native W rings
+are written in the certified primal's rotational face-fan order, rather than the
+generic conversion's unordered incident-face list; this preserves the certified
+corners and fixes inconsistent native shared-edge winding before admission. The explicit
+`write_springjustment_global_gridfile` adapter saves the older Spring core's exact
+widths, including transition interpolation, when that core supplies them. It does
+not infer widths from Method-C levels or mutate the input gridfile. This library
+adapter is not an automatic modern Project Method-C integration.
+
+Regional, landtype, mask-postproc and clean-ocean metadata paths compact widths
+with W-row identities, preserve the global reference/NXP/step/source, and copy
+widths when W vertices are split. Width-only clean-ocean rewrites also retain OBC.
+Absent context stays absent; partial headers, wrong dimensions/types/units or
+invalid values fail rather than select a uniform fallback.
+
+Producers retaining HField, adaptive region-pass or fully covered LEPP resolved
+demand acquire the nominal-width contracts below. Other Method-C routes remain
+without context. Birth generations and measured polygon geometry never
+substitute for a missing source or reconstruct legacy Spring interpolation.
+
+### Effective spherical HField demand (not MPAS widths)
+
+Successful spherical HField runs embed the exact field consumed by refinement,
+after specified/threshold/hydro composition and final domain limiting:
+
+- `earthmesh_hfield_target_m`: f64 metres, dimensions
+  `[earthmesh_hfield_nlat, earthmesh_hfield_nlon]`, longitude-fast values.
+- `earthmesh_hfield_base_m`: f64 positive base size and
+  `earthmesh_hfield_max_level`: integer effective cap in 1..5.
+- `earthmesh_hfield_semantics = spherical_effective_demand_v1`: demand-only
+  snapshot, not realized size or spring target lengths.
+
+The v1 grid is global, cell-centred at `-180 + (i+.5)*360/nlon` longitude and
+`-90 + (j+.5)*180/nlat` latitude. Replay uses the existing `HField::sample` /
+`level_at`: periodic longitude, the existing polar-continuous interpolation,
+then `ceil(log2(base_m/h) - 1e-9)` clamped to `[0,max_level]` (zero for
+`h >= base_m`). The current Method-C
+pipeline samples these target levels for selection; its nest spring still uses
+the separate NXP/level/mrow compatibility target, not this continuous field.
+
+`read_hfield_gridfile_context` reconstructs the exact field and quantization
+inputs without reading sidecars or original rasters. Native copies, region/land
+masking, clean-ocean rewrites and post-quality derivatives retain the **whole
+source demand**, not a W-row-compacted or re-normalized field. Cartesian and
+non-HField producers do not acquire fabricated spherical demand. Entirely
+absent context remains absent; partial/unknown semantics, wrong dimensions,
+types/units and invalid sizes/base/caps reject rather than silently drop data.
+MPAS delivery still rejects files containing only this raw snapshot without a
+producer-persisted MPAS context; the final adapter does not infer missing widths.
+
+### HField quantized nominal W demand
+
+MPAS defines `meshDensity` as the generation density function evaluated at cells,
+not measured cell area/edge length. [MPAS Registry](https://github.com/MPAS-Dev/MPAS-Model/blob/f34984b2c89353cf31c235b08d3b4acd96b37bb3/src/core_init_atmosphere/Registry.xml)
+The upstream Tools injector transforms generation widths with a fourth power
+and interpolates density to cells. [MPAS-Tools injector](https://github.com/MPAS-Dev/MPAS-Tools/blob/4e723bd7fe8203a221e03ce622ee4fd1c9beaf5d/conda_package/mpas_tools/ocean/inject_meshDensity.py#L54-L95)
+
+EarthMesh's `method_c_hfield_quantized_w_demand_v1` is an explicit **nominal
+requested-scale** convention: evaluate the same `try_level_at` consumed by the
+producer at each final physical W site, then use `base_m / 2^level / 1000` km.
+It is not a birth generation, realized resolution or Spring U-edge target.
+Unlike the Tools continuous-density interpolation, EarthMesh samples HField
+first and quantizes using its actual producer's level cap and tolerance.
+
+The reference is `base_m / 2^Lmax / 1000` km, where `Lmax` is the maximum of
+`field.level_map(base_m,max_level)` over the **whole source field**. It need not
+be reached at any final W site: all physical `meshDensity` values may be below
+one. Crop/mask retains the same reference and compacts producer widths; a
+post-quality derivative re-evaluates demand at its changed W sites.
+
+This tagged source uses `reference_km * 1000 / EARTH_RADIUS_METERS` for
+unit-sphere `nominalMinDc`; MPAS-Ocean scales it with its existing sphere radius.
+The existing base-NXP/step fields retain producer provenance (step=`Lmax+1`),
+but cannot substitute the legacy integer formula when `base_m` was overridden.
+Final MPAS files also record the width-source tag and reference-width attribute
+before staged publication, so the delivery convention remains visible.
+This is a generation-demand export contract, not solver validation or a promise
+that the achieved cell sizes meet every target. Cartesian/other algorithms
+still receive no fabricated context.
+
+### Adaptive region-pass nominal W demand
+
+`adaptive_region_pass_w_demand_v1` reuses the **actual retained**
+`AdaptiveNestReport` and `base_m` of canonical Method-C point+radius and RedGreen
+adaptive runs. For each final W site it finds the deepest recorded pass with an
+active region (`region.level >= pass.level`) containing that site, using the
+same shared canonical spherical region predicate as generation. The width is
+`base_m / 2^pass.level / 1000` km; outside all recorded active regions it is
+`base_m / 1000`. A raw region's deeper level does not imply that an unexecuted
+pass occurred. Circle, bbox, polygon and corridor semantics are shared, not
+approximated by circular report summaries or reconstructed from sidecars.
+
+The global reference uses the deepest **recorded** pass, with step=depth+1.
+Empty but genuinely present reports describe unrefined emitted demand; missing
+reports never yield a uniform fallback. Pass sequence, base/judging scale,
+regions and physical W coordinates are validated. Density and nominalMinDc use
+the same reference rule as the exact HField contract, including an unsampled
+finest level and crops removing every finest-demand cell.
+
+This is nominal **emitted-pass demand**, not the complete unexecuted user plan,
+realized geometry, algorithm ancestry, Spring targets or a guarantee that every
+requested region succeeded. A fresh parent with this MPAS context but no
+algorithm lineage receives stable M/W snapshot-row IDs before crop/mask; those
+are root snapshot identities, not invented refinement generations. Existing
+Method-C ancestry remains unchanged, and regional exact parent/site/corner
+validation remains mandatory.
+
+Direct named-only runs without an adaptive record, LEPP hybrid, Cartesian and
+native two-stage routes do not acquire this context. Cartesian Method-C with
+`&adaptive` is rejected before grid generation: its X/Y placeholders must not be
+interpreted as geographic demand sites. Cartesian HField remains unchanged.
+LEPP uses its separate resolved-target contract below; substituting the adaptive
+base/level convention would misrepresent that producer. Neither changes mesh
+construction or model-solver behavior.
+
+### LEPP resolved-region nominal W demand
+
+LEPP retains every resolved target and the initial sphere radius in its existing
+adaptive report. Explicit target edges are unchanged; named targets retain the
+initial-mesh region-local median (or representative-face fallback) divided by
+`2^level`, exactly as consumed by the algorithm. The diagnostic
+`method_c_lepp_report.json` records all original demands, resolved target edges,
+region shapes, levels, source-resolution floors and units in metres under
+`lepp_resolved_region_targets_v1`; it is not read by the final adapter.
+
+`lepp_resolved_region_w_demand_v1` samples these targets at final W sites using
+the same spatial region predicates, choosing the minimum in overlaps. It does
+**not** replay representative-face-only injection, apply size tolerance or source
+floors to the nominal edge, or infer targets from balance/quality operations.
+There is no LEPP background target: the producer writes native MPAS context only
+when every physical W in the global parent is spatially covered. Empty/partial
+coverage leaves context absent with a diagnostic, while native/CoLM generation
+remains available subject to its normal checks. Malformed targets fail instead
+of being treated as uncovered.
+
+The density reference is the minimum of **all** resolved target edges, including
+unsampled targets, converted to km. Crop/mask preserves this reference and the
+selected W widths. `step=max(region.level)+1` is provenance only; nominalMinDc
+uses the reference formula above, not an integer NXP/step approximation.
+Complete demand coverage is necessary, not sufficient, for MPAS delivery:
+5–7-sided cells, shared-edge winding, global/regional topology and Project final
+admission remain mandatory. Retained nominal targets do not certify achieved
+resolution or model-solver suitability.
+
+HEX LEPP now commits a legal single insertion or a bounded atomic pair: when
+one midpoint creates a degree-4 fan, one neighboring LEPP insertion must restore
+the full affected set to 5–7 sides. Both sites consume the insertion budget; the
+closure is recorded as balance work (or boundary work when splitting a protected
+segment), not another physical demand. A rejected pair restores mesh and segment
+state. The NXP 6 global-bbox two-insertion regression now delivers global and
+selected regional MPAS, MPAS-Ocean and MPAS-Simple with the retained demand.
+Insufficient budget or no legal local pair can still prevent progress: HEX runs
+with unresolved demand and zero committed insertions fail rather than publish an
+unchanged success. Partial progress still reports unresolved demand. This fixes
+the insertion contract, not the angle-quality objective or demand completeness;
+TRI keeps its historical single-insertion behavior and final gates are unchanged.
+
+### Native spherical W-ring construction
+
+After all refinement and Spring work, shared output construction uses the
+existing shared-edge cycle orderer on a copy, before native writing or crop/mask.
+Only active W-ring direction may change; the original first corner, padding,
+row IDs, corner/undirected-edge sets, coordinates and demand remain unchanged.
+Algorithm-internal neighbor order is untouched, and Cartesian output explicitly
+skips spherical orientation. Invalid cycles or nonfinite/degenerate orientation
+fail rather than publishing an unproven order. Readers and final model adapters
+do not repair altered/imported files; the same topology gates still apply.
+
+### MPAS selected-final delivery
+
+For `target.cell: Hex` and `Mpas`, `MpasOcean` or `MpasSimple`, Project runs the
+shared native-context adapter **after** selected-file final admission, independent
+of backend or intent. Authoritative outputs are
+`standard/MPAS_<selected_gridfile_stem>/mesh.nc4` and (full/Ocean) `graph.info`;
+stdout identifies them as `mpas_mesh_input` and `mpas_graph_info`.
+TRI/MPAS remains explicitly grid-only, matching the capability registry.
+
+Global delivery checks actual W polygons (5–7 sides), manifold/reciprocal
+topology, no boundary, Euler 2 and one component. Regional delivery requires an
+explicit closed global parent from the selected run's `raw_output`; CMRC retains
+that native parent in the same artifact publication set and records its path as
+`global_parent_gridfile`. No filename discovery or nearest-centre matching is used.
+
+The shared verifier binds each final row by positive ancestry plus exact finite
+coordinates (signed zero is equivalent), not by assuming ancestor IDs are unique.
+It rejects ambiguous or repeated parent-row matches, changed optional levels,
+cyclic corners or W widths/reference/NXP/step/source. Regional polygons separately
+pass 5–7, manifold-boundary and component-aware Euler checks; legitimate islands
+and isolated whole cells are allowed. The ordered subset preserves final W order,
+parent metrics and density. Dropped stencil edges retain the existing zero-weight
+sentinel behavior; this is not a physical boundary-condition prescription.
+
+CMRC regional capability checks are separate from model-format admission.
+Shared Project validation rejects active ocean bbox/circle/HEX and close
+EnclosingCap configurations, and regional Coupled targets. Ocean requires TRI
+and one close polygon; multipart Shapefile/Close PolygonShp is rejected during
+compilation once its members are known. Project Close NML/NetCDF paths select
+one exact file, staged unchanged so same-prefix siblings/backups cannot enter
+the domain. Raw NML keeps its legacy prefix semantics. Single-close Polyline and SphericalChaikin remain eligible
+for the existing ocean path, which still performs runtime geometry/boundary
+checks. Disabled refinement preserves its stored backend settings. This does not
+restrict other backends or add ocean union/OBC support.
+
+Connected regional producers include CMRC whole-dual-cell selection for
+Earth/atmosphere/land (bbox/circle/close or unions of whole-cell selections,
+retaining the same global parent; land alone adds the landtype mask),
+spherical Method-C HField, and canonical Method-C/RedGreen adaptive whole-cell
+crops, independent of model format. Other
+producers may use the same adapter only when they supply its complete
+parent/geometry/width contract. Missing or malformed context fails; unsupported
+producer routes still do not acquire invented widths. No new ocean-HEX selection algorithm is included. Retaining a
+parent costs additional disk space. Internal/legacy MPAS artifacts alone are not
+proof that Project final delivery passed.
+
+Density is `(producer_global_reference_width / final_W_width)^4`, aligned to
+physical rows with placeholders excluded. It is not renormalized to the cropped
+minimum. All other full/Simple/Ocean builder formulas and format conventions are
+retained. Legacy sources keep the integer `nominalMinDc` calculation; only the
+explicit HField, adaptive region-pass and LEPP resolved-region tags use their nominal reference as
+described above. Final full export rejects a nonpositive result. MPAS uses unit-sphere metrics; MPAS-Ocean
+uses the existing physical-radius writer. Simple remains an incomplete mesh
+schema, not a solver-ready full mesh, and has no graph.
+
+Outputs are staged and closed before publication. The existing CMRC artifact-set
+rollback helper is shared: graph is published first and mesh last; ordinary
+publication errors restore the previous files. This is not crash-atomic or
+concurrent-reader transaction isolation. Changing to Simple removes a stale
+graph in the same publication transaction. Solver execution, boundary forcing
+and model-specific initial conditions are outside mesh export validation.
+
+### ICON selected-final delivery
+
+For `target.cell: Tri` + `target.model_format: Icon`, Project now calls the
+existing ICON geometry/writer pipeline **after selected-file final admission**,
+independent of backend or intent. The authoritative artifact is
+`standard/ICON_<selected_gridfile_stem>.nc4`, identified by `icon_mesh_input`;
+stdout also records physical cell/vertex/edge counts and `icon_global_grid`.
+HEX/ICON retains the explicit grid-only contract.
+
+The explicit parent is checked as native M triangles: one closed sphere with
+Euler 2 and manifold, consistently wound connectivity. W vertex valence is not
+the HEX cell-degree contract; ICON checks the selected vertex fan against its
+existing format limit.
+
+The final adapter verifies the exact native M-center/triangle-corner sets,
+physical W coordinates, undirected edge set and boundary-edge count against
+the built ICON grid. The existing longitude/radian conversion and signed-zero
+equivalence are used, not proximity matching. Coincident physical vertices
+with ambiguous identity are rejected rather than merged. Output is staged,
+closed, reopened and atomically renamed using the shared single-file helper;
+errors leave an earlier output untouched. No native geometry is modified.
+
+This connects delivery; it does **not** broaden the existing ICON format:
+its `ne=6` vertex fan cannot encode degree-7 vertices that are otherwise legal
+in EarthMesh's 5–7-sided duals. Such outputs fail explicitly, without truncating
+fans or changing the refinement algorithm. `Full` in the target registry
+selects a specialized adapter, not guaranteed acceptance of arbitrary geometry.
+
+Regional whole-triangle selections use an **explicit same-run closed parent**
+from the producer report (`icon_parent_gridfile`), not filename inference. Fresh
+base generation records snapshot M/W identities; clipping retains the full
+parent and its metadata, as refined runs already do. Imported files without
+complete lineage are not assigned invented parent identities. Exact M/W
+ancestry, coordinates and optional levels must match; every selected triangle
+must retain its parent's corners. Parent M triangles are selected before ICON
+fan construction, so unsupported fans outside the selected domain do not cause
+rejection. Missing parents, incomplete/ambiguous identity or altered corners
+fail without replacing an existing output.
+
+Existing parent geometry supplies `cell_area` and `dual_area`. In particular,
+**boundary `dual_area` is the full parent dual area, not a clipped regional
+control volume**. NetCDF attributes `earthmesh_geometry_parent` and
+`earthmesh_dual_area_scope=full_parent_dual` record this contract. Existing open
+fans, boundary adjacency (`-1`) and zero missing-side distances are reused;
+no new boundary area formula, solver/forcing or nesting contract is asserted.
+
+The reused MPAS intermediate's density/nominal-width scalars are not ICON
+variables, and the adapter neither requires nor fabricates MPAS demand context.
+Existing ICON metric formulas and boundary controls are reused; only parent
+provenance metadata is added. Mesh export is not ICON solver, nested-grid or
+forcing validation.
+
+### FVCOM selected-final delivery
+
+For `target.cell: Tri` + `target.model_format: Fvcom`, Project writes
+`standard/FVCOM_<selected_gridfile_stem>.2dm` beside the selected gridfile, after
+final admission. The backend and land/ocean/atmosphere intent do not select a
+separate export algorithm. HEX/FVCOM retains the existing grid-only contract.
+
+New ocean TRI mask-postproc/clean-ocean gridfiles embed the exact same-run
+`obc_order` as the integer global attribute `earthmesh_fvcom_obc_order` (canonical
+vertex IDs, with `1` as the sequence placeholder and segment separator). This
+survives metadata rewrites, byte copies, and CMRC temporary-directory cleanup;
+Project never searches neighboring directories for a possibly stale OBC sidecar.
+An absent attribute differs from an explicitly present empty order. A mesh with
+boundary edges and missing context is rejected before writing; a closed mesh
+needs no OBC metadata. Older regional files must be regenerated through the
+boundary-producing path rather than silently exported with an empty boundary.
+
+The adapter validates boundary vertices and consecutive boundary edges, retains
+NS segmentation, checks physical M-triangle/W-node counts, and atomically
+publishes without replacing an old output on failure. `fvcom_mesh_input=` points
+to the new artifact. `fvcom_boundary_status=` distinguishes `closed_mesh`,
+`open_chains_preserved` and `no_open_chains_classified`. The last state keeps a
+warning: a recorded empty/all-separator order does **not** prove that the model's
+open-boundary conditions are complete. Existing synthetic CMRC ocean fixtures
+produce this state; the exporter preserves it rather than inventing NS records.
+A `.2dm` mesh and its available OBC are not bathymetry, forcing, or solver-run
+certification.
+
+## Configuration
+
+Add this to an otherwise valid CMRC project (same region syntax as `domain`):
+
+```yaml
+refinement:
+  enabled: true
+  threshold_enabled: true
+  max_passes: 2
+  backend: Certified
+  threshold_region: !Close
+    path: input/evaluation_window.nml
+    format: Nml
+    boundary:
+      mode: polyline
+```
+
+`!Bbox {w: 170, e: -170, s: -10, n: 10}`, `!Circle {lon: 110, lat: 20,
+radius_km: 500}`, `!Shapefile {path: input/window.shp}` and `!Close` imports
+(`Nml`, `Netcdf`, `LonLatText`, `PolygonShp`) are supported. Bboxes preserve
+directed longitude spans, including antimeridian crossings. Polygon shapefile
+imports retain the existing polygon-reader acceptance rules.
+
+- Absent/null: existing threshold behavior is unchanged. A regional delivery
+  domain is **not** implicitly copied into the threshold region. Existing
+  adapter/domain constraints still apply; this field adds an independent mask.
+- With either refinement or thresholds switched off: the configuration is
+  retained but inactive. Stored geometry is still validated.
+- Active: requires at least one enabled statistical criterion and an explicitly
+  supported route. Unsupported combinations fail rather than broaden the window
+  or interpret it as hard demand.
+- Relative input paths are resolved against the Project file, including after
+  GUI open/edit/save/run. GUI preserves this field; it currently has no separate
+  visual editor. Set it in YAML/JSON.
+
+| Route | Independent active threshold region |
+|---|---|
+| Certified / CMRC | Supported |
+| Method-C canonical with enabled HField | Supported |
+| Method-C canonical without HField | Rejected |
+| Method-C LEPP-Delaunay with adaptive enabled | Supported |
+| RedGreen with adaptive enabled | Supported |
+| RedGreen / LEPP-Delaunay with adaptive disabled | Rejected |
+
+For RedGreen and LEPP-Delaunay, an omitted `adaptive` recipe defaults to enabled;
+`adaptive.enabled: false` explicitly disables the statistical demand consumer.
+Canonical Method-C without HField still has no supported criteria-driven loop.
+Land, atmosphere and ocean use the same field and criteria pipeline; no
+case-specific region is hard-coded.
+
+Both adaptive routes reuse the shared statistical-support mask. In raw NML,
+when statistical criteria and an adaptive/HField consumer are active, calculated
+regions with degree zero are evaluation windows, not additional hard demands.
+Positive-degree calculated regions remain hard demands. Without statistical
+sources or without either consumer, the legacy reader still interprets degree
+zero as the maximum configured hard-refinement level, where that route is valid.
+Callers that relied on the former adaptive double consumption must use a
+positive degree or `specified_*` for an independent hard requirement.
+
+## Staging and failure behavior
+
+`earthmesh_cli --project` stages each active shape as an evaluation-only
+mask with refinement degree **zero**, then sets `RL%mask_refine_cal_type` and
+`RL%mask_refine_cal_fprefix`. Bbox/circle primitives also become files because
+the calculated-region reader does not consume inline geometry. Raw
+`ProjectConfig::lower().to_namelist()` is an intermediate representation for
+these shapes; use the Project CLI to resolve and stage all inputs.
+
+NML/NetCDF imports must be concrete files with `close_refine=0` / zero stored
+refinement degree. Positive-degree files are rejected: use `specified_close`
+for hard refinement. Files are read exactly, not expanded as caller-provided
+prefixes, then copied byte-for-byte under a run-owned prefix, preserving their
+coordinate precision and representation. Text/shapefile conversion uses the
+existing NML writer (10 decimal places). The original inputs are never rewritten.
+Missing/malformed imports fail and clean the failed run directory;
+they never fall back to global evaluation.
+
+Only `polyline` close boundaries are accepted here. Spherical Chaikin and
+enclosing-cap transforms are rejected because the calculated reader has no
+boundary-transform contract. Final delivery-domain transformations remain
+independently configured and unchanged.

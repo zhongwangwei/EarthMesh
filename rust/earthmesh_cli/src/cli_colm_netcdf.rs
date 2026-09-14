@@ -118,3 +118,62 @@ pub(crate) fn run_colm_coupling_csv_to_netcdf(
     }
     Ok(())
 }
+
+pub(crate) fn run_colm_mesh_from_gridfile(
+    args: impl Iterator<Item = String>,
+) -> Result<(), String> {
+    let args = args.collect::<Vec<_>>();
+    if args.len() < 4 {
+        return Err(usage(
+            "--colm-mesh-from-gridfile requires INPUT OUTPUT --pixels-per-degree N [--kind tri|hex]",
+        ));
+    }
+    let input = &args[0];
+    let output = &args[1];
+    let mut resolution = None;
+    let mut kind = earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex;
+    let mut seen_kind = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--pixels-per-degree" => {
+                if resolution.is_some() || i + 1 >= args.len() {
+                    return Err(usage(
+                        "--colm-mesh-from-gridfile requires one --pixels-per-degree N",
+                    ));
+                }
+                resolution = Some(crate::cli_args::parse_positive_usize(
+                    "--pixels-per-degree",
+                    &args[i + 1],
+                )?);
+                i += 2;
+            }
+            "--kind" => {
+                if seen_kind || i + 1 >= args.len() {
+                    return Err(usage(
+                        "--colm-mesh-from-gridfile requires one --kind tri|hex",
+                    ));
+                }
+                kind = match args[i + 1].as_str() {
+                    "tri" => earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Tri,
+                    "hex" => earthmesh_cli::unstructured_mesh_support::GridfileCellKind::Hex,
+                    other => return Err(usage(&format!("unknown CoLM mesh kind {other}"))),
+                };
+                seen_kind = true;
+                i += 2;
+            }
+            other => return Err(usage(&format!("unknown CoLM mesh argument {other}"))),
+        }
+    }
+    let resolution = resolution
+        .ok_or_else(|| usage("--colm-mesh-from-gridfile requires one --pixels-per-degree N"))?;
+    let report = earthmesh_cli::colm_mesh_input::write_colm_mesh_from_gridfile_with_kind(
+        input, output, resolution, kind,
+    )
+    .map_err(|err| err.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}

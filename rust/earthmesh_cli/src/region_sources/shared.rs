@@ -108,9 +108,10 @@ pub(crate) fn parse_inline_mask_source(prefix: &str) -> io::Result<Option<Inline
 pub(crate) fn method_c_calculated_region_level(
     mask_refine_degree: usize,
     max_level: usize,
+    zero_is_threshold_domain: bool,
 ) -> Option<usize> {
     if mask_refine_degree == 0 {
-        Some(max_level)
+        (!zero_is_threshold_domain).then_some(max_level)
     } else if mask_refine_degree <= max_level {
         Some(mask_refine_degree)
     } else {

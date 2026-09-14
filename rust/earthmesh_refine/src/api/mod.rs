@@ -3,7 +3,7 @@
 /// The refinement backends, as a choice rather than a chain.
 ///
 /// They differ in what they do with a request they cannot take as given, and
-/// that difference is the whole reason there are three.
+/// that difference is the whole reason there are three retained backends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RefinementBackend {
     /// Nested regions with transition rows. Refuses a region off its lattice,
@@ -13,9 +13,6 @@ pub enum RefinementBackend {
     /// Splits any marked triangle into four and closes the seams. Grows a
     /// marking it cannot take as given rather than rejecting a shape.
     RedGreen,
-    /// Re-reads the criteria against the cells that exist now and changes the
-    /// mesh locally where they are still unmet.
-    HarpDv,
     /// Starts from a certified icosahedral mother grid and only coarsens a
     /// patch when the primal, dual, physical, and balance certificates pass.
     Certified,
@@ -27,7 +24,6 @@ impl RefinementBackend {
         match self {
             Self::MethodC => "method_c",
             Self::RedGreen => "red_green",
-            Self::HarpDv => "harp_dv",
             Self::Certified => "certified",
         }
     }
@@ -37,7 +33,6 @@ impl RefinementBackend {
         match name.trim() {
             "method_c" => Some(Self::MethodC),
             "red_green" => Some(Self::RedGreen),
-            "harp_dv" => Some(Self::HarpDv),
             "certified" => Some(Self::Certified),
             _ => None,
         }
@@ -49,6 +44,6 @@ impl RefinementBackend {
     /// than approximated, so criteria reach it only as named regions someone
     /// else derived. Measured, and recorded in the technical guide.
     pub fn serves_criteria_directly(self) -> bool {
-        matches!(self, Self::RedGreen | Self::HarpDv | Self::Certified)
+        matches!(self, Self::RedGreen | Self::Certified)
     }
 }

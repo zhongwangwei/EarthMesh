@@ -70,12 +70,6 @@ impl RefineConfig {
         if self.niter_refine_specified {
             out.push_str(&format!("  RL%niter_refine = {}\n", self.niter_refine));
         }
-        if self.harp_min_angle_deg > 0.0 {
-            out.push_str(&format!(
-                "  RL%harp_min_angle_deg = {}\n",
-                self.harp_min_angle_deg
-            ));
-        }
 
         // specified / calculated control
         out.push_str(&format!("  RL%refine_spc = {}\n", flag(self.refine_spc)));

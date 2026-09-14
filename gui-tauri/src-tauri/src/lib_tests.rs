@@ -1,8 +1,8 @@
 use super::*;
 use earthmesh_project::{
-    default_mask_sea_ratio, CloseBoundaryMode, CoupledMeshConfig, DomainConfig, HydroCoastConfig,
-    MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig, ProjectDataLayer,
-    ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
+    default_mask_sea_ratio, CloseBoundaryMode, CloseMaskFormat, CoupledMeshConfig, DomainConfig,
+    HydroCoastConfig, MeshDomainKind, MeshIntentPreset, ModelFormat, ProjectConfig,
+    ProjectDataLayer, ProjectLayerRole, RegionShape, ResolutionSpec, SpecifiedCloseRefinement,
     ThresholdCriterionConfig, ThresholdField, ViolationPolicy, DEFAULT_MIN_ANGLE_DEG,
     INTENT_PRESETS, METHOD_C_MAX_AUTO_REFINE_LEVEL, METHOD_C_MIN_BASE_NXP,
 };
@@ -132,7 +132,7 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/4'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
@@ -143,21 +143,21 @@ fn engine_discovery_rejects_silent_zero_exit_stubs() {
     assert!(!engine::engine_candidate_is_compatible(&stub));
     assert!(engine::engine_candidate_is_compatible(&compatible));
     // Matching package versions are insufficient: the old sidecar cannot parse
-    // sea_ratio even though it reports the same alpha version as the new GUI.
+    // the CoLM delivery schema even though it reports the same alpha version as the new GUI.
     fs::write(
         &compatible,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/2'; fi\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '{}'; else printf '%s\\n' 'earthmesh-studio-engine/3'; fi\n",
             env!("CARGO_PKG_VERSION"),
         ),
     )
     .unwrap();
     match engine::inspect_engine_candidate(&compatible) {
         engine::EngineCandidate::Unusable(reason) => {
-            assert!(reason.contains("earthmesh-studio-engine/2"));
+            assert!(reason.contains("earthmesh-studio-engine/4"));
             assert!(reason.contains("earthmesh-studio-engine/3"));
         }
-        _ => panic!("same-version sidecar without sea_ratio support must be rejected"),
+        _ => panic!("same-version sidecar without CoLM delivery schema support must be rejected"),
     }
     let _ = fs::remove_dir_all(root);
 }
@@ -494,6 +494,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
         path: "fixtures/refine.txt".to_string(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "fixtures/threshold-region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
     cfg.hydro_coast = Some(HydroCoastConfig {
         merit_root: "fixtures/merit".to_string(),
         cama_root: Some("fixtures/hydro-cama".to_string()),
@@ -529,6 +534,11 @@ fn gui_absolutizes_every_project_file_before_staging_it_in_the_run_directory() {
     };
     assert!(Path::new(path).is_absolute());
     assert!(Path::new(&cfg.refinement.specified_close.unwrap().path).is_absolute());
+    let Some(RegionShape::Close { path, .. }) = &cfg.refinement.threshold_region else {
+        panic!("close threshold region");
+    };
+    assert!(Path::new(path).is_absolute());
+    assert!(Path::new(path).ends_with("fixtures/threshold-region.nml"));
     let hydro = cfg.hydro_coast.unwrap();
     assert!(Path::new(&hydro.merit_root).is_absolute());
     assert!(Path::new(hydro.cama_root.as_deref().unwrap()).is_absolute());
@@ -605,6 +615,9 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         path: absolute_missing.to_string_lossy().into_owned(),
         boundary: CloseBoundaryMode::Polyline,
     });
+    cfg.refinement.threshold_region = Some(RegionShape::Shapefile {
+        path: "threshold/region.shp".to_string(),
+    });
     let project_path = project_dir.join("project.yaml");
     fs::write(&project_path, cfg.to_yaml().unwrap()).unwrap();
 
@@ -618,6 +631,10 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
         Path::new(&opened_cfg.refinement.specified_close.unwrap().path),
         absolute_missing
     );
+    let Some(RegionShape::Shapefile { path }) = &opened_cfg.refinement.threshold_region else {
+        panic!("shapefile threshold region");
+    };
+    assert_eq!(Path::new(path), project_dir.join("threshold/region.shp"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -791,7 +808,11 @@ fn sidecar_success_reports_exit_and_gridfile() {
     let run = mesh_process::begin_run().expect("reserve run");
     let logs = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&logs);
-    let child = spawn_test_sidecar("gridfile=/tmp/gui-success.nc", "sidecar warning", 0);
+    let child = spawn_test_sidecar(
+        "gridfile=/tmp/base.nc\nproject_final_gridfile=/tmp/gui-success.nc\nproject_hydro_final_gridfile=/tmp/intermediate.nc\ngridfile=/tmp/rejected.nc",
+        "sidecar warning",
+        0,
+    );
 
     let (ok, code, gridfile) =
         mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
@@ -801,7 +822,7 @@ fn sidecar_success_reports_exit_and_gridfile() {
 
     assert!(ok);
     assert_eq!(code, Some(0));
-    assert_eq!(gridfile.as_deref(), Some("/tmp/gui-success.nc"));
+    assert_eq!(gridfile.gridfile.as_deref(), Some("/tmp/gui-success.nc"));
     assert!(logs
         .lock()
         .unwrap()
@@ -825,7 +846,7 @@ fn sidecar_nonzero_exit_is_a_completed_failed_result() {
 
     assert!(!ok);
     assert_eq!(code, Some(7));
-    assert_eq!(gridfile, None);
+    assert_eq!(gridfile.gridfile, None);
     let logs = logs.lock().unwrap();
     assert!(logs.iter().any(|line| line == "[stderr] synthetic failure"));
     assert!(logs.iter().any(|line| line == "— exited with 7"));
@@ -859,7 +880,6 @@ fn project_capabilities_expose_authoritative_runtime_limits() {
     assert_eq!(capabilities.default_relax, 0.04);
     assert_eq!(capabilities.default_hfield_g, 0.2);
     assert_eq!(capabilities.method_c_defaults, Default::default());
-    assert_eq!(capabilities.harp_dv_defaults, Default::default());
     assert_eq!(capabilities.certified_defaults, Default::default());
     assert_eq!(
         capabilities.certified_defaults.mode,
@@ -1203,6 +1223,48 @@ fn gui_target_profile_is_editable_with_the_backend_compatibility_matrix() {
 }
 
 #[test]
+fn colm_mesh_delivery_defaults_off_and_setter_persists() {
+    let yaml = preset_yaml("colm_mesh_delivery", MeshIntentPreset::Custom);
+    let summary = project_summary(yaml.clone()).expect("summary");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+
+    let yaml = set_colm_mesh_delivery(yaml, true, Some(240)).expect("enable colm mesh");
+    let summary = project_summary(yaml.clone()).expect("summary enabled");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(240));
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+
+    let yaml = set_colm_mesh_delivery(yaml, false, None).expect("disable colm mesh");
+    let summary = project_summary(yaml).expect("summary disabled");
+    assert!(!summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_preserved_and_rejected_for_non_colm_targets() {
+    let base = set_colm_mesh_delivery(
+        preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom),
+        true,
+        Some(120),
+    )
+    .expect("base colm delivery");
+    let edited = preset_yaml("colm_mesh_preserve", MeshIntentPreset::Custom);
+    let preserved =
+        preserve_unexposed_project_fields(base.clone(), edited, false).expect("preserve delivery");
+    let summary = project_summary(preserved).expect("summary");
+    assert!(summary.colm_mesh_enabled);
+    assert_eq!(summary.colm_mesh_pixels_per_degree, Some(120));
+
+    let non_colm = set_project_target(base, "ocean".to_string(), "FVCOM".to_string())
+        .expect("switching away from CoLM clears delivery");
+    let summary = project_summary(non_colm).expect("non-colm summary");
+    assert_eq!(summary.model_format, "FVCOM");
+    assert!(!summary.colm_mesh_enabled);
+}
+
+#[test]
 fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_state() {
     let yaml = preset_yaml("migration_base", MeshIntentPreset::MeritHydroCoast);
     let yaml = set_domain_bbox(yaml, 108.0, 120.0, 18.0, 26.0, None).unwrap();
@@ -1223,6 +1285,12 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
             enabled: false,
             value: Some(3.5),
         });
+    base.refinement.threshold_region = Some(RegionShape::Close {
+        path: "/data/hidden_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    base.refinement.threshold_enabled = false;
     base.quality.min_angle_deg = 31.0;
     base.validate().expect("valid migration base");
 
@@ -1245,6 +1313,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         migrated.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        migrated.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!migrated.refinement.threshold_enabled);
     assert!(migrated
         .data_layers
         .iter()
@@ -1277,6 +1350,11 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         compatible.refinement.threshold_criteria,
         base.refinement.threshold_criteria
     );
+    assert_eq!(
+        compatible.refinement.threshold_region,
+        base.refinement.threshold_region
+    );
+    assert!(!compatible.refinement.threshold_enabled);
     assert_eq!(compatible.target.kind, MeshDomainKind::Coupled);
     assert_eq!(compatible.target.model_format, ModelFormat::CoLM);
 }
@@ -1300,17 +1378,40 @@ fn circle_project(name: &str) -> ProjectConfig {
     )
 }
 #[test]
-fn set_domain_bbox_accepts_antimeridian_and_rejects_degenerate_coordinates() {
+fn set_domain_bbox_accepts_antimeridian_and_rejects_invalid_coordinates() {
     let yaml = hydrology_yaml("bbox_test");
     let yaml = set_domain_bbox(yaml, 170.0, -170.0, 21.5, 23.5, None).expect("antimeridian bbox");
     let summary = project_summary(yaml).expect("summary");
     assert_eq!(summary.bbox, Some([170.0, -170.0, 21.5, 23.5]));
-    let yaml = hydrology_yaml("bbox_test");
-    let err = set_domain_bbox(yaml, 112.0, 112.0, 21.5, 23.5, None).unwrap_err();
-    assert!(err.contains("bbox west and east must differ"));
-    let yaml = hydrology_yaml("bbox_test");
-    let err = set_domain_bbox(yaml, 112.0, 115.0, 21.5, 21.5, None).unwrap_err();
-    assert!(err.contains("bbox south must be < north"));
+
+    for (w, e, s, n, expected) in [
+        (112.0, 112.0, 21.5, 23.5, "bbox west and east must differ"),
+        (112.0, 115.0, 21.5, 21.5, "bbox south must be < north"),
+        (
+            f64::NAN,
+            115.0,
+            21.5,
+            23.5,
+            "bbox coordinates must be finite",
+        ),
+        (
+            181.0,
+            115.0,
+            21.5,
+            23.5,
+            "bbox longitudes must be between -180 and 180",
+        ),
+        (
+            112.0,
+            115.0,
+            -91.0,
+            23.5,
+            "bbox latitudes must be between -90 and 90",
+        ),
+    ] {
+        let err = set_domain_bbox(hydrology_yaml("bbox_test"), w, e, s, n, None).unwrap_err();
+        assert!(err.contains(expected), "{err}");
+    }
 }
 #[test]
 fn set_domain_bbox_rejects_invalid_sea_ratio() {
@@ -1318,6 +1419,174 @@ fn set_domain_bbox_rejects_invalid_sea_ratio() {
     let err = set_domain_bbox(yaml, 112.0, 115.0, 21.5, 23.5, Some(1.5)).unwrap_err();
     assert!(err.contains("domain sea_ratio must be between 0 and 1"));
 }
+
+#[test]
+fn domain_setters_roundtrip_fractional_sea_ratio_without_quantizing() {
+    for (label, yaml) in [
+        (
+            "bbox",
+            set_domain_bbox(
+                hydrology_yaml("bbox_ratio"),
+                112.0,
+                115.0,
+                21.5,
+                23.5,
+                Some(0.125),
+            )
+            .expect("bbox ratio"),
+        ),
+        (
+            "circle",
+            set_domain_circle(
+                hydrology_yaml("circle_ratio"),
+                113.0,
+                22.0,
+                100.0,
+                Some(0.125),
+            )
+            .expect("circle ratio"),
+        ),
+        (
+            "shapefile",
+            set_domain_shapefile(
+                hydrology_yaml("shapefile_ratio"),
+                "input/watershed.shp".to_string(),
+                Some(0.125),
+            )
+            .expect("shapefile ratio"),
+        ),
+        (
+            "close",
+            set_domain_close(
+                hydrology_yaml("close_ratio"),
+                "input/domain.nc".to_string(),
+                "netcdf".to_string(),
+                Some(0.125),
+            )
+            .expect("close ratio"),
+        ),
+    ] {
+        let summary = project_summary(validate_project(yaml).expect("canonical yaml"))
+            .unwrap_or_else(|err| panic!("{label}: {err}"));
+        assert_eq!(summary.sea_ratio, Some(0.125), "{label}");
+    }
+}
+
+#[test]
+fn set_domain_close_rejects_format_extension_mismatch() {
+    let err = set_domain_close(
+        hydrology_yaml("close_format_mismatch"),
+        "input/ocean-domain.nml".to_string(),
+        "netcdf".to_string(),
+        Some(0.375),
+    )
+    .expect_err("close domain format must match the selected path extension");
+    assert!(
+        err.contains("close domain path extension does not match its format"),
+        "{err}"
+    );
+}
+
+#[test]
+fn set_domain_circle_sets_regional_circle_default_sea_ratio_and_clears_lepp() {
+    let mut cfg = ProjectConfig::scaffold(
+        "circle_domain",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    cfg.refinement.enabled = true;
+    cfg.refinement.max_passes = 1;
+    cfg.refinement.specified_circle = Some(earthmesh_project::SpecifiedCircleRefinements::One(
+        earthmesh_project::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.0,
+            radius_km: 80.0,
+        },
+    ));
+    cfg.quality.lepp_post_quality = Some(earthmesh_project::LeppPostQualityConfig {
+        maximum_insertions: 77,
+        maximum_edge_km: None,
+    });
+    let yaml = set_domain_circle(cfg.to_yaml().unwrap(), 113.5, 22.25, 150.0, None)
+        .expect("set circle domain");
+    let updated = ProjectConfig::from_yaml(&yaml).expect("valid circle yaml");
+    assert!(updated.quality.lepp_post_quality.is_none());
+    assert!(matches!(
+        updated.domain,
+        DomainConfig::Regional {
+            shape: RegionShape::Circle {
+                lon: 113.5,
+                lat: 22.25,
+                radius_km: 150.0,
+            },
+            sea_ratio: Some(ratio),
+        } if ratio == default_mask_sea_ratio()
+    ));
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.domain, "regional");
+    assert_eq!(summary.domain_shape, "circle");
+    assert_eq!(summary.circle, Some([113.5, 22.25, 150.0]));
+    assert_eq!(summary.bbox, None);
+    assert_eq!(summary.sea_ratio, Some(default_mask_sea_ratio()));
+}
+
+#[test]
+fn set_domain_circle_accepts_explicit_sea_ratio_and_global_switch_clears_shape() {
+    let yaml = hydrology_yaml("circle_switch");
+    let yaml = set_domain_circle(yaml, -60.0, 10.0, 500.0, Some(0.3)).expect("set circle domain");
+    let summary = project_summary(yaml.clone()).expect("circle summary");
+    assert_eq!(summary.circle, Some([-60.0, 10.0, 500.0]));
+    assert_eq!(summary.sea_ratio, Some(0.3));
+
+    let global = set_domain_global(yaml).expect("set global");
+    let summary = project_summary(global).expect("global summary");
+    assert_eq!(summary.domain, "global");
+    assert_eq!(summary.domain_shape, "global");
+    assert_eq!(summary.circle, None);
+    assert_eq!(summary.sea_ratio, None);
+}
+
+#[test]
+fn set_domain_circle_rejects_invalid_values() {
+    for (lon, lat, radius_km, expected) in [
+        (
+            f64::NAN,
+            22.0,
+            100.0,
+            "circle coordinates and radius must be finite",
+        ),
+        (
+            181.0,
+            22.0,
+            100.0,
+            "circle longitude must be between -180 and 180",
+        ),
+        (
+            113.0,
+            -91.0,
+            100.0,
+            "circle latitude must be between -90 and 90",
+        ),
+        (113.0, 22.0, 0.0, "circle radius_km must be > 0"),
+        (113.0, 22.0, 11_000.0, "circle radius_km must be <="),
+    ] {
+        let err = set_domain_circle(hydrology_yaml("invalid_circle"), lon, lat, radius_km, None)
+            .unwrap_err();
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn set_domain_circle_rejects_invalid_sea_ratio() {
+    let yaml = preset_yaml("circle_sea_ratio_test", MeshIntentPreset::CoastalOcean);
+    let err = set_domain_circle(yaml, 112.0, 21.5, 100.0, Some(f64::INFINITY)).unwrap_err();
+    assert!(err.contains("domain sea_ratio must be finite"));
+    let yaml = preset_yaml("circle_sea_ratio_test", MeshIntentPreset::CoastalOcean);
+    let err = set_domain_circle(yaml, 112.0, 21.5, 100.0, Some(-0.1)).unwrap_err();
+    assert!(err.contains("domain sea_ratio must be between 0 and 1"));
+}
+
 #[test]
 fn project_summary_reports_regional_sea_ratio() {
     let yaml = preset_yaml("sea_ratio_test", MeshIntentPreset::CoastalOcean);
@@ -1411,6 +1680,20 @@ fn project_summary_reports_hidden_regional_shape() {
     assert_eq!(summary.domain, "regional");
     assert_eq!(summary.domain_shape, "circle");
     assert_eq!(summary.bbox, None);
+    assert_eq!(summary.circle, Some([113.0, 22.5, 100.0]));
+    assert_eq!(summary.sea_ratio, None);
+}
+
+#[test]
+fn validate_project_preserves_circle_domain_and_unexposed_fields() {
+    let mut cfg = circle_project("circle_preserve");
+    cfg.expert.openmp = Some(3);
+    let yaml = validate_project(cfg.to_yaml().unwrap()).expect("validate circle project");
+    let reopened = ProjectConfig::from_yaml(&yaml).expect("valid yaml");
+    assert_eq!(reopened.domain, cfg.domain);
+    assert_eq!(reopened.expert.openmp, Some(3));
+    let summary = project_summary(yaml).expect("summary");
+    assert_eq!(summary.circle, Some([113.0, 22.5, 100.0]));
 }
 
 #[test]
@@ -2274,6 +2557,268 @@ fn preserve_unexposed_project_fields_keeps_supported_hidden_opened_config() {
         .iter()
         .any(|layer| layer.id == "custom_threshold"));
 }
+
+fn active_threshold_region_opened_yaml(name: &str) -> String {
+    let yaml = set_layer_path(
+        hydrology_yaml(name),
+        "lai".to_string(),
+        "/opened/lai.nc".to_string(),
+        true,
+    )
+    .expect("opened LAI threshold source");
+    let yaml = set_threshold_criterion(yaml, "lai_std".to_string(), true, Some(7.5))
+        .expect("opened LAI std criterion");
+    let mut cfg = ProjectConfig::from_yaml(&yaml).expect("opened threshold project");
+    cfg.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/active_threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    let yaml = cfg.to_yaml().expect("dormant threshold region yaml");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("opened CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("opened active threshold region");
+    ProjectConfig::from_yaml(&yaml)
+        .expect("active threshold region base")
+        .to_yaml()
+        .expect("active threshold region yaml")
+}
+
+fn preserved_active_threshold_region_compose_base(name: &str) -> String {
+    let opened_yaml = active_threshold_region_opened_yaml(name);
+    let scaffold = ProjectConfig::scaffold(
+        name,
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: 108.0,
+                e: 120.0,
+                s: 18.0,
+                n: 26.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(40),
+    );
+    let yaml = preserve_unexposed_project_fields(
+        opened_yaml,
+        scaffold.to_yaml().expect("scaffold yaml"),
+        false,
+    )
+    .expect("preserve active threshold region while dormant");
+    set_layer_path(yaml, "lai".to_string(), "/opened/lai.nc".to_string(), true)
+        .expect("replay visible LAI source")
+}
+
+#[test]
+fn active_threshold_region_replays_through_cmrc_backend_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_cmrc_replay");
+    assert!(
+        set_refinement(yaml.clone(), true, true, 1).is_err(),
+        "the former enable-before-route order must not bypass admission"
+    );
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, false, None, None, None).expect("h-field off");
+    let yaml = set_refinement_backend(yaml, "certified".to_string()).expect("CMRC backend");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::Certified
+    );
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+    assert!(cfg
+        .refinement
+        .threshold_criteria
+        .iter()
+        .any(|criterion| criterion.id == "lai_std" && criterion.enabled));
+}
+
+#[test]
+fn active_threshold_region_replays_through_canonical_method_c_hfield_before_enable() {
+    let yaml = preserved_active_threshold_region_compose_base("active_region_hfield_replay");
+    let yaml = set_adaptive_refinement(yaml, false, None, None).expect("adaptive off");
+    let yaml = set_hfield_refinement(yaml, true, Some(0.25), Some(4), Some(10_000.0))
+        .expect("h-field route before activation");
+    let yaml = set_refinement_backend(yaml, "method_c".to_string()).expect("canonical Method-C");
+    let yaml = set_refinement(yaml, true, true, 1).expect("activate threshold region");
+    let saved = validate_project(yaml).expect("canonical save serialization");
+    let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        cfg.refinement.backend,
+        earthmesh_project::RefinementBackend::MethodC
+    );
+    assert_eq!(
+        cfg.refinement.method_c.algorithm,
+        earthmesh_project::MethodCAlgorithm::Canonical
+    );
+    assert!(cfg
+        .refinement
+        .hfield
+        .as_ref()
+        .is_some_and(|hfield| hfield.enabled));
+    assert!(cfg.refinement.enabled);
+    assert!(cfg.refinement.threshold_enabled);
+    assert!(matches!(
+        cfg.refinement.threshold_region,
+        Some(RegionShape::Close { .. })
+    ));
+}
+
+#[test]
+fn active_threshold_region_replays_through_adaptive_backends_before_enable() {
+    for (name, backend, expected_backend, expected_algorithm) in [
+        (
+            "red_green",
+            "red_green",
+            earthmesh_project::RefinementBackend::RedGreen,
+            earthmesh_project::MethodCAlgorithm::Canonical,
+        ),
+        (
+            "lepp_delaunay",
+            "lepp_delaunay",
+            earthmesh_project::RefinementBackend::MethodC,
+            earthmesh_project::MethodCAlgorithm::LeppDelaunay,
+        ),
+    ] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{name}_adaptive_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, true, Some(2), Some(true))
+            .unwrap_or_else(|error| panic!("{name}: adaptive route before activation: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{name}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{name}: backend before activation: {error}"));
+        let yaml = set_refinement(yaml, true, true, 1)
+            .unwrap_or_else(|error| panic!("{name}: activate threshold region: {error}"));
+        let saved = validate_project(yaml)
+            .unwrap_or_else(|error| panic!("{name}: canonical save serialization: {error}"));
+        let cfg = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+        assert_eq!(cfg.refinement.backend, expected_backend, "{name}");
+        assert_eq!(
+            cfg.refinement.method_c.algorithm, expected_algorithm,
+            "{name}"
+        );
+        assert!(
+            cfg.refinement
+                .adaptive
+                .as_ref()
+                .is_some_and(|adaptive| adaptive.enabled),
+            "{name}: adaptive route should remain enabled"
+        );
+        assert!(
+            cfg.refinement
+                .hfield
+                .as_ref()
+                .is_none_or(|hfield| !hfield.enabled),
+            "{name}: h-field must stay inactive for adaptive replay"
+        );
+        assert!(cfg.refinement.enabled, "{name}");
+        assert!(cfg.refinement.threshold_enabled, "{name}");
+        assert!(matches!(
+            cfg.refinement.threshold_region,
+            Some(RegionShape::Close { .. })
+        ));
+    }
+}
+
+#[test]
+fn active_threshold_region_rejects_adaptive_backends_when_adaptive_is_off() {
+    for backend in ["red_green", "lepp_delaunay"] {
+        let yaml = preserved_active_threshold_region_compose_base(&format!(
+            "active_region_{backend}_adaptive_off_replay"
+        ));
+        let yaml = set_adaptive_refinement(yaml, false, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: adaptive off replay: {error}"));
+        let yaml = set_hfield_refinement(yaml, false, None, None, None)
+            .unwrap_or_else(|error| panic!("{backend}: h-field off replay: {error}"));
+        let yaml = set_refinement_backend(yaml, backend.to_string())
+            .unwrap_or_else(|error| panic!("{backend}: backend before activation: {error}"));
+        let error = set_refinement(yaml, true, true, 1)
+            .expect_err("activation must reject adaptive backend with adaptive off");
+
+        assert!(
+            error.contains("refinement.threshold_region"),
+            "{backend}: {error}"
+        );
+        assert!(error.contains("adaptive"), "{backend}: {error}");
+    }
+}
+
+#[test]
+fn dormant_threshold_region_survives_gui_compose_visible_edit_and_save() {
+    let mut opened = circle_project("hidden_threshold_region_roundtrip");
+    opened.refinement.threshold_enabled = false;
+    opened.refinement.threshold_region = Some(RegionShape::Close {
+        path: "hidden/threshold_region.nml".to_string(),
+        format: CloseMaskFormat::Nml,
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    opened
+        .refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "lai_std".to_string(),
+            enabled: false,
+            value: Some(1.25),
+        });
+    opened.expert.openmp = Some(2);
+    opened
+        .validate()
+        .expect("dormant threshold region is valid");
+
+    let visible_edit = set_domain_bbox(
+        ProjectConfig::scaffold(
+            "hidden_threshold_region_roundtrip",
+            opened.target.intent,
+            opened.domain.clone(),
+            opened.target.resolution,
+        )
+        .to_yaml()
+        .unwrap(),
+        108.0,
+        120.0,
+        18.0,
+        26.0,
+        None,
+    )
+    .expect("visible bbox edit");
+    let composed =
+        preserve_unexposed_project_fields(opened.to_yaml().unwrap(), visible_edit, false)
+            .expect("compose preserves hidden threshold region");
+    let recomposed = set_refinement(composed, false, false, 0).expect("visible refinement edit");
+    let saved = validate_project(recomposed).expect("canonical save serialization");
+    let reopened = ProjectConfig::from_yaml(&saved).expect("saved yaml");
+
+    assert_eq!(
+        reopened.refinement.threshold_region,
+        opened.refinement.threshold_region
+    );
+    assert!(!reopened.refinement.threshold_enabled);
+    assert_eq!(
+        reopened.refinement.threshold_criteria,
+        opened.refinement.threshold_criteria
+    );
+    assert_eq!(reopened.expert.openmp, Some(2));
+    let DomainConfig::Regional {
+        shape: RegionShape::Bbox { w, e, s, n },
+        ..
+    } = reopened.domain
+    else {
+        panic!("visible bbox edit must win over hidden opened circle");
+    };
+    assert_eq!((w, e, s, n), (108.0, 120.0, 18.0, 26.0));
+}
+
 #[test]
 fn preserve_unexposed_project_fields_keeps_user_bbox_edit_over_hidden_circle() {
     let base = circle_project("opened");
@@ -2471,6 +3016,114 @@ fn switching_landtype_sources_in_both_directions_keeps_one_mask_source() {
         cfg.effective_landcover_criterion().unwrap().source_layer_id,
         "landcover"
     );
+}
+
+#[test]
+fn opened_sources_survive_gui_compose_without_activating_preset_defaults() {
+    for intent in [
+        MeshIntentPreset::AtmosphereMpas,
+        MeshIntentPreset::HydrologyLand,
+        MeshIntentPreset::CoastalOcean,
+    ] {
+        let scaffold = ProjectConfig::scaffold(
+            "opened_sources",
+            intent,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(80),
+        );
+        for mut sources in [
+            vec![],
+            vec![ProjectDataLayer {
+                id: "landcover".into(),
+                role: ProjectLayerRole::LandType,
+                path: String::new(),
+                enabled: false,
+                threshold_value: Some(4.0),
+            }],
+            vec![ProjectDataLayer {
+                // IDs do not determine source roles; opened schema fields do.
+                id: "landcover".into(),
+                role: ProjectLayerRole::Threshold(ThresholdField::Lai),
+                path: "/opened/lai.nc".into(),
+                enabled: true,
+                threshold_value: Some(2.5),
+            }],
+        ] {
+            let mut opened = scaffold.clone();
+            if intent != MeshIntentPreset::AtmosphereMpas {
+                sources.push(ProjectDataLayer {
+                    id: "custom_landcover".into(),
+                    role: ProjectLayerRole::LandType,
+                    path: "/opened/landcover.nc".into(),
+                    enabled: true,
+                    threshold_value: None,
+                });
+            }
+            opened.data_layers = sources.clone();
+            opened.validate().expect("valid opened project fixture");
+            let yaml = preserve_unexposed_project_fields(
+                opened.to_yaml().unwrap(),
+                scaffold.to_yaml().unwrap(),
+                false,
+            )
+            .expect("preserve opened sources");
+            let saved = validate_project(yaml).unwrap();
+            let restored = ProjectConfig::from_yaml(&saved).unwrap();
+            for source in &sources {
+                assert_eq!(
+                    restored
+                        .data_layers
+                        .iter()
+                        .find(|layer| layer.id == source.id),
+                    Some(source),
+                    "opened source changed for {intent:?}"
+                );
+            }
+            for slot in &restored.data_layers {
+                if !sources.iter().any(|source| source.id == slot.id) {
+                    assert!(
+                        !slot.enabled,
+                        "unexpected active source: {intent:?} {slot:?}"
+                    );
+                    assert!(slot.path.is_empty(), "unexpected preset path: {slot:?}");
+                }
+            }
+            let reopened = preserve_unexposed_project_fields(
+                saved.clone(),
+                scaffold.to_yaml().unwrap(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                ProjectConfig::from_yaml(&reopened).unwrap().data_layers,
+                restored.data_layers,
+                "save/reopen must not change source configuration"
+            );
+
+            // Missing preset slots remain available for an explicit source edit.
+            let edited = set_layer_path(saved, "lai".into(), "/new/lai.nc".into(), true)
+                .expect("explicitly enable a previously absent source");
+            let edited = ProjectConfig::from_yaml(&edited).unwrap();
+            let lai = edited
+                .data_layers
+                .iter()
+                .find(|layer| layer.id == "lai")
+                .unwrap();
+            assert!(lai.enabled);
+            assert_eq!(lai.path, "/new/lai.nc");
+            assert_eq!(
+                edited
+                    .data_layers
+                    .iter()
+                    .filter(|layer| {
+                        layer.enabled
+                            && layer.role == ProjectLayerRole::Threshold(ThresholdField::Lai)
+                    })
+                    .count(),
+                1
+            );
+        }
+    }
 }
 
 #[test]
@@ -3126,6 +3779,30 @@ fn set_quality_rejects_an_empty_auto_refine_batch() {
 }
 
 #[test]
+fn refinement_commands_preserve_requested_depth_before_cli_quality_projection() {
+    let mut base = circle_project("requested_depth");
+    base.refinement.specified_close = Some(SpecifiedCloseRefinement {
+        path: "/opened/refine.nml".into(),
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    for algorithm in ["method_c", "red_green", "lepp_delaunay", "certified"] {
+        for policy in [ViolationPolicy::Warn, ViolationPolicy::AutoRefine] {
+            base.quality.on_violation = policy;
+            let yaml = set_refinement_backend(base.to_yaml().unwrap(), algorithm.into()).unwrap();
+            for passes in [3, METHOD_C_MAX_AUTO_REFINE_LEVEL] {
+                let edited = set_refinement(yaml.clone(), true, false, passes).unwrap();
+                assert_eq!(project_summary(edited.clone()).unwrap().max_passes, passes);
+                let lowered = ProjectConfig::from_yaml(&edited)
+                    .unwrap()
+                    .try_lower()
+                    .unwrap();
+                assert_eq!(lowered.refine.max_iter_spc, i32::from(passes));
+            }
+        }
+    }
+}
+
+#[test]
 fn set_refinement_rejects_too_many_passes() {
     let yaml = hydrology_yaml("refine_test");
     let err = set_refinement(yaml, true, true, 6).unwrap_err();
@@ -3284,12 +3961,7 @@ fn the_summary_says_what_a_target_and_model_pairing_delivers() {
     assert_eq!(summary.delivery_status, "full");
 }
 
-/// The GUI can select every mesh-refinement algorithm the engine has.
-///
-/// It could not: `set_refinement_backend` knew `method_c` and `red_green`, and
-/// `RefinementBackend` had no HARP-DV variant at all, so the third backend was
-/// unreachable from a project file or the interface. The engine had shipped it
-/// and nothing above the CLI could ask for it.
+/// The GUI can select every retained mesh-refinement algorithm.
 #[test]
 fn every_refinement_algorithm_is_selectable_from_a_project() {
     let base = circle_project("backend selection").to_yaml().expect("yaml");
@@ -3307,11 +3979,6 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
         (
             "red_green",
             earthmesh_project::RefinementBackend::RedGreen,
-            earthmesh_project::MethodCAlgorithm::Canonical,
-        ),
-        (
-            "harp_dv",
-            earthmesh_project::RefinementBackend::HarpDv,
             earthmesh_project::MethodCAlgorithm::Canonical,
         ),
         (
@@ -3333,17 +4000,28 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
             name
         );
     }
+    let error = crate::project_edits::set_refinement_backend(base, "not_a_backend".to_string())
+        .expect_err("an unknown name is not a backend");
+    assert!(error.contains("unknown refinement algorithm"));
+    assert!(error.contains("certified"));
+}
 
-    let error = crate::project_edits::set_refinement_backend(base, "harpdv".to_string())
-        .expect_err("a typo is not a backend");
-    assert!(
-        error.contains("harp_dv"),
-        "the message should list it: {error}"
-    );
-    assert!(
-        error.contains("certified"),
-        "the message should list it: {error}"
-    );
+#[test]
+fn retired_harp_backend_cannot_be_selected_or_restored() {
+    let base = circle_project("retired backend").to_yaml().expect("yaml");
+    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
+        let error = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
+            .expect_err("retired backend must not silently select another algorithm");
+        assert!(error.contains("retired"), "{name}: {error}");
+    }
+    let capabilities = serde_json::to_value(project_capabilities()).unwrap();
+    assert!(capabilities.get("harp_dv_defaults").is_none());
+    let summary = serde_json::to_value(project_summary(base).unwrap()).unwrap();
+    assert!(summary
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|name| !name.starts_with("harp_dv")));
 }
 
 #[test]
@@ -3368,24 +4046,6 @@ fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.method_c_lepp_maximum_path_length, 700);
     assert!(!summary.method_c_lepp_stop_at_source_resolution);
     assert_eq!(summary.method_c_lepp_minimum_triangle_angle_deg, 20.0);
-
-    let harp = crate::project_edits::set_refinement_backend(base, "harp_dv".to_string())
-        .expect("HARP-DV algorithm");
-    let harp = crate::project_edits::set_harp_dv_options(
-        harp, 4, 2_000.0, 10_000, 900, 1.5, 2.0, 6, 25.0, 10.0,
-    )
-    .expect("HARP-DV options");
-    let summary = project_summary(harp).expect("HARP-DV summary");
-    assert_eq!(summary.refinement_algorithm, "harp_dv");
-    assert_eq!(summary.harp_dv_max_cycles, 4);
-    assert_eq!(summary.harp_dv_minimum_cell_width_m, 2_000.0);
-    assert_eq!(summary.harp_dv_maximum_cells, 10_000);
-    assert_eq!(summary.harp_dv_maximum_patch_cells, 900);
-    assert_eq!(summary.harp_dv_maximum_neighbor_scale_ratio, 1.5);
-    assert_eq!(summary.harp_dv_minimum_candidate_separation_m, 2.0);
-    assert_eq!(summary.harp_dv_maximum_vertex_degree, 6);
-    assert_eq!(summary.harp_dv_minimum_triangle_angle_deg, 25.0);
-    assert_eq!(summary.harp_dv_criterion_minimum_angle_deg, 10.0);
 }
 
 #[test]
@@ -3422,4 +4082,427 @@ fn certified_controls_round_trip_through_the_gui_commands() {
     assert_eq!(summary.certified_maximum_cells, 900_000);
     assert_eq!(summary.certified_gradation_rings_per_level, 5);
     assert_eq!(summary.certified_search_budget, 12_000);
+}
+
+#[test]
+fn certified_delivery_cell_mismatch_is_rejected_by_gui_commands() {
+    let base = circle_project("CMRC delivery cell guard")
+        .to_yaml()
+        .expect("yaml");
+    let inactive =
+        crate::project_edits::set_refinement_backend(base.clone(), "certified".to_string())
+            .expect("CMRC backend");
+    let inactive_tri = crate::project_edits::set_certified_options(
+        inactive,
+        "reverse_coarsening".to_string(),
+        "tri".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect("inactive CMRC recipe remains editable and dormant");
+    let dormant = ProjectConfig::from_yaml(&inactive_tri).expect("inactive certified yaml");
+    assert_eq!(
+        dormant.refinement.certified.delivery,
+        earthmesh_project::CertifiedDeliveryMode::Tri
+    );
+
+    let active = set_specified_refinement(
+        base,
+        true,
+        Some("radius".to_string()),
+        Some(113.0),
+        Some(22.5),
+        Some(100.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("specified refinement");
+    let active = set_refinement(active, true, false, 3).expect("enable refinement");
+    let active = crate::project_edits::set_refinement_backend(active, "certified".to_string())
+        .expect("active CMRC backend");
+    let error = crate::project_edits::set_certified_options(
+        active.clone(),
+        "reverse_coarsening".to_string(),
+        "tri".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect_err("TRI delivery does not match the HEX target");
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+    let original = ProjectConfig::from_yaml(&active).expect("original certified yaml");
+    assert_eq!(
+        original.refinement.certified.delivery,
+        earthmesh_project::CertifiedDeliveryMode::Coupled
+    );
+
+    let hex_delivery = crate::project_edits::set_certified_options(
+        active,
+        "reverse_coarsening".to_string(),
+        "hex".to_string(),
+        "domain_quality_38_to_82_v1".to_string(),
+        4,
+        900_000,
+        5,
+        12_000,
+    )
+    .expect("HEX delivery matches the HEX target");
+    let error = crate::project_edits::set_target_cell(hex_delivery, "tri".to_string())
+        .expect_err("switching the target cell would make CMRC delivery stale");
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+}
+
+fn active_ocean_project_yaml(name: &str) -> String {
+    let yaml = preset_yaml(name, MeshIntentPreset::CoastalOcean);
+    let yaml = set_project_target(yaml, "ocean".to_string(), "fvcom".to_string())
+        .expect("ocean FVCOM target");
+    let yaml = set_target_cell(yaml, "tri".to_string()).expect("tri target");
+    let yaml = set_specified_refinement(
+        yaml,
+        true,
+        Some("bbox".to_string()),
+        None,
+        None,
+        None,
+        Some(100.0),
+        Some(160.0),
+        Some(0.0),
+        Some(50.0),
+        None,
+    )
+    .expect("specified bbox refinement");
+    set_refinement(yaml, true, true, 1).expect("active refinement")
+}
+
+#[test]
+fn certified_regional_ocean_admission_reaches_gui_edit_commands() {
+    let bbox = set_domain_bbox(
+        active_ocean_project_yaml("cmrc_ocean_bbox_backend"),
+        100.0,
+        160.0,
+        0.0,
+        50.0,
+        None,
+    )
+    .expect("bbox before CMRC");
+    let before = bbox.clone();
+    let error = set_refinement_backend(bbox, "certified".to_string())
+        .expect_err("CMRC ocean bbox must fail before run");
+    assert!(
+        error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{error}"
+    );
+    let parsed = ProjectConfig::from_yaml(&before).expect("original yaml still valid");
+    assert_eq!(
+        parsed.refinement.backend,
+        earthmesh_project::RefinementBackend::MethodC
+    );
+
+    let close = set_domain_close(
+        active_ocean_project_yaml("cmrc_ocean_close_supported"),
+        "./masks/domain_close.nml".to_string(),
+        "nml".to_string(),
+        None,
+    )
+    .expect("close domain");
+    let certified = set_refinement_backend(close, "certified".to_string())
+        .expect("single close TRI ocean route is supported");
+    let summary = project_summary(certified.clone()).expect("summary");
+    assert_eq!(summary.domain_shape, "close");
+    assert_eq!(summary.refinement_algorithm, "certified");
+
+    let domain_error = set_domain_circle(certified.clone(), 130.0, 25.0, 1_000.0, None)
+        .expect_err("switching active CMRC ocean close to circle must fail");
+    assert!(
+        domain_error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{domain_error}"
+    );
+    let still_close = project_summary(certified.clone()).expect("unchanged close summary");
+    assert_eq!(still_close.domain_shape, "close");
+
+    let target_error = set_target_cell(certified.clone(), "hex".to_string())
+        .expect_err("switching active CMRC ocean TRI to HEX must fail");
+    assert!(
+        target_error.contains("CMRC regional ocean delivery supports only TRI"),
+        "{target_error}"
+    );
+    let still_tri = ProjectConfig::from_yaml(&certified).expect("original certified yaml");
+    assert_eq!(still_tri.target.cell, earthmesh_project::MeshCellKind::Tri);
+}
+
+/// Opt-in boundary smoke; runs the real CLI, not external model solvers.
+/// See scripts/check_gui_delivery_e2e.py for WebView transport/render verification.
+#[test]
+#[ignore = "requires EARTHMESH_GUI_E2E_ENGINE and EARTHMESH_GUI_E2E_OUTPUT with land.nc4/ocean.nc4 fixtures"]
+fn gui_real_project_delivery_land_atmosphere_ocean() {
+    use earthmesh_project::{ColmMeshDeliveryConfig, MeshCellKind, RefinementBackend};
+    let _guard = RUN_STATE_TEST_LOCK.lock().unwrap();
+    let engine = env::var("EARTHMESH_GUI_E2E_ENGINE").expect("absolute CLI binary path");
+    let analysis_engine =
+        env::var("EARTHMESH_MKGRD").expect("set EARTHMESH_MKGRD to the same CLI for GUI analysis");
+    assert_eq!(
+        fs::canonicalize(&analysis_engine).unwrap(),
+        fs::canonicalize(&engine).unwrap()
+    );
+    let root = PathBuf::from(env::var("EARTHMESH_GUI_E2E_OUTPUT").expect("artifact directory"));
+    let mut records = Vec::new();
+    for (name, kind, cell, format, colm, backend, circle_domain) in [
+        (
+            "land_tri",
+            MeshDomainKind::Land,
+            MeshCellKind::Tri,
+            ModelFormat::CoLM,
+            true,
+            RefinementBackend::Certified,
+            false,
+        ),
+        (
+            "land_hex",
+            MeshDomainKind::Land,
+            MeshCellKind::Hex,
+            ModelFormat::CoLM,
+            true,
+            RefinementBackend::MethodC,
+            false,
+        ),
+        (
+            "land_native",
+            MeshDomainKind::Land,
+            MeshCellKind::Tri,
+            ModelFormat::CoLM,
+            false,
+            RefinementBackend::RedGreen,
+            false,
+        ),
+        (
+            "atmosphere",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Hex,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::Certified,
+            false,
+        ),
+        (
+            "regional_circle_grid_only",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Tri,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::MethodC,
+            true,
+        ),
+        (
+            "ocean",
+            MeshDomainKind::Ocean,
+            MeshCellKind::Tri,
+            ModelFormat::Fvcom,
+            false,
+            RefinementBackend::Certified,
+            false,
+        ),
+        (
+            "grid_only",
+            MeshDomainKind::Atmosphere,
+            MeshCellKind::Tri,
+            ModelFormat::Mpas,
+            false,
+            RefinementBackend::MethodC,
+            false,
+        ),
+    ] {
+        let mut cfg = ProjectConfig::scaffold(
+            name,
+            MeshIntentPreset::Custom,
+            DomainConfig::Global,
+            ResolutionSpec::Nxp(3),
+        );
+        cfg.target.kind = kind;
+        cfg.target.cell = cell;
+        cfg.target.model_format = format;
+        cfg.refinement.enabled = false;
+        cfg.refinement.backend = backend;
+        cfg.refinement.threshold_enabled = false;
+        cfg.data_layers.clear();
+        cfg.expert.niter = Some(1);
+        cfg.quality.on_violation = ViolationPolicy::Warn;
+        if kind == MeshDomainKind::Land || kind == MeshDomainKind::Ocean {
+            cfg.data_layers.push(ProjectDataLayer {
+                id: "landtype".into(),
+                role: ProjectLayerRole::LandType,
+                path: root
+                    .join(if kind == MeshDomainKind::Land {
+                        "land.nc4"
+                    } else {
+                        "ocean.nc4"
+                    })
+                    .display()
+                    .to_string(),
+                enabled: true,
+                threshold_value: None,
+            });
+        }
+        if circle_domain {
+            cfg.domain = DomainConfig::Regional {
+                shape: RegionShape::Circle {
+                    lon: 113.0,
+                    lat: 22.0,
+                    // NXP=3 is intentionally coarse for this real-engine smoke;
+                    // use a broad circle so the regional mask keeps cells.
+                    radius_km: 8_000.0,
+                },
+                sea_ratio: Some(default_mask_sea_ratio()),
+            };
+        }
+        if kind == MeshDomainKind::Ocean {
+            let close = root.join("ocean-domain.nml");
+            fs::write(
+                &close,
+                "close_num=4\nclose_refine=0\n100 0\n160 0\n160 50\n100 50\n",
+            )
+            .unwrap();
+            cfg.domain = DomainConfig::Regional {
+                shape: RegionShape::Close {
+                    path: close.display().to_string(),
+                    format: CloseMaskFormat::Nml,
+                    boundary: CloseBoundaryMode::Polyline,
+                },
+                sea_ratio: None,
+            };
+        }
+        if colm {
+            cfg.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+                pixels_per_degree: 1,
+            });
+        }
+        let dir = mesh_runner::project_run_dir(&cfg, Some(root.join(name).display().to_string()))
+            .unwrap();
+        let yaml = cfg.to_yaml().unwrap();
+        fs::write(dir.join("project.yaml"), &yaml).unwrap();
+        let run = mesh_process::begin_run().unwrap();
+        let child = mesh_runner::project_cli_command(&engine, &dir.join("project.yaml"), &dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&logs);
+        let (ok, code, output) =
+            mesh_runner::capture_mesh_child_with_logger(child, run.id(), move |line| {
+                capture.lock().unwrap().push(line)
+            })
+            .unwrap();
+        fs::write(dir.join("gui.log"), logs.lock().unwrap().join("\n")).unwrap();
+        assert!(ok, "{name}: {}", dir.join("gui.log").display());
+        let gridfile =
+            mesh_runner::require_project_gridfile(&dir, output.gridfile.as_deref()).unwrap();
+        let delivery = crate::project_delivery::read_project_delivery(
+            &cfg,
+            &dir,
+            Some(&gridfile),
+            output.delivery_report.as_deref(),
+            ok,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            delivery["report"]["model_delivery_status"],
+            if name == "land_native" || name == "grid_only" || name == "regional_circle_grid_only" {
+                "native_only"
+            } else {
+                "model_delivered"
+            }
+        );
+        let quality: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                delivery["report"]["final_quality"]["report"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(quality["mesh_name"], gridfile);
+        let selected = Path::new(&gridfile);
+        let final_quality_path = Path::new(
+            delivery["report"]["final_quality"]["report"]
+                .as_str()
+                .unwrap(),
+        );
+        let report_path = Path::new(delivery["report_path"].as_str().unwrap());
+        let originals =
+            [selected, final_quality_path, report_path].map(|path| fs::read(path).unwrap());
+        let view = if cell == MeshCellKind::Tri {
+            "tri"
+        } else {
+            "hex"
+        };
+        let gui_quality = mesh_outputs::mesh_quality(
+            gridfile.clone(),
+            Some(view.into()),
+            Some(cfg.quality.min_angle_deg),
+            Some("warn".into()),
+        )
+        .unwrap();
+        let gui_quality = serde_json::to_value(gui_quality).unwrap();
+        assert_eq!(gui_quality["cell_count"], quality["geometry"]["cell_count"]);
+        assert_eq!(gui_quality["cell_view"], view);
+        assert_eq!(
+            gui_quality["min_angle_deg"],
+            quality["geometry"]["min_angle_deg"]
+        );
+        assert_eq!(
+            gui_quality["max_angle_deg"],
+            quality["geometry"]["max_angle_deg"]
+        );
+        let preview = mesh_outputs::mesh_cell_polygons(
+            gridfile.clone(),
+            view.into(),
+            Some(0),
+            Some(50000),
+            Some(1),
+            None,
+        )
+        .unwrap();
+        let preview: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(
+            preview["features"].as_array().unwrap().len() as u64,
+            gui_quality["cell_count"].as_u64().unwrap()
+        );
+        for (path, original) in [selected, final_quality_path, report_path]
+            .into_iter()
+            .zip(originals)
+        {
+            assert_eq!(
+                fs::read(path).unwrap(),
+                original,
+                "GUI analysis modified {}",
+                path.display()
+            );
+        }
+        records.push(serde_json::json!({"name":name,"summary": project_summary(yaml).unwrap(), "quality":quality,"gui_quality":gui_quality,"preview":preview,
+            "result":dto::RunResult {ok, code, outdir:dir.display().to_string(), gridfile:Some(gridfile), delivery:Some(delivery), certified:None, auto_refine_decisions:Vec::new()}}));
+    }
+    fs::write(
+        root.join("gui-records.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"capabilities":project_capabilities().unwrap(),"cases":records}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
 }

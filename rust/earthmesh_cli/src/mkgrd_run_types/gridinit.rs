@@ -8,6 +8,8 @@ pub struct MkgrdGridinitRunReport {
     pub config: EarthmeshConfig,
     pub runtime_state: Option<EarthmeshRuntimeState>,
     pub workspace_mask: WorkspaceMaskApplyReport,
+    /// Same-run full parent retained before any regional clip/carve.
+    pub raw_output: Option<UnstructuredMeshWriteReport>,
     pub gridfile: UnstructuredMeshWriteReport,
     pub fvcom_2dm: Option<FvcomMesh2dmWriteReport>,
 }

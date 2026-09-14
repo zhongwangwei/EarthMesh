@@ -35,8 +35,9 @@
 - [Lifted-N12 fixed-prefix SDCE closure](n12_sdce_find_one.md)
 - [Lifted-N12 CEC shard resume](n12_cec_shard_resume.md)
 
-CMRC (`refine_backend = 'certified'`) is a peer of Method-C, Red-Green, and
-HARP-DV. Selecting it does not rename, replace, or downgrade another backend.
+CMRC (`refine_backend = 'certified'`) is a peer of the retained Method-C and
+Red-Green backends. Selecting it does not rename, replace, or downgrade another
+backend; retired `harp_dv` requests fail explicitly.
 
 Alpha7 adds an explicit `DomainQuality38To82V1` certificate contract with a
 38.2--81.8 degree internal window and a 38--82 degree final hard window. The

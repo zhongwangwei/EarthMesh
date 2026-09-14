@@ -2,6 +2,7 @@ use std::io;
 
 use super::indexing::{
     mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id,
+    unstructured_w_row_layout,
 };
 use super::{UnstructuredMesh, UnstructuredMeshTopologyReport};
 
@@ -23,6 +24,33 @@ pub(crate) fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<
             io::ErrorKind::InvalidInput,
             "n_w_to_m values must be non-negative",
         ));
+    }
+    Ok(())
+}
+
+/// Final polygon delivery contract, not a restriction on raw/intermediate W rings.
+/// TRI publishes M triangles, so its boundary W fans need not have 5–7 members.
+pub fn validate_published_cell_degrees(mesh: &UnstructuredMesh, mode_grid: &str) -> io::Result<()> {
+    match mode_grid.trim() {
+        "tri" => return Ok(()),
+        "hex" => {}
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported publication mode_grid: {other}"),
+            ))
+        }
+    }
+    validate_unstructured_mesh(mesh)?;
+    let layout = unstructured_w_row_layout(mesh);
+    for row in layout.first_physical_row..mesh.w_points.len() {
+        let degree = mesh.n_w_to_m[row];
+        if !(5..=7).contains(&degree) || degree as usize > mesh.w_to_m[row].len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "HEX publication requires 5..=7 edges per physical polygon: W row {row} has degree {degree}, ring width {}",
+                mesh.w_to_m[row].len(),
+            )));
+        }
     }
     Ok(())
 }

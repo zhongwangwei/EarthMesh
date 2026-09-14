@@ -1,7 +1,7 @@
 use crate::infer_mask_restart_ocean_num_vertex_from_config;
+use crate::mask_postproc_domain::run_final_mask_postproc_ocean_domain;
 use crate::plan_mask_postproc_domain_io;
 use crate::plan_mkgrd_mask_restart_namelist;
-use crate::run_mask_postproc_ocean_domain;
 use crate::MaskPostprocOceanRunOptions;
 use crate::MaskRestartAction;
 use crate::MkgrdMaskRestartOceanRunReport;
@@ -61,7 +61,7 @@ pub fn run_mkgrd_mask_restart_ocean_namelist(
         &plan.config.mesh_type,
         plan.config.mask_patch_on,
     )?;
-    let postproc = run_mask_postproc_ocean_domain(&postproc_plan, options)?;
+    let postproc = run_final_mask_postproc_ocean_domain(&postproc_plan, options)?;
     let runtime_state = plan.runtime_state.clone();
 
     Ok(MkgrdMaskRestartOceanRunReport {

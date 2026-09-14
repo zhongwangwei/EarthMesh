@@ -845,6 +845,7 @@ fn adaptive_config(
         gates: LeppInsertionGates {
             maximum_vertex_degree: 8,
             protected_vertices: method_c.mesh().impent.to_vec(),
+            ..LeppInsertionGates::default()
         },
     }
 }
@@ -1042,6 +1043,118 @@ fn adaptive_hybrid_parallel_scan_is_thread_count_deterministic() {
 }
 
 #[test]
+fn adaptive_hybrid_report_keeps_resolved_targets_from_initial_mesh() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let mut state = original.clone();
+    let demand = AdaptiveHybridDemand::user_region("derived", adaptive_circle(&method_c, 1));
+    let expected = adaptive_hybrid_target_edge_from_level(&original, &demand.region)
+        .expect("initial resolved target");
+
+    let report = refine_adaptive_hybrid(
+        &mut state,
+        std::slice::from_ref(&demand),
+        &adaptive_config(&method_c, 1, 1),
+    )
+    .expect("adaptive hybrid");
+
+    assert_eq!(report.resolved_targets.len(), 1);
+    assert_eq!(report.resolved_targets[0].demand, demand);
+    assert_eq!(report.resolved_targets[0].demand.target_edge_m, None);
+    assert_eq!(report.resolved_targets[0].target_edge_m, expected);
+    assert!(
+        (report.target_radius_m - magnitude(original.vertices()[MESH_STATE_FIRST_ID])).abs() < 0.1,
+        "target radius {}",
+        report.target_radius_m
+    );
+    assert!(state.vertex_count() > original.vertex_count());
+}
+
+#[test]
+fn adaptive_hybrid_report_preserves_explicit_source_floor_and_all_resolved_targets() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let mut state = original.clone();
+    let mut demands = Vec::new();
+    for index in 0..=LEPP_REPORT_DETAIL_LIMIT {
+        let mut demand = AdaptiveHybridDemand::user_region(
+            format!("explicit-{index}"),
+            adaptive_circle(&method_c, 1),
+        );
+        demand.target_edge_m = Some(1.0e12 + index as f64);
+        demand.source_resolution_m = Some(1.0e12);
+        demands.push(demand);
+    }
+
+    let report = refine_adaptive_hybrid(&mut state, &demands, &adaptive_config(&method_c, 1, 1))
+        .expect("explicit targets");
+
+    assert_eq!(state, original);
+    assert_eq!(report.stop_reason, AdaptiveHybridStopReason::Satisfied);
+    assert_eq!(report.resolved_targets.len(), demands.len());
+    for (resolved, demand) in report.resolved_targets.iter().zip(&demands) {
+        assert_eq!(&resolved.demand, demand);
+        assert_eq!(Some(resolved.target_edge_m), demand.target_edge_m);
+        assert_eq!(resolved.demand.source_resolution_m, Some(1.0e12));
+    }
+}
+
+#[test]
+fn adaptive_hybrid_report_samples_nominal_targets_without_representative_faces() {
+    let method_c = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
+    let original = MeshState::from_triangular_mesh(method_c.mesh()).expect("neutral state");
+    let center = crate::xyz_to_lonlat_degrees(test_face_center(&original, MESH_STATE_FIRST_ID));
+    let mut state = original.clone();
+    let mut coarse = AdaptiveHybridDemand::user_region(
+        "coarse",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1_000_000.0,
+            level: 1,
+        },
+    );
+    coarse.target_edge_m = Some(400_000.0);
+    let mut fine = AdaptiveHybridDemand::user_region(
+        "fine",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1_000_000.0,
+            level: 1,
+        },
+    );
+    fine.target_edge_m = Some(200_000.0);
+    let mut tiny = AdaptiveHybridDemand::user_region(
+        "tiny-representative-only",
+        RefinementRegion::Circle {
+            center,
+            radius_meters: 1.0,
+            level: 1,
+        },
+    );
+    tiny.target_edge_m = Some(100_000.0);
+
+    let report = refine_adaptive_hybrid(
+        &mut state,
+        &[coarse, fine, tiny],
+        &adaptive_config(&method_c, 1, 1),
+    )
+    .expect("sampler report");
+    let inside_field_outside_tiny =
+        LonLatDegrees::new(center.lon_degrees + 0.1, center.lat_degrees);
+    let samples = report
+        .nominal_target_edges_at(&[
+            inside_field_outside_tiny,
+            LonLatDegrees::new(-center.lon_degrees, -center.lat_degrees),
+        ])
+        .expect("sample nominal targets");
+
+    assert_eq!(samples, vec![Some(200_000.0), None]);
+    assert!(report
+        .nominal_target_edges_at(&[LonLatDegrees::new(f64::NAN, 0.0)])
+        .is_err());
+}
+
+#[test]
 fn constrained_lepp_splits_encroached_segment_before_terminal_boundary() {
     let mut state = mesh(
         vec![p(0.0, 0.0), p(60.0, 0.0), p(15.0, 5.0)],
@@ -1220,6 +1333,8 @@ fn adaptive_hybrid_report_bounds_details_but_keeps_the_exact_count() {
         initial_faces: 0,
         final_faces: 0,
         target_satisfaction: AdaptiveHybridTargetSatisfaction::default(),
+        resolved_targets: Vec::new(),
+        target_radius_m: 1.0,
         unresolved_demand_count: 0,
         unresolved_demands: Vec::new(),
         rejections: Vec::new(),
@@ -1277,5 +1392,223 @@ fn adaptive_hybrid_quality_insertions_strictly_improve_the_quality_objective() {
     } else {
         assert_eq!(state, original);
         assert!(report.path_stats.rejected > 0, "{report:?}");
+    }
+}
+
+#[test]
+fn hex_lepp_pair_commits_two_or_restores_the_exact_original() {
+    use super::insertion::insert_lepp_terminal_batch;
+    let mother = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).unwrap();
+    let original = MeshState::from_triangular_mesh(mother.mesh()).unwrap();
+    let gates = LeppInsertionGates {
+        minimum_vertex_degree: 5,
+        ..LeppInsertionGates::for_method_c(mother.mesh().impent)
+    };
+    let mut single = original.clone();
+    assert!(matches!(
+        insert_lepp_terminal_midpoint(&mut single, 4, &default_config(), &gates),
+        Err(LeppInsertionError::DegreeLimit { degree: 4, .. })
+    ));
+    assert_eq!(single, original);
+    for budget in [0, 1] {
+        let batch = insert_lepp_terminal_batch(
+            &mut single,
+            None,
+            4,
+            &default_config(),
+            &gates,
+            budget,
+            |_| true,
+        );
+        assert!(batch.result.is_err());
+        assert_eq!(
+            single, original,
+            "insufficient budget cannot leak insertion 1"
+        );
+    }
+    // Rolled-back IDs are intentionally never reused; replay from the same allocator state.
+    let before_success = single.clone();
+    let batch =
+        insert_lepp_terminal_batch(&mut single, None, 4, &default_config(), &gates, 2, |_| true);
+    let reports = batch
+        .result
+        .expect("a local pair satisfies the HEX contract");
+    assert_eq!(reports.len(), 2);
+    assert!(batch.attempted >= 2);
+    assert_eq!(single.vertex_count(), original.vertex_count() + 2);
+    assert_eq!(single.triangle_count(), original.triangle_count() + 4);
+    single.validate().unwrap();
+    assert_eq!(single.open_edge_count(), 0);
+    assert_eq!(delaunay_violations(&single), 0);
+    for vertex in single.active_vertex_slots() {
+        assert!((5..=7).contains(&single.vertex_degree(vertex).unwrap()));
+    }
+    for &vertex in &gates.protected_vertices {
+        assert_eq!(single.vertex_degree(vertex), original.vertex_degree(vertex));
+    }
+    let mut repeated = before_success;
+    let repeat =
+        insert_lepp_terminal_batch(&mut repeated, None, 4, &default_config(), &gates, 2, |_| {
+            true
+        });
+    assert_eq!(repeat.result.unwrap(), reports);
+    assert_eq!(repeat.attempted, batch.attempted);
+    assert_eq!(repeated, single);
+
+    // The caller's final quality gate rejects the complete pair, not just step 2.
+    let mut rejected = original.clone();
+    let batch =
+        insert_lepp_terminal_batch(&mut rejected, None, 4, &default_config(), &gates, 2, |_| {
+            false
+        });
+    assert!(batch.result.is_err());
+    assert!(batch.attempted >= 2);
+    assert_eq!(rejected, original);
+
+    // Exercise the constrained implementation as well, with a remote marker.
+    let corners = original.triangles()[original.triangles().len() - 1];
+    let mut segments = SegmentList::from_marked_pairs([(corners[0], corners[1], 17)]);
+    let before_segments = segments.clone();
+    let batch = insert_lepp_terminal_batch(
+        &mut rejected,
+        Some(&mut segments),
+        4,
+        &default_config(),
+        &gates,
+        2,
+        |_| false,
+    );
+    assert!(batch.result.is_err());
+    assert!(batch.attempted >= 2);
+    assert_eq!(rejected, original);
+    assert_eq!(segments, before_segments);
+    let batch = insert_lepp_terminal_batch(
+        &mut rejected,
+        Some(&mut segments),
+        4,
+        &default_config(),
+        &gates,
+        2,
+        |_| true,
+    );
+    assert_eq!(batch.result.unwrap().len(), 2);
+    assert_eq!(rejected.vertices(), single.vertices());
+    assert_eq!(rejected.triangles(), single.triangles());
+    assert_eq!(rejected.neighbours(), single.neighbours());
+    assert_eq!(segments, before_segments);
+
+    // A real marker split in step 1 must also disappear when the batch rejects it.
+    let mut boundary = mesh(
+        vec![p(0.0, 0.0), p(120.0, 0.0), p(60.0, 20.0)],
+        vec![[2, 3, 4]],
+    );
+    let before_boundary = boundary.clone();
+    let mut markers = SegmentList::from_marked_pairs([(2, 3, 11), (3, 4, 12), (4, 2, 13)]);
+    let before_markers = markers.clone();
+    let mut probe = boundary.clone();
+    let mut probe_markers = markers.clone();
+    insert_lepp_terminal_midpoint_constrained(
+        &mut probe,
+        &mut probe_markers,
+        2,
+        &default_config(),
+        &LeppInsertionGates::default(),
+    )
+    .unwrap();
+    assert_ne!(probe_markers, markers);
+    let boundary_gates = LeppInsertionGates {
+        minimum_vertex_degree: 5,
+        ..LeppInsertionGates::default()
+    };
+    let batch = insert_lepp_terminal_batch(
+        &mut boundary,
+        Some(&mut markers),
+        2,
+        &default_config(),
+        &boundary_gates,
+        2,
+        |_| true,
+    );
+    assert!(batch.result.is_err());
+    assert_eq!(boundary, before_boundary);
+    assert_eq!(markers, before_markers);
+}
+
+#[test]
+fn hex_lepp_drivers_count_pair_budgets_and_preserve_unresolved_demands() {
+    let mother = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).unwrap();
+    let original = MeshState::from_triangular_mesh(mother.mesh()).unwrap();
+    let gates = LeppInsertionGates {
+        minimum_vertex_degree: 5,
+        ..LeppInsertionGates::for_method_c(mother.mesh().impent)
+    };
+    let demand = AdaptiveHybridDemand::physical_region("hex", adaptive_circle(&mother, 1));
+    for (per_cycle, spare_vertices) in [(1, 2), (2, 1), (2, 2)] {
+        let config = AdaptiveHybridConfig {
+            gates: gates.clone(),
+            maximum_vertices: original.vertex_count() + spare_vertices,
+            ..adaptive_config(&mother, 1, per_cycle)
+        };
+        let (state, report) = adaptive_hybrid_in_threads(&original, &demand, &config, 1);
+        assert_eq!(
+            report.path_stats.attempted,
+            report.path_stats.committed + report.path_stats.rejected
+        );
+        assert_eq!(
+            report.final_vertices - report.initial_vertices,
+            report.path_stats.committed
+        );
+        assert!(report.unresolved_demand_count > 0);
+        assert_ne!(report.stop_reason, AdaptiveHybridStopReason::Satisfied);
+        if per_cycle.min(spare_vertices) == 1 {
+            assert_eq!(report.path_stats.committed, 0);
+            assert_eq!(
+                report.stop_reason,
+                AdaptiveHybridStopReason::NoCommittableInsertion
+            );
+            assert_eq!(state, original);
+        } else {
+            assert_eq!(report.path_stats.committed, 2);
+            assert_eq!(report.insertion_counts.physical, 1);
+            assert_eq!(report.insertion_counts.balance, 1);
+            let (parallel, parallel_report) =
+                adaptive_hybrid_in_threads(&original, &demand, &config, 4);
+            assert_eq!(state, parallel);
+            assert_eq!(report, parallel_report);
+            assert_eq!(delaunay_violations(&state), 0);
+        }
+        for vertex in state.active_vertex_slots() {
+            assert!((5..=7).contains(&state.vertex_degree(vertex).unwrap()));
+        }
+    }
+    for budget in [1, 2] {
+        let config = LeppPostQualityConfig {
+            gates: gates.clone(),
+            ..post_quality_config(&mother, budget)
+        };
+        let (state, report) = post_quality_in_threads(&original, &config, 1);
+        assert_eq!(report.attempted, report.committed + report.rejected);
+        if budget == 1 {
+            assert_eq!(report.committed, 0);
+            assert_eq!(
+                report.stop_reason,
+                LeppPostQualityStopReason::NoCommittableInsertion
+            );
+            assert_eq!(report.before, report.after);
+            assert_eq!(state, original);
+        } else {
+            assert_eq!(report.committed, 2);
+            assert!(super::post_quality::strictly_improves_quality_snapshot(
+                report.after,
+                report.before
+            ));
+            let (parallel, parallel_report) = post_quality_in_threads(&original, &config, 4);
+            assert_eq!(state, parallel);
+            assert_eq!(report, parallel_report);
+            assert_eq!(delaunay_violations(&state), 0);
+        }
+        for vertex in state.active_vertex_slots() {
+            assert!((5..=7).contains(&state.vertex_degree(vertex).unwrap()));
+        }
     }
 }

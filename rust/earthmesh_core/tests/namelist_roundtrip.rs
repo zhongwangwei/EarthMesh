@@ -47,6 +47,39 @@ fn mkgrd_namelist_round_trips_through_writer() {
 }
 
 #[test]
+fn deferred_model_exports_round_trip_without_changing_the_target_format() {
+    let legacy = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).unwrap();
+    let rendered = legacy.to_mkgrd_namelist();
+    assert!(!rendered.contains("defer_model_exports"));
+    let deferred = rendered.replace("&mkgrd", "&mkgrd\n NL%defer_model_exports=.true.");
+    let parsed = EarthmeshConfig::from_mkgrd_namelist(&deferred).unwrap();
+    assert_eq!(parsed.output_format, legacy.output_format);
+    let round_trip = parsed.to_mkgrd_namelist();
+    assert!(round_trip.contains("NL%defer_model_exports = .TRUE."));
+    assert_eq!(
+        EarthmeshConfig::from_mkgrd_namelist(&round_trip).unwrap(),
+        parsed
+    );
+    let datalayers = lower_datalayers_namelist(
+        &format!("{round_trip}\n&datalayers\n NL%layer='lc|landtype|./land.nc|landtype|T|F'\n/\n"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        EarthmeshConfig::from_mkgrd_namelist(&datalayers.namelist)
+            .unwrap()
+            .defer_model_exports
+    );
+    let disabled = rendered.replace("&mkgrd", "&mkgrd\n NL%defer_model_exports=.false.");
+    assert_eq!(
+        EarthmeshConfig::from_mkgrd_namelist(&disabled).unwrap(),
+        legacy
+    );
+    let malformed = rendered.replace("&mkgrd", "&mkgrd\n NL%defer_model_exports='sometimes'");
+    assert!(EarthmeshConfig::from_mkgrd_namelist(&malformed).is_err());
+}
+
+#[test]
 fn mkgrd_namelist_rejects_unknown_fields() {
     let input = SAMPLE_MKGRD.replace("NL%relax = 0.035", "NL%relxa = 0.035");
     let error = EarthmeshConfig::from_mkgrd_namelist(&input).unwrap_err();

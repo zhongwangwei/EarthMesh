@@ -171,7 +171,6 @@ dependencies = [
  "earthmesh_project",
  "earthmesh_quality",
  "earthmesh_refine_certified",
- "earthmesh_refine_harp_dv",
  "earthmesh_refine_method_c",
  "earthmesh_refine_planner",
  "earthmesh_refine_redgreen",
@@ -252,16 +251,6 @@ dependencies = [
  "earthmesh_mesh",
  "earthmesh_quality",
  "rayon",
-]
-
-[[package]]
-name = "earthmesh_refine_harp_dv"
-version = "3.0.0-alpha5"
-dependencies = [
- "earthmesh_boundary",
- "earthmesh_core",
- "earthmesh_mesh",
- "earthmesh_refine",
 ]
 
 [[package]]

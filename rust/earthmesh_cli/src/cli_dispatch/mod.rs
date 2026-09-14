@@ -1,7 +1,7 @@
 use std::env;
 
 use super::cli_args::usage;
-use super::cli_colm_netcdf::run_colm_coupling_csv_to_netcdf;
+use super::cli_colm_netcdf::{run_colm_coupling_csv_to_netcdf, run_colm_mesh_from_gridfile};
 use super::cli_hydro_close::{
     run_hydro_close_mask_nmls, run_hydro_close_recipe, run_hydro_composite_close_mask_nmls,
 };
@@ -29,7 +29,7 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     }
     if first == "--studio-protocol" {
         // v3 adds the independent LandType-derived `sea_ratio` project criterion.
-        println!("earthmesh-studio-engine/3");
+        println!("earthmesh-studio-engine/4");
         return Ok(());
     }
     if first == "-h" || first == "--help" {
@@ -50,6 +50,9 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     }
     if first == "--hydro-composite-close-mask-nmls" {
         return run_hydro_composite_close_mask_nmls(args);
+    }
+    if first == "--colm-mesh-from-gridfile" {
+        return run_colm_mesh_from_gridfile(args);
     }
     if first == "--colm-coupling-csv-to-netcdf" {
         return run_colm_coupling_csv_to_netcdf(args);

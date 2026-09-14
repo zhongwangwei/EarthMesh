@@ -36,6 +36,9 @@ const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/scri
 );
 new Function(scripts.join("\n"));
 log(`parsed ${scripts.length} inline scripts`);
+check(!/harp[_-]?dv|harp[A-Z]/i.test(html), "retired HARP controls must not be exposed");
+check(!libRs.includes("set_harp_dv_options"), "retired HARP command must not be registered");
+log("retired HARP UI and commands are absent");
 
 check(
   !/<[^>]+\s+on[a-z]+\s*=/i.test(html),
@@ -100,12 +103,12 @@ check(
 log("niter_refine default remains engine-owned");
 
 check(
-  html.includes('const springControls = algorithm === "harp_dv"') &&
-    html.includes("HARP-DV uses transactional site moves with Delaunay legalization and quality acceptance") &&
+  html.includes('const springControls = algorithm === "certified"') &&
+    html.includes("generic spring smoothing would invalidate the certificate.") &&
     html.includes('${springControls}'),
-  "HARP-DV must explain and hide the inapplicable generic spring controls",
+  "CMRC must explain and hide the inapplicable generic spring controls",
 );
-log("HARP-DV and CMRC hide inapplicable generic spring controls");
+log("CMRC hides inapplicable generic spring controls");
 
 check(
   html.includes('id="thresholdRefineOn"') &&
@@ -243,7 +246,7 @@ check(
     html.includes("sum.refinement_algorithm || sum.refinement_backend") &&
     html.includes("+ algorithmBlock") &&
     !html.includes('<div id="refinementAlgorithmPanel" class="expert"'),
-  "Method-C must visibly own Canonical and LEPP-Delaunay while CMRC, Red-Green, and HARP-DV remain peer backends",
+  "Method-C must visibly own Canonical and LEPP-Delaunay while CMRC and Red-Green remain peer backends",
 );
 log("algorithm hierarchy shows LEPP-Delaunay AdaptiveHybrid under Method-C");
 
@@ -251,14 +254,11 @@ check(
   html.includes('id="canonicalMethodCOptions"') &&
     html.includes('id="leppDelaunayOptions"') &&
     html.includes('id="redGreenOptions"') &&
-    html.includes('id="harpDvOptions"') &&
     html.includes('id="certifiedOptions"') &&
     html.includes("const algorithmOptionsBlock = {") &&
     html.includes("+ algorithmOptionsBlock") &&
     html.includes('id="leppMaximumPathLength"') &&
-    html.includes('id="harpMaximumPatchCells"') &&
     html.includes('invoke("set_method_c_algorithm_options"') &&
-    html.includes('invoke("set_harp_dv_options"') &&
     html.includes('invoke("set_certified_options"'),
   "the selected algorithm must be the only one whose complete production controls are rendered and saved",
 );
@@ -281,7 +281,7 @@ log("CMRC defaults to reverse coarsening and large meshes use viewport LOD");
 
 {
   const canonical = section(html, /const canonicalMethodCOptions = `([\s\S]*?)`;\n    const leppOptions/, "Canonical Method-C options");
-  const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const harpOptions/, "Red-Green options");
+  const redGreen = section(html, /const redGreenOptions = `([\s\S]*?)`;\n    const certifiedOptions/, "Red-Green options");
   check(
     !canonical.includes('id="expertWeakConcav"') &&
       redGreen.includes('id="expertWeakConcav"') &&
@@ -513,7 +513,6 @@ log("resolution slider ticks are self-describing");
       body.includes("capabilities.default_min_angle_deg") &&
       body.includes("capabilities.target_presets") &&
       body.includes("capabilities.target_compatibility") &&
-      body.includes("capabilities.method_c_min_base_nxp") &&
       body.includes("capabilities.method_c_max_refinement_level") &&
       body.includes("capabilities.default_surface_refine_spring_iterations") &&
       body.includes("capabilities.default_atmosphere_refine_spring_iterations") &&
@@ -543,9 +542,23 @@ check(
 );
 log("target kind/model are editable canonical state");
 
+check(
+  html.includes('id="colmMeshDeliveryControls"') &&
+    html.includes('id="colmMeshEnabled"') &&
+    html.includes('id="colmMeshPixelsPerDegree"') &&
+    html.includes('invoke("set_colm_mesh_delivery"') &&
+    html.includes("setColmMeshDelivery:") &&
+    html.includes("selectedModelForDelivery === \"CoLM\"") &&
+    html.includes("Number.isInteger(colmMeshDelivery.pixelsPerDegree)") &&
+    html.includes('colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 }') &&
+    libRs.includes("set_colm_mesh_delivery,"),
+  "CoLM mesh delivery UI must be backed by a registered Tauri IPC command",
+);
+log("CoLM mesh delivery command is wired and model-gated");
+
 {
-  const compose = section(html, /async function composeYaml\(\) \{([\s\S]*?)\n  \}/, "composeYaml body");
-  const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const compose = section(html, /async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/, "composeYaml body");
+  const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   const wire = section(html, /async function wireExpertTargetStep\(\) \{([\s\S]*?)\n  \}/, "wireExpertTargetStep body");
   check(
     compose.includes("yaml, nxp: expertEdit.nxp") &&
@@ -574,9 +587,10 @@ log("target kind/model are editable canonical state");
   check(
     compose.indexOf('invoke("set_adaptive_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
       compose.indexOf('invoke("set_hfield_refinement"') < compose.indexOf('invoke("set_refinement_backend"') &&
+      compose.indexOf('invoke("set_refinement_backend"') < compose.indexOf('invoke("set_refinement"') &&
       compose.includes('invoke("preserve_unexposed_quality_fields"') &&
       reflect.includes('algorithm: sum.refinement_algorithm || sum.refinement_backend || "method_c"'),
-    "opened GUI projects must restore backend choice after route setters and preserve hidden LEPP quality only after compatibility is known",
+    "opened GUI projects must configure routes and backend before enabling refinement, and preserve hidden LEPP quality only after compatibility is known",
   );
   log("opened project backend/route/hidden-LEPP round-trip is ordered safely");
 }
@@ -800,7 +814,7 @@ log("CaMa label check passed");
     readme.includes("domain_shape") &&
       html.includes("hiddenDomainShape") &&
       html.includes('kind: "hidden"') &&
-      html.includes("preserveDomain: !!hiddenDomainShape") &&
+      html.includes("preserveDomain: !template && !!hiddenDomainShape") &&
       html.includes("function domainLabel") &&
       html.includes("hiddenDomainShapeText") &&
       html.includes("readyDomain.textContent=domainLabel();") &&
@@ -813,7 +827,7 @@ log("CaMa label check passed");
 }
 
 {
-  const unawaitedReflect = /(^|\n)\s*(?!await\s+)reflectProject\(res\);/.test(html);
+  const unawaitedReflect = /(^|\n)\s*(?!await\s+)reflectProject\(res(?:,[^)]*)?\);/.test(html);
   check(
     html.includes("renderMissingGridfile") &&
       html.includes("engine did not report gridfile") &&
@@ -821,10 +835,10 @@ log("CaMa label check passed");
       html.includes("_lastQuality = null;") &&
       html.includes("runInfo && runInfo.ok && _lastQuality") &&
       html.includes("function setRunControls") &&
-      html.includes("if(r){ setRunControls(false);") &&
+      html.includes("let runCompletion = null;") &&
       html.includes("function clearRunArtifacts") &&
       html.includes("applyMesh(null);") &&
-      html.includes("await reflectProject(res);") &&
+      (html.includes("await reflectProject(res);") || html.includes("await reflectProject(res, epoch);")) &&
       html.includes('runOut.textContent=parts.join(" \u00b7 ");') &&
       !html.includes('${runInfo&&runInfo.outdir?(lang?"\u8f93\u51fa\u76ee\u5f55\uff1a":"output: ")+runInfo.outdir') &&
       !unawaitedReflect,
@@ -891,10 +905,12 @@ check(
   html.includes('tr.dataset.path = l.path || "";') &&
     html.includes('tr.dataset.enabled = l.enabled ? "1" : "0";') &&
     html.includes('tr.dataset.sourceField = l.source_field || "";') &&
-    html.includes("const selectExclusiveSource = (id, path) => {") &&
-    html.includes("sibling.source_field === selected.source_field") &&
-    html.includes('layerEdits[sibling.id] = { path: sibling.path || "", enabled: false };') &&
-    html.includes("if (enabled) selectExclusiveSource(id, path);") &&
+    html.includes('commitProjectEdit(yaml => invoke("set_layer_path", { yaml, id, path, enabled }))') &&
+    html.includes('await editLayer(id, p, true);') &&
+    html.includes('await editLayer(id, "", false);') &&
+    html.includes('await editLayer(id, path, enabled);') &&
+    html.includes('commitProjectEdit(yaml => api.autofillLayers(yaml, folder))') &&
+    !html.includes('selectExclusiveSource') &&
     !html.includes("const e = layerEdits[id];\n        if (!e || !e.path) return;"),
   "layer toggles must preserve paths and keep same-field sources exclusive",
 );
@@ -1021,7 +1037,6 @@ check(
     html.includes("applyProjectCapabilities(capabilities)") &&
     html.includes("DEFAULT_HFIELD_G = capabilities.default_hfield_g") &&
     html.includes("METHOD_C_DEFAULTS = capabilities.method_c_defaults") &&
-    html.includes("HARP_DV_DEFAULTS = capabilities.harp_dv_defaults") &&
     html.includes("CERTIFIED_DEFAULTS = capabilities.certified_defaults") &&
     html.includes("const algorithmDefaults = defaultAlgorithmControls();") &&
     html.includes("DEFAULT_OPENMP = capabilities.default_openmp") &&
@@ -1034,7 +1049,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
   const current = section(html, /function currentResolution\(\) \{([\s\S]*?)\n  \}/, "currentResolution body");
   const nxp = section(html, /function currentNxp\(\) \{([\s\S]*?)\n  \}/, "currentNxp body");
   const res = section(html, /function resInput\(src\)\{([\s\S]*?)\n\}/, "resInput body");
-  const reflect = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   check(
     current.includes("if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null") &&
       current.includes("return { nxp: null, approxKm: resVal") &&
@@ -1081,12 +1096,9 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 }
 
 {
-  const body = section(html, /const readSeaRatio = \(\) => \{([\s\S]*?)\n    \};/, "readSeaRatio body");
-  check(
-    body.includes("return isNaN(v) ? null : v / 100;") && !body.includes("Math.max(0, Math.min(100, v))"),
-    "frontend sea ratio must pass invalid input to Rust validation",
-  );
-  log("frontend sea ratio passes invalid input to Rust validation");
+  const body = section(html, /if \(ratio\) ratio\.addEventListener\("input", \(\) => \{([\s\S]*?)\n    \}\);/, "domain sea ratio handler");
+  check(body.includes("Number(ratio.value) / 100") && body.includes("clearRunArtifacts()") && !body.includes("Math.round"), "all domain ratios must retain precision and invalidate obsolete results");
+  log("domain sea ratio uses one unrounded draft handler");
 }
 
 {
@@ -1104,7 +1116,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 }
 
 {
-  const body = section(html, /async function reflectProject\(res\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+  const body = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
   check(body.includes("maxPasses = sum.max_passes;") && !body.includes("if (sum.max_passes)"), "opened project max_passes must not truthy-filter zero");
   log("opened project max_passes preserves zero");
 }
@@ -1147,13 +1159,46 @@ check(
 );
 log("blank MERIT thresholds restore defaults; invalid values reach Rust validation");
 
-check(
-  html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level") &&
-    html.includes('const maxRefinePasses = summary.domain === "regional" ? regionalMethodCLevelCap(summary.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;') &&
-    html.includes('const nMax = regionalRefine ? regionalMethodCLevelCap(sum.effective_nxp ?? currentNxp()) : METHOD_C_MAX_REFINEMENT_LEVEL;'),
-  "global and regional refinement controls must share the engine level cap",
-);
-log("Method-C refinement controls share the engine level cap");
+{
+  check(
+    html.includes("METHOD_C_MAX_REFINEMENT_LEVEL = capabilities.method_c_max_refinement_level"),
+    "refinement controls must use the runtime schema limit",
+  );
+  const compose = section(html, /(const maxRefinePasses =[\s\S]*?\n      : 0;)/, "refinement compose limits");
+  const controls = section(html, /(const nMax =[\s\S]*?const shownCalPasses =[^\n]*;)/, "refinement control limits");
+  const legacyCap = html.match(/  function regionalMethodCLevelCap\(nxp\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  const probe = new Function("summary", "requested", "source", "algorithm", `
+    const METHOD_C_MAX_REFINEMENT_LEVEL=5, METHOD_C_MIN_BASE_NXP=10;
+    const currentNxp=()=>summary.effective_nxp;
+    ${legacyCap}
+    let maxPasses=requested;
+    const expertEdit={};
+    const thresholdRefine={enabled:source==="threshold"};
+    const specifiedRefine={enabled:source==="specified",algorithm};
+    const hasEnabledThresholdLayer=()=>source==="threshold";
+    const hasEnabledHydroRefinement=()=>false;
+    const refinementEnabled=source!=="off",template=null;
+    ${compose}
+    {
+      const sum=summary, regionalRefine=sum.domain==="regional";
+      ${controls}
+      return {composed:refinementPasses,afterPaint:maxPasses,nMax,shownPasses,shownSpcPasses,shownCalPasses};
+    }
+  `);
+  for (const algorithm of ["method_c", "red_green", "lepp_delaunay", "certified"])
+    for (const domain of ["global", "regional"])
+      for (const effective_nxp of [3, 40])
+        for (const source of ["specified", "threshold", "off"])
+          for (const requested of source === "off" ? [0, 3] : [1, 3, 5]) {
+            const actual = probe({domain,effective_nxp}, requested, source, algorithm);
+            check(actual.composed === (source === "off" ? 0 : requested) && actual.afterPaint === requested,
+              "compose/paint must preserve requested depth; AutoRefine projection belongs to the CLI",
+              {algorithm,domain,effective_nxp,source,requested,actual});
+            check(actual.nMax === 5 && actual.shownSpcPasses === Math.max(1, requested) && actual.shownCalPasses === Math.max(1, requested),
+              "pass controls must expose schema-valid requests without an NXP cap", actual);
+          }
+  log("refinement demand: actual compose/control snippets preserve requested depths and disabled zero across domains/algorithms");
+}
 
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
@@ -1233,7 +1278,7 @@ log("discrete mask is existing-project-only");
 
 {
   // Algorithm and route were two selects that knew nothing about each other, so
-  // the pair `harp_dv` + h-field was one click away and the run refuses it.
+  // an unsupported backend + h-field was one click away and the run refuses it.
   // Both halves are needed: the non-Method-C DOM must not contain H-field
   // controls, and stale projects must be reset before rendering or saving.
   check(
@@ -1264,3 +1309,696 @@ log("discrete mask is existing-project-only");
   check(!stale.length && !missing.length, "i18n key drift", { stale, missing });
   log(`checked ${keys.length} i18n keys`);
 }
+
+// Execute the actual delivery renderer, including legacy/failed paths, without a DOM dependency.
+{
+  const body = section(html, /function renderProjectDelivery\(result\) \{([\s\S]*?)\n  \}\n\n  function renderCertifiedRun/, "actual delivery renderer");
+  const render = new Function("result", "document", "zh", "openButton", body);
+  const element = () => ({
+    style: {}, children: [], value: "",
+    set textContent(value) { this.value = value; this.children = []; },
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(" "); },
+    append(...children) { this.children.push(...children); },
+    appendChild(child) { this.append(child); },
+  });
+  for (const chinese of [false, true]) {
+    const card = element(), links = [];
+    const document = { getElementById: () => card, createElement: element };
+    const open = (name, path) => { links.push(path); const button = element(); button.textContent = name; return button; };
+    const report = { target: {kind:"Land",cell:"Tri",model_format:"CoLM"}, capability:"full",
+      gridfile:"/run/final.nc4", final_quality:{report:"/run/quality.json",verdict:"warn"},
+      model_delivery_status:"model_delivered", model_artifacts:{colm_mesh_input:"/run/colm.nc"}, skipped_reason:null };
+    const result = {ok:true,delivery:{report_path:"/run/delivery.json",report}};
+    render(result, document, () => chinese, open);
+    check(card.textContent.includes(chinese ? "模型文件已交付" : "Model files delivered"), "actual delivered renderer");
+    check(links.join() === "/run/final.nc4,/run/quality.json,/run/delivery.json,/run/colm.nc", "renderer must bind current record paths");
+    report.model_delivery_status="native_only"; report.model_artifacts={}; report.skipped_reason="<img src=x>";
+    links.length=0; render(result, document, () => chinese, open);
+    check(card.textContent.includes(chinese ? "仅生成通用网格" : "Native mesh only") && card.textContent.includes("<img src=x>"), "native-only reason renders as text");
+    check(links.length===3, "native-only must not expose model links");
+    for (const input of [{ok:true}, {...result,ok:false}, null]) {
+      links.length=0; render(input, document, () => chinese, open);
+      check(links.length===0 && !card.textContent.includes("CoLM"), "failed or legacy runs must clear delivery links");
+      check(card.textContent.includes(input && input.ok ? (chinese ? "无法确认" : "unconfirmed") : (chinese ? "运行失败" : "Run failed")), "unknown is not delivered");
+    }
+  }
+  check(html.includes("delivery: r.ok ? r.delivery || null : null") && html.includes('deliveryCard.textContent = ""; deliveryCard.style.display = "none";'), "actual delivery is captured only on success and cleared on restart");
+  log("actual delivery renderer: final links, native-only, legacy, failure and bilingual text passed");
+}
+
+// Run the real async loaders with controlled IPC promises: no browser/test dependency.
+async function checkAnalysisOwnership() {
+  const names = ["meshViewKind", "readMeshQuality", "loadMeshMeritCells", "loadMeshPreview", "loadQualityAndMesh"];
+  const definitions = names.map(name => section(html,
+    new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name));
+  const harness = new Function(`
+    let runInfo=null,lastSummary=null,_lastQuality=null,_meshPreview=null,_meshPreviewToken=0,_meshGeojson=null,_hydroThresholds;
+    const events=[],pending=[],DEFAULT_MIN_ANGLE_DEG=25,MESH_VIEW_CELLS=50000,MERIT_SURFACE_PREVIEW_STRIDE=50;
+    const invoke=(command,args)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}));
+    const zh=()=>false,meshPreviewStride=()=>1,certifiedPreviewCellCount=()=>0;
+    const meshMeritLayer=s=>s&&s.merit,meshLandcoverLayer=()=>null;
+    const renderQualityCard=q=>events.push(['quality',q]),renderQualityNote=s=>events.push(['note',s]);
+    const logLine=s=>events.push(['log',s]),clearCoastalOverlay=()=>events.push(['clear']);
+    const applyCoastal=mesh=>events.push(['coastal',mesh]);
+    const applyMesh=mesh=>{_meshGeojson=mesh;events.push(['mesh',mesh]);};
+    ${definitions.join("\n")}
+    return {events,pending,
+      set(result,live){runInfo=result;lastSummary=live;_meshPreviewToken++;_lastQuality=null;_meshPreview=null;},
+      load(known){return loadQualityAndMesh(runInfo.gridfile,known);},
+      merit(){loadMeshMeritCells(runInfo.gridfile,meshViewKind(),runInfo);},
+      view:meshViewKind,quality(){return _lastQuality;}};
+  `);
+  const take = (h, command) => {
+    const index=h.pending.findIndex(p=>p.command===command);
+    check(index>=0, `missing ${command}`);
+    return h.pending.splice(index,1)[0];
+  };
+  const flush = () => new Promise(resolve=>setImmediate(resolve));
+  const old = {gridfile:"/old.nc",summary:{cell:"tri",min_angle_deg:32,on_violation:"warn"}};
+  const current = {gridfile:"/new.nc",summary:{cell:"hex",min_angle_deg:25,on_violation:"warn"}};
+  const mesh = JSON.stringify({features:[{id:"current"}]});
+  for (const outcome of ["resolve","reject"]) {
+    const h=harness();h.set(old,current.summary);h.load();
+    const delayed=take(h,"mesh_quality");
+    check(delayed.args.kind==="tri" && delayed.args.minAngleDeg===32 && delayed.args.onViolation==="warn", "analysis must use selected run snapshot, not live summary");
+    h.set(current,old.summary);h.load();
+    take(h,"mesh_quality").resolve({cell_count:92});await flush();
+    take(h,"mesh_cell_polygons").resolve(mesh);await flush();
+    const before=JSON.stringify(h.events);
+    delayed[outcome](outcome==="resolve"?{cell_count:180}:new Error("old quality"));await flush();
+    check(h.quality().cell_count===92 && JSON.stringify(h.events)===before && h.pending.length===0, "old quality must not repaint, start preview or log errors");
+
+    const p=harness();p.set(old);p.load({cell_count:180});
+    const stale=take(p,"mesh_cell_polygons");
+    p.set(current);p.load({cell_count:92});
+    take(p,"mesh_cell_polygons").resolve(mesh);await flush();
+    const previewBefore=JSON.stringify(p.events);
+    stale[outcome](outcome==="resolve"?JSON.stringify({features:[{id:"old"}]}):new Error("old preview"));await flush();
+    check(JSON.stringify(p.events)===previewBefore, "old preview must not repaint, classify or log errors");
+
+    const c=harness();
+    const withMerit=result=>({...result,summary:{...result.summary,merit:{path:"/merit"},bbox:[100,120,0,40]}});
+    c.set(withMerit(old));c.merit();const oldCoast=take(c,"mesh_merit_cells");
+    c.set(withMerit(current));c.merit();take(c,"mesh_merit_cells").resolve(mesh);await flush();
+    check(c.events.some(e=>e[0]==="coastal"), "current coastal result must still apply");
+    const coastBefore=JSON.stringify(c.events);
+    oldCoast[outcome](outcome==="resolve"?JSON.stringify({features:[{id:"old coast"}]}):new Error("old coast"));await flush();
+    check(JSON.stringify(c.events)===coastBefore, "old classification must not repaint, clear or log errors");
+  }
+  const h=harness();h.set({...current,delivery:{report:{target:{cell:"Tri"}}}},old.summary);
+  check(h.view()==="tri", "actual delivered target must outrank the summary");
+  h.load();take(h,"mesh_quality").reject(new Error("current quality"));await flush();
+  check(h.events.some(e=>e[0]==="note" && e[1].includes("current quality")), "current analysis errors must remain visible");
+  check(html.includes("summary: runSummary") && html.indexOf("runSummary = await api.summary(yaml)")<html.indexOf("const r = await api.runProject"), "snapshot run summary before awaiting engine completion");
+  log("analysis ownership: stale quality/preview/coastal success and error suppressed; selected view/snapshot/current errors passed");
+}
+checkAnalysisOwnership().catch(error => { console.error(error); process.exitCode=1; });
+
+// Exercise the actual run/stop handlers with delayed command completion.
+async function checkRunSettlement() {
+  const extract = (name, indent) => section(html, new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`), name);
+  const definitions = [extract("doRun", "  "), extract("enhanceRunStep", "  "), extract("setRunControls", ""), extract("killRun", ""), extract("confirmStopForPageSwitch", "")];
+  const harness = new Function(`
+    let runInProgress=false,runCompletion=null,killInProgress=false,hasRun=true,runInfo={ok:true,outdir:'/old'},_lastQuality=null,lastSummary=null,cur=6,lang=0,outputPath='';
+    const pending=[],events=[],elements={};
+    const element=()=>({textContent:'',style:{},classList:{toggle(){}},appendChild(node){events.push(['log',node.textContent]);}});
+    for(const id of ['runBtn','killBtn','rtext','rdot','logbox'])elements[id]=element();
+    const document={getElementById:id=>elements[id],querySelectorAll:()=>[],createElement:element};
+    const defer=command=>new Promise((resolve,reject)=>pending.push({command,resolve,reject}));
+    const invoke=command=>defer(command),window={__TAURI__:{core:{invoke}}};
+    const api={summary:async()=>({cell:'tri'}),runProject:()=>defer('run_project')};
+    let composeYaml=async()=>'yaml',projectEditQueue=Promise.resolve();
+    const zh=()=>false,confirm=()=>true,currentIntent=()=>'',currentResolutionLabel=()=>'';
+    const logLine=s=>events.push(['log',s]);
+    const clearRunArtifacts=()=>{hasRun=false;runInfo=null;};
+    const renderAutoRefineDecisions=()=>{},renderCertifiedRun=()=>{},renderProjectDelivery=()=>{},renderQualityCard=()=>{},renderMissingGridfile=()=>{};
+    const loadQualityAndMesh=path=>events.push(['load',path]);
+    const renderStep=()=>{events.push(['render',hasRun,runInfo]);elements.runBtn=element();elements.killBtn=element();enhanceRunStep();};
+    ${definitions.join("\n")}
+    return {pending,events,elements,start:doRun,kill:killRun,switchPage:confirmStopForPageSwitch,
+      redraw:renderStep,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},
+      state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion};}};
+  `);
+  const flush = () => new Promise(resolve=>setImmediate(resolve));
+  const take = (h,command) => { const i=h.pending.findIndex(p=>p.command===command);check(i>=0, `missing run command ${command}`);return h.pending.splice(i,1)[0]; };
+  const done = outdir => ({ok:true,outdir,gridfile:outdir+'/mesh.nc',code:0});
+  for (const outcome of ['resolve','reject']) {
+    const h=harness(),first=h.start();await flush();const old=take(h,'run_project');
+    check(h.events.some(e=>e[0]==='render' && !e[1] && e[2]===null), 'starting a rerun must repaint without old results');
+    h.redraw();check(h.elements.runBtn.disabled && h.elements.killBtn.style.display==='inline-flex','redraw must preserve running controls');
+    h.start();await flush();check(h.pending.length===0,'duplicate Run must not create a second command');
+    let switched=false;const stop=h.switchPage().then(value=>{switched=value;});take(h,'kill_run').resolve(true);await flush();
+    check(!switched && h.state().busy && h.elements.runBtn.disabled,'stop must wait for its run owner before allowing retry/page switch');
+    h.start();await flush();check(h.pending.length===0,'retry must not overlap cancelled command settlement');
+    old[outcome](outcome==='resolve'?{ok:false,code:null,outdir:'/cancelled'}:new Error('cancelled command'));
+    await first;await stop;check(switched && !h.state().busy && !h.state().stopping,'settled cancellation must release navigation');
+    const next=h.start();await flush();take(h,'run_project').resolve(done('/new'));await next;
+    check(h.state().result.outdir==='/new' && h.events.filter(e=>e[0]==='load').map(e=>e[1]).join()==='/new/mesh.nc','recovery must load only its own successful mesh');
+  }
+  const editing=harness();editing.holdEdit();const waiting=editing.start();await flush();
+  check(editing.state().busy && editing.pending.length===1,'Run must own startup but not compose before pending edits settle');
+  take(editing,'edit').resolve();await flush();take(editing,'run_project').resolve(done('/after-edit'));await waiting;
+  const early=harness();early.holdCompose();const composing=early.start();await flush();
+  const noChild=early.switchPage();take(early,'kill_run').resolve(false);
+  check(!await noChild && early.state().busy,'no child during startup is not a completed cancellation');
+  take(early,'compose').reject(new Error('invalid project'));await composing;
+  check(early.state().result?.ok===false && !early.state().busy && !early.state().completion,'compose failure must render failure and release its owner');
+
+  const late=harness(),run=late.start();await flush();const child=take(late,'run_project');
+  const stop=late.kill(),reply=take(late,'kill_run');child.resolve(done('/finished'));await run;
+  late.redraw();check(late.elements.runBtn.disabled,'pending kill reply must keep retry fenced after natural completion');
+  late.start();await flush();check(late.pending.length===0,'late stop must not race a newer child');
+  reply.resolve(false);await stop;check(!late.elements.runBtn.disabled && !late.state().stopping,'late no-child reply must release retry without erasing success');
+  check(late.state().result.outdir==='/finished','late stop reply must not replace completed result');
+  const retry=late.start();await flush();take(late,'run_project').resolve(done('/retry'));await retry;
+  check(late.state().result.outdir==='/retry','retry after late stop must succeed');
+  log('run settlement: pending redraw, duplicate Run, stop/page-switch fence, late kill, compose failure and recovery passed');
+}
+checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; });
+
+// Exercise the real target callbacks and candidate commit, not a second UI implementation.
+async function checkProjectEditAdmission() {
+  const extract = name => section(html, new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name);
+  const commitYaml = html.includes('function commitProjectYaml(') ? extract('commitProjectYaml') : '';
+  const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
+  const harness = new Function(`
+    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
+    let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0;
+    const layerEdits={},logs=[],elements={targetKindOutput:{value:'atmosphere'},targetModelOutput:{value:'MPAS'},targetCellOutput:{value:'hex'}};
+    const document={getElementById:id=>elements[id]},zh=()=>false,logLine=s=>logs.push(s);
+    const compatibleTargetModels=()=>['MPAS','CoLM','FVCOM'],selectedTarget=()=>targetEdit||{kind:'atmosphere'};
+    const wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;};
+    const initial={target_kind:'atmosphere',model_format:'MPAS',cell:'hex',layers:['a','b'].map(id=>({id,path:'',enabled:false,source_field:'landtype'}))};
+    function validate(cfg){
+      if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('LandType required');
+      if(cfg.layers.some(l=>l.enabled&&!l.path))throw new Error('empty source');
+      return JSON.stringify(cfg);
+    }
+    const api={
+      setProjectTarget:async(yaml,kind,model)=>validate({...JSON.parse(yaml),target_kind:kind,model_format:model,colm_mesh_enabled:false}),
+      setTargetCell:async(yaml,cell)=>{if(!['tri','hex'].includes(cell))throw new Error('bad cell');return validate({...JSON.parse(yaml),cell});},
+      summary:async yaml=>{if(rejectSummary)throw new Error('summary unavailable');validate(JSON.parse(yaml));return JSON.parse(yaml);},
+      validate:async yaml=>validate(JSON.parse(yaml))
+    };
+    async function invoke(command,{yaml,id,path,enabled}){
+      if(command!=='set_layer_path')throw new Error(command);
+      const cfg=JSON.parse(yaml),selected=cfg.layers.find(l=>l.id===id);
+      if(!selected)throw new Error('unknown source');
+      if(enabled)cfg.layers.forEach(l=>{if(l.source_field===selected.source_field)l.enabled=false;});
+      Object.assign(selected,{path,enabled});return validate(cfg);
+    }
+    async function composeYaml(){
+      let yaml=baseProjectYaml||validate(initial);
+      if(targetEdit)yaml=await api.setProjectTarget(yaml,targetEdit.kind,targetEdit.modelFormat);
+      if(cellEdit)yaml=await api.setTargetCell(yaml,cellEdit);
+      for(const id of Object.keys(layerEdits).sort((a,b)=>Number(layerEdits[b].enabled)-Number(layerEdits[a].enabled)))
+        yaml=await invoke('set_layer_path',{yaml,id,...layerEdits[id]});
+      return yaml;
+    }
+    function paintTargetOutputs(s){if(s){elements.targetKindOutput.value=s.target_kind;elements.targetModelOutput.value=s.model_format;elements.targetCellOutput.value=s.cell;}}
+    ${extract('refreshSummary')}
+    ${commitYaml}
+    ${commit}
+    ${extract('enhanceTargetOutputStep')}
+    return {init:enhanceTargetOutputStep,logs,elements,composeYaml,
+      change:async(id,value)=>{elements[id].value=value;await elements[id].onchange();},
+      edit:fn=>commitProjectEdit(fn),source:(id,path,enabled)=>commitProjectEdit(yaml=>invoke('set_layer_path',{yaml,id,path,enabled})),
+      failSummary:value=>{rejectSummary=value;},
+      state:()=>JSON.stringify({baseProjectYaml,lastSummary,targetEdit,cellEdit,colmMeshDelivery,layerEdits,clears})};
+  `);
+  for(const [name,after] of [['onSave','composeYaml()'],['onOpen','api.openProject()'],['reflectProject','api.summary(res.yaml)'],['onNew','resetProject()'],['openRecent','invoke("read_project"']]) {
+    const body=extract(name);
+    check(body.indexOf('await projectEditQueue;')>=0&&body.indexOf('await projectEditQueue;')<body.indexOf(after),name+' must wait for pending edits before consuming/replacing project');
+  }
+  const template=section(html,/async function selectTemplate\(k\)\{([\s\S]*?)\n\}/,'template edit fence');
+  check(template.indexOf('await window.waitForProjectEdits()')>=0&&template.indexOf('await window.waitForProjectEdits()')<template.indexOf('tpl=next;'),'template change must wait for pending edits');
+  const h=harness();await h.init();
+  const before=h.state();
+  for(const kind of ['land','ocean']){
+    await h.change('targetKindOutput',kind);
+    check(h.state()===before && h.elements.targetKindOutput.value==='atmosphere','rejected target edit must keep the valid project, summary and target selection');
+  }
+  check(h.logs.some(s=>s.includes('LandType required')),'rejected edit must report backend reason');
+  for(const kind of ['land','ocean']){
+    check(await h.source('a','/land-a.nc',true),'adding source should succeed before target migration');
+    await h.change('targetKindOutput',kind);
+    check(JSON.parse(await h.composeYaml()).target_kind===kind,'accepted source must survive target-before-source composition');
+    const withSource=h.state();
+    check(!await h.source('a','',false)&&h.state()===withSource,'required-source clear must leave valid state unchanged');
+    check(!await h.source('a','/land-a.nc',false)&&h.state()===withSource,'required-source disable must leave valid state unchanged');
+    check(await h.source('b','/land-b.nc',true),'exclusive source replacement should succeed');
+    const replaced=JSON.parse(await h.composeYaml());
+    check(replaced.layers.filter(l=>l.enabled).map(l=>l.id).join()==='b','backend exclusivity must survive compose');
+    await h.change('targetKindOutput','atmosphere');
+    check(await h.source('b','',false),'source removal should succeed after leaving a required-source target');
+    check(JSON.parse(await h.composeYaml()).layers.every(l=>!l.enabled),'removed sources must not revive from original base');
+  }
+  await h.change('targetModelOutput','CoLM');await h.change('targetCellOutput','tri');
+  check(JSON.parse(await h.composeYaml()).cell==='tri'&&h.elements.targetModelOutput.value==='CoLM','model and cell handlers must commit validated candidates');
+  const valid=h.state();h.failSummary(true);
+  check(!await h.source('a','/candidate.nc',true)&&h.state()===valid,'summary failure must not partially commit candidate');
+  h.failSummary(false);
+  let release;const blocked=new Promise(resolve=>{release=resolve;});let secondStarted=false;
+  const first=h.edit(async yaml=>{await blocked;return yaml;});
+  const second=h.edit(async yaml=>{secondStarted=true;return yaml;});
+  await new Promise(resolve=>setImmediate(resolve));check(!secondStarted,'project edits must serialize');
+  release();check(await first&&await second&&secondStarted,'serialized edits must settle and remain usable after rejection');
+  log('project edit admission: rejected target/source recovery, canonical migrations, exclusivity, model/cell and serialized commits passed');
+}
+checkProjectEditAdmission().catch(error => { console.error(error); process.exitCode=1; });
+
+{
+  const TPL = new Function('return '+section(html,/const TPL=(\[[\s\S]*?\n\]);/,'template cards'))();
+  const gallery = section(html,/(<div class="tpl">[\s\S]*?)\n      <div class="grid2">/,'template gallery');
+  const render = new Function('TPL','tpl','lang','return `'+gallery+'`;');
+  for (const lang of [0,1]) for (const selected of [0,TPL.length-1]) {
+    const markup = render(TPL,selected,lang);
+    const buttons = [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)];
+    check(buttons.length===TPL.length,'every template card must be a native keyboard-accessible button');
+    buttons.forEach(([,attrs,body],k)=>{
+      check(attrs.includes('type="button"')&&attrs.includes(`data-tpl="${k}"`)&&
+        attrs.includes(`aria-pressed="${k===selected}"`)&&attrs.includes(`aria-label="${TPL[k].nm[lang]}"`),
+        'template buttons must expose their name and committed selection, without submitting forms');
+      check(!/<(?:div|button|input|select|a)\b/.test(body),'template button content must be noninteractive phrasing content');
+    });
+  }
+  log('template accessibility: native buttons expose bilingual names and committed selection');
+}
+
+async function checkTemplateAdmission() {
+  const extract=name=>{const indent=["selectTemplate","bboxDomainError"].includes(name)?"":"  ";return section(html,new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`),name);};
+  const reset=section(html,/window\.resetTemplateDerivedState = function \(\) \{([\s\S]*?)\n  \};/,'template reset');
+  const bridge=html.match(/  window\.commitTemplateEdit = [\s\S]*?\n  \};/)?.[0]||'';
+  const commitYaml=html.includes('function commitProjectYaml(')?extract('commitProjectYaml'):'';
+  const preset=html.includes('function templateSpecifiedRefinement(')?extract('templateSpecifiedRefinement'):'';
+  const harness=new Function(`
+    const TPL=${section(html,/const TPL=(\[[\s\S]*?\n\]);/,'template cards')};
+    let tpl=0,domainMode='global',regional=false,watershedPath='',closePath='',closeFormat='nml',hiddenDomainShape=null;
+    let domainEdit=null,domainCloseBoundary={},resUnitIdx=1,resVal=3,maxPasses=3,targetEdit=null,cellEdit=null;
+    let specifiedRefine={enabled:false,algorithm:'certified',route:'discrete'},colmMeshDelivery={enabled:false,pixelsPerDegree:240};
+    let projectEditQueue=Promise.resolve(),backendReady=null,cur=1,clears=0,paints=0,focused=null;
+    const layerEdits={},thresholdEdits={},criterionEdits={},metadataEdit={authors:['author'],description:'keep'};
+    const qualityEdit={minAngle:31,policy:'warn',batchCells:1},expertEdit={},hydroRefine={},thresholdRefine={enabled:false};
+    const DEFAULT_BBOX=[108,120,18,26],domBbox=[110,118,20,25],METHOD_C_MAX_REFINEMENT_LEVEL=5;
+    let baseProjectYaml=JSON.stringify({intent:'AtmosphereMpas',target_kind:'atmosphere',cell:'hex',model_format:'MPAS',domain:'global',layers:[],hidden:'keep'});
+    let lastSummary={...JSON.parse(baseProjectYaml),_valid:true,_err:null};
+    const logs=[],calls=[],window={},zh=()=>false,logLine=s=>logs.push(s);
+    const document={querySelector:selector=>({focus(){focused=selector;}})};
+    const currentIntent=()=>TPL[tpl].intent,currentResolution=()=>({nxp:resVal,approxKm:null,approxDegree:null}),projectName=()=>'template-test';
+    const normalizeCloseBoundary=()=>({mode:'polyline'}),defaultAlgorithmControls=()=>({}),inferCloseFormat=()=>'nml';
+    const clearCoastalOverlay=()=>{},clearRunArtifacts=()=>{clears++;},renderSteps=()=>{},renderStep=()=>{paints++;};
+    const springTypesFor=()=>({}),hasEnabledThresholdLayer=()=>false,hasEnabledHydroRefinement=()=>false;
+    const applyCloseBoundary=async yaml=>yaml;
+    function validate(cfg){if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('landtype required');return JSON.stringify(cfg);}
+    async function invoke(command,args){
+      calls.push([command,args]);let cfg=args.yaml?JSON.parse(args.yaml):null;
+      if(command==='scaffold_project')return validate({intent:args.intent,target_kind:args.intent==='AtmosphereMpas'?'atmosphere':args.intent==='CoastalOcean'?'ocean':'land',cell:args.intent==='CoastalOcean'?'tri':'hex',model_format:args.intent==='AtmosphereMpas'?'MPAS':args.intent==='CoastalOcean'?'FVCOM':'CoLM',domain:'global',nxp:args.nxp,layers:[{id:'landcover',enabled:true,path:'/preset.nc'}]});
+      if(command==='preserve_unexposed_project_fields'){
+        const base=JSON.parse(args.baseYaml);cfg.layers=base.layers.length?base.layers:[{id:'landcover',enabled:false,path:''}];cfg.hidden=base.hidden;
+        if(base.intent===cfg.intent)for(const k of ['target_kind','cell','model_format'])cfg[k]=base[k];
+      }else if(command==='set_project_target'){cfg.target_kind=args.kind;cfg.model_format=args.modelFormat;}
+      else if(command==='set_target_cell')cfg.cell=args.cell;
+      else if(command==='set_domain_global')cfg.domain='global';
+      else if(command==='set_domain_bbox'){cfg.domain='regional';cfg.bbox=[args.w,args.e,args.s,args.n];}
+      else if(command==='set_domain_close'){cfg.domain='regional';cfg.close=args.path;}
+      else if(command==='set_layer_path'){const l=cfg.layers.find(l=>l.id===args.id);if(!l)throw new Error('missing source');Object.assign(l,{path:args.path,enabled:args.enabled});}
+      else if(command==='set_specified_refinement')cfg.specified=args.enabled?{kind:args.kind,path:args.path}:null;
+      else if(command==='set_refinement_backend')cfg.backend=args.backend;
+      else if(command==='set_refinement')cfg.max_passes=args.maxPasses;
+      else if(command==='set_quality')cfg.min_angle_deg=args.minAngleDeg;
+      else if(command==='set_project_metadata')cfg.description=args.description;
+      validate(cfg);return command==='project_summary'?cfg:JSON.stringify(cfg);
+    }
+    const api={summary:yaml=>invoke('project_summary',{yaml})};
+    let lang=0;
+    ${extract('bboxDomainError')}
+    ${extract('specifiedRefinementError')}
+    ${preset}
+    ${extract('composeYaml')}
+    ${commitYaml}
+    ${extract('commitProjectEdit')}
+    window.waitForProjectEdits=()=>projectEditQueue;
+    window.resetTemplateDerivedState=function(){${reset}};
+    ${bridge}
+    ${extract('selectTemplate')}
+    return {choose:selectTemplate,compose:composeYaml,logs,calls,
+      source(){const cfg=JSON.parse(baseProjectYaml);cfg.layers=[{id:'landcover',enabled:true,path:'/chosen.nc'}];baseProjectYaml=validate(cfg);lastSummary={...cfg,_valid:true,_err:null};},
+      customize(){const cfg=JSON.parse(baseProjectYaml);Object.assign(cfg,{target_kind:'atmosphere',model_format:'ICON',cell:'tri'});baseProjectYaml=validate(cfg);targetEdit={kind:'atmosphere',modelFormat:'ICON'};cellEdit='tri';},
+      hold(){let release;projectEditQueue=new Promise(resolve=>{release=resolve;});return release;},
+      state:()=>JSON.stringify({tpl,domainMode,regional,watershedPath,closePath,closeFormat,hiddenDomainShape,domainEdit,domainCloseBoundary,resUnitIdx,resVal,maxPasses,targetEdit,cellEdit,specifiedRefine,baseProjectYaml,lastSummary,layerEdits,clears,paints,focused})};
+  `);
+  const empty=harness(),before=empty.state();
+  for(const card of [1,2,7,8,9]){
+    await empty.choose(card);
+    check(empty.state()===before,'rejected template must preserve original domain, source/target state, resolution, refinement and results');
+    check(JSON.parse(await empty.compose()).target_kind==='atmosphere','rejected template must leave project composable');
+  }
+  check(empty.logs.some(s=>s.includes('landtype required')),'template rejection must expose backend reason');
+  const h=harness();h.source();await h.choose(1);
+  check(JSON.parse(h.state()).focused==='[data-tpl="1"]','accepted template must restore focus after replacing its button');
+  await h.choose(1);check(JSON.parse(h.state()).focused==='[data-tpl="1"]','reselecting the active template must retain keyboard focus');
+  let cfg=JSON.parse(await h.compose());check(cfg.target_kind==='land'&&cfg.layers[0].path==='/chosen.nc','different-intent template must use preset target and preserve chosen source');
+  h.customize();await h.choose(4);cfg=JSON.parse(await h.compose());
+  check(cfg.domain==='regional'&&cfg.target_kind==='atmosphere'&&cfg.model_format==='ICON'&&cfg.cell==='tri','same-intent regional preset must retain canonical target overrides');
+  for(const [card,nxp] of [[7,80],[8,768],[9,192]]){
+    await h.choose(card);cfg=JSON.parse(await h.compose());
+    check(cfg.nxp===nxp&&cfg.close==='input/Ocean/Ocean_ChinaSea_boundary.nml','close templates must apply their own resolution and domain only after admission');
+    check(cfg.layers[0].path==='/chosen.nc'&&cfg.hidden==='keep'&&cfg.min_angle_deg===31&&cfg.description==='keep','templates must preserve common source/hidden/quality/metadata fields');
+    if(card===9)check(cfg.max_passes===2&&cfg.specified?.path==='input/Ocean/refine_spc_close01.nml','O3 specified-close and passes must survive next compose');
+  }
+  const blocked=harness(),release=blocked.hold(),initial=blocked.state(),pending=blocked.choose(3);
+  await new Promise(resolve=>setImmediate(resolve));check(blocked.state()===initial,'template selection must not mutate while earlier edit is pending');
+  release();await pending;check(JSON.parse(await blocked.compose()).domain==='regional','template must apply after earlier edit settles');
+  log('template admission: actual selector/compose rejects atomically, preserves common and same-intent state, applies O1/O2/O3 and waits for edits');
+}
+checkTemplateAdmission().catch(error=>{console.error(error);process.exitCode=1;});
+
+async function checkWorkflowNavigation() {
+  const extract=name=>section(html,new RegExp(`((?:async )?function ${name}\\([^\\n]*\\)\\{[\\s\\S]*?\\n\\})`),name);
+  const steps=section(html,/const STEPS=(\[[\s\S]*?\n\]);/,'workflow steps');
+  const harness=new Function('lang',`
+    const STEPS=${steps};let cur=0,runInProgress=false,killInProgress=false,answer=true,stop=null,focused=null;
+    const paints=[],prompts=[];
+    const element=tag=>({tag,attrs:{},children:[],setAttribute(k,v){this.attrs[k]=v;},
+      set textContent(v){this.text=v;this.children=[];},append(...nodes){this.children.push(...nodes);},
+      appendChild(node){this.append(node);},focus(){focused=this;}});
+    const rail=element('nav'),heading=element('h1'),work={scrollTop:100,querySelector:s=>s==='h1'?heading:null};
+    const document={createElement:element,getElementById:id=>id==='steps'?rail:work};
+    const confirm=message=>{prompts.push(message);return answer;};
+    const killRun=()=>new Promise(resolve=>{stop=ok=>{if(ok){runInProgress=false;killInProgress=false;}resolve(ok);};});
+    const renderStep=i=>paints.push(i);
+    ${extract('renderSteps')}
+    ${extract('confirmStopForPageSwitch')}
+    ${extract('go')}
+    renderSteps();return {STEPS,rail,heading,work,paints,prompts,go,
+      click(i){const b=rail.children[i];b.focus();return b.onclick();},
+      guard(running,accept,killing=false){runInProgress=running;answer=accept;killInProgress=killing;},
+      stop(ok){stop(ok);stop=null;},state:()=>({cur,focused,pending:!!stop})};
+  `);
+  for(const lang of [0,1]) {
+    const h=harness(lang);
+    check(h.rail.children.length===7,'workflow rail must expose every step');
+    h.rail.children.forEach((button,i)=>{
+      check(button.tag==='button'&&button.type==='button','workflow steps must be native non-submit buttons');
+      check(button.attrs['aria-current']===(i===0?'step':undefined),'workflow current state must match committed page');
+      const [number,copy]=button.children;
+      check(number.tag==='span'&&copy.tag==='span'&&copy.children.every(n=>n.tag==='span'),'workflow buttons must contain phrasing elements');
+      check(copy.children[0].text===h.STEPS[i].t[lang]&&copy.children[1].text===h.STEPS[i].d[lang],'workflow labels must retain bilingual safe text');
+    });
+    await h.click(3);
+    check(h.state().cur===3&&h.state().focused===h.heading&&h.work.scrollTop===0,'accepted navigation must focus the destination heading and reset scroll');
+    check(h.rail.children[3].attrs['aria-current']==='step'&&!h.rail.children[0].attrs['aria-current'],'only the committed step may be current');
+    const before=h.paints.length,oldButtons=h.rail.children;
+    h.guard(true,false);await h.click(1);
+    check(h.state().cur===3&&h.paints.length===before&&h.rail.children===oldButtons&&h.state().focused===oldButtons[1],'declined stop must preserve page and triggering focus');
+    for(const ok of [false,true]) {
+      h.guard(!ok,true,ok);const pending=h.click(1);await new Promise(resolve=>setImmediate(resolve));
+      check(h.state().pending&&h.state().cur===3&&h.paints.length===before,'navigation must await running or settling kill guard');
+      h.stop(ok);await pending;
+      check(h.state().cur===(ok?1:3)&&h.state().focused===(ok?h.heading:oldButtons[1]),'only successful stop may navigate and move focus');
+    }
+    const prompts=h.prompts.length;await h.click(1);check(h.prompts.length===prompts,'same-step activation must not request a stop');
+    check(await h.go(6)&&h.state().focused===h.heading,'footer shared go must use the same destination focus');
+  }
+  check(html.includes('<h1 tabindex="-1">${t}</h1>'),'workflow heading must support programmatic focus without adding a tab stop');
+  check(html.includes('b.onclick=()=>go(+b.dataset.go)'),'footer and rail must share the guarded go handler');
+  log('workflow accessibility: native bilingual steps, committed current state, destination focus and stop/page-switch guard passed');
+}
+checkWorkflowNavigation().catch(error=>{console.error(error);process.exitCode=1;});
+
+async function checkProjectControls() {
+  const extract=name=>section(html,new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`),name);
+  const picker=section(html,/(<(?:div|button)[^>\n]*id="outPathBrowse"[\s\S]*?<\/(?:div|button)>)/,'output folder picker');
+  const renderPicker=new Function('lang','return `'+picker+'`;');
+  for(const lang of [0,1]) {
+    const markup=renderPicker(lang);
+    check(markup.startsWith('<button type="button"')&&markup.includes(`aria-label="${lang?'选择输出目录':'Choose output folder'}"`)&&markup.includes('aria-describedby="outPathText"'),'output picker must be a named native button describing the current path');
+  }
+  const harness=new Function('chinese',`
+    let outputPath='/before',projectEditQueue=Promise.resolve(),projectLoadEpoch=0,project='before',pick=null,readFails=false;
+    let recents=[{path:'/a/<project>.yaml',name:'<img src=x onerror=bad>'}];
+    const logs=[],reads=[],saved=[],metadataEdit={},zh=()=>chinese,logLine=s=>logs.push(s);
+    const element=tag=>({tag,style:{},children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}});
+    const card=element('div'),hint=element('div'),folder=element('button'),pathText=element('span');
+    card.querySelector=s=>s==='h3'?{textContent:chinese?'最近项目':'Recent projects'}:hint;
+    card.querySelectorAll=()=>card.children.slice();
+    const document={createElement:element,getElementById:id=>({outPathBrowse:folder,outPathText:pathText})[id]||null,
+      querySelector:()=>null,querySelectorAll:()=>[card]};
+    const loadRecents=()=>recents,renderProjectSummary=()=>{},localStorage={setItem:(...args)=>saved.push(args)};
+    const api={pickDataFolder:async()=>{if(pick instanceof Error)throw pick;return pick;}};
+    const invoke=async(command,args)=>{reads.push([command,args]);if(readFails)throw new Error('missing project');return {yaml:'opened',path:args.path};};
+    const reflectProject=async res=>{project=res.yaml;};
+    ${extract('openRecent')}
+    ${extract('enhanceNewProjectStep')}
+    enhanceNewProjectStep();return {card,folder,pathText,logs,reads,saved,render:enhanceNewProjectStep,
+      pick(p){pick=p;return folder.onclick();},readFail(v){readFails=v;},empty(){recents=[];enhanceNewProjectStep();},
+      hold(){let release;projectEditQueue=new Promise(resolve=>{release=resolve;});return release;},state:()=>({outputPath,project})};
+  `);
+  for(const chinese of [false,true]) {
+    const h=harness(chinese),row=h.card.children[0];
+    check(row.tag==='button'&&row.type==='button','recent projects must be native non-submit buttons');
+    check(row.title==='/a/<project>.yaml'&&row.children[0].textContent==='📄 <img src=x onerror=bad>','recent names and paths must stay literal text');
+    h.render();check(h.card.children.length===1,'project page enhancement must not duplicate recent buttons');
+    const before=JSON.stringify(h.state());
+    await h.pick(null);await h.pick(new Error('picker failed'));
+    check(JSON.stringify(h.state())===before&&h.saved.length===0&&h.logs.some(s=>s.includes('picker failed')),'cancelled or failed picker must preserve output preference and report failure');
+    await h.pick('/selected/<folder>');
+    check(h.state().outputPath==='/selected/<folder>'&&h.pathText.textContent==='📁 /selected/<folder>'&&h.saved[0].join()==='em.outputPath,/selected/<folder>','accepted picker must update safe visible text and existing saved preference');
+    h.readFail(true);await h.card.children[0].onclick();
+    check(h.state().project==='before'&&h.logs.some(s=>s.includes('missing project')),'failed recent read must leave the current project unchanged');
+    h.readFail(false);const release=h.hold(),reads=h.reads.length,pending=h.card.children[0].onclick();
+    await new Promise(resolve=>setImmediate(resolve));check(h.reads.length===reads,'recent activation must wait for pending edits');
+    release();await pending;check(h.state().project==='opened'&&h.reads.at(-1)[1].path==='/a/<project>.yaml','accepted recent button must use the original shared read path');
+    h.empty();check(h.card.children.length===1&&h.card.children[0].className==='recent-empty','empty recents must keep the noninteractive placeholder');
+  }
+  const reflect=extract('reflectProject');
+  check(reflect.indexOf('document.querySelector("#work h1")?.focus();')>reflect.indexOf('renderStep(typeof cur'),'shared Open/recent reflection must restore heading focus after rerender');
+  log('project controls: native recent/folder buttons, safe text, picker cancel/failure, recent read failure and edit fence passed');
+}
+
+async function checkProjectReplacementOwnership() {
+  const extract=name=>{
+    let start=html.indexOf(`function ${name}(`);
+    check(start>=0, `missing ${name}`);
+    if(html.slice(Math.max(0,start-6),start)==='async ') start-=6;
+    const open=html.indexOf('{',start);
+    let depth=0,quote=null,escape=false;
+    for(let i=open;i<html.length;i++){
+      const c=html[i];
+      if(quote){
+        if(escape){escape=false;continue;}
+        if(c==='\\'){escape=true;continue;}
+        if(c===quote){quote=null;continue;}
+        continue;
+      }
+      if(c==='"'||c==="'"||c==='`'){quote=c;continue;}
+      if(c==='{')depth++;
+      else if(c==='}'){depth--;if(depth===0)return html.slice(start,i+1);}
+    }
+    check(false, `unterminated ${name}`);
+  };
+  const harness=new Function(`
+    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,projectActive=true,baseProjectYaml='accepted',lastSummary=null;
+    let outputPath='',metadataEdit={},domainEdit=null,domainMode='global',regional=false,tpl=0;
+    let targetEdit=null,cellEdit=null,colmMeshDelivery={enabled:false,pixelsPerDegree:240},qualityEdit=null,maxPasses=null;
+    let domBbox=[],domCircle=[],domainSeaRatios={},watershedPath='',closePath='',closeFormat='nml',domainCloseBoundary=null,hiddenDomainShape=null;
+    let expertEdit={},specifiedRefine={},hydroRefine={},thresholdRefine={},_hydroThresholds={};
+    const DEFAULT_TPL=0,DEFAULT_BBOX=[108,120,18,26],DEFAULT_CIRCLE=[114,22,500],layerEdits={},thresholdEdits={},criterionEdits={};
+    const TPL=[{intent:'Custom',global:true}],RES_UNITS=[{def:100}],logs=[],renders=[],recentWrites=[],pushed=[],saves=[];
+    const normalizeCloseBoundary=()=>null,defaultAlgorithmControls=()=>({}),defaultHydroRefine=()=>({}),springStrategyFromTypes=()=>null,expertEnabled=()=>false;
+    const setExpertMode=()=>{},clearCoastalOverlay=()=>{},clearRunArtifacts=()=>{},loadWatershedBoundary=()=>{},renderSteps=()=>renders.push('steps'),renderStep=i=>renders.push('step:'+i),renderProjectSummary=()=>renders.push('summary');
+    let visibleName='accepted-name'; const zh=()=>false,logLine=s=>logs.push(String(s)),projectName=()=>visibleName,confirm=()=>true;
+    const nameEl={value:'earthmesh-project'},heading={focus(){renders.push('focus');}};
+    function element(tag){return {tag,type:'',className:'',style:{},title:'',children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);},querySelector(sel){return sel==='h3'?{textContent:'Recent projects'}:{textContent:''};},querySelectorAll(){return this.children.slice();}};}
+    const recentCard=element('div');
+    const document={createElement:element,getElementById:()=>null,querySelector:sel=>sel==='.proj-name'?nameEl:sel==='#work h1'?heading:null,querySelectorAll:sel=>sel==='#work .card'?[recentCard]:[]};
+    let recents=[{path:'/A.yaml',name:'A'},{path:'/B.yaml',name:'B'}];
+    const localStorage={getItem:key=>key==='em.recents'?JSON.stringify(recents):null,setItem:(key,value)=>recentWrites.push([key,value])};
+    function loadRecents(){return recents;}
+    function defer(){let resolve,reject;const promise=new Promise((res,rej)=>{resolve=res;reject=rej;});return {promise,resolve,reject};}
+    const reads=new Map(),opens=[],summaries=[],validations=[];
+    let summaryCalls=0;
+    function summaryOf(yaml){return {name:String(yaml),intent:'Custom',domain:'global',domain_shape:'global',target_kind:'land',model_format:'CoLM',cell:'hex',layers:[],max_passes:0};}
+    async function composeYaml(){return baseProjectYaml || 'new-default';}
+    async function invoke(command,args){
+      if(command!=='read_project')throw new Error(command);
+      const d=defer();reads.set(args.path,d);return d.promise;
+    }
+    const api={
+      openProject:async()=>{const d=defer();opens.push(d);return d.promise;},
+      saveProject:async yaml=>{const d=defer();saves.push({yaml,d});return d.promise;},
+      summary:async yaml=>{summaryCalls++;if(yaml==='new-default')return summaryOf(yaml);const d=defer();summaries.push({yaml,d});return d.promise;},
+      validate:async yaml=>{if(yaml==='new-default')return true;const d=defer();validations.push({yaml,d});return d.promise;},
+    };
+    function pushRecent(path,name){pushed.push([path,name]);}
+    ${extract('reflectProject')}
+    ${extract('openRecent')}
+    ${extract('onOpen')}
+    ${extract('resetProject')}
+    ${extract('refreshSummary')}
+    ${extract('onSave')}
+    ${extract('onNew')}
+    ${extract('enhanceNewProjectStep')}
+    function finishSummary(yaml){const item=summaries.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing summary '+yaml);item.done=true;item.d.resolve(summaryOf(yaml));}
+    function failSummary(yaml,message='summary failed'){const item=summaries.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing summary '+yaml);item.done=true;item.d.reject(new Error(message));}
+    function finishValidate(yaml){const item=validations.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing validate '+yaml);item.done=true;item.d.resolve(true);}
+    function failValidate(yaml,message='validate failed'){const item=validations.find(x=>x.yaml===yaml&&!x.done);if(!item)throw new Error('missing validate '+yaml);item.done=true;item.d.reject(new Error(message));}
+    enhanceNewProjectStep();
+    return {recentCard,logs,reads,opens,summaries,validations,renders,pushed,saves,
+      openRecent,onOpen,onNew,onSave,render:enhanceNewProjectStep,
+      resolveRead(path,yaml=path){reads.get(path).resolve({yaml,path});},rejectRead(path,message='read failed'){reads.get(path).reject(new Error(message));},
+      resolveOpen(res){opens.at(-1).resolve(res);},rejectOpen(message='open failed'){opens.at(-1).reject(new Error(message));},
+      resolveSave(path='/saved.yaml'){saves.at(-1).d.resolve(path);},rejectSave(message='save failed'){saves.at(-1).d.reject(new Error(message));},setName(name){visibleName=name;nameEl.value=name;},
+      finishSummary,failSummary,finishValidate,failValidate,
+      setRecents(next){recents=next;enhanceNewProjectStep();},refreshSummary,
+      state:()=>({baseProjectYaml,last:lastSummary&&lastSummary.name,valid:lastSummary&&lastSummary._valid,err:lastSummary&&lastSummary._err,projectActive,logs:[...logs],renders:[...renders],pushed:[...pushed],summaryCalls,saveCalls:saves.length})};
+  `);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  const settleReflect=async(h,yaml)=>{if(!h.summaries.some(x=>x.yaml===yaml&&!x.done))return false;h.finishSummary(yaml);await flush();if(h.validations.some(x=>x.yaml===yaml&&!x.done)){h.finishValidate(yaml);await flush();}return true;};
+
+  // A then B: B's quicker read/summary/validate is the user's latest accepted replacement.
+  // A must not overwrite it when its older async work finally returns.
+  const h=harness();
+  const a=h.recentCard.children[0].onclick();
+  await flush();
+  const b=h.recentCard.children[1].onclick();
+  await flush();
+  h.resolveRead('/B.yaml');await flush();await settleReflect(h,'/B.yaml');await b;
+  check(h.state().baseProjectYaml==='/B.yaml'&&h.state().last==='/B.yaml','latest recent project must win after B resolves first');
+  if(h.reads.has('/A.yaml')){h.resolveRead('/A.yaml');await flush();await settleReflect(h,'/A.yaml');}
+  await a;
+  check(h.state().baseProjectYaml==='/B.yaml'&&h.state().last==='/B.yaml','stale earlier recent response must not overwrite the latest project');
+
+  // Candidate replacement must not partially commit after summary while validate is still pending.
+  // A parseable candidate with validation errors is still atomically accepted as repairable.
+  const v=harness();
+  const first=v.openRecent('/A.yaml');await flush();v.resolveRead('/A.yaml');await flush();await settleReflect(v,'/A.yaml');await first;
+  const second=v.openRecent('/B.yaml');await flush();v.resolveRead('/B.yaml');await flush();v.finishSummary('/B.yaml');await flush();
+  check(v.state().baseProjectYaml==='/A.yaml'&&v.state().last==='/A.yaml','replacement must not commit globals while validation is still pending');
+  v.failValidate('/B.yaml','bad candidate');await second;
+  check(v.state().baseProjectYaml==='/B.yaml'&&v.state().last==='/B.yaml'&&v.state().valid===false&&String(v.state().err).includes('bad candidate'),'validation-failed replacement must be atomically accepted with invalid summary state');
+
+  // A stale validation result must not touch a newer accepted summary.
+  const sv=harness();
+  const old=sv.openRecent('/A.yaml');await flush();sv.resolveRead('/A.yaml');await flush();sv.finishSummary('/A.yaml');await flush();
+  const latest=sv.openRecent('/B.yaml');await flush();sv.resolveRead('/B.yaml');await flush();await settleReflect(sv,'/B.yaml');await latest;
+  sv.failValidate('/A.yaml','stale invalid');await old;
+  check(sv.state().baseProjectYaml==='/B.yaml'&&sv.state().last==='/B.yaml'&&sv.state().valid===true,'stale validation failure must not overwrite newer accepted project summary');
+
+  // A pending refreshSummary compose/summary/validate must not overwrite a newer replacement.
+  const r=harness();
+  const accepted=r.openRecent('/A.yaml');await flush();r.resolveRead('/A.yaml');await flush();await settleReflect(r,'/A.yaml');await accepted;
+  const refresh=r.refreshSummary();await flush();r.finishSummary('/A.yaml');await flush();
+  const newer=r.openRecent('/B.yaml');await flush();r.resolveRead('/B.yaml');await flush();await settleReflect(r,'/B.yaml');await newer;
+  r.failValidate('/A.yaml','stale refresh invalid');await refresh;
+  check(r.state().baseProjectYaml==='/B.yaml'&&r.state().last==='/B.yaml'&&r.state().valid===true,'stale refreshSummary validation must not overwrite newer replacement');
+
+  // A pending recent load must be invalidated by New; stale success/failure must not repaint or log.
+  const n=harness();
+  const stale=n.openRecent('/A.yaml');await flush();
+  await n.onNew();
+  check(n.state().last==='new-default'&&n.state().baseProjectYaml===null,'New must become the active project while an older recent read is pending');
+  if(n.reads.has('/A.yaml')){n.resolveRead('/A.yaml');await flush();await settleReflect(n,'/A.yaml');}
+  await stale;
+  check(n.state().last==='new-default'&&n.state().baseProjectYaml===null,'stale recent success must not overwrite New');
+  const staleFail=n.openRecent('/B.yaml');await flush();await n.onNew();if(n.reads.has('/B.yaml'))n.rejectRead('/B.yaml','obsolete missing');await staleFail;
+  check(!n.state().logs.some(line=>line.includes('obsolete missing')),'obsolete recent failures must not be logged after New invalidates them');
+
+  // Save must remember the YAML/name at dialog start, and stale save completion after New/Open
+  // must not foreground-refresh or repaint the current project.
+  const s=harness();
+  s.setName('saved-original');
+  const saving=s.onSave();await flush();
+  check(s.saves.length===1&&s.saves[0].yaml==='accepted','Save must compose the currently accepted project before opening the native save dialog');
+  s.setName('new-visible-name');
+  await s.onNew();
+  const beforeSaveReturn=s.state();
+  s.resolveSave('/saved-original.yaml');await saving;
+  const afterSaveReturn=s.state();
+  check(afterSaveReturn.pushed.some(([path,name])=>path==='/saved-original.yaml'&&name==='saved-original'),'completed stale Save must keep the original project name in recents');
+  check(afterSaveReturn.last===beforeSaveReturn.last&&afterSaveReturn.summaryCalls===beforeSaveReturn.summaryCalls&&afterSaveReturn.renders.length===beforeSaveReturn.renders.length,'obsolete Save completion must not refresh or repaint after New/Open replaced the project');
+  const cancel=harness(),cancelSave=cancel.onSave();await flush();cancel.resolveSave(null);await cancelSave;
+  check(cancel.state().baseProjectYaml==='accepted'&&cancel.state().logs.some(line=>line.includes('save cancelled')),'current Save cancellation must preserve accepted project and remain visible');
+  const fail=harness(),failedSave=fail.onSave();await flush();fail.rejectSave('disk full');await failedSave;
+  check(fail.state().baseProjectYaml==='accepted'&&fail.state().logs.some(line=>line.includes('save failed')&&line.includes('disk full')),'current Save failure must preserve accepted project and report the error');
+
+  // Current cancellation/failure still preserves the accepted project and reports only current errors.
+  const c=harness();
+  const before=c.state();
+  const cancelled=c.onOpen();await flush();c.resolveOpen(null);await cancelled;
+  const afterCancel=c.state();
+  check(afterCancel.baseProjectYaml===before.baseProjectYaml&&afterCancel.last===before.last&&!afterCancel.logs.some(line=>line.includes('✗')),'cancelled Open may log cancellation but must preserve accepted state without an error');
+  const failed=c.openRecent('/A.yaml');await flush();c.rejectRead('/A.yaml','current missing');await failed;
+  check(c.state().baseProjectYaml==='accepted'&&c.state().logs.some(line=>line.includes('current missing')),'current recent failure must preserve accepted project and remain visible');
+  log('project replacement ownership: Open/recent/New latest response, local validation and current-error handling passed');
+}
+checkProjectReplacementOwnership().catch(error=>{console.error(error);process.exitCode=1;});
+
+checkProjectControls().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Exercise the real circle validation/frame/estimate and domain compose branch
+// without a browser dependency, so this boundary also runs in the regular CI gate.
+async function checkCircleDomain() {
+  const extract=name=>section(html,new RegExp(`(function ${name}\\([^\\n]*\\)\\{[\\s\\S]*?\\n\\})`),name);
+  const compose=section(html,/async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/,'composeYaml');
+  const domain=compose.slice(compose.indexOf('    const mode ='),compose.indexOf('    if (baseProjectYaml)'));
+  const h=new Function(`
+    let domCircle=[179,20,750],domBbox=[170,-170,-10,10],domainMode='circle',regional=true,lang=0;
+    const KM_PER_DEG_EQ=2*Math.PI*6371.229/360,DEFAULT_BBOX=[108,120,18,26];
+    const cellKm=()=>100,olGeojsonFrame=()=>{throw Error('circle fell back to an old mesh frame');};
+    ${extract('wrapOlLon')}
+    ${extract('bboxDomainError')}
+    ${extract('circleDomainError')}
+    ${extract('currentOlDomainFrame')}
+    ${extract('estCells')}
+    return {set:c=>{domCircle=c;},setBbox:b=>{domainMode="regional";domBbox=b;},error:circleDomainError,frame:currentOlDomainFrame,estimate:estCells,
+      compose:async()=>{const template=null,domain={kind:'circle',seaRatio:.47125},calls=[];let yaml='input';
+        const invoke=async(cmd,args)=>{calls.push({cmd,args});return 'circle yaml';};
+        ${domain}
+        return {yaml,calls};}};
+  `)();
+  check(h.frame().crossesDateline && h.frame().east-h.frame().west<20,'circle frame must use the short dateline span');
+  const {yaml,calls}=await h.compose();
+  check(yaml==='circle yaml'&&calls.length===1&&calls[0].cmd==='set_domain_circle','circle must reach its shared setter, not bbox');
+  check(JSON.stringify(calls[0].args)===JSON.stringify({yaml:'input',lon:179,lat:20,radiusKm:750,seaRatio:.47125}),'circle coordinates/radius/sea ratio must retain precision');
+  const radius=6371.229,area=4*Math.PI*radius**2*Math.sin(750/radius/2)**2;
+  check(h.estimate()===Math.round(area/(100*100*.866)),'circle estimate must use spherical-cap area');
+  for(const circle of [[NaN,20,750],[181,20,750],[0,91,750],[0,0,0],[0,0,10009]]){
+    h.set(circle);check(h.error()&&h.frame()===null&&h.estimate()===0,'invalid circle must not show an old mesh extent/estimate');
+    let rejected=false;try{await h.compose();}catch{rejected=true;}check(rejected,'invalid draft must fail compose before any setter');
+  }
+  for(const lat of [-90,90]){h.set([0,lat,500]);const frame=h.frame();check(frame.west===-180&&frame.east===180,'polar circles cover all longitudes');}
+  h.setBbox([170,-170,-10,10]);const wrapped=h.estimate();h.setBbox([-10,10,-10,10]);check(h.estimate()===wrapped,'bbox estimate must use its dateline-safe short longitude span');
+  for(const bbox of [[NaN,120,0,20],[181,120,0,20],[10,10,0,20],[10,20,30,20]]){h.setBbox(bbox);check(h.frame()===null&&h.estimate()===0,'invalid bbox must not render old extents');let rejected=false;try{await h.compose();}catch{rejected=true;}check(rejected,'invalid bbox must fail before invoking the backend');}
+  check(libRs.includes('set_domain_circle,')&&html.includes('domCircle = [...sum.circle]')&&html.includes('circle:domCircle')&&html.includes('if ("circle" in payload) domCircle = payload.circle;'),'circle command, open reflection and detached map state must remain wired');
+  check(html.includes('data-mode="circle"')&&html.includes('aria-describedby="domainCircleHint domainCircleError"'),'circle editor needs a named, described native input');
+  log('circle domain: actual compose/validation/dateline/pole/area and command/reflection/map state checks passed');
+}
+checkCircleDomain().catch(error=>{console.error(error);process.exitCode=1;});
+
+
+async function checkDomainBoundaryOwnership() {
+  const body=section(html, /  (async function loadWatershedBoundary\(path\) \{[\s\S]*?\n  \})/, 'domain boundary loader');
+  const h=new Function(`
+    let watershedBoundaryPath='',watershedBoundaryVersion=0,_domainGeojson=null;
+    const calls=[],logs=[];
+    const api={shapefileBoundary:path=>new Promise((resolve,reject)=>calls.push({path,resolve,reject}))};
+    const applyDomainBoundary=g=>{_domainGeojson=g;},logLine=s=>logs.push(s);
+    ${body}
+    return {load:loadWatershedBoundary,calls,logs,view:()=>_domainGeojson};
+  `)();
+  const a=h.load('/a.shp'),b=h.load('/b.shp');
+  h.calls[1].resolve({id:'b'});await b;h.calls[0].reject(Error('old failure'));await a;
+  check(h.view().id==='b'&&h.logs.length===0,'old boundary failure must not clear the newer outline/log an unrelated error');
+  const c=h.load('/c.shp');check(h.view()===null,'new path must clear the old outline while loading');await h.load('');h.calls[2].resolve({id:'c'});await c;
+  check(h.view()===null,'cleared/global/circle domain must not repaint a stale shapefile response');
+  const first=h.load('/same.shp'),other=h.load('/other.shp'),latest=h.load('/same.shp');
+  h.calls[5].resolve({id:'latest'});await latest;h.calls[3].resolve({id:'first'});await first;h.calls[4].reject(Error('superseded'));await other;
+  check(h.view().id==='latest'&&h.logs.length===0,'A→B→A must honor request identity, not path equality');
+  const n=h.calls.length;await h.load('/same.shp');check(h.calls.length===n,'accepted outline must reuse existing cache');
+  const failed=h.load('/bad.shp');h.calls[n].reject(Error('current failure'));await failed;
+  check(h.view()===null&&h.logs.length===1&&h.logs[0].includes('current failure'),'current preview error must remain visible');
+  check(!section(html,/async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/,'reflect').includes('await loadWatershedBoundary'), 'project controls must not wait for an optional preview');
+  log('domain boundary ownership: stale success/error, A→B→A, cache, clear and current errors passed');
+}
+checkDomainBoundaryOwnership().catch(error=>{console.error(error);process.exitCode=1;});

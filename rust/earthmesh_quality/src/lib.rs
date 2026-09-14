@@ -1334,8 +1334,7 @@ pub fn compute_with_options(
 
     // Neighbor reciprocity plus the physical resolution jump across each
     // shared edge. Refinement generations are provenance, not a length scale:
-    // arbitrary Delaunay insertion can advance generations without halving a
-    // cell, so 2^level_diff overstates HARP-DV transitions.
+    // refinement levels cannot substitute for physical edge lengths.
     for (ci, cell) in input.cells.iter().enumerate() {
         for &nb in &cell.neighbors {
             if nb >= input.cells.len() {

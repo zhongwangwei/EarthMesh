@@ -113,6 +113,7 @@ fn write_three_cell_tri_gridfile(path: &std::path::Path) {
 }
 
 fn write_two_cell_hex_gridfile(path: &std::path::Path) {
+    // Keep northern corners distinct: all longitudes at 90°N are the same point.
     let mut m_points = vec![earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 }];
     m_points.extend([
         earthmesh_cli::coordinate_types::LonLatPoint {
@@ -129,15 +130,15 @@ fn write_two_cell_hex_gridfile(path: &std::path::Path) {
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
-            lat: 90.0,
+            lat: 89.9,
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.5,
-            lat: 90.0,
+            lat: 89.9,
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -179.0,
-            lat: 90.0,
+            lat: 89.9,
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
@@ -153,15 +154,15 @@ fn write_two_cell_hex_gridfile(path: &std::path::Path) {
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.0,
-            lat: 90.0,
+            lat: 89.9,
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -177.5,
-            lat: 90.0,
+            lat: 89.9,
         },
         earthmesh_cli::coordinate_types::LonLatPoint {
             lon: -178.0,
-            lat: 90.0,
+            lat: 89.9,
         },
     ]);
     let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {

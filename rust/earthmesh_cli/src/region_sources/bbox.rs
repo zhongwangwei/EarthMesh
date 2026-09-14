@@ -40,6 +40,7 @@ pub(crate) fn read_method_c_bbox_refinement_regions(
 pub(crate) fn read_method_c_calculated_bbox_refinement_regions(
     source: &Path,
     max_level: usize,
+    zero_is_threshold_domain: bool,
     regions: &mut Vec<RefinementRegion>,
 ) -> io::Result<()> {
     let mask = match source_extension(source).as_deref() {
@@ -50,7 +51,9 @@ pub(crate) fn read_method_c_calculated_bbox_refinement_regions(
     let Some(mask) = mask else {
         return Ok(());
     };
-    let Some(level) = method_c_calculated_region_level(mask.refine_degree, max_level) else {
+    let Some(level) =
+        method_c_calculated_region_level(mask.refine_degree, max_level, zero_is_threshold_domain)
+    else {
         return Ok(());
     };
     for point in &mask.points {

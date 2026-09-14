@@ -26,7 +26,8 @@ use earthmesh_mesh::GetAreaUnitInput;
 use std::io;
 
 use super::placeholder_rows::{
-    normalize_mpas_placeholder_inputs, trim_mpas_inserted_placeholder_rows,
+    normalize_mpas_placeholder_inputs, normalized_mpas_output_trim_counts,
+    trim_mpas_inserted_placeholder_rows,
 };
 
 /// Build the in-memory payload produced by `MOD_mask_postproc.F90:MPAS_Mesh_Cal`
@@ -42,12 +43,9 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
     nxp: usize,
     step: usize,
 ) -> io::Result<MpasMesh> {
-    let original_cell_rows = mesh.w_points.len();
-    let original_vertex_rows = mesh.m_points.len();
     let (mesh, cellwidth) = normalize_mpas_placeholder_inputs(mesh, cellwidth)?;
     let mesh = &mesh;
-    let extra_cell_rows = mesh.w_points.len().saturating_sub(original_cell_rows);
-    let extra_vertex_rows = mesh.m_points.len().saturating_sub(original_vertex_rows);
+    let (trim_cell_rows, trim_vertex_rows) = normalized_mpas_output_trim_counts(mesh);
     let cellwidth = cellwidth.as_slice();
     validate_unstructured_mesh(mesh)?;
     if cellwidth.len() != mesh.w_points.len() {
@@ -272,7 +270,7 @@ pub fn build_mpas_mesh_from_unstructured_one_based(
         nominal_min_dc,
         error_segment: weights.error_segment,
     };
-    trim_mpas_inserted_placeholder_rows(&mut mpas, extra_cell_rows, extra_vertex_rows);
+    trim_mpas_inserted_placeholder_rows(&mut mpas, trim_cell_rows, trim_vertex_rows);
     validate_mpas_mesh(&mpas)?;
     Ok(mpas)
 }

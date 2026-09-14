@@ -1,6 +1,11 @@
-# 细化层的 crate 结构：现状与剩余差距
+# 细化层的 crate 结构：历史拆分记录
 
 日期：2026-08-07
+
+> 状态：历史/已部分过期记录。当前保留的细化后端以
+> `docs/architecture.md` 为准；`earthmesh_refine_harp_dv` 已退役，不能作为
+> 新工程入口或当前 crate 布局依据。本文保留当时拆分 `MeshState`、谓词与
+> Method-C 迁移顺序的背景。
 
 目标结构（用户给定）：
 
@@ -15,7 +20,7 @@ rust/
 │   └── demand/
 ├── earthmesh_refine_method_c/
 ├── earthmesh_refine_redgreen/
-└── earthmesh_refine_harp_dv/
+└── earthmesh_refine_harp_dv/   # 历史目标；该后端现已退役
 ```
 
 ## 已经到位
@@ -23,15 +28,15 @@ rust/
 | 目标 | 状态 |
 |---|---|
 | `earthmesh_boundary/` | **新建**。中立边界拓扑：`BoundaryRole`（6 种角色）、`LoopType`、`SphericalBoundaryModel`，逐项不变量校验（孤儿 hole、hole 套 hole、捏合环、退化环），`topology_counts` 给出细化必须保持的那对数。6 个测试 |
-| `earthmesh_refine/api/` | **新建**。`RefinementBackend` 三选一 + namelist 名字往返 + `serves_criteria_directly`（Method-C 为 false，这是实测结论） |
+| `earthmesh_refine/api/` | **已建，现保留 Method-C / Red-Green / Certified CMRC 三类入口**；HARP-DV 名称作为退役输入显式报错 |
 | `earthmesh_refine/criteria/` | **新建**。`CriterionSemantics` 四种停止语义、`EvidenceStopReason`、`DemandEvidence` |
 | `earthmesh_refine/demand/` | **新建**。`RefinementCause`（物理因与簿记因分开计数）、`RefinementDemand`（取最细尺度、最强违反给 witness）、`order_demands`（硬→优先级→id，末项保证跨机一致） |
 | `earthmesh_refine/hfield/` | **就位**，以 re-export 形式。h 场是自带测试与自带调用方的数值内核，搬文件是独立一刀 |
 | `earthmesh_refine_redgreen/` | 早已存在 |
-| `earthmesh_refine_harp_dv/` | 上一步新建，现已改为消费 `earthmesh_refine` 的判据词汇，不再自带一份 |
+| `earthmesh_refine_harp_dv/` | **历史项，已退役并从工作区移除**；不要恢复为活动后端 |
 
-依赖方向：`mesh`/`boundary` → `refine` → 三个后端。`earthmesh_refine` **不依赖任何后端**，
-这条边是三者并列而非成链的保证。
+依赖方向仍是 `mesh`/`boundary` → `refine` → 保留后端。`earthmesh_refine` **不依赖任何后端**，
+这条边是后端并列而非成链的保证。
 
 ## 关于两个 `RefinementCriterion`
 
@@ -48,7 +53,7 @@ rust/
 
 `earthmesh_mesh::MeshState`（`mesh_state/`）是后端中立的三角剖分：**顶点、三角形、每条边
 对面的三角形**。它**不带** `mrlm`、`mrow`、`ngr`、`impent`、`boundary_rows`——那些是
-Method-C 的嵌套簿记，红绿和 HARP-DV 既用不上也维护不了。
+Method-C 的嵌套簿记；非 Method-C 后端既用不上也维护不了。
 
 - `from_triangular_mesh` 取 Method-C 网格的中立部分（M 点即 site，W 面的 `im` 即三角形），
   其余留在原处；
@@ -63,8 +68,8 @@ Method-C 的嵌套簿记，红绿和 HARP-DV 既用不上也维护不了。
 测试 7 项，含一条 **Euler 校验**（V − E + F = 2）：它保证转换保住的是拓扑，不只是数字。
 基础网格与细化后的网格都通过。
 
-**HARP-DV 的 `AdaptiveMesh` 已改为包 `MeshState`**，不再包 `TriangularMesh`。这是中立类型
-成立的证明，也是让 HARP-DV 成为并列后端而不是建在某个后端之上的那一步。
+历史上，HARP-DV 曾用 `AdaptiveMesh` 包 `MeshState` 来验证中立类型的可用性。该后端现已退役；
+`MeshState` 仍作为共享网格状态保留。
 
 ## Phase 2a 已完成：球面鲁棒谓词
 
@@ -95,14 +100,13 @@ patch、拒绝事务），而不是靠掷硬币继续。
 
 ## 还没到位：`earthmesh_refine_method_c/`
 
-这是唯一没动的一格，原因在 `HARP_DV_REUSE_MAP.md`：
+这是当时唯一没动的一格；原始依据见历史 Git 记录中的 `docs/HARP_DV_REUSE_MAP.md`，该文件不再作为当前活动文档保留：
 
 `TriangularMesh` 定义在 `earthmesh_mesh/src/method_c_mesh/mod.rs`，字段就是 Method-C 的
 数据模型（`impent`、`mrlm`、`mrow`、`mrlw`、`ngr`、`boundary_rows`）。三个后端都消费这个
 类型，红绿是桥出去再桥回来。`method_c_*` 共 54 个模块 17324 行，非 Method-C 部分 8772 行。
 
-**所以拆分的第一步不是搬文件，是先有一个后端中立的网格类型**——而那正是 HARP-DV 的
-`MeshState` 需要的同一个东西。两件事是同一块地基，做一次两边都受益。
+**所以拆分的第一步不是搬文件，是先有一个后端中立的网格类型**。这仍是保留后端共享的地基。
 
 现在搬会得到一个 `earthmesh_refine_method_c` 反过来被 `earthmesh_mesh` 依赖（因为核心类型
 在里面），依赖方向立刻反转——比不搬更糟。
@@ -112,11 +116,11 @@ patch、拒绝事务），而不是靠掷硬币继续。
 ```
 1. 后端中立网格状态                                    ✅ 已完成
 2. earthmesh_refine_method_c 搬出（现在是纯文件移动 + 依赖调整）
-3. HARP-DV Phase 2a：球面谓词                          ✅ 已完成
-4. HARP-DV Phase 2c/2d：增量 Delaunay、patch
+3. 球面鲁棒谓词                                      ✅ 已完成
+4. HARP-DV 后续增量 Delaunay / patch                  已取消（后端退役）
 ```
 
-第 1 步曾是唯一的瓶颈，现已落成，3 与 4 都不再被它堵着。
+第 1 步曾是唯一的瓶颈，现已落成；HARP-DV 后续阶段不再推进。
 
 ## 第 2 步不是文件移动（2026-08-07 更正）
 

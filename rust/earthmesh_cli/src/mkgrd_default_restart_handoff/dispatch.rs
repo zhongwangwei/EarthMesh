@@ -1,9 +1,7 @@
 use crate::plan_mkgrd_mask_restart_namelist;
 use crate::refine_pipeline_refine_dispatch_requested;
 use crate::run_mkgrd_mask_restart_area_judge_configured_global_source_namelist;
-use crate::run_mkgrd_regional_clip_base_namelist;
-use crate::run_mkgrd_top_level_namelist;
-use crate::run_refine_pipeline_namelist;
+use crate::run_refine_pipeline_with_delivery;
 use crate::MaskRestartAction;
 use crate::MkgrdDefaultRestartRefineHandoff;
 use crate::MkgrdTopLevelDefaultRestartRefineRunReport;
@@ -104,6 +102,34 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
     source_first_triangle_id: usize,
     mask_postproc_num_vertex: Option<usize>,
 ) -> io::Result<MkgrdTopLevelDefaultRestartRefineRunReport> {
+    run_mkgrd_default_with_base_delivery(
+        namelist_source,
+        workdir,
+        max_tris,
+        mask_restart_max_iter,
+        restart_refine_initial_gridfile,
+        source_gridnum_perdegree,
+        source_first_triangle_id,
+        mask_postproc_num_vertex,
+        false,
+    )
+}
+
+/// Shared dispatcher with explicit final-output ownership. The CLI enables this
+/// only without Project; it is not inferred from `defer_model_exports`.
+/// Public raw carrier APIs keep their existing handoffs.
+#[doc(hidden)]
+pub fn run_mkgrd_default_with_base_delivery(
+    namelist_source: impl AsRef<Path>,
+    workdir: impl AsRef<Path>,
+    max_tris: usize,
+    mask_restart_max_iter: i32,
+    restart_refine_initial_gridfile: Option<&Path>,
+    source_gridnum_perdegree: Option<usize>,
+    source_first_triangle_id: usize,
+    mask_postproc_num_vertex: Option<usize>,
+    final_base_delivery: bool,
+) -> io::Result<MkgrdTopLevelDefaultRestartRefineRunReport> {
     let namelist_source = namelist_source.as_ref();
     let workdir = workdir.as_ref();
     let contents = fs::read_to_string(namelist_source)?;
@@ -151,11 +177,12 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         }
         if !config.mask_restart && refine_pipeline_refine_dispatch_requested(&contents, &config)? {
             let _ = source_first_triangle_id;
-            return run_refine_pipeline_namelist(
+            return run_refine_pipeline_with_delivery(
                 namelist_source,
                 workdir,
                 max_tris,
                 source_gridnum_perdegree,
+                final_base_delivery,
             )
             .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline);
         }
@@ -170,15 +197,21 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
                 !lt.is_empty() && lt != "none" && lt != "/tmp"
             };
         if regional_clip_source || landtype_carve {
-            return run_mkgrd_regional_clip_base_namelist(namelist_source, workdir, max_tris)
-                .map(MkgrdTopLevelDispatchRunReport::Gridinit)
-                .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
+            return crate::mkgrd_gridinit_driver::run_mkgrd_regional_clip_base(
+                namelist_source,
+                workdir,
+                max_tris,
+                final_base_delivery,
+            )
+            .map(MkgrdTopLevelDispatchRunReport::Gridinit)
+            .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
         }
-        return run_mkgrd_top_level_namelist(
+        return crate::mkgrd_top_level_dispatch::run_mkgrd_top_level_with_base_delivery(
             namelist_source,
             workdir,
             max_tris,
             mask_restart_max_iter,
+            final_base_delivery,
         )
         .map(MkgrdTopLevelDefaultRestartRefineRunReport::Dispatch);
     };
@@ -190,8 +223,14 @@ pub fn run_mkgrd_top_level_namelist_with_default_restart_refine_handoff(
         workdir,
         &handoff.initial_gridfile,
     )?;
-    run_refine_pipeline_namelist(&rewritten, workdir, max_tris, source_gridnum_perdegree)
-        .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
+    run_refine_pipeline_with_delivery(
+        &rewritten,
+        workdir,
+        max_tris,
+        source_gridnum_perdegree,
+        final_base_delivery,
+    )
+    .map(MkgrdTopLevelDefaultRestartRefineRunReport::RefinePipeline)
 }
 
 /// Rewrite the restart handoff fields in the single `&mkgrd` group.

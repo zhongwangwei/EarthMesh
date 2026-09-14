@@ -24,6 +24,7 @@ fn sample() -> ProjectConfig {
             resolution: ResolutionSpec::Nxp(40),
             model_format: ModelFormat::CoLM,
         },
+        delivery: ProjectDeliveryConfig::default(),
         data_layers: vec![
             ProjectDataLayer {
                 id: "lc".into(),
@@ -44,10 +45,10 @@ fn sample() -> ProjectConfig {
             backend: crate::RefinementBackend::default(),
             enabled: true,
             threshold_enabled: true,
+            threshold_region: None,
             max_passes: 3,
             threshold_criteria: Vec::new(),
             method_c: Default::default(),
-            harp_dv: Default::default(),
             certified: Default::default(),
             adaptive: None,
             specified_circle: None,
@@ -171,6 +172,7 @@ fn domain_export_quality_policy_round_trips_and_requires_certified_backend() {
         working_halo: DistanceSpec::GraphRings(5),
     };
     let mut project = sample();
+    project.domain = DomainConfig::Global;
     project.quality.quality_policy = QualityPolicy::DomainExport;
     project.quality.spatial_quality_domain = Some(domain.clone());
 
@@ -629,6 +631,76 @@ fn every_target_and_model_pairing_is_accepted_and_says_what_it_delivers() {
     let triple = ProjectTargetTriple::from(&p.target);
     assert_eq!(triple.output_delivery(), ProjectOutputDelivery::Full);
     assert_eq!(triple.skipped_adapter_reason(), None);
+}
+
+#[test]
+fn colm_mesh_delivery_is_opt_in_and_round_trips() {
+    let legacy = sample().to_yaml().expect("yaml");
+    assert!(!legacy.contains("colm_mesh"));
+    let parsed = ProjectConfig::from_yaml(&legacy).expect("legacy delivery absent");
+    assert_eq!(parsed.delivery.colm_mesh, None);
+
+    let mut project = sample();
+    project.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    let yaml = project.to_yaml().expect("yaml");
+    assert!(yaml.contains("colm_mesh"));
+    assert!(yaml.contains("pixels_per_degree: 240"));
+    assert_eq!(
+        yaml_round_trip(&project).delivery.colm_mesh,
+        project.delivery.colm_mesh
+    );
+}
+
+#[test]
+fn colm_mesh_delivery_requires_explicit_positive_resolution_and_colm_target() {
+    let missing = r#"
+schema_version: 3.0.0
+metadata:
+  name: bad_colm_mesh
+domain: Global
+target:
+  kind: Land
+  cell: Hex
+  intent: Custom
+  resolution: !Nxp 40
+  model_format: CoLM
+delivery:
+  colm_mesh: {}
+"#;
+    assert!(ProjectConfig::from_yaml(missing)
+        .unwrap_err()
+        .contains("missing field `pixels_per_degree`"));
+
+    let mut zero = sample();
+    zero.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 0,
+    });
+    assert!(yaml_err(&zero).contains("pixels_per_degree must be positive"));
+
+    let mut non_colm = sample();
+    non_colm.target.model_format = ModelFormat::Fvcom;
+    non_colm.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 240,
+    });
+    assert!(yaml_err(&non_colm).contains("target.model_format=CoLM"));
+}
+
+#[test]
+fn colm_mesh_delivery_does_not_change_lowered_source_resolution() {
+    let mut base = sample();
+    let before = base.try_lower().expect("lower without delivery");
+    base.delivery.colm_mesh = Some(ColmMeshDeliveryConfig {
+        pixels_per_degree: 7,
+    });
+    let after = base.try_lower().expect("lower with delivery");
+    assert_eq!(
+        after.mkgrd.gridnum_perdegree,
+        before.mkgrd.gridnum_perdegree
+    );
+    assert_eq!(after.mkgrd.nxp, before.mkgrd.nxp);
+    assert_eq!(after.to_namelist(), before.to_namelist());
 }
 
 #[test]
@@ -1421,6 +1493,184 @@ fn shapefile_domain_lowers_to_close_adapter_input() {
     assert_eq!(lowered.mkgrd.mask_domain_fprefix, "./watershed.shp");
 }
 
+fn certified_regional_project(
+    kind: MeshDomainKind,
+    cell: MeshCellKind,
+    model_format: ModelFormat,
+    shape: RegionShape,
+) -> ProjectConfig {
+    let mut p = sample();
+    p.target.kind = kind;
+    p.target.cell = cell;
+    p.target.model_format = model_format;
+    p.domain = DomainConfig::Regional {
+        shape,
+        sea_ratio: None,
+    };
+    p.refinement.backend = RefinementBackend::Certified;
+    p
+}
+
+const CMRC_REGIONAL_ADMISSION_ERROR: &str =
+    "CMRC regional ocean delivery supports only TRI shapefile/close polyline or spherical_chaikin domains";
+
+#[test]
+fn certified_regional_ocean_rejects_shapes_the_runtime_cannot_publish() {
+    for (name, cell, shape) in [
+        (
+            "bbox",
+            MeshCellKind::Tri,
+            RegionShape::Bbox {
+                w: 100.0,
+                e: 160.0,
+                s: 0.0,
+                n: 50.0,
+            },
+        ),
+        (
+            "circle",
+            MeshCellKind::Tri,
+            RegionShape::Circle {
+                lon: 130.0,
+                lat: 25.0,
+                radius_km: 1_000.0,
+            },
+        ),
+        (
+            "hex_close",
+            MeshCellKind::Hex,
+            RegionShape::Close {
+                path: "./masks/domain_close.nml".into(),
+                format: CloseMaskFormat::Nml,
+                boundary: CloseBoundaryMode::Polyline,
+            },
+        ),
+        (
+            "enclosing_cap",
+            MeshCellKind::Tri,
+            RegionShape::Close {
+                path: "./masks/domain_close.nml".into(),
+                format: CloseMaskFormat::Nml,
+                boundary: CloseBoundaryMode::EnclosingCap {
+                    margin_km: 20.0,
+                    max_radius_deg: 80.0,
+                    max_segment_angle_deg: 0.25,
+                },
+            },
+        ),
+    ] {
+        let project =
+            certified_regional_project(MeshDomainKind::Ocean, cell, ModelFormat::Fvcom, shape);
+        let error = project
+            .validate()
+            .expect_err(&format!("{name} should be refused"));
+        assert!(
+            error.contains(CMRC_REGIONAL_ADMISSION_ERROR),
+            "{name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn certified_regional_ocean_allows_single_close_tri_delivery_sources() {
+    for shape in [
+        RegionShape::Shapefile {
+            path: "./watershed.shp".into(),
+        },
+        RegionShape::Close {
+            path: "./masks/domain_close.nml".into(),
+            format: CloseMaskFormat::Nml,
+            boundary: CloseBoundaryMode::Polyline,
+        },
+        RegionShape::Close {
+            path: "./masks/domain_close.nml".into(),
+            format: CloseMaskFormat::Nml,
+            boundary: CloseBoundaryMode::SphericalChaikin {
+                iterations: 2,
+                max_segment_angle_deg: 0.25,
+            },
+        },
+    ] {
+        certified_regional_project(
+            MeshDomainKind::Ocean,
+            MeshCellKind::Tri,
+            ModelFormat::Fvcom,
+            shape,
+        )
+        .validate()
+        .expect("supported ocean CMRC regional source should validate");
+    }
+}
+
+#[test]
+fn certified_regional_admission_is_limited_to_active_certified_projects() {
+    let bbox = RegionShape::Bbox {
+        w: 100.0,
+        e: 160.0,
+        s: 0.0,
+        n: 50.0,
+    };
+    let mut inactive = certified_regional_project(
+        MeshDomainKind::Ocean,
+        MeshCellKind::Tri,
+        ModelFormat::Fvcom,
+        bbox.clone(),
+    );
+    inactive.refinement.enabled = false;
+    inactive
+        .validate()
+        .expect("inactive CMRC options must remain serializable");
+
+    let mut method_c = inactive.clone();
+    method_c.refinement.enabled = true;
+    method_c.refinement.backend = RefinementBackend::MethodC;
+    method_c
+        .validate()
+        .expect("non-CMRC route is not rejected by CMRC admission");
+
+    for kind in [
+        MeshDomainKind::Earth,
+        MeshDomainKind::Atmosphere,
+        MeshDomainKind::Land,
+    ] {
+        let project = certified_regional_project(
+            kind,
+            MeshCellKind::Hex,
+            if kind == MeshDomainKind::Atmosphere {
+                ModelFormat::Mpas
+            } else {
+                ModelFormat::CoLM
+            },
+            bbox.clone(),
+        );
+        project
+            .validate()
+            .unwrap_or_else(|error| panic!("{kind:?} regional CMRC must stay available: {error}"));
+    }
+}
+
+#[test]
+fn certified_regional_coupled_is_rejected_before_lowering() {
+    let project = certified_regional_project(
+        MeshDomainKind::Coupled,
+        MeshCellKind::Hex,
+        ModelFormat::CoLM,
+        RegionShape::Bbox {
+            w: 100.0,
+            e: 160.0,
+            s: 0.0,
+            n: 50.0,
+        },
+    );
+    let error = project
+        .validate()
+        .expect_err("regional LOCmesh CMRC is still rejected by runtime");
+    assert!(
+        error.contains("CMRC regional delivery does not support coupled targets"),
+        "{error}"
+    );
+}
+
 #[test]
 fn threshold_value_override_lowers_to_engine_arrays() {
     let mut p = sample();
@@ -1682,12 +1932,22 @@ fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
     assert!(nml.contains("&hfield"), "{nml}");
     assert!(!nml.contains("&adaptive"), "{nml}");
 
-    // Turning the adaptive route off without asking for the h-field leaves the
-    // run on the plain region path.
+    // A plain named-region route has no reader for statistical thresholds.
     p.refinement.hfield = None;
     p.refinement.adaptive = Some(AdaptiveRefinementRecipe {
         enabled: false,
         ..AdaptiveRefinementRecipe::default()
+    });
+    assert!(p
+        .try_lower()
+        .unwrap_err()
+        .contains("statistical threshold refinement"));
+    p.refinement.threshold_enabled = false;
+    p.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: 112.0,
+        e: 115.0,
+        s: 21.0,
+        n: 24.0,
     });
     let nml = p.lower().to_namelist();
     assert!(!nml.contains("&adaptive"), "{nml}");
@@ -1764,16 +2024,6 @@ fn global_tri_mesh_lowers_to_the_global_spring() {
     let lowered = project.lower();
 
     assert_eq!(lowered.refine.spring_global_type, 1);
-    assert_eq!(lowered.refine.spring_regional_type, 0);
-}
-
-#[test]
-fn harp_dv_does_not_lower_the_generic_spring() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    let lowered = project.lower();
-
-    assert_eq!(lowered.refine.spring_global_type, 0);
     assert_eq!(lowered.refine.spring_regional_type, 0);
 }
 
@@ -2091,7 +2341,7 @@ fn layer_role_labels_are_schema_owned() {
 }
 
 #[test]
-fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
+fn quality_warning_default_matches_intent_defaults() {
     assert_eq!(
         QualityConfig::default().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
@@ -2099,11 +2349,6 @@ fn quality_warning_and_harp_transaction_floor_have_independent_defaults() {
     assert_eq!(
         MeshIntentPreset::HydrologyLand.defaults().min_angle_deg,
         DEFAULT_MIN_ANGLE_DEG
-    );
-    assert_eq!(
-        HarpDvRefinementRecipe::default().minimum_triangle_angle_deg,
-        0.0,
-        "HARP-DV reports the warning but does not enforce it by default"
     );
 }
 
@@ -2380,21 +2625,23 @@ fn method_c_local_refinement_rounds_nxp_up_to_stride_three() {
     );
 
     project.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
+    project.domain = DomainConfig::Global;
     project.quality.on_violation = ViolationPolicy::AutoRefine;
     assert_eq!(
         project.lower().mkgrd.nxp,
         80,
-        "HARP-DV owns its quality repair and must not inherit Method-C's stride-three lattice"
+        "CMRC owns its quality repair and must not inherit Method-C's stride-three lattice"
     );
 }
 
 #[test]
 fn hydro_only_local_refinement_rounds_parent_nxp_to_stride_three() {
     let mut project = sample();
+    project.target.kind = MeshDomainKind::Land;
     project.target.resolution = ResolutionSpec::Nxp(80);
     project.quality.on_violation = ViolationPolicy::Warn;
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
+    project.refinement.backend = crate::RefinementBackend::Certified;
     project.data_layers = vec![
         ProjectDataLayer {
             id: "merit".into(),
@@ -2488,6 +2735,26 @@ fn coupling_config_lowers_overlay_and_feature_detection_options() {
     p.data_layers
         .retain(|layer| layer.role != ProjectLayerRole::LandType);
     assert!(p.try_lower().unwrap_err().contains("landtype layer"));
+}
+
+#[test]
+fn project_yaml_rejects_retired_harp_backend_and_options() {
+    let yaml = sample().to_yaml().unwrap();
+
+    let backend_yaml = yaml.replace("backend: MethodC", "backend: HarpDv");
+    let error = ProjectConfig::from_yaml(&backend_yaml).expect_err("HARP-DV backend is retired");
+    assert!(
+        error.contains("HarpDv") || error.contains("unknown"),
+        "{error}"
+    );
+
+    let option_yaml = yaml.replace("refinement:\n", "refinement:\n  harp_dv: {}\n");
+    let error =
+        ProjectConfig::from_yaml(&option_yaml).expect_err("retired HARP options are unknown");
+    assert!(
+        error.contains("harp_dv") || error.contains("unknown"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2769,10 +3036,9 @@ fn coupling_cama_root_round_trips_with_compatibility_alias() {
 fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     // The run refuses this at the dispatch, but a project is edited and saved
     // long before it is run. Without the refusal here, the GUI would happily
-    // save a project whose only symptom is a run that dies -- and before the
-    // dispatch grew its guard, harp_dv took the pair and produced 6450 cells
-    // having never read the field.
+    // save a project whose only symptom is a run that dies.
     let mut p = sample();
+    p.domain = DomainConfig::Global;
     p.refinement.hfield = Some(crate::HfieldRefinementRecipe {
         enabled: true,
         ..Default::default()
@@ -2791,7 +3057,6 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
 
     for (backend, name) in [
         (crate::RefinementBackend::RedGreen, "red_green"),
-        (crate::RefinementBackend::HarpDv, "harp_dv"),
         (crate::RefinementBackend::Certified, "certified"),
     ] {
         p.refinement.backend = backend;
@@ -2917,43 +3182,9 @@ fn method_c_lepp_algorithm_rejects_invalid_limits_and_post_quality_composition()
 }
 
 #[test]
-fn harp_dv_algorithm_lowers_every_exposed_control() {
-    let mut project = sample();
-    project.refinement.backend = crate::RefinementBackend::HarpDv;
-    project.refinement.harp_dv = crate::HarpDvRefinementRecipe {
-        max_cycles: 3,
-        minimum_cell_width_m: 2_000.0,
-        maximum_cells: 9_000,
-        maximum_patch_cells: 800,
-        maximum_neighbor_scale_ratio: 1.5,
-        minimum_candidate_separation_m: 2.0,
-        maximum_vertex_degree: 6,
-        minimum_triangle_angle_deg: 25.0,
-        criterion_minimum_angle_deg: 10.0,
-    };
-
-    let namelist = project.try_lower().expect("HARP-DV project").to_namelist();
-    assert!(namelist.contains("&harp_dv"));
-    assert!(namelist.contains("NL%max_cycles = 3"));
-    assert!(namelist.contains("NL%minimum_cell_width_m = 2000"));
-    assert!(namelist.contains("NL%maximum_cells = 9000"));
-    assert!(namelist.contains("NL%maximum_patch_cells = 800"));
-    assert!(namelist.contains("NL%maximum_neighbor_scale_ratio = 1.5"));
-    assert!(namelist.contains("NL%minimum_candidate_separation_m = 2"));
-    assert!(namelist.contains("NL%maximum_vertex_degree = 6"));
-    assert!(namelist.contains("NL%minimum_triangle_angle_deg = 25"));
-    assert!(namelist.contains("RL%harp_min_angle_deg = 10"));
-
-    project.refinement.harp_dv.maximum_patch_cells = 9_001;
-    assert!(project
-        .validate()
-        .expect_err("patch budget exceeds mesh budget")
-        .contains("maximum_patch_cells"));
-}
-
-#[test]
 fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     let mut project = sample();
+    project.domain = DomainConfig::Global;
     project.refinement.backend = crate::RefinementBackend::Certified;
     project.refinement.certified = crate::CertifiedRefinementRecipe {
         mode: crate::CertifiedMode::ReverseCoarsening,
@@ -2987,6 +3218,50 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
 }
 
 #[test]
+fn certified_delivery_must_match_target_cell_when_backend_is_selected() {
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.target.kind = MeshDomainKind::Earth;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.backend = crate::RefinementBackend::Certified;
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Tri;
+    let error = yaml_err(&project);
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Hex;
+    yaml_round_trip(&project);
+
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Fvcom;
+    let error = yaml_err(&project);
+    assert!(
+        error.contains("CMRC delivery must match target.cell unless delivery=coupled"),
+        "{error}"
+    );
+
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Coupled;
+    yaml_round_trip(&project);
+
+    project.refinement.enabled = false;
+    project.refinement.certified.delivery = crate::CertifiedDeliveryMode::Hex;
+    yaml_round_trip(&project);
+    assert!(!project
+        .try_lower()
+        .expect("inactive CMRC recipe lowers")
+        .to_namelist()
+        .contains("&certified"));
+
+    project.refinement.backend = crate::RefinementBackend::MethodC;
+    project.refinement.enabled = true;
+    yaml_round_trip(&project);
+}
+
+#[test]
 fn certified_rejects_the_unsupported_adaptive_route_before_runtime() {
     let mut project = sample();
     project.refinement.backend = crate::RefinementBackend::Certified;
@@ -2998,4 +3273,91 @@ fn certified_rejects_the_unsupported_adaptive_route_before_runtime() {
         .validate()
         .expect_err("CMRC cannot consume &adaptive");
     assert!(error.contains("does not consume the &adaptive"));
+}
+
+#[test]
+fn statistical_thresholds_require_a_consumer_across_targets_and_backends() {
+    for kind in [
+        MeshDomainKind::Land,
+        MeshDomainKind::Atmosphere,
+        MeshDomainKind::Ocean,
+    ] {
+        for global in [false, true] {
+            for (backend, algorithm) in [
+                (RefinementBackend::MethodC, MethodCAlgorithm::Canonical),
+                (RefinementBackend::MethodC, MethodCAlgorithm::LeppDelaunay),
+                (RefinementBackend::RedGreen, MethodCAlgorithm::Canonical),
+                (RefinementBackend::Certified, MethodCAlgorithm::Canonical),
+            ] {
+                let mut project = sample();
+                project.target.kind = kind;
+                if kind == MeshDomainKind::Ocean {
+                    project.target.cell = MeshCellKind::Tri;
+                    project.target.model_format = ModelFormat::Fvcom;
+                }
+                if global {
+                    project.domain = DomainConfig::Global;
+                } else if kind == MeshDomainKind::Ocean && backend == RefinementBackend::Certified {
+                    project.domain = DomainConfig::Regional {
+                        shape: RegionShape::Close {
+                            path: "./masks/domain_close.nml".into(),
+                            format: CloseMaskFormat::Nml,
+                            boundary: CloseBoundaryMode::Polyline,
+                        },
+                        sea_ratio: None,
+                    };
+                }
+                project.refinement.backend = backend;
+                project.refinement.method_c.algorithm = algorithm;
+                project.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+                    w: 112.0,
+                    e: 115.0,
+                    s: 21.0,
+                    n: 24.0,
+                });
+                project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+                    enabled: false,
+                    ..Default::default()
+                });
+                let context = format!("{kind:?}/{global}/{backend:?}/{algorithm:?}");
+                if backend == RefinementBackend::Certified {
+                    project
+                        .try_lower()
+                        .unwrap_or_else(|err| panic!("{context}: {err}"));
+                    continue;
+                }
+                let err = project.try_lower().expect_err(&context);
+                assert!(
+                    err.contains("statistical threshold refinement"),
+                    "{context}: {err}"
+                );
+                // Named demand must not hide an unconsumed statistical demand.
+                project.refinement.threshold_enabled = false;
+                project
+                    .try_lower()
+                    .unwrap_or_else(|err| panic!("named only {context}: {err}"));
+                project.refinement.threshold_enabled = true;
+                project.refinement.enabled = false;
+                project
+                    .validate()
+                    .unwrap_or_else(|err| panic!("disabled {context}: {err}"));
+                project.refinement.enabled = true;
+                project.refinement.adaptive = None;
+                project
+                    .try_lower()
+                    .unwrap_or_else(|err| panic!("adaptive {context}: {err}"));
+                if backend == RefinementBackend::MethodC && algorithm == MethodCAlgorithm::Canonical
+                {
+                    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+                        enabled: false,
+                        ..Default::default()
+                    });
+                    project.refinement.hfield = Some(HfieldRefinementRecipe::default());
+                    project
+                        .try_lower()
+                        .unwrap_or_else(|err| panic!("HField {context}: {err}"));
+                }
+            }
+        }
+    }
 }

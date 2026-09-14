@@ -27,6 +27,10 @@ pub struct ProjectConfig {
     pub metadata: ProjectMetadata,
     pub domain: DomainConfig,
     pub target: MeshTargetConfig,
+    /// Optional model-specific delivery artifacts requested in addition to the
+    /// canonical EarthMesh gridfile. Absence means no extra delivery.
+    #[serde(default)]
+    pub delivery: ProjectDeliveryConfig,
     #[serde(default)]
     pub data_layers: Vec<ProjectDataLayer>,
     #[serde(default)]
@@ -169,19 +173,6 @@ pub enum RefinementBackend {
     /// marking it cannot take as given and never rejects a shape. This is the
     /// backend for a coastline.
     RedGreen,
-    /// Re-read the criteria against the cells that exist and change the mesh
-    /// locally where they are still unmet.
-    ///
-    /// Where Method-C and Red-Green turn demand into geometry once and fit a mesh to it,
-    /// this measures each Voronoi cell every cycle, so a cell that has become
-    /// fine enough stops asking. It refuses any transaction that would leave a
-    /// thin triangle, which is what carries its worst angle past Method-C's on
-    /// the same request, and it reports what it could not do rather than
-    /// quietly serving less.
-    ///
-    /// It serves named circular regions. A region with a shape -- a bbox, a
-    /// polygon -- is refused rather than approximated.
-    HarpDv,
     /// Certified Mother-grid Reverse Coarsening (CMRC). Builds a safe global
     /// mother grid and only accepts changes that retain every hard certificate.
     Certified,
@@ -189,7 +180,7 @@ pub enum RefinementBackend {
 
 impl RefinementBackend {
     pub fn owns_quality_repair(self) -> bool {
-        matches!(self, Self::HarpDv | Self::Certified)
+        matches!(self, Self::Certified)
     }
 }
 
@@ -250,6 +241,24 @@ pub enum ModelFormat {
     MpasOcean,
     MpasSimple,
     Fvcom,
+}
+
+// ----------------------------- delivery -----------------------------
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectDeliveryConfig {
+    /// Optional CoLM unstructured mesh raster handoff. Absence means disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colm_mesh: Option<ColmMeshDeliveryConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColmMeshDeliveryConfig {
+    /// Explicit output raster resolution in pixels per degree. This is a
+    /// delivery raster setting, independent of threshold/source rasters.
+    pub pixels_per_degree: usize,
 }
 
 // ----------------------------- data layers -----------------------------
@@ -326,6 +335,12 @@ pub struct RefinementRecipe {
     /// Data layers remain available to mesh output when this is disabled.
     #[serde(default)]
     pub threshold_enabled: bool,
+    /// Optional statistical evaluation window, independent of the delivery
+    /// domain and specified refinement. CLI staging emits degree-zero masks.
+    /// Absent means the existing unrestricted threshold support; retained but
+    /// inactive when refinement or thresholds are switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_region: Option<RegionShape>,
     #[serde(default)]
     pub max_passes: u8,
     /// Independent mean/std criteria for continuous threshold sources. The
@@ -347,9 +362,6 @@ pub struct RefinementRecipe {
     /// LEPP-Delaunay perform the local refinement.
     #[serde(default)]
     pub method_c: MethodCRefinementRecipe,
-    /// HARP-DV cycle budgets, candidate spacing, and transaction gates.
-    #[serde(default)]
-    pub harp_dv: HarpDvRefinementRecipe,
     /// CMRC safe-mother, certification, and search budgets.
     #[serde(default)]
     pub certified: CertifiedRefinementRecipe,
@@ -520,83 +532,6 @@ fn default_method_c_lepp_minimum_triangle_angle_deg() -> f64 {
 
 fn default_method_c_lepp_stop_at_source_resolution() -> bool {
     earthmesh_core::DEFAULT_METHOD_C_LEPP_STOP_AT_SOURCE_RESOLUTION
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HarpDvRefinementRecipe {
-    #[serde(default = "default_harp_dv_max_cycles")]
-    pub max_cycles: u32,
-    #[serde(default = "default_harp_dv_minimum_cell_width_m")]
-    pub minimum_cell_width_m: f64,
-    #[serde(default = "default_harp_dv_maximum_cells")]
-    pub maximum_cells: usize,
-    #[serde(default = "default_harp_dv_maximum_patch_cells")]
-    pub maximum_patch_cells: usize,
-    #[serde(default = "default_harp_dv_maximum_neighbor_scale_ratio")]
-    pub maximum_neighbor_scale_ratio: f64,
-    #[serde(default = "default_harp_dv_minimum_candidate_separation_m")]
-    pub minimum_candidate_separation_m: f64,
-    #[serde(default = "default_harp_dv_maximum_vertex_degree")]
-    pub maximum_vertex_degree: usize,
-    #[serde(default = "default_harp_dv_minimum_triangle_angle_deg")]
-    pub minimum_triangle_angle_deg: f64,
-    /// Optional Ruppert-style angle demand. Zero disables it; the independent
-    /// transaction gate above remains active.
-    #[serde(default = "default_harp_dv_criterion_minimum_angle_deg")]
-    pub criterion_minimum_angle_deg: f64,
-}
-
-impl Default for HarpDvRefinementRecipe {
-    fn default() -> Self {
-        Self {
-            max_cycles: default_harp_dv_max_cycles(),
-            minimum_cell_width_m: default_harp_dv_minimum_cell_width_m(),
-            maximum_cells: default_harp_dv_maximum_cells(),
-            maximum_patch_cells: default_harp_dv_maximum_patch_cells(),
-            maximum_neighbor_scale_ratio: default_harp_dv_maximum_neighbor_scale_ratio(),
-            minimum_candidate_separation_m: default_harp_dv_minimum_candidate_separation_m(),
-            maximum_vertex_degree: default_harp_dv_maximum_vertex_degree(),
-            minimum_triangle_angle_deg: default_harp_dv_minimum_triangle_angle_deg(),
-            criterion_minimum_angle_deg: default_harp_dv_criterion_minimum_angle_deg(),
-        }
-    }
-}
-
-fn default_harp_dv_max_cycles() -> u32 {
-    earthmesh_core::DEFAULT_HARP_DV_MAX_CYCLES
-}
-
-fn default_harp_dv_minimum_cell_width_m() -> f64 {
-    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_CELL_WIDTH_M
-}
-
-fn default_harp_dv_maximum_cells() -> usize {
-    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_CELLS
-}
-
-fn default_harp_dv_maximum_patch_cells() -> usize {
-    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_PATCH_CELLS
-}
-
-fn default_harp_dv_maximum_neighbor_scale_ratio() -> f64 {
-    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_NEIGHBOR_SCALE_RATIO
-}
-
-fn default_harp_dv_minimum_candidate_separation_m() -> f64 {
-    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_CANDIDATE_SEPARATION_M
-}
-
-fn default_harp_dv_maximum_vertex_degree() -> usize {
-    earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE
-}
-
-fn default_harp_dv_minimum_triangle_angle_deg() -> f64 {
-    earthmesh_core::DEFAULT_HARP_DV_MINIMUM_TRIANGLE_ANGLE_DEG
-}
-
-fn default_harp_dv_criterion_minimum_angle_deg() -> f64 {
-    earthmesh_core::DEFAULT_HARP_DV_CRITERION_MINIMUM_ANGLE_DEG
 }
 
 /// Point+radius refinement, re-planned before every pass.

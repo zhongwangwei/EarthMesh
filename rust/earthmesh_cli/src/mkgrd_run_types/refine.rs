@@ -115,7 +115,7 @@ pub struct RefinePipelineRunReport {
     /// Backend-neutral, because it is measured off the mesh rather than taken
     /// from each backend's own bookkeeping. `realized_max_level` is not:
     /// Method-C counts face generations, criteria-driven Red-Green counts
-    /// completed passes, and HARP-DV counts site generations. A run that
+    /// completed passes. A run that
     /// refined to 2.6 halvings can therefore report a different integer here.
     ///
     /// `log2(coarsest / finest)` is the halvings actually achieved, which is
@@ -140,12 +140,6 @@ pub struct RefinePipelineRunReport {
     pub hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     pub transition_faces: usize,
     pub spring_nest_passes: usize,
-    /// HARP-DV's own ending, or `None` from the other peer backends.
-    ///
-    /// On the record because a run that stopped at a budget or a scale floor
-    /// exits zero with a mesh written, exactly like one that met every demand.
-    /// Without this a caller cannot tell them apart.
-    pub harp_dv_run: Option<crate::refine_pipeline::HarpDvRunRecord>,
     /// CMRC's strict delivery evidence, or `None` for the other peer backends.
     pub certified_run: Option<CertifiedRunRecord>,
     /// Method-C AdaptiveHybrid evidence, or `None` for canonical Method-C and

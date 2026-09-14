@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -102,18 +104,21 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
             "refinement:\n",
             "refinement:\n  hfield:\n    enabled: true\n",
         );
+    // Isolate quality selection from the pending regional/refined MPAS context.
+    let project = project.replace("model_format: Mpas", "model_format: CoLM");
     fs::write(&project_path, project).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project AutoRefine CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project AutoRefine CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -130,6 +135,11 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
         })
         .unwrap_or_else(|| panic!("missing pass-2 adapter under {}", root.display()));
     let adapter_text = fs::read_to_string(adapter).unwrap();
+    assert!(
+        earthmesh_core::EarthmeshConfig::from_mkgrd_namelist(&adapter_text)
+            .unwrap()
+            .defer_model_exports
+    );
     assert!(adapter_text.contains("RL%refine_spc = .TRUE."));
     assert!(adapter_text.contains("hfield_target_levels_json"));
     let mut quality_reports = Vec::new();
@@ -233,7 +243,7 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
 }
 
 #[test]
-fn project_block_quality_includes_hfield_gates() {
+fn project_block_quality_delivers_regional_hfield_mpas_after_admission() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
     let project_path = root.join("project.yaml");
@@ -250,19 +260,54 @@ fn project_block_quality_includes_hfield_gates() {
         .replace("on_violation: AutoRefine", "on_violation: Block");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project Block CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project Block CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stderr:\n{stderr}");
+    assert!(output.status.success(), "regional HField MPAS: {stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("project_final_quality="),
+        "final admission must precede delivery"
+    );
+    let field = |prefix: &str| {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap_or_else(|| panic!("missing {prefix}: {stdout}"))
+    };
+    assert!(
+        stdout.find("project_final_quality=").unwrap() < stdout.find("mpas_mesh_input=").unwrap()
+    );
+    assert!(Path::new(field("mpas_parent_gridfile=")).is_file());
+    assert!(Path::new(field("mpas_graph_info=")).is_file());
+    let mpas = netcdf::open(field("mpas_mesh_input=")).unwrap();
+    assert_eq!(
+        mpas.attribute("earthmesh_mpas_cellwidth_source")
+            .unwrap()
+            .value()
+            .unwrap(),
+        netcdf::AttributeValue::Str("method_c_hfield_quantized_w_demand_v1".into())
+    );
+    let density = mpas
+        .variable("meshDensity")
+        .unwrap()
+        .get_values::<f64, _>(..)
+        .unwrap();
+    assert!(!density.is_empty());
+    assert!(density
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0));
+    drop(mpas);
     let mut quality_reports = Vec::new();
     find_named(&root, "quality_summary.json", &mut quality_reports);
     let quality = fs::read_to_string(
@@ -299,19 +344,22 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
         )
         .replace("  niter: 1", "  niter: 20")
         .replace("  niter_refine: 1", "  niter_refine: 20");
+    // Isolate quality selection from the pending regional/refined MPAS context.
+    let project = project.replace("model_format: Mpas", "model_format: CoLM");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .args([
-            "--project",
-            project_path.to_str().unwrap(),
-            "--max-tris",
-            "100000",
-            "--quiet",
-        ])
-        .output()
-        .expect("run Project AutoRefine rejection CLI");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "100000",
+                "--quiet",
+            ]),
+    )
+    .expect("run Project AutoRefine rejection CLI");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -349,6 +397,31 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
     let selected_gridfile = json_string(&decision, "selected_gridfile");
     assert_eq!(selected_gridfile, baseline_gridfile);
     assert_ne!(selected_gridfile, candidate_gridfile);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let final_report = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("project_final_quality="))
+        .expect("selected final admission report");
+    let final_quality = fs::read_to_string(final_report).unwrap();
+    assert_eq!(json_string(&final_quality, "mesh_name"), selected_gridfile);
+    let delivery_path = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("project_delivery_report="))
+        .unwrap();
+    let delivery: serde_json::Value =
+        serde_json::from_slice(&fs::read(delivery_path).unwrap()).unwrap();
+    assert_eq!(delivery["gridfile"], selected_gridfile);
+    assert_ne!(delivery["gridfile"], candidate_gridfile);
+    assert_eq!(delivery["final_quality"]["report"], final_report);
+    assert_eq!(
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("project_final_gridfile=")),
+        Some(selected_gridfile.as_str())
+    );
+
+    assert!(final_quality.contains("final_mesh_admission"));
+
     for path in [&baseline_gridfile, &candidate_gridfile, &selected_gridfile] {
         assert!(
             root.join(path).is_file(),
@@ -404,11 +477,12 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
         .replace("expert: {}", "expert:\n  niter: 1\n  niter_refine: 1");
     fs::write(&project_path, project).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["--project", project_path.to_str().unwrap(), "--quiet"])
-        .output()
-        .expect("run global uniform AutoRefine project");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["--project", project_path.to_str().unwrap(), "--quiet"]),
+    )
+    .expect("run global uniform AutoRefine project");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr:\n{stderr}");
     assert!(
@@ -422,5 +496,350 @@ fn project_cli_repairs_a_global_uniform_baseline_from_any_working_directory() {
         .to_string_lossy()
         .contains("quality_auto_refine/pass_1")));
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let final_mesh = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("mpas_mesh_input="))
+        .expect("selected base mesh with native widths must receive final MPAS delivery");
+    assert!(Path::new(final_mesh).is_file());
+    let _ = fs::remove_dir_all(root);
+}
+
+fn project_field<'a>(stdout: &'a str, prefix: &str) -> &'a str {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .unwrap_or_else(|| panic!("missing {prefix}: {stdout}"))
+}
+
+fn scalar_attr_f64(path: &Path, name: &str) -> f64 {
+    match netcdf::open(path)
+        .unwrap()
+        .attribute(name)
+        .unwrap()
+        .value()
+        .unwrap()
+    {
+        netcdf::AttributeValue::Double(value) => value,
+        other => panic!("{name} has unexpected value {other:?}"),
+    }
+}
+
+fn scalar_attr_string(path: &Path, name: &str) -> String {
+    match netcdf::open(path)
+        .unwrap()
+        .attribute(name)
+        .unwrap()
+        .value()
+        .unwrap()
+    {
+        netcdf::AttributeValue::Str(value) => value,
+        other => panic!("{name} has unexpected value {other:?}"),
+    }
+}
+
+fn adaptive_region_project(
+    backend: earthmesh_project::RefinementBackend,
+) -> earthmesh_project::ProjectConfig {
+    use earthmesh_project::{
+        AdaptiveRefinementRecipe, DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset,
+        MethodCAlgorithm, ModelFormat, ProjectConfig, RegionShape, ResolutionSpec,
+        SpecifiedCircleRefinement, SpecifiedCircleRefinements, ViolationPolicy,
+    };
+
+    let mut project = ProjectConfig::scaffold(
+        "adaptive_region_project",
+        MeshIntentPreset::Custom,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: -150.0,
+                e: -60.0,
+                s: -50.0,
+                n: 50.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(21),
+    );
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = false;
+    project.refinement.max_passes = 1;
+    project.refinement.backend = backend;
+    project.refinement.method_c.algorithm = MethodCAlgorithm::Canonical;
+    project.refinement.specified_circle =
+        Some(SpecifiedCircleRefinements::One(SpecifiedCircleRefinement {
+            lon: 114.0,
+            lat: 22.0,
+            radius_km: 400.0,
+        }));
+    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        enabled: true,
+        max_level: 1,
+        base_m: Some(400_000.0),
+        coastline: false,
+    });
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.expert.niter = Some(1);
+    project.expert.niter_refine = Some(1);
+    project.expert.openmp = Some(1);
+    project
+}
+
+#[test]
+fn project_adaptive_region_delivers_regional_mpas_with_parent_context() {
+    for (label, backend) in [
+        ("method_c", earthmesh_project::RefinementBackend::MethodC),
+        ("red_green", earthmesh_project::RefinementBackend::RedGreen),
+    ] {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let project_path = root.join(format!("{label}.yaml"));
+        fs::write(
+            &project_path,
+            adaptive_region_project(backend)
+                .to_yaml()
+                .expect("project yaml"),
+        )
+        .unwrap();
+
+        let output = support::output(
+            Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+                .current_dir(&root)
+                .args([
+                    "--project",
+                    project_path.to_str().unwrap(),
+                    "--max-tris",
+                    "200000",
+                    "--quiet",
+                ]),
+        )
+        .unwrap_or_else(|error| panic!("run {label} Project CLI: {error}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{label} stderr:\n{stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.find("project_final_quality=").unwrap()
+                < stdout.find("mpas_mesh_input=").unwrap(),
+            "{label} final admission must precede MPAS delivery:\n{stdout}"
+        );
+        let parent = Path::new(project_field(&stdout, "mpas_parent_gridfile="));
+        let final_quality = Path::new(project_field(&stdout, "project_final_quality="));
+        let mpas_path = Path::new(project_field(&stdout, "mpas_mesh_input="));
+        assert!(
+            parent.is_file(),
+            "{label} parent missing: {}",
+            parent.display()
+        );
+        assert!(
+            final_quality.is_file(),
+            "{label} final quality missing: {}",
+            final_quality.display()
+        );
+        let selected_native = PathBuf::from(json_string(
+            &fs::read_to_string(final_quality).unwrap(),
+            "mesh_name",
+        ));
+        let selected_native = if selected_native.is_absolute() {
+            selected_native
+        } else {
+            root.join(selected_native)
+        };
+        assert!(
+            selected_native.is_file(),
+            "{label} native missing: {}",
+            selected_native.display()
+        );
+        assert!(
+            mpas_path.is_file(),
+            "{label} MPAS missing: {}",
+            mpas_path.display()
+        );
+        assert!(Path::new(project_field(&stdout, "mpas_graph_info=")).is_file());
+
+        for gridfile in [parent, selected_native.as_path()] {
+            let context =
+                earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(context.source, "adaptive_region_pass_w_demand_v1");
+            assert_eq!(context.density_reference_width_km, 200.0);
+            assert_eq!(context.base_nxp, 21);
+        }
+
+        assert_eq!(
+            scalar_attr_string(mpas_path, "earthmesh_mpas_cellwidth_source"),
+            "adaptive_region_pass_w_demand_v1"
+        );
+        assert_eq!(
+            scalar_attr_f64(mpas_path, "earthmesh_mpas_density_reference_width_km"),
+            200.0
+        );
+        let file = netcdf::open(mpas_path).unwrap();
+        let density = file
+            .variable("meshDensity")
+            .unwrap()
+            .get_values::<f64, _>(..)
+            .unwrap();
+        assert!(!density.is_empty(), "{label} density missing");
+        assert!(
+            density
+                .iter()
+                .all(|value| (*value - 1.0 / 16.0).abs() < 1.0e-12),
+            "{label} regional crop should remove finest W samples: {density:?}"
+        );
+        assert_eq!(
+            file.attribute("mesh_spec").unwrap().value().unwrap(),
+            netcdf::AttributeValue::Str("1.0".into())
+        );
+        drop(file);
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn lepp_resolved_project() -> earthmesh_project::ProjectConfig {
+    use earthmesh_project::{
+        AdaptiveRefinementRecipe, DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset,
+        MethodCAlgorithm, ModelFormat, ProjectConfig, RegionShape, ResolutionSpec,
+        SpecifiedBboxRefinement, ViolationPolicy,
+    };
+
+    let mut project = ProjectConfig::scaffold(
+        "lepp_resolved_project",
+        MeshIntentPreset::Custom,
+        DomainConfig::Regional {
+            shape: RegionShape::Bbox {
+                w: -150.0,
+                e: -60.0,
+                s: -50.0,
+                n: 50.0,
+            },
+            sea_ratio: None,
+        },
+        ResolutionSpec::Nxp(6),
+    );
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Hex;
+    project.target.model_format = ModelFormat::Mpas;
+    project.refinement.enabled = true;
+    project.refinement.threshold_enabled = false;
+    project.refinement.max_passes = 1;
+    project.refinement.backend = earthmesh_project::RefinementBackend::MethodC;
+    project.refinement.method_c.algorithm = MethodCAlgorithm::LeppDelaunay;
+    project.refinement.method_c.max_cycles = 1;
+    project.refinement.method_c.maximum_insertions_per_cycle = 2;
+    project.refinement.method_c.maximum_neighbor_size_ratio = 10.0;
+    project.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: -180.0,
+        e: 180.0,
+        s: -90.0,
+        n: 90.0,
+    });
+    project.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        enabled: true,
+        max_level: 0,
+        base_m: None,
+        coastline: false,
+    });
+    project.quality.on_violation = ViolationPolicy::Warn;
+    project.expert.niter = Some(1);
+    project.expert.niter_refine = Some(1);
+    project.expert.max_iter_spc = Some(1);
+    project.expert.max_iter_cal = Some(0);
+    project.expert.num_rc = Some(1);
+    project.expert.spring_global_type = Some(1);
+    project.expert.spring_regional_type = Some(0);
+    project.expert.halo = Some(vec![4, 4, 3, 0, 0, 0, 0, 0, 0]);
+    project.expert.max_transition_row = Some(vec![4, 4, 3, 0, 0, 0, 0, 0, 0]);
+    project.expert.openmp = Some(1);
+    project
+}
+
+#[test]
+fn project_lepp_resolved_region_delivers_mpas_after_selected_admission() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let project_path = root.join("lepp_inserting.yaml");
+    fs::write(
+        &project_path,
+        lepp_resolved_project().to_yaml().expect("project yaml"),
+    )
+    .unwrap();
+
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .args([
+                "--project",
+                project_path.to_str().unwrap(),
+                "--max-tris",
+                "200000",
+                "--quiet",
+            ]),
+    )
+    .expect("run inserting LEPP Project CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stderr}\n{stdout}");
+    let mesh = Path::new(project_field(&stdout, "mpas_mesh_input="));
+    let graph = Path::new(project_field(&stdout, "mpas_graph_info="));
+    assert!(mesh.is_file() && graph.is_file());
+
+    let final_quality = Path::new(project_field(&stdout, "project_final_quality="));
+    let quality: serde_json::Value =
+        serde_json::from_slice(&fs::read(final_quality).unwrap()).unwrap();
+    assert_eq!(quality["verdict"], "pass");
+    assert_eq!(quality["topology"]["misoriented_shared_edge_count"], 0);
+
+    let mut reports = Vec::new();
+    find_named(&root, "method_c_lepp_report.json", &mut reports);
+    let report_path = reports
+        .first()
+        .unwrap_or_else(|| panic!("missing method_c_lepp_report.json under {}", root.display()));
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["lepp_paths"]["committed"].as_u64(), Some(2));
+    let reference_km = report["resolved_targets"]
+        .as_array()
+        .expect("resolved targets")
+        .iter()
+        .map(|target| target["resolved_target_edge_m"].as_f64().unwrap() / 1000.0)
+        .fold(f64::INFINITY, f64::min);
+
+    let selected = Path::new(
+        report["output"]
+            .as_str()
+            .expect("LEPP report records selected native output"),
+    );
+    assert_eq!(quality["mesh_name"], report["output"]);
+    assert!(
+        selected.is_file(),
+        "LEPP selected missing: {}",
+        selected.display()
+    );
+    let context = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(selected)
+        .unwrap()
+        .expect("LEPP selected must carry true resolved-demand context");
+    assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
+    assert_eq!(context.base_nxp, 6);
+    assert!((context.density_reference_width_km - reference_km).abs() < 1.0e-9);
+    assert_eq!(
+        scalar_attr_string(mesh, "earthmesh_mpas_cellwidth_source"),
+        context.source
+    );
+    assert!(
+        (scalar_attr_f64(mesh, "earthmesh_mpas_density_reference_width_km") - reference_km).abs()
+            < 1.0e-9
+    );
+    let file = netcdf::open(mesh).unwrap();
+    let degrees = file
+        .variable("nEdgesOnCell")
+        .unwrap()
+        .get_values::<i32, _>(..)
+        .unwrap();
+    assert!(!degrees.is_empty() && degrees.iter().all(|n| (5..=7).contains(n)));
+    drop(file);
     let _ = fs::remove_dir_all(root);
 }

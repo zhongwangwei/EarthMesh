@@ -61,6 +61,38 @@ pub fn finalize_mask_postproc_layout_with_reindex_report(
         layout.ustr_bounds.saturating_sub(1),
     )?;
 
+    // Check source IDs before reindexing can turn an active placeholder into
+    // an apparently physical vertex. Only cyclic direction may change.
+    if mode_grid == "hex" {
+        let mut ring = Vec::new();
+        for center_id in 2..=final_data.points_final {
+            let count = final_data.center_neighbor_counts_final[center_id];
+            let row = &mut final_data.center_neighbors_final[center_id];
+            ring.clear();
+            for &vertex_id in &row[..count] {
+                if vertex_id <= 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("final hex cell {center_id} references placeholder {vertex_id}"),
+                    ));
+                }
+                let [lon, lat] = vertex_coordinates[vertex_id];
+                ring.push(earthmesh_geometry::Point::new(lon, lat));
+            }
+            let area = earthmesh_geometry::try_spherical_polygon_area(&ring).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("final hex cell {center_id} has invalid polygon geometry: {error}"),
+                )
+            })?;
+            if area.signed_minor_sr < 0.0 {
+                // Reverse only the cyclic direction: keep the starting vertex,
+                // membership, undirected edges and inactive padding unchanged.
+                row[1..count].reverse();
+            }
+        }
+    }
+
     let unique_vertices = earthmesh_mesh::extract_unique_vertices_one_based(
         &final_data.center_neighbors_final,
         &final_data.center_neighbor_counts_final,

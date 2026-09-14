@@ -86,7 +86,7 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `validate_project` | `yaml` | canonical YAML, or a parse error |
 | `set_project_metadata` | `yaml, name, authors, description` | updated **YAML** |
 | `preserve_unexposed_project_fields` | `baseYaml, yaml, preserveDomain` | updated **YAML** with opened-project fields the UI does not expose yet |
-| `project_summary` | `yaml` | `{name,authors,description,intent,target_kind,cell,model_format,domain,domain_shape,nxp,approx_km,approx_degree,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}],refinement_backend,refinement_algorithm,method_c_lepp_*,harp_dv_*,hydro_river_width_refine_enabled,hydro_river_upstream_area_refine_enabled,hydro_river_width_threshold_m,hydro_river_upstream_area_threshold_km2,hydro_coast_refine_enabled,hydro_coast_buffer_km,hydro_coast_land_refine_enabled,hydro_coast_ocean_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]}` |
+| `project_summary` | `yaml` | `{name,authors,description,intent,target_kind,cell,model_format,domain,domain_shape,nxp,approx_km,approx_degree,effective_nxp,bbox,sea_ratio,min_angle_deg,auto_refine_batch_cells,on_violation,refine_enabled,threshold_refine_enabled,threshold_criteria:[{id,source_id,statistic,source_enabled,enabled,value}],refinement_backend,refinement_algorithm,method_c_lepp_*,hydro_river_width_refine_enabled,hydro_river_upstream_area_refine_enabled,hydro_river_width_threshold_m,hydro_river_upstream_area_threshold_km2,hydro_coast_refine_enabled,hydro_coast_buffer_km,hydro_coast_land_refine_enabled,hydro_coast_ocean_refine_enabled,max_passes,hfield_enabled,layers:[{id,role_kind,source_field,role,path,enabled,threshold_value,wants_folder}]}` |
 | `set_layer_path` | `yaml, id, path, enabled` | updated **YAML** |
 | `set_threshold_value` | `yaml, id, value?` | updated **YAML** (legacy/shared source threshold; null uses the catalog default) |
 | `set_threshold_criterion` | `yaml, id, enabled, value?` | updated **YAML** (one independent `<source>_mean` or `<source>_std` switch/value; source path remains in `data_layers`) |
@@ -96,15 +96,15 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `set_target_cell` | `yaml, cell` | updated **YAML** (`hex` or `tri`) |
 | `set_domain_global` | `yaml` | updated **YAML** (global domain) |
 | `set_domain_bbox` | `yaml, w, e, s, n, seaRatio?` | updated **YAML** (regional bbox) |
+| `set_domain_circle` | `yaml, lon, lat, radiusKm, seaRatio?` | updated **YAML** (regional circle) |
 | `set_domain_shapefile` | `yaml, path, seaRatio?` | updated **YAML** (watershed SHP domain) |
 | `set_domain_close` | `yaml, path, format, seaRatio?` | updated **YAML** (close boundary source) |
 | `set_close_boundary` | `yaml, target, mode, iterations?, marginKm?, maxRadiusDeg?, maxSegmentAngleDeg?` | updated **YAML** (expert close boundary mode) |
 | `set_quality` | `yaml, minAngleDeg, policy, autoRefineBatchCells` | updated **YAML** (min angle + policy + connected local repair batch) |
 | `set_refinement` | `yaml, enabled, thresholdEnabled, maxPasses` | updated **YAML** (independent threshold switch + validated pass count) |
 | `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
-| `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, `harp_dv`, and peer CMRC backend `certified` |
+| `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, and peer CMRC backend `certified` |
 | `set_method_c_algorithm_options` | `yaml` plus the eight LEPP-Delaunay controls | updated **YAML** after validating cycle, tolerance, neighbor-ratio, vertex/insertion/path limits, source-resolution stop, and minimum angle |
-| `set_harp_dv_options` | `yaml` plus the nine HARP-DV controls | updated **YAML** after validating cycle, cell-width/budget, patch, neighbor-ratio, separation, degree, and angle limits |
 | `set_certified_options` | `yaml` plus CMRC mode, delivery, level/cell, grading, and search bounds | updated **YAML** after validating strict CMRC bounds |
 | `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (opt-in canonical H-field; point+radius is the GUI default) |
 | `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?, isolatedOcean?` | updated **YAML** (expert overrides; compatibility-only values remain preserved even when not editable in the GUI) |
@@ -178,7 +178,7 @@ It is off by default. The threshold `t` is a fraction in `0 ≤ t < 0.5` (defaul
 `0.05`): refine where ocean share is strictly between `t` and `1−t` (5%–95% by
 default). `0` selects any mixed land/ocean neighbourhood; pure land and pure
 ocean do not qualify. This does not change the domain's sea/land masking ratio.
-Studio requires engine protocol `earthmesh-studio-engine/3` for this criterion;
+Studio requires engine protocol `earthmesh-studio-engine/4` for this criterion;
 older sidecars are rejected even when their package version is identical.
 
 Clicking **Run** spawns the mesh generator. **No setup needed if you've built the
@@ -212,8 +212,9 @@ automatically.
   through the shared `earthmesh_project` model.
 - Data layers, domain, quality, refinement, target output, and run state are
   reflected from `ProjectConfig` instead of duplicated frontend tables.
-- Runs are explicit: the backend stages the engine, writes `mkgrd.nml`, streams
-  stdout/stderr to the Log pane, supports kill, and reports the output directory.
+- Runs are explicit: the backend stages the engine and `project.yaml`, invokes
+  the shared CLI `--project` workflow, streams stdout/stderr to the Log pane,
+  supports kill, and reports the output directory.
 - Successful runs load `quality_summary.json` and a map mesh overlay when the
   engine reports a gridfile; quality uses `tri-strict` for triangle targets and
   `hex-cgrid` for hex targets.
@@ -231,15 +232,45 @@ automatically.
   is authoritative; legacy artifacts without `schema_version` remain readable
   with a warning, while unknown future versions are skipped rather than decoded
   against an incompatible DTO.
-- AutoRefine accepts global, regional bbox/close, and watershed domains. It can
+- AutoRefine accepts global, regional bbox/circle/close, and watershed domains. It can
   repair either an already-refined mesh or a uniform pass-zero baseline; its
   generated quality repair remains local and is accepted only when guarded
   quality metrics strictly improve.
 - The quality dashboard treats polygon side counts as observed cell makeup, not
   topology failures; failures come from gates and topology issues.
 
-Known gaps: circle domains remain preserved-but-not-editable in the GUI; polygon
-domains need project-schema support first; release bundles still need a full
+Open/recent/New requests use latest-request ownership, including summary and
+validation callbacks. A slow older request cannot replace the newer project;
+an already-started save keeps its original recent-project name without repainting
+another project.
+
+Specified refinement keeps invalid required numeric drafts visible across page,
+language and source changes. Save/Run reject them while the source is enabled;
+disabled/other-source drafts are not sent as active geometry. Threshold fields
+still use their documented blank-to-default behavior. Circle chains show a
+read-only first circle and preserve all members when saving that radius source;
+edit the YAML to change any member. Changing refinement source replaces the chain. Refinement-circle radii are positive, without the domain-only
+hemisphere bound below.
+
+Circle domains are editable in the Domain step: center longitude/latitude,
+geodesic radius (km), and sea ratio round-trip through the shared Project
+validation and lowering. Domain circles are independent of refinement circles.
+The radius is positive and at most a hemisphere (about 10,008 km). Plane/globe
+previews use the engine sphere; the existing MapLibre polar-display limit still
+applies, not a computational-domain restriction. Older summaries without circle
+coordinates retain the preserved-shape fallback instead of replacing the domain.
+
+All regional domain editors retain geometry and the full-precision sea ratio
+when switching modes or languages. A blank/invalid bbox or circle draft remains
+invalid and blocks Save/Run rather than silently reusing old coordinates; bbox
+previews and estimates use the short longitude span across the dateline. Opening
+a different project resets alternate domain drafts. Boundary file selectors
+preserve the current request on cancel/error/unsupported extension; older picker
+and preview responses cannot overwrite a newer domain. Optional SHP previews do
+not delay reflecting an opened project's controls. The shared backend still
+requires each close-file extension to match its declared format.
+
+Known gaps: polygon domains need project-schema support first; release bundles still need a full
 platform icon set.
 
 ## Caveats
@@ -259,3 +290,85 @@ platform icon set.
 - **Own workspace.** `src-tauri/Cargo.toml` declares an empty `[workspace]`, so
   this app stays out of the engine workspace and never affects
   `cargo test -p earthmesh_*`.
+
+## Actual Project delivery in Run / Results
+
+The result card reads the CLI's `project_delivery_report=` completion record,
+not the configured model, directory contents, or process exit status alone.
+`project_final_gridfile=` takes precedence over hydro/intermediate and legacy
+`gridfile=` lines, so map/quality loading follows the selected final mesh.
+
+- **Model files delivered** means the current successful adapter returned the
+  expected model artifacts. It does not mean a model solver has been run.
+- **Native mesh only** is a valid successful outcome for grid-only pairings and
+  CoLM without the optional mesh-raster delivery request; the reason is shown.
+- A compatible older engine without a completion record shows **unconfirmed**,
+  not an inferred model-delivered result. A malformed reported record fails the
+  GUI run rather than silently downgrading it to success.
+
+The backend checks the schema, configured target/capability, artifact keys,
+selected mesh, and final-quality mesh/verdict linkage. Referenced files must
+exist within this unique run directory after canonicalization. Only a successful
+child supplies an actual delivery card; restarting clears it. Keyboard-accessible
+buttons open the selected native mesh, model files, original final-quality
+report, and delivery record. The original admission report is distinct from the
+GUI's optional quality reanalysis. Analysis uses the selected run's cell view and
+configuration snapshot, not later edits to the project. Delayed quality, preview,
+and coastal-classification success/error responses from earlier runs are ignored.
+See the [CLI delivery contract](../docs/project_threshold_region.md).
+
+### Bounded integration verification
+
+`make test-gui` includes dependency-free execution of the actual JS renderer and
+Rust record/capture regressions; controlled IPC promises also test stale quality,
+preview and coastal callbacks, selected-run settings, and visible current errors.
+An optional real-CLI smoke test covers Land/CoLM
+TRI and HEX, CoLM without raster opt-in, Atmosphere/MPAS, regional Ocean/FVCOM,
+and legal TRI/MPAS native-only pairings (global and circle domain). The circle
+smoke uses an 8,000 km radius to retain cells on the very coarse NXP3 parent.
+NXP3 uniform grids and synthetic constant
+masks make this a delivery-boundary check, not a realistic coastline,
+refinement-quality, performance, or solver benchmark.
+
+With existing Python netCDF4/numpy and Playwright installations, run from the
+repository root (no packages are installed by these checks):
+
+```sh
+export EARTHMESH_GUI_E2E_ENGINE="$PWD/target/debug/earthmesh_cli"
+export EARTHMESH_MKGRD="$EARTHMESH_GUI_E2E_ENGINE"
+export EARTHMESH_GUI_E2E_OUTPUT="$(mktemp -d)"
+CARGO_TARGET_DIR=target cargo build --manifest-path rust/earthmesh_cli/Cargo.toml
+python3 - <<'PY'
+import os
+from pathlib import Path
+import netCDF4
+import numpy as np
+root = Path(os.environ["EARTHMESH_GUI_E2E_OUTPUT"])
+for name, value in [("land", 1), ("ocean", 0)]:
+    with netCDF4.Dataset(root / f"{name}.nc4", "w") as ds:
+        ds.createDimension("longitude", 43200)
+        ds.createDimension("latitude", 21600)
+        v = ds.createVariable("landtype", "i1", ("longitude", "latitude"),
+                              zlib=True, complevel=1, chunksizes=(360, 180))
+        stripe = np.full((360, 21600), value, dtype="i1")
+        for x in range(0, 43200, 360):
+            v[x:x+360, :] = stripe
+PY
+CARGO_TARGET_DIR=target/gui cargo test --manifest-path gui-tauri/src-tauri/Cargo.toml --lib gui_real_project_delivery_land_atmosphere_ocean -- --ignored
+python3 scripts/check_gui_delivery_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
+python3 scripts/check_gui_circle_e2e.py "$EARTHMESH_GUI_E2E_OUTPUT/gui-records.json"
+```
+
+The Rust smoke executes real GUI quality and cell-polygon commands using the
+same CLI as generation. It checks cell counts, TRI/HEX view and angles against
+the original quality report, and verifies that analysis leaves the native mesh,
+original final-quality report and delivery record byte-identical.
+
+The Python check replays these real delivery/quality/polygon responses through
+**mocked Tauri transport** in headless Chromium: Chinese/English at 1400px and
+1000px, file-link keyboard activation, quality dashboard, OpenLayers cell IDs,
+legacy/failed/pending runs and inert diagnostic text. Delayed previous TRI
+quality success/error must not replace a newer HEX dashboard or preview.
+This is not native WebView packaging, live IPC, real MERIT classification or
+model-solver validation. Regional CMRC Ocean uses its supported close-polygon
+path; unsupported bbox entry remains rejected.

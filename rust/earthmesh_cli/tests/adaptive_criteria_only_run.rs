@@ -11,6 +11,8 @@
 //! `refine_spc`, which is a different branch. It takes a land or atmosphere
 //! mesh, where `refine_num_landtypes` is the criterion, to reach this path.
 
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -154,11 +156,12 @@ fn run_with_backend(mesh_type: &str, depth: usize, backend: &str) -> (bool, Stri
     )
     .expect("write namelist");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
-        .current_dir(&root)
-        .arg(&namelist)
-        .output()
-        .expect("run earthmesh_cli");
+    let output = support::output(
+        Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
+            .current_dir(&root)
+            .arg(&namelist),
+    )
+    .expect("run earthmesh_cli");
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

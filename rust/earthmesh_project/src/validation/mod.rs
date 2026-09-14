@@ -1,11 +1,12 @@
 use crate::{
     criterion_catalog, threshold_criterion_by_id, CoupledMeshConfig, DomainConfig, ExpertOverrides,
-    HfieldRefinementRecipe, HydroCoastConfig, MeshDomainKind, MeshTargetConfig, MethodCAlgorithm,
-    MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
-    ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementRecipe, RegionShape,
-    ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement, SpecifiedCloseRefinement,
-    ThresholdCriterionConfig, ThresholdField, ThresholdStatistic, LANDCOVER_CRITERION_ID,
-    METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION, SEA_RATIO_CRITERION_ID,
+    HfieldRefinementRecipe, HydroCoastConfig, MeshCellKind, MeshDomainKind, MeshTargetConfig,
+    MethodCAlgorithm, MethodCRefinementRecipe, ProjectConfig, ProjectDataLayer, ProjectLayerRole,
+    ProjectTargetTriple, QualityConfig, QualityPolicy, RefinementBackend, RefinementRecipe,
+    RegionShape, ResolutionSpec, SpecifiedBboxRefinement, SpecifiedCircleRefinement,
+    SpecifiedCloseRefinement, ThresholdCriterionConfig, ThresholdField, ThresholdStatistic,
+    LANDCOVER_CRITERION_ID, METHOD_C_MAX_AUTO_REFINE_LEVEL, PROJECT_SCHEMA_VERSION,
+    SEA_RATIO_CRITERION_ID,
 };
 use std::collections::HashSet;
 
@@ -46,6 +47,7 @@ impl ProjectConfig {
         }
         self.domain.validate()?;
         self.target.validate()?;
+        self.validate_delivery()?;
         self.validate_data_layers()?;
         self.validate_landtype_requirements()?;
         self.refinement.validate()?;
@@ -59,6 +61,8 @@ impl ProjectConfig {
         }
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
+        self.validate_certified_delivery_matches_target_cell()?;
+        self.validate_statistical_refinement_route()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
             && self.refinement.backend != crate::RefinementBackend::Certified
@@ -92,6 +96,7 @@ impl ProjectConfig {
                 );
             }
         }
+        self.validate_certified_regional_admission()?;
         self.expert.validate()?;
         self.validate_expert_refinement_levels()?;
         if let Some(hydro_coast) = &self.hydro_coast {
@@ -107,6 +112,67 @@ impl ProjectConfig {
     fn validated(config: Self) -> Result<Self, String> {
         config.validate()?;
         Ok(config)
+    }
+
+    fn validate_delivery(&self) -> Result<(), String> {
+        if let Some(colm_mesh) = &self.delivery.colm_mesh {
+            if colm_mesh.pixels_per_degree == 0 {
+                return Err("delivery colm_mesh pixels_per_degree must be positive".to_string());
+            }
+            if self.target.model_format != crate::ModelFormat::CoLM {
+                return Err("delivery colm_mesh requires target.model_format=CoLM".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_certified_delivery_matches_target_cell(&self) -> Result<(), String> {
+        if !self.refinement.enabled || self.refinement.backend != RefinementBackend::Certified {
+            return Ok(());
+        }
+        match (self.refinement.certified.delivery, self.target.cell) {
+            (crate::CertifiedDeliveryMode::Tri, MeshCellKind::Hex)
+            | (crate::CertifiedDeliveryMode::Hex, MeshCellKind::Tri) => {
+                Err("CMRC delivery must match target.cell unless delivery=coupled".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_certified_regional_admission(&self) -> Result<(), String> {
+        if !self.refinement.enabled || self.refinement.backend != RefinementBackend::Certified {
+            return Ok(());
+        }
+        let DomainConfig::Regional { shape, .. } = &self.domain else {
+            return Ok(());
+        };
+        if self.target.kind == MeshDomainKind::Coupled {
+            return Err(
+                "CMRC regional delivery does not support coupled targets; deliver land/ocean regions separately"
+                    .to_string(),
+            );
+        }
+        if self.target.kind != MeshDomainKind::Ocean {
+            return Ok(());
+        }
+        let supported_ocean_tri_close = self.target.cell == MeshCellKind::Tri
+            && matches!(
+                shape,
+                RegionShape::Shapefile { .. }
+                    | RegionShape::Close {
+                        boundary: crate::CloseBoundaryMode::Polyline
+                            | crate::CloseBoundaryMode::SphericalChaikin { .. },
+                        ..
+                    }
+            );
+        if supported_ocean_tri_close {
+            Ok(())
+        } else {
+            Err(
+                "CMRC regional ocean delivery supports only TRI shapefile/close polyline or spherical_chaikin domains; bbox, circle, enclosing_cap, and HEX ocean regions are rejected before run"
+                    .to_string(),
+            )
+        }
     }
 
     fn validate_data_layers(&self) -> Result<(), String> {
@@ -234,8 +300,6 @@ impl ProjectConfig {
     /// place that knows what each backend can do -- but a project is edited and
     /// saved long before it is run, so the refusal has to exist here too or the
     /// only way to learn is to start a run and watch it fail. Measured before
-    /// the dispatch grew its guard: `harp_dv` with an h-field configured
-    /// produced 6450 cells having never read the field.
     fn validate_backend_serves_refinement_route(&self) -> Result<(), String> {
         if !self.refinement.enabled {
             return Ok(());
@@ -266,12 +330,6 @@ impl ProjectConfig {
                  and the point+radius criteria. Use method_c, or turn refinement.hfield off"
                     .to_string(),
             ),
-            crate::RefinementBackend::HarpDv => Err(
-                "refinement.backend harp_dv does not serve an h-field; it re-reads a target scale \
-                 against the cells that exist and serves circular regions. Use method_c, or turn \
-                 refinement.hfield off"
-                    .to_string(),
-            ),
             crate::RefinementBackend::Certified => Err(
                 "refinement.backend certified does not consume the Method-C h-field route; use threshold or named requirement sources, or turn refinement.hfield off"
                     .to_string(),
@@ -288,32 +346,81 @@ impl ProjectConfig {
     fn has_calculated_refinement_source(&self) -> bool {
         self.refinement.threshold_enabled
             && self.data_layers.iter().any(|layer| {
-                if !layer.enabled {
-                    return false;
-                }
-                match layer.role {
-                    ProjectLayerRole::LandType => {
-                        self.effective_landcover_criterion()
-                            .is_some_and(|criterion| criterion.enabled)
-                            || self
-                                .effective_sea_ratio_criterion()
-                                .is_some_and(|criterion| criterion.enabled)
-                    }
-                    ProjectLayerRole::Threshold(field) => {
-                        self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
-                            || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)
-                    }
-                    ProjectLayerRole::MeritHydro => {
-                        self.hydro_coast.as_ref().is_some_and(|hydro| {
+                self.layer_has_threshold_criterion(layer)
+                    || (layer.enabled
+                        && layer.role == ProjectLayerRole::MeritHydro
+                        && self.hydro_coast.as_ref().is_some_and(|hydro| {
                             hydro.has_river_refinement()
                                 || (hydro.coast_refinement_enabled
                                     && (hydro.coast_land_refinement_enabled
                                         || hydro.coast_ocean_refinement_enabled))
-                        })
-                    }
-                    ProjectLayerRole::Cama => false,
-                }
+                        }))
             })
+    }
+
+    fn layer_has_threshold_criterion(&self, layer: &ProjectDataLayer) -> bool {
+        if !layer.enabled {
+            return false;
+        }
+        match layer.role {
+            ProjectLayerRole::LandType => {
+                self.effective_landcover_criterion()
+                    .is_some_and(|criterion| criterion.enabled)
+                    || self
+                        .effective_sea_ratio_criterion()
+                        .is_some_and(|criterion| criterion.enabled)
+            }
+            ProjectLayerRole::Threshold(field) => {
+                self.threshold_statistic_enabled(field, ThresholdStatistic::Mean)
+                    || self.threshold_statistic_enabled(field, ThresholdStatistic::Std)
+            }
+            ProjectLayerRole::MeritHydro | ProjectLayerRole::Cama => false,
+        }
+    }
+
+    fn validate_statistical_refinement_route(&self) -> Result<(), String> {
+        if !self.refinement.enabled || !self.refinement.threshold_enabled {
+            return Ok(());
+        }
+        if !self
+            .data_layers
+            .iter()
+            .any(|layer| self.layer_has_threshold_criterion(layer))
+        {
+            return if self.refinement.threshold_region.is_some() {
+                Err("refinement.threshold_region requires an active statistical threshold criterion".into())
+            } else {
+                Ok(())
+            };
+        }
+        let adaptive_enabled = self
+            .refinement
+            .adaptive
+            .as_ref()
+            .is_none_or(|recipe| recipe.enabled);
+        let supported = match self.refinement.backend {
+            crate::RefinementBackend::Certified => true,
+            crate::RefinementBackend::MethodC
+                if self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical =>
+            {
+                self.refinement
+                    .hfield
+                    .as_ref()
+                    .is_some_and(|recipe| recipe.enabled)
+                    || (self.refinement.threshold_region.is_none() && adaptive_enabled)
+            }
+            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => {
+                adaptive_enabled
+            }
+        };
+        if !supported {
+            return Err(if self.refinement.threshold_region.is_some() {
+                "refinement.threshold_region requires Certified, canonical MethodC with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled"
+            } else {
+                "statistical threshold refinement requires Certified, canonical MethodC with hfield, or adaptive enabled; disable threshold refinement for named regions only"
+            }.into());
+        }
+        Ok(())
     }
 
     pub(crate) fn threshold_statistic_enabled(
@@ -586,8 +693,16 @@ impl ThresholdCriterionConfig {
 impl RefinementRecipe {
     fn validate(&self) -> Result<(), String> {
         self.method_c.validate()?;
-        self.harp_dv.validate()?;
         self.certified.validate()?;
+        if let Some(shape) = &self.threshold_region {
+            shape
+                .validate()
+                .map_err(|err| format!("refinement.threshold_region: {err}"))?;
+            if matches!(shape, RegionShape::Close { boundary, .. } if !matches!(boundary, crate::CloseBoundaryMode::Polyline))
+            {
+                return Err("refinement.threshold_region only supports polyline close boundaries; calculated masks do not apply boundary transforms".into());
+            }
+        }
         if let Some(circles) = &self.specified_circle {
             let circles = circles.as_slice();
             if circles.is_empty() {
@@ -678,65 +793,6 @@ impl MethodCRefinementRecipe {
         {
             return Err(
                 "refinement.method_c minimum_triangle_angle_deg must be finite and in [0, 60)"
-                    .to_string(),
-            );
-        }
-        Ok(())
-    }
-}
-
-impl crate::HarpDvRefinementRecipe {
-    fn validate(&self) -> Result<(), String> {
-        if self.max_cycles == 0 {
-            return Err("refinement.harp_dv max_cycles must be > 0".to_string());
-        }
-        if !self.minimum_cell_width_m.is_finite() || self.minimum_cell_width_m <= 0.0 {
-            return Err(
-                "refinement.harp_dv minimum_cell_width_m must be positive and finite".to_string(),
-            );
-        }
-        if self.maximum_cells == 0 {
-            return Err("refinement.harp_dv maximum_cells must be > 0".to_string());
-        }
-        if self.maximum_patch_cells == 0 || self.maximum_patch_cells > self.maximum_cells {
-            return Err(
-                "refinement.harp_dv maximum_patch_cells must be in 1..=maximum_cells".to_string(),
-            );
-        }
-        if !self.maximum_neighbor_scale_ratio.is_finite()
-            || self.maximum_neighbor_scale_ratio <= 1.0
-        {
-            return Err(
-                "refinement.harp_dv maximum_neighbor_scale_ratio must be finite and > 1"
-                    .to_string(),
-            );
-        }
-        if !self.minimum_candidate_separation_m.is_finite()
-            || self.minimum_candidate_separation_m <= 0.0
-        {
-            return Err(
-                "refinement.harp_dv minimum_candidate_separation_m must be positive and finite"
-                    .to_string(),
-            );
-        }
-        if !(3..=earthmesh_core::DEFAULT_HARP_DV_MAXIMUM_VERTEX_DEGREE)
-            .contains(&self.maximum_vertex_degree)
-        {
-            return Err("refinement.harp_dv maximum_vertex_degree must be in 3..=7".to_string());
-        }
-        if !self.minimum_triangle_angle_deg.is_finite()
-            || !(0.0..60.0).contains(&self.minimum_triangle_angle_deg)
-        {
-            return Err(
-                "refinement.harp_dv minimum_triangle_angle_deg must be finite and in [0, 60)"
-                    .to_string(),
-            );
-        }
-        if !self.criterion_minimum_angle_deg.is_finite()
-            || !(0.0..=20.7).contains(&self.criterion_minimum_angle_deg)
-        {
-            return Err(
-                "refinement.harp_dv criterion_minimum_angle_deg must be finite and in [0, 20.7]"
                     .to_string(),
             );
         }

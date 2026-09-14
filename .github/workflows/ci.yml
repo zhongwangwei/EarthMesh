@@ -26,8 +26,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
-      - name: Active taskbook and frozen Alpha6 evidence
-        run: make check-active-taskbook
+      - name: Active taskbook, frozen evidence, and architecture gates
+        run: make check-active-taskbook check-architecture check-architecture-selftest
       - name: Install rustfmt + clippy
         run: rustup component add rustfmt clippy
       - name: Format check (fix locally with `cargo fmt`)
