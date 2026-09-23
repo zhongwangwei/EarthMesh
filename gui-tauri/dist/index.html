@@ -3550,7 +3550,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (specOn.checked && specKind) syncSpecified();
       else if (specOn.checked) {
         // The detailed controls are not mounted until this switch is enabled.
-        const initial = (value, fallback) => Number.isFinite(value) ? value : fallback;
+        // Only initialize missing values; keep invalid drafts for validation after toggling.
+        const initial = (value, fallback) => value == null ? fallback : value;
         specifiedRefine.lon = initial(specifiedRefine.lon, 0);
         specifiedRefine.lat = initial(specifiedRefine.lat, 0);
         specifiedRefine.radiusKm = initial(specifiedRefine.radiusKm, 100);
