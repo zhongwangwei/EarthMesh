@@ -587,16 +587,20 @@ impl MeshState {
     /// candidate on the same sphere as the mesh", which is a question about
     /// orders of magnitude rather than metres.
     pub fn sphere_radius(&self) -> f64 {
-        let count = self.vertex_count();
+        let (total, count) =
+            self.active_vertex_slots()
+                .fold((0.0, 0usize), |(total, count), vertex| {
+                    let point = self.vertices[vertex];
+                    (
+                        total + (point.x * point.x + point.y * point.y + point.z * point.z).sqrt(),
+                        count + 1,
+                    )
+                });
         if count == 0 {
-            return 0.0;
+            0.0
+        } else {
+            total / count as f64
         }
-        let total: f64 = self
-            .active_vertex_slots()
-            .map(|vertex| self.vertices[vertex])
-            .map(|point| (point.x * point.x + point.y * point.y + point.z * point.z).sqrt())
-            .sum();
-        total / count as f64
     }
 
     /// Edges with nothing across them, among these triangles only.

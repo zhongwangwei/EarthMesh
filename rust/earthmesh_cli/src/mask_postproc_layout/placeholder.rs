@@ -12,12 +12,18 @@ pub(crate) fn ensure_leading_mask_postproc_placeholder(
 
 fn has_leading_mask_postproc_placeholder(layout: &MaskPostprocLayout) -> bool {
     let is_zero_point = |point: &LonLatPoint| point.lon == 0.0 && point.lat == 0.0;
+    let first_two_are_sentinels = |rows: &[Vec<usize>]| {
+        rows.get(..2)
+            .is_some_and(|rows| rows.iter().all(|row| row.iter().all(|&id| id <= 1)))
+    };
     layout.center_points.len() > 1
         && layout.vertex_points.len() > 1
         && is_zero_point(&layout.center_points[0])
         && is_zero_point(&layout.center_points[1])
         && is_zero_point(&layout.vertex_points[0])
         && is_zero_point(&layout.vertex_points[1])
+        && first_two_are_sentinels(&layout.center_neighbors)
+        && first_two_are_sentinels(&layout.vertex_neighbors)
 }
 
 pub(super) fn add_leading_mask_postproc_placeholder(
@@ -77,5 +83,25 @@ mod tests {
 
         assert_eq!(normalized.ustr_points, 3);
         assert_eq!(normalized.ustr_bounds, 3);
+    }
+
+    #[test]
+    fn inserts_placeholder_when_physical_rows_sit_at_origin() {
+        let zero = LonLatPoint { lon: 0.0, lat: 0.0 };
+        let layout = MaskPostprocLayout {
+            ustr_points: 3,
+            ustr_bounds: 3,
+            center_points: vec![zero, zero, LonLatPoint { lon: 1.0, lat: 1.0 }],
+            vertex_points: vec![zero, zero, LonLatPoint { lon: 2.0, lat: 2.0 }],
+            center_neighbors: vec![vec![1; 3], vec![2, 3, 4], vec![2, 3, 4]],
+            vertex_neighbors: vec![vec![1; 3], vec![2, 3, 4], vec![2, 3, 4]],
+            center_neighbor_counts: vec![3; 3],
+            vertex_neighbor_counts: vec![0, 3, 3],
+        };
+
+        let normalized = ensure_leading_mask_postproc_placeholder(layout);
+        assert_eq!(normalized.ustr_points, 4);
+        assert_eq!(normalized.ustr_bounds, 4);
+        assert_eq!(normalized.center_neighbors[2], vec![2, 3, 4]);
     }
 }

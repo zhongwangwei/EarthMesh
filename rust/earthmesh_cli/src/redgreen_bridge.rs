@@ -63,12 +63,202 @@ pub fn unstructured_mesh_from_redgreen(mesh: &RedGreenMesh) -> io::Result<Unstru
     })
 }
 
-/// Restore the final Red-Green point set to a spherical Delaunay triangulation.
-///
-/// The ported transition LOP only visits its boundary-segment candidates. A
-/// multi-component adaptive run can leave other illegal diagonals behind, so
-/// the shared Lawson implementation must finish the job before publication.
+/// Result of angle-protected Lawson polishing, not an angle or Delaunay certificate.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RedGreenPolishReport {
+    pub flipped_edges: usize,
+    pub forced_flips: usize,
+    pub remaining_illegal_edges: usize,
+}
+
+/// Compatibility entry point for angle-safe polishing. The returned flip count
+/// does not imply Delaunay certification; use `polish_redgreen_mesh` for the audit.
 pub fn legalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<usize> {
+    Ok(polish_redgreen_mesh(mesh)?.flipped_edges)
+}
+
+/// Publication cannot leave illegal diagonals that create an overfull W ring.
+/// Try the quality guard first, then use ordinary Lawson only where necessary.
+pub fn finalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPolishReport> {
+    polish_redgreen_mesh_impl(mesh, true)
+}
+
+const MAX_ADJACENT_RESOLUTION_RATIO: f64 = 2.0;
+
+#[derive(Default)]
+struct LocalResolutionStats {
+    max_ratio: f64,
+    over_limit_count: usize,
+    by_edge: BTreeMap<(usize, usize), f64>,
+}
+
+fn triangle_edge(a: usize, b: usize) -> (usize, usize) {
+    (a.min(b), a.max(b))
+}
+
+fn triangle_edges(corners: [usize; 3]) -> [(usize, usize); 3] {
+    [
+        triangle_edge(corners[0], corners[1]),
+        triangle_edge(corners[1], corners[2]),
+        triangle_edge(corners[2], corners[0]),
+    ]
+}
+
+fn shared_triangle_edge(left: [usize; 3], right: [usize; 3]) -> io::Result<(usize, usize)> {
+    let shared = left
+        .into_iter()
+        .filter(|vertex| right.contains(vertex))
+        .collect::<Vec<_>>();
+    if shared.len() == 2 {
+        Ok(triangle_edge(shared[0], shared[1]))
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "red-green adjacency does not share exactly one edge",
+        ))
+    }
+}
+
+fn triangle_resolution_scale(
+    corners: [usize; 3],
+    vertices: &[earthmesh_mesh::CartesianPoint],
+) -> io::Result<f64> {
+    let point_at = |vertex: usize| {
+        vertices.get(vertex).copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("red-green triangle references missing vertex {vertex}"),
+            )
+        })
+    };
+    let area = earthmesh_mesh::spherical_triangle_area_unit([
+        point_at(corners[0])?,
+        point_at(corners[1])?,
+        point_at(corners[2])?,
+    ]);
+    if area.is_finite() && area > 0.0 {
+        Ok(area.sqrt())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "red-green triangle has non-positive spherical area",
+        ))
+    }
+}
+
+fn record_resolution_ratio(stats: &mut LocalResolutionStats, edge: (usize, usize), ratio: f64) {
+    stats.max_ratio = stats.max_ratio.max(ratio);
+    if ratio > MAX_ADJACENT_RESOLUTION_RATIO {
+        stats.over_limit_count += 1;
+    }
+    stats.by_edge.insert(edge, ratio);
+}
+
+fn current_local_resolution_stats(
+    state: &earthmesh_mesh::MeshState,
+    faces: [usize; 2],
+) -> io::Result<LocalResolutionStats> {
+    local_resolution_stats_for_pair(
+        state,
+        faces[0],
+        faces[1],
+        [state.triangles()[faces[0]], state.triangles()[faces[1]]],
+    )
+}
+
+fn external_neighbours_by_edge(
+    state: &earthmesh_mesh::MeshState,
+    faces: [usize; 2],
+) -> io::Result<BTreeMap<(usize, usize), usize>> {
+    let mut external = BTreeMap::new();
+    for face in faces {
+        let here = state.triangles()[face];
+        for &neighbour in &state.neighbours()[face] {
+            if !state.is_triangle_live(neighbour) || faces.contains(&neighbour) {
+                continue;
+            }
+            let edge = shared_triangle_edge(here, state.triangles()[neighbour])?;
+            if external.insert(edge, neighbour).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "red-green local edge has more than one external neighbour",
+                ));
+            }
+        }
+    }
+    Ok(external)
+}
+
+fn local_resolution_stats_for_pair(
+    state: &earthmesh_mesh::MeshState,
+    triangle: usize,
+    neighbour: usize,
+    candidate: [[usize; 3]; 2],
+) -> io::Result<LocalResolutionStats> {
+    let external = external_neighbours_by_edge(state, [triangle, neighbour])?;
+    let scales = [
+        triangle_resolution_scale(candidate[0], state.vertices())?,
+        triangle_resolution_scale(candidate[1], state.vertices())?,
+    ];
+    let internal = shared_triangle_edge(candidate[0], candidate[1])?;
+    let mut stats = LocalResolutionStats::default();
+    let ratio = scales[0].max(scales[1]) / scales[0].min(scales[1]);
+    record_resolution_ratio(&mut stats, internal, ratio);
+
+    for (index, corners) in candidate.into_iter().enumerate() {
+        for edge in triangle_edges(corners) {
+            if edge == internal {
+                continue;
+            }
+            let Some(&external_face) = external.get(&edge) else {
+                continue;
+            };
+            let external_scale =
+                triangle_resolution_scale(state.triangles()[external_face], state.vertices())?;
+            let ratio = scales[index].max(external_scale) / scales[index].min(external_scale);
+            record_resolution_ratio(&mut stats, edge, ratio);
+        }
+    }
+    Ok(stats)
+}
+
+fn resolution_safe_after_flip(
+    state: &earthmesh_mesh::MeshState,
+    triangle: usize,
+    neighbour: usize,
+    candidate: [[usize; 3]; 2],
+) -> io::Result<bool> {
+    let before = current_local_resolution_stats(state, [triangle, neighbour])?;
+    let after = local_resolution_stats_for_pair(state, triangle, neighbour, candidate)?;
+    if after.over_limit_count > before.over_limit_count
+        || (before.max_ratio > MAX_ADJACENT_RESOLUTION_RATIO
+            && after.max_ratio > before.max_ratio + 1.0e-12)
+    {
+        return Ok(false);
+    }
+    for (edge, before_ratio) in before.by_edge {
+        if before_ratio <= MAX_ADJACENT_RESOLUTION_RATIO
+            && after
+                .by_edge
+                .get(&edge)
+                .is_some_and(|after_ratio| *after_ratio > MAX_ADJACENT_RESOLUTION_RATIO)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Improve admissible edges independently; never discard a safe flip merely
+/// because another quadrilateral needs a different geometric repair.
+pub fn polish_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPolishReport> {
+    polish_redgreen_mesh_impl(mesh, false)
+}
+
+fn polish_redgreen_mesh_impl(
+    mesh: &mut RedGreenMesh,
+    finish_delaunay: bool,
+) -> io::Result<RedGreenPolishReport> {
     let vertices = mesh
         .cell_points
         .iter()
@@ -88,13 +278,83 @@ pub fn legalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<usize> {
             )
         })?;
     let faces = state.active_triangle_slots().collect::<BTreeSet<_>>();
-    let flips = state
-        .legalize_around(&faces)
+    let mut shape_error = None;
+    let safe_flips = state
+        .legalize_around_if(&faces, |state, triangle, corner| {
+            let neighbor = state.neighbours()[triangle][corner];
+            let before = [state.triangles()[triangle], state.triangles()[neighbor]];
+            let admissible = (|| {
+                let candidate = earthmesh_refine_redgreen::checked_lop_edge_flip(
+                    triangle,
+                    neighbor,
+                    before[0],
+                    before[1],
+                    &mesh.cell_points,
+                )?;
+                let old = earthmesh_refine_redgreen::triangle_pair_angle_range(
+                    before,
+                    &mesh.cell_points,
+                )?;
+                let new = earthmesh_refine_redgreen::triangle_pair_angle_range(
+                    candidate.triangles,
+                    &mesh.cell_points,
+                )?;
+                if !(new.0 >= old.0 - 1.0e-9 && new.1 <= old.1 + 1.0e-9) {
+                    return Ok(false);
+                }
+                resolution_safe_after_flip(state, triangle, neighbor, candidate.triangles)
+            })();
+            match admissible {
+                Ok(accept) => accept,
+                Err(error) => {
+                    shape_error = Some(error);
+                    false
+                }
+            }
+        })
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if let Some(error) = shape_error {
+        return Err(error);
+    }
+    let count_illegal = |state: &earthmesh_mesh::MeshState| -> io::Result<usize> {
+        let mut count = 0;
+        for &triangle in &faces {
+            for corner in 0..3 {
+                if triangle < state.neighbours()[triangle][corner]
+                    && state.edge_is_illegal(triangle, corner).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                    })?
+                {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    };
+    let mut remaining_illegal_edges = count_illegal(&state)?;
+    let forced_flips = if finish_delaunay && remaining_illegal_edges > 0 {
+        let forced = state
+            .legalize_around(&faces)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        remaining_illegal_edges = count_illegal(&state)?;
+        forced
+    } else {
+        0
+    };
+    let flips = safe_flips + forced_flips;
+    let report = RedGreenPolishReport {
+        flipped_edges: flips,
+        forced_flips,
+        remaining_illegal_edges,
+    };
     if flips == 0 {
-        return Ok(0);
+        return Ok(report);
     }
 
+    // This is a terminal triangulation step. Flips invalidate green ancestry;
+    // reject any later attempt to refine this finalized mesh as a red hierarchy.
+    mesh.green_parents.clear();
+    mesh.refinement_levels.clear();
     mesh.cells_on_triangle = state.triangles().to_vec();
     mesh.triangle_points.resize(
         mesh.cells_on_triangle.len(),
@@ -128,7 +388,7 @@ pub fn legalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<usize> {
         &mesh.triangle_points,
         &mut mesh.triangles_on_cell,
     )?;
-    Ok(flips)
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -174,6 +434,8 @@ mod tests {
             cells_on_triangle: vec![[1, 1, 1]; 3],
             triangles_on_cell: vec![Vec::new(); 3],
             n_triangles_on_cell: vec![0; 3],
+            green_parents: Vec::new(),
+            refinement_levels: Vec::new(),
         };
         mesh.cells_on_triangle[2] = [1, 1, i32::MAX as usize + 1];
 
@@ -202,6 +464,8 @@ mod tests {
             cells_on_triangle: vec![[1, 1, 1], [1, 1, 1], [2, 3, 4], [2, 4, 5]],
             triangles_on_cell: vec![Vec::new(); 6],
             n_triangles_on_cell: vec![0; 6],
+            green_parents: Vec::new(),
+            refinement_levels: Vec::new(),
         };
 
         let flips = legalize_redgreen_mesh(&mut mesh).expect("legalize final point set");
@@ -211,6 +475,76 @@ mod tests {
         assert!(mesh.cells_on_triangle[2].contains(&5));
         assert!(mesh.cells_on_triangle[3].contains(&3));
         assert!(mesh.cells_on_triangle[3].contains(&5));
+    }
+
+    #[test]
+    fn final_lawson_refuses_flip_that_breaks_external_two_to_one_ratio() {
+        use earthmesh_mesh::LonLatDegrees as Point;
+        // Current illegal edge B-C is angle-safe to flip, but that would move the
+        // large A-B-D triangle onto the already-valid tiny neighbour across A-B.
+        let mut mesh = RedGreenMesh {
+            num_vertex: 1,
+            num_center: 1,
+            triangle_points: vec![Point::new(0.0, 0.0); 5],
+            cell_points: vec![
+                Point::new(0.0, 0.0),
+                Point::new(0.0, 0.0),
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.3687017802959149, 0.15753136583659297),
+                Point::new(0.9502750133197551, -0.8704885354647786),
+                Point::new(0.5, -0.05),
+            ],
+            cells_on_triangle: vec![[1; 3], [1; 3], [2, 3, 4], [5, 4, 3], [6, 3, 2]],
+            triangles_on_cell: vec![Vec::new(); 7],
+            n_triangles_on_cell: vec![0; 7],
+            green_parents: Vec::new(),
+            refinement_levels: vec![0; 5],
+        };
+
+        let before = mesh.cells_on_triangle.clone();
+        let report = polish_redgreen_mesh(&mut mesh).unwrap();
+
+        assert_eq!(report.flipped_edges, 0);
+        assert!(report.remaining_illegal_edges >= 1);
+        assert_eq!(mesh.cells_on_triangle, before);
+    }
+    #[test]
+    fn final_lawson_keeps_safe_flips_without_accepting_the_bad_pair() {
+        use earthmesh_mesh::LonLatDegrees as Point;
+        // Two real NXP80 quadrilaterals. The first flip raises max angle
+        // 97.159 -> 113.033; the second improves 90.809 -> 89.197.
+        let mut mesh = RedGreenMesh {
+            num_vertex: 1,
+            num_center: 1,
+            triangle_points: vec![Point::new(0.0, 0.0); 6],
+            cell_points: vec![
+                Point::new(0.0, 0.0),
+                Point::new(0.0, 0.0),
+                Point::new(1.5904483212864065, -73.3537167014725),
+                Point::new(2.4385950022378506, -73.69405763645796),
+                Point::new(4.774389118700588, -73.31695417755233),
+                Point::new(2.3384087199332564, -73.00411890583615),
+                Point::new(13.87039566655922, -5.3910828568021305),
+                Point::new(14.080406690793641, -5.732818572761572),
+                Point::new(14.538690578907662, -4.97067681285334),
+                Point::new(14.748917229045073, -5.312203227305401),
+            ],
+            cells_on_triangle: vec![[1; 3], [1; 3], [2, 3, 4], [5, 2, 4], [6, 7, 8], [9, 8, 7]],
+            triangles_on_cell: vec![Vec::new(); 10],
+            n_triangles_on_cell: vec![0; 10],
+            green_parents: Vec::new(),
+            refinement_levels: vec![0; 6],
+        };
+        let before = mesh.cells_on_triangle.clone();
+        let flips = polish_redgreen_mesh(&mut mesh).unwrap();
+        assert_eq!(
+            flips.flipped_edges, 1,
+            "a bad candidate must not discard the independent safe flip"
+        );
+        assert_eq!(flips.remaining_illegal_edges, 1);
+        assert_eq!(&mesh.cells_on_triangle[2..4], &before[2..4]);
+        assert_ne!(&mesh.cells_on_triangle[4..6], &before[4..6]);
     }
 }
 
@@ -246,6 +580,7 @@ pub fn redgreen_settings_for_level(
         eliminate_weak_concavity: refine.weak_concav_eliminate,
         halo: at_level(&refine.halo, defaults.halo),
         protect_triangle_quality: false,
+        min_triangle_angle_deg: defaults.min_triangle_angle_deg,
     }
 }
 
@@ -324,327 +659,6 @@ pub fn redgreen_marking_from_regions(
             *mark = i32::from(region_index.contains_lonlat_canonical(centre, level));
         });
     marking
-}
-
-/// Restore only holes whose entire boundary decomposes into triangular faces.
-///
-/// The weak-concavity transition can omit a face where two carried transition
-/// rows meet. Filling an arbitrary boundary would hide a broken mesh, so this
-/// accepts only edge-disjoint three-edge cycles and leaves every other shape as
-/// an error for the caller's topology gate.
-fn is_hanging_edge_cycle(cycle: [usize; 3], points: &[earthmesh_mesh::LonLatDegrees]) -> bool {
-    if cycle.iter().any(|&cell| cell >= points.len()) {
-        return false;
-    }
-    let xyz = cycle.map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(points[cell]));
-    let mut edges = [
-        earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[1]),
-        earthmesh_mesh::arc_length_unit_sphere(xyz[1], xyz[2]),
-        earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[2]),
-    ];
-    edges.sort_by(f64::total_cmp);
-    (edges[2] - edges[0] - edges[1]).abs() <= 1.0e-10 * edges[2].max(1.0)
-}
-
-fn close_triangular_transition_holes(mesh: &mut RedGreenMesh) -> io::Result<usize> {
-    let edge_counts = |mesh: &RedGreenMesh| -> io::Result<BTreeMap<(usize, usize), usize>> {
-        let mut counts = BTreeMap::new();
-        for (triangle, corners) in mesh
-            .cells_on_triangle
-            .iter()
-            .enumerate()
-            .skip(mesh.num_vertex + 1)
-        {
-            if corners
-                .iter()
-                .any(|&cell| cell == 0 || cell >= mesh.cell_points.len())
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("red-green triangle {triangle} names a missing cell"),
-                ));
-            }
-            for (a, b) in [
-                (corners[0], corners[1]),
-                (corners[1], corners[2]),
-                (corners[2], corners[0]),
-            ] {
-                *counts.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
-        Ok(counts)
-    };
-
-    let counts = edge_counts(mesh)?;
-    if let Some((&edge, &owners)) = counts.iter().find(|(_, owners)| **owners > 2) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("red-green edge {edge:?} has {owners} owners"),
-        ));
-    }
-    let boundary = counts
-        .iter()
-        .filter_map(|(&edge, &owners)| (owners == 1).then_some(edge))
-        .collect::<BTreeSet<_>>();
-    if boundary.is_empty() {
-        return Ok(0);
-    }
-
-    let mut graph = BTreeMap::<usize, BTreeSet<usize>>::new();
-    for &(a, b) in &boundary {
-        graph.entry(a).or_default().insert(b);
-        graph.entry(b).or_default().insert(a);
-    }
-    let mut holes = BTreeSet::<[usize; 3]>::new();
-    for &(a, b) in &boundary {
-        let common = graph[&a]
-            .intersection(&graph[&b])
-            .copied()
-            .filter(|&middle| is_hanging_edge_cycle([a, b, middle], &mesh.cell_points))
-            .collect::<Vec<_>>();
-        if common.len() != 1 {
-            let reason = if common.is_empty() {
-                "contains a true missing face, not a hanging edge".to_string()
-            } else {
-                format!("belongs to {} hanging-edge cycles", common.len())
-            };
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("red-green transition boundary edge {a}/{b} {reason}"),
-            ));
-        }
-        let mut face = [a, b, common[0]];
-        face.sort_unstable();
-        holes.insert(face);
-    }
-    let mut covered = BTreeMap::<(usize, usize), usize>::new();
-    for [a, b, c] in &holes {
-        for edge in [(*a, *b), (*b, *c), (*a, *c)] {
-            *covered.entry(edge).or_default() += 1;
-        }
-    }
-    if covered.len() != boundary.len()
-        || boundary
-            .iter()
-            .any(|edge| covered.get(edge).copied() != Some(1))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "red-green transition boundary is not a set of edge-disjoint triangular holes",
-        ));
-    }
-
-    let mut repaired = mesh.clone();
-    let orient = |mut corners: [usize; 3], points: &[earthmesh_mesh::LonLatDegrees]| {
-        let face_points = corners.map(|cell| points[cell]);
-        let xyz = face_points.map(earthmesh_mesh::lonlat_degrees_to_unit_xyz);
-        match earthmesh_mesh::orientation_on_sphere(xyz[0], xyz[1], xyz[2]).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("red-green transition face orientation is ambiguous: {error}"),
-            )
-        })? {
-            earthmesh_mesh::Sign::Positive => {}
-            earthmesh_mesh::Sign::Negative => corners.swap(1, 2),
-            earthmesh_mesh::Sign::Zero => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "red-green transition face is degenerate",
-                ));
-            }
-        }
-        let centroid =
-            earthmesh_mesh::spherical_centroid_degrees(&face_points).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "red-green transition face has no spherical centroid",
-                )
-            })?;
-        Ok::<_, io::Error>((corners, centroid))
-    };
-    for cycle in holes.iter().copied() {
-        let xyz = cycle
-            .map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(repaired.cell_points[cell]));
-        let edges = [
-            (
-                earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[1]),
-                0,
-                1,
-                2,
-            ),
-            (
-                earthmesh_mesh::arc_length_unit_sphere(xyz[1], xyz[2]),
-                1,
-                2,
-                0,
-            ),
-            (
-                earthmesh_mesh::arc_length_unit_sphere(xyz[0], xyz[2]),
-                0,
-                2,
-                1,
-            ),
-        ];
-        let &(_, left, right, middle) = edges
-            .iter()
-            .max_by(|a, b| a.0.total_cmp(&b.0))
-            .expect("three edges");
-        let a = cycle[left];
-        let b = cycle[right];
-        let midpoint = cycle[middle];
-        let owners = repaired
-            .cells_on_triangle
-            .iter()
-            .enumerate()
-            .skip(repaired.num_vertex + 1)
-            .filter(|(_, corners)| corners.contains(&a) && corners.contains(&b))
-            .map(|(triangle, _)| triangle)
-            .collect::<Vec<_>>();
-        if owners.len() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "red-green hanging edge {a}/{b} has {} coarse owners",
-                    owners.len()
-                ),
-            ));
-        }
-        let owner = owners[0];
-        let opposite = repaired.cells_on_triangle[owner]
-            .iter()
-            .copied()
-            .find(|&cell| cell != a && cell != b)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("red-green hanging-edge owner {owner} has no opposite cell"),
-                )
-            })?;
-        let (first, first_center) = orient([opposite, a, midpoint], &repaired.cell_points)?;
-        let (second, second_center) = orient([opposite, midpoint, b], &repaired.cell_points)?;
-        repaired.cells_on_triangle[owner] = first;
-        repaired.triangle_points[owner] = first_center;
-        repaired.cells_on_triangle.push(second);
-        repaired.triangle_points.push(second_center);
-    }
-    repaired.triangles_on_cell = vec![Vec::new(); repaired.cell_points.len()];
-    for (triangle, corners) in repaired.cells_on_triangle.iter().enumerate().skip(2) {
-        for &cell in corners {
-            repaired.triangles_on_cell[cell].push(triangle);
-        }
-    }
-    repaired.n_triangles_on_cell = repaired.triangles_on_cell.iter().map(Vec::len).collect();
-    earthmesh_refine_redgreen::get_sort_new_one_based(
-        repaired.cell_count(),
-        &repaired.n_triangles_on_cell,
-        &repaired.cells_on_triangle,
-        &repaired.triangle_points,
-        &mut repaired.triangles_on_cell,
-    )?;
-    if edge_counts(&repaired)?.values().any(|&owners| owners != 2) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "red-green triangular-hole repair did not produce a closed mesh",
-        ));
-    }
-    let repaired_count = holes.len();
-    *mesh = repaired;
-    Ok(repaired_count)
-}
-
-#[cfg(test)]
-mod transition_hole_tests {
-    use super::*;
-
-    fn tetrahedron_with_one_hanging_midpoint() -> RedGreenMesh {
-        let mut cell_points = vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); 7];
-        cell_points[2] = earthmesh_mesh::LonLatDegrees::new(0.0, 70.0);
-        cell_points[3] = earthmesh_mesh::LonLatDegrees::new(-120.0, -20.0);
-        cell_points[4] = earthmesh_mesh::LonLatDegrees::new(0.0, -20.0);
-        cell_points[5] = earthmesh_mesh::LonLatDegrees::new(120.0, -20.0);
-        cell_points[6] = earthmesh_refine_redgreen::midpoint_lonlat(cell_points[2], cell_points[4])
-            .expect("edge midpoint");
-        let mut cells_on_triangle = vec![[1usize; 3]; 2];
-        let mut triangle_points = vec![earthmesh_mesh::LonLatDegrees::new(0.0, 0.0); 2];
-        for mut corners in [[3, 2, 6], [3, 6, 4], [3, 5, 4], [2, 5, 3], [2, 4, 5]] {
-            let xyz =
-                corners.map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(cell_points[cell]));
-            if earthmesh_mesh::orientation_on_sphere(xyz[0], xyz[1], xyz[2])
-                .expect("non-degenerate face")
-                == earthmesh_mesh::Sign::Negative
-            {
-                corners.swap(1, 2);
-            }
-            triangle_points.push(
-                earthmesh_mesh::spherical_centroid_degrees(&corners.map(|cell| cell_points[cell]))
-                    .expect("face centroid"),
-            );
-            cells_on_triangle.push(corners);
-        }
-        let mut triangles_on_cell = vec![Vec::new(); cell_points.len()];
-        for (triangle, corners) in cells_on_triangle.iter().enumerate().skip(2) {
-            for &cell in corners {
-                triangles_on_cell[cell].push(triangle);
-            }
-        }
-        let n_triangles_on_cell = triangles_on_cell.iter().map(Vec::len).collect();
-        RedGreenMesh {
-            num_vertex: 1,
-            num_center: 1,
-            triangle_points,
-            cell_points,
-            cells_on_triangle,
-            triangles_on_cell,
-            n_triangles_on_cell,
-        }
-    }
-
-    #[test]
-    fn only_a_complete_hanging_edge_cycle_is_restored() {
-        let mut mesh = tetrahedron_with_one_hanging_midpoint();
-
-        assert_eq!(close_triangular_transition_holes(&mut mesh).unwrap(), 1);
-        let neighbors = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
-            &mesh.cells_on_triangle,
-            &mesh.triangles_on_cell,
-            &mesh.n_triangles_on_cell,
-        )
-        .expect("closed membership");
-        assert!(
-            neighbors.iter().skip(2).all(|row| !row.contains(&0)),
-            "every restored edge must have a neighbor: {neighbors:?}"
-        );
-        assert!(mesh.cells_on_triangle.iter().skip(2).all(|corners| {
-            earthmesh_mesh::spherical_triangle_area_unit(
-                corners
-                    .map(|cell| earthmesh_mesh::lonlat_degrees_to_unit_xyz(mesh.cell_points[cell])),
-            ) > 0.0
-        }));
-        assert_eq!(close_triangular_transition_holes(&mut mesh).unwrap(), 0);
-    }
-
-    #[test]
-    fn hanging_edge_geometry_disambiguates_graph_candidates() {
-        let mesh = tetrahedron_with_one_hanging_midpoint();
-
-        assert!(is_hanging_edge_cycle([2, 4, 6], &mesh.cell_points));
-        assert!(!is_hanging_edge_cycle([2, 4, 3], &mesh.cell_points));
-    }
-
-    #[test]
-    fn a_true_missing_face_is_not_hidden_as_a_transition_repair() {
-        let mut mesh = tetrahedron_with_one_hanging_midpoint();
-        close_triangular_transition_holes(&mut mesh).unwrap();
-        mesh.cells_on_triangle.pop();
-        mesh.triangle_points.pop();
-        let before = mesh.clone();
-
-        let error = close_triangular_transition_holes(&mut mesh)
-            .expect_err("a non-collinear missing face is not a hanging edge");
-
-        assert!(error.to_string().contains("true missing face"), "{error}");
-        assert_eq!(mesh, before, "a refused repair must not mutate the mesh");
-    }
 }
 
 #[cfg(test)]
@@ -742,72 +756,19 @@ pub fn refine_redgreen_level(
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
-    preserve_locality: bool,
+    _preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking_from_regions(mesh, regions, level);
     let mut settings = redgreen_settings_for_level(refine, level);
-    settings.protect_triangle_quality = preserve_locality;
-    let primary = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+    // The ancestry-aware prototype can leave dual degree 8 after Lawson;
+    // keep publication on the canonical closure until that invariant is fixed.
+    settings.protect_triangle_quality = false;
+    let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,
         &settings,
         previous_level_marks,
-    );
-    let mut fallback_reason = None;
-    let mut outcome = match primary {
-        Ok(outcome) => outcome,
-        Err(error) if preserve_locality && settings.eliminate_weak_concavity => {
-            fallback_reason = Some(format!(
-                "weak-concavity elimination could not form a local transition ({error})"
-            ));
-            settings.eliminate_weak_concavity = false;
-            earthmesh_refine_redgreen::refine_redgreen_round_inside(
-                mesh,
-                &marking,
-                &settings,
-                previous_level_marks,
-            )?
-        }
-        Err(error) => return Err(error),
-    };
-    let refinable = mesh.triangle_count().saturating_sub(mesh.num_vertex);
-    if preserve_locality
-        && settings.eliminate_weak_concavity
-        && outcome.grown_triangle_count > 0
-        && outcome.refined_triangle_count == refinable
-    {
-        settings.eliminate_weak_concavity = false;
-        outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
-            mesh,
-            &marking,
-            &settings,
-            previous_level_marks,
-        )?;
-        fallback_reason =
-            Some("weak-concavity elimination reached the whole triangular domain".to_string());
-    }
-    let closed = if preserve_locality {
-        close_triangular_transition_holes(&mut outcome.mesh)?
-    } else {
-        0
-    };
-    outcome
-        .interior_marks
-        .resize(outcome.mesh.triangle_count() + 1, 0);
-    if let Some(reason) = fallback_reason {
-        eprintln!(
-            "earthmesh_cli: Red-Green {reason}; carrying the boundary concavities instead{}",
-            if closed == 0 {
-                String::new()
-            } else {
-                format!(" and restoring {closed} triangular transition face(s)")
-            }
-        );
-    } else if closed > 0 {
-        eprintln!(
-            "earthmesh_cli: Red-Green restored {closed} triangular hanging-edge transition face(s)"
-        );
-    }
+    )?;
     let written = unstructured_mesh_from_redgreen(&outcome.mesh)?;
     Ok((written, outcome))
 }
@@ -968,70 +929,6 @@ mod level_tests {
             "so it refines less: {} vs {}",
             held.refined_triangle_count,
             free.refined_triangle_count
-        );
-    }
-
-    #[test]
-    fn triangular_red_green_does_not_turn_distributed_demand_into_global_refinement() {
-        let base =
-            earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
-        let neighbors = base.m_neighbors.clone();
-        let mesh = earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &neighbors)
-            .expect("bridge in");
-        let refine = earthmesh_core::RefineConfig::default();
-        let refinable = mesh.triangle_count() - mesh.num_vertex;
-        let mut fixture = None;
-        'search: for step in [45, 30, 20] {
-            for radius_meters in [1_500_000.0, 2_000_000.0, 2_500_000.0] {
-                let regions = [-60.0, 0.0, 60.0]
-                    .into_iter()
-                    .flat_map(|lat| {
-                        (-180..180)
-                            .step_by(step)
-                            .map(move |lon| RefinementRegion::Circle {
-                                center: LonLatDegrees::new(f64::from(lon), lat),
-                                radius_meters,
-                                level: 1,
-                            })
-                    })
-                    .collect::<Vec<_>>();
-                let (_, filled) = refine_redgreen_level(&mesh, &regions, &refine, 1, None, false)
-                    .expect("filled run");
-                if filled.refined_triangle_count == refinable && filled.grown_triangle_count > 0 {
-                    fixture = Some((regions, filled));
-                    break 'search;
-                }
-            }
-        }
-        let (regions, filled) = fixture.expect("a distributed marking must exercise the fallback");
-
-        let (written, local) =
-            refine_redgreen_level(&mesh, &regions, &refine, 1, None, true).expect("local run");
-        assert!(
-            local.refined_triangle_count < filled.refined_triangle_count,
-            "distributed local demand must retain a coarse exterior"
-        );
-        let neighbors = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
-            &local.mesh.cells_on_triangle,
-            &local.mesh.triangles_on_cell,
-            &local.mesh.n_triangles_on_cell,
-        )
-        .expect("local transition membership must resolve");
-        assert!(
-            neighbors
-                .iter()
-                .skip(local.mesh.num_vertex + 1)
-                .all(|row| !row.contains(&0)),
-            "the carried transition must close every edge"
-        );
-        let topology = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&written);
-        assert!(
-            topology
-                .violations
-                .iter()
-                .all(|violation| !violation.starts_with("misoriented_shared_edge")),
-            "the carried transition must stay consistently oriented: {:?}",
-            topology.violations
         );
     }
 }

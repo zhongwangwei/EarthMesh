@@ -28,10 +28,95 @@ def main():
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
+            app = browser.new_page(viewport={"width": 1200, "height": 700})
+            app.on("pageerror", lambda error: errors.append(str(error)))
+            app.route("https://**", lambda route: route.abort())
+            base = f"http://127.0.0.1:{server.server_port}"
+            app.goto(f"{base}/gui-tauri/dist/index.html?lang=en", wait_until="domcontentloaded")
+            app.wait_for_function("document.querySelectorAll('#steps .step').length === 7")
+            page_controls = ("#projNew", "#targetCellOutput", ".dom-mode", ".layers", ".card", "#qualityViolationPolicy", "#runBtn")
+            for index, control in enumerate(page_controls):
+                app.locator("#steps .step").nth(index).click()
+                app.wait_for_function("index => cur === index", arg=index)
+                assert app.locator("#work .work-head").is_visible(), index
+                assert app.locator(f"#work {control}").first.is_visible(), (index, control)
+            app.locator("#steps .step").nth(1).click()
+            app.locator('#work [data-tpl="2"]').click()  # Global ocean defaults to Tri.
+            tri_cells = app.evaluate("() => { cellEdit = 'tri'; updateEstimate(); return estCells(); }")
+            hex_cells = app.evaluate("() => { cellEdit = 'hex'; updateEstimate(); return estCells(); }")
+            assert abs(tri_cells - 2 * hex_cells) <= 2, (tri_cells, hex_cells)
+            assert app.locator("#estCells").inner_text() == app.evaluate("'~' + fmtK(estCells())")
+            # Persisted splitter widths and dragging must not starve the workspace
+            # at the native window's 960px minimum width.
+            app.set_viewport_size({"width": 960, "height": 700})
+            app.evaluate("() => { localStorage.setItem('em.railW','460px'); localStorage.setItem('em.liveW','576px'); }")
+            app.reload()
+            app.wait_for_function("document.querySelectorAll('#steps .step').length === 7")
+            for language in (0, 1):
+                app.evaluate("language => { lang = language; applyI18n(); }", language)
+                for index in range(7):
+                    app.locator("#steps .step").nth(index).click()
+                    app.wait_for_function("index => cur === index", arg=index)
+                    assert app.locator("#work").evaluate("element => element.clientWidth >= 320 && element.scrollWidth <= element.clientWidth + 1"), (language, index)
+                    if index == 3:
+                        # The browser-only page has no Tauri layer summary; give the
+                        # responsive table real long paths and status badges.
+                        app.evaluate("""() => {
+                            const body = document.querySelector('#work table.layers tbody');
+                            body.textContent = '';
+                            for (const [name, role, path, status] of [
+                                ['landcover', 'land type', 'input/landtype_igbp_update.nc', '已选择'],
+                                ['merit · 分块目录', 'MERIT-Hydro', '📁 选择文件夹', '未设置·判据禁用']]) {
+                                const row = body.insertRow();
+                                for (const value of ['●', name, role, path, status]) {
+                                    const cell = row.insertCell();
+                                    if (value === status) {
+                                        const badge = document.createElement('span');
+                                        badge.className = 'cov no';
+                                        badge.textContent = value;
+                                        cell.append(badge);
+                                    } else if (value === path) {
+                                        const label = document.createElement('span');
+                                        label.className = 'path';
+                                        label.textContent = value;
+                                        cell.append(label, ' ✕');
+                                    } else cell.textContent = value;
+                                }
+                            }
+                        }""")
+                        assert app.locator("#work").evaluate("element => element.scrollWidth <= element.clientWidth + 1"), language
+                        assert app.locator("#work .cov").first.evaluate("element => getComputedStyle(element).whiteSpace === 'nowrap'"), language
+            app.locator("#steps .step").nth(0).click()
+            app.evaluate("""() => {
+                const host = document.querySelector('#projSummary');
+                host.innerHTML = '<div class="card"><div class="metrics">' +
+                    '<div class="metric"><div class="mv"></div></div>'.repeat(4) + '</div></div>';
+                host.querySelector('.mv').textContent = '/very-long-domain-path'.repeat(12);
+            }""")
+            assert app.locator("#work").evaluate("element => element.scrollWidth <= element.clientWidth + 1")
+            for selector, target_x in ((".rail > .splitter", 600), (".live > .splitter", 100)):
+                box = app.locator(selector).bounding_box()
+                app.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                app.mouse.down()
+                app.mouse.move(target_x, box["y"] + box["height"] / 2)
+                app.mouse.up()
+                assert app.locator("#work").evaluate("element => element.getBoundingClientRect().width >= 320")
+            app.locator('#liveTabs button[data-pane="log"]').click()
+            hidden_fit = app.evaluate("""() => {
+                const map=ensureOlMap('mapsvg');
+                map.getView().setZoom(8);
+                return {fit:fitOlMap(map,'global',0),deferred:!!map._deferredFit,zoom:map.getView().getZoom()};
+            }""")
+            assert hidden_fit == {"fit": False, "deferred": True, "zoom": 8}, hidden_fit
+            app.locator('#liveTabs button[data-pane="map"]').click()
+            app.wait_for_function("""() => {
+                const map=document.getElementById('mapsvg')._olmap;
+                return !map._deferredFit && map.getSize()[0]>0 && map.getView().getZoom()<5;
+            }""")
+            app.close()
             page = browser.new_page(viewport={"width": 1200, "height": 700}, accept_downloads=True)
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.route("https://**", lambda route: route.abort())
-            base = f"http://127.0.0.1:{server.server_port}"
             page.goto(
                 f"{base}/gui-tauri/dist/index.html?view=map&lang=en",
                 wait_until="domcontentloaded",

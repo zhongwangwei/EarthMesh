@@ -167,6 +167,9 @@ stopped; it is not proof that the requested coarsening is impossible. Mixed
 requirements delivered as a uniform mesh are `CompressionIncomplete` and do
 not publish an ordinary success file. Explicit `safe_mother_only` delivery may
 publish the certified mesh under `*_certified_safe_fallback.*` names instead.
+Reverse coarsening rejects any explicit refinement region with no qualifying
+HField sample center; another region reaching the same level cannot certify it.
+This check detects wholly missed regions, not every possible boundary alias.
 
 ### v3.0.0-alpha5 Frozen N6 status after PR44
 
@@ -278,9 +281,17 @@ sphere before the land-type subset and is therefore published as
 `*_pre_export_remap.csv`; the manifest sets `remap` to `null` and records that
 no conservative matrix for the final masked domain is available. It must not
 be used as though it indexed the compacted domain grid.
-The final masked triangle-angle range is recomputed against the selected
-contract before publication and recorded as `published_domain_geometry` in
-the certificate and resource record.
+For Tri exports, the final masked triangle-angle range is recomputed against
+the selected contract before publication. For Hex exports, the published dual
+cells receive geometry and topology checks, but the triangle-angle contract
+remains scoped to the certified pre-export primal mesh. The audited view and
+applicable contract result are recorded as `published_domain_geometry`.
+For masked outputs, `physical_residuals` and balance residuals certify the
+pre-export closed sphere, not retention after the final mask. When refinement
+regions are declared, `published_refinement_region_centers` records how many
+pre-export cell centers in those regions survive the published mask; removed
+centers are also warned on stderr. This is a diagnostic, not a promise that
+disconnected water bodies are retained.
 `certified_resources.json` records certification time, requirement/target
 sizes, remap rows and entries, and staged artifact sizes. In-process peak RSS
 is deliberately reported as unavailable; production acceptance must measure it

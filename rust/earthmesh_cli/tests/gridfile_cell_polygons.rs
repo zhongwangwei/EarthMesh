@@ -226,6 +226,23 @@ fn hex_keeps_first_physical_w_cell_at_origin_after_single_sentinel() {
 }
 
 #[test]
+fn hex_keeps_origin_cell_when_sentinel_padding_is_zero() {
+    let mut mesh = empty_mesh();
+    mesh.m_lon = vec![0.0, -1.0, 1.0, 1.0, -1.0];
+    mesh.m_lat = vec![0.0, -1.0, -1.0, 1.0, 1.0];
+    mesh.w_lon = vec![0.0, 0.0];
+    mesh.w_lat = vec![0.0, 0.0];
+    mesh.w_to_m = vec![1, 0, 0, 0, 2, 3, 4, 5];
+    mesh.w_to_m_width = 4;
+    mesh.n_w = vec![1, 4];
+
+    let json = gridfile_cell_polygons_geojson(&mesh, GridfileCellKind::Hex, None, None);
+
+    assert_eq!(json.matches("\"type\": \"Feature\"").count(), 1, "{json}");
+    assert!(json.contains("\"cell_id\": \"2\""), "{json}");
+}
+
+#[test]
 fn hex_skips_two_placeholder_corners_by_row_identity() {
     // Rows 0/1 are dummy placeholders. Canonical id 1 is ignored; ids 2..5 are real.
     let mut mesh = empty_mesh();

@@ -1184,6 +1184,113 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
 }
 
 #[test]
+fn certified_global_hex_masks_audit_the_published_dual_view() {
+    let root = temp_root("global_hex_masks");
+    let landtype = root.join("landtype.nc");
+    let mut landtype_file = earthmesh_cli::create_netcdf_quiet(&landtype).unwrap();
+    landtype_file.add_dimension("longitude", 360).unwrap();
+    landtype_file.add_dimension("latitude", 180).unwrap();
+    let values = (0..360 * 180)
+        .map(|index| if index / 180 < 180 { 1_i8 } else { 0_i8 })
+        .collect::<Vec<_>>();
+    landtype_file
+        .add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+    drop(landtype_file);
+    for mesh_type in ["landmesh", "oceanmesh"] {
+        let case = format!("global_hex_{mesh_type}");
+        let path = root.join(format!("{case}.nml"));
+        fs::write(
+            &path,
+            landtype_namelist(&root, &case, &landtype).replace("landmesh", mesh_type),
+        )
+        .unwrap();
+
+        let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+            .expect("global masked Hex must be audited in its dual-cell view");
+        let certificate: serde_json::Value = serde_json::from_slice(
+            &fs::read(&run.certified_run.as_ref().unwrap().certificate).unwrap(),
+        )
+        .unwrap();
+        let published = &certificate["published_domain_geometry"];
+        assert_eq!(published["cell_view"], "hex");
+        assert!(published["cells"].as_u64().is_some_and(|count| count > 0));
+        assert!(published["minimum_angle_deg"].as_f64().is_some());
+        assert!(published["maximum_angle_deg"].as_f64().is_some());
+        assert!(published["contract_pass"].is_null());
+        assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+        assert_eq!(
+            certificate["published_grid_is_certified_face_subset"],
+            false
+        );
+    }
+}
+
+#[test]
+fn certified_ocean_reports_declared_region_centers_removed_by_final_mask() {
+    let root = temp_root("ocean_demand_mask_loss");
+    let landtype = root.join("landtype.nc");
+    let mut file = earthmesh_cli::create_netcdf_quiet(&landtype).unwrap();
+    file.add_dimension("longitude", 360).unwrap();
+    file.add_dimension("latitude", 180).unwrap();
+    let values = (0..360 * 180)
+        .map(|index| {
+            let lon = (index / 180) as f64 - 179.5;
+            let lat = 89.5 - (index % 180) as f64;
+            if lon < 0.0 || (lon - 100.0).powi(2) + lat.powi(2) < 25.0_f64.powi(2) {
+                0_i8
+            } else {
+                1_i8
+            }
+        })
+        .collect::<Vec<_>>();
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+    drop(file);
+    let circle = root.join("circle.nml");
+    fs::write(
+        &circle,
+        "circle_num = 1\ncircle_refine = 1\n100.0 0.0 800.0\n",
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    let contents = specified_circle_namelist(&root, "ocean_demand_mask_loss", &circle)
+        .replace("mesh_type='earthmesh'", "mesh_type='oceanmesh'")
+        .replace("mode_grid='hex'", "mode_grid='tri'")
+        .replace(
+            "landtype_file='none'",
+            &format!("landtype_file='{}'", landtype.display()),
+        );
+    fs::write(&path, contents).unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certificate: serde_json::Value = serde_json::from_slice(
+        &fs::read(&run.certified_run.as_ref().unwrap().certificate).unwrap(),
+    )
+    .unwrap();
+    let retention = &certificate["published_refinement_region_centers"];
+    let requested = retention["requested"].as_u64().unwrap();
+    let retained = retention["retained"].as_u64().unwrap();
+    let dropped = retention["dropped"].as_u64().unwrap();
+    assert!(requested > 0 && dropped > 0);
+    assert_eq!(retained + dropped, requested);
+    assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
+    assert_eq!(
+        certificate["physical_balance_domain_scope"],
+        "pre_export_closed_sphere"
+    );
+    assert_eq!(certificate["physical_residuals"], 0);
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(&run.certified_run.as_ref().unwrap().resources).unwrap())
+            .unwrap();
+    assert_eq!(resources["published_refinement_region_centers"], *retention);
+}
+
+#[test]
 fn certified_refine_false_uses_uniform_level_zero_safe_mother() {
     let root = temp_root("refine_false_uniform");
     let path = root.join("cmrc.nml");
@@ -2431,6 +2538,39 @@ fn close_requirement_sources_are_order_invariant_and_artifact_deterministic() {
         fs::read(forward.join("certified_safe_fallback_remap.csv")).unwrap(),
         fs::read(reverse.join("certified_safe_fallback_remap.csv")).unwrap()
     );
+}
+
+#[test]
+fn reverse_mode_rejects_a_specified_circle_missed_by_hfield_samples() {
+    let root = temp_root("sub_raster_specified_circle");
+    let circles =
+        std::path::Path::new("inline:circles:lon=90,lat=0,radius_km=800;lon=0,lat=0,radius_km=1");
+    let path = root.join("cmrc.nml");
+    fs::write(
+        &path,
+        specified_circle_namelist(&root, "sub_raster_specified_circle", circles)
+            .replace("safe_mother_only", "reverse_coarsening"),
+    )
+    .unwrap();
+
+    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect_err("a second, unsampled circle must not be certified by the first");
+    assert!(
+        error.to_string().contains("CriterionNotCertifiable")
+            && error.to_string().contains("HField sample centers"),
+        "{error}"
+    );
+    assert!(!root
+        .join("sub_raster_specified_circle/result/certified_ready")
+        .exists());
+
+    fs::write(
+        &path,
+        specified_circle_namelist(&root, "sub_raster_specified_circle", circles),
+    )
+    .unwrap();
+    let safe = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    assert!(safe.certified_run.unwrap().ready_marker.exists());
 }
 
 #[test]

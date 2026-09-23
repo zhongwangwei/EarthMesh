@@ -62,7 +62,7 @@ pub(crate) use refine_iter_helpers::{
 mod refine_loop;
 pub use refine_loop::{
     redgreen_mesh_from_triangular, refine_redgreen_round_inside, refine_redgreen_round_one_based,
-    RedGreenMesh, RedGreenOutcome, RedGreenSettings,
+    triangle_balance_marks, RedGreenBalanceReport, RedGreenMesh, RedGreenOutcome, RedGreenSettings,
 };
 mod refine_num_ref;
 pub use refine_num_ref::refine_num_ref_cal_one_based;
@@ -73,7 +73,7 @@ pub use refine_onedivide_two::refine_onedivide_two_one_based;
 mod refine_onedivide_four_connection;
 pub use refine_onedivide_four_connection::refine_onedivide_four_connection_one_based;
 mod refine_lop;
-pub use refine_lop::refine_delaunay_lop_one_based;
+pub use refine_lop::{refine_delaunay_lop_one_based, triangle_pair_angle_range};
 mod refine_lop_pair;
 pub use refine_lop_pair::refine_m1w1_to_m11w11_one_based;
 mod refine_lop_sharp;

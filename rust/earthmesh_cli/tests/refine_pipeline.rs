@@ -1202,6 +1202,13 @@ fn cartesian_native_method_c_runs_explicit_hfield_in_xy_meters() {
         run.runtime_state.grid.nma,
     );
     assert!(run.transition_faces > 0);
+    assert!(
+        run.finest_cell_km.is_finite()
+            && run.coarsest_cell_km.is_finite()
+            && run.finest_cell_km > 0.0
+            && run.coarsest_cell_km >= run.finest_cell_km,
+        "Cartesian refinement must report finite physical cell sizes"
+    );
 }
 
 #[test]
@@ -3059,6 +3066,11 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
     );
 }
 
+/// A request red-green cannot serve is refused, not served with less.
+///
+/// The marking comes from named regions; an h-field's target levels are simply
+/// not read on this route. Ignoring them would produce a mesh that is valid,
+/// passes its quality checks, and is not what the project asked for.
 #[test]
 fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
@@ -3225,6 +3237,19 @@ fn redgreen_backend_refuses_to_run_without_its_transition_rows() {
     );
 }
 
+/// The native spawn refuses a route it would otherwise swallow -- and only then.
+///
+/// It sits at the head of Method-C's branch chain and never consults `&adaptive`
+/// or `&hfield`, so a namelist carrying both used to get the native mesh in
+/// silence: measured at NXP 6, `&nsfcgrids` with and without `&adaptive`
+/// produced bit-identical 435-cell meshes, exit 0, and not one line of adaptive
+/// output.
+///
+/// The pair is not always a swallow, which is the part worth pinning. With
+/// `refine_spc` on, the native spawn stands down and the h-field branch runs --
+/// that is how Cartesian-XY serves `&ngrids` and an h-field together. A guard
+/// keyed on "native regions are configured" rather than on the branch's own
+/// condition refuses that too, and 64 tests said so.
 #[test]
 fn native_grids_refuse_a_route_they_would_swallow_and_not_one_they_share() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");

@@ -24,6 +24,9 @@
 
 use std::io;
 
+mod conforming;
+pub use conforming::triangle_balance_marks;
+
 use crate::{
     refine_array_length_calculation_one_based, refine_boundary_segments_make_one_based,
     refine_delaunay_lop_one_based, refine_isreverse_judge_one_based, refine_iter_b_judge_one_based,
@@ -53,6 +56,11 @@ pub struct RedGreenMesh {
     pub triangles_on_cell: Vec<Vec<usize>>,
     /// How many of `triangles_on_cell` are real (`n_ngrwm`).
     pub n_triangles_on_cell: Vec<usize>,
+    /// Temporary green child pairs and their original red parent. Restore these
+    /// before a later round; a green child is never a refinement parent.
+    pub green_parents: Vec<([usize; 3], [usize; 2])>,
+    /// Red subdivision depth per face (green children keep their parent's depth).
+    pub refinement_levels: Vec<usize>,
 }
 
 impl RedGreenMesh {
@@ -68,9 +76,10 @@ impl RedGreenMesh {
 }
 
 /// How wide the transition band is and what to do with weak concavities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RedGreenSettings {
-    /// `max_transition_row`: rounds of 1→2 closure outside the refined region.
+    /// `max_transition_row`: rounds of canonical dual-mode transition closure.
+    /// Quality-protected triangle output closes by ancestry/edge constraints instead.
     pub max_transition_row: usize,
     /// `Istransition`: build the transition rows at all.
     ///
@@ -118,8 +127,13 @@ pub struct RedGreenSettings {
     /// protection, which is right for a first level -- there is nothing to
     /// stay inside of.
     pub halo: usize,
-    /// Keep optional transition flips from worsening triangle angles.
+    /// Use ancestry-aware, shape-checked closure for triangle output instead
+    /// of the canonical dual-degree transition rows. A green child is restored
+    /// to its parent before another round can refine it.
     pub protect_triangle_quality: bool,
+    /// Optional absolute floor in addition to inherited red-leaf shape quality.
+    /// Zero selects only the geometric floor; the CLI supplies its warning floor.
+    pub min_triangle_angle_deg: f64,
 }
 
 impl Default for RedGreenSettings {
@@ -130,13 +144,25 @@ impl Default for RedGreenSettings {
             eliminate_weak_concavity: false,
             halo: 3,
             protect_triangle_quality: false,
+            min_triangle_angle_deg: 0.0,
         }
     }
+}
+
+/// Audit of the optional physical 2:1 repair on triangle output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedGreenBalanceReport {
+    pub initial_warning_count: usize,
+    pub remaining_warning_count: usize,
+    pub added_triangle_count: usize,
+    /// A rejected candidate leaves the pre-repair conforming mesh unchanged.
+    pub rejection_reason: Option<String>,
 }
 
 /// What one round of refinement produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RedGreenOutcome {
+    pub balance_repair: Option<RedGreenBalanceReport>,
     pub mesh: RedGreenMesh,
     /// Final triangles descended directly from this round's red 1-to-4 splits.
     /// Transition children and boundary flips remain zero so a deeper level can
@@ -344,9 +370,9 @@ pub fn refine_redgreen_round_one_based(
 /// The same round, held inside the region a previous level refined.
 ///
 /// `previous_level_marks` is that level's marking, one entry per triangle.
-/// Every mark this level made that does not survive eroding it by
-/// `settings.halo` rings is cancelled, so a level never refines ground the
-/// level above it is still transitioning across.
+/// Seeds outside the region eroded by `settings.halo` rings are cancelled.
+/// Triangle-quality closure may promote restored coarse ancestors beyond this
+/// seed clearance, but never subdivides an earlier green child directly.
 pub fn refine_redgreen_round_inside(
     mesh: &RedGreenMesh,
     ref_sjx: &[i32],
@@ -377,6 +403,21 @@ pub fn refine_redgreen_round_inside(
         Some(previous) => cancel_marks_outside_halo(mesh, previous, settings.halo, &mut marking)?,
         None => 0,
     };
+    if settings.protect_triangle_quality {
+        if !settings.build_transition_rows {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "triangular red-green refinement requires conforming closure",
+            ));
+        }
+        return conforming::refine(
+            mesh,
+            &marking,
+            &triangle_neighbors,
+            halo_cancelled_count,
+            settings.min_triangle_angle_deg,
+        );
+    }
     let isolated_dropped_count = drop_isolated_marks(
         mesh.num_vertex,
         sjx_points,
@@ -388,6 +429,7 @@ pub fn refine_redgreen_round_inside(
         .count();
     if asked_for == 0 {
         return Ok(RedGreenOutcome {
+            balance_repair: None,
             mesh: mesh.clone(),
             interior_marks: vec![0; mesh.triangle_count() + 1],
             refined_triangle_count: 0,
@@ -675,6 +717,7 @@ pub fn refine_redgreen_round_inside(
         }
     }
     Ok(RedGreenOutcome {
+        balance_repair: None,
         mesh: RedGreenMesh {
             num_vertex: mesh.num_vertex,
             num_center: mesh.num_center,
@@ -683,6 +726,8 @@ pub fn refine_redgreen_round_inside(
             cells_on_triangle,
             triangles_on_cell: renewed.triangles_on_cell,
             n_triangles_on_cell: renewed.n_triangles_on_cell,
+            green_parents: Vec::new(),
+            refinement_levels: Vec::new(),
         },
         interior_marks,
         refined_triangle_count,
@@ -1059,6 +1104,8 @@ pub fn redgreen_mesh_from_triangular(
         cells_on_triangle,
         triangles_on_cell,
         n_triangles_on_cell,
+        green_parents: Vec::new(),
+        refinement_levels: vec![0; mesh.nwd + 1],
     })
 }
 

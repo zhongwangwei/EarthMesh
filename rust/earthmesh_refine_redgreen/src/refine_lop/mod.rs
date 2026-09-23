@@ -12,7 +12,8 @@ use earthmesh_mesh::polygon_length_angle_metrics;
 /// Connectivity a triangle carries once something has consumed it.
 const DELETED_TRIANGLE: [usize; 3] = [1, 1, 1];
 
-fn angle_range(
+/// Finite spherical angle envelope of a pair, using canonical vertex ids.
+pub fn triangle_pair_angle_range(
     triangles: [[usize; 3]; 2],
     cell_points: &[LonLatDegrees],
 ) -> io::Result<(f64, f64)> {
@@ -26,6 +27,12 @@ fn angle_range(
         let metrics = polygon_length_angle_metrics(&points)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "degenerate LOP pair"))?;
         for angle in metrics.angles_degrees {
+            if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid triangle-pair angle",
+                ));
+            }
             range.0 = range.0.min(angle);
             range.1 = range.1.max(angle);
         }
@@ -111,9 +118,11 @@ pub fn refine_delaunay_lop_one_based(
             cell_points,
         )?;
         if protect_triangle_quality {
-            let current_angles =
-                angle_range([cells_on_triangle[i], cells_on_triangle[j]], cell_points)?;
-            let candidate_angles = angle_range(flip.triangles, cell_points)?;
+            let current_angles = triangle_pair_angle_range(
+                [cells_on_triangle[i], cells_on_triangle[j]],
+                cell_points,
+            )?;
+            let candidate_angles = triangle_pair_angle_range(flip.triangles, cell_points)?;
             if candidate_angles.0 < current_angles.0 - 1.0e-9
                 || candidate_angles.1 > current_angles.1 + 1.0e-9
             {

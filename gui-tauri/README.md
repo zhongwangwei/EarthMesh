@@ -119,7 +119,7 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `kill_run` | – | terminate the running engine child if one exists |
 | `mesh_quality` | `gridfile, kind?` | parsed `quality_summary.json` for the dashboard; `kind` is `tri` or `hex` and maps to report `cell_view` (omitted defaults to `hex`) |
 | `mesh_cell_polygons` | `gridfile, kind, maxCells?` | GeoJSON mesh overlay for the map |
-| `mesh_merit_cells` | `gridfile, kind, meritRoot, w, e, s, n, stride?, landtypeFile?, r2WidthM, r2UpaKm2, r3WidthM, r3UpaKm2` | final mesh cells with MERIT-Hydro R2/R3 plus land-cover land/ocean/coast fractions; land-cover resolution is inferred from the file |
+| `mesh_merit_cells` | `gridfile, kind, meritRoot, w, e, s, n, stride?, cellStride?, landtypeFile?, r2WidthM, r2UpaKm2, r3WidthM, r3UpaKm2` | preview-sampled mesh cells with MERIT-Hydro R2/R3 plus land-cover land/ocean/coast fractions; land-cover resolution is inferred from the file |
 | `shapefile_boundary_geojson` | `path` | GeoJSON polygon outline for the map |
 
 New MERIT-Hydro configurations use one 50 km coast-distance threshold with both

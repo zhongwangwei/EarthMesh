@@ -143,6 +143,20 @@ fn a_closed_triangulation_has_no_open_edge() {
 }
 
 #[test]
+fn sphere_radius_keeps_the_live_vertex_average() {
+    let (mut vertices, triangles) = tetrahedron();
+    vertices[2] = point(2.0, 1.0, 1.0);
+    let state = MeshState::from_parts(vertices, triangles).expect("tetrahedron");
+    let expected: f64 = state
+        .active_vertex_slots()
+        .map(|vertex| state.vertices()[vertex])
+        .map(|point| (point.x * point.x + point.y * point.y + point.z * point.z).sqrt())
+        .sum::<f64>()
+        / state.vertex_count() as f64;
+    assert_eq!(state.sphere_radius().to_bits(), expected.to_bits());
+}
+
+#[test]
 fn from_parts_matches_ordered_map_reference_for_closed_and_open_meshes() {
     let cases = [
         tetrahedron(),

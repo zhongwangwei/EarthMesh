@@ -5,7 +5,9 @@ use crate::json_node_to_string;
 use crate::read_text_maybe_gzip;
 use crate::read_unstructured_mesh_netcdf;
 use crate::sample_landtype_values_for_points_one_based;
-use crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows;
+use crate::unstructured_mesh_support::{
+    mesh_m_has_two_placeholder_rows, mesh_w_has_two_placeholder_rows,
+};
 use crate::AreaJudgeLandtypeClass;
 use crate::JsonNode;
 use crate::JsonParser;
@@ -71,8 +73,8 @@ pub fn write_coupling_quality_from_gridfile(
     output_json: impl AsRef<Path>,
 ) -> io::Result<earthmesh_quality::coupling::CouplingQualityReport> {
     let mesh = read_unstructured_mesh_netcdf(gridfile)?;
-    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
-    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
+    let w_has_two_placeholders = mesh_w_has_two_placeholder_rows(&mesh);
+    let m_has_two_placeholders = mesh_m_has_two_placeholder_rows(&mesh);
 
     let mut dense_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let mut wi_list: Vec<usize> = Vec::new();

@@ -491,16 +491,16 @@ pub(crate) fn set_specified_refinement(
     let kind = kind.as_deref().unwrap_or("radius");
     if enabled && kind == "bbox" {
         cfg.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
-            w: w.unwrap_or(0.0),
-            e: e.unwrap_or(1.0),
-            s: s.unwrap_or(0.0),
-            n: n.unwrap_or(1.0),
+            w: w.ok_or("specified bbox west longitude is required")?,
+            e: e.ok_or("specified bbox east longitude is required")?,
+            s: s.ok_or("specified bbox south latitude is required")?,
+            n: n.ok_or("specified bbox north latitude is required")?,
         });
     } else if enabled && kind == "radius" {
         let requested = SpecifiedCircleRefinement {
-            lon: lon.unwrap_or(0.0),
-            lat: lat.unwrap_or(0.0),
-            radius_km: radius_km.unwrap_or(100.0),
+            lon: lon.ok_or("specified circle longitude is required")?,
+            lat: lat.ok_or("specified circle latitude is required")?,
+            radius_km: radius_km.ok_or("specified circle radius is required")?,
         };
         // Open -> save/run sends the visible head of a chain back through this
         // one-circle command. Keep the chain if the head is unchanged; reject

@@ -193,6 +193,10 @@ impl ProjectConfig {
         let lepp = self.quality.lepp_post_quality.as_ref();
         QualityNamelist {
             min_angle_warn_deg: self.quality.min_angle_deg,
+            min_angle_fail_deg: self
+                .quality
+                .min_angle_deg
+                .min(QualityNamelist::default().min_angle_fail_deg),
             repair_batch_limit: self.quality.auto_refine_batch_cells as i32,
             on_violation: self.quality.on_violation.as_str().to_string(),
             lepp_post_quality: lepp.is_some(),

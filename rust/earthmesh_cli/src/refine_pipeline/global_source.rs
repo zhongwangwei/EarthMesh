@@ -119,7 +119,7 @@ fn certified_gridfile_refine_levels(
     delivered_levels: &[usize],
 ) -> io::Result<(Vec<i32>, Vec<i32>)> {
     let w_has_placeholders =
-        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.w_points);
+        crate::unstructured_mesh_support::mesh_w_has_two_placeholder_rows(mesh);
     let mut source_levels = delivered_levels.iter().copied();
     let mut w_levels = vec![0; mesh.w_points.len()];
     for (row, level) in w_levels.iter_mut().enumerate() {
@@ -147,7 +147,7 @@ fn certified_gridfile_refine_levels(
     }
 
     let m_has_placeholders =
-        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.m_points);
+        crate::unstructured_mesh_support::mesh_m_has_two_placeholder_rows(mesh);
     let mut m_levels = vec![0; mesh.m_points.len()];
     for (row, triangle) in mesh.m_to_w.iter().enumerate() {
         let Some(id) =
@@ -185,9 +185,9 @@ fn certified_gridfile_refine_levels(
 // These IDs identify the final closed-sphere export rows, not coarsening ancestry.
 fn certified_gridfile_pre_export_lineages(mesh: &crate::UnstructuredMesh) -> (Vec<i64>, Vec<i64>) {
     let m_has_placeholders =
-        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.m_points);
+        crate::unstructured_mesh_support::mesh_m_has_two_placeholder_rows(mesh);
     let w_has_placeholders =
-        crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(&mesh.w_points);
+        crate::unstructured_mesh_support::mesh_w_has_two_placeholder_rows(mesh);
     let lineage_for_row = |row: usize, has_placeholders: bool| {
         crate::unstructured_mesh_support::mesh_canonical_id_for_row(row, has_placeholders)
             .map(i64::from)
@@ -894,64 +894,15 @@ pub(super) fn run_refine_pipeline_in_workspace(
                 .map(|(report, _, _, _)| report.deepest_level)
         })
         .unwrap_or(0);
-    // Measured off the produced mesh, so it means the same thing whichever
-    // backend made it -- see the field docs for why `realized_max_level` does
-    // not.
-    // Percentiles, not extremes. The mask carve leaves partial cells at a
-    // coastline, and on this very run the smallest was 2.4 km against a
-    // nominal 300 km -- so a min/max pair reports the carve rather than the
-    // refinement, and `log2(max/min)` came out at 12 halvings for a two-level
-    // request.
+    // Equivalent-area radii of the requested cell view, before ocean carving.
+    // Use percentiles rather than extrema; these are not Red hierarchy depths.
+    let cell_radii =
+        refinement_cell_radii(&output_mesh, config.mode_grid.trim(), native_cartesian_xy)?;
     let (finest_cell_km, coarsest_cell_km) = {
-        let mut across: Vec<f64> = Vec::with_capacity(output_mesh.w_to_m.len());
-        let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
-        // Two corrections the per-region metric already had and this did not.
-        //
-        // `n_w_to_m` gives how many of a row's seven slots are corners; the
-        // rest are placeholder id 1, which resolves to a real but unrelated
-        // point. Reading the whole row builds a polygon out of a cell plus a
-        // stranger, which is the defect guide 11.x records for the per-region
-        // count -- fixed there, missed here, in the same file.
-        //
-        // And the area is signed: about half the cells wind the other way, so
-        // discarding `steradians <= 0.0` threw away half the mesh and reported
-        // the extremes of what was left.
-        for (row_index, corners) in output_mesh.w_to_m.iter().enumerate() {
-            let valid = output_mesh
-                .n_w_to_m
-                .get(row_index)
-                .and_then(|&n| usize::try_from(n).ok())
-                .unwrap_or(corners.len())
-                .min(corners.len());
-            let polygon: Vec<earthmesh_mesh::LonLatDegrees> = corners
-                .iter()
-                .take(valid)
-                .filter_map(|&im| {
-                    let row = usize::try_from(im).ok()?.checked_sub(1)?;
-                    let point = output_mesh.m_points.get(row)?;
-                    Some(earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
-                })
-                .collect();
-            if polygon.len() < 3 {
-                continue;
-            }
-            let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
-                continue;
-            };
-            // A cell is a small patch, so its area is the *minor* one. A
-            // polygon containing a pole comes back as the complement instead:
-            // measured, a triangle whose three corners sit at 89 north returns
-            // 12.5654 sr against a true 0.00096 -- four pi minus almost
-            // nothing, and 13000 times too big. Taking `abs()` does not help;
-            // the sign only says which way the ring was walked.
-            //
-            // Every cell here is far smaller than a hemisphere, so the minor
-            // area is the one below 2*pi and the complement is the one above.
-            let Some(steradians) = minor_cell_steradians(steradians) else {
-                continue;
-            };
-            across.push((steradians / std::f64::consts::PI).sqrt() * radius_km);
-        }
+        let mut across = cell_radii
+            .iter()
+            .map(|(_, radius)| *radius)
+            .collect::<Vec<_>>();
         if across.is_empty() {
             (0.0, 0.0)
         } else {
@@ -966,13 +917,8 @@ pub(super) fn run_refine_pipeline_in_workspace(
         }
     };
 
-    // What a refinement level actually delivered: the median cell width inside
-    // the regions that asked, against the median outside them.
-    //
-    // The global percentiles above are not a level -- they carry the
-    // icosahedron's own variation and the coastline carve, and both backends
-    // read near four halvings there whatever was requested. A level is a claim
-    // about the refined region relative to the rest.
+    // Compare median equivalent-area radii inside/outside the demand regions.
+    // This diagnostic is a physical scale ratio, not the discrete Red depth.
     let realized_region_halvings = {
         let adaptive_regions = adaptive_run
             .as_ref()
@@ -991,49 +937,22 @@ pub(super) fn run_refine_pipeline_in_workspace(
         } else {
             regions.as_slice()
         };
-        let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
         let measure_index = earthmesh_mesh::RefinementRegionIndex::new(measure_regions);
         let mut inside: Vec<f64> = Vec::new();
         let mut outside: Vec<f64> = Vec::new();
-        for (row, corners) in output_mesh.w_to_m.iter().enumerate() {
-            // `w_to_m` rows are the full seven-wide `itab_w.im`, and only the
-            // first `n_w_to_m` entries are corners of this cell. The rest are
-            // placeholders, and placeholder id 1 resolves to a real point
-            // somewhere else entirely -- which is what made four earlier
-            // attempts at this measure compute cell areas twenty-four times
-            // too large (guide 11.35).
-            let valid = output_mesh
-                .n_w_to_m
-                .get(row)
-                .and_then(|count| usize::try_from(*count).ok())
-                .unwrap_or(0)
-                .min(corners.len());
-            if valid < 3 {
-                continue;
-            }
-            let polygon: Vec<earthmesh_mesh::LonLatDegrees> = corners[..valid]
-                .iter()
-                .filter_map(|&im| {
-                    let index = usize::try_from(im).ok()?.checked_sub(1)?;
-                    let point = output_mesh.m_points.get(index)?;
-                    Some(earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
-                })
-                .collect();
-            if polygon.len() < 3 {
-                continue;
-            }
-            let Some(steradians) = earthmesh_mesh::robust_spherical_area_unit(&polygon) else {
-                continue;
+        for &(centre, across_km) in &cell_radii {
+            let in_region = if native_cartesian_xy {
+                let point = earthmesh_mesh::CartesianPoint::new(
+                    centre.lon_degrees,
+                    centre.lat_degrees,
+                    0.0,
+                );
+                measure_regions
+                    .iter()
+                    .any(|region| region.contains_cartesian_xy(point))
+            } else {
+                measure_index.contains_lonlat_canonical(centre, 0)
             };
-            let Some(steradians) = minor_cell_steradians(steradians) else {
-                continue;
-            };
-            let Some(centre) = output_mesh.w_points.get(row) else {
-                continue;
-            };
-            let across_km = (steradians / std::f64::consts::PI).sqrt() * radius_km;
-            let centre = earthmesh_mesh::LonLatDegrees::new(centre.lon, centre.lat);
-            let in_region = measure_index.contains_lonlat_canonical(centre, 0);
             if in_region {
                 inside.push(across_km);
             } else {
@@ -1049,19 +968,23 @@ pub(super) fn run_refine_pipeline_in_workspace(
         };
         let (fine, coarse) = (median(&mut inside), median(&mut outside));
         if std::env::var("EM_DEBUG_LEVEL").is_ok() {
-            let total: f64 = inside
+            let total_km2: f64 = inside
                 .iter()
                 .chain(outside.iter())
-                .map(|across| across * across * std::f64::consts::PI / (radius_km * radius_km))
+                .map(|across| across * across * std::f64::consts::PI)
                 .sum();
-            eprintln!(
-                "level-debug: cells={} in={} out={} in-median={fine:?} out-median={coarse:?} \
-                 area-sum={total:.4} (4pi={:.4})",
-                output_mesh.w_to_m.len(),
-                inside.len(),
-                outside.len(),
-                4.0 * std::f64::consts::PI
-            );
+            let area = if native_cartesian_xy {
+                format!("area-sum-km2={total_km2:.4}")
+            } else {
+                let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+                format!(
+                    "area-sum={:.4} (4pi={:.4})",
+                    total_km2 / (radius_km * radius_km),
+                    4.0 * std::f64::consts::PI
+                )
+            };
+            eprintln!("level-debug: cells={} in={} out={} in-median={fine:?} out-median={coarse:?} {area}",
+                cell_radii.len(), inside.len(), outside.len());
         }
         match (fine, coarse) {
             (Some(fine), Some(coarse)) if fine > 0.0 && coarse > 0.0 => (coarse / fine).log2(),
@@ -2029,6 +1952,7 @@ pub(super) struct CertifiedDomainPublication {
     pub(super) topology: serde_json::Value,
     pub(super) quality_topology: (usize, Vec<serde_json::Value>),
     pub(super) geometry: serde_json::Value,
+    pub(super) region_center_retention: Option<serde_json::Value>,
     pub(super) fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
 }
 
@@ -2110,6 +2034,7 @@ fn publish_certified_domain_gridfile(
     workdir: &Path,
     domain_region: Option<&GridRegion>,
     angle_contract: earthmesh_refine_certified::AngleContractId,
+    requested_center_lineages: Option<&BTreeSet<i64>>,
     fvcom_output: Option<&Path>,
 ) -> io::Result<CertifiedDomainPublication> {
     let mode_grid = config.mode_grid.trim();
@@ -2229,6 +2154,37 @@ fn publish_certified_domain_gridfile(
             ),
         ));
     }
+    let region_center_retention = if let Some(requested) = requested_center_lineages {
+        let lineages = crate::read_gridfile_cell_lineages(output_gridfile)?;
+        let published_centers = if mode_grid == "tri" {
+            &lineages.m
+        } else {
+            &lineages.w
+        };
+        if !requested.is_empty() && published_centers.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CMRC published domain lacks center lineage needed to audit requested regions",
+            ));
+        }
+        let retained_lineages = published_centers.iter().copied().collect::<BTreeSet<_>>();
+        let retained = requested.intersection(&retained_lineages).count();
+        let dropped = requested.len() - retained;
+        if dropped > 0 {
+            eprintln!(
+                "earthmesh_cli: CMRC final domain mask removed {dropped} of {} pre-export cell centers in declared refinement regions",
+                requested.len()
+            );
+        }
+        Some(serde_json::json!({
+            "scope": "pre_export_cell_centers_in_declared_regions",
+            "requested": requested.len(),
+            "retained": retained,
+            "dropped": dropped,
+        }))
+    } else {
+        None
+    };
     let quality_mesh = crate::read_gridfile_mesh_points(output_gridfile)?;
     if domain_region.is_some() && mesh_type != "oceanmesh" {
         crate::regional_gridfile_writers::lineage::verify_whole_triangle_lineage(
@@ -2237,7 +2193,10 @@ fn publish_certified_domain_gridfile(
             &quality_mesh,
         )?;
     }
-    let quality_input = crate::grid_quality_pipeline::quality_input_from_gridfile(&quality_mesh)?;
+    let quality_input = match mode_grid {
+        "hex" => crate::grid_quality_pipeline::quality_input_from_gridfile_hex(&quality_mesh)?,
+        _ => crate::grid_quality_pipeline::quality_input_from_gridfile(&quality_mesh)?,
+    };
     let quality_report = earthmesh_quality::compute(
         &quality_input,
         &earthmesh_quality::QualityThresholds::default(),
@@ -2246,16 +2205,31 @@ fn publish_certified_domain_gridfile(
     let published_maximum = quality_report.geometry.max_angle_deg;
     let delivery_window =
         earthmesh_refine_certified::AngleContract::for_id(angle_contract).final_delivery;
-    if !published_minimum.is_finite()
-        || !published_maximum.is_finite()
-        || !delivery_window.contains_range(published_minimum, published_maximum)
-    {
+    if !published_minimum.is_finite() || !published_maximum.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CMRC published domain has non-finite cell angles",
+        ));
+    }
+    if mode_grid == "tri" && !delivery_window.contains_range(published_minimum, published_maximum) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "CMRC published domain angle contract failed: [{published_minimum}, {published_maximum}] is outside [{}, {}]",
                 delivery_window.minimum_degrees, delivery_window.maximum_degrees
             ),
+        ));
+    }
+    if mode_grid == "hex"
+        && (quality_report.geometry.non_finite_cell_count > 0
+            || quality_report.geometry.invalid_polygon_count > 0
+            || quality_report.geometry.zero_area_cell_count > 0
+            || quality_report.geometry.negative_area_cell_count > 0
+            || quality_report.geometry.self_intersection_count > 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CMRC published Hex domain contains invalid geometry",
         ));
     }
     let component_count = earthmesh_quality::topology::connected_component_count(&quality_input);
@@ -2316,14 +2290,15 @@ fn publish_certified_domain_gridfile(
         }),
         quality_topology: (component_count, quality_issue_json),
         geometry: serde_json::json!({
-            "cell_view": "tri",
+            "cell_view": mode_grid,
             "cells": quality_report.geometry.cell_count,
             "minimum_angle_deg": published_minimum,
             "maximum_angle_deg": published_maximum,
-            "contract_minimum_deg": delivery_window.minimum_degrees,
-            "contract_maximum_deg": delivery_window.maximum_degrees,
-            "contract_pass": true,
+            "contract_minimum_deg": (mode_grid == "tri").then_some(delivery_window.minimum_degrees),
+            "contract_maximum_deg": (mode_grid == "tri").then_some(delivery_window.maximum_degrees),
+            "contract_pass": (mode_grid == "tri").then_some(true),
         }),
+        region_center_retention,
         fvcom_2dm,
     })
 }
@@ -2501,6 +2476,30 @@ fn run_certified_pipeline(
                 options.maximum_level
             ),
         ));
+    }
+    if options.mode == CertifiedMode::ReverseCoarsening {
+        for (index, region) in requirements.regions.iter().enumerate() {
+            let requested = region.level();
+            if requested == 0 {
+                continue;
+            }
+            let sampled = (0..requirement_nlat).any(|j| {
+                let lat = -90.0 + (j as f64 + 0.5) * 180.0 / requirement_nlat as f64;
+                (0..requirement_nlon).any(|i| {
+                    let lon = -180.0 + (i as f64 + 0.5) * 360.0 / requirement_nlon as f64;
+                    region.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(lon, lat))
+                        && required_levels[j * requirement_nlon + i] >= requested
+                })
+            });
+            if !sampled {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "CMRC CriterionNotCertifiable: refinement region {index} at level {requested} has no qualifying HField sample centers on the {requirement_nlon}x{requirement_nlat} requirement raster"
+                    ),
+                ));
+            }
+        }
     }
     let raster_requirements = earthmesh_refine_certified::RasterLevelField::new(
         requirement_nlon,
@@ -2852,6 +2851,12 @@ fn run_certified_pipeline(
             (regional_whole_cells && requested_view == "hex").into()
         };
     certificate_document["requirement_layers"] = requirement_layers.clone();
+    certificate_document["physical_balance_domain_scope"] =
+        serde_json::Value::from(if is_domain_export {
+            "pre_export_closed_sphere"
+        } else {
+            "published_grid"
+        });
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
             "pre_export_closed_sphere_canonical_ids"
@@ -2969,10 +2974,25 @@ fn run_certified_pipeline(
             topology,
             domain_quality,
             published_geometry,
+            region_center_retention,
             fvcom_2dm,
         ) = if is_domain_export {
             let (m_pre_export_lineage, w_pre_export_lineage) =
                 certified_gridfile_pre_export_lineages(&output_mesh);
+            let requested_center_lineages = (!requirements.regions.is_empty()).then(|| {
+                let center_lineages = if requested_view == "tri" {
+                    &m_pre_export_lineage
+                } else {
+                    &w_pre_export_lineage
+                };
+                region_center_demand(&requirements.regions, requested_view, &output_mesh)
+                    .into_iter()
+                    .zip(center_lineages.iter().copied())
+                    .filter_map(|(requested, lineage)| {
+                        (requested && lineage > 1).then_some(lineage)
+                    })
+                    .collect::<BTreeSet<_>>()
+            });
             let mut parent_report = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
                 &temporary_source_path,
                 &output_mesh,
@@ -2997,6 +3017,7 @@ fn run_certified_pipeline(
                 &domain_workdir,
                 regional_domain.as_ref(),
                 options.angle_contract,
+                requested_center_lineages.as_ref(),
                 fvcom_output_path
                     .as_ref()
                     .map(|_| temporary_fvcom_path.as_path()),
@@ -3009,6 +3030,7 @@ fn run_certified_pipeline(
                 Some(published.topology),
                 Some(published.quality_topology),
                 Some(published.geometry),
+                published.region_center_retention,
                 published.fvcom_2dm,
             )
         } else {
@@ -3023,6 +3045,7 @@ fn run_certified_pipeline(
                         ..Default::default()
                     },
                 )?,
+                None,
                 None,
                 None,
                 None,
@@ -3054,6 +3077,15 @@ fn run_certified_pipeline(
                     published_geometry.clone(),
                 );
         }
+        if let Some(retention) = &region_center_retention {
+            certificate_document
+                .as_object_mut()
+                .expect("CMRC certificate document is an object")
+                .insert(
+                    "published_refinement_region_centers".to_string(),
+                    retention.clone(),
+                );
+        }
         fs::write(
             &temporary_certificate_path,
             serde_json::to_vec_pretty(&certificate_document).map_err(io::Error::other)?,
@@ -3079,6 +3111,7 @@ fn run_certified_pipeline(
             "landtype_masked_cells": landtype_masked_cells,
             "landtype_kept_cells": landtype_masked_cells,
             "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+            "physical_balance_domain_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
             "published_grid_remap_available": !is_domain_export,
             "published_domain_topology": topology,
             "published_domain_quality_topology": domain_quality.as_ref().map(|(component_count, issues)| serde_json::json!({
@@ -3086,6 +3119,7 @@ fn run_certified_pipeline(
                 "issues": issues,
             })),
             "published_domain_geometry": published_geometry,
+            "published_refinement_region_centers": region_center_retention,
             "fvcom_2dm": fvcom_2dm.as_ref().map(|report| {
                 let output = fvcom_output_path.as_ref().unwrap_or(&report.output);
                 serde_json::json!({
@@ -3723,6 +3757,97 @@ fn certified_icosahedron_vertices(
         })
 }
 
+/// Measure the same cell view that is exported, respecting each array's row layout.
+fn refinement_cell_radii(
+    mesh: &crate::UnstructuredMesh,
+    mode_grid: &str,
+    cartesian_xy: bool,
+) -> io::Result<Vec<(earthmesh_mesh::LonLatDegrees, f64)>> {
+    use crate::unstructured_mesh_support::{
+        mesh_m_has_two_placeholder_rows, mesh_row_for_canonical_id, mesh_w_has_two_placeholder_rows,
+    };
+    let triangular = mode_grid == "tri";
+    let (centers, vertices) = if triangular {
+        (&mesh.m_points, &mesh.w_points)
+    } else {
+        (&mesh.w_points, &mesh.m_points)
+    };
+    let (center_placeholders, vertex_placeholders) = if triangular {
+        (
+            mesh_m_has_two_placeholder_rows(mesh),
+            mesh_w_has_two_placeholder_rows(mesh),
+        )
+    } else {
+        (
+            mesh_w_has_two_placeholder_rows(mesh),
+            mesh_m_has_two_placeholder_rows(mesh),
+        )
+    };
+    let first = if center_placeholders { 2 } else { 0 };
+    let radius_km = earthmesh_core::EARTH_RADIUS_METERS / 1000.0;
+    let mut samples = Vec::with_capacity(centers.len());
+    for (row, center) in centers.iter().enumerate().skip(first) {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid {mode_grid} cell row {row} in refinement size diagnostic"),
+            )
+        };
+        let corners: &[i32] = if triangular {
+            mesh.m_to_w.get(row).ok_or_else(invalid)?
+        } else {
+            let count = usize::try_from(*mesh.n_w_to_m.get(row).ok_or_else(invalid)?)
+                .map_err(|_| invalid())?;
+            mesh.w_to_m
+                .get(row)
+                .and_then(|corners| corners.get(..count))
+                .ok_or_else(invalid)?
+        };
+        // Compact output may retain a single sentinel row; it has no polygon.
+        if corners.len() < 3 || corners.iter().all(|id| *id == corners[0]) {
+            continue;
+        }
+        let polygon = corners
+            .iter()
+            .map(|&id| {
+                let vertex = mesh_row_for_canonical_id(id, vertices.len(), vertex_placeholders)
+                    .and_then(|index| vertices.get(index))
+                    .ok_or_else(invalid)?;
+                Ok(earthmesh_mesh::LonLatDegrees::new(vertex.lon, vertex.lat))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let radius = if cartesian_xy {
+            let origin = polygon[0];
+            let area_m2 = polygon[1..]
+                .windows(2)
+                .map(|edge| {
+                    let ax = edge[0].lon_degrees - origin.lon_degrees;
+                    let ay = edge[0].lat_degrees - origin.lat_degrees;
+                    let bx = edge[1].lon_degrees - origin.lon_degrees;
+                    let by = edge[1].lat_degrees - origin.lat_degrees;
+                    ax * by - ay * bx
+                })
+                .sum::<f64>()
+                .abs()
+                * 0.5;
+            if !area_m2.is_finite() || area_m2 <= 0.0 {
+                return Err(invalid());
+            }
+            (area_m2 / std::f64::consts::PI).sqrt() / 1000.0
+        } else {
+            let area = earthmesh_mesh::robust_spherical_area_unit(&polygon)
+                .and_then(minor_cell_steradians)
+                .ok_or_else(invalid)?;
+            (area / std::f64::consts::PI).sqrt() * radius_km
+        };
+        samples.push((
+            earthmesh_mesh::LonLatDegrees::new(center.lon, center.lat),
+            radius,
+        ));
+    }
+    Ok(samples)
+}
+
 fn minor_cell_steradians(area: f64) -> Option<f64> {
     let area = area.abs();
     let area = if area > 2.0 * std::f64::consts::PI {
@@ -3905,6 +4030,39 @@ fn spring_region_interior_mask(
     Ok(movable)
 }
 
+/// A later smoother must not undo the triangle backend's physical balance.
+fn keep_balanced_redgreen_spring(
+    original: &crate::UnstructuredMesh,
+    candidate: crate::UnstructuredMesh,
+    passes: usize,
+) -> (crate::UnstructuredMesh, usize) {
+    if passes == 0 {
+        return (candidate, 0);
+    }
+    let audit = (|| {
+        let triangles = crate::cells_on_triangle_one_based_from_mesh(&candidate)?;
+        let points = candidate
+            .w_points
+            .iter()
+            .map(|p| earthmesh_mesh::LonLatDegrees::new(p.lon, p.lat))
+            .collect::<Vec<_>>();
+        earthmesh_refine_redgreen::triangle_balance_marks(&points, &triangles, 2)
+    })();
+    match audit {
+        Ok((_, 0, _)) => (candidate, passes),
+        other => {
+            let reason = match other {
+                Ok((_, count, ratio)) => {
+                    format!("{count} physical 2:1 violations, max ratio {ratio}")
+                }
+                Err(error) => error.to_string(),
+            };
+            eprintln!("earthmesh_cli: warning: Red-Green spring rolled back ({reason}); keeping the unsmoothed mesh");
+            (original.clone(), 0)
+        }
+    }
+}
+
 /// Apply the existing spherical regional spring without requiring Method-C
 /// boundary-row metadata. Red-Green and LEPP both preserve connectivity here;
 /// only cell coordinates and their derived triangle centres are replaced.
@@ -3999,17 +4157,13 @@ fn unstructured_mesh_with_one_based_rows(
     mesh: &crate::UnstructuredMesh,
 ) -> crate::UnstructuredMesh {
     let mut normalized = mesh.clone();
-    if !crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(
-        &normalized.m_points,
-    ) {
+    if !crate::unstructured_mesh_support::mesh_m_has_two_placeholder_rows(mesh) {
         normalized
             .m_points
             .insert(0, crate::LonLatPoint { lon: 0.0, lat: 0.0 });
         normalized.m_to_w.insert(0, [0; 3]);
     }
-    if !crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows(
-        &normalized.w_points,
-    ) {
+    if !crate::unstructured_mesh_support::mesh_w_has_two_placeholder_rows(mesh) {
         normalized
             .w_points
             .insert(0, crate::LonLatPoint { lon: 0.0, lat: 0.0 });
@@ -4033,14 +4187,14 @@ fn unstructured_triangle_angle_range(mesh: &crate::UnstructuredMesh) -> io::Resu
         let metrics = earthmesh_mesh::polygon_length_angle_metrics(&triangle).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                "refinement spring encountered a degenerate triangle",
+                "refinement mesh contains a degenerate triangle",
             )
         })?;
         for angle in metrics.angles_degrees {
             if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "refinement spring encountered a non-finite or degenerate triangle angle",
+                    "refinement mesh contains a non-finite or degenerate triangle angle",
                 ));
             }
             minimum = minimum.min(angle);
@@ -4050,7 +4204,7 @@ fn unstructured_triangle_angle_range(mesh: &crate::UnstructuredMesh) -> io::Resu
     if !minimum.is_finite() || !maximum.is_finite() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "refinement spring mesh contains no physical triangles",
+            "refinement mesh contains no physical triangles",
         ));
     }
     Ok((minimum, maximum))
@@ -4131,6 +4285,7 @@ fn refine_with_redgreen(
     let mut output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
     let mut previous_marks: Option<Vec<i32>> = None;
     let mut split_triangles = 0usize;
+    let mut transition_faces = 0usize;
     let mut passes = Vec::new();
     let mut spring_regions = named_regions.to_vec();
     let mut deepest_level = 0usize;
@@ -4188,6 +4343,15 @@ fn refine_with_redgreen(
             outcome.flipped_triangle_count,
             outcome.mesh.triangle_count(),
         );
+        if let Some(balance) = &outcome.balance_repair {
+            eprintln!("earthmesh_cli: Red-Green physical 2:1 level {level}: {} -> {} violations, {} added triangles",
+                balance.initial_warning_count, balance.remaining_warning_count, balance.added_triangle_count);
+            if let Some(reason) = &balance.rejection_reason {
+                eprintln!(
+                    "earthmesh_cli: warning: physical balance candidate rolled back: {reason}"
+                );
+            }
+        }
         // The degree the gridfile's dual and the mask post-process are built
         // for. Method-C guarantees {5, 6, 7} by construction; red-green only
         // reaches it by taking back, with Lawson flips, the degree each
@@ -4262,16 +4426,53 @@ fn refine_with_redgreen(
         ));
     }
     if preserve_locality {
-        let flips = crate::redgreen_bridge::legalize_redgreen_mesh(&mut redgreen)?;
-        if flips > 0 {
-            eprintln!(
-                "earthmesh_cli: Red-Green final spherical Delaunay legalization flipped {flips} edges"
-            );
-            output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
+        // Count final faces derived from green closure or retriangulated by
+        // Lawson; zero previously hid every Red-Green transition from the GUI.
+        let before = redgreen.cells_on_triangle.clone();
+        let mut transitions = vec![false; before.len()];
+        for &(_, children) in &redgreen.green_parents {
+            for face in children {
+                transitions[face] = true;
+            }
         }
+        let polish = crate::redgreen_bridge::finalize_redgreen_mesh(&mut redgreen)?;
+        eprintln!("earthmesh_cli: Red-Green Lawson flipped {} edges ({} topology fallback); remaining Delaunay violations={}{}",
+            polish.flipped_edges, polish.forced_flips, polish.remaining_illegal_edges,
+            if polish.remaining_illegal_edges == 0 { "" } else { "; not Delaunay certified" });
+        if polish.flipped_edges > 0 {
+            let candidate = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
+            let baseline_angles = unstructured_triangle_angle_range(&output_mesh)?;
+            let candidate_angles = unstructured_triangle_angle_range(&candidate)?;
+            if polish.forced_flips == 0
+                && (candidate_angles.0 < baseline_angles.0 - 1.0e-4
+                    || candidate_angles.1 > baseline_angles.1 + 1.0e-4)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "angle-safe Lawson violated its non-degradation invariant",
+                ));
+            }
+            output_mesh = candidate;
+        }
+        transition_faces = before
+            .iter()
+            .zip(&redgreen.cells_on_triangle)
+            .enumerate()
+            .skip(redgreen.num_vertex + 1)
+            .filter(|(i, (old, new))| transitions[*i] || old != new)
+            .count();
     }
-    let (output_mesh, spring_nest_passes) =
-        spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
+    let (output_mesh, spring_nest_passes) = if spring_iterations == 0 || spring_regions.is_empty() {
+        (output_mesh, 0)
+    } else {
+        let (smoothed, passes) =
+            spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
+        if preserve_locality {
+            keep_balanced_redgreen_spring(&output_mesh, smoothed, passes)
+        } else {
+            (smoothed, passes)
+        }
+    };
     Ok(RefinedGrid {
         state: None,
         output_mesh,
@@ -4280,7 +4481,7 @@ fn refine_with_redgreen(
         // over the cells that went in, so a base-mesh cell keeps its id through
         // every level. The pentagons are base-mesh cells.
         pentagon_indices: mesh.impent,
-        transition_faces: 0,
+        transition_faces,
         spring_nest_passes,
         hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
         hfield_context: None,
@@ -5864,6 +6065,72 @@ mod tests {
     }
 
     #[test]
+    fn refinement_sizes_follow_cell_view_and_row_layout() {
+        let points = |tuples: &[(f64, f64)]| {
+            tuples
+                .iter()
+                .map(|&(lon, lat)| crate::LonLatPoint { lon, lat })
+                .collect::<Vec<_>>()
+        };
+        let mesh = crate::UnstructuredMesh {
+            m_points: points(&[(10.0, 0.0), (12.0, 0.0), (10.0, 2.0)]),
+            w_points: points(&[(20.0, 0.0), (21.0, 0.0), (20.0, 1.0)]),
+            m_to_w: vec![[1, 2, 3]; 3],
+            w_to_m: vec![vec![1, 2, 3, 999]; 3], // Unused padding is not a corner.
+            n_w_to_m: vec![3; 3],
+        };
+        let tri = refinement_cell_radii(&mesh, "tri", false).unwrap();
+        let hex = refinement_cell_radii(&mesh, "hex", false).unwrap();
+        assert_eq!(tri.len(), 3);
+        assert_eq!(hex.len(), 3);
+        assert_eq!(tri[0].0, earthmesh_mesh::LonLatDegrees::new(10.0, 0.0));
+        assert_eq!(hex[0].0, earthmesh_mesh::LonLatDegrees::new(20.0, 0.0));
+        assert!((hex[0].1 / tri[0].1 - 2.0).abs() < 0.001);
+        let mut planar = mesh.clone();
+        for point in planar.m_points.iter_mut().chain(&mut planar.w_points) {
+            point.lon *= 1000.0;
+            point.lat *= 1000.0;
+        }
+        let planar_tri = refinement_cell_radii(&planar, "tri", true).unwrap();
+        let planar_hex = refinement_cell_radii(&planar, "hex", true).unwrap();
+        assert!((planar_tri[0].1 - (0.5 / std::f64::consts::PI).sqrt()).abs() < 1.0e-12);
+        assert!((planar_hex[0].1 / planar_tri[0].1 - 2.0).abs() < 1.0e-12);
+
+        let mut explicit = mesh.clone();
+        for points in [&mut explicit.m_points, &mut explicit.w_points] {
+            points.splice(..0, [crate::LonLatPoint { lon: 0.0, lat: 0.0 }; 2]);
+        }
+        for row in &mut explicit.m_to_w {
+            for id in row {
+                *id += 1;
+            }
+        }
+        for row in &mut explicit.w_to_m {
+            for id in &mut row[..3] {
+                *id += 1;
+            }
+        }
+        explicit.m_to_w.splice(..0, [[0; 3], [1; 3]]);
+        explicit.w_to_m.splice(..0, [vec![], vec![1]]);
+        explicit.n_w_to_m.splice(..0, [0, 1]);
+        assert_eq!(refinement_cell_radii(&explicit, "tri", false).unwrap(), tri);
+        assert_eq!(refinement_cell_radii(&explicit, "hex", false).unwrap(), hex);
+        let mut compact = explicit.clone();
+        compact.m_points.remove(0);
+        compact.m_to_w.remove(0);
+        // Each array has its own layout: compact M can coexist with explicit W.
+        assert_eq!(refinement_cell_radii(&compact, "tri", false).unwrap(), tri);
+        assert_eq!(refinement_cell_radii(&compact, "hex", false).unwrap(), hex);
+        compact.w_points.remove(0);
+        compact.w_to_m.remove(0);
+        compact.n_w_to_m.remove(0);
+        assert_eq!(refinement_cell_radii(&compact, "tri", false).unwrap(), tri);
+        assert_eq!(refinement_cell_radii(&compact, "hex", false).unwrap(), hex);
+        explicit.m_to_w[2][2] = 999;
+        assert!(refinement_cell_radii(&explicit, "tri", false).is_err());
+    }
+
+    #[test]
     fn cell_area_metrics_always_use_the_minor_spherical_patch() {
         let tiny = 1.0e-3;
         assert_eq!(minor_cell_steradians(tiny), Some(tiny));
@@ -5970,6 +6237,37 @@ mod tests {
     }
 
     #[test]
+    fn redgreen_spring_cannot_reintroduce_physical_balance_warnings() {
+        let point = |lon, lat| crate::LonLatPoint { lon, lat };
+        let original = crate::UnstructuredMesh {
+            m_points: vec![point(0.0, 0.0); 4],
+            w_points: vec![
+                point(0.0, 0.0),
+                point(0.0, 0.0),
+                point(0.0, 0.0),
+                point(1.0, 0.0),
+                point(0.0, 1.0),
+                point(0.0, -1.0),
+            ],
+            m_to_w: vec![[1; 3], [1; 3], [2, 3, 4], [3, 2, 5]],
+            w_to_m: vec![],
+            n_w_to_m: vec![],
+        };
+        let mut bad = original.clone();
+        bad.w_points[5].lat = -0.01;
+        assert_eq!(
+            keep_balanced_redgreen_spring(&original, bad, 1),
+            (original.clone(), 0)
+        );
+        let mut good = original.clone();
+        good.w_points[5].lat = -0.9;
+        assert_eq!(
+            keep_balanced_redgreen_spring(&original, good.clone(), 1),
+            (good, 1)
+        );
+    }
+
+    #[test]
     fn redgreen_consumes_the_configured_refinement_spring() {
         let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25)
             .expect("base mesh")
@@ -5992,10 +6290,48 @@ mod tests {
 
         assert_eq!(refined.spring_nest_passes, 1);
         assert!(
+            refined.transition_faces > 0,
+            "green closure must be reported"
+        );
+        assert!(
             crate::unstructured_mesh_support::check_unstructured_mesh_topology(
                 &refined.output_mesh
             )
             .is_consistent()
+        );
+    }
+
+    #[test]
+    #[ignore = "three-level Red-Green local dual can exceed valence 7; publication is not certified"]
+    fn final_redgreen_polishing_keeps_three_level_dual_publishable() {
+        let mesh = TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
+        let region = earthmesh_mesh::RefinementRegion::Bbox {
+            west_degrees: -35.0,
+            east_degrees: 35.0,
+            south_degrees: -30.0,
+            north_degrees: 30.0,
+            level: 3,
+        };
+        let refine = RefineConfig {
+            is_transition: true,
+            ..RefineConfig::default()
+        };
+        let result = refine_with_redgreen(&mesh, &[region], &refine, 3, None, true, 0).unwrap();
+        assert_eq!(result.spring_nest_passes, 0);
+        let angles = unstructured_triangle_angle_range(&result.output_mesh).unwrap();
+        assert!(angles.0 >= 25.0 && angles.1 <= 105.0, "{angles:?}");
+        assert!(
+            result
+                .output_mesh
+                .n_w_to_m
+                .iter()
+                .all(|&degree| degree <= 7),
+            "final W rings must fit the canonical dual valence cap"
+        );
+        assert!(result.transition_faces > 0);
+        assert!(
+            crate::unstructured_mesh_support::check_unstructured_mesh_topology(&result.output_mesh)
+                .is_consistent()
         );
     }
 

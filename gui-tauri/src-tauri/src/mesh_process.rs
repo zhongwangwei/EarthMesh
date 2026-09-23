@@ -12,6 +12,7 @@ struct RunState {
     id: RunId,
     child_pid: Option<u32>,
     owner_active: bool,
+    cancel_requested: bool,
 }
 
 /// One GUI command owns the run slot from validation through any follow-up hydro
@@ -64,6 +65,7 @@ pub(crate) fn begin_run() -> Result<RunLease, String> {
         id,
         child_pid: None,
         owner_active: true,
+        cancel_requested: false,
     });
     Ok(RunLease { id })
 }
@@ -76,6 +78,9 @@ pub(crate) fn record_running_child(run_id: RunId, pid: u32) -> Result<(), String
         .as_mut()
         .filter(|state| state.id == run_id && state.owner_active)
         .ok_or_else(|| "mesh run lease is no longer active".to_string())?;
+    if state.cancel_requested {
+        return Err("mesh run cancelled before child started".to_string());
+    }
     if let Some(existing) = state.child_pid {
         return Err(format!(
             "mesh run already has an active child (PID {existing})"
@@ -110,9 +115,8 @@ pub(crate) fn running_child_pid() -> Option<u32> {
         .and_then(|slot| slot.as_ref().and_then(|state| state.child_pid))
 }
 
-/// Terminate the running mesh-generator process, if any. Returns whether
-/// a process was signalled. Kills by PID — SIGKILL on unix, `taskkill /F /T` on
-/// Windows (which also reaps any child threads/processes).
+/// Cancel the active run, including one that has not spawned its child yet.
+/// Kills by PID — SIGKILL on unix, `taskkill /F /T` on Windows.
 #[tauri::command]
 pub(crate) fn kill_run() -> Result<bool, String> {
     let mut slot = RUN_STATE
@@ -121,8 +125,9 @@ pub(crate) fn kill_run() -> Result<bool, String> {
     let Some(state) = slot.as_mut() else {
         return Ok(false);
     };
+    state.cancel_requested = true;
     let Some(pid) = state.child_pid else {
-        return Ok(false);
+        return Ok(true);
     };
     #[cfg(unix)]
     let output = Command::new("kill")

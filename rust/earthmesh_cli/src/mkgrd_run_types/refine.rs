@@ -104,36 +104,15 @@ pub struct RefinePipelineRunReport {
     /// this can be lower than [`Self::max_level`]. Reporting only the requested
     /// depth made that outcome indistinguishable from a fully realized one.
     pub realized_max_level: usize,
-    /// The 2nd and 98th percentile cell width of the produced mesh, in km
-    /// across (`sqrt(A/pi)`, the radius of the disc with the cell's area).
-    ///
-    /// Percentiles rather than extremes: the mask carve leaves partial cells
-    /// at a coastline, and taking the minimum reported a 2.4 km sliver on a
-    /// mesh whose cells are nominally 300 km -- so `log2(max/min)` said twelve
-    /// halvings for a two-level request.
-    ///
-    /// Backend-neutral, because it is measured off the mesh rather than taken
-    /// from each backend's own bookkeeping. `realized_max_level` is not:
-    /// Method-C counts face generations, criteria-driven Red-Green counts
-    /// completed passes. A run that
-    /// refined to 2.6 halvings can therefore report a different integer here.
-    ///
-    /// `log2(coarsest / finest)` is the halvings actually achieved, which is
-    /// what a request in levels was asking for.
+    /// The 2nd/98th percentiles of equivalent-area radius (`sqrt(A/pi)`),
+    /// in km, for the requested tri/hex view before domain/ocean carving.
+    /// Their log2 ratio describes physical scale variation, not discrete
+    /// refinement depth or proof that all refinement demands were delivered.
     pub finest_cell_km: f64,
     pub coarsest_cell_km: f64,
-    /// What a refinement level actually delivered: `log2` of the median cell
-    /// width outside the refinement regions over the median inside them.
-    ///
-    /// The operational definition of a level, and the only one comparable
-    /// between backends. `realized_max_level` counts each backend's own
-    /// bookkeeping and is not directly comparable (guide 11.19); the global
-    /// percentiles above carry the icosahedron's own variation and the
-    /// coastline carve, and read near four halvings whatever was requested.
-    ///
-    /// Medians rather than sums or extremes: a few cells spanning a pole or the
-    /// dateline come back from `robust_spherical_area_unit` with the
-    /// complementary area, which wrecks a total and leaves a median alone.
+    /// Log2 of median equivalent-area radius outside the demand regions
+    /// divided by the median inside, on that same pre-carve cell view.
+    /// This is a physical scale diagnostic, not a backend hierarchy level.
     pub realized_region_halvings: f64,
     /// What the h-field asked for versus what survived Method-C legality, summed
     /// over passes. All zero for the geometric region paths.

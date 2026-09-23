@@ -353,6 +353,19 @@ fn project_validation_rejects_invalid_quality_gate() {
 }
 
 #[test]
+fn project_quality_threshold_below_default_fail_threshold_still_lowers() {
+    let mut project = sample();
+    project.quality.min_angle_deg = 2.0;
+    let lowered = project
+        .try_lower()
+        .expect("valid project quality threshold");
+    let reparsed = earthmesh_core::QualityNamelist::from_quality_namelist(&lowered.to_namelist())
+        .expect("lowered quality threshold must be accepted by the engine");
+    assert_eq!(reparsed.min_angle_warn_deg, 2.0);
+    assert!(reparsed.min_angle_fail_deg <= reparsed.min_angle_warn_deg);
+}
+
+#[test]
 fn project_validation_rejects_invalid_data_layers() {
     let mut p = sample();
     p.data_layers[0].path.clear();

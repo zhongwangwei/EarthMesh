@@ -103,7 +103,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .est .big{font-size:19px;font-weight:750;letter-spacing:-.02em}
 
 /* ---------------- center workspace ---------------- */
-.work{grid-area:work;overflow:auto;padding:var(--s-xl) calc(var(--s-xl) + 4px)}
+.work{grid-area:work;overflow:auto;padding:var(--s-xl) calc(var(--s-xl) + 4px);container-type:inline-size}
 .work-head{display:flex;align-items:baseline;gap:12px;margin-bottom:3px}
 .work-head .kicker{color:var(--accent);font-weight:700;font-size:12px;letter-spacing:.02em}
 .work h1{font-size:23px}
@@ -147,7 +147,7 @@ h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.01em}
 .layers td{padding:8px;border-bottom:1px solid var(--border-soft);vertical-align:middle}
 .layers tr:last-child td{border-bottom:0}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
-.cov{font-size:11px;padding:2px 8px;border-radius:20px;font-weight:650}
+.cov{display:inline-block;white-space:nowrap;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:650}
 .cov.ok{background:var(--pass-bg);color:var(--pass)} .cov.no{background:var(--fail-bg);color:var(--fail)}
 .path{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;display:inline-block;vertical-align:middle}
 .sw{position:relative;width:34px;height:19px;border-radius:20px;background:var(--border);transition:.15s;flex:none}
@@ -179,12 +179,28 @@ body.normal .expert{display:none}
 .verdict .vt{font-weight:700;font-size:15px} .verdict .vs{color:var(--muted);font-size:12px}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s-md)}
 .metric{border:1px solid var(--border);border-radius:var(--r-md);padding:13px;background:var(--elevated)}
-.metric .mv{font-size:21px;font-weight:760;letter-spacing:-.02em}
+.metric .mv{font-size:21px;font-weight:760;letter-spacing:-.02em;overflow-wrap:anywhere}
 .metric .ml{color:var(--muted);font-size:11px;margin-top:2px}
 .foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:18px;border-top:1px solid var(--border)}
 .nav-btns{display:flex;gap:8px;margin-left:auto}
 .btn-next{padding:8px 18px;border:0;border-radius:var(--r-sm);background:var(--accent);color:#fff;font-weight:650}
 .btn-back{padding:8px 16px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg)}
+@container (max-width:560px){
+  .grid2{grid-template-columns:minmax(0,1fr)}
+  .tpl,.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .proj-actions,.work-head{flex-wrap:wrap}
+  .res-inputs{flex-wrap:wrap}
+  .layers,.layers tbody{display:block}
+  .layers thead{display:none}
+  .layers tr{display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:3px 8px;padding:8px 0;border-bottom:1px solid var(--border-soft)}
+  .layers td{padding:0;border:0;min-width:0}
+  .layers td:nth-child(1){grid-row:1/4;align-self:start}
+  .layers td:nth-child(2){grid-column:2;grid-row:1}
+  .layers td:nth-child(3){grid-column:2/4;grid-row:2}
+  .layers td:nth-child(4){grid-column:2/4;grid-row:3}
+  .layers td:nth-child(5){grid-column:3;grid-row:1}
+  .layers .path{max-width:calc(100% - 36px)}
+}
 
 /* ---------------- right live panel ---------------- */
 .live{grid-area:live;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
@@ -482,6 +498,7 @@ let runInProgress=false;
 let runCompletion = null;
 let killInProgress = false;
 
+
 function renderSteps(){
   const el=document.getElementById("steps");el.textContent="";
   STEPS.forEach((s,i)=>{
@@ -732,7 +749,8 @@ function estCells(){
   } else {
     area=5.10072e8; // Earth's surface area (km²)
   }
-  return Math.max(1,Math.round(area/(km*km*0.866))); // hex cell area ≈ 0.866·s²
+  const dualCells=area/(km*km*0.866); // hex area ≈ 2 triangular faces
+  return Math.max(1,Math.round(dualCells*(templateDefaultCell()==="tri"?2:1)));
 }
 function fmtK(n){ return n>=1e6 ? (n/1e6).toFixed(2)+"M" : n>=1e3 ? Math.round(n/1e3)+"k" : ""+n; }
 function updateEstimate(){
@@ -747,7 +765,7 @@ function resControl(lang){
   const u=RES_UNITS[resUnitIdx];
   const opts=RES_UNITS.map((x,i)=>`<option value="${i}" ${i===resUnitIdx?"selected":""}>${x.label[lang]}</option>`).join("");
   return `<div class="field"><label>${lang?"目标分辨率":"Target resolution"} <span class="hint">${lang?"可直接输入或拖动":"type a value or drag"}</span></label>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+    <div class="res-inputs" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       <input class="input" type="number" id="resNum" style="width:84px" value="${resVal}" min="${u.min}" max="${u.max}" step="${u.step}">
       <select class="select" id="resUnit" style="width:158px">${opts}</select>
       <span id="resOut" style="margin-left:auto;font-weight:750;font-size:17px;color:var(--accent)">${fmtRes()}</span>
@@ -759,12 +777,13 @@ function resControl(lang){
     </div></div>`;
 }
 function resInput(src){
-  if(src==="unit"){ resUnitIdx=+document.getElementById("resUnit").value; resVal=RES_UNITS[resUnitIdx].def; renderStep(1); return; }
+  if(src==="unit"){ resUnitIdx=+document.getElementById("resUnit").value; resVal=RES_UNITS[resUnitIdx].def; window.invalidateRunArtifacts?.(); renderStep(1); return; }
   const u=RES_UNITS[resUnitIdx];
   let v = src==="range" ? +document.getElementById("resRange").value : +document.getElementById("resNum").value;
   if(isNaN(v)) return;
   if(src==="range") v=Math.min(u.max,Math.max(u.min,v));
   resVal=Math.round(v/u.step)*u.step; resVal=Math.round(resVal*1000)/1000;
+  window.invalidateRunArtifacts?.();
   const r=document.getElementById("resRange"), n=document.getElementById("resNum"), o=document.getElementById("resOut");
   if(r && (src==="range" || (src==="num" && resVal>=u.min && resVal<=u.max))) r.value=resVal;
   if(n && src!=="num") n.value=resVal;
@@ -923,14 +942,16 @@ function renderStep(i){
   // domain mode pills (global hides the bbox section)
   w.querySelectorAll(".dom-mode").forEach(p=>{
     p.setAttribute("aria-pressed",String(p.classList.contains("on")));
-    p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;renderStep(2);w.querySelector(`.dom-mode[data-mode="${domainMode}"]`)?.focus();};
+    p.onclick=()=>{domainMode=p.dataset.mode;regional=domainMode!=="global";hiddenDomainShape=null;window.invalidateRunArtifacts?.();renderStep(2);w.querySelector(`.dom-mode[data-mode="${domainMode}"]`)?.focus();};
   });
+
   const resNum=document.getElementById("resNum"); if(resNum) resNum.oninput=()=>resInput("num");
   const resUnit=document.getElementById("resUnit"); if(resUnit) resUnit.onchange=()=>resInput("unit");
   const resRange=document.getElementById("resRange"); if(resRange) resRange.oninput=()=>resInput("range");
   // the Run button now lives in the final step's footer
   const rb=document.getElementById("runBtn"); if(rb) rb.onclick=backendUnavailableRun;
   const kb=document.getElementById("killBtn"); if(kb) kb.onclick=killRun;
+  setRunControls(runInProgress);
   updateEstimate();
   drawMap(); // keep the map's domain box in sync with regional/global + template
 }
@@ -1513,8 +1534,15 @@ function fitOlMap(map,scope="region",duration=250,size,maxZoom=10){
   if(scope==="global") extent=map.getView().getProjection().getExtent();
   else if(scope==="region") extent=olRegionExtent(map);
   if(!usableOlExtent(extent)) return false;
+  const rect=size?null:map.getTargetElement().getBoundingClientRect();
+  const fitSize=size||[rect.width,rect.height];
+  if(!(fitSize[0]>0&&fitSize[1]>0)){
+    map._deferredFit={scope,maxZoom};
+    return false;
+  }
+  map._deferredFit=null;
   setOlWorldClip(map,scope==="global");
-  const options={size:size||map.getSize(),padding:[36,36,36,36],duration};
+  const options={size:fitSize,padding:[36,36,36,36],duration};
   if(maxZoom!=null) options.maxZoom=maxZoom;
   map.getView().fit(extent,options);
   return true;
@@ -1918,7 +1946,7 @@ setExpertMode(false);
 document.getElementById("modeSeg").onclick=e=>{const b=e.target.closest("[data-mode]");if(!b)return;setExpertMode(b.dataset.mode==="expert");};
 document.getElementById("liveTabs").onclick=e=>{const b=e.target.closest("[data-pane]");if(!b)return;
   document.querySelectorAll("#liveTabs button").forEach(x=>x.classList.toggle("on",x===b));
-  document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane===b.dataset.pane));};
+  document.querySelectorAll(".live-pane").forEach(p=>p.classList.toggle("on",p.dataset.pane===b.dataset.pane));scheduleMapResize();};
 function backendUnavailableRun(){
   document.getElementById("rdot").classList.remove("on");
   document.getElementById("rtext").textContent=lang?"无法连接后端":"backend unavailable";
@@ -1936,9 +1964,15 @@ function scheduleMapResize(){
     ["mapsvg","mapsvgModal"].forEach((id)=>{
       const el=document.getElementById(id);
       if(el && el._olmap){
-        const target=id==="mapsvgModal"?(document.getElementById("mapStage")||el):el,rect=target.getBoundingClientRect(),key=`${rect.width}:${rect.height}:${window.devicePixelRatio}`;
-        if(el._olmap._resizeKey===key) return; el._olmap._resizeKey=key;
-        if(el._olmap._globeActive&&el._olmap._globe) el._olmap._globe.resize(); else el._olmap.updateSize();
+        const map=el._olmap,target=id==="mapsvgModal"?(document.getElementById("mapStage")||el):el,rect=target.getBoundingClientRect(),key=`${rect.width}:${rect.height}:${window.devicePixelRatio}`;
+        if(map._resizeKey!==key){
+          map._resizeKey=key;
+          if(map._globeActive&&map._globe) map._globe.resize(); else map.updateSize();
+        }
+        if(rect.width>0&&rect.height>0&&map._deferredFit){
+          const {scope,maxZoom}=map._deferredFit;
+          fitOlMap(map,scope,0,[rect.width,rect.height],maxZoom);
+        }
       }
     });
   });
@@ -1947,8 +1981,19 @@ function scheduleMapResize(){
 /* ---------------- resizable rail / map panels (draggable splitters) ---------------- */
 function setupSplitters(){
   const root=document.documentElement;
+  const minWork=320,minLive=280;
   try{ const rw=localStorage.getItem("em.railW"); if(rw) root.style.setProperty("--rail-w",rw); }catch(e){}
   try{ const lw=localStorage.getItem("em.liveW"); if(lw) root.style.setProperty("--live-w",lw); }catch(e){}
+  const width=(name,fallback)=>parseFloat(getComputedStyle(root).getPropertyValue(name))||fallback;
+  const clampPanels=()=>{
+    const rail=Math.max(180,Math.min(460,width("--rail-w",248),window.innerWidth-minWork-minLive));
+    const live=Math.max(minLive,Math.min(Math.round(window.innerWidth*.6),width("--live-w",360),window.innerWidth-rail-minWork));
+    root.style.setProperty("--rail-w",rail+"px");
+    root.style.setProperty("--live-w",live+"px");
+    scheduleMapResize();
+  };
+  clampPanels();
+  window.addEventListener("resize",clampPanels);
   const mk=(parent,side)=>{
     if(!parent||parent.querySelector(":scope > .splitter")) return;
     parent.style.position="relative";
@@ -1960,10 +2005,10 @@ function setupSplitters(){
       ev0.preventDefault(); s.classList.add("drag"); document.body.style.userSelect="none";
       const move=ev=>{
         if(side==="right"){ // left rail: width = pointer X
-          const w=Math.max(180,Math.min(460,ev.clientX));
+          const w=Math.max(180,Math.min(460,ev.clientX,window.innerWidth-width("--live-w",360)-minWork));
           root.style.setProperty("--rail-w",w+"px"); try{localStorage.setItem("em.railW",w+"px");}catch(e){}
         }else{ // map panel (drag its left edge): width grows leftward
-          const w=Math.max(280,Math.min(Math.round(window.innerWidth*0.6),window.innerWidth-ev.clientX));
+          const w=Math.max(minLive,Math.min(Math.round(window.innerWidth*0.6),window.innerWidth-ev.clientX,window.innerWidth-width("--rail-w",248)-minWork));
           root.style.setProperty("--live-w",w+"px"); try{localStorage.setItem("em.liveW",w+"px");}catch(e){}
           scheduleMapResize();
         }
@@ -2152,7 +2197,7 @@ if(MAP_WINDOW_MODE){
 
   // ---- live project model ----------------------------------------------------
   const layerEdits = {};   // layer id -> { path, enabled }
-  const thresholdEdits = {}; // threshold layer id -> number|null (null = catalog default)
+  const thresholdEdits = {}; // threshold layer id -> number|null|NaN (default|invalid draft)
   const criterionEdits = {}; // mean/std criterion id -> { enabled, value }
   let thresholdRefine = { enabled: false }; // explicit strategy; data availability does not opt in
   const defaultHydroRefine = () => ({ riverWidthEnabled: true, riverUpstreamAreaEnabled: true, coastEnabled: true, coastBufferKm: 50, coastLandEnabled: true, coastOceanEnabled: true, riverWidthThresholdM: 300, riverUpstreamAreaThresholdKm2: 50000, r2WidthM: 50, r2UpaKm2: 5000 });
@@ -2187,6 +2232,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   let projectEditQueue = Promise.resolve();
   let projectLoadEpoch = 0;
   window.waitForProjectEdits = () => projectEditQueue;
+  let _runArtifactEpoch = 0; // rejects responses from a previous project or run
+
   let backendReady = null;   // capability/catalog gate for every compose/save/run path
   // maxPasses is owned by the static step renderer; the Tauri bridge reads/writes it here.
 
@@ -2237,12 +2284,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     const sync = () => {
       const previous = normalizeCloseBoundary(current());
+      const number = (el, fallback) => el ? (el.value.trim() ? Number(el.value) : NaN) : fallback;
       const next = {
         mode: mode.value,
-        iterations: iterations ? Math.max(1,Math.min(6,parseInt(iterations.value,10)||2)) : previous.iterations,
-        margin_km: margin ? Math.max(0,parseFloat(margin.value)||0) : previous.margin_km,
-        max_radius_deg: maxRadius ? (parseFloat(maxRadius.value)||80) : previous.max_radius_deg,
-        max_segment_angle_deg: maxSegment ? (parseFloat(maxSegment.value)||0.25) : previous.max_segment_angle_deg,
+        iterations: number(iterations, previous.iterations),
+        margin_km: number(margin, previous.margin_km),
+        max_radius_deg: number(maxRadius, previous.max_radius_deg),
+        max_segment_angle_deg: number(maxSegment, previous.max_segment_angle_deg),
       };
       onChange(next); paint(); clearRunArtifacts();
     };
@@ -2252,6 +2300,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function applyCloseBoundary(yaml, target, value) {
     const b = normalizeCloseBoundary(value);
+    const required = b.mode === "spherical_chaikin" ? [b.iterations, b.max_segment_angle_deg]
+      : b.mode === "enclosing_cap" ? [b.margin_km, b.max_radius_deg, b.max_segment_angle_deg] : [];
+    if (!required.every(Number.isFinite)) {
+      throw new Error(zh() ? "闭合边界参数必须填写有效数字。" : "Close-boundary parameters must contain valid numbers.");
+    }
     return await invoke("set_close_boundary", {
       yaml, target, mode:b.mode, iterations:b.iterations, marginKm:b.margin_km,
       maxRadiusDeg:b.max_radius_deg, maxSegmentAngleDeg:b.max_segment_angle_deg
@@ -2299,6 +2352,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const mode = template ? (template.domainMode || (template.global ? "global" : "regional"))
       : ((typeof domainMode !== "undefined") ? domainMode : ((typeof regional !== "undefined" && regional) ? "regional" : "global"));
     if (mode === "global") {
+
       yaml = await invoke("set_domain_global", { yaml });
     } else if (mode === "circle") {
       const error = circleDomainError();
@@ -2346,6 +2400,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const e = layerEdits[id];
       yaml = await invoke("set_layer_path", { yaml, id, path: e.path, enabled: e.enabled });
     }
+    if (Object.values(thresholdEdits).some((value) => value != null && !Number.isFinite(value)) ||
+        Object.values(criterionEdits).some((criterion) => criterion.value != null && !Number.isFinite(criterion.value)) ||
+        ![hydroRefine.coastBufferKm, hydroRefine.riverWidthThresholdM, hydroRefine.riverUpstreamAreaThresholdKm2].every(Number.isFinite)) {
+      throw new Error(zh() ? "细化阈值无效；请在细化步骤修正后重试。" : "Refinement thresholds contain invalid numbers; correct them in the Refinement step.");
+    }
     for (const id of Object.keys(thresholdEdits)) {
       yaml = await invoke("set_threshold_value", { yaml, id, value: thresholdEdits[id] });
     }
@@ -2365,6 +2424,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       riverUpstreamAreaThresholdKm2: hydroRefine.riverUpstreamAreaThresholdKm2
     });
     const spring = springTypesFor(expertEdit.springStrategy);
+    const validInt = (value) => value == null || Number.isInteger(value);
+    const validFloat = (value) => value == null || Number.isFinite(value);
+    const validIntList = (value) => value == null || (Array.isArray(value) && value.every(Number.isInteger));
+    if (![expertEdit.openmp, expertEdit.niter, expertEdit.niterRefine].every(validInt) ||
+        ![expertEdit.beta, expertEdit.relax].every(validFloat) ||
+        ![expertEdit.halo, expertEdit.maxTransitionRow].every(validIntList)) {
+      throw new Error(zh() ? "专家参数包含无效数字；请修正后重试。" : "Expert settings contain invalid numbers; correct them before saving or running.");
+    }
     yaml = await invoke("set_expert", {
       yaml, nxp: expertEdit.nxp, openmp: expertEdit.openmp, niter: expertEdit.niter,
       niterRefine: expertEdit.niterRefine, maxIterSpc: expertEdit.maxIterSpc, maxIterCal: expertEdit.maxIterCal,
@@ -2386,6 +2453,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const refinementPasses = refinementEnabled
       ? Math.min(maxRefinePasses, Math.max(1, requestedPasses == null ? (summary.max_passes || 1) : requestedPasses))
       : 0;
+    if (refine.enabled) {
+      const required = refine.kind === "radius" ? [refine.lon, refine.lat, refine.radiusKm]
+        : refine.kind === "bbox" ? [refine.w, refine.e, refine.s, refine.n] : [];
+      if (!required.every(Number.isFinite)) {
+        throw new Error(zh() ? "指定细化坐标或半径无效；请在细化步骤修正后重试。" : "Specified refinement coordinates or radius are invalid; correct them in the Refinement step.");
+      }
+    }
     yaml = await invoke("set_specified_refinement", {
       yaml, enabled: !!refine.enabled,
       kind: refine.kind || "radius",
@@ -2396,6 +2470,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (refine.enabled && refine.kind === "close") {
       yaml = await applyCloseBoundary(yaml, "specified", refine.closeBoundary);
     }
+
     yaml = await invoke("set_adaptive_refinement", {
       yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "adaptive",
       maxLevel: refine.adaptiveMaxLevel ?? null,
@@ -2444,8 +2519,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml = await invoke("preserve_unexposed_quality_fields", { baseYaml: baseProjectYaml, yaml });
     }
     if (qualityEdit) {
+      if (!Number.isFinite(qualityEdit.minAngle) ||
+          (qualityEdit.policy === "auto_refine" && (!Number.isInteger(qualityEdit.batchCells) || qualityEdit.batchCells < 1))) {
+        throw new Error(zh() ? "质量参数包含无效数字；请在质量步骤修正后重试。" : "Quality settings contain invalid numbers; correct them in the Quality step.");
+      }
       yaml = await invoke("set_quality",
-        { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy, autoRefineBatchCells: qualityEdit.batchCells });
+        { yaml, minAngleDeg: qualityEdit.minAngle, policy: qualityEdit.policy, autoRefineBatchCells: Number.isInteger(qualityEdit.batchCells) && qualityEdit.batchCells > 0 ? qualityEdit.batchCells : 1 });
     }
     return yaml;
   }
@@ -2534,6 +2613,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   let watershedBoundaryVersion = 0;
   async function loadWatershedBoundary(path) {
     const version = ++watershedBoundaryVersion;
+
     if (!path) {
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
@@ -2548,6 +2628,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(geojson, true);
     } catch (e) {
       if (version !== watershedBoundaryVersion) return;
+
       watershedBoundaryPath = "";
       if (typeof applyDomainBoundary === "function") applyDomainBoundary(null, false);
       logLine("✗ watershed boundary: " + e);
@@ -2561,6 +2642,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   function clearRunArtifacts() {
+    _runArtifactEpoch++;
     hasRun = false;
     runInfo = null;
     const deliveryCard = document.getElementById("deliveryCard");
@@ -2575,6 +2657,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       .forEach((b) => { b.textContent = "—"; b.style.color = "var(--muted)"; });
     document.querySelectorAll(".badge.pass").forEach((b) => { b.style.display = "none"; });
   }
+  window.invalidateRunArtifacts = clearRunArtifacts;
 
   // Only the O3 card overrides the specified demand; other cards keep user edits.
   function templateSpecifiedRefinement(t) {
@@ -2589,7 +2672,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       domainEdit = null;
       domainCloseBoundary = normalizeCloseBoundary(null);
       lastSummary = null;
-      targetEdit = null;
+        targetEdit = null;
       cellEdit = null;
       const t = (typeof TPL !== "undefined" && TPL[tpl]) ? TPL[tpl] : {};
       if (t.nxp) { resUnitIdx = 1; resVal = t.nxp; }
@@ -2617,18 +2700,23 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const z = zh();
     const auto = document.getElementById("autoLayerFolder");
     if (auto) auto.onclick = async () => {
+      const epoch = _runArtifactEpoch;
       let folder;
       try { folder = await api.pickDataFolder(); }
-      catch (e) { logLine("✗ " + e); return; }
+      catch (e) { if (epoch === _runArtifactEpoch) logLine("✗ " + e); return; }
+      if (epoch !== _runArtifactEpoch) return;
       if (!folder) return;
       if (await commitProjectEdit(yaml => api.autofillLayers(yaml, folder))) {
         logLine((z ? "✓ 已匹配数据文件夹 " : "✓ matched data folder ") + folder);
       }
       await enhanceLayerStep();
+
     };
+    const epoch = _runArtifactEpoch;
     let sum;
-    try { sum = await api.summary(await composeYaml()); }
+    try { sum = await api.summary(await composeYaml()); if (epoch !== _runArtifactEpoch || !table.isConnected) return; }
     catch (e) {
+      if (epoch !== _runArtifactEpoch || !table.isConnected) return;
       tbody.textContent = "";
       const tr = document.createElement("tr");
       const td = document.createElement("td");
@@ -2646,6 +2734,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const editLayer = async (id, path, enabled) => {
       await commitProjectEdit(yaml => invoke("set_layer_path", { yaml, id, path, enabled }));
       await enhanceLayerStep();
+
     };
     if (!layers.length) {
       const tr = document.createElement("tr");
@@ -2718,12 +2807,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     });
     tbody.querySelectorAll(".em-browse").forEach((b) => {
       b.onclick = async () => {
+        const epoch = _runArtifactEpoch;
         const tr = b.closest("[data-layer]");
         const id = tr.dataset.layer;
         const folder = tr.dataset.folder === "1";
         let p;
         try { p = await (folder ? api.pickDataFolder() : api.pickDataFile()); }
-        catch (e) { logLine("✗ " + e); return; }
+        catch (e) { if (epoch === _runArtifactEpoch) logLine("✗ " + e); return; }
+        if (epoch !== _runArtifactEpoch) return;
         if (!p) return;
         await editLayer(id, p, true);
       };
@@ -2732,6 +2823,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       b.onclick = async () => {
         const id = b.closest("[data-layer]").dataset.layer;
         await editLayer(id, "", false);
+
       };
     });
     // on/off switch: enable/disable a layer that already has a file set
@@ -2743,6 +2835,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         if (!path) return; // nothing to toggle without a file
         const enabled = tr.dataset.enabled !== "1";
         await editLayer(id, path, enabled);
+
       };
     });
     const card = table.closest(".card");
@@ -2752,7 +2845,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   // ---- domain (step 2) -> DomainConfig --------------------------------------
-  const num = (el) => parseFloat(String(el.value).replace(/[^\d.\-]/g, ""));
+  const num = (el) => {
+    const value = String(el.value).trim().replace(/°$/, "").trim();
+    return value ? Number(value) : NaN;
+  };
+
   function enhanceDomainStep() {
     if (hiddenDomainShape && domainEdit && domainEdit.kind === "hidden") return;
     const mode = domainMode;
@@ -2820,6 +2917,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       await refreshSummary();
     };
     if (!shapefile) bindCloseBoundaryControls("domain", () => domainCloseBoundary, (value) => { domainCloseBoundary = value; });
+
   }
 
   // ---- quality (step 5) -> QualityConfig ------------------------------------
@@ -2833,13 +2931,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (!qualityEdit) {
       if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn", batchCells: s.auto_refine_batch_cells || 1 };
     }
-    const autoEligible = !!s;
+    const autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");
     const readQ = () => {
       let minAngle = 0, policy = "warn", batchCells = 1;
-      if (minIn) { const v = num(minIn); if (minIn.value.trim() && !isNaN(v)) minAngle = v; }
+      if (minIn) { const v = num(minIn); minAngle = Number.isFinite(v) ? v : minIn.value; }
       if (sel) policy = sel.value === "block" ? "block" : "warn";
       if (autoIn && autoIn.checked && !autoIn.disabled) policy = "auto_refine";
-      if (batchIn) { const v = Number.parseInt(batchIn.value, 10); if (Number.isInteger(v) && v > 0) batchCells = v; }
+      if (batchIn) { const v = Number(batchIn.value); batchCells = batchIn.value.trim() && Number.isInteger(v) && v > 0 ? v : batchIn.value; }
       return { minAngle, policy, batchCells };
     };
     const paintAutoRefine = () => {
@@ -2853,8 +2951,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (autoIn) autoIn.addEventListener("change", update);
     if (batchIn) batchIn.addEventListener("input", update);
     if (qualityEdit) {
-      if (minIn) minIn.value = qualityEdit.minAngle + "°";
-      if (batchIn) batchIn.value = String(qualityEdit.batchCells || 1);
+      if (minIn) minIn.value = Number.isFinite(qualityEdit.minAngle) ? qualityEdit.minAngle + "°" : String(qualityEdit.minAngle);
+      if (batchIn) batchIn.value = String(qualityEdit.batchCells ?? 1);
       if (sel) sel.value = qualityEdit.policy === "block" ? "block" : "warn";
     }
     if (autoIn) {
@@ -2887,6 +2985,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     try { cat = await api.listCriteria(); }
     catch (e) { logLine("✗ refinement: " + e); return; }
     if (document.querySelector("#work .card") !== critCard) return;
+
     if (maxPasses == null) maxPasses = sum.max_passes;
     const merit = (sum.hydro_coast_buffer_km != null || sum.hydro_river_width_threshold_m != null || sum.hydro_river_upstream_area_threshold_km2 != null)
       ? meshMeritLayer(sum)
@@ -3184,7 +3283,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const ch = critCard.querySelector(".ch");
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
-      ch.textContent = z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.";
+      ch.textContent = draftError || (z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.");
       const anchor = ch;
       const switches = `<div class="grid2" id="refinementStrategySwitches" style="margin-top:12px">
         ${field(z?"指定细化":"Specified refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用后显示指定区域设置":"Show specified-region settings"}</label>`)}
@@ -3257,18 +3356,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (methodCAlgorithmSel) methodCAlgorithmSel.onchange = () => selectAlgorithm(
         methodCAlgorithmSel.value === "lepp_delaunay" ? "lepp_delaunay" : "method_c"
       );
+      const adaptiveMax = document.getElementById("adaptiveMaxLevel");
+      if (adaptiveMax) adaptiveMax.addEventListener("input", () => { specifiedRefine.adaptiveMaxLevel = readNum(adaptiveMax); clearRunArtifacts(); });
       const hfG = document.getElementById("hfieldG");
-      if (hfG) hfG.addEventListener("input", () => { const v = parseFloat(hfG.value); specifiedRefine.hfieldG = Number.isFinite(v) ? v : null; });
+      if (hfG) hfG.addEventListener("input", () => { specifiedRefine.hfieldG = hfG.value.trim() ? readNum(hfG) : null; clearRunArtifacts(); });
       const hfMax = document.getElementById("hfieldMaxLevel");
-      if (hfMax) hfMax.addEventListener("input", () => { const v = parseInt(hfMax.value, 10); specifiedRefine.hfieldMaxLevel = Number.isFinite(v) ? v : null; });
+      if (hfMax) hfMax.addEventListener("input", () => { specifiedRefine.hfieldMaxLevel = hfMax.value.trim() ? readNum(hfMax) : null; clearRunArtifacts(); });
       const hfBase = document.getElementById("hfieldBaseM");
-      if (hfBase) hfBase.addEventListener("input", () => { const v = parseFloat(hfBase.value); specifiedRefine.hfieldBaseM = Number.isFinite(v) ? v : null; });
+      if (hfBase) hfBase.addEventListener("input", () => { specifiedRefine.hfieldBaseM = hfBase.value.trim() ? readNum(hfBase) : null; clearRunArtifacts(); });
       const bindAlgorithmNumber = (id, key, integer=false) => {
         const el = document.getElementById(id);
         if (!el) return;
         const update = () => {
-          const value = integer ? parseInt(el.value, 10) : parseFloat(el.value);
-          specifiedRefine[key] = Number.isFinite(value) ? value : 0;
+          const value = readNum(el);
+          specifiedRefine[key] = integer && !Number.isInteger(value) ? el.value : value;
           clearRunArtifacts();
         };
         el.oninput = update;
@@ -3322,12 +3423,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
             hydroRefine.coastOceanEnabled = true;
           }
           _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
-          clearRunArtifacts();
         } else if (row.dataset.isCriterion === "1") {
           const id = row.dataset.crit;
           const next = row.dataset.enabled !== "1";
           const previous = criterionEdits[id];
-          const shownValue = row.dataset.value === "" ? null : parseFloat(row.dataset.value);
+          const shownValue = row.dataset.value === "" ? null : Number(row.dataset.value);
           criterionEdits[id] = { enabled: next, value: previous ? previous.value : (Number.isFinite(shownValue) ? shownValue : null) };
         } else {
           const id = row.dataset.crit;
@@ -3335,23 +3435,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
           if (!path) return;
           layerEdits[id] = { path, enabled: row.dataset.enabled !== "1" };
         }
+        clearRunArtifacts();
         enhanceRefinementStep();
       };
       const th = row.querySelector(".em-threshold");
       if (th) th.oninput = () => {
         const raw = th.value.trim();
-        const v = raw === "" ? null : parseFloat(raw);
+        const v = th.validity.badInput || (raw !== "" && !Number.isFinite(Number(raw)))
+          ? NaN : raw === "" ? null : Number(raw);
         const hydroThresholdKey = row.dataset.hydroThresholdKey;
         if (hydroThresholdKey) {
-          hydroRefine[hydroThresholdKey] = raw === ""
+          hydroRefine[hydroThresholdKey] = v === null
             ? defaultHydroRefine()[hydroThresholdKey]
-            : Number.isFinite(v) ? v : 0;
+            : v;
           _hydroThresholds = { ...hydroRefine, r3WidthM: hydroRefine.riverWidthThresholdM, r3UpaKm2: hydroRefine.riverUpstreamAreaThresholdKm2 };
         } else if (row.dataset.isCriterion === "1") {
           const previous = criterionEdits[row.dataset.crit];
-          criterionEdits[row.dataset.crit] = { enabled: previous ? previous.enabled : row.dataset.enabled === "1", value: Number.isFinite(v) ? v : null };
+          criterionEdits[row.dataset.crit] = { enabled: previous ? previous.enabled : row.dataset.enabled === "1", value: v };
         } else {
-          thresholdEdits[row.dataset.crit] = Number.isFinite(v) ? v : null;
+          thresholdEdits[row.dataset.crit] = v;
         }
         clearRunArtifacts();
       };
@@ -3418,7 +3520,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const specCloseText = document.getElementById("specifiedClosePathText");
     const readNum = (el) => {
       if (!el) return null;
-      return el.value.trim() ? Number(el.value) : "";
+      const value = el.value.trim();
+      const n = Number(value);
+      return value && Number.isFinite(n) ? n : el.value;
+
     };
     const paintSpecifiedKind = (kind) => {
       const radiusFields = document.getElementById("specifiedRadiusFields");
@@ -3442,6 +3547,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     if (specOn) specOn.onchange = () => {
       specifiedRefine.enabled = specOn.checked;
+      if (specOn.checked && specKind) syncSpecified();
+      else if (specOn.checked) {
+        // The detailed controls are not mounted until this switch is enabled.
+        const initial = (value, fallback) => Number.isFinite(value) ? value : fallback;
+        specifiedRefine.lon = initial(specifiedRefine.lon, 0);
+        specifiedRefine.lat = initial(specifiedRefine.lat, 0);
+        specifiedRefine.radiusKm = initial(specifiedRefine.radiusKm, 100);
+        specifiedRefine.w = initial(specifiedRefine.w, DEFAULT_BBOX[0]);
+        specifiedRefine.e = initial(specifiedRefine.e, DEFAULT_BBOX[1]);
+        specifiedRefine.s = initial(specifiedRefine.s, DEFAULT_BBOX[2]);
+        specifiedRefine.n = initial(specifiedRefine.n, DEFAULT_BBOX[3]);
+      }
       clearRunArtifacts();
       enhanceRefinementStep();
     };
@@ -3470,6 +3587,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       let p; try { p = await api.pickDataFile(); }
       catch (e) { if (document.getElementById("specifiedCloseBrowse") === specCloseBrowse) logLine("✗ " + e); return; }
       if (!p || document.getElementById("specifiedCloseBrowse") !== specCloseBrowse) return;
+
       if (!inferCloseFormat(p)) {
         logLine("✗ " + (z ? "指定闭合细化支持 .shp / .nml / .nc / .nc4 / .txt / .csv" : "Specified close refinement supports .shp / .nml / .nc / .nc4 / .txt / .csv"));
         return;
@@ -3548,6 +3666,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     try { await api.validate(res.yaml); sum._valid = true; sum._err = null; }
     catch (e) { sum._valid = false; sum._err = String(e); }
     if (epoch !== projectLoadEpoch) return;
+
     projectActive = true;
     baseProjectYaml = res.yaml;
     lastSummary = sum;
@@ -3598,6 +3717,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         domCircle = [...sum.circle];
         domainEdit = { kind: "circle", seaRatio: sum.sea_ratio ?? null };
         loadWatershedBoundary("");
+
       } else if (sum.bbox) {
         domainMode = "regional";
         regional = true;
@@ -3703,6 +3823,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   async function onSave() {
     const epoch = projectLoadEpoch;
+
     try {
       await projectEditQueue;
       if (epoch !== projectLoadEpoch) return;
@@ -3717,6 +3838,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         projectActive = true;
         await refreshSummary();
         if (epoch !== projectLoadEpoch) return;
+
         renderProjectSummary();
       }
       else if (epoch === projectLoadEpoch) logLine("save cancelled");
@@ -3733,12 +3855,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (epoch !== projectLoadEpoch) return;
     if (!res) { logLine("open cancelled"); return; }
     await reflectProject(res, epoch);
+
   }
 
   // Reset to a clean default project (matches first-load state). Keep the chosen
   // output folder — that's a machine preference, not project data.
   function resetProject() {
     tpl = DEFAULT_TPL; domainMode = "regional"; regional = true; domBbox = [...DEFAULT_BBOX]; domCircle = [...DEFAULT_CIRCLE]; domainSeaRatios = {}; watershedPath = ""; closePath = ""; closeFormat = "nml"; domainCloseBoundary = normalizeCloseBoundary(null); targetEdit = null; cellEdit = null;
+
     resUnitIdx = 0; resVal = RES_UNITS[0].def; maxPasses = null;
     if (typeof clearCoastalOverlay === "function") clearCoastalOverlay();
     clearRunArtifacts();
@@ -3763,7 +3887,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   // Compute the summary (+ validation) for the current UI state.
   async function refreshSummary() {
     const epoch = projectLoadEpoch, base = baseProjectYaml;
-    const current = () => epoch === projectLoadEpoch && base === baseProjectYaml;
+    const artifactEpoch = _runArtifactEpoch;
+    const current = () => epoch === projectLoadEpoch && base === baseProjectYaml && artifactEpoch === _runArtifactEpoch;
     try {
       const yaml = await composeYaml();
       if (!current()) return null;
@@ -3775,6 +3900,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       lastSummary = sum;
       return sum;
     } catch (e) { if (current()) lastSummary = null; return null; }
+
   }
 
   function cellShapeLabel(cell) {
@@ -3858,20 +3984,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function readOptionalInt(id) {
     const el = document.getElementById(id);
     if (!el || !el.value.trim()) return null;
-    const n = parseInt(el.value, 10);
-    return Number.isFinite(n) ? n : null;
+    const n = Number(el.value);
+    return Number.isInteger(n) ? n : el.value;
   }
   function readOptionalFloat(id) {
     const el = document.getElementById(id);
     if (!el || !el.value.trim()) return null;
-    const n = parseFloat(el.value);
-    return Number.isFinite(n) ? n : null;
+    const n = Number(el.value);
+    return Number.isFinite(n) ? n : el.value;
   }
   function readOptionalIntList(id) {
     const el = document.getElementById(id);
     if (!el || !el.value.trim()) return null;
-    const xs = el.value.split(/[\s,]+/).filter(Boolean).map((v) => parseInt(v, 10));
-    return xs.length && xs.every(Number.isFinite) ? xs : null;
+    const xs = el.value.split(/[\s,]+/).filter(Boolean);
+    const numbers = xs.map(Number);
+    return numbers.every(Number.isInteger) ? numbers : xs;
   }
   function inferCloseFormat(path) {
     const p = String(path || "").toLowerCase();
@@ -3956,7 +4083,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       cellIn.onchange = async () => {
         const cell = cellIn.value === "tri" ? "tri" : "hex";
         await commitProjectEdit(yaml => api.setTargetCell(yaml, cell));
+        updateEstimate();
         paintTargetOutputs(lastSummary);
+
       };
     }
     const colmEnabled = document.getElementById("colmMeshEnabled");
@@ -3988,6 +4117,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     projectActive = true;
     await refreshSummary();
     if (epoch !== projectLoadEpoch) return;
+
     if (typeof renderSteps === "function") renderSteps();
     if (typeof renderStep === "function") renderStep(0);
     logLine(zh() ? "✓ 新建项目" : "✓ new project");
@@ -4002,6 +4132,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     catch (e) { if (epoch === projectLoadEpoch) logLine("✗ open " + path + ": " + e); return; }
     if (epoch !== projectLoadEpoch) return;
     await reflectProject(res, epoch);
+
   }
 
   // ---- New Project (step 0): output-folder picker + real recent list --------
@@ -4017,9 +4148,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (nameStep && nameTop) nameStep.value = nameTop.value;
     if (author) author.value = (metadataEdit.authors || []).join(", ");
     if (desc) desc.value = metadataEdit.description || "";
-    if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; };
-    if (author) author.oninput = () => { metadataEdit.authors = author.value.split(",").map((s) => s.trim()).filter(Boolean); };
-    if (desc) desc.oninput = () => { metadataEdit.description = desc.value; };
+    if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; clearRunArtifacts(); };
+    if (author) author.oninput = () => { metadataEdit.authors = author.value.split(",").map((s) => s.trim()).filter(Boolean); clearRunArtifacts(); };
+    if (desc) desc.oninput = () => { metadataEdit.description = desc.value; clearRunArtifacts(); };
     // output-folder picker
     const opb = document.getElementById("outPathBrowse");
     const t0 = document.getElementById("outPathText");
@@ -4028,6 +4159,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       let p; try { p = await api.pickDataFolder(); } catch (e) { logLine("✗ " + e); return; }
       if (!p) return;
       outputPath = p;
+      clearRunArtifacts();
       try { localStorage.setItem("em.outputPath", p); } catch (e) {}
       const t = document.getElementById("outPathText");
       if (t) t.textContent = "📁 " + p;
@@ -4094,7 +4226,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     sumEl.innerHTML =
       `<div class="card"><h3>${z ? "项目摘要" : "Project summary"}</h3>
          <div class="ch">${z ? "新建/打开后的项目状态" : "Status of the created/opened project"}</div>
-         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s-md);margin-top:10px">
+         <div class="metrics" style="margin-top:10px">
            <div class="metric"><div class="mv" id="projectSummaryLayers"></div><div class="ml">${z ? "数据图层（启用/总）" : "Data layers (on/total)"}</div></div>
            <div class="metric"><div class="mv" id="projectSummaryDomain" style="font-size:15px"></div><div class="ml">${z ? "计算域" : "Domain"}</div></div>
            <div class="metric"><div class="mv" id="projectSummaryGate" style="font-size:15px"></div><div class="ml">${z ? "质量门限（最小角）" : "Quality gate (min angle)"}</div></div>
@@ -4138,13 +4270,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       domainEdit = { kind: "bbox", w: DEFAULT_BBOX[0], e: DEFAULT_BBOX[1], s: DEFAULT_BBOX[2], n: DEFAULT_BBOX[3] };
     if (typeof cur !== "undefined") {
       if (typeof renderStep === "function") renderStep(cur);
-      if (cur === 0) enhanceNewProjectStep();
-      else if (cur === 1) enhanceTargetOutputStep();
-      else if (cur === 2) enhanceDomainStep();
-      else if (cur === 3) enhanceLayerStep();
-      else if (cur === 4) enhanceRefinementStep();
-      else if (cur === 5) enhanceQualityStep();
-      else if (cur === 6) enhanceRunStep();
     }
   }
   backendReady = loadBackendCapabilities();
@@ -4168,31 +4293,39 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     setStatus(zh() ? "运行中…" : "running…", false);
     setRunControls(true);
+    let runEpoch;
+    const runIsCurrent = () => runEpoch === _runArtifactEpoch;
     try {
       await projectEditQueue;
       clearRunArtifacts();
+      runEpoch = _runArtifactEpoch;
       if (typeof cur !== "undefined" && cur === 6) renderStep(6);
       // show the Log pane because the Run button now lives inside the step footer
       document.querySelectorAll("#liveTabs button").forEach(x => x.classList.toggle("on", x.dataset.pane === "log"));
       document.querySelectorAll(".live-pane").forEach(p => p.classList.toggle("on", p.dataset.pane === "log"));
       const yaml = await composeYaml();
+      if (!runIsCurrent()) return;
       let runSummary = null;
       try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
       logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
+      if (!runIsCurrent()) return;
       const r = await api.runProject(yaml, outputPath || null);
+      if (!runIsCurrent()) return;
       logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
                    : ("✗ " + (zh() ? "退出码 " : "exited with code ") + r.code));
       setStatus(r.ok ? (zh() ? "运行完成" : "finished") : (zh() ? "运行失败" : "failed"), true);
       const decisions = Array.isArray(r.auto_refine_decisions) ? r.auto_refine_decisions : [];
-      hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
+      hasRun = true; runInfo = { ok: r.ok, outdir: r.outdir, code: r.code, cell: r.cell, gridfile: r.gridfile, summary: runSummary, delivery: r.ok ? r.delivery || null : null, certified: r.certified || null, autoRefineDecisions: decisions };
       if (decisions.length) logLine((zh() ? "✓ 已载入 AutoRefine 决策记录：" : "✓ loaded AutoRefine decisions: ") + decisions.length);
     } catch (e) {
+      if (!runIsCurrent()) return;
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
       hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
     } finally {
       setRunControls(false);
       try {
+        if (!runIsCurrent()) { setStatus(zh() ? "配置已更改，旧结果已忽略" : "settings changed; old result ignored", true); return; }
         if (typeof cur !== "undefined" && cur === 6 && typeof renderStep === "function") {
           try { renderStep(6); }
           catch (e) { logLine((zh() ? "⚠ 结果面板刷新失败，继续加载网格：" : "⚠ result panel refresh failed; continuing mesh load: ") + e); }
@@ -4493,7 +4626,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   function meshViewKind() {
     const report = runInfo && runInfo.delivery && runInfo.delivery.report;
     const summary = runInfo && runInfo.summary;
-    return String((report && report.target.cell) || (summary && summary.cell) || "").toLowerCase() === "tri" ? "tri" : "hex";
+    return String((report && report.target.cell) || (runInfo && runInfo.cell) || (summary && summary.cell) || "").toLowerCase() === "tri" ? "tri" : "hex";
+
   }
   function readMeshQuality(gridfile) {
     const certificate = runInfo && runInfo.certified && runInfo.certified.certificate;
@@ -4508,9 +4642,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       onViolation: Number.isFinite(certifiedMinimum) ? "block" : ((summary && summary.on_violation) || "warn")
     });
   }
-  function loadMeshMeritCells(gridfile, kind, result) {
-    if (runInfo !== result) return;
-    const summary = result.summary;
+  function loadMeshMeritCells(gridfile, kind, cellStride, previewToken) {
+    const epoch = _runArtifactEpoch;
+    const previewMesh = _meshGeojson;
+    const summary = runInfo && runInfo.summary;
+
     const merit = meshMeritLayer(summary);
     const landcover = meshLandcoverLayer(summary);
     const b = summary && summary.bbox;
@@ -4524,21 +4660,24 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       coastLandEnabled: !!summary.hydro_coast_land_refine_enabled,
       coastOceanEnabled: !!summary.hydro_coast_ocean_refine_enabled,
     };
-    invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
+    invoke("mesh_merit_cells", { gridfile, kind, meritRoot: merit.path, w: b[0], e: b[1], s: b[2], n: b[3], stride: MERIT_SURFACE_PREVIEW_STRIDE, cellStride, landtypeFile: landcover && landcover.path ? landcover.path : null, r2WidthM:_hydroThresholds.r2WidthM, r2UpaKm2:_hydroThresholds.r2UpaKm2, r3WidthM:_hydroThresholds.r3WidthM, r3UpaKm2:_hydroThresholds.r3UpaKm2 })
       .then((txt) => {
-        if (runInfo !== result) return;
+        if (epoch !== _runArtifactEpoch || previewToken !== _meshPreviewToken || previewMesh !== _meshGeojson) return;
+
         const classified = JSON.parse(txt);
-        const fullCount = _meshGeojson && Array.isArray(_meshGeojson.features) ? _meshGeojson.features.length : 0;
-        const classifiedCount = Array.isArray(classified.features) ? classified.features.length : 0;
-        if (classifiedCount < fullCount) {
+        const sourceCells = previewMesh && Array.isArray(previewMesh.features) ? previewMesh.features : [];
+        const classifiedCells = Array.isArray(classified.features) ? classified.features : [];
+        const fullCount = sourceCells.length, classifiedCount = classifiedCells.length;
+        if (classifiedCount !== fullCount || classifiedCells.some((cell, i) => cell.properties?.cell_id !== sourceCells[i].properties?.cell_id)) {
           clearCoastalOverlay();
-          logLine(zh() ? `⚠ MERIT 分类仅覆盖 ${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} 个单元；保留完整未分类网格。` : `⚠ MERIT classification covers only ${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} cells; keeping the complete unclassified mesh.`);
+          logLine(zh() ? `⚠ MERIT 分类与网格预览不对应（${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} 个单元）；保留未分类网格。` : `⚠ MERIT classification does not match the mesh preview (${classifiedCount.toLocaleString()} / ${fullCount.toLocaleString()} cells); keeping the unclassified mesh.`);
           return;
         }
         applyCoastal(classified, false);
         logLine(zh() ? "✓ 最终网格预览已按 MERIT-Hydro R3/R2 + land-cover fraction 区分海岸带/陆地/海洋" : "✓ final mesh preview classified with MERIT-Hydro R3/R2 plus land-cover coastal fractions");
       })
-      .catch((e) => { if (runInfo !== result) return; clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+      .catch((e) => { if (epoch !== _runArtifactEpoch || previewToken !== _meshPreviewToken || previewMesh !== _meshGeojson) return; clearCoastalOverlay(); logLine((zh() ? "⚠ 最终网格海岸带分类失败：" : "⚠ final coastal classification failed: ") + e); });
+
   }
   function certifiedPreviewCellCount(kind) {
     const resources = runInfo && runInfo.certified && runInfo.certified.resources;
@@ -4589,23 +4728,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return true;
   }
   async function loadQualityAndMesh(gridfile, knownQuality) {
-    const result = runInfo;
-    if (!result || result.gridfile !== gridfile) return;
-    const current = () => runInfo === result;
+    const epoch = _runArtifactEpoch;
+    const isCurrent = () => epoch === _runArtifactEpoch;
     renderQualityNote(zh() ? "分析中…" : "analyzing…");
     const kind = meshViewKind();
     const quality = knownQuality ? Promise.resolve(knownQuality) : readMeshQuality(gridfile);
-    quality.then((q) => { if (current()) { _lastQuality = q; renderQualityCard(q); } })
-      .catch((e) => { if (current()) renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e); });
+    quality.then((q) => { if (!isCurrent()) return; _lastQuality = q; renderQualityCard(q); })
+      .catch((e) => { if (isCurrent()) renderQualityNote((zh() ? "质量分析失败：" : "quality failed: ") + e); });
     const knownCells = Number(knownQuality && knownQuality.cell_count) || certifiedPreviewCellCount(kind);
     const startPreview = (totalCells) => {
-      if (!current()) return false;
+      if (!isCurrent()) return Promise.resolve();
+
       _meshPreview = {gridfile,kind,totalCells,key:"global"};
-      return loadMeshPreview(gridfile,kind,totalCells,null,true);
+      const loaded = loadMeshPreview(gridfile,kind,totalCells,null,true);
+      const token = _meshPreviewToken;
+      return loaded.then(applied => applied ? {totalCells,token} : null);
     };
     (knownCells > 0 ? startPreview(knownCells) : quality.then((q)=>startPreview(Number(q.cell_count)||MESH_VIEW_CELLS)))
-      .then((applied) => { if (applied && current() && !result.certified) loadMeshMeritCells(gridfile, kind, result); })
-      .catch((e) => { if (current()) logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e); });
+      .then((preview) => { if (preview && isCurrent() && preview.token === _meshPreviewToken && !(runInfo && runInfo.certified)) loadMeshMeritCells(gridfile, kind, meshPreviewStride(preview.totalCells,null), preview.token); })
+      .catch((e) => { if (isCurrent()) logLine((zh() ? "网格叠加失败：" : "mesh overlay failed: ") + e); });
+
   }
 
   // A distribution row: [min..max] track with the μ±σ band + mean tick.

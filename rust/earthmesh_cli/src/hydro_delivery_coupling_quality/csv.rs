@@ -2,7 +2,9 @@ use crate::cama_binary_io::{CamaLonLatBbox, CamaReachClassificationThresholds};
 use crate::cama_reach_inventory::{
     classify_cama_reach_record, read_cama_reach_inventory_from_map_dir,
 };
-use crate::unstructured_mesh_support::mesh_points_have_two_placeholder_rows;
+use crate::unstructured_mesh_support::{
+    mesh_m_has_two_placeholder_rows, mesh_w_has_two_placeholder_rows,
+};
 use crate::{
     classify_area_judge_landtype_one_based, read_unstructured_mesh_netcdf,
     sample_landtype_values_for_points_one_based, AreaJudgeLandtypeClass, ColmSurfaceCounts,
@@ -195,8 +197,8 @@ struct CouplingCell {
 }
 
 fn coupling_cells(mesh: &UnstructuredMesh, mode_grid: &str) -> io::Result<Vec<CouplingCell>> {
-    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
-    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let m_has_two_placeholders = mesh_m_has_two_placeholder_rows(mesh);
+    let w_has_two_placeholders = mesh_w_has_two_placeholder_rows(mesh);
     let mut cells = Vec::new();
     match mode_grid.trim() {
         "tri" => {

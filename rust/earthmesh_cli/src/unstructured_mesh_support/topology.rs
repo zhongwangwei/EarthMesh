@@ -1,8 +1,8 @@
 use std::io;
 
 use super::indexing::{
-    mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, mesh_row_for_canonical_id,
-    unstructured_w_row_layout,
+    mesh_canonical_id_for_row, mesh_m_has_two_placeholder_rows, mesh_row_for_canonical_id,
+    mesh_w_has_two_placeholder_rows, unstructured_w_row_layout,
 };
 use super::{UnstructuredMesh, UnstructuredMeshTopologyReport};
 
@@ -125,8 +125,8 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
 
     let m_rows = mesh.m_points.len();
     let w_rows = mesh.w_points.len();
-    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
-    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let m_has_two_placeholders = mesh_m_has_two_placeholder_rows(mesh);
+    let w_has_two_placeholders = mesh_w_has_two_placeholder_rows(mesh);
     let cap = 80usize;
     let push_violation = |violations: &mut Vec<String>, message: String| {
         if violations.len() < cap {
@@ -246,8 +246,8 @@ pub(crate) fn split_non_manifold_triangle_vertex_fans(
     mesh: &mut UnstructuredMesh,
 ) -> io::Result<Vec<usize>> {
     validate_unstructured_mesh(mesh)?;
-    let m_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.m_points);
-    let w_has_two_placeholders = mesh_points_have_two_placeholder_rows(&mesh.w_points);
+    let m_has_two_placeholders = mesh_m_has_two_placeholder_rows(mesh);
+    let w_has_two_placeholders = mesh_w_has_two_placeholder_rows(mesh);
     let original_w_rows = mesh.w_points.len();
     let mut duplicate_sources = Vec::new();
 
@@ -448,6 +448,21 @@ mod tests {
         assert_eq!(report.boundary_vertex_degree_violation_count, 0);
         assert_eq!(report.euler_characteristic, Some(1));
         assert_eq!(report.expected_euler_characteristic, Some(1));
+    }
+
+    #[test]
+    fn compact_disk_keeps_a_physical_vertex_at_the_origin() {
+        let mut mesh = two_triangle_disk();
+        mesh.m_points.remove(0);
+        mesh.w_points.remove(0);
+        mesh.m_to_w.remove(0);
+        mesh.w_to_m.remove(0);
+        mesh.n_w_to_m.remove(0);
+
+        let report = check_unstructured_mesh_topology(&mesh);
+        assert!(report.is_consistent(), "{:?}", report.violations);
+        assert_eq!(report.boundary_loop_count, 1);
+        assert_eq!(report.euler_characteristic, Some(1));
     }
 
     #[test]

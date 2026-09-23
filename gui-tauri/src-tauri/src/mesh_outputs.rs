@@ -140,6 +140,10 @@ pub(crate) fn mesh_quality(
 ) -> Result<MeshQuality, String> {
     let kind = checked_mesh_kind(kind.as_deref())?;
     let dir = gridfile_dir(&gridfile)?;
+    let quality_namelist = quality_namelist_for_gui(
+        min_angle_deg.unwrap_or(25.0),
+        on_violation.as_deref().unwrap_or("warn"),
+    )?;
     // Measure hexagon cells for hex/atmos (MPAS) meshes, triangles for FVCOM —
     // matching the cell view the map renders, so the reported angles are the real
     // cell angles (≈120° for hexagons), not the dual triangles (≈60°).
@@ -148,10 +152,6 @@ pub(crate) fn mesh_quality(
     // directory, so simultaneous IPC requests cannot overwrite one another.
     let quality_dir = create_unique_analysis_dir(&dir, "quality")?;
     let quality_path = quality_dir.join("studio_quality.nml");
-    let quality_namelist = quality_namelist_for_gui(
-        min_angle_deg.unwrap_or(25.0),
-        on_violation.as_deref().unwrap_or("warn"),
-    )?;
     fs::write(&quality_path, quality_namelist)
         .map_err(|e| format!("write {}: {e}", quality_path.display()))?;
     let bin = resolve_mkgrd()?;
@@ -178,19 +178,18 @@ pub(crate) fn quality_namelist_for_gui(
     min_angle_deg: f64,
     on_violation: &str,
 ) -> Result<String, String> {
-    if !min_angle_deg.is_finite() || min_angle_deg <= 0.0 {
-        return Err("quality min_angle_deg must be finite and > 0".to_string());
+    if !min_angle_deg.is_finite() || !(0.0..180.0).contains(&min_angle_deg) {
+        return Err("quality min_angle_deg must be finite and between 0 and 180".to_string());
     }
     let policy = match on_violation.trim() {
-        "warn" => "warn",
-        "block" => "block",
-        // This IPC is measurement-only. Project AutoRefine is owned by the
-        // canonical `mkgrd.x --project` workflow.
-        "auto_refine" => "warn",
+        // This IPC only reads an existing grid. A failed gate must still return
+        // its report; Project owns blocking and AutoRefine decisions.
+        "warn" | "block" | "auto_refine" => "warn",
         other => return Err(format!("unknown quality policy {other:?}")),
     };
     Ok(format!(
-        "&quality\n  NL%min_angle_warn_deg = {min_angle_deg}\n  NL%on_violation = '{policy}'\n/\n"
+        "&quality\n  NL%min_angle_warn_deg = {min_angle_deg}\n  NL%min_angle_fail_deg = {}\n  NL%on_violation = '{policy}'\n/\n",
+        min_angle_deg.min(5.0)
     ))
 }
 
@@ -251,6 +250,7 @@ pub(crate) fn mesh_merit_cells(
     s: f64,
     n: f64,
     stride: Option<u32>,
+    cell_stride: Option<u32>,
     landtype_file: Option<String>,
     r2_width_m: f64,
     r2_upa_km2: f64,
@@ -292,6 +292,8 @@ pub(crate) fn mesh_merit_cells(
             .arg(kind)
             .arg("--max-cells")
             .arg(MAP_PREVIEW_PAGE_LIMIT.to_string())
+            .arg("--cell-stride")
+            .arg(cell_stride.unwrap_or(1).max(1).to_string())
             .output()
             .map_err(|e| format!("run --gridfile-cell-polygons ({bin}): {e}"))?;
         if !res.status.success() {

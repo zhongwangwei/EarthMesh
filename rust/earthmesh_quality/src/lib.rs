@@ -448,6 +448,16 @@ impl MeshQualityReport {
     pub fn has_unrepairable_failure(&self) -> bool {
         self.verdict == QualityLevel::Fail
             && (self.repair_cells.is_empty()
+                || self.gates.iter().any(|gate| {
+                    gate.level == QualityLevel::Fail
+                        && !matches!(
+                            gate.metric.as_str(),
+                            "min_angle_deg"
+                                | "aspect_ratio_max"
+                                | "cell_edge_length_cv_max"
+                                | "angle_deviation_deg_max"
+                        )
+                })
                 || self.worst_cells.iter().any(|cell| {
                     cell.level == QualityLevel::Fail && !cell.is_refinement_repairable()
                 })
@@ -1692,6 +1702,21 @@ fn evaluate(
         });
     };
 
+    push(
+        "cell_count",
+        geom.cell_count as f64,
+        if geom.cell_count == 0 {
+            QualityLevel::Fail
+        } else {
+            QualityLevel::Pass
+        },
+        if geom.cell_count == 0 {
+            "mesh contains no cells"
+        } else {
+            ""
+        },
+    );
+
     // Catastrophic topology -> Fail.
     for (name, count) in [
         (
@@ -1867,7 +1892,7 @@ fn evaluate(
         "transition_continuity_warning_count",
         topo.transition_continuity_warning_count as f64,
         trans_level,
-        "adjacent level jump > 1",
+        "adjacent sqrt(area) ratio > 2",
     );
 
     let isolated_level = if topo.isolated_refined_cell_count > 0 {
@@ -2152,6 +2177,17 @@ mod tests {
         // 3D chord corner angle of a 1°×1° equatorial square is ~90° (not exactly,
         // since the chord vectors live on the sphere) — sane, not a planar artifact.
         assert!((r.geometry.min_angle_deg - 90.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn empty_mesh_cannot_pass_quality_gate() {
+        let report = compute(&QualityMeshInput::default(), &QualityThresholds::default());
+        assert_eq!(report.verdict, QualityLevel::Fail);
+        assert!(report.has_unrepairable_failure());
+        assert!(report
+            .gates
+            .iter()
+            .any(|gate| { gate.metric == "cell_count" && gate.level == QualityLevel::Fail }));
     }
 
     #[test]
@@ -2577,6 +2613,40 @@ mod tests {
         assert!(r.geometry.cell_area.mean.is_finite());
         assert!(r.geometry.cell_area.std.is_finite());
         assert!(r.geometry.edge_length_km.mean.is_finite());
+    }
+
+    #[test]
+    fn non_finite_cell_cannot_hide_behind_a_repairable_sliver() {
+        let input = QualityMeshInput {
+            vertices: vec![
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.5, 0.001),
+                Point::new(f64::NAN, -1.0),
+            ],
+            cells: vec![
+                QualityCell {
+                    vertices: vec![0, 1, 2],
+                    neighbors: vec![1],
+                    refine_level: Some(0),
+                },
+                QualityCell {
+                    vertices: vec![1, 0, 3],
+                    neighbors: vec![0],
+                    refine_level: Some(0),
+                },
+            ],
+        };
+        let baseline = compute(&input, &QualityThresholds::default());
+        assert_eq!(baseline.geometry.non_finite_cell_count, 1);
+        assert!(!baseline.repair_cells.is_empty());
+        assert!(baseline.has_unrepairable_failure());
+
+        let mut improved_sliver = input;
+        improved_sliver.vertices[2].y = 0.01;
+        let candidate = compute(&improved_sliver, &QualityThresholds::default());
+        assert!(candidate.has_unrepairable_failure());
+        assert!(!candidate.is_strict_improvement_over(&baseline));
     }
 
     #[test]

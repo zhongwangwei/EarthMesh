@@ -125,13 +125,6 @@ pub(crate) fn preserve_unexposed_project_fields(
         }
     }
 
-    cfg.hydro_coast = matches!(cfg.domain, DomainConfig::Regional { .. })
-        .then_some(base.hydro_coast)
-        .flatten();
-    cfg.coupling = (cfg.target.kind == MeshDomainKind::Coupled)
-        .then_some(base.coupling)
-        .flatten();
-
     let preserves_unexposed_shape = matches!(
         &base.domain,
         DomainConfig::Regional {
@@ -144,6 +137,13 @@ pub(crate) fn preserve_unexposed_project_fields(
     if preserve_domain && preserves_unexposed_shape {
         cfg.domain = base.domain;
     }
+
+    cfg.hydro_coast = matches!(cfg.domain, DomainConfig::Regional { .. })
+        .then_some(base.hydro_coast)
+        .flatten();
+    cfg.coupling = (cfg.target.kind == MeshDomainKind::Coupled)
+        .then_some(base.coupling)
+        .flatten();
 
     validated_yaml(cfg)
 }

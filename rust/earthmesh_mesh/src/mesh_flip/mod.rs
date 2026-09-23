@@ -200,6 +200,18 @@ impl MeshState {
         self.legalize_within(seed, None)
     }
 
+    /// Lawson polishing with a per-edge admission check. A refused flip leaves
+    /// that edge unchanged; the result need not be Delaunay. Unfiltered callers
+    /// keep using `legalize_around` / `legalize_within` with their original policy.
+    pub fn legalize_around_if(
+        &mut self,
+        seed: &BTreeSet<usize>,
+        accept: impl FnMut(&Self, usize, usize) -> bool,
+    ) -> Result<usize, FlipError> {
+        self.legalize_filtered(seed, None, accept)
+            .map(|(flips, _)| flips)
+    }
+
     /// The same, refusing to turn an edge outside `allowed`.
     ///
     /// A repair that reaches past what a caller snapshotted cannot be rolled
@@ -222,6 +234,15 @@ impl MeshState {
         &mut self,
         seed: &BTreeSet<usize>,
         allowed: Option<&BTreeSet<usize>>,
+    ) -> Result<(usize, BTreeSet<usize>), FlipError> {
+        self.legalize_filtered(seed, allowed, |_, _, _| true)
+    }
+
+    fn legalize_filtered(
+        &mut self,
+        seed: &BTreeSet<usize>,
+        allowed: Option<&BTreeSet<usize>>,
+        mut accept: impl FnMut(&Self, usize, usize) -> bool,
     ) -> Result<(usize, BTreeSet<usize>), FlipError> {
         // Generous, and a bound rather than a guess: Lawson's argument says
         // this terminates, so hitting the cap means the premise failed and the
@@ -251,6 +272,9 @@ impl MeshState {
                             neighbour,
                         });
                     }
+                }
+                if !accept(self, triangle, corner) {
+                    continue;
                 }
                 for face in [triangle, neighbour] {
                     touched.insert(face);

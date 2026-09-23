@@ -254,3 +254,23 @@ fn a_sequence_of_flips_keeps_the_adjacency_symmetric() {
     }
     assert!(flipped > 10, "only {flipped} flips were legal");
 }
+
+#[test]
+fn legalization_admission_can_refuse_without_changing_default_behavior() {
+    let mut broken = sphere(6);
+    broken.flip_edge(10, 0).unwrap();
+    assert!(delaunay_violations(&broken) > 0);
+    let seed = broken.active_triangle_slots().collect::<BTreeSet<_>>();
+    let mut filtered = broken.clone();
+    assert_eq!(
+        filtered.legalize_around_if(&seed, |_, _, _| false).unwrap(),
+        0
+    );
+    assert_eq!(filtered, broken);
+    let expected = broken.legalize_around(&seed).unwrap();
+    assert_eq!(
+        filtered.legalize_around_if(&seed, |_, _, _| true).unwrap(),
+        expected
+    );
+    assert_eq!(filtered, broken);
+}

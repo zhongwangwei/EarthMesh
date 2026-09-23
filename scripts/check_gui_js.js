@@ -303,7 +303,7 @@ check(
 log("AutoRefine is visible in normal quality controls");
 
 check(
-  html.includes("const autoEligible = !!s;") &&
+  html.includes('const autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");') &&
     html.includes("支持全球、区域、流域；也可从未细化网格开始") &&
     !html.includes('s.domain === "regional" && s.refine_enabled') &&
     !html.includes('qualityEdit.policy = "warn"'),
@@ -471,6 +471,9 @@ check(
   "startup and language switches must render the workflow/map only once",
 );
 log("startup and language switching avoid duplicate renders");
+const startup = section(html, /async function initializeBackend\(\) \{([\s\S]*?)\n  \}\n  backendReady =/, "backend startup");
+check(startup.includes("renderStep(cur)") && !/enhance\w+Step\(\)/.test(startup),
+  "backend startup must not enhance a step twice after renderStep");
 
 {
   const splitters = section(
@@ -488,7 +491,7 @@ log("splitter dragging only resizes existing maps");
 check(
   /<input class="proj-name"[^>]*\breadonly\b/.test(html) &&
     html.includes('id="projectNameStep"') &&
-    html.includes("if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; };"),
+    html.includes("if (nameStep && nameTop) nameStep.oninput = () => { nameTop.value = nameStep.value; clearRunArtifacts(); };"),
   "case name must be a read-only mirror of the editable project name",
 );
 log("case name follows the project name and is read-only");
@@ -559,6 +562,7 @@ log("CoLM mesh delivery command is wired and model-gated");
 {
   const compose = section(html, /async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/, "composeYaml body");
   const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+
   const wire = section(html, /async function wireExpertTargetStep\(\) \{([\s\S]*?)\n  \}/, "wireExpertTargetStep body");
   check(
     compose.includes("yaml, nxp: expertEdit.nxp") &&
@@ -810,11 +814,13 @@ log("CaMa label check passed");
 }
 
 {
+  const compose = section(html, /async function composeYaml\([^)]*\) \{([\s\S]*?)\n  \}/, "composeYaml body");
   check(
     readme.includes("domain_shape") &&
       html.includes("hiddenDomainShape") &&
       html.includes('kind: "hidden"') &&
       html.includes("preserveDomain: !template && !!hiddenDomainShape") &&
+
       html.includes("function domainLabel") &&
       html.includes("hiddenDomainShapeText") &&
       html.includes("readyDomain.textContent=domainLabel();") &&
@@ -828,6 +834,7 @@ log("CaMa label check passed");
 
 {
   const unawaitedReflect = /(^|\n)\s*(?!await\s+)reflectProject\(res(?:,[^)]*)?\);/.test(html);
+
   check(
     html.includes("renderMissingGridfile") &&
       html.includes("engine did not report gridfile") &&
@@ -839,6 +846,7 @@ log("CaMa label check passed");
       html.includes("function clearRunArtifacts") &&
       html.includes("applyMesh(null);") &&
       (html.includes("await reflectProject(res);") || html.includes("await reflectProject(res, epoch);")) &&
+
       html.includes('runOut.textContent=parts.join(" \u00b7 ");') &&
       !html.includes('${runInfo&&runInfo.outdir?(lang?"\u8f93\u51fa\u76ee\u5f55\uff1a":"output: ")+runInfo.outdir') &&
       !unawaitedReflect,
@@ -894,6 +902,7 @@ log("layer rows render project data as text");
   check(
     body.indexOf("auto.onclick = async") >= 0 &&
       body.indexOf("auto.onclick = async") < body.indexOf("await api.summary") &&
+      body.includes("commitProjectEdit(yaml => api.autofillLayers(yaml, folder))") &&
       body.includes("无法读取数据图层") &&
       body.includes("当前模板不需要外部数据图层"),
     "folder matching must bind before project composition and layer loading must expose error/empty states",
@@ -924,6 +933,32 @@ check(
 log("opened project layers preserve disabled state");
 
 {
+  const body = section(html, /async function refreshSummary\(\) \{([\s\S]*?)\n  \}/, "refreshSummary body");
+  const harness = new Function(`
+    let lastSummary=null, _runArtifactEpoch=0, projectLoadEpoch=0, baseProjectYaml=null, current="old";
+    const pending={};
+    const api={summary:(yaml)=>new Promise((resolve)=>{pending[yaml]=resolve;}), validate:async()=>{}};
+    const composeYaml=async()=>current;
+    async function refreshSummary(){${body}\n  }
+    return {refreshSummary, advance:()=>{current="new";_runArtifactEpoch++;},
+      resolve:(id)=>pending[id]({id}), result:()=>lastSummary&&lastSummary.id};
+  `)();
+  (async () => {
+    const old = harness.refreshSummary();
+    await new Promise(setImmediate);
+    harness.advance();
+    const current = harness.refreshSummary();
+    await new Promise(setImmediate);
+    harness.resolve("new");
+    await current;
+    harness.resolve("old");
+    await old;
+    check(harness.result() === "new", "stale project summary must not overwrite a newer one");
+    log("project summaries reject stale asynchronous responses");
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
+}
+
+{
   const body = section(html, /function renderProjectSummary\(\) \{([\s\S]*?)\n  \}/, "renderProjectSummary body");
   check(
     body.includes("projectSummaryError") &&
@@ -932,6 +967,7 @@ log("opened project layers preserve disabled state");
       body.includes("domainEl.textContent = domain;") &&
       body.includes("gateEl.textContent = gate;") &&
       body.includes('layersEl.textContent = on + "/" + total;') &&
+      body.includes('<div class="metrics" style="margin-top:10px">') &&
       !body.includes('sumEl.innerHTML = ""') &&
       !body.includes(">${domain}</div>") &&
       !body.includes(">${gate}</div>") &&
@@ -942,11 +978,32 @@ log("opened project layers preserve disabled state");
 }
 
 {
+  const body = section(html, /function setRunControls\(on\)\{([\s\S]*?)\n\}/, "setRunControls body");
+  const rerenderControls = new Function(`
+    let runInProgress=true, killInProgress=false, lang=1;
+    const runBtn={disabled:false,style:{},textContent:"▶ 运行"};
+    const killBtn={style:{display:"none"}};
+    const document={getElementById:(id)=>id==="runBtn"?runBtn:id==="killBtn"?killBtn:null};
+    function setRunControls(on) {${body}\n}
+    setRunControls(runInProgress);
+    return {runBtn,killBtn};
+  `);
+  const {runBtn, killBtn} = rerenderControls();
+  check(runBtn.disabled && killBtn.style.display === "inline-flex",
+    "rerendered run page must keep Run disabled and Kill visible");
+  log("rerendered run controls preserve active state");
+}
+
+
+{
   const body = section(html, /async function loadQualityAndMesh\(gridfile[^)]*\) \{([\s\S]*?)\n  \}/, "loadQualityAndMesh body");
   const note = section(html, /function renderQualityNote\(text\) \{([\s\S]*?)\n  \}/, "renderQualityNote body");
   check(
     html.includes("function renderQualityNote(text)") &&
       body.includes("renderQualityNote") &&
+      body.includes("const epoch = _runArtifactEpoch;") &&
+      body.includes("if (!isCurrent()) return;") &&
+      body.includes("preview.token === _meshPreviewToken") &&
       !body.includes('quality failed: ") + e}</div>') &&
       !note.includes("innerHTML") &&
       note.includes("note.textContent = text;"),
@@ -974,6 +1031,21 @@ log("opened project layers preserve disabled state");
     "quality mode must render user-facing tri/hex labels without an unexplained dash",
   );
   log("quality mode labels are explicit and render from project summary");
+}
+
+{
+  const body = section(html, /function meshViewKind\(\) \{([\s\S]*?)\n  \}/, "meshViewKind body");
+  const kind = new Function("runInfo", "lastSummary", body);
+  check(kind({cell:"tri"}, {cell:"hex"}) === "tri" && kind({cell:"hex"}, {cell:"tri"}) === "hex",
+    "mesh preview must use this run's cell shape, not a stale project summary");
+  check(kind({summary:{cell:"tri"}}, {cell:"hex"}) === "tri", "mesh preview must use its captured run summary fallback");
+  log("mesh preview uses the current run's cell shape");
+}
+
+{
+  const cellChange = section(html, /cellIn\.onchange = async \(\) => \{([\s\S]*?)\n      \};/, "cell-shape change handler");
+  check(cellChange.includes("updateEstimate();"), "changing Tri/Hex must refresh the cell-count estimate");
+  log("cell-shape changes refresh the estimate");
 }
 
 check(
@@ -1050,6 +1122,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
   const nxp = section(html, /function currentNxp\(\) \{([\s\S]*?)\n  \}/, "currentNxp body");
   const res = section(html, /function resInput\(src\)\{([\s\S]*?)\n\}/, "resInput body");
   const reflect = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+
   check(
     current.includes("if (resUnitIdx === 1) return { nxp: Math.round(resVal), approxKm: null") &&
       current.includes("return { nxp: null, approxKm: resVal") &&
@@ -1108,8 +1181,8 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
     "h-field base input body",
   );
   check(
-    body.includes("Number.isFinite(v) ? v : null") &&
-      !body.includes("Number.isFinite(v) && v > 0 ? v : null"),
+    body.includes("hfBase.value.trim() ? readNum(hfBase) : null") &&
+      !body.includes("readNum(hfBase) > 0"),
     "frontend h-field base_m must pass non-positive values to Rust validation",
   );
   log("frontend h-field base_m passes non-positive values to Rust validation");
@@ -1117,6 +1190,7 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 
 {
   const body = section(html, /async function reflectProject\(res(?:,[^)]*)?\) \{([\s\S]*?)\n  \}/, "reflectProject body");
+
   check(body.includes("maxPasses = sum.max_passes;") && !body.includes("if (sum.max_passes)"), "opened project max_passes must not truthy-filter zero");
   log("opened project max_passes preserves zero");
 }
@@ -1132,6 +1206,40 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
     "save must refresh active project summary",
   );
   log("save refreshes active project summary");
+}
+
+{
+  const body = section(html, /async function onSave\(\) \{([\s\S]*?)\n  \}/, "onSave body");
+  const makeSaver = new Function(`
+    let projectLoadEpoch=0, projectEditQueue=Promise.resolve(), projectActive=false, name="A", complete, recent=[], refreshes=0, renders=0;
+    const composeYaml=async()=>"yaml-A", projectName=()=>name, logLine=()=>{};
+    const api={saveProject:()=>new Promise((resolve)=>{complete=resolve})};
+    const refreshSummary=async()=>{refreshes++}, pushRecent=(path,title)=>recent.push({path,title});
+    const renderProjectSummary=()=>{renders++};
+    async function onSave(){${body}\n}
+    return {onSave,switchProject:()=>{projectLoadEpoch++;name="B"},finish:()=>complete("A.yaml"),
+      state:()=>({recent,refreshes,renders})};
+  `);
+  (async () => {
+    const saver = makeSaver();
+    const pending = saver.onSave();
+    await new Promise(setImmediate);
+    saver.switchProject();
+    saver.finish();
+    await pending;
+    const state = saver.state();
+    check(state.recent[0]?.title === "A" && state.refreshes === 0 && state.renders === 0,
+      "late save must not relabel old output or refresh a newer project", state);
+    const current = makeSaver();
+    const currentSave = current.onSave();
+    await new Promise(setImmediate);
+    current.finish();
+    await currentSave;
+    const currentState = current.state();
+    check(currentState.recent[0]?.title === "A" && currentState.refreshes === 1 && currentState.renders === 1,
+      "current-project save must still refresh its summary", currentState);
+    log("late saves retain the saved project's name without repainting the current project");
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
 }
 
 {
@@ -1151,13 +1259,12 @@ log("plain-browser fallback is bounded; Tauri defaults are runtime-owned");
 }
 
 check(
-  html.includes('hydroRefine[hydroThresholdKey] = raw === ""') &&
+  html.includes('hydroRefine[hydroThresholdKey] = v === null') &&
     html.includes("? defaultHydroRefine()[hydroThresholdKey]") &&
-    html.includes(": Number.isFinite(v) ? v : 0;") &&
-    !html.includes("if (Number.isFinite(v) && v > 0) {\n            hydroRefine[hydroThresholdKey] = v;"),
-  "blank MERIT thresholds must restore defaults while invalid values reach Rust validation",
+    html.includes("Refinement thresholds contain invalid numbers"),
+  "blank MERIT thresholds must restore defaults while invalid values block save/run",
 );
-log("blank MERIT thresholds restore defaults; invalid values reach Rust validation");
+log("blank MERIT thresholds restore defaults; invalid values block save/run");
 
 {
   check(
@@ -1352,7 +1459,7 @@ async function checkAnalysisOwnership() {
   const definitions = names.map(name => section(html,
     new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name));
   const harness = new Function(`
-    let runInfo=null,lastSummary=null,_lastQuality=null,_meshPreview=null,_meshPreviewToken=0,_meshGeojson=null,_hydroThresholds;
+    let _runArtifactEpoch=0,runInfo=null,lastSummary=null,_lastQuality=null,_meshPreview=null,_meshPreviewToken=0,_meshGeojson=null,_hydroThresholds;
     const events=[],pending=[],DEFAULT_MIN_ANGLE_DEG=25,MESH_VIEW_CELLS=50000,MERIT_SURFACE_PREVIEW_STRIDE=50;
     const invoke=(command,args)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}));
     const zh=()=>false,meshPreviewStride=()=>1,certifiedPreviewCellCount=()=>0;
@@ -1363,9 +1470,9 @@ async function checkAnalysisOwnership() {
     const applyMesh=mesh=>{_meshGeojson=mesh;events.push(['mesh',mesh]);};
     ${definitions.join("\n")}
     return {events,pending,
-      set(result,live){runInfo=result;lastSummary=live;_meshPreviewToken++;_lastQuality=null;_meshPreview=null;},
+      set(result,live){_runArtifactEpoch++;runInfo=result;lastSummary=live;_meshPreviewToken++;_lastQuality=null;_meshPreview=null;},
       load(known){return loadQualityAndMesh(runInfo.gridfile,known);},
-      merit(){loadMeshMeritCells(runInfo.gridfile,meshViewKind(),runInfo);},
+      merit(){_meshGeojson={features:[{id:"current"}]};loadMeshMeritCells(runInfo.gridfile,meshViewKind(),1,_meshPreviewToken);},
       view:meshViewKind,quality(){return _lastQuality;}};
   `);
   const take = (h, command) => {
@@ -1419,7 +1526,7 @@ async function checkRunSettlement() {
   const extract = (name, indent) => section(html, new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`), name);
   const definitions = [extract("doRun", "  "), extract("enhanceRunStep", "  "), extract("setRunControls", ""), extract("killRun", ""), extract("confirmStopForPageSwitch", "")];
   const harness = new Function(`
-    let runInProgress=false,runCompletion=null,killInProgress=false,hasRun=true,runInfo={ok:true,outdir:'/old'},_lastQuality=null,lastSummary=null,cur=6,lang=0,outputPath='';
+    let _runArtifactEpoch=0,runInProgress=false,runCompletion=null,killInProgress=false,hasRun=true,runInfo={ok:true,outdir:'/old'},_lastQuality=null,lastSummary=null,cur=6,lang=0,outputPath='';
     const pending=[],events=[],elements={};
     const element=()=>({textContent:'',style:{},classList:{toggle(){}},appendChild(node){events.push(['log',node.textContent]);}});
     for(const id of ['runBtn','killBtn','rtext','rdot','logbox'])elements[id]=element();
@@ -1430,13 +1537,13 @@ async function checkRunSettlement() {
     let composeYaml=async()=>'yaml',projectEditQueue=Promise.resolve();
     const zh=()=>false,confirm=()=>true,currentIntent=()=>'',currentResolutionLabel=()=>'';
     const logLine=s=>events.push(['log',s]);
-    const clearRunArtifacts=()=>{hasRun=false;runInfo=null;};
+    const clearRunArtifacts=()=>{_runArtifactEpoch++;hasRun=false;runInfo=null;};
     const renderAutoRefineDecisions=()=>{},renderCertifiedRun=()=>{},renderProjectDelivery=()=>{},renderQualityCard=()=>{},renderMissingGridfile=()=>{};
     const loadQualityAndMesh=path=>events.push(['load',path]);
     const renderStep=()=>{events.push(['render',hasRun,runInfo]);elements.runBtn=element();elements.killBtn=element();enhanceRunStep();};
     ${definitions.join("\n")}
     return {pending,events,elements,start:doRun,kill:killRun,switchPage:confirmStopForPageSwitch,
-      redraw:renderStep,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},
+      redraw:renderStep,invalidate:clearRunArtifacts,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},
       state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion};}};
   `);
   const flush = () => new Promise(resolve=>setImmediate(resolve));
@@ -1472,6 +1579,9 @@ async function checkRunSettlement() {
   check(late.state().result.outdir==='/finished','late stop reply must not replace completed result');
   const retry=late.start();await flush();take(late,'run_project').resolve(done('/retry'));await retry;
   check(late.state().result.outdir==='/retry','retry after late stop must succeed');
+  const stale=harness(),staleRun=stale.start();await flush();const staleCommand=take(stale,'run_project');
+  stale.invalidate();staleCommand.resolve(done('/superseded'));await staleRun;
+  check(stale.state().result===null && !stale.state().busy && !stale.events.some(e=>e[0]==='load'), 'invalidated run must settle without restoring artifacts');
   log('run settlement: pending redraw, duplicate Run, stop/page-switch fence, late kill, compose failure and recovery passed');
 }
 checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; });
@@ -1482,12 +1592,12 @@ async function checkProjectEditAdmission() {
   const commitYaml = html.includes('function commitProjectYaml(') ? extract('commitProjectYaml') : '';
   const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
   const harness = new Function(`
-    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
+    let _runArtifactEpoch=0,projectEditQueue=Promise.resolve(),projectLoadEpoch=0,baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
     let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0;
     const layerEdits={},logs=[],elements={targetKindOutput:{value:'atmosphere'},targetModelOutput:{value:'MPAS'},targetCellOutput:{value:'hex'}};
     const document={getElementById:id=>elements[id]},zh=()=>false,logLine=s=>logs.push(s);
     const compatibleTargetModels=()=>['MPAS','CoLM','FVCOM'],selectedTarget=()=>targetEdit||{kind:'atmosphere'};
-    const wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;};
+    const updateEstimate=()=>{},wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;};
     const initial={target_kind:'atmosphere',model_format:'MPAS',cell:'hex',layers:['a','b'].map(id=>({id,path:'',enabled:false,source_field:'landtype'}))};
     function validate(cfg){
       if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('LandType required');
@@ -1598,7 +1708,7 @@ async function checkTemplateAdmission() {
     let specifiedRefine={enabled:false,algorithm:'certified',route:'discrete'},colmMeshDelivery={enabled:false,pixelsPerDegree:240};
     let projectEditQueue=Promise.resolve(),backendReady=null,cur=1,clears=0,paints=0,focused=null;
     const layerEdits={},thresholdEdits={},criterionEdits={},metadataEdit={authors:['author'],description:'keep'};
-    const qualityEdit={minAngle:31,policy:'warn',batchCells:1},expertEdit={},hydroRefine={},thresholdRefine={enabled:false};
+    const qualityEdit={minAngle:31,policy:'warn',batchCells:1},expertEdit={},hydroRefine={coastBufferKm:50,riverWidthThresholdM:300,riverUpstreamAreaThresholdKm2:50000},thresholdRefine={enabled:false};
     const DEFAULT_BBOX=[108,120,18,26],domBbox=[110,118,20,25],METHOD_C_MAX_REFINEMENT_LEVEL=5;
     let baseProjectYaml=JSON.stringify({intent:'AtmosphereMpas',target_kind:'atmosphere',cell:'hex',model_format:'MPAS',domain:'global',layers:[],hidden:'keep'});
     let lastSummary={...JSON.parse(baseProjectYaml),_valid:true,_err:null};
@@ -1744,7 +1854,7 @@ async function checkProjectControls() {
     card.querySelectorAll=()=>card.children.slice();
     const document={createElement:element,getElementById:id=>({outPathBrowse:folder,outPathText:pathText})[id]||null,
       querySelector:()=>null,querySelectorAll:()=>[card]};
-    const loadRecents=()=>recents,renderProjectSummary=()=>{},localStorage={setItem:(...args)=>saved.push(args)};
+    const clearRunArtifacts=()=>{},loadRecents=()=>recents,renderProjectSummary=()=>{},localStorage={setItem:(...args)=>saved.push(args)};
     const api={pickDataFolder:async()=>{if(pick instanceof Error)throw pick;return pick;}};
     const invoke=async(command,args)=>{reads.push([command,args]);if(readFails)throw new Error('missing project');return {yaml:'opened',path:args.path};};
     const reflectProject=async res=>{project=res.yaml;};
@@ -1798,7 +1908,7 @@ async function checkProjectReplacementOwnership() {
     check(false, `unterminated ${name}`);
   };
   const harness=new Function(`
-    let projectEditQueue=Promise.resolve(),projectLoadEpoch=0,projectActive=true,baseProjectYaml='accepted',lastSummary=null;
+    let _runArtifactEpoch=0,projectEditQueue=Promise.resolve(),projectLoadEpoch=0,projectActive=true,baseProjectYaml='accepted',lastSummary=null;
     let outputPath='',metadataEdit={},domainEdit=null,domainMode='global',regional=false,tpl=0;
     let targetEdit=null,cellEdit=null,colmMeshDelivery={enabled:false,pixelsPerDegree:240},qualityEdit=null,maxPasses=null;
     let domBbox=[],domCircle=[],domainSeaRatios={},watershedPath='',closePath='',closeFormat='nml',domainCloseBoundary=null,hiddenDomainShape=null;
@@ -1945,7 +2055,7 @@ async function checkCircleDomain() {
   const h=new Function(`
     let domCircle=[179,20,750],domBbox=[170,-170,-10,10],domainMode='circle',regional=true,lang=0;
     const KM_PER_DEG_EQ=2*Math.PI*6371.229/360,DEFAULT_BBOX=[108,120,18,26];
-    const cellKm=()=>100,olGeojsonFrame=()=>{throw Error('circle fell back to an old mesh frame');};
+    const templateDefaultCell=()=>"hex",cellKm=()=>100,olGeojsonFrame=()=>{throw Error('circle fell back to an old mesh frame');};
     ${extract('wrapOlLon')}
     ${extract('bboxDomainError')}
     ${extract('circleDomainError')}
@@ -2002,3 +2112,171 @@ async function checkDomainBoundaryOwnership() {
   log('domain boundary ownership: stale success/error, A→B→A, cache, clear and current errors passed');
 }
 checkDomainBoundaryOwnership().catch(error=>{console.error(error);process.exitCode=1;});
+
+
+
+{
+  const body = section(html, /function loadMeshMeritCells\(gridfile[^)]*\) \{([\s\S]*?)\n  \}/, "loadMeshMeritCells body");
+  const makeHarness = new Function("response", `
+    let _runArtifactEpoch=0, _meshPreviewToken=7, _hydroThresholds={};
+    let _meshGeojson={features:[{properties:{cell_id:"a"}},{properties:{cell_id:"b"}}]};
+    const runInfo={summary:{bbox:[-180,180,-90,90]}}, MERIT_SURFACE_PREVIEW_STRIDE=50;
+    const meshMeritLayer=()=>({path:"/merit"}), meshLandcoverLayer=()=>null;
+    const zh=()=>false, logLine=()=>{};
+    let args=null, applied=false, cleared=false;
+    const invoke=(name,payload)=>{args=payload;return response.promise;};
+    const applyCoastal=()=>{applied=true;}, clearCoastalOverlay=()=>{cleared=true;};
+    function loadMeshMeritCells(gridfile,kind,cellStride,previewToken) {${body}\n  }
+    return {start:()=>loadMeshMeritCells("mesh.nc","tri",2,7), invalidate:()=>_meshPreviewToken++, outcome:()=>({args,applied,cleared})};
+  `);
+  (async () => {
+    const matched = makeHarness({promise:Promise.resolve(JSON.stringify({features:[{properties:{cell_id:"a"}},{properties:{cell_id:"b"}}]}))});
+    matched.start();
+    await new Promise(setImmediate);
+    check(matched.outcome().args.cellStride === 2 && matched.outcome().applied,
+      "MERIT classification must forward the preview stride and accept matching cell IDs", matched.outcome());
+    const mismatched = makeHarness({promise:Promise.resolve(JSON.stringify({features:[{properties:{cell_id:"a"}},{properties:{cell_id:"c"}}]}))});
+    mismatched.start();
+    await new Promise(setImmediate);
+    check(!mismatched.outcome().applied && mismatched.outcome().cleared,
+      "MERIT classification must reject a same-size but different cell sample", mismatched.outcome());
+    const stale = {};
+    stale.promise = new Promise((resolve)=>{stale.resolve=resolve;});
+    const superseded = makeHarness(stale);
+    superseded.start();
+    superseded.invalidate();
+    stale.resolve(JSON.stringify({features:[{properties:{cell_id:"a"}},{properties:{cell_id:"b"}}]}));
+    await new Promise(setImmediate);
+    check(!superseded.outcome().applied && !superseded.outcome().cleared,
+      "an old MERIT response must not alter a newer preview", superseded.outcome());
+log("MERIT overlay tracks the exact sampled preview and ignores stale responses");
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
+}
+
+
+{
+  const start = html.indexOf("  function normalizeCloseBoundary(value) {");
+  const end = html.indexOf("  // Refinement runs only", start);
+  check(start >= 0 && end > start, "missing close-boundary controls");
+  const harness = new Function(`
+    const window={}, field=()=>"", zh=()=>false;
+    let state={mode:"enclosing_cap",iterations:2,margin_km:0,max_radius_deg:80,max_segment_angle_deg:0.25}, sent=null;
+    const fields={
+      domainCloseBoundaryMode:{value:"enclosing_cap"}, domainCloseIterations:{value:"2"},
+      domainCloseMarginKm:{value:"-5"}, domainCloseMaxRadius:{value:"0"}, domainCloseMaxSegment:{value:"0"},
+      domainCloseChaikinOptions:{style:{}}, domainCloseCapOptions:{style:{}}
+    };
+    const document={getElementById:(id)=>fields[id]||null};
+    const clearRunArtifacts=()=>{};
+    const invoke=async (_,args)=>{sent=args;return "ok"};
+    ${html.slice(start, end)}
+    bindCloseBoundaryControls("domain",()=>state,(value)=>{state=value});
+    return {fields, sync:()=>fields.domainCloseMarginKm.oninput(), apply:()=>applyCloseBoundary("yaml","domain",state), state:()=>state, sent:()=>sent};
+  `)();
+  (async () => {
+    harness.sync();
+    check(harness.state().margin_km === -5 && harness.state().max_radius_deg === 0 && harness.state().max_segment_angle_deg === 0,
+      "close-boundary controls must not silently replace invalid numeric ranges", harness.state());
+    await harness.apply();
+    check(harness.sent().marginKm === -5 && harness.sent().maxRadiusDeg === 0 && harness.sent().maxSegmentAngleDeg === 0,
+      "the backend must receive the original values for validation", harness.sent());
+    harness.fields.domainCloseMaxRadius.value = "";
+    harness.sync();
+    let rejected = false;
+    try { await harness.apply(); } catch (_) { rejected = true; }
+    check(rejected, "missing active close-boundary input must reject save/run");
+log("close-boundary values reach backend validation without silent correction");
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
+}
+
+
+{
+  const start = html.indexOf("  function readOptionalInt(id) {");
+  const end = html.indexOf("  function inferCloseFormat(path) {", start);
+  check(start >= 0 && end > start, "missing expert input readers");
+  const fields = { expertNiter:{value:"1e3"}, expertHalo:{value:"4,garbage,3"}, expertBeta:{value:"3.5x"} };
+  const readExpert = new Function("document", `${html.slice(start, end)}
+    return {int:readOptionalInt("expertNiter"),list:readOptionalIntList("expertHalo"),float:readOptionalFloat("expertBeta")};
+  `);
+  const values = readExpert({getElementById:(id)=>fields[id]});
+  check(values.int === 1000 && values.list.join(",") === "4,garbage,3" && values.float === "3.5x",
+    "expert parsing must not truncate numbers or discard malformed overrides", values);
+  const guardStart = html.indexOf("    const validInt = (value) =>");
+  const guardEnd = html.indexOf('    yaml = await invoke("set_expert"', guardStart);
+  check(guardStart >= 0 && guardEnd > guardStart, "missing expert save guard");
+  const validate = new Function("expertEdit", "zh", html.slice(guardStart, guardEnd));
+  let rejected = false;
+  try { validate({niter:values.int,halo:values.list,beta:values.float},()=>false); } catch (_) { rejected = true; }
+  check(rejected, "malformed expert values must block save/run");
+  validate({niter:values.int,halo:[4,5,3],beta:3.5},()=>false);
+log("expert numeric inputs parse fully and reject malformed overrides");
+}
+
+
+{
+  const body = section(html, /const readQ = \(\) => \{([\s\S]*?)\n    \};/, "quality input reader");
+  const read = new Function("minIn", "batchIn", "num", `const sel={value:"warn"},autoIn={checked:true,disabled:false};
+    const readQ=()=>{${body}\n    };return readQ();
+  `);
+  const parse = (value) => { const raw=value.trim().replace(/°$/, "").trim(); return raw ? Number(raw) : NaN; };
+  const valid = read({value:"25°"},{value:"1e3"},(el)=>parse(el.value));
+  const invalid = read({value:"bad"},{value:"0"},(el)=>parse(el.value));
+  check(valid.minAngle === 25 && valid.batchCells === 1000 && invalid.minAngle === "bad" && invalid.batchCells === "0",
+    "quality inputs must preserve invalid intent and parse full batch numbers", {valid,invalid});
+  const start = html.indexOf("      if (!Number.isFinite(qualityEdit.minAngle)");
+  const end = html.indexOf('      yaml = await invoke("set_quality"', start);
+  check(start >= 0 && end > start, "missing quality save guard");
+  const validate = new Function("qualityEdit", "zh", html.slice(start, end));
+  let rejected = false;
+  try { validate({...invalid, policy:"auto_refine"},()=>false); } catch (_) { rejected = true; }
+  check(rejected, "invalid active quality settings must block save/run");
+  validate({...valid,policy:"auto_refine"},()=>false);
+  const qualityStart = html.indexOf("  async function enhanceQualityStep() {");
+  const qualityEnd = html.indexOf("  // ---- refinement (step 4)", qualityStart);
+  check(qualityStart >= 0 && qualityEnd > qualityStart, "missing quality step binding");
+  const qualityStep = new Function("num", `
+    let qualityEdit={minAngle:"bad",policy:"auto_refine",batchCells:"0"};
+    const make=(value)=>({value,style:{},listeners:{},addEventListener(event,fn){this.listeners[event]=fn}});
+    const fields={qualityMinAngle:make("bad"),qualityBatchCells:make("0"),qualityViolationPolicy:make("warn"),
+      qualityAutoRefineOn:make(""),qualityAutoRefineOptions:make("")};
+    const document={getElementById:(id)=>fields[id]||null};
+    const refreshSummary=async()=>null, clearRunArtifacts=()=>{}, zh=()=>false;
+    ${html.slice(qualityStart, qualityEnd)}
+    return {enhanceQualityStep,fields,state:()=>qualityEdit};
+  `)((el)=>parse(el.value));
+  (async () => {
+    await qualityStep.enhanceQualityStep();
+    check(!qualityStep.fields.qualityAutoRefineOn.disabled && qualityStep.fields.qualityAutoRefineOn.checked,
+      "an invalid AutoRefine value must not disable its own controls");
+    qualityStep.fields.qualityMinAngle.value="25°";
+    qualityStep.fields.qualityBatchCells.value="2";
+    qualityStep.fields.qualityMinAngle.listeners.input();
+    check(qualityStep.state().policy === "auto_refine" && qualityStep.state().batchCells === 2,
+      "correcting quality inputs must preserve AutoRefine mode", qualityStep.state());
+log("quality inputs reject invalid active values without trapping AutoRefine controls");
+  })().catch((error) => { console.error(error); process.exitCode = 1; });
+}
+
+// Hidden panes have no usable layout size: fit only after the map becomes visible.
+{
+  const fit = section(html, /function fitOlMap\(map[^\n]*\)\{([\s\S]*?)\n\}/, "fitOlMap");
+  const resize = section(html, /function scheduleMapResize\(\)\{([\s\S]*?)\n\}/, "scheduleMapResize");
+  const harness = new Function(`
+    let regional=false,_mapResizeFrame=null;
+    let rect={width:0,height:0},fits=[],updates=0;
+    const usableOlExtent=()=>true,setOlWorldClip=()=>{},olRegionExtent=()=>[0,0,10,10];
+    const view={getProjection:()=>({getExtent:()=>[-180,-90,180,90]}),fit:(extent,options)=>fits.push({extent,options})};
+    const map={getView:()=>view,getTargetElement:()=>({getBoundingClientRect:()=>rect}),updateSize:()=>{updates++}};
+    const document={getElementById:id=>id==='mapsvg'?{_olmap:map,getBoundingClientRect:()=>rect}:null};
+    const window={devicePixelRatio:1},requestAnimationFrame=fn=>fn();
+    function fitOlMap(map,scope="region",duration=250,size,maxZoom=10){${fit}\n}
+    function scheduleMapResize(){${resize}\n}
+    return {map,fits,fit:()=>fitOlMap(map),resize:scheduleMapResize,show:()=>{rect={width:600,height:400}}};
+  `)();
+  check(!harness.fit() && harness.fits.length===0 && harness.map._deferredFit, "hidden map must defer fit rather than zoom to max");
+  harness.resize();check(harness.fits.length===0,"hidden resize must not consume fit");
+  harness.show();harness.resize();
+  check(harness.fits.length===1 && harness.fits[0].options.size.join() === "600,400" && !harness.map._deferredFit,"visible map must consume deferred fit with measured size");
+  harness.resize();check(harness.fits.length===1,"unchanged resize must not refit");
+  log("hidden-map fit waits for visible geometry and runs exactly once");
+}

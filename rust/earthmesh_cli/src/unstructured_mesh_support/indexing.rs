@@ -1,4 +1,4 @@
-use super::types::GridfileMeshPoints;
+use super::types::{GridfileMeshPoints, UnstructuredMesh};
 use crate::LonLatPoint;
 
 /// Gridfile row identity has two independent dimensions: canonical-id mapping
@@ -149,7 +149,7 @@ fn w_row_is_sentinel(mesh: &GridfileMeshPoints, row: usize) -> bool {
         && mesh
             .w_to_m
             .get(start..start + mesh.w_to_m_width)
-            .is_some_and(row_is_constant)
+            .is_some_and(|ids| ids.iter().all(|&id| (0..=1).contains(&id)))
 }
 
 fn authoritative_w_connectivity_references_id(mesh: &GridfileMeshPoints, id: usize) -> bool {
@@ -202,10 +202,65 @@ pub(crate) fn mesh_canonical_id_for_row(row: usize, has_two_placeholder_rows: bo
     }
 }
 
-pub(crate) fn mesh_points_have_two_placeholder_rows(points: &[LonLatPoint]) -> bool {
+fn mesh_points_have_two_placeholder_rows(points: &[LonLatPoint]) -> bool {
     points.len() > 2
         && points[0].lon == 0.0
         && points[0].lat == 0.0
         && points[1].lon == 0.0
         && points[1].lat == 0.0
+}
+
+// A physical row may also sit at (0, 0); confirm placeholders in connectivity.
+pub(crate) fn mesh_m_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
+    mesh_points_have_two_placeholder_rows(&mesh.m_points)
+        && mesh
+            .m_to_w
+            .first()
+            .is_some_and(|row| row.iter().all(|&id| (0..=1).contains(&id)))
+        && mesh
+            .m_to_w
+            .get(1)
+            .is_some_and(|row| row.iter().all(|&id| (0..=1).contains(&id)))
+}
+
+pub(crate) fn mesh_w_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
+    mesh_points_have_two_placeholder_rows(&mesh.w_points)
+        && (0..2).all(|row| {
+            mesh.n_w_to_m
+                .get(row)
+                .is_some_and(|&count| (0..=1).contains(&count))
+                && mesh
+                    .w_to_m
+                    .get(row)
+                    .is_some_and(|ids| ids.iter().all(|&id| (0..=1).contains(&id)))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_origin_is_not_a_second_placeholder() {
+        let point = |lon, lat| LonLatPoint { lon, lat };
+        let mesh = UnstructuredMesh {
+            m_points: vec![point(0.0, 0.0), point(0.0, 0.0), point(45.0, 45.0)],
+            w_points: vec![
+                point(0.0, 0.0),
+                point(0.0, 0.0),
+                point(90.0, 0.0),
+                point(0.0, 90.0),
+            ],
+            m_to_w: vec![[1; 3], [2, 3, 4], [1; 3]],
+            w_to_m: vec![vec![1], vec![2], vec![2], vec![2]],
+            n_w_to_m: vec![0, 1, 1, 1],
+        };
+
+        assert!(!mesh_m_has_two_placeholder_rows(&mesh));
+        assert!(!mesh_w_has_two_placeholder_rows(&mesh));
+        assert_eq!(
+            mesh_row_for_canonical_id(2, mesh.w_points.len(), false),
+            Some(1)
+        );
+    }
 }

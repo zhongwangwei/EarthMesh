@@ -479,7 +479,7 @@ mod tests {
 
 fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<UnstructuredMesh> {
     use crate::unstructured_mesh_support::{
-        mesh_canonical_id_for_row, mesh_points_have_two_placeholder_rows, unstructured_w_row_layout,
+        mesh_canonical_id_for_row, mesh_m_has_two_placeholder_rows, unstructured_w_row_layout,
     };
     let invalid = || {
         io::Error::new(
@@ -487,21 +487,30 @@ fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<Unst
             "invalid spherical native W ring cycle, coordinates or membership",
         )
     };
-    if mesh.m_points.iter().chain(&mesh.w_points).any(|point| {
-        !point.lon.is_finite() || !point.lat.is_finite() || !(-90.0..=90.0).contains(&point.lat)
-    }) {
-        return Err(invalid());
+    if let Some((row, point)) =
+        mesh.m_points
+            .iter()
+            .chain(&mesh.w_points)
+            .enumerate()
+            .find(|(_, point)| {
+                !point.lon.is_finite()
+                    || !point.lat.is_finite()
+                    || !(-90.0..=90.0).contains(&point.lat)
+            })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid spherical native W ring coordinates at row {row}: ({}, {})",
+                point.lon, point.lat
+            ),
+        ));
     }
     let normalized =
         crate::mpas_unstructured_mesh_builders::normalize_unstructured_mesh_placeholder_rows(mesh)?;
     let m_padding = normalized.m_points.len() - mesh.m_points.len();
     let w_padding = normalized.w_points.len() - mesh.w_points.len();
-    let m_two = mesh_points_have_two_placeholder_rows(&mesh.m_points)
-        && mesh
-            .m_to_w
-            .iter()
-            .take(2)
-            .all(|row| row.iter().all(|&id| id <= 1));
+    let m_two = mesh_m_has_two_placeholder_rows(mesh);
     let faces = crate::triangles_on_cell_one_based_from_mesh(&normalized)?;
     let degrees = crate::n_edges_on_cell_usize_from_mesh(&normalized)?;
     let edges = crate::get_edge_from_unstructured_mesh(&normalized)?;
@@ -518,7 +527,12 @@ fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<Unst
         &vertices,
         &cells,
     )
-    .ok_or_else(invalid)?;
+    .ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid spherical native W ring cycle: shared-edge ordering failed",
+        )
+    })?;
     let edge_set = |ring: &[i32]| {
         let mut edges = (0..ring.len())
             .map(|k| {
@@ -533,7 +547,10 @@ fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<Unst
     for row in unstructured_w_row_layout(mesh).first_physical_row..mesh.w_points.len() {
         let n = usize::try_from(mesh.n_w_to_m[row]).map_err(|_| invalid())?;
         if !(3..=7).contains(&n) {
-            return Err(invalid());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid spherical native W ring degree {n} at row {row}"),
+            ));
         }
         let original = &mesh.w_to_m[row][..n];
         let mut ring = ordered[row + w_padding][..n]
@@ -541,20 +558,29 @@ fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<Unst
             .map(|&id| {
                 id.checked_sub(m_padding)
                     .and_then(|index| mesh_canonical_id_for_row(index, m_two))
-                    .ok_or_else(invalid)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "invalid spherical native W ring canonical id {id} at row {row}"
+                            ),
+                        )
+                    })
             })
             .collect::<io::Result<Vec<_>>>()?;
         let start = ring
             .iter()
             .position(|&id| id == original[0])
-            .ok_or_else(invalid)?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("invalid spherical native W ring start id {} at row {row}; ordered={ring:?}", original[0])))?;
         ring.rotate_left(start);
         let mut before = original.to_vec();
         let mut after = ring.clone();
         before.sort_unstable();
         after.sort_unstable();
         if before != after || edge_set(original) != edge_set(&ring) {
-            return Err(invalid());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "invalid spherical native W ring cycle: row {row}, original={original:?}, ordered={ring:?}"
+            )));
         }
         output.w_to_m[row][..n].copy_from_slice(&ring);
     }

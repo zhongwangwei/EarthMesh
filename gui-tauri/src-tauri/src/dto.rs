@@ -217,7 +217,10 @@ pub(crate) struct RunResult {
     pub(crate) ok: bool,
     pub(crate) code: Option<i32>,
     pub(crate) outdir: String,
+    /// The cell view requested by this run, independent of the UI summary cache.
+    pub(crate) cell: String,
     /// The selected final gridfile (legacy `gridfile=` if unavailable), so the GUI
+
     /// can run quality + draw the mesh without re-globbing. None if not seen.
     pub(crate) gridfile: Option<String>,
     /// CMRC certificate, manifest, and resource evidence from the reported

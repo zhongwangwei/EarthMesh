@@ -45,6 +45,19 @@ fn gui_run_state_rejects_overlap_and_ignores_stale_pid_cleanup() {
 }
 
 #[test]
+fn gui_cancel_before_spawn_rejects_late_child_and_releases_run() {
+    let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
+    let run = mesh_process::begin_run().expect("reserve run");
+    assert!(mesh_process::kill_run().expect("cancel pending run"));
+    assert!(mesh_process::record_running_child(run.id(), 101)
+        .unwrap_err()
+        .contains("cancelled"));
+    drop(run);
+    let next = mesh_process::begin_run().expect("start after cancellation");
+    drop(next);
+}
+
+#[test]
 fn gui_run_directories_are_unique_even_under_an_explicit_output_base() {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -639,6 +652,50 @@ fn opened_project_paths_are_bound_to_the_project_directory() {
 }
 
 #[test]
+fn saved_project_reopens_with_the_same_inputs_as_run() {
+    let root = env::temp_dir().join(format!(
+        "earthmesh_gui_saved_inputs_{}_{}",
+        process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let mut cfg = circle_project("saved_inputs");
+    let boundary = "input/Ocean/Ocean_ChinaSea_boundary.nml";
+    let refinement = "input/Ocean/refine_spc_close01.nml";
+    cfg.domain = DomainConfig::Regional {
+        shape: RegionShape::Close {
+            path: boundary.to_string(),
+            format: earthmesh_project::CloseMaskFormat::Nml,
+            boundary: CloseBoundaryMode::Polyline,
+        },
+        sea_ratio: None,
+    };
+    cfg.refinement.specified_close = Some(SpecifiedCloseRefinement {
+        path: refinement.to_string(),
+        boundary: CloseBoundaryMode::Polyline,
+    });
+    let mut run_cfg = cfg.clone();
+    mesh_runner::absolutize_gui_project_inputs(&mut run_cfg).unwrap();
+    let project_path = root.join("saved.yaml");
+    fs::write(
+        &project_path,
+        file_commands::saved_project_yaml(&cfg.to_yaml().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let opened = read_project(project_path.to_string_lossy().into_owned()).unwrap();
+    let opened_cfg = ProjectConfig::from_yaml(&opened.yaml).unwrap();
+    assert_eq!(opened_cfg.domain, run_cfg.domain);
+    assert_eq!(
+        opened_cfg.refinement.specified_close,
+        run_cfg.refinement.specified_close
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn failed_kill_keeps_the_running_pid_for_a_retry() {
     let _guard = RUN_STATE_TEST_LOCK.lock().expect("lock run-state test");
     let run = mesh_process::begin_run().expect("reserve run");
@@ -649,6 +706,9 @@ fn failed_kill_keeps_the_running_pid_for_a_retry() {
     assert!(mesh_process::kill_run().is_err());
     assert_eq!(mesh_process::running_child_pid(), Some(impossible_pid));
     mesh_process::clear_running_child(run.id(), impossible_pid);
+    assert!(mesh_process::record_running_child(run.id(), 101)
+        .unwrap_err()
+        .contains("cancelled"));
     drop(run);
 }
 
@@ -985,6 +1045,7 @@ fn mesh_kind_rejects_invalid_values() {
         1.0,
         None,
         None,
+        None,
         50.0,
         5_000.0,
         300.0,
@@ -1041,6 +1102,7 @@ fn explicit_missing_landtype_file_is_not_silently_replaced_by_merit_surface_data
         21.0,
         24.0,
         None,
+        None,
         Some(missing_landtype.to_string_lossy().into_owned()),
         50.0,
         5_000.0,
@@ -1066,6 +1128,7 @@ fn merit_map_rejects_unordered_custom_thresholds_before_running_the_engine() {
         24.0,
         None,
         None,
+        None,
         300.0,
         5_000.0,
         50.0,
@@ -1076,14 +1139,18 @@ fn merit_map_rejects_unordered_custom_thresholds_before_running_the_engine() {
 }
 
 #[test]
-fn gui_quality_config_uses_project_threshold_and_policy() {
+fn gui_quality_measurement_keeps_threshold_without_blocking_reports() {
     let block = mesh_outputs::quality_namelist_for_gui(27.5, "block").unwrap();
     assert!(block.contains("NL%min_angle_warn_deg = 27.5"));
-    assert!(block.contains("NL%on_violation = 'block'"));
+    assert!(block.contains("NL%on_violation = 'warn'"));
 
     let auto = mesh_outputs::quality_namelist_for_gui(31.0, "auto_refine").unwrap();
     assert!(auto.contains("NL%min_angle_warn_deg = 31"));
     assert!(auto.contains("NL%on_violation = 'warn'"));
+    let low = mesh_outputs::quality_namelist_for_gui(2.0, "warn").unwrap();
+    assert!(low.contains("NL%min_angle_fail_deg = 2"));
+    assert!(mesh_outputs::quality_namelist_for_gui(180.0, "warn").is_err());
+    assert!(mesh_outputs::quality_namelist_for_gui(25.0, "unknown").is_err());
 }
 
 #[test]
@@ -2219,6 +2286,42 @@ fn set_specified_refinement_updates_project() {
 }
 
 #[test]
+fn specified_refinement_does_not_replace_missing_geometry_with_defaults() {
+    let yaml = hydrology_yaml("specified_missing_geometry");
+    let circle = set_specified_refinement(
+        yaml.clone(),
+        true,
+        Some("radius".to_string()),
+        None,
+        Some(22.0),
+        Some(80.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect_err("missing circle longitude must not become zero");
+    assert!(circle.contains("longitude is required"), "{circle}");
+
+    let bbox = set_specified_refinement(
+        yaml,
+        true,
+        Some("bbox".to_string()),
+        None,
+        None,
+        None,
+        None,
+        Some(115.0),
+        Some(21.0),
+        Some(24.0),
+        None,
+    )
+    .expect_err("missing bbox west longitude must not become zero");
+    assert!(bbox.contains("west longitude is required"), "{bbox}");
+}
+
+#[test]
 fn set_specified_refinement_accepts_bbox_region() {
     let yaml = hydrology_yaml("specified_refine_bbox");
     let yaml = set_specified_refinement(
@@ -2817,6 +2920,36 @@ fn dormant_threshold_region_survives_gui_compose_visible_edit_and_save() {
         panic!("visible bbox edit must win over hidden opened circle");
     };
     assert_eq!((w, e, s, n), (108.0, 120.0, 18.0, 26.0));
+}
+
+#[test]
+fn hidden_circle_round_trip_preserves_hydro_config_after_global_scaffold() {
+    let mut base = circle_project("opened");
+    base.hydro_coast = Some(
+        serde_json::from_value(serde_json::json!({"merit_root": "/data/merit"}))
+            .expect("hydro config"),
+    );
+    let edited = ProjectConfig::scaffold(
+        "saved",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    let merged = preserve_unexposed_project_fields(
+        base.to_yaml().expect("base yaml"),
+        edited.to_yaml().expect("scaffold yaml"),
+        true,
+    )
+    .expect("preserve hidden circle");
+    let merged = ProjectConfig::from_yaml(&merged).expect("merged yaml");
+    assert!(matches!(
+        merged.domain,
+        DomainConfig::Regional {
+            shape: RegionShape::Circle { .. },
+            ..
+        }
+    ));
+    assert_eq!(merged.hydro_coast.unwrap().merit_root, "/data/merit");
 }
 
 #[test]
@@ -4495,7 +4628,7 @@ fn gui_real_project_delivery_land_atmosphere_ocean() {
             );
         }
         records.push(serde_json::json!({"name":name,"summary": project_summary(yaml).unwrap(), "quality":quality,"gui_quality":gui_quality,"preview":preview,
-            "result":dto::RunResult {ok, code, outdir:dir.display().to_string(), gridfile:Some(gridfile), delivery:Some(delivery), certified:None, auto_refine_decisions:Vec::new()}}));
+            "result":dto::RunResult {ok, code, cell: cell.engine_str().to_string(), outdir:dir.display().to_string(), gridfile:Some(gridfile), delivery:Some(delivery), certified:None, auto_refine_decisions:Vec::new()}}));
     }
     fs::write(
         root.join("gui-records.json"),

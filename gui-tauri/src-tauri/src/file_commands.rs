@@ -56,8 +56,7 @@ pub(crate) async fn open_project(app: AppHandle) -> Result<Option<OpenedProject>
 /// Save a validated project YAML via a native dialog. Returns the chosen path.
 #[tauri::command]
 pub(crate) async fn save_project(app: AppHandle, yaml: String) -> Result<Option<String>, String> {
-    let cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
-    let yaml = cfg.to_yaml()?;
+    let yaml = saved_project_yaml(&yaml)?;
     let picked = app
         .dialog()
         .file()
@@ -69,6 +68,12 @@ pub(crate) async fn save_project(app: AppHandle, yaml: String) -> Result<Option<
     let path = fp.to_string();
     fs::write(&path, yaml.as_bytes()).map_err(|e| format!("write {path}: {e}"))?;
     Ok(Some(path))
+}
+
+pub(crate) fn saved_project_yaml(yaml: &str) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(yaml).map_err(|e| format!("invalid project: {e}"))?;
+    crate::mesh_runner::absolutize_gui_project_inputs(&mut cfg)?;
+    cfg.to_yaml()
 }
 
 /// Save PNG bytes through the native file dialog. Returns the chosen path, or

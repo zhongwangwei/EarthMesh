@@ -117,6 +117,7 @@ async fn run_project_cli(
         ok,
         code,
         outdir: run_dir.to_string_lossy().into_owned(),
+        cell: cfg.target.cell.engine_str().to_string(),
         certified: gridfile
             .as_deref()
             .and_then(read_certified_bundle_for_gridfile),
