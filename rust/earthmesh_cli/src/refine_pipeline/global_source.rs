@@ -3962,12 +3962,7 @@ fn region_center_demand(
         .collect()
 }
 
-/// Most incident triangles a cell may have.
-///
-/// Method-C holds vertex degree to {5, 6, 7} by construction, and everything
-/// downstream is sized for it: `mask_postproc_neighbor_widths` gives 7 for the
-/// polygon side either way round, and `IcosahedronMPointNeighbors` carries
-/// seven slots.
+/// HEX publication needs 5..=7 polygon sides; TRI keeps variable-width W fans.
 const REDGREEN_MAX_CELL_DEGREE: usize = 7;
 
 /// Triangles left holding an edge no other triangle owns.
@@ -6302,8 +6297,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "three-level Red-Green local dual can exceed valence 7; publication is not certified"]
-    fn final_redgreen_polishing_keeps_three_level_dual_publishable() {
+    #[ignore = "three-level Red-Green triangle angle floor 25° is not yet certified"]
+    fn final_redgreen_polishing_meets_three_level_triangle_angle_floor() {
         let mesh = TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
         let region = earthmesh_mesh::RefinementRegion::Bbox {
             west_degrees: -35.0,
@@ -6320,14 +6315,7 @@ mod tests {
         assert_eq!(result.spring_nest_passes, 0);
         let angles = unstructured_triangle_angle_range(&result.output_mesh).unwrap();
         assert!(angles.0 >= 25.0 && angles.1 <= 105.0, "{angles:?}");
-        assert!(
-            result
-                .output_mesh
-                .n_w_to_m
-                .iter()
-                .all(|&degree| degree <= 7),
-            "final W rings must fit the canonical dual valence cap"
-        );
+        crate::validate_published_cell_degrees(&result.output_mesh, "tri").unwrap();
         assert!(result.transition_faces > 0);
         assert!(
             crate::unstructured_mesh_support::check_unstructured_mesh_topology(&result.output_mesh)

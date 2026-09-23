@@ -546,7 +546,8 @@ fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<Unst
     let mut output = mesh.clone();
     for row in unstructured_w_row_layout(mesh).first_physical_row..mesh.w_points.len() {
         let n = usize::try_from(mesh.n_w_to_m[row]).map_err(|_| invalid())?;
-        if !(3..=7).contains(&n) {
+        // TRI can have high-degree W fans; only HEX publication has the 5..=7 cap.
+        if n < 3 || n > mesh.w_to_m[row].len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid spherical native W ring degree {n} at row {row}"),
@@ -633,16 +634,74 @@ mod native_ring_tests {
             assert_eq!(oriented.w_to_m, expected, "layout {placeholders}");
             assert_ne!(mesh.w_to_m, expected, "input not mutated");
         }
-        for case in ["duplicate", "changed_edges", "bad_lat", "nan"] {
+        for case in [
+            "duplicate",
+            "changed_edges",
+            "bad_lat",
+            "nan",
+            "count_overflow",
+        ] {
             let mut mesh = compact.clone();
             match case {
                 "duplicate" => mesh.w_to_m[1][1] = mesh.w_to_m[1][0],
                 "changed_edges" => mesh.w_to_m[1].swap(1, 2),
                 "bad_lat" => mesh.w_points[1].lat = 91.0,
                 "nan" => mesh.m_points[2].lon = f64::NAN,
+                "count_overflow" => mesh.n_w_to_m[1] = mesh.w_to_m[1].len() as i32 + 1,
                 _ => unreachable!(),
             }
             assert!(oriented_spherical_native_w_rings(&mesh).is_err(), "{case}");
         }
+    }
+
+    #[test]
+    fn triangular_publication_orients_a_high_degree_redgreen_ring() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
+        let mut mesh =
+            earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &base.m_neighbors)
+                .unwrap();
+        let settings = earthmesh_refine_redgreen::RedGreenSettings {
+            protect_triangle_quality: true,
+            min_triangle_angle_deg: 25.0,
+            ..Default::default()
+        };
+        let mut previous = None;
+        for _ in 0..3 {
+            let marks = mesh
+                .triangle_points
+                .iter()
+                .enumerate()
+                .map(|(face, point)| {
+                    i32::from(
+                        face > mesh.num_vertex
+                            && point.lon_degrees.abs() < 35.0
+                            && point.lat_degrees.abs() < 30.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+                &mesh,
+                &marks,
+                &settings,
+                previous.as_deref(),
+            )
+            .unwrap();
+            previous = Some(outcome.interior_marks);
+            mesh = outcome.mesh;
+        }
+        crate::redgreen_bridge::finalize_redgreen_mesh(&mut mesh).unwrap();
+        let native = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&mesh).unwrap();
+        let widest = native.n_w_to_m.iter().max().copied().unwrap();
+        assert!(
+            widest > 7,
+            "fixture must exercise a high-degree ring: {widest}"
+        );
+        let oriented = oriented_spherical_native_w_rings(&native).unwrap();
+        assert!(
+            crate::unstructured_mesh_support::check_unstructured_mesh_topology(&oriented)
+                .is_consistent()
+        );
+        crate::validate_published_cell_degrees(&oriented, "tri").unwrap();
+        assert!(crate::validate_published_cell_degrees(&oriented, "hex").is_err());
     }
 }
