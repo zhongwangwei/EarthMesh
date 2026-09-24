@@ -142,9 +142,10 @@ fn resolve_mkgrd_path() -> Result<String, String> {
 
     // In a source checkout the staged Tauri sidecar is the intentional
     // release engine. Prefer it over a newer debug binary left by `cargo test`.
-    if !prefer_adjacent && current_exe
-        .as_deref()
-        .is_some_and(|exe| path_is_within(exe, &repo))
+    if !prefer_adjacent
+        && current_exe
+            .as_deref()
+            .is_some_and(|exe| path_is_within(exe, &repo))
     {
         if let Some(candidate) = source_sidecar_candidates(&repo)
             .into_iter()
