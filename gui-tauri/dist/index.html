@@ -2560,6 +2560,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   function commitProjectYaml(candidateYaml, onCommit) {
     const result = projectEditQueue.then(async () => {
+      const deliveryDraft = colmMeshDelivery;
       let yaml, summary;
       try {
         yaml = await candidateYaml();
@@ -2573,7 +2574,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       lastSummary = { ...summary, _valid: true, _err: null };
       targetEdit = { kind: summary.target_kind, modelFormat: summary.model_format };
       cellEdit = String(summary.cell || "").toLowerCase() === "tri" ? "tri" : "hex";
-      colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 };
+      if (colmMeshDelivery === deliveryDraft) colmMeshDelivery = { enabled: !!summary.colm_mesh_enabled, pixelsPerDegree: summary.colm_mesh_pixels_per_degree || 240 };
       for (const k of Object.keys(layerEdits)) delete layerEdits[k];
       (summary.layers || []).forEach((l) => { layerEdits[l.id] = { path: l.path || "", enabled: l.enabled }; });
       clearRunArtifacts();

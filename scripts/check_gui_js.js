@@ -1648,13 +1648,15 @@ async function checkProjectEditAdmission() {
   const extract = name => section(html, new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name);
   const commitYaml = html.includes('function commitProjectYaml(') ? extract('commitProjectYaml') : '';
   const commit = html.includes('function commitProjectEdit(') ? extract('commitProjectEdit') : '';
+  const delivery = section(html, /(    const selectedModelForDelivery = [\s\S]*?)(?=    const layerIds =)/, 'CoLM delivery composition');
   const harness = new Function(`
     let _runArtifactEpoch=0,projectEditQueue=Promise.resolve(),projectLoadEpoch=0,baseProjectYaml=null,lastSummary=null,targetEdit=null,cellEdit=null;
-    let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0;
+    let colmMeshDelivery={enabled:false,pixelsPerDegree:240},rejectSummary=false,clears=0,holdSummary=false,releaseSummary;
     const layerEdits={},logs=[],elements={targetKindOutput:{value:'atmosphere'},targetModelOutput:{value:'MPAS'},targetCellOutput:{value:'hex'}};
+    elements.colmMeshEnabled={checked:false};elements.colmMeshPixelsPerDegree={value:'240',setCustomValidity(){}};
     const document={getElementById:id=>elements[id]},zh=()=>false,logLine=s=>logs.push(s);
     const compatibleTargetModels=()=>['MPAS','CoLM','FVCOM'],selectedTarget=()=>targetEdit||{kind:'atmosphere'};
-    const updateEstimate=()=>{},wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;};
+    const updateEstimate=()=>{},wireExpertTargetStep=()=>{},clearRunArtifacts=()=>{clears++;_runArtifactEpoch++;};
     const initial={target_kind:'atmosphere',model_format:'MPAS',cell:'hex',layers:['a','b'].map(id=>({id,path:'',enabled:false,source_field:'landtype'}))};
     function validate(cfg){
       if(['land','ocean'].includes(cfg.target_kind)&&!cfg.layers.some(l=>l.enabled&&l.path))throw new Error('LandType required');
@@ -1664,10 +1666,12 @@ async function checkProjectEditAdmission() {
     const api={
       setProjectTarget:async(yaml,kind,model)=>validate({...JSON.parse(yaml),target_kind:kind,model_format:model,colm_mesh_enabled:false}),
       setTargetCell:async(yaml,cell)=>{if(!['tri','hex'].includes(cell))throw new Error('bad cell');return validate({...JSON.parse(yaml),cell});},
-      summary:async yaml=>{if(rejectSummary)throw new Error('summary unavailable');validate(JSON.parse(yaml));return JSON.parse(yaml);},
+      summary:async yaml=>{if(holdSummary){holdSummary=false;await new Promise(resolve=>releaseSummary=resolve);}if(rejectSummary)throw new Error('summary unavailable');validate(JSON.parse(yaml));return JSON.parse(yaml);},
       validate:async yaml=>validate(JSON.parse(yaml))
     };
-    async function invoke(command,{yaml,id,path,enabled}){
+    async function invoke(command,{yaml,id,path,enabled,pixelsPerDegree}){
+      if(command==='project_summary')return JSON.parse(yaml);
+      if(command==='set_colm_mesh_delivery')return JSON.stringify({...JSON.parse(yaml),colm_mesh_enabled:enabled,colm_mesh_pixels_per_degree:pixelsPerDegree});
       if(command!=='set_layer_path')throw new Error(command);
       const cfg=JSON.parse(yaml),selected=cfg.layers.find(l=>l.id===id);
       if(!selected)throw new Error('unknown source');
@@ -1680,14 +1684,17 @@ async function checkProjectEditAdmission() {
       if(cellEdit)yaml=await api.setTargetCell(yaml,cellEdit);
       for(const id of Object.keys(layerEdits).sort((a,b)=>Number(layerEdits[b].enabled)-Number(layerEdits[a].enabled)))
         yaml=await invoke('set_layer_path',{yaml,id,...layerEdits[id]});
+      const template=null;
+      ${delivery}
       return yaml;
     }
-    function paintTargetOutputs(s){if(s){elements.targetKindOutput.value=s.target_kind;elements.targetModelOutput.value=s.model_format;elements.targetCellOutput.value=s.cell;}}
+    function paintTargetOutputs(s){if(s){elements.targetKindOutput.value=s.target_kind;elements.targetModelOutput.value=s.model_format;elements.targetCellOutput.value=s.cell;}elements.colmMeshEnabled.checked=colmMeshDelivery.enabled;elements.colmMeshPixelsPerDegree.value=String(colmMeshDelivery.pixelsPerDegree);}
     ${extract('refreshSummary')}
     ${commitYaml}
     ${commit}
     ${extract('enhanceTargetOutputStep')}
     return {init:enhanceTargetOutputStep,logs,elements,composeYaml,
+      holdSummary:()=>{holdSummary=true;},releaseSummary:()=>releaseSummary(),
       change:async(id,value)=>{elements[id].value=value;await elements[id].onchange();},
       edit:fn=>commitProjectEdit(fn),source:(id,path,enabled)=>commitProjectEdit(yaml=>invoke('set_layer_path',{yaml,id,path,enabled})),
       failSummary:value=>{rejectSummary=value;},
@@ -1730,7 +1737,28 @@ async function checkProjectEditAdmission() {
   const second=h.edit(async yaml=>{secondStarted=true;return yaml;});
   await new Promise(resolve=>setImmediate(resolve));check(!secondStarted,'project edits must serialize');
   release();check(await first&&await second&&secondStarted,'serialized edits must settle and remain usable after rejection');
-  log('project edit admission: rejected target/source recovery, canonical migrations, exclusivity, model/cell and serialized commits passed');
+  for (const control of ['targetCellOutput','targetModelOutput']) {
+    const race=harness();await race.init();await race.change('targetModelOutput','CoLM');
+    race.holdSummary();
+    const pending=race.change(control,control==='targetCellOutput'?'tri':'CoLM');
+    await new Promise(resolve=>setImmediate(resolve));
+    race.elements.colmMeshEnabled.checked=true;
+    race.elements.colmMeshPixelsPerDegree.value='360';
+    await race.elements.colmMeshEnabled.onchange();
+    race.elements.colmMeshPixelsPerDegree.value='480';
+    await race.elements.colmMeshPixelsPerDegree.oninput();
+    race.releaseSummary();await pending;
+    const deliveryState=JSON.parse(race.state()).colmMeshDelivery;
+    const composed=JSON.parse(await race.composeYaml());
+    check(deliveryState.enabled && deliveryState.pixelsPerDegree===480 && composed.colm_mesh_enabled && composed.colm_mesh_pixels_per_degree===480 && race.elements.colmMeshEnabled.checked && race.elements.colmMeshPixelsPerDegree.value==='480',
+      'delayed cell/target summaries must preserve newer CoLM delivery edits in controls, draft and compose');
+    if(control==='targetCellOutput')check(composed.cell==='tri','delivery edits must not cancel an otherwise valid cell change');
+    race.holdSummary();const unchanged=race.change('targetModelOutput','MPAS');
+    await new Promise(resolve=>setImmediate(resolve));race.releaseSummary();await unchanged;
+    check(!JSON.parse(race.state()).colmMeshDelivery.enabled && !race.elements.colmMeshEnabled.checked,
+      'accepted target summary must still normalize delivery when there was no concurrent delivery edit');
+  }
+  log('project edit admission: rejected target/source recovery, canonical migrations, exclusivity, model/cell, concurrent CoLM delivery and serialized commits passed');
 }
 checkProjectEditAdmission().catch(error => { console.error(error); process.exitCode=1; });
 
