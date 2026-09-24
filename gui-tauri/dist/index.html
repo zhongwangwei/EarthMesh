@@ -352,8 +352,10 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
           <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
-            <button type="button" class="btn-ghost" id="copyLogBtn" title="copy log" style="flex:none;padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
-            <button type="button" class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
+            <div style="display:flex;gap:8px;flex:none">
+              <button type="button" class="btn-ghost" id="copyLogBtn" title="copy log" style="padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
+              <button type="button" class="btn-ghost" id="clearLogBtn" title="clear log" style="padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
+            </div>
           </div>
         </div>
         <div class="logbox" id="logbox" style="flex:1"></div>
