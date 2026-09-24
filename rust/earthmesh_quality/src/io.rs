@@ -138,7 +138,7 @@ fn adaptive_json(a: &AdaptiveDiagnostics) -> String {
          \"target_above_actual_count\":{},\"actual_above_target_count\":{},\
          \"max_target_actual_delta\":{},\"max_adjacent_target_level_jump\":{},\
          \"target_level_jump_gt_one_count\":{},\"max_adjacent_actual_level_jump\":{},\
-         \"actual_level_jump_gt_one_count\":{}}}",
+         \"actual_level_jump_gt_one_count\":{},\"actual_refine_levels_recorded\":{}}}",
         if a.enabled { "true" } else { "false" },
         opt_u32_json(a.max_level),
         opt_f64_json(a.base_m),
@@ -158,7 +158,8 @@ fn adaptive_json(a: &AdaptiveDiagnostics) -> String {
         a.max_adjacent_target_level_jump,
         a.target_level_jump_gt_one_count,
         a.max_adjacent_actual_level_jump,
-        a.actual_level_jump_gt_one_count
+        a.actual_level_jump_gt_one_count,
+        a.actual_refine_levels_recorded
     )
 }
 

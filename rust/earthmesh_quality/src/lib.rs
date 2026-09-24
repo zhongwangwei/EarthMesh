@@ -330,6 +330,11 @@ pub struct AdaptiveDiagnostics {
     pub target_level_jump_gt_one_count: usize,
     pub max_adjacent_actual_level_jump: u32,
     pub actual_level_jump_gt_one_count: usize,
+    /// Whether the mesh carries a per-cell actual refinement level at all. A
+    /// backend that records none (red-green) leaves every cell without one, and
+    /// the target/actual counts above then measure that absence, not a
+    /// refinement shortfall.
+    pub actual_refine_levels_recorded: bool,
 }
 
 /// How a run configured the point+radius route.
@@ -1594,6 +1599,7 @@ pub fn compute_adaptive_diagnostics(
         target_level_jump_gt_one_count: shared.target_level_jump_gt_one_count,
         max_adjacent_actual_level_jump: shared.max_adjacent_actual_level_jump,
         actual_level_jump_gt_one_count: shared.actual_level_jump_gt_one_count,
+        actual_refine_levels_recorded: input.cells.iter().any(|cell| cell.refine_level.is_some()),
     }
 }
 
@@ -1646,13 +1652,27 @@ pub fn attach_adaptive_diagnostics(
         "a circle asked for a level the mesh missed by more than one, which a \
          hard circle edge cannot explain",
     );
-    add_gate(
-        "adaptive_missing_level_count",
-        diagnostics.missing_target_level_count
-            + diagnostics.extra_target_level_count
-            + diagnostics.missing_actual_refine_level_count,
-        "point+radius target/actual level mapping is incomplete",
-    );
+    // A mesh with no actual level anywhere was not built by a backend that
+    // records one, so the reconciliation is unmeasured rather than failed:
+    // counting every cell as missing turned one absent field into a warning the
+    // size of the mesh. A mesh with some levels and not others is incomplete,
+    // and still warns.
+    if diagnostics.actual_refine_levels_recorded {
+        add_gate(
+            "adaptive_missing_level_count",
+            diagnostics.missing_target_level_count
+                + diagnostics.extra_target_level_count
+                + diagnostics.missing_actual_refine_level_count,
+            "point+radius target/actual level mapping is incomplete",
+        );
+    } else {
+        add_gate(
+            "adaptive_missing_level_count",
+            diagnostics.missing_target_level_count + diagnostics.extra_target_level_count,
+            "point+radius target levels only: this mesh records no per-cell actual \
+             refinement level, so target/actual reconciliation was not measured",
+        );
+    }
     add_gate(
         "adaptive_actual_level_jump_gt_one_count",
         diagnostics.actual_level_jump_gt_one_count,
@@ -2234,6 +2254,47 @@ mod tests {
                 .unwrap();
             assert_eq!(gate.level, expected, "targets={targets:?}");
         }
+    }
+
+    #[test]
+    fn adaptive_reconciliation_is_unmeasured_without_any_actual_level() {
+        let gate_for = |levels: [Option<u32>; 2]| {
+            let mut mesh = two_square_mesh();
+            for (cell, level) in mesh.cells.iter_mut().zip(levels) {
+                cell.refine_level = level;
+            }
+            let mut report = compute(&mesh, &QualityThresholds::default());
+            attach_adaptive_diagnostics(
+                &mut report,
+                &mesh,
+                &[2, 2],
+                AdaptiveConfigDiagnostics {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+            let gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.metric == "adaptive_missing_level_count")
+                .unwrap()
+                .clone();
+            (gate, report.adaptive.unwrap().actual_refine_levels_recorded)
+        };
+
+        // No cell carries a level: the backend records none, so nothing is
+        // counted as missing and the gate says the side it could not measure.
+        let (gate, recorded) = gate_for([None, None]);
+        assert!(!recorded);
+        assert_eq!(gate.level, QualityLevel::Pass);
+        assert_eq!(gate.value, 0.0);
+        assert!(gate.detail.contains("not measured"), "{}", gate.detail);
+
+        // Some cells carry one and some do not: that is a real gap, and warns.
+        let (gate, recorded) = gate_for([Some(2), None]);
+        assert!(recorded);
+        assert_eq!(gate.level, QualityLevel::Warn);
+        assert_eq!(gate.value, 1.0);
     }
 
     #[test]

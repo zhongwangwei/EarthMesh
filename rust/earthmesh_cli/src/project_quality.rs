@@ -748,13 +748,16 @@ mod tests {
         let report = admit_final_gridfile(&spec, &gridfile, &out, Some(&namelist)).unwrap();
         assert!(
             report.adaptive.as_ref().is_some_and(|diagnostics| {
-                diagnostics.circle_count == 1 && diagnostics.missing_actual_refine_level_count > 0
+                diagnostics.circle_count == 1 && !diagnostics.actual_refine_levels_recorded
             }),
             "final admission must inspect the adaptive artifact next to the selected gridfile"
         );
+        // The fixture records no actual levels, so the gate reads the target
+        // side only and says why, instead of warning on every cell.
         assert!(report.gates.iter().any(|gate| {
             gate.metric == "adaptive_missing_level_count"
-                && gate.level == earthmesh_quality::QualityLevel::Warn
+                && gate.level == earthmesh_quality::QualityLevel::Pass
+                && gate.detail.contains("not measured")
         }));
         let without_namelist = admit_final_gridfile(&spec, &gridfile, &out, None).unwrap();
         assert_eq!(without_namelist.adaptive, report.adaptive);
