@@ -82,6 +82,7 @@ check(
   csp["default-src"] === "'self'" &&
     csp["script-src"] === "'self'" &&
     csp["worker-src"] === "'self'" &&
+    csp["style-src-attr"] === "'unsafe-inline'" &&
     !csp["script-src"].includes("unsafe-inline") &&
     !csp["worker-src"].includes("blob:") &&
     csp["connect-src"].includes("https://server.arcgisonline.com") &&

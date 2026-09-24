@@ -267,15 +267,13 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
 .ol-cell-inspector-row{display:grid;grid-template-columns:minmax(86px,.8fr) minmax(100px,1.2fr);gap:8px;padding:3px 0;border-top:1px solid var(--border-soft)}
 .ol-cell-inspector-row span:first-child{color:var(--muted);overflow-wrap:anywhere}.ol-cell-inspector-row span:last-child{font-family:var(--mono);overflow-wrap:anywhere}
 .logbox{min-height:0;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;
-  padding-right:4px;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap}
+  padding-right:4px;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
 .logbox::-webkit-scrollbar{width:10px}
 .logbox::-webkit-scrollbar-track{background:var(--surface-2);border-radius:5px}
 .logbox::-webkit-scrollbar-thumb{background:var(--faint);border:2px solid var(--surface-2);border-radius:5px}
 .logbox::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 .mini-metric{display:flex;justify-content:space-between;padding:7px 2px;border-bottom:1px solid var(--border-soft);font-size:12.5px}
 .mini-metric b{font-weight:700}
-.progress{height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:10px 0}
-.progress>i{display:block;height:100%;width:62%;background:linear-gradient(90deg,var(--accent),var(--ocean))}
 
 /* ---------------- status bar ---------------- */
 .status{grid-area:status;display:flex;align-items:center;gap:14px;padding:0 var(--s-lg);
@@ -348,7 +346,6 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
       <div class="live-pane" data-pane="log">
         <!-- inner flex column: fixed header on top, scrolling log below -->
         <div class="log-head">
-          <div class="progress"><i></i></div>
           <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
