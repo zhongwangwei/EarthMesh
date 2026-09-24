@@ -1533,7 +1533,8 @@ async function checkRunSettlement() {
     const document={getElementById:id=>elements[id],querySelectorAll:()=>[],createElement:element};
     const defer=command=>new Promise((resolve,reject)=>pending.push({command,resolve,reject}));
     const invoke=command=>defer(command),window={__TAURI__:{core:{invoke}}};
-    const api={summary:async()=>({cell:'tri'}),runProject:()=>defer('run_project')};
+    let deferSummary=false;
+    const api={summary:()=>deferSummary?defer('summary'):Promise.resolve({cell:'tri'}),runProject:()=>defer('run_project')};
     let composeYaml=async()=>'yaml',projectEditQueue=Promise.resolve();
     const zh=()=>false,confirm=()=>true,currentIntent=()=>'',currentResolutionLabel=()=>'';
     const logLine=s=>events.push(['log',s]);
@@ -1543,8 +1544,8 @@ async function checkRunSettlement() {
     const renderStep=()=>{events.push(['render',hasRun,runInfo]);elements.runBtn=element();elements.killBtn=element();enhanceRunStep();};
     ${definitions.join("\n")}
     return {pending,events,elements,start:doRun,kill:killRun,switchPage:confirmStopForPageSwitch,
-      redraw:renderStep,invalidate:clearRunArtifacts,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},
-      state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion};}};
+      redraw:renderStep,invalidate:clearRunArtifacts,holdCompose(){composeYaml=()=>defer('compose');},holdEdit(){projectEditQueue=defer('edit');},holdSummary(){deferSummary=true;},setSummary(value){lastSummary=value;},
+      state(){return {busy:runInProgress,stopping:killInProgress,result:runInfo,completion:runCompletion,summary:lastSummary};}};
   `);
   const flush = () => new Promise(resolve=>setImmediate(resolve));
   const take = (h,command) => { const i=h.pending.findIndex(p=>p.command===command);check(i>=0, `missing run command ${command}`);return h.pending.splice(i,1)[0]; };
@@ -1582,6 +1583,10 @@ async function checkRunSettlement() {
   const stale=harness(),staleRun=stale.start();await flush();const staleCommand=take(stale,'run_project');
   stale.invalidate();staleCommand.resolve(done('/superseded'));await staleRun;
   check(stale.state().result===null && !stale.state().busy && !stale.events.some(e=>e[0]==='load'), 'invalidated run must settle without restoring artifacts');
+  const oldSummary=harness();oldSummary.holdSummary();const superseded=oldSummary.start();await flush();
+  const pendingSummary=take(oldSummary,'summary');oldSummary.invalidate();oldSummary.setSummary({cell:'hex',effective_nxp:81});
+  pendingSummary.resolve({cell:'tri',effective_nxp:243});await superseded;
+  check(oldSummary.state().summary.effective_nxp===81 && oldSummary.pending.length===0 && !oldSummary.events.some(e=>e[0]==='log' && e[1].includes('starting mesh engine')), 'stale run summary must not overwrite current project or start its engine');
   log('run settlement: pending redraw, duplicate Run, stop/page-switch fence, late kill, compose failure and recovery passed');
 }
 checkRunSettlement().catch(error => { console.error(error); process.exitCode=1; });

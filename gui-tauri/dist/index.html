@@ -4307,9 +4307,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const yaml = await composeYaml();
       if (!runIsCurrent()) return;
       let runSummary = null;
-      try { runSummary = await api.summary(yaml); lastSummary = runSummary; } catch (e) {}
-      logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
+      try { runSummary = await api.summary(yaml); if (runIsCurrent()) lastSummary = runSummary; } catch (e) {}
       if (!runIsCurrent()) return;
+      logLine("\n▶ " + (zh() ? "启动网格引擎（" : "starting mesh engine (") + currentIntent() + ", " + currentResolutionLabel() + ")");
       const r = await api.runProject(yaml, outputPath || null);
       if (!runIsCurrent()) return;
       logLine(r.ok ? ("✓ " + (zh() ? "完成 — 输出在 " : "done — outputs in ") + r.outdir)
