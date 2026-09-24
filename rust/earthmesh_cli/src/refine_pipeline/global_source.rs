@@ -1282,8 +1282,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
         None
     };
 
-    // Beside the final gridfile, where the quality step can find it: both it and
-    // the saved namelist live in `<case>/result/`.
+    // Beside the final gridfile, where the quality step finds it.
     if let Some((report, depth, base_m, coastline)) = &adaptive_run {
         if let Some(directory) = outputs.output.output.parent() {
             let path = directory.join(crate::refinement_demand::nest::ADAPTIVE_REFINEMENT_FILE);

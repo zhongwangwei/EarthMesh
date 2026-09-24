@@ -1,12 +1,9 @@
 //! Reconcile the point+radius route's circles against the mesh it produced.
 //!
-//! Quality runs as its own step, from a namelist path and a gridfile, so it
-//! cannot see the run's `AdaptiveNestReport`. The refinement step leaves the
-//! circles it actually emitted in `adaptive_refinement.json` beside the final
-//! gridfile; both that file and the saved namelist live in `<case>/result/`, so
-//! either path leads to it. (Measured, not assumed — gridinit writes into
-//! `<case>/gridfile/`, a different directory, and a file placed there would
-//! never be found and nothing would say so.)
+//! Quality runs as its own step and cannot see the run's `AdaptiveNestReport`.
+//! The refinement step leaves the circles it actually emitted in
+//! `adaptive_refinement.json` beside the selected gridfile. A Project namelist
+//! can live in a different directory, so it cannot locate this artifact.
 //!
 //! Reading the emitted circles rather than re-planning the demand is what makes
 //! a mismatch mean something: it can only be a refinement failure, never a
@@ -171,14 +168,14 @@ fn adaptive_target_levels_for_quality_cells(
 ///
 /// Returns whether anything was attached, so a caller can tell "not this route"
 /// from "this route, nothing wrong".
-pub fn attach_adaptive_diagnostics_from_namelist_path(
+pub fn attach_adaptive_diagnostics_from_gridfile_path(
     report: &mut MeshQualityReport,
     input: &QualityMeshInput,
     mesh: &GridfileMeshPoints,
     kind: &str,
-    namelist_path: &Path,
+    gridfile_path: &Path,
 ) -> io::Result<bool> {
-    let Some(directory) = namelist_path.parent() else {
+    let Some(directory) = gridfile_path.parent() else {
         return Ok(false);
     };
     let path = directory.join(ADAPTIVE_REFINEMENT_FILE);

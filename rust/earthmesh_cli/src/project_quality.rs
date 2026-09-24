@@ -391,7 +391,7 @@ fn write_quality_report_impl(
         MeshCellKind::Tri => "tri",
     };
     report.cell_view = cell_view.to_string();
-    if let (Some(path), Some(namelist)) = (target_namelist, target_namelist_text) {
+    if let Some(namelist) = target_namelist_text {
         crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
             &mut report,
             &input,
@@ -400,16 +400,17 @@ fn write_quality_report_impl(
             &namelist,
         )
         .map_err(|err| format!("project quality attach h-field diagnostics: {err}"))?;
-        // A run refines one way or the other, so at most one of these attaches.
-        crate::grid_quality_pipeline::attach_adaptive_diagnostics_from_namelist_path(
-            &mut report,
-            &input,
-            &mesh,
-            cell_view,
-            path,
-        )
-        .map_err(|err| format!("project quality attach point+radius diagnostics: {err}"))?;
     }
+    // A run refines one way or the other; this artifact follows the gridfile,
+    // not the optional target namelist.
+    crate::grid_quality_pipeline::attach_adaptive_diagnostics_from_gridfile_path(
+        &mut report,
+        &input,
+        &mesh,
+        cell_view,
+        gridfile,
+    )
+    .map_err(|err| format!("project quality attach point+radius diagnostics: {err}"))?;
     let admission = if final_admission {
         let admission = final_mesh_contract(spec, &input, &report);
         report.gates.push(earthmesh_quality::GateResult {
@@ -541,6 +542,51 @@ mod tests {
             !summary.contains(&staged.display().to_string()),
             "quality report must expose the final published path, not the staged path"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn final_admission_reads_adaptive_sidecar_beside_gridfile_not_namelist() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_adaptive_final_admission_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let gridfile = root.join("result/gridfile.nc4");
+        let namelist = root.join("run/project.nml");
+        let out = root.join("quality");
+        fs::create_dir_all(gridfile.parent().unwrap()).unwrap();
+        fs::create_dir_all(namelist.parent().unwrap()).unwrap();
+        write_canonical_tri_gridfile(&gridfile);
+        fs::write(&namelist, "&quality\n/\n").unwrap();
+        fs::write(
+            gridfile.parent().unwrap().join("adaptive_refinement.json"),
+            r#"{"enabled":true,"max_level":3,"base_m":1000,"coastline":false,"passes":[{"level":3,"circles":[{"lon":0,"lat":0,"radius_m":30000000}]}]}"#,
+        )
+        .unwrap();
+
+        let spec = FinalAdmissionSpec {
+            cell_kind: MeshCellKind::Tri,
+            expected_euler_characteristic: None,
+            thresholds: earthmesh_quality::QualityThresholds::default(),
+            repair_level_cap: None,
+        };
+        let report = admit_final_gridfile(&spec, &gridfile, &out, Some(&namelist)).unwrap();
+        assert!(
+            report.adaptive.as_ref().is_some_and(|diagnostics| {
+                diagnostics.circle_count == 1 && diagnostics.missing_actual_refine_level_count > 0
+            }),
+            "final admission must inspect the adaptive artifact next to the selected gridfile"
+        );
+        assert!(report.gates.iter().any(|gate| {
+            gate.metric == "adaptive_missing_level_count"
+                && gate.level == earthmesh_quality::QualityLevel::Warn
+        }));
+        let without_namelist = admit_final_gridfile(&spec, &gridfile, &out, None).unwrap();
+        assert_eq!(without_namelist.adaptive, report.adaptive);
         let _ = fs::remove_dir_all(root);
     }
 

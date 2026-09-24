@@ -688,11 +688,9 @@ impl AdaptiveNestReport {
 /// Name of the file a run leaves beside its gridfile describing what the
 /// point+radius route asked for.
 ///
-/// The quality step runs separately, from a namelist and a gridfile path, so it
-/// cannot see the run's [`AdaptiveNestReport`]. Both the final gridfile and the
-/// saved namelist land in `<case>/result/`, so a sibling file there is reachable
-/// from either — measured, not assumed: gridinit writes into `<case>/gridfile/`,
-/// which is a different directory and would not be found.
+/// The quality step runs separately and cannot see the run's
+/// [`AdaptiveNestReport`]. The artifact lives beside the selected gridfile;
+/// the Project namelist can be in a different directory.
 pub const ADAPTIVE_REFINEMENT_FILE: &str = "adaptive_refinement.json";
 
 impl AdaptiveNestReport {

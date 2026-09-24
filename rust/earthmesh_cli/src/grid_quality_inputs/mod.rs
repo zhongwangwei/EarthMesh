@@ -2,7 +2,7 @@ mod adaptive;
 mod gridfile;
 mod hfield;
 
-pub use adaptive::attach_adaptive_diagnostics_from_namelist_path;
+pub use adaptive::attach_adaptive_diagnostics_from_gridfile_path;
 pub(crate) use gridfile::tri_quality_cells_from_gridfile;
 #[allow(unused_imports)]
 pub use gridfile::{
