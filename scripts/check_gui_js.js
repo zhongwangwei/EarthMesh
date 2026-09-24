@@ -2419,3 +2419,53 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
     log('target expert controls preserve edits during deferred initialization and ignore detached pages');
   })().catch(error=>{console.error(error);process.exitCode=1});
 }
+
+// Exercise the actual Data Layers renderer and picker for a required source.
+{
+  const enhance = section(html, /(async function enhanceLayerStep\(\) \{[\s\S]*?\n  \})/, 'data layer enhancement');
+  const makeHarness = new Function(`
+    const layer={id:'landcover',role:'Land cover',role_kind:'landcover',path:'/old.nc',enabled:true};
+    const calls=[],picked=[];
+    function element(){
+      return {children:[],dataset:{},style:{},className:'',
+        set textContent(value){this.text=value;this.children=[]},get textContent(){return this.text||''},
+        append(...children){children.forEach(child=>this.appendChild(child))},
+        appendChild(child){this.children.push(child);if(typeof child==='object')child.parent=this},
+        closest(){return this.dataset.layer?this:this.parent?.closest()},
+        querySelectorAll(selector){
+          const found=[];
+          function visit(node){
+            if(typeof node!=='object')return;
+            if(node.className.split(' ').includes(selector.split('.').pop()))found.push(node);
+            node.children.forEach(visit);
+          }
+          this.children.forEach(visit);return found;
+        }
+      };
+    }
+    const tbody=element(),table={isConnected:true,querySelector:()=>tbody,closest:()=>null};
+    const document={querySelector:()=>table,getElementById:()=>null,createElement:element};
+    const zh=()=>false,_runArtifactEpoch=0,clearCoastalOverlay=()=>{},logLine=()=>{};
+    const composeYaml=async()=>JSON.stringify(layer);
+    const api={summary:async()=>({layers:[layer]}),pickDataFile:async()=>picked.shift(),pickDataFolder:async()=>picked.shift()};
+    async function invoke(command,args){
+      calls.push({command,...args});
+      if(!args.path||!args.enabled)throw Error('required source cannot be cleared');
+      return JSON.stringify({...layer,path:args.path,enabled:args.enabled});
+    }
+    const commitProjectEdit=async edit=>{Object.assign(layer,JSON.parse(await edit(await composeYaml())));return true};
+    ${enhance}
+    return {layer,calls,picked,render:enhanceLayerStep,browse:()=>tbody.querySelectorAll('.em-browse')[0]};
+  `);
+  (async()=>{
+    const h=makeHarness();await h.render();
+    check(h.browse() && typeof h.browse().onclick==='function','configured required sources must expose a wired replacement picker');
+    h.picked.push(null);await h.browse().onclick();
+    check(h.layer.path==='/old.nc' && h.layer.enabled && h.calls.length===0,'cancelling replacement must preserve the required source without a write');
+    h.picked.push('/replacement.nc');await h.browse().onclick();
+    check(h.calls.length===1 && h.calls[0].command==='set_layer_path' && h.calls[0].id==='landcover' && h.calls[0].path==='/replacement.nc' && h.calls[0].enabled,
+      'required source replacement must write the selected path atomically without clearing');
+    check(h.layer.path==='/replacement.nc' && h.browse(),'replaced required sources must remain replaceable');
+    log('configured required data sources support atomic replacement and preserve the path on cancel');
+  })().catch(error=>{console.error(error);process.exitCode=1});
+}

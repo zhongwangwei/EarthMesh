@@ -2788,13 +2788,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         clear.style.cssText = "padding:2px 7px;cursor:pointer";
         clear.textContent = "✕";
         pathCell.append(path, " ", clear);
-      } else {
-        const browse = document.createElement("span");
-        browse.className = "btn-ghost em-browse";
-        browse.style.cssText = "padding:3px 9px;cursor:pointer";
-        browse.textContent = l.wants_folder ? (z ? "📁 选择文件夹" : "📁 Browse folder") : (z ? "📂 浏览" : "📂 Browse");
-        pathCell.appendChild(browse);
       }
+      const browse = document.createElement("button");
+      browse.type = "button";
+      browse.className = "btn-ghost em-browse";
+      browse.style.cssText = "padding:3px 9px;cursor:pointer";
+      browse.textContent = l.path ? (z ? "替换" : "Replace") : l.wants_folder ? (z ? "📁 选择文件夹" : "📁 Browse folder") : (z ? "📂 浏览" : "📂 Browse");
+      pathCell.appendChild(browse);
 
       const statusCell = document.createElement("td");
       const cov = document.createElement("span");
