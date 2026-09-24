@@ -147,6 +147,10 @@ fn project_final_admission_spec(project: &ProjectConfig) -> Result<FinalAdmissio
         expected_euler_characteristic: project.expected_euler_characteristic(),
         thresholds: earthmesh_quality::QualityThresholds {
             min_angle_warn_deg: project.quality.min_angle_deg,
+            min_angle_fail_deg: project
+                .quality
+                .min_angle_deg
+                .min(earthmesh_quality::QualityThresholds::default().min_angle_fail_deg),
             repair_batch_limit: project.quality.auto_refine_batch_cells,
             repair_level_cap: Some(u32::from(repair_level_cap)),
             ..earthmesh_quality::QualityThresholds::default()
@@ -333,7 +337,7 @@ fn write_quality_report_impl(
             expected_euler_characteristic: spec.expected_euler_characteristic,
         },
     );
-    if final_admission && spec.expected_euler_characteristic.is_none() {
+    if spec.expected_euler_characteristic.is_none() {
         // Disconnected islands (including complete single-cell islands) are
         // legitimate in regional/surface-masked products. Keep the diagnostics,
         // but do not apply the standalone validator's connected-mesh contract.

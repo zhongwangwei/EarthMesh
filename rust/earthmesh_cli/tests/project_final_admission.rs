@@ -1,7 +1,8 @@
 mod support;
 
 use earthmesh_cli::project_quality::{
-    admit_final_gridfile, admit_project_final_gridfile as admit, FinalAdmissionSpec,
+    admit_final_gridfile, admit_project_final_gridfile as admit, write_project_quality_report,
+    FinalAdmissionSpec,
 };
 use earthmesh_project::{
     DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, ProjectConfig, RefinementBackend,
@@ -203,6 +204,62 @@ fn final_spec(
         thresholds: earthmesh_quality::QualityThresholds::default(),
         repair_level_cap: None,
     }
+}
+
+#[test]
+fn regional_islands_have_the_same_candidate_and_final_quality_verdict() {
+    let root =
+        std::env::temp_dir().join(format!("project_regional_islands_{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("islands.nc4");
+    grid(
+        &file,
+        MeshCellKind::Tri,
+        &[
+            (100., 20.),
+            (102., 20.),
+            (101., 22.),
+            (110., 20.),
+            (112., 20.),
+            (111., 22.),
+        ],
+        &[vec![0, 1, 2], vec![3, 4, 5]],
+    );
+    let mut p = project(MeshCellKind::Tri);
+    p.quality.on_violation = ViolationPolicy::Block;
+    let candidate = write_project_quality_report(&p, &file, &root.join("candidate")).unwrap();
+    let final_report = admit(&p, &file, &root.join("final"), None).unwrap();
+    assert_eq!(candidate.verdict, final_report.verdict);
+    assert_ne!(candidate.verdict, earthmesh_quality::QualityLevel::Fail);
+    assert!(!candidate.has_unrepairable_failure());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_min_angle_below_default_fail_is_honored_at_final_admission() {
+    let root = std::env::temp_dir().join(format!("project_low_angle_{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("angle.nc4");
+    grid(
+        &file,
+        MeshCellKind::Tri,
+        &[(100., 20.), (102., 20.), (101., 20.06)],
+        &[vec![0, 1, 2]],
+    );
+    let mut p = project(MeshCellKind::Tri);
+    p.quality.on_violation = ViolationPolicy::Block;
+    p.quality.min_angle_deg = 2.0;
+    let candidate = write_project_quality_report(&p, &file, &root.join("candidate")).unwrap();
+    let final_report = admit(&p, &file, &root.join("final"), None).unwrap();
+    let angle_gate = final_report
+        .gates
+        .iter()
+        .find(|gate| gate.metric == "min_angle_deg")
+        .unwrap();
+    assert!(angle_gate.value > 2.0 && angle_gate.value < 5.0);
+    assert_eq!(angle_gate.level, earthmesh_quality::QualityLevel::Pass);
+    assert_eq!(candidate.verdict, final_report.verdict);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
