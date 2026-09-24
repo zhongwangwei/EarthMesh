@@ -2936,7 +2936,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (!qualityEdit) {
       if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn", batchCells: s.auto_refine_batch_cells || 1 };
     }
-    const autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");
+    let autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");
     const readQ = () => {
       let minAngle = 0, policy = "warn", batchCells = 1;
       if (minIn) { const v = num(minIn); minAngle = Number.isFinite(v) ? v : minIn.value; }
@@ -2946,11 +2946,27 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       return { minAngle, policy, batchCells };
     };
     const paintAutoRefine = () => {
+      if (autoIn) {
+        autoIn.disabled = !autoEligible;
+        autoIn.title = autoEligible
+          ? (zh() ? "支持全球、区域、流域；也可从未细化网格开始" : "Supports global, regional, and watershed domains, including uniform baselines")
+          : (zh() ? "正在读取项目配置" : "Loading project configuration");
+      }
       const on = !!(autoIn && autoIn.checked && !autoIn.disabled);
       if (autoOptions) autoOptions.style.opacity = on ? "1" : "0.5";
       if (batchIn) batchIn.disabled = !on;
     };
-    const update = () => { qualityEdit = readQ(); paintAutoRefine(); clearRunArtifacts(); };
+    const update = async () => {
+      const draft = qualityEdit = readQ();
+      paintAutoRefine();
+      clearRunArtifacts();
+      if (autoIn && !autoEligible) {
+        const summary = await refreshSummary();
+        if (document.getElementById("qualityMinAngle") !== minIn || qualityEdit !== draft) return;
+        autoEligible = !!summary;
+        paintAutoRefine();
+      }
+    };
     if (sel) sel.addEventListener("change", update);
     if (minIn) minIn.addEventListener("input", update);
     if (autoIn) autoIn.addEventListener("change", update);
@@ -2961,11 +2977,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (sel) sel.value = qualityEdit.policy === "block" ? "block" : "warn";
     }
     if (autoIn) {
-      autoIn.disabled = !autoEligible;
       autoIn.checked = autoEligible && !!qualityEdit && qualityEdit.policy === "auto_refine";
-      autoIn.title = autoEligible
-        ? (zh() ? "支持全球、区域、流域；也可从未细化网格开始" : "Supports global, regional, and watershed domains, including uniform baselines")
-        : (zh() ? "正在读取项目配置" : "Loading project configuration");
     }
     paintAutoRefine();
   }

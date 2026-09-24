@@ -326,7 +326,7 @@ check(
 log("AutoRefine is visible in normal quality controls");
 
 check(
-  html.includes('const autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");') &&
+  html.includes('let autoEligible = !!s || !!(qualityEdit && qualityEdit.policy === "auto_refine");') &&
     html.includes("支持全球、区域、流域；也可从未细化网格开始") &&
     !html.includes('s.domain === "regional" && s.refine_enabled') &&
     !html.includes('qualityEdit.policy = "warn"'),
@@ -2318,15 +2318,15 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
 {
   const body = section(html, /async function enhanceQualityStep\(\) \{([\s\S]*?)\n  \}/, "delayed quality step");
   const makeHarness = new Function(`
-    let qualityEdit=null, finish;
+    let qualityEdit=null, finish;const pending=[];
     const make=()=>({value:"",disabled:false,style:{},listeners:{},addEventListener(event,fn){this.listeners[event]=fn}});
     const fields=Object.fromEntries(["qualityMinAngle","qualityBatchCells","qualityViolationPolicy",
       "qualityAutoRefineOn","qualityAutoRefineOptions"].map(id=>[id,make()]));
     const document={getElementById:id=>fields[id]};
-    const refreshSummary=()=>new Promise(resolve=>{finish=resolve});
+    const refreshSummary=()=>new Promise(resolve=>{finish=resolve;pending.push(resolve)});
     const num=el=>Number(el.value.replace("°","")),clearRunArtifacts=()=>{},zh=()=>false;
     async function enhanceQualityStep(){${body}\n  }
-    return {fields,enhanceQualityStep,finish:value=>finish(value),state:()=>qualityEdit};
+    return {fields,pending,enhanceQualityStep,finish:value=>finish(value),replaceProject:()=>{qualityEdit=null;},state:()=>qualityEdit};
   `);
   (async()=>{
     const harness=makeHarness();
@@ -2347,12 +2347,47 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
     check(!failed.fields.qualityMinAngle.disabled && !failed.fields.qualityViolationPolicy.disabled &&
       failed.fields.qualityAutoRefineOn.disabled && failed.fields.qualityBatchCells.disabled,
       "failed summaries must leave ordinary quality settings editable without enabling unavailable AutoRefine");
+    failed.fields.qualityMinAngle.value="24°";
+    const corrected=failed.fields.qualityMinAngle.listeners.input();
+    failed.finish({min_angle_deg:24,on_violation:"warn",auto_refine_batch_cells:1});await corrected;
+    check(!failed.fields.qualityAutoRefineOn.disabled && failed.fields.qualityBatchCells.disabled,
+      "correcting an initially invalid draft must re-enable AutoRefine without leaving the quality page");
+    failed.fields.qualityAutoRefineOn.checked=true;
+    await failed.fields.qualityAutoRefineOn.listeners.change();
+    check(failed.state().policy==="auto_refine" && !failed.fields.qualityBatchCells.disabled,
+      "re-enabled AutoRefine must update the draft and enable its batch field");
+    const retry=makeHarness(), retryLoading=retry.enhanceQualityStep();
+    retry.finish(null);await retryLoading;
+    retry.fields.qualityMinAngle.value="bad";
+    const invalidEdit=retry.fields.qualityMinAngle.listeners.input();
+    retry.finish(null);await invalidEdit;
+    check(retry.fields.qualityAutoRefineOn.disabled,"still-invalid drafts must not enable AutoRefine");
+    retry.fields.qualityMinAngle.value="18°";
+    const oldEdit=retry.fields.qualityMinAngle.listeners.input();
+    retry.fields.qualityMinAngle={value:"replacement page",disabled:false};
+    retry.finish({min_angle_deg:18,on_violation:"warn"});await oldEdit;
+    check(retry.fields.qualityAutoRefineOn.disabled && retry.fields.qualityMinAngle.value==="replacement page",
+      "a delayed quality correction must not enable controls on a replacement page");
+    const racing=makeHarness(), raceLoading=racing.enhanceQualityStep();
+    racing.finish(null);await raceLoading;
+    racing.fields.qualityMinAngle.value="20°";
+    const older=racing.fields.qualityMinAngle.listeners.input();
+    racing.fields.qualityMinAngle.value="bad";
+    const newer=racing.fields.qualityMinAngle.listeners.input();
+    racing.pending[1]({min_angle_deg:20,on_violation:"warn"});await older;
+    check(racing.fields.qualityAutoRefineOn.disabled,"an older valid correction must not enable a newer invalid draft");
+    racing.pending[2](null);await newer;
+    racing.fields.qualityMinAngle.value="21°";
+    const oldProject=racing.fields.qualityMinAngle.listeners.input();
+    racing.replaceProject();racing.finish({min_angle_deg:21,on_violation:"warn"});await oldProject;
+    check(racing.state()===null && racing.fields.qualityAutoRefineOn.disabled,
+      "a correction from the previous project must not change replacement-project controls");
     const stale=makeHarness(), loading=stale.enhanceQualityStep();
     stale.fields.qualityMinAngle={value:"new page",disabled:false};
     stale.finish({min_angle_deg:17,on_violation:"warn"});await loading;
     check(stale.state()===null && stale.fields.qualityMinAngle.value==="new page",
       "a detached quality page must not restore an obsolete project draft");
-    log("quality controls cannot silently lose edits during delayed summary loading");
+    log("quality controls protect initial loading, recover AutoRefine after corrections and reject stale draft/page/project responses");
   })().catch(error=>{console.error(error);process.exitCode=1});
 }
 
