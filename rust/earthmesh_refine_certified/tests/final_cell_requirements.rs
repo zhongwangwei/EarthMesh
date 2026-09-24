@@ -1,7 +1,10 @@
+use earthmesh_mesh::CartesianPoint;
 use earthmesh_refine_certified::{
+    remap::ConservativeRemap,
     requirement::{
         certify_final_cell_requirements, certify_final_cell_requirements_from_raster,
-        graded_envelope, RasterLevelField, SourceLevelField, TargetLevelField,
+        certify_final_cell_requirements_with_remap, graded_envelope, RasterLevelField,
+        SourceLevelField, TargetLevelField,
     },
     BalanceCertificate, MotherGrid, PhysicalCertificate,
 };
@@ -69,6 +72,61 @@ fn mixed_requirements_report_physical_witnesses() {
         .witnesses()
         .iter()
         .any(|w| w.required_level == 5 && w.delivered_level == 1));
+}
+
+#[test]
+fn supplied_remap_must_match_both_meshes() {
+    let target = MotherGrid::generate(1).unwrap().mesh;
+    let mut source = target.clone();
+    let (sin, cos) = 0.3_f64.sin_cos();
+    for site in source.active_vertex_slots().collect::<Vec<_>>() {
+        let p = source.vertices()[site];
+        source.move_vertex(
+            site,
+            CartesianPoint::new(cos * p.x - sin * p.y, sin * p.x + cos * p.y, p.z),
+        );
+    }
+    let mut levels = vec![0; target.vertex_count()];
+    levels[0] = 3;
+    let source_levels =
+        SourceLevelField::from_active_voronoi_cells(&source, levels.clone()).unwrap();
+    let target_levels = TargetLevelField::from_active_voronoi_cells(&target, levels).unwrap();
+
+    let stale_source = ConservativeRemap::identity_for_mesh(&target);
+    let result = certify_final_cell_requirements_with_remap(
+        &source,
+        &source_levels,
+        &target,
+        &target_levels,
+        10,
+        &stale_source,
+    );
+    assert!(matches!(
+        result,
+        Err(earthmesh_refine_certified::FinalCellRequirementError::InvalidInput(_))
+    ));
+
+    for remap in [
+        ConservativeRemap::identity_for_mesh(&source),
+        ConservativeRemap::identity(target.vertex_count()),
+    ] {
+        assert!(matches!(
+            certify_final_cell_requirements_with_remap(
+                &source,
+                &source_levels,
+                &target,
+                &target_levels,
+                10,
+                &remap,
+            ),
+            Err(earthmesh_refine_certified::FinalCellRequirementError::InvalidInput(_))
+        ));
+    }
+
+    let fresh =
+        certify_final_cell_requirements(&source, &source_levels, &target, &target_levels, 10)
+            .unwrap_err();
+    assert_eq!(fresh.physical_residuals(), 2);
 }
 
 #[test]

@@ -229,7 +229,7 @@ pub fn certify_final_cell_requirements(
     max_adjacent_level_delta: usize,
 ) -> Result<FinalCellRequirementCertificate, FinalCellRequirementError> {
     let remap = if source_mesh == target_mesh {
-        ConservativeRemap::identity(target_mesh.vertex_count())
+        ConservativeRemap::identity_for_mesh(target_mesh)
     } else {
         ConservativeRemap::between_voronoi_meshes(source_mesh, target_mesh)
             .map_err(FinalCellRequirementError::InvalidInput)?
@@ -365,6 +365,7 @@ fn final_cell_requirement_report(
 ) -> Result<FinalCellRequirementReport, String> {
     source_levels.validate_for(source_mesh)?;
     target_levels.validate_for(target_mesh)?;
+    remap.validate_mesh_binding(source_mesh, target_mesh)?;
     let source_sites = source_levels.active_sites();
     let target_sites = target_levels.active_sites();
     let remap_cert = remap.certify_spherical_overlap(source_sites.len(), target_sites.len());

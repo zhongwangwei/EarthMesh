@@ -16,6 +16,7 @@ pub struct RemapRow {
 pub struct ConservativeRemap {
     rows: Vec<RemapRow>,
     coverage_error: f64,
+    source_fingerprint: Option<u64>,
     target_fingerprint: Option<u64>,
 }
 
@@ -68,6 +69,7 @@ impl ConservativeRemap {
         Self {
             rows,
             coverage_error: 0.0,
+            source_fingerprint: None,
             target_fingerprint: None,
         }
     }
@@ -81,6 +83,7 @@ impl ConservativeRemap {
                 })
                 .collect(),
             coverage_error: 0.0,
+            source_fingerprint: None,
             target_fingerprint: None,
         }
     }
@@ -88,8 +91,23 @@ impl ConservativeRemap {
     pub fn identity_for_mesh(mesh: &MeshState) -> Self {
         let fingerprint = mesh_fingerprint(mesh);
         let mut remap = Self::identity(mesh.active_vertex_slots().count());
+        remap.source_fingerprint = Some(fingerprint);
         remap.target_fingerprint = Some(fingerprint);
         remap
+    }
+
+    pub(crate) fn validate_mesh_binding(
+        &self,
+        source: &MeshState,
+        target: &MeshState,
+    ) -> Result<(), String> {
+        if self.source_fingerprint != Some(mesh_fingerprint(source)) {
+            return Err("Voronoi overlap remap source mesh is unbound or stale".into());
+        }
+        if self.target_fingerprint != Some(mesh_fingerprint(target)) {
+            return Err("Voronoi overlap remap target mesh is unbound or stale".into());
+        }
+        Ok(())
     }
 
     pub fn hierarchy_2_to_1_average(coarse: &MotherGrid, fine: &MotherGrid) -> Option<Self> {
@@ -128,6 +146,7 @@ impl ConservativeRemap {
         Some(Self {
             rows,
             coverage_error: 0.0,
+            source_fingerprint: Some(mesh_fingerprint(&fine.mesh)),
             target_fingerprint: Some(mesh_fingerprint(&coarse.mesh)),
         })
     }
@@ -199,12 +218,14 @@ impl ConservativeRemap {
         Ok(Self {
             rows,
             coverage_error,
+            source_fingerprint: None,
             target_fingerprint: None,
         })
     }
 
     pub fn between_voronoi_meshes(source: &MeshState, target: &MeshState) -> Result<Self, String> {
         let mut remap = Self::spherical_overlap(&voronoi_rings(source)?, &voronoi_rings(target)?)?;
+        remap.source_fingerprint = Some(mesh_fingerprint(source));
         remap.target_fingerprint = Some(mesh_fingerprint(target));
         Ok(remap)
     }
@@ -398,6 +419,7 @@ impl<'a> VoronoiRemapSource<'a> {
             &target_cells,
             targets,
         )?;
+        remap.source_fingerprint = Some(mesh_fingerprint(self.mesh));
         remap.target_fingerprint = Some(mesh_fingerprint(target));
         Ok(remap)
     }
@@ -666,6 +688,7 @@ mod tests {
         Ok(ConservativeRemap {
             rows: rows.into_iter().map(|(row, _)| row).collect(),
             coverage_error,
+            source_fingerprint: None,
             target_fingerprint: None,
         })
     }
@@ -680,6 +703,7 @@ mod tests {
             let target = MotherGrid::generate(n).unwrap();
             let targets = voronoi_rings(&target.mesh).unwrap();
             let mut expected = scalar_overlap_reference(&sources, &targets).unwrap();
+            expected.source_fingerprint = Some(mesh_fingerprint(&source.mesh));
             expected.target_fingerprint = Some(mesh_fingerprint(&target.mesh));
             for threads in [1, 4] {
                 let actual = rayon::ThreadPoolBuilder::new()
@@ -955,6 +979,7 @@ mod tests {
                 },
             ],
             coverage_error: 0.0,
+            source_fingerprint: Some(7),
             target_fingerprint: Some(7),
         };
         let valid_lineage =
