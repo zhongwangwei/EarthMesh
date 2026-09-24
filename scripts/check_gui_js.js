@@ -2469,3 +2469,77 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
     log('configured required data sources support atomic replacement and preserve the path on cancel');
   })().catch(error=>{console.error(error);process.exitCode=1});
 }
+
+// Execute the Step 5 bindings, composition and invalidation from the shipped source.
+async function checkAdaptiveCoastlineToggle() {
+  const wiring = section(html, /(      const adaptiveMax = [\s\S]*?)(?=      const hfG =)/, 'adaptive bindings');
+  const compose = section(html, /(async function composeYaml\([^)]*\) \{[\s\S]*?\n  \})/, 'composeYaml');
+  const clear = section(html, /(function clearRunArtifacts\(\) \{[\s\S]*?\n  \})/, 'clearRunArtifacts');
+  const h = new Function(`
+    const listeners={}, select={value:'on',addEventListener:(event,fn)=>listeners[event]=fn};
+    const card={textContent:'old delivery',style:{display:''}};
+    const document={getElementById:id=>id==='adaptiveCoastline'?select:id==='deliveryCard'?card:null,querySelectorAll:()=>[]};
+    let specifiedRefine={enabled:false,algorithm:'method_c',route:'adaptive',adaptiveMaxLevel:2,adaptiveCoastline:true};
+    let _runArtifactEpoch=0,hasRun=true,runInfo={},_lastQuality={},_meshPreview={},_meshPreviewToken=0,_meshPreviewTimer;
+    const backendReady=null,domainEdit=null,domainMode='global',baseProjectYaml=null,targetEdit=null,cellEdit=null;
+    const metadataEdit={},colmMeshDelivery={enabled:false},layerEdits={},thresholdEdits={},criterionEdits={},expertEdit={};
+    const hydroRefine={coastBufferKm:0,riverWidthThresholdM:0,riverUpstreamAreaThresholdKm2:0};
+    const thresholdRefine={enabled:false},METHOD_C_MAX_REFINEMENT_LEVEL=5,maxPasses=2,qualityEdit=null;
+    const currentResolution=()=>({nxp:80}),currentIntent=()=>'AtmosphereMpas',projectName=()=>'coastline-test';
+    const specifiedRefinementError=()=>null,springTypesFor=()=>({});
+    const calls=[],invoke=async(command,args)=>{calls.push({command,args});return command==='project_summary'?{model_format:'MPAS'}:'yaml';};
+    ${clear}
+    ${wiring}
+    ${compose}
+    return {select,listeners,calls,compose:composeYaml,card,
+      seed(){hasRun=true;runInfo={};_lastQuality={};_meshPreview={};card.textContent='old delivery';card.style.display='';},
+      state:()=>({coastline:specifiedRefine.adaptiveCoastline,epoch:_runArtifactEpoch,hasRun,runInfo,quality:_lastQuality,preview:_meshPreview,token:_meshPreviewToken})};
+  `)();
+  check(typeof h.listeners.change === 'function', 'adaptive coastline must bind the native change event');
+  await h.compose();
+  check(h.calls.findLast(call=>call.command==='set_adaptive_refinement').args.coastline === true, 'initial coastline selection must compose as enabled');
+  for (const [value,expected,epoch] of [['off',false,1],['on',true,2]]) {
+    h.seed();h.select.value=value;h.listeners.change();
+    const state=h.state();
+    check(state.coastline===expected && state.epoch===epoch && state.token===epoch && !state.hasRun && state.runInfo===null && state.quality===null && state.preview===null && h.card.textContent==='' && h.card.style.display==='none',
+      'each coastline change must update the draft and invalidate results, delivery and preview');
+    await h.compose();
+    const args=h.calls.findLast(call=>call.command==='set_adaptive_refinement').args;
+    check(args.coastline===expected && args.enabled && args.maxLevel===2, 'coastline selection must reach composed IPC without changing other adaptive options');
+  }
+  log('adaptive coastline: actual change bindings preserve on→off→on in composed IPC and invalidate prior results');
+}
+checkAdaptiveCoastlineToggle().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Hidden algorithm controls are retained drafts, not requests to clear their values.
+{
+  const readers = html.slice(html.indexOf('  function readOptionalInt(id) {'), html.indexOf('  function inferCloseFormat(path) {'));
+  const enabled = section(html, /(function expertEnabled\(\) \{[\s\S]*?\n  \})/, 'expert enabled');
+  const wiring = section(html, /(    const erNiter = [\s\S]*?)(?=    const specOn =)/, 'expert refinement bindings');
+  const h = new Function(`
+    const expertEdit={niterRefine:12,halo:[5,4,3],maxTransitionRow:[3,2,1],springStrategy:'equal',weakConcavEliminate:false,isolatedOcean:true};
+    let fields={},clears=0;
+    const document={getElementById:id=>fields[id]||null},clearRunArtifacts=()=>clears++;
+    ${readers}\n${enabled}
+    function mount(ids){fields=Object.fromEntries(ids.map(id=>[id,{_value:'',get value(){return this._value},set value(value){this._value=String(value)}}]));${wiring}}
+    return {mount,state:()=>expertEdit,field:id=>fields[id],clears:()=>clears};
+  `)();
+  const spring=['expertNiterRefine','expertRefineSpringStrategy','expertIsolatedOcean'];
+  const arrays=['expertHalo','expertMaxTransitionRow'];
+  h.mount([...spring,...arrays]);
+  h.field('expertHalo').value='6,5,4';h.field('expertHalo').oninput();
+  h.mount(spring); // Canonical -> LEPP: no halo or transition-row inputs.
+  h.field('expertNiterRefine').value='20';h.field('expertNiterRefine').oninput();
+  check(JSON.stringify(h.state().halo)==='[6,5,4]' && JSON.stringify(h.state().maxTransitionRow)==='[3,2,1]' && h.state().niterRefine===20,
+    'LEPP edits must preserve hidden Canonical halo and transition-row drafts');
+  h.mount(['expertIsolatedOcean']); // CMRC: no generic spring controls.
+  h.field('expertIsolatedOcean').value='off';h.field('expertIsolatedOcean').onchange();
+  check(h.state().springStrategy==='equal' && h.state().niterRefine===20 && h.state().isolatedOcean===false && h.state().weakConcavEliminate===false,
+    'CMRC edits must preserve hidden spring and algorithm settings');
+  h.mount([...spring,...arrays,'expertWeakConcav']);
+  for (const id of [...spring,...arrays,'expertWeakConcav']) h.field(id).value='';
+  h.field('expertHalo').oninput();
+  check(['niterRefine','halo','maxTransitionRow','springStrategy','isolatedOcean','weakConcavEliminate'].every(key=>h.state()[key]===null) && !h.state().enabled && h.clears()===4,
+    'mounted empty expert controls must intentionally clear overrides and invalidate results');
+  log('expert refinement: actual bindings retain hidden Canonical/LEPP/CMRC settings and clear mounted empty controls');
+}

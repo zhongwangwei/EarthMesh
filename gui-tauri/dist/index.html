@@ -3366,6 +3366,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       );
       const adaptiveMax = document.getElementById("adaptiveMaxLevel");
       if (adaptiveMax) adaptiveMax.addEventListener("input", () => { specifiedRefine.adaptiveMaxLevel = readNum(adaptiveMax); clearRunArtifacts(); });
+      const adaptiveCoastline = document.getElementById("adaptiveCoastline");
+      if (adaptiveCoastline) adaptiveCoastline.addEventListener("change", () => { specifiedRefine.adaptiveCoastline = adaptiveCoastline.value === "on"; clearRunArtifacts(); });
       const hfG = document.getElementById("hfieldG");
       if (hfG) hfG.addEventListener("input", () => { specifiedRefine.hfieldG = hfG.value.trim() ? readNum(hfG) : null; clearRunArtifacts(); });
       const hfMax = document.getElementById("hfieldMaxLevel");
@@ -3504,13 +3506,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (erSpring) erSpring.value = expertEdit.springStrategy ?? "";
     if (erIsolatedOcean) erIsolatedOcean.value = expertEdit.isolatedOcean === true ? "on" : expertEdit.isolatedOcean === false ? "off" : "";
     const syncExpertRefine = () => {
-      expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
-      expertEdit.halo = readOptionalIntList("expertHalo");
-      expertEdit.maxTransitionRow = readOptionalIntList("expertMaxTransitionRow");
+      if (erNiter) expertEdit.niterRefine = readOptionalInt("expertNiterRefine");
+      if (erHalo) expertEdit.halo = readOptionalIntList("expertHalo");
+      if (erRows) expertEdit.maxTransitionRow = readOptionalIntList("expertMaxTransitionRow");
       const weakConcav = document.getElementById("expertWeakConcav");
       if (weakConcav) expertEdit.weakConcavEliminate = weakConcav.value === "" ? null : weakConcav.value === "on";
-      expertEdit.springStrategy = erSpring && erSpring.value ? erSpring.value : null;
-      expertEdit.isolatedOcean = erIsolatedOcean && erIsolatedOcean.value ? erIsolatedOcean.value === "on" : null;
+      if (erSpring) expertEdit.springStrategy = erSpring.value || null;
+      if (erIsolatedOcean) expertEdit.isolatedOcean = erIsolatedOcean.value ? erIsolatedOcean.value === "on" : null;
       expertEdit.enabled = expertEnabled();
       clearRunArtifacts();
     };
