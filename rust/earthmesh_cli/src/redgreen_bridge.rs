@@ -84,6 +84,8 @@ pub fn finalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPol
 }
 
 const MAX_ADJACENT_RESOLUTION_RATIO: f64 = 2.0;
+// Geometry contract, independent of the configurable warn/fail quality policy.
+const TRIANGLE_SHAPE_FLOOR_DEG: f64 = 25.0;
 
 #[derive(Default)]
 struct LocalResolutionStats {
@@ -756,13 +758,15 @@ pub fn refine_redgreen_level(
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
-    _preserve_locality: bool,
+    preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking_from_regions(mesh, regions, level);
     let mut settings = redgreen_settings_for_level(refine, level);
-    // The ancestry-aware prototype can leave dual degree 8 after Lawson;
-    // keep publication on the canonical closure until that invariant is fixed.
-    settings.protect_triangle_quality = false;
+    // TRI can publish variable-width W fans; HEX still needs the canonical dual.
+    settings.protect_triangle_quality = preserve_locality;
+    if preserve_locality {
+        settings.min_triangle_angle_deg = TRIANGLE_SHAPE_FLOOR_DEG;
+    }
     let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,

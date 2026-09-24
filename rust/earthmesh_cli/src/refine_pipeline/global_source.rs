@@ -4430,7 +4430,9 @@ fn refine_with_redgreen(
                 transitions[face] = true;
             }
         }
-        let polish = crate::redgreen_bridge::finalize_redgreen_mesh(&mut redgreen)?;
+        // TRI can retain non-Delaunay diagonals; forcing them would undo the
+        // closure's angle floor without helping the published triangle mesh.
+        let polish = crate::redgreen_bridge::polish_redgreen_mesh(&mut redgreen)?;
         eprintln!("earthmesh_cli: Red-Green Lawson flipped {} edges ({} topology fallback); remaining Delaunay violations={}{}",
             polish.flipped_edges, polish.forced_flips, polish.remaining_illegal_edges,
             if polish.remaining_illegal_edges == 0 { "" } else { "; not Delaunay certified" });
@@ -6297,7 +6299,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "three-level Red-Green triangle angle floor 25° is not yet certified"]
     fn final_redgreen_polishing_meets_three_level_triangle_angle_floor() {
         let mesh = TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
         let region = earthmesh_mesh::RefinementRegion::Bbox {
