@@ -1952,7 +1952,6 @@ pub(super) struct CertifiedDomainPublication {
     pub(super) topology: serde_json::Value,
     pub(super) quality_topology: (usize, Vec<serde_json::Value>),
     pub(super) geometry: serde_json::Value,
-    pub(super) region_center_retention: Option<serde_json::Value>,
     pub(super) fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
 }
 
@@ -2034,7 +2033,6 @@ fn publish_certified_domain_gridfile(
     workdir: &Path,
     domain_region: Option<&GridRegion>,
     angle_contract: earthmesh_refine_certified::AngleContractId,
-    requested_center_lineages: Option<&BTreeSet<i64>>,
     fvcom_output: Option<&Path>,
 ) -> io::Result<CertifiedDomainPublication> {
     let mode_grid = config.mode_grid.trim();
@@ -2154,37 +2152,6 @@ fn publish_certified_domain_gridfile(
             ),
         ));
     }
-    let region_center_retention = if let Some(requested) = requested_center_lineages {
-        let lineages = crate::read_gridfile_cell_lineages(output_gridfile)?;
-        let published_centers = if mode_grid == "tri" {
-            &lineages.m
-        } else {
-            &lineages.w
-        };
-        if !requested.is_empty() && published_centers.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "CMRC published domain lacks center lineage needed to audit requested regions",
-            ));
-        }
-        let retained_lineages = published_centers.iter().copied().collect::<BTreeSet<_>>();
-        let retained = requested.intersection(&retained_lineages).count();
-        let dropped = requested.len() - retained;
-        if dropped > 0 {
-            eprintln!(
-                "earthmesh_cli: CMRC final domain mask removed {dropped} of {} pre-export cell centers in declared refinement regions",
-                requested.len()
-            );
-        }
-        Some(serde_json::json!({
-            "scope": "pre_export_cell_centers_in_declared_regions",
-            "requested": requested.len(),
-            "retained": retained,
-            "dropped": dropped,
-        }))
-    } else {
-        None
-    };
     let quality_mesh = crate::read_gridfile_mesh_points(output_gridfile)?;
     if domain_region.is_some() && mesh_type != "oceanmesh" {
         crate::regional_gridfile_writers::lineage::verify_whole_triangle_lineage(
@@ -2298,7 +2265,6 @@ fn publish_certified_domain_gridfile(
             "contract_maximum_deg": (mode_grid == "tri").then_some(delivery_window.maximum_degrees),
             "contract_pass": (mode_grid == "tri").then_some(true),
         }),
-        region_center_retention,
         fvcom_2dm,
     })
 }
@@ -3017,20 +2983,52 @@ fn run_certified_pipeline(
                 &domain_workdir,
                 regional_domain.as_ref(),
                 options.angle_contract,
-                requested_center_lineages.as_ref(),
                 fvcom_output_path
                     .as_ref()
                     .map(|_| temporary_fvcom_path.as_path()),
             );
             let _ = fs::remove_dir_all(&domain_workdir);
             let published = published?;
+            let region_center_retention = if let Some(requested) =
+                requested_center_lineages.as_ref()
+            {
+                let lineages = crate::read_gridfile_cell_lineages(&temporary_path)?;
+                let published_centers = if requested_view == "tri" {
+                    &lineages.m
+                } else {
+                    &lineages.w
+                };
+                if !requested.is_empty() && published_centers.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "CMRC published domain lacks center lineage needed to audit requested regions",
+                    ));
+                }
+                let retained_lineages = published_centers.iter().copied().collect::<BTreeSet<_>>();
+                let retained = requested.intersection(&retained_lineages).count();
+                let dropped = requested.len() - retained;
+                if dropped > 0 {
+                    eprintln!(
+                        "earthmesh_cli: CMRC final domain mask removed {dropped} of {} pre-export cell centers in declared refinement regions",
+                        requested.len()
+                    );
+                }
+                Some(serde_json::json!({
+                    "scope": "pre_export_cell_centers_in_declared_regions",
+                    "requested": requested.len(),
+                    "retained": retained,
+                    "dropped": dropped,
+                }))
+            } else {
+                None
+            };
             (
                 published.report,
                 is_surface_masked.then_some(published.kept_cells),
                 Some(published.topology),
                 Some(published.quality_topology),
                 Some(published.geometry),
-                published.region_center_retention,
+                region_center_retention,
                 published.fvcom_2dm,
             )
         } else {

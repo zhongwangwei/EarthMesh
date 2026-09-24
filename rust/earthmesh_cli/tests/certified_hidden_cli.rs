@@ -1291,6 +1291,63 @@ fn certified_ocean_reports_declared_region_centers_removed_by_final_mask() {
 }
 
 #[test]
+fn certified_regional_hex_reports_declared_region_centers_removed_by_mask() {
+    let root = temp_root("regional_hex_demand_mask_loss");
+    let landtype = root.join("landtype.nc");
+    let mut file = earthmesh_cli::create_netcdf_quiet(&landtype).unwrap();
+    file.add_dimension("longitude", 360).unwrap();
+    file.add_dimension("latitude", 180).unwrap();
+    let values = (0..360 * 180)
+        .map(|index| {
+            let lon = (index / 180) as f64 - 179.5;
+            let lat = 89.5 - (index % 180) as f64;
+            if (lon - 100.0).powi(2) + lat.powi(2) < 15.0_f64.powi(2) {
+                0_i8
+            } else {
+                1_i8
+            }
+        })
+        .collect::<Vec<_>>();
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+    drop(file);
+    let circle = root.join("circle.nml");
+    fs::write(
+        &circle,
+        "circle_num = 1\ncircle_refine = 1\n100.0 0.0 800.0\n",
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    let contents = specified_circle_namelist(&root, "regional_hex_demand_mask_loss", &circle)
+        .replace("mesh_type='earthmesh'", "mesh_type='landmesh'")
+        .replace(
+            "landtype_file='none'",
+            &format!("landtype_file='{}'", landtype.display()),
+        )
+        .replace(
+            "mask_domain_global=.true.",
+            "mask_domain_global=.false.\nNL%mask_domain_type='bbox'\nNL%mask_domain_fprefix='inline:bbox:w=60,e=140,s=-40,n=40'",
+        );
+    fs::write(&path, contents).unwrap();
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
+    let certified = run.certified_run.unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    let retention = &certificate["published_refinement_region_centers"];
+    assert!(retention["requested"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert_eq!(retention["retained"], 0);
+    assert_eq!(retention["dropped"], retention["requested"]);
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.resources).unwrap()).unwrap();
+    assert_eq!(resources["published_refinement_region_centers"], *retention);
+}
+
+#[test]
 fn certified_refine_false_uses_uniform_level_zero_safe_mother() {
     let root = temp_root("refine_false_uniform");
     let path = root.join("cmrc.nml");
