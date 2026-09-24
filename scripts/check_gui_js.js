@@ -2327,3 +2327,43 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
   harness.resize();check(harness.fits.length===1,"unchanged resize must not refit");
   log("hidden-map fit waits for visible geometry and runs exactly once");
 }
+
+// Expert defaults are local: bind before the optional target summary can yield.
+{
+  const readers = html.slice(html.indexOf('  function readOptionalInt(id) {'), html.indexOf('  function inferCloseFormat(path) {'));
+  const enabled = section(html, /(function expertEnabled\(\) \{[\s\S]*?\n  \})/, 'expert enabled');
+  const wiring = section(html, /(async function wireExpertTargetStep\(\) \{[\s\S]*?\n  \})/, 'expert target wiring');
+  const enhance = section(html, /(async function enhanceTargetOutputStep\(\) \{[\s\S]*?\n  \})/, 'target enhancement');
+  const makeHarness = new Function(`
+    let expertEdit={openmp:4,niter:8,beta:1.1,relax:.5}, paints=0;
+    const DEFAULT_OPENMP=1,DEFAULT_NITER=10,DEFAULT_BETA=1.2,DEFAULT_RELAX=.6;
+    const fields=Object.fromEntries(['targetKindOutput','expertOpenmp','expertNiter','expertBeta','expertRelax'].map(id=>[id,{_value:'',get value(){return this._value},set value(value){this._value=String(value)}}]));
+    const document={getElementById:id=>fields[id]||null};
+    const pending=[],refreshSummary=()=>new Promise(resolve=>pending.push(resolve));
+    const paintTargetOutputs=()=>paints++,clearRunArtifacts=()=>{};
+    ${readers}\n${enabled}\n${wiring}\n${enhance}
+    return {fields,pending,start:enhanceTargetOutputStep,state:()=>expertEdit,paints:()=>paints};
+  `);
+  (async()=>{
+    const h=makeHarness(), loading=h.start();
+    check(typeof h.fields.expertOpenmp.oninput==='function' && h.fields.expertNiter.value==='8',
+      'expert target controls must initialize and bind synchronously before summary loading');
+    h.fields.expertOpenmp.value='12';h.fields.expertBeta.value='1.7';
+    const edit=h.fields.expertOpenmp.oninput();
+    check(h.state().openmp===12 && h.state().beta===1.7,'expert edits during target loading must reach the draft immediately');
+    h.pending[0]({});await loading;
+    check(h.fields.expertOpenmp.value==='12' && h.state().openmp===12,'delayed initial summary must not overwrite expert edits');
+    h.pending[1]({});await edit;
+    check(h.fields.expertOpenmp.value==='12' && h.fields.expertBeta.value==='1.7','expert summary completion must preserve the edited draft');
+    const stale=makeHarness(), oldPage=stale.start();
+    stale.fields.targetKindOutput={value:'new page'};
+    stale.fields.expertOpenmp={value:'new expert'};
+    stale.pending[0]({});await oldPage;
+    check(stale.paints()===0 && stale.fields.expertOpenmp.value==='new expert',
+      'detached target initialization must not repaint or bind a replacement page');
+    const run=makeHarness();delete run.fields.targetKindOutput;run.fields.readyModelOutput={};
+    const oldRun=run.start();run.fields.readyModelOutput={};run.pending[0]({});await oldRun;
+    check(run.paints()===0,'detached run summary initialization must not repaint its replacement');
+    log('target expert controls preserve edits during deferred initialization and ignore detached pages');
+  })().catch(error=>{console.error(error);process.exitCode=1});
+}

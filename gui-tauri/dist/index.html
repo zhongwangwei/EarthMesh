@@ -4109,9 +4109,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     };
     if (colmEnabled) colmEnabled.onchange = syncColm;
     if (colmPpd) { colmPpd.oninput = syncColm; colmPpd.onchange = syncColm; }
-    const s = await refreshSummary();
-    paintTargetOutputs(s);
     wireExpertTargetStep();
+    const ready = document.getElementById("readyModelOutput");
+    const s = await refreshSummary();
+    if (document.getElementById("targetKindOutput") !== kindIn || document.getElementById("readyModelOutput") !== ready) return;
+    paintTargetOutputs(s);
   }
 
   async function onNew() {
