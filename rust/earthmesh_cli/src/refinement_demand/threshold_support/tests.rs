@@ -1,6 +1,8 @@
 use super::*;
 use crate::hfield_refine::{build_composed_hfield_with_report, HfieldRefineOptions};
-use crate::refinement_demand::plan::{plan_demand_at_scale, DemandPlanInputs};
+use crate::refinement_demand::plan::{
+    plan_demand_at_scale, plan_demand_at_scale_for_windows, DemandPlanInputs,
+};
 use crate::refinement_demand::source_bounds_for_bbox;
 use crate::GridRegion;
 use earthmesh_core::{EarthmeshConfig, RefineConfig, EARTH_RADIUS_METERS};
@@ -657,6 +659,83 @@ fn plan_entry_and_hfield_report_share_raw_support_for_mean_std_and_landcover() {
         .expect("above-cap threshold level must not open sources");
     assert!(above_cap.raw_support.is_empty());
     assert!(above_cap.demand.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn window_planning_shares_support_and_matches_per_window_plans_cell_for_cell() {
+    // The per-window entry is the oracle: sharing one support evaluation across
+    // windows must not change a single demanded cell, count or support report.
+    let root = temp_root("window_support_sharing");
+    let lai = root.join("lai.nc");
+    let land = root.join("landtype.nc");
+    write_numeric(&lai, "lai", 16, 8, |i, j| {
+        if (i * 3 + j) % 5 == 0 {
+            10.0
+        } else {
+            0.0
+        }
+    });
+    // Source resolution, so the coastline producer can read it too.
+    write_landtype(&land, 360, 180, |i, j| match (i / 7 + 2 * (j / 5)) % 4 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 5,
+    });
+    let mut refine = RefineConfig {
+        refine_cal: true,
+        max_iter_cal: 3,
+        threshold_dir: root.display().to_string(),
+        refine_num_landtypes: true,
+        th_num_landtypes: 1,
+        ..RefineConfig::default()
+    };
+    refine.refine_onelayer_lnd[0] = true;
+    refine.refine_onelayer_lnd[1] = true;
+    refine.th_onelayer_lnd[0] = 1.0;
+    refine.th_onelayer_lnd[1] = 1.0;
+    let windows = [
+        (-180.0, 0.0, -90.0, 0.0),
+        (0.0, 180.0, -90.0, 0.0),
+        (-180.0, 0.0, 0.0, 90.0),
+        (0.0, 180.0, 0.0, 90.0),
+    ];
+    for refine_coastline in [false, true] {
+        let inputs = windows
+            .iter()
+            .map(|&(west, east, south, north)| DemandPlanInputs {
+                bounds: source_bounds_for_bbox(west, east, south, north, 1).unwrap(),
+                gridnum_perdegree: 1,
+                landtype_file: Some(&land),
+                mesh_type: "landmesh",
+                refine_coastline,
+                domain_region: None,
+            })
+            .collect::<Vec<_>>();
+        for (level, parent_m) in [(1, parent_m_for_nlat(4)), (2, parent_m_for_nlat(8))] {
+            let mut shared = Vec::new();
+            plan_demand_at_scale_for_windows(&refine, &inputs, level, parent_m, |plan| {
+                shared.push(plan);
+                Ok(())
+            })
+            .expect("shared window plans");
+            assert_eq!(shared.len(), inputs.len());
+            let mut demanded = 0;
+            for (input, shared) in inputs.iter().zip(&shared) {
+                let oracle = plan_demand_at_scale(&refine, input, level, parent_m).expect("oracle");
+                assert_eq!(shared.level, oracle.level);
+                assert_eq!(shared.demand, oracle.demand, "{:?}", input.bounds);
+                assert_eq!(shared.contributions, oracle.contributions);
+                assert_eq!(shared.raw_support, oracle.raw_support);
+                demanded += oracle.demand.demanded_count();
+            }
+            assert!(
+                demanded > 0,
+                "fixture must demand something at level {level}"
+            );
+        }
+    }
     let _ = fs::remove_dir_all(root);
 }
 

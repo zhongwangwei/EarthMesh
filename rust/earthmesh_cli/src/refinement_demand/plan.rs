@@ -9,7 +9,9 @@ use earthmesh_core::RefineConfig;
 use earthmesh_mesh::AreaJudgeSourceBounds;
 
 use super::landtype::coastal_demand;
-use super::threshold_support::{evaluate_threshold_support, threshold_level_cap};
+use super::threshold_support::{
+    evaluate_threshold_support, threshold_level_cap, ThresholdSupportDemand,
+};
 use super::RefinementDemand;
 use crate::GridRegion;
 
@@ -66,30 +68,103 @@ pub fn plan_demand_at_scale(
     level: usize,
     cell_meters: f64,
 ) -> io::Result<LevelDemand> {
+    let support = threshold_support_for_level(refine, inputs, level, cell_meters)?;
+    plan_demand_with_support(inputs, level, support.as_ref())
+}
+
+/// [`plan_demand_at_scale`] for every window of one level.
+///
+/// The statistical support does not depend on the window: it is evaluated over
+/// the whole domain and only projected onto a window afterwards. Evaluating it
+/// per window re-read the full source raster once for each -- a global run cuts
+/// 72 thirty-degree windows, so one level of a 15 arc-second landtype took about
+/// 24 minutes instead of 20 seconds. Windows that agree on everything the
+/// support reads share one evaluation.
+pub fn plan_demand_at_scale_for_windows(
+    refine: &RefineConfig,
+    inputs: &[DemandPlanInputs<'_>],
+    level: usize,
+    cell_meters: f64,
+    mut each: impl FnMut(LevelDemand) -> io::Result<()>,
+) -> io::Result<()> {
+    // Handed over one window at a time, as the per-window loop this replaces
+    // did: a window's demand is a source-resolution bitmap (6.5 MB at 240 cells
+    // per degree), and there is no reason to hold 72 of them.
+    let mut shared: Vec<(&DemandPlanInputs<'_>, Option<ThresholdSupportDemand>)> = Vec::new();
+    for input in inputs {
+        let index = match shared
+            .iter()
+            .position(|(owner, _)| same_support_source(owner, input))
+        {
+            Some(index) => index,
+            None => {
+                let support = threshold_support_for_level(refine, input, level, cell_meters)?;
+                shared.push((input, support));
+                shared.len() - 1
+            }
+        };
+        each(plan_demand_with_support(
+            input,
+            level,
+            shared[index].1.as_ref(),
+        )?)?;
+    }
+    Ok(())
+}
+
+/// Everything `evaluate_threshold_support` reads from its inputs. The window
+/// (`bounds`) is deliberately absent.
+fn same_support_source(a: &DemandPlanInputs<'_>, b: &DemandPlanInputs<'_>) -> bool {
+    a.gridnum_perdegree == b.gridnum_perdegree
+        && a.landtype_file == b.landtype_file
+        && a.mesh_type == b.mesh_type
+        && match (a.domain_region, b.domain_region) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::ptr::eq(a, b),
+            _ => false,
+        }
+}
+
+fn threshold_support_for_level(
+    refine: &RefineConfig,
+    inputs: &DemandPlanInputs<'_>,
+    level: usize,
+    cell_meters: f64,
+) -> io::Result<Option<ThresholdSupportDemand>> {
     if !cell_meters.is_finite() || cell_meters <= 0.0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "cell size for a demand plan must be positive and finite",
         ));
     }
-    let mut demand = RefinementDemand::new(inputs.bounds, inputs.gridnum_perdegree)?;
-    let mut contributions = Vec::new();
-    let mut raw_support = Vec::new();
     if !(1..=5).contains(&level) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "demand level must be in 1..=5",
         ));
     }
-    let cap = threshold_level_cap(refine, inputs.mesh_type, 5)?;
-    if level <= cap {
-        let raw = evaluate_threshold_support(
-            refine,
-            inputs.mesh_type,
-            inputs.landtype_file,
-            cell_meters,
-            inputs.domain_region,
-        )?;
+    if level > threshold_level_cap(refine, inputs.mesh_type, 5)? {
+        return Ok(None);
+    }
+    evaluate_threshold_support(
+        refine,
+        inputs.mesh_type,
+        inputs.landtype_file,
+        cell_meters,
+        inputs.domain_region,
+    )
+    .map(Some)
+}
+
+fn plan_demand_with_support(
+    inputs: &DemandPlanInputs<'_>,
+    level: usize,
+    support: Option<&ThresholdSupportDemand>,
+) -> io::Result<LevelDemand> {
+    let mut demand = RefinementDemand::new(inputs.bounds, inputs.gridnum_perdegree)?;
+    let mut contributions = Vec::new();
+    let mut raw_support = Vec::new();
+    if let Some(raw) = support {
         for criterion in &raw.criteria {
             let contribution =
                 raw.project_source(&criterion.hits, inputs.bounds, inputs.gridnum_perdegree)?;

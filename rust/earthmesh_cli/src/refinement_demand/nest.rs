@@ -31,7 +31,7 @@ use earthmesh_mesh::{RefinementRegion, TriangularMesh};
 use earthmesh_refine_method_c::MethodCMesh;
 
 use super::ladder::{nested_circle_radii_meters, MEASURED_PARENT_HALO_ROWS};
-use super::plan::{plan_demand_at_scale, DemandPlanInputs, LevelDemand};
+use super::plan::{plan_demand_at_scale_for_windows, DemandPlanInputs};
 use super::reduce_demand_to_circles_on_blocks;
 use earthmesh_core::RefineConfig;
 
@@ -209,10 +209,9 @@ pub fn adaptive_demand_circles_for_level_windows_at_radius(
     let mut demanded_cells = 0usize;
     let mut circles = Vec::new();
     let mut criterion_ids = std::collections::BTreeSet::new();
-    for input in inputs {
-        let plan: LevelDemand = plan_demand_at_scale(refine, input, level, cell_meters)?;
+    plan_demand_at_scale_for_windows(refine, inputs, level, cell_meters, |plan| {
         if plan.is_empty() {
-            continue;
+            return Ok(());
         }
         demanded_cells += plan.demand.demanded_count();
         criterion_ids.extend(
@@ -227,7 +226,8 @@ pub fn adaptive_demand_circles_for_level_windows_at_radius(
             radius_meters,
             block_radius_meters,
         )?);
-    }
+        Ok(())
+    })?;
     Ok(LevelCircles {
         demanded: demanded_cells > 0,
         demanded_cells,
