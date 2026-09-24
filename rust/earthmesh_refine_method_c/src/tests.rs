@@ -25,6 +25,7 @@ mod method_c_projection;
 mod method_c_remapping;
 mod method_c_selection_fill;
 mod method_c_selection_start;
+mod method_c_shape_probe;
 mod method_c_source_grid;
 mod method_c_split_u;
 mod method_c_split_u_midpoints;
