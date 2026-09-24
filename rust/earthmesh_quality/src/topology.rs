@@ -109,9 +109,15 @@ pub struct BoundaryTopology {
 }
 
 pub fn boundary_topology(mesh: &QualityMeshInput) -> BoundaryTopology {
-    let boundary_edges = valid_edge_cells(mesh)
-        .into_iter()
-        .filter_map(|(edge, cells)| (cells.len() == 1).then_some(edge))
+    boundary_topology_from_edges(&valid_edge_cells(mesh))
+}
+
+pub(crate) fn boundary_topology_from_edges(
+    edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+) -> BoundaryTopology {
+    let boundary_edges = edge_cells
+        .iter()
+        .filter_map(|(&edge, cells)| (cells.len() == 1).then_some(edge))
         .collect::<Vec<_>>();
     let mut adjacency = BTreeMap::<usize, Vec<usize>>::new();
     for &(a, b) in &boundary_edges {
@@ -218,6 +224,13 @@ pub fn genus_zero_euler_expectation(
 /// This is informational because the expected value depends on whether the mesh is
 /// global, regional, holed, or disconnected.
 pub fn euler_characteristic(mesh: &QualityMeshInput) -> isize {
+    euler_characteristic_from_edges(mesh, &valid_edge_cells(mesh))
+}
+
+pub(crate) fn euler_characteristic_from_edges(
+    mesh: &QualityMeshInput,
+    edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+) -> isize {
     let mut used_vertices = BTreeSet::new();
     let mut valid_cells = 0isize;
     for cell in &mesh.cells {
@@ -232,7 +245,7 @@ pub fn euler_characteristic(mesh: &QualityMeshInput) -> isize {
             used_vertices.extend(distinct);
         }
     }
-    used_vertices.len() as isize - valid_edge_cells(mesh).len() as isize + valid_cells
+    used_vertices.len() as isize - edge_cells.len() as isize + valid_cells
 }
 
 /// Number of edge-connected cell components. Cells touching only at a vertex are
@@ -241,7 +254,7 @@ pub fn connected_component_count(mesh: &QualityMeshInput) -> usize {
     connected_component_count_from_edges(mesh, &valid_edge_cells(mesh))
 }
 
-fn connected_component_count_from_edges(
+pub(crate) fn connected_component_count_from_edges(
     mesh: &QualityMeshInput,
     edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
 ) -> usize {
@@ -284,7 +297,7 @@ fn non_manifold_vertex_fans(mesh: &QualityMeshInput) -> Vec<(usize, usize)> {
     non_manifold_vertex_fans_from_edges(mesh, &edge_cells)
 }
 
-fn non_manifold_vertex_fans_from_edges(
+pub(crate) fn non_manifold_vertex_fans_from_edges(
     mesh: &QualityMeshInput,
     edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
 ) -> Vec<(usize, usize)> {
@@ -1181,6 +1194,49 @@ mod tests {
             cell
         }));
         QualityMeshInput { vertices, cells }
+    }
+
+    #[test]
+    fn computed_topology_matches_standalone_helpers() {
+        let mut cases = vec![two_square_mesh(), square_ring_mesh(), two_component_mesh()];
+        for ring in [vec![0, 1, 2, 99], vec![0, 1, 1, 2], vec![0, 1], vec![]] {
+            let mut mesh = two_square_mesh();
+            mesh.cells[0].vertices = ring;
+            cases.push(mesh);
+        }
+        let mut duplicate = two_square_mesh();
+        duplicate.cells.push(duplicate.cells[0].clone());
+        cases.push(duplicate);
+        let mut empty = two_square_mesh();
+        empty.cells.clear();
+        cases.push(empty);
+
+        for mesh in cases {
+            let report = crate::compute(&mesh, &crate::QualityThresholds::default());
+            let boundary = boundary_topology(&mesh);
+            assert_eq!(report.topology.boundary_edge_count, boundary.edge_count);
+            assert_eq!(report.topology.boundary_loop_count, boundary.loops.len());
+            assert_eq!(
+                report.topology.boundary_vertex_degree_violation_count,
+                boundary.invalid_vertex_degrees.len()
+            );
+            assert_eq!(
+                report.topology.euler_characteristic,
+                euler_characteristic(&mesh)
+            );
+            assert_eq!(
+                report.topology.connected_component_count,
+                connected_component_count(&mesh)
+            );
+            assert_eq!(
+                report.topology.non_manifold_vertex_fan_count,
+                non_manifold_vertex_fan_count(&mesh)
+            );
+            assert_eq!(
+                format!("{:?}", report.topology_issues),
+                format!("{:?}", MeshTopologyValidator::new(&mesh).validate_all())
+            );
+        }
     }
 
     #[test]

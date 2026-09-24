@@ -1259,22 +1259,24 @@ pub fn compute_with_options(
     // non-manifold edges (shared by > 2 cells)
     topo.duplicate_edge_count = edge_cells.values().filter(|c| c.len() > 2).count();
     topo.boundary_edge_count = edge_cells.values().filter(|c| c.len() == 1).count();
-    let boundary = topology::boundary_topology(input);
+    let boundary = topology::boundary_topology_from_edges(&edge_cells);
     topo.boundary_loop_count = boundary.loops.len();
     topo.boundary_vertex_degree_violation_count = boundary.invalid_vertex_degrees.len();
     topo.misoriented_shared_edge_count = edge_orientations
         .values()
         .filter(|occ| occ.len() == 2 && occ[0].1 == occ[1].1 && occ[0].2 == occ[1].2)
         .count();
-    topo.euler_characteristic = topology::euler_characteristic(input);
+    topo.euler_characteristic = topology::euler_characteristic_from_edges(input, &edge_cells);
     topo.expected_euler_characteristic = options.expected_euler_characteristic;
     topo.euler_characteristic_mismatch_count = usize::from(
         options
             .expected_euler_characteristic
             .is_some_and(|expected| expected != topo.euler_characteristic),
     );
-    topo.connected_component_count = topology::connected_component_count(input);
-    topo.non_manifold_vertex_fan_count = topology::non_manifold_vertex_fan_count(input);
+    topo.connected_component_count =
+        topology::connected_component_count_from_edges(input, &edge_cells);
+    topo.non_manifold_vertex_fan_count =
+        topology::non_manifold_vertex_fans_from_edges(input, &edge_cells).len();
 
     // orphan cells: share no edge with any other cell
     for (ci, cell) in input.cells.iter().enumerate() {
