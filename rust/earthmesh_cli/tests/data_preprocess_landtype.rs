@@ -257,6 +257,135 @@ fn landtype_masked_gridfile_keeps_land_or_ocean_cells_and_reindexes() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// A closed octahedron: six vertices on the axes, eight faces, no boundary.
+fn write_closed_octahedron_tri_gridfile(path: &std::path::Path) {
+    let point = |lon: f64, lat: f64| earthmesh_cli::coordinate_types::LonLatPoint { lon, lat };
+    // W ids 2..=7; row 0 is the canonical placeholder.
+    let vertices = [
+        point(0.0, 0.0),
+        point(90.0, 0.0),
+        point(180.0, 0.0),
+        point(-90.0, 0.0),
+        point(0.0, 90.0),
+        point(0.0, -90.0),
+    ];
+    let (north, south) = (6, 7);
+    let equator = [2, 3, 4, 5];
+    let mut triangles = Vec::new();
+    for k in 0..4 {
+        let (a, b) = (equator[k], equator[(k + 1) % 4]);
+        triangles.push([a, b, north]);
+        triangles.push([b, a, south]);
+    }
+    let centre_lon = [45.0, 135.0, -135.0, -45.0];
+    let mut m_points = vec![point(0.0, 0.0)];
+    for lon in centre_lon {
+        m_points.push(point(lon, 35.264));
+        m_points.push(point(lon, -35.264));
+    }
+    let mut w_to_m = vec![vec![1]];
+    for w_id in 2..=7 {
+        w_to_m.push(
+            triangles
+                .iter()
+                .enumerate()
+                .filter(|(_, triangle)| triangle.contains(&w_id))
+                .map(|(row, _)| row as i32 + 2)
+                .collect::<Vec<_>>(),
+        );
+    }
+    let n_w_to_m = w_to_m.iter().map(|ring| ring.len() as i32).collect();
+    let mut m_to_w = vec![[1, 1, 1]];
+    m_to_w.extend(triangles);
+    let mesh = earthmesh_cli::unstructured_mesh_support::UnstructuredMesh {
+        m_points,
+        w_points: std::iter::once(point(0.0, 0.0)).chain(vertices).collect(),
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
+    };
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh)
+        .expect("write octahedron gridfile");
+}
+
+#[test]
+fn ocean_carve_of_closed_sphere_records_that_no_boundary_is_open() {
+    let root = temp_root("ocean_carve_closed_obc");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let ocean_output = root.join("ocean_gridfile.nc4");
+    // Land under the face centred at (45E, 35.3N): 1-degree cells, latitude
+    // counted from the north.
+    write_landtype_file_with_points(&landtype_file, &[(225, 54)]);
+    write_closed_octahedron_tri_gridfile(&input);
+    let input_topology = earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(
+        &earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&input).unwrap(),
+    );
+    assert!(
+        input_topology.is_consistent() && input_topology.boundary_loop_count == 0,
+        "fixture must be a closed sphere: {input_topology:?}"
+    );
+
+    let kept = earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
+        &input,
+        &ocean_output,
+        &landtype_file,
+        1,
+        "tri",
+        "oceanmesh",
+    )
+    .expect("carve ocean from closed sphere");
+
+    // The carve opened a coastline, and it is the only boundary there is.
+    assert_eq!(kept, 7);
+    let carved = earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(
+        &earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&ocean_output).unwrap(),
+    );
+    assert_eq!(carved.boundary_loop_count, 1, "{carved:?}");
+    assert_eq!(
+        earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&ocean_output).unwrap(),
+        Some(Vec::new())
+    );
+    let delivered = earthmesh_cli::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+        &ocean_output,
+        &root.join("ocean.2dm"),
+    )
+    .expect("FVCOM accepts a coastline-only boundary");
+    assert_eq!(delivered.triangles, 7);
+    assert_eq!(delivered.boundary_segments, 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ocean_carve_of_bounded_mesh_leaves_boundary_context_unclassified() {
+    // A bounded input has edges the carve did not make; nothing here says
+    // whether they are open, so delivery must keep refusing to guess.
+    let root = temp_root("ocean_carve_bounded_obc");
+    let landtype_file = root.join("landtype.nc");
+    let input = root.join("gridfile.nc4");
+    let ocean_output = root.join("ocean_gridfile.nc4");
+    write_landtype_file_with_points(&landtype_file, &[(1, 0), (3, 0)]);
+    write_three_cell_tri_gridfile(&input);
+
+    earthmesh_cli::regional_gridfile_writers::write_landtype_masked_gridfile(
+        &input,
+        &ocean_output,
+        &landtype_file,
+        1,
+        "tri",
+        "oceanmesh",
+    )
+    .expect("carve ocean from bounded mesh");
+
+    assert_eq!(
+        earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&ocean_output).unwrap(),
+        None
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn landtype_masked_hex_gridfile_preserves_cell_corner_geometry_after_reindex() {
     let root = temp_root("landtype_masked_hex_geometry");

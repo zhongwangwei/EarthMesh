@@ -417,7 +417,10 @@ survives metadata rewrites, byte copies, and CMRC temporary-directory cleanup;
 Project never searches neighboring directories for a possibly stale OBC sidecar.
 An absent attribute differs from an explicitly present empty order. A mesh with
 boundary edges and missing context is rejected before writing; a closed mesh
-needs no OBC metadata. Older regional files must be regenerated through the
+needs no OBC metadata. The land-type ocean carve of a closed (global) sphere
+records an explicitly empty order, because every boundary it creates is
+coastline; the same carve of an already-bounded input leaves the attribute
+absent, since it cannot tell whether the cut edges it inherited are open. Older regional files must be regenerated through the
 boundary-producing path rather than silently exported with an empty boundary.
 
 The adapter validates boundary vertices and consecutive boundary edges, retains

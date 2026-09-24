@@ -186,9 +186,21 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
         final_metadata.duplicate_w_vertices(&duplicate_sources)?;
     }
     write_unstructured_mesh_netcdf_with_method_c_metadata(
-        output_gridfile,
+        &output_gridfile,
         &report.mesh,
         final_metadata.slices(),
     )?;
+    if !keep_land && mode_grid.trim() == "tri" {
+        // Carving a closed sphere leaves only coastline: no boundary is open,
+        // and FVCOM treats every unlisted boundary as a wall. Say so in the
+        // file, because final delivery refuses a bounded mesh whose context is
+        // absent -- absent means "never classified", not "none open". A
+        // bounded input keeps it absent: its inherited cut edges may be open,
+        // and nothing here can tell.
+        let input = crate::unstructured_mesh_support::check_unstructured_mesh_topology(&mesh);
+        if input.is_consistent() && input.boundary_loop_count == 0 {
+            crate::obc_boundary_io::write_gridfile_obc_order(output_gridfile.as_ref(), &[])?;
+        }
+    }
     Ok(kept)
 }
