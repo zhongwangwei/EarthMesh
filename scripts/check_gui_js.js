@@ -2262,6 +2262,48 @@ log("quality inputs reject invalid active values without trapping AutoRefine con
   })().catch((error) => { console.error(error); process.exitCode = 1; });
 }
 
+// Quality controls must not accept edits before their current project values arrive.
+{
+  const body = section(html, /async function enhanceQualityStep\(\) \{([\s\S]*?)\n  \}/, "delayed quality step");
+  const makeHarness = new Function(`
+    let qualityEdit=null, finish;
+    const make=()=>({value:"",disabled:false,style:{},listeners:{},addEventListener(event,fn){this.listeners[event]=fn}});
+    const fields=Object.fromEntries(["qualityMinAngle","qualityBatchCells","qualityViolationPolicy",
+      "qualityAutoRefineOn","qualityAutoRefineOptions"].map(id=>[id,make()]));
+    const document={getElementById:id=>fields[id]};
+    const refreshSummary=()=>new Promise(resolve=>{finish=resolve});
+    const num=el=>Number(el.value.replace("°","")),clearRunArtifacts=()=>{},zh=()=>false;
+    async function enhanceQualityStep(){${body}\n  }
+    return {fields,enhanceQualityStep,finish:value=>finish(value),state:()=>qualityEdit};
+  `);
+  (async()=>{
+    const harness=makeHarness();
+    const pending=harness.enhanceQualityStep();
+    const controls=["qualityMinAngle","qualityBatchCells","qualityViolationPolicy","qualityAutoRefineOn"];
+    check(controls.every(id=>harness.fields[id].disabled),
+      "quality controls must be disabled synchronously while the project summary is pending");
+    harness.finish({min_angle_deg:17,on_violation:"warn",auto_refine_batch_cells:3});
+    await pending;
+    check(!harness.fields.qualityMinAngle.disabled && !harness.fields.qualityViolationPolicy.disabled &&
+      !harness.fields.qualityAutoRefineOn.disabled && harness.fields.qualityBatchCells.disabled,
+      "loaded quality controls must restore their policy-dependent enabled states");
+    harness.fields.qualityMinAngle.value="19°";
+    harness.fields.qualityMinAngle.listeners.input();
+    check(harness.state().minAngle===19,"quality edits after loading must update the draft");
+    const failed=makeHarness(), failing=failed.enhanceQualityStep();
+    failed.finish(null);await failing;
+    check(!failed.fields.qualityMinAngle.disabled && !failed.fields.qualityViolationPolicy.disabled &&
+      failed.fields.qualityAutoRefineOn.disabled && failed.fields.qualityBatchCells.disabled,
+      "failed summaries must leave ordinary quality settings editable without enabling unavailable AutoRefine");
+    const stale=makeHarness(), loading=stale.enhanceQualityStep();
+    stale.fields.qualityMinAngle={value:"new page",disabled:false};
+    stale.finish({min_angle_deg:17,on_violation:"warn"});await loading;
+    check(stale.state()===null && stale.fields.qualityMinAngle.value==="new page",
+      "a detached quality page must not restore an obsolete project draft");
+    log("quality controls cannot silently lose edits during delayed summary loading");
+  })().catch(error=>{console.error(error);process.exitCode=1});
+}
+
 // Hidden panes have no usable layout size: fit only after the map becomes visible.
 {
   const fit = section(html, /function fitOlMap\(map[^\n]*\)\{([\s\S]*?)\n\}/, "fitOlMap");

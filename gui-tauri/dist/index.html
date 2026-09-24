@@ -2927,7 +2927,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const autoIn = document.getElementById("qualityAutoRefineOn");
     const autoOptions = document.getElementById("qualityAutoRefineOptions");
     const batchIn = document.getElementById("qualityBatchCells");
+    // These controls are not bound until their project values have loaded.
+    for (const control of [sel, minIn, autoIn, batchIn]) if (control) control.disabled = true;
     const s = await refreshSummary();
+    if (document.getElementById("qualityMinAngle") !== minIn) return;
+    if (sel) sel.disabled = false;
+    if (minIn) minIn.disabled = false;
     if (!qualityEdit) {
       if (s) qualityEdit = { minAngle: s.min_angle_deg, policy: s.on_violation || "warn", batchCells: s.auto_refine_batch_cells || 1 };
     }
