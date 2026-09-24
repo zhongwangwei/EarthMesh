@@ -666,7 +666,7 @@ impl MeshQualityReport {
                 self.topology.max_adjacent_resolution_ratio,
             );
         }
-        if geometry_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg) < 0
+        if min_angle_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg) < 0
         {
             push(
                 &mut regressions,
@@ -792,7 +792,7 @@ impl MeshQualityReport {
                 self.topology.max_adjacent_resolution_ratio,
                 baseline.topology.max_adjacent_resolution_ratio,
             ) < 0
-            || geometry_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg)
+            || min_angle_metric_change(self.geometry.min_angle_deg, baseline.geometry.min_angle_deg)
                 > 0
     }
 }
@@ -843,6 +843,14 @@ fn metric_change(candidate: f64, baseline: f64) -> i8 {
 /// Continuous whole-mesh extrema: only mesh-quality-relevant shifts count.
 fn geometry_metric_change(candidate: f64, baseline: f64) -> i8 {
     metric_change_within(candidate, baseline, GEOMETRY_METRIC_TOLERANCE)
+}
+
+fn min_angle_metric_change(candidate: f64, baseline: f64) -> i8 {
+    match (candidate.is_finite(), baseline.is_finite()) {
+        (false, true) => -1,
+        (true, false) => 1,
+        _ => geometry_metric_change(candidate, baseline),
+    }
 }
 
 fn cell_ring(input: &QualityMeshInput, cell: &QualityCell) -> Option<Vec<Point>> {
@@ -2552,6 +2560,22 @@ mod tests {
         let mut topology_regressed = warned_candidate;
         topology_regressed.topology.isolated_refined_cell_count += 1;
         assert!(!topology_regressed.is_strict_improvement_over(&failed_baseline));
+    }
+
+    #[test]
+    fn missing_min_angle_is_a_regression_not_an_improvement() {
+        let baseline = compute(&two_square_mesh(), &QualityThresholds::default());
+        assert!(baseline.geometry.min_angle_deg.is_finite());
+        for missing in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut candidate = baseline.clone();
+            candidate.geometry.min_angle_deg = missing;
+            assert!(candidate
+                .guarded_metric_regressions(&baseline)
+                .iter()
+                .any(|regression| regression.metric == "min_angle_deg"));
+            assert!(!candidate.is_strict_improvement_over(&baseline));
+            assert!(baseline.is_strict_improvement_over(&candidate));
+        }
     }
 
     #[test]
