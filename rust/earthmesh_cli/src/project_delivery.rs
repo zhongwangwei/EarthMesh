@@ -28,12 +28,13 @@ pub fn write_project_delivery_report(
     quality_report: &Path,
     verdict: QualityLevel,
     model_artifacts: &BTreeMap<&str, PathBuf>,
+    adapter_skip_reason: Option<&str>,
 ) -> io::Result<(PathBuf, &'static str)> {
     let target = ProjectTargetTriple::from(&config.target);
     let skipped_reason = if model_artifacts.is_empty() {
         Some(
-            target
-                .skipped_adapter_reason()
+            adapter_skip_reason
+                .or_else(|| target.skipped_adapter_reason())
                 .or_else(|| {
                     (config.target.model_format == ModelFormat::CoLM
                         && config.delivery.colm_mesh.is_none())
@@ -479,6 +480,7 @@ mod tests {
             &quality,
             QualityLevel::Pass,
             &BTreeMap::new(),
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("directory"));
@@ -493,7 +495,8 @@ mod tests {
             &gridfile,
             &quality,
             QualityLevel::Pass,
-            &BTreeMap::new()
+            &BTreeMap::new(),
+            None,
         )
         .unwrap_err()
         .to_string()
@@ -505,7 +508,8 @@ mod tests {
                 &gridfile,
                 &quality,
                 QualityLevel::Pass,
-                &missing
+                &missing,
+                None,
             )
             .unwrap_err()
             .kind(),

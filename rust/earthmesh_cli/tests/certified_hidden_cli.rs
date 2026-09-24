@@ -1733,8 +1733,34 @@ fn certified_regional_land_triangles_keep_vertex_touching_islands() {
         6,
     )
     .expect_err("ICON must not merge the two distinct boundary vertices");
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    assert!(error.to_string().contains("split vertices"), "{error}");
     assert!(!icon_path.exists());
+
+    let delivery_path = root.join("regional_delivery.nml");
+    fs::write(
+        &delivery_path,
+        regional_land_namelist(
+            &root,
+            "regional_tri_pinch_delivery",
+            &landtype,
+            "tri",
+            "bbox",
+            "inline:bbox:w=60,e=140,s=-40,n=40",
+        )
+        .replace("output_format='CoLM'", "output_format='ICON'"),
+    )
+    .unwrap();
+    earthmesh_cli::run_refine_pipeline_with_delivery(&delivery_path, &root, 1_000, None, true)
+        .expect("unsupported ICON adapter must retain native final delivery");
+    let marker = root
+        .join("regional_tri_pinch_delivery/result/final_quality/refinement/legacy_delivery.json");
+    let delivery: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
+    assert_eq!(delivery["model_delivery_status"], "native_only");
+    assert!(delivery["skipped_reason"]
+        .as_str()
+        .unwrap()
+        .contains("cannot represent"));
 }
 
 #[test]

@@ -157,9 +157,19 @@ fn write_icon_model(
     let output = standard_output_file(gridfile, "ICON", "nc4")?;
     let report = match parent {
         Some(parent) => {
-            crate::write_icon_from_final_gridfile_with_parent(gridfile, parent, &output, nxp)?
+            crate::write_icon_from_final_gridfile_with_parent(gridfile, parent, &output, nxp)
         }
-        None => crate::write_icon_from_final_gridfile(gridfile, &output, nxp)?,
+        None => crate::write_icon_from_final_gridfile(gridfile, &output, nxp),
+    };
+    let report = match report {
+        Ok(report) => report,
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            return Ok((
+                BTreeMap::new(),
+                Some("ICON model export skipped because its adapter cannot represent the selected native grid"),
+            ));
+        }
+        Err(error) => return Err(error),
     };
     Ok((BTreeMap::from([("icon_mesh_input", report.output)]), None))
 }

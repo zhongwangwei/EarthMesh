@@ -1,9 +1,10 @@
 mod support;
 
 use earthmesh_project::{
-    DomainConfig, MeshCellKind, MeshDomainKind, MeshIntentPreset, MethodCAlgorithm, ModelFormat,
-    ProjectConfig, RefinementBackend, RegionShape, ResolutionSpec, SpecifiedCircleRefinement,
-    SpecifiedCircleRefinements, ViolationPolicy,
+    CertifiedDeliveryMode, CertifiedMode, DomainConfig, MeshCellKind, MeshDomainKind,
+    MeshIntentPreset, MethodCAlgorithm, ModelFormat, ProjectConfig, ProjectDataLayer,
+    ProjectLayerRole, RefinementBackend, RegionShape, ResolutionSpec, SpecifiedBboxRefinement,
+    SpecifiedCircleRefinement, SpecifiedCircleRefinements, ViolationPolicy,
 };
 use std::{
     collections::BTreeSet,
@@ -495,6 +496,105 @@ fn project_icon_regional_tri_delivers_selected_native_triangles_with_parent_geom
         }
     }
     nc.close().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_icon_split_regional_land_keeps_native_grid_only() {
+    let root = root("split_regional_land");
+    let mut global = icon_project(MeshCellKind::Tri, DomainConfig::Global, 6);
+    global.refinement.enabled = true;
+    global.refinement.backend = RefinementBackend::Certified;
+    global.refinement.certified.mode = CertifiedMode::SafeMotherOnly;
+    global.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    global.refinement.max_passes = 1;
+    global.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: 110.0,
+        e: 150.0,
+        s: 10.0,
+        n: 40.0,
+    });
+    let global_run = run_project(&root, &global, "global");
+    let global_stdout = String::from_utf8_lossy(&global_run.stdout);
+    let global_stderr = String::from_utf8_lossy(&global_run.stderr);
+    assert!(
+        global_run.status.success(),
+        "{global_stdout}\n{global_stderr}"
+    );
+    let global_mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        Path::new(field(&global_stdout, "project_final_gridfile=")),
+    )
+    .unwrap();
+    assert_eq!(
+        global_mesh.m_to_w[2]
+            .iter()
+            .filter(|corner| global_mesh.m_to_w[4].contains(corner))
+            .count(),
+        1
+    );
+
+    let landtype = root.join("landtype.nc");
+    let mut file = earthmesh_cli::create_netcdf_quiet(&landtype).unwrap();
+    file.add_dimension("longitude", 360 * 120).unwrap();
+    file.add_dimension("latitude", 180 * 120).unwrap();
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .set_fill_value(0_i8)
+        .unwrap();
+    file.close().unwrap();
+    let mut file = netcdf::append(&landtype).unwrap();
+    let mut variable = file.variable_mut("landtype").unwrap();
+    for &row in &[2, 4] {
+        let center = global_mesh.m_points[row];
+        let lon = ((center.lon + 180.0) * 120.0)
+            .floor()
+            .rem_euclid(360.0 * 120.0) as usize;
+        let lat = ((90.0 - center.lat) * 120.0)
+            .floor()
+            .clamp(0.0, 180.0 * 120.0 - 1.0) as usize;
+        variable.put_value(1_i8, [lon, lat]).unwrap();
+    }
+    file.close().unwrap();
+
+    let mut regional = global;
+    regional.target.kind = MeshDomainKind::Land;
+    regional.domain = DomainConfig::Regional {
+        shape: RegionShape::Bbox {
+            w: 60.0,
+            e: 140.0,
+            s: -40.0,
+            n: 40.0,
+        },
+        sea_ratio: None,
+    };
+    regional.data_layers = vec![ProjectDataLayer {
+        id: "landtype".into(),
+        role: ProjectLayerRole::LandType,
+        path: landtype.display().to_string(),
+        enabled: true,
+        threshold_value: None,
+    }];
+    let output = run_project(&root, &regional, "regional");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    assert_no_icon_artifact(gridfile.parent().unwrap(), &stdout);
+    assert_eq!(
+        field(&stdout, "project_model_delivery_status="),
+        "native_only"
+    );
+    assert!(gridfile.is_file());
+    let native = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(gridfile)
+        .expect("read retained native gridfile");
+    assert_eq!(native.m_to_w.len() - 2, 2);
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(field(&stdout, "project_delivery_report=")).unwrap())
+            .unwrap();
+    assert!(report["skipped_reason"]
+        .as_str()
+        .unwrap()
+        .contains("split vertices"));
     fs::remove_dir_all(root).unwrap();
 }
 

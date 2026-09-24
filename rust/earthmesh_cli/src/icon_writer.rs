@@ -96,6 +96,27 @@ fn write_icon_final(
             )
         })
         .transpose()?;
+    // The parent dual cannot encode distinct regional W vertices at one physical site.
+    if parent.is_some() {
+        let mut physical_sites = BTreeSet::new();
+        let mut used_vertices = BTreeSet::new();
+        let bits = |value: f64| if value == 0.0 { 0 } else { value.to_bits() };
+        for vertex in input
+            .cells
+            .iter()
+            .flat_map(|cell| cell.vertices.iter().copied())
+        {
+            if used_vertices.insert(vertex) {
+                let key = [bits(points.w_lon[vertex]), bits(points.w_lat[vertex])];
+                if !physical_sites.insert(key) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "ICON regional adapter cannot represent split vertices",
+                    ));
+                }
+            }
+        }
+    }
     let mesh = crate::read_unstructured_mesh_netcdf(parent.unwrap_or(gridfile))?;
     // ICON consumes only geometry/connectivity from this existing intermediate:
     // neither its MPAS density nor nominalMinDc is exported as ICON demand.

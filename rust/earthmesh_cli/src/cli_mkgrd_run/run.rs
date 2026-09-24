@@ -600,6 +600,7 @@ fn run_prepared_mkgrd(
                     final_quality.verdict.as_str()
                 );
                 let mut model_artifacts = std::collections::BTreeMap::new();
+                let mut adapter_skip_reason = None;
                 if spec.config.target.model_format == earthmesh_project::ModelFormat::Icon {
                     if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
                         let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
@@ -621,17 +622,26 @@ fn run_prepared_mkgrd(
                             None => earthmesh_cli::write_icon_from_final_gridfile(
                                 gridfile, &output, nxp,
                             ),
+                        };
+                        match icon {
+                            Ok(icon) => {
+                                if let Some(parent) = parent {
+                                    println!("icon_parent_gridfile={}", parent.display());
+                                }
+                                println!("icon_mesh_input={}", icon.output.display());
+                                model_artifacts.insert("icon_mesh_input", icon.output);
+                                println!(
+                                    "icon_cells={} icon_vertices={} icon_edges={} icon_global_grid={}",
+                                    icon.cells, icon.vertices, icon.edges, icon.global_grid
+                                );
+                            }
+                            Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
+                                let reason = format!("ICON adapter skipped: {err}");
+                                eprintln!("earthmesh_cli: {reason}; native gridfile retained");
+                                adapter_skip_reason = Some(reason);
+                            }
+                            Err(err) => return Err(format!("project ICON final delivery: {err}")),
                         }
-                        .map_err(|err| format!("project ICON final delivery: {err}"))?;
-                        if let Some(parent) = parent {
-                            println!("icon_parent_gridfile={}", parent.display());
-                        }
-                        println!("icon_mesh_input={}", icon.output.display());
-                        model_artifacts.insert("icon_mesh_input", icon.output);
-                        println!(
-                            "icon_cells={} icon_vertices={} icon_edges={} icon_global_grid={}",
-                            icon.cells, icon.vertices, icon.edges, icon.global_grid
-                        );
                     } else {
                         eprintln!("earthmesh_cli: ICON specialized export requires triangular cells; grid-only delivery");
                     }
@@ -728,6 +738,7 @@ fn run_prepared_mkgrd(
                         &out_dir.join("quality_summary.json"),
                         final_quality.verdict,
                         &model_artifacts,
+                        adapter_skip_reason.as_deref(),
                     )
                     .map_err(|err| format!("project delivery record: {err}"))?;
                 println!("project_delivery_report={}", delivery_path.display());
