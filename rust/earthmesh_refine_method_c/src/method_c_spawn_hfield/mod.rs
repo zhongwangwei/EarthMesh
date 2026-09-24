@@ -27,6 +27,11 @@ pub struct MethodCHfieldSpawnDiagnostics {
     /// is still losing demand, and the ratio is the only way to see it.
     pub demanded_face_count: usize,
     pub unmet_face_count: usize,
+    /// Refinement blocks a pass dropped, whole, because Method-C's transition
+    /// patch could not build them, and the parent faces they held. The run
+    /// still builds; these are where it refined less than the field asked.
+    pub dropped_block_count: usize,
+    pub dropped_face_count: usize,
 }
 
 enum MethodCHfieldRad3Footprint {
@@ -65,6 +70,24 @@ impl MethodCHfieldDemandCoverage {
 
     pub(crate) fn unmet_face_count(&self) -> usize {
         self.unmet_face_count
+    }
+
+    /// Keep only the anchors `selected` still covers, after a block was
+    /// dropped from it, and return how many demanded faces the lost anchors
+    /// held. Those anchors can no longer be covered at this pass; saying so is
+    /// the caller's job, through `MethodCHfieldSpawnDiagnostics`.
+    pub(crate) fn retain_covered(&mut self, selected: &[bool]) -> usize {
+        let mut lost_faces = std::collections::BTreeSet::new();
+        self.anchors.retain(|(_, faces)| {
+            let covered = faces
+                .iter()
+                .any(|&iw| selected.get(iw).copied().unwrap_or(false));
+            if !covered {
+                lost_faces.extend(faces.iter().copied());
+            }
+            covered
+        });
+        lost_faces.len()
     }
 
     pub(crate) fn validate(&self, selected: &[bool]) -> io::Result<()> {
@@ -1020,6 +1043,192 @@ impl MethodCMesh {
         Ok((selected, coverage))
     }
 
+    /// One h-field pass, giving up on whole blocks rather than on the pass.
+    ///
+    /// Method-C's transition patch refuses some perimeter shapes outright -- a
+    /// perimeter through a pentagon, a corner off the triple phase -- and no
+    /// mask repair reaches them (`method_c_shape_probe`). Failing the pass for
+    /// one such block threw away every other block's refinement. When a
+    /// legality gate names a point, the block holding it is dropped from this
+    /// pass, its demand with it, and the pass is retried; the drop is counted
+    /// in `diagnostics` so the run can say where it refined less than asked.
+    /// A pass that builds is never touched.
+    pub(crate) fn spawn_nest_pass_dropping_unbuildable_blocks(
+        &self,
+        mut selected: Vec<bool>,
+        child_level: usize,
+        max_mrows: usize,
+        mut coverage: MethodCHfieldDemandCoverage,
+        diagnostics: &mut MethodCHfieldSpawnDiagnostics,
+    ) -> io::Result<Self> {
+        let m_neighbors = self.method_c_m_neighbors()?;
+        loop {
+            let error = match self.spawn_nest_pass_method_c_preserving_demands(
+                &selected,
+                child_level,
+                max_mrows,
+                true,
+                &coverage,
+            ) {
+                Ok(mesh) => return Ok(mesh),
+                Err(error) => error,
+            };
+            if method_c_repairable_payload(&error).is_none() {
+                return Err(error);
+            }
+            // Which block to drop is decided by building each on its own. The
+            // gate's point is only a hint: the repair ladder rewrites the mask
+            // before it gives up, so the point it names can sit on another
+            // block entirely. The block nearest it is tried first.
+            let hint = method_c_repairable_payload(&error).and_then(|payload| payload.m_point);
+            let mut blocks = self.method_c_selected_blocks(&selected);
+            let near = hint.and_then(|point| {
+                self.method_c_selected_block_near(&selected, point, &m_neighbors)
+            });
+            if let Some(near) = &near {
+                if let Some(position) = blocks.iter().position(|block| block == near) {
+                    let near = blocks.remove(position);
+                    blocks.insert(0, near);
+                }
+            }
+            let mut unbuildable = None;
+            for block in blocks {
+                let mut alone = coverage.clone();
+                alone.retain_covered(&block);
+                if self
+                    .spawn_nest_pass_method_c_preserving_demands(
+                        &block,
+                        child_level,
+                        max_mrows,
+                        true,
+                        &alone,
+                    )
+                    .is_err()
+                {
+                    unbuildable = Some(block);
+                    break;
+                }
+            }
+            // Every block builds alone and only their union fails. The repair
+            // ladder works on the whole mask, so blocks that each close on
+            // their own can still defeat it together -- the global coastal case
+            // does. Then the block at the gate's point is the one given up.
+            let Some(block) = unbuildable.or(near) else {
+                return Err(error);
+            };
+            let dropped_faces = block.iter().filter(|&&face| face).count();
+            let remaining = selected.iter().filter(|&&face| face).count() - dropped_faces;
+            if remaining == 0 {
+                return Err(error);
+            }
+            for (face, drop) in selected.iter_mut().zip(&block) {
+                if *drop {
+                    *face = false;
+                }
+            }
+            let lost_demand = coverage.retain_covered(&selected);
+            diagnostics.dropped_block_count += 1;
+            diagnostics.dropped_face_count += dropped_faces;
+            diagnostics.unmet_face_count += lost_demand;
+        }
+    }
+
+    /// The edge-connected blocks of `selected`, each as its own face mask.
+    pub(crate) fn method_c_selected_blocks(&self, selected: &[bool]) -> Vec<Vec<bool>> {
+        let mut assigned = vec![false; selected.len()];
+        let mut blocks = Vec::new();
+        for seed in 2..=self.nwd.min(selected.len().saturating_sub(1)) {
+            if !selected[seed] || assigned[seed] {
+                continue;
+            }
+            let mut block = vec![false; selected.len()];
+            block[seed] = true;
+            assigned[seed] = true;
+            let mut stack = vec![seed];
+            while let Some(iw) = stack.pop() {
+                for &iu in &self.w_faces[iw].iu {
+                    if iu <= 1 || iu > self.nud {
+                        continue;
+                    }
+                    for &next in &self.u_edges[iu].iw[..2] {
+                        if next > 1 && next <= self.nwd && selected[next] && !assigned[next] {
+                            assigned[next] = true;
+                            block[next] = true;
+                            stack.push(next);
+                        }
+                    }
+                }
+            }
+            blocks.push(block);
+        }
+        blocks
+    }
+
+    /// The edge-connected block of selected faces nearest `im`: the one holding
+    /// a face at `im` if any, otherwise the first reached walking outward over
+    /// M points. `None` when no selected face lies within reach.
+    pub(crate) fn method_c_selected_block_near(
+        &self,
+        selected: &[bool],
+        im: usize,
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> Option<Vec<bool>> {
+        // Repairs move a failing mask a few rings from where the pass began;
+        // twelve rings reaches back to it without wandering to another block.
+        const REACH_RINGS: usize = 12;
+        if im <= 1 || im > self.nmd {
+            return None;
+        }
+        let mut seen = std::collections::HashSet::from([im]);
+        let mut frontier = vec![im];
+        let mut start = None;
+        for _ in 0..=REACH_RINGS {
+            start = frontier.iter().find_map(|&point| {
+                let neighbors = m_neighbors[point];
+                neighbors
+                    .iw
+                    .iter()
+                    .take(neighbors.npoly)
+                    .copied()
+                    .filter(|&iw| iw > 1 && iw <= self.nwd && selected[iw])
+                    .min()
+            });
+            if start.is_some() {
+                break;
+            }
+            let mut next = Vec::new();
+            for &point in &frontier {
+                let neighbors = m_neighbors[point];
+                for &iu in neighbors.iu.iter().take(neighbors.npoly) {
+                    if let Ok(other) = self.other_m_endpoint(iu, point) {
+                        if other > 1 && other <= self.nmd && seen.insert(other) {
+                            next.push(other);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let start = start?;
+        let mut block = vec![false; selected.len()];
+        block[start] = true;
+        let mut stack = vec![start];
+        while let Some(iw) = stack.pop() {
+            for &iu in &self.w_faces[iw].iu {
+                if iu <= 1 || iu > self.nud {
+                    continue;
+                }
+                for &next in &self.u_edges[iu].iw[..2] {
+                    if next > 1 && next <= self.nwd && selected[next] && !block[next] {
+                        block[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        Some(block)
+    }
+
     fn hfield_has_demand_at_or_above<F: Fn(f64, f64) -> u8>(
         &self,
         target_level: &F,
@@ -1122,12 +1331,12 @@ impl MethodCMesh {
             }
 
             mesh = mesh
-                .spawn_nest_pass_method_c_preserving_demands(
-                    &selected_faces,
+                .spawn_nest_pass_dropping_unbuildable_blocks(
+                    selected_faces,
                     grid_number,
                     max_mrows,
-                    true,
-                    &coverage,
+                    coverage,
+                    &mut diagnostics,
                 )
                 .map_err(|error| {
                     let message =

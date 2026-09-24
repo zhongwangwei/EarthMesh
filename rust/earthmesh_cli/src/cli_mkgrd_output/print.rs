@@ -197,6 +197,19 @@ pub(crate) fn print_refine_pipeline_report(
             hfield.demanded_face_count
         );
         println!("refine_hfield_unmet_faces={}", hfield.unmet_face_count);
+        println!(
+            "refine_hfield_dropped_blocks={}",
+            hfield.dropped_block_count
+        );
+        println!("refine_hfield_dropped_faces={}", hfield.dropped_face_count);
+    }
+    if hfield.dropped_block_count > 0 {
+        eprintln!(
+            "earthmesh_cli: warning: {} refinement block(s) ({} parent faces) were left at the \
+             coarser level: Method-C's transition patch cannot build their shape. The rest of \
+             the mesh reached its requested levels; the red-green backend refines such regions",
+            hfield.dropped_block_count, hfield.dropped_face_count
+        );
     }
     // An empty demand legitimately produces no refinement, so a shortfall is
     // only worth reporting when the field actually asked for something that

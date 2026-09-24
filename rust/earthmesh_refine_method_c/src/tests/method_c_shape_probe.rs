@@ -635,3 +635,73 @@ fn shape_violations_predict_the_transition_patch_on_recorded_masks() {
     assert!(violations.is_empty(), "{violations:?}");
     assert!(builds);
 }
+
+/// A pass whose mask holds one block the transition patch cannot build and one
+/// it can: the unbuildable block is dropped, the other is refined, and the
+/// drop is counted rather than failing the pass.
+#[test]
+fn an_unbuildable_block_is_dropped_and_the_rest_of_the_pass_builds() {
+    let probe = ShapeProbe::new(21, 800);
+    // Recorded above: this union's normalised perimeter crosses a pentagon.
+    let unbuildable = [20, 614, 677, 740, 743, 806];
+    let blocked = probe
+        .mesh
+        .method_c_footprint_mask(&unbuildable, &probe.m_neighbors)
+        .unwrap();
+    assert!(probe
+        .mesh
+        .spawn_nest_pass_with_max_mrows(&blocked, 2, 7, true)
+        .is_err());
+
+    // A small union that builds on its own and stays a separate block.
+    let separate = |mask: &[bool]| {
+        let mut both = blocked.clone();
+        for (face, &keep) in both.iter_mut().zip(mask) {
+            *face |= keep;
+        }
+        (probe.mesh.method_c_selected_blocks(&both).len() == 2).then_some(both)
+    };
+    let (clean_alone, both) = probe
+        .lattice
+        .iter()
+        .rev()
+        .filter(|&&seed| probe.lattice_neighbors[&seed].len() >= 2)
+        .find_map(|&seed| {
+            let mut seeds = vec![seed];
+            seeds.extend(probe.lattice_neighbors[&seed].iter().take(2));
+            let clean = probe
+                .mesh
+                .method_c_footprint_mask(&seeds, &probe.m_neighbors)
+                .ok()?;
+            let both = separate(&clean)?;
+            let alone = probe
+                .mesh
+                .spawn_nest_pass_with_max_mrows(&clean, 2, 7, true)
+                .ok()?;
+            Some((alone, both))
+        })
+        .expect("a separate clean block");
+
+    // Without the fallback the whole pass is refused.
+    assert!(probe
+        .mesh
+        .spawn_nest_pass_with_max_mrows(&both, 2, 7, true)
+        .is_err());
+    let mut diagnostics = crate::method_c_spawn_hfield::MethodCHfieldSpawnDiagnostics::default();
+    let refined = probe
+        .mesh
+        .spawn_nest_pass_dropping_unbuildable_blocks(
+            both,
+            2,
+            7,
+            crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage::from_anchors(Vec::new()),
+            &mut diagnostics,
+        )
+        .expect("the pass builds once the unbuildable block is dropped");
+    assert_eq!(diagnostics.dropped_block_count, 1);
+    assert!(diagnostics.dropped_face_count > 0);
+    refined.validate_topology().expect("closed topology");
+    // What is left is exactly the clean block's refinement.
+    assert_eq!(refined.nwd, clean_alone.nwd);
+    assert_eq!(refined.nmd, clean_alone.nmd);
+}
