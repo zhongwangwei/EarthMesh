@@ -123,14 +123,13 @@ fn resolve_mkgrd_path() -> Result<String, String> {
     let roots = engine_search_roots(&repo, current_exe.as_deref());
     let names = ["mkgrd.x", "earthmesh_cli", "earthmesh_cli.exe", "mkgrd.exe"];
 
-    // Outside a source checkout, the sidecar next to the application is the
-    // packaged engine and must win over any build tree left on the machine.
-    // Inside the checkout, however, choose the newest compatible build. This
-    // prevents stale test stubs in target/debug from shadowing a real CLI.
-    if current_exe
+    // An app bundle owns its adjacent engine even when the bundle is under the
+    // source checkout. An unbundled `cargo run` still prefers the staged release
+    // sidecar over a stale debug build beside its executable.
+    let prefer_adjacent = current_exe
         .as_deref()
-        .is_some_and(|exe| !path_is_within(exe, &repo))
-    {
+        .is_some_and(|exe| prefers_adjacent_engine(exe, &repo));
+    if prefer_adjacent {
         if let Some(dir) = current_exe.as_deref().and_then(Path::parent) {
             for name in &names {
                 let candidate = dir.join(name);
@@ -143,7 +142,7 @@ fn resolve_mkgrd_path() -> Result<String, String> {
 
     // In a source checkout the staged Tauri sidecar is the intentional
     // release engine. Prefer it over a newer debug binary left by `cargo test`.
-    if current_exe
+    if !prefer_adjacent && current_exe
         .as_deref()
         .is_some_and(|exe| path_is_within(exe, &repo))
     {
@@ -278,6 +277,13 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
     let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     path.starts_with(root)
+}
+
+pub(crate) fn prefers_adjacent_engine(executable: &Path, repo: &Path) -> bool {
+    !path_is_within(executable, repo)
+        || executable
+            .ancestors()
+            .any(|path| path.extension().is_some_and(|extension| extension == "app"))
 }
 
 fn candidate_modified(path: &Path) -> SystemTime {

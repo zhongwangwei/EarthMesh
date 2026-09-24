@@ -322,6 +322,15 @@ fn bundled_engine_directory_precedes_a_stale_repository_build() {
         ))
     );
     assert_eq!(roots.get(1).map(PathBuf::as_path), Some(repo));
+    assert!(engine::prefers_adjacent_engine(executable, repo));
+    assert!(engine::prefers_adjacent_engine(
+        Path::new("/repo/gui-tauri/src-tauri/target/debug/bundle/macos/EarthMesh Studio.app/Contents/MacOS/earthmesh_studio"),
+        repo
+    ));
+    assert!(!engine::prefers_adjacent_engine(
+        Path::new("/repo/target/debug/earthmesh_studio"),
+        repo
+    ));
 }
 
 #[test]
