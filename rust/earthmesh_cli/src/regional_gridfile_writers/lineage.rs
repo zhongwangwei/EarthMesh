@@ -39,7 +39,7 @@ pub(crate) fn verify_whole_cell_lineage(
     let w_layout = gridfile_w_row_layout(grid);
     let source_m = gridfile_m_row_layout(&original);
     let source_w = gridfile_w_row_layout(&original);
-    let mut matched = match_parent_rows(source, output, grid, &original)?;
+    let mut matched = match_parent_rows(source, output, grid, &original, false)?;
     for (index, &parent_row) in matched[1].iter().enumerate() {
         let row = w_layout.first_physical_row + index;
         let count = grid.n_w[row] as usize; // native adapters validated count/indices
@@ -86,6 +86,7 @@ fn match_parent_rows(
     output: &Path,
     grid: &GridfileMeshPoints,
     original: &GridfileMeshPoints,
+    allow_split_w_vertices: bool,
 ) -> io::Result<Vec<Vec<usize>>> {
     let lineage = read_gridfile_cell_lineages(output)?;
     let parent_lineage = read_gridfile_cell_lineages(source)?;
@@ -95,16 +96,19 @@ fn match_parent_rows(
     let source_w = gridfile_w_row_layout(original);
     let mut matched = Vec::new();
     for (
-        lon,
-        lat,
-        levels,
-        ids,
-        layout,
-        source_lon,
-        source_lat,
-        source_levels,
-        source_ids,
-        source_layout,
+        part_index,
+        (
+            lon,
+            lat,
+            levels,
+            ids,
+            layout,
+            source_lon,
+            source_lat,
+            source_levels,
+            source_ids,
+            source_layout,
+        ),
     ) in [
         (
             &grid.m_lon,
@@ -130,7 +134,10 @@ fn match_parent_rows(
             &parent_lineage.w,
             source_w,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         if ids.len() != lon.len() || source_ids.len() != source_lon.len() {
             return Err(invalid(
                 "whole-cell delivery requires complete M/W parent lineage",
@@ -158,7 +165,10 @@ fn match_parent_rows(
             let &parent = parent_rows
                 .get(&key)
                 .ok_or_else(|| invalid("whole-cell lineage points outside explicit parent"))?;
-            if !used.insert(parent) || (has_levels && levels[row] != source_levels[parent]) {
+            let repeated_parent = !used.insert(parent);
+            if (repeated_parent && (part_index == 0 || !allow_split_w_vertices))
+                || (has_levels && levels[row] != source_levels[parent])
+            {
                 return Err(invalid(
                     "whole-cell delivery changed parent coordinates, levels or identity",
                 ));
@@ -183,7 +193,9 @@ pub(crate) fn verify_whole_triangle_lineage(
     let w_layout = gridfile_w_row_layout(grid);
     let source_m = gridfile_m_row_layout(&original);
     let source_w = gridfile_w_row_layout(&original);
-    let matched = match_parent_rows(source, output, grid, &original)?;
+    // A regional TRI carve may split a pinched vertex into disconnected fans.
+    // Their W rows keep the same exact parent site; M triangles remain unique.
+    let matched = match_parent_rows(source, output, grid, &original, true)?;
     for (index, &parent_row) in matched[0].iter().enumerate() {
         let row = m_layout.first_physical_row + index;
         let parent_corners = original.m_to_w[parent_row * 3..parent_row * 3 + 3]

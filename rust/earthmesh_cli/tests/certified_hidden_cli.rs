@@ -1660,6 +1660,84 @@ fn certified_close_land_triangles_preserve_global_faces_and_publication_guards()
 }
 
 #[test]
+fn certified_regional_land_triangles_keep_vertex_touching_islands() {
+    let root = temp_root("regional_land_tri_pinch");
+    let global_path = root.join("global.nml");
+    fs::write(
+        &global_path,
+        namelist(&root, "global_tri_pinch", 6, 1_000).replace("mode_grid='hex'", "mode_grid='tri'"),
+    )
+    .unwrap();
+    let global_run =
+        earthmesh_cli::run_refine_pipeline_namelist(&global_path, &root, 1_000, None).unwrap();
+    let global = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(
+        &global_run.output.output,
+    )
+    .unwrap();
+    assert_eq!(
+        global.m_to_w[2]
+            .iter()
+            .filter(|corner| global.m_to_w[4].contains(corner))
+            .count(),
+        1
+    );
+
+    let landtype = root.join("landtype.nc");
+    write_all_ocean(&landtype);
+    {
+        let mut file = netcdf::append(&landtype).unwrap();
+        let mut variable = file.variable_mut("landtype").unwrap();
+        for &row in &[2, 4] {
+            let center = global.m_points[row];
+            let lon = (center.lon + 179.5).round().rem_euclid(360.0) as usize;
+            let lat = (89.5 - center.lat).round().clamp(0.0, 179.0) as usize;
+            variable.put_value(1_i8, [lon, lat]).unwrap();
+        }
+    }
+    let regional_path = root.join("regional.nml");
+    fs::write(
+        &regional_path,
+        regional_land_namelist(
+            &root,
+            "regional_tri_pinch",
+            &landtype,
+            "tri",
+            "bbox",
+            "inline:bbox:w=60,e=140,s=-40,n=40",
+        ),
+    )
+    .unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&regional_path, &root, 1_000, None)
+        .expect("regional land triangle fans may split a shared W vertex");
+    let regional =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
+            .unwrap();
+    let lineages =
+        earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(&run.output.output)
+            .unwrap();
+    assert_regional_triangles_are_whole_global_subset(&regional, &lineages, &global);
+    assert_eq!(regional.m_to_w.len() - 2, 2);
+    assert!(lineages.w.iter().skip(2).collect::<BTreeSet<_>>().len() < lineages.w.len() - 2);
+    let parent_path = run.refinement_parent_gridfile().to_path_buf();
+    let resources: serde_json::Value =
+        serde_json::from_slice(&fs::read(run.certified_run.unwrap().resources).unwrap()).unwrap();
+    assert_eq!(
+        resources["published_domain_topology"]["violations"],
+        serde_json::json!([])
+    );
+    let icon_path = root.join("split_icon.nc4");
+    let error = earthmesh_cli::write_icon_from_final_gridfile_with_parent(
+        &run.output.output,
+        &parent_path,
+        &icon_path,
+        6,
+    )
+    .expect_err("ICON must not merge the two distinct boundary vertices");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+    assert!(!icon_path.exists());
+}
+
+#[test]
 fn certified_close_land_publishes_whole_dual_cells_independently_of_model_format() {
     for format in ["CoLM", "MPAS", "MPAS-Ocean", "MPAS-Simple"] {
         let root = temp_root("regional_land_colm");
