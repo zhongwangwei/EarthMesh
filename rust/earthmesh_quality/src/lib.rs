@@ -1400,7 +1400,8 @@ pub fn compute_with_options(
 
     // Run the detailed topology validator and fold its worst severity into the
     // verdict (catastrophic connectivity = Fail; transition degradation = Warn).
-    let topology_issues = topology::MeshTopologyValidator::new(input).validate_all();
+    let topology_issues =
+        topology::MeshTopologyValidator::new(input).validate_all_from_edges(&edge_cells);
     let validator_level = match topology::worst_severity(&topology_issues) {
         Some(topology::Severity::Fail) => QualityLevel::Fail,
         Some(topology::Severity::Warn) => QualityLevel::Warn,

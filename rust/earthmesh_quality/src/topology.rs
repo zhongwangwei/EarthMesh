@@ -199,7 +199,14 @@ pub fn genus_zero_euler_expectation(
     mesh: &QualityMeshInput,
     boundary: &BoundaryTopology,
 ) -> Option<isize> {
-    let edge_cells = valid_edge_cells(mesh);
+    genus_zero_euler_expectation_from_edges(mesh, boundary, &valid_edge_cells(mesh))
+}
+
+fn genus_zero_euler_expectation_from_edges(
+    mesh: &QualityMeshInput,
+    boundary: &BoundaryTopology,
+    edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+) -> Option<isize> {
     if mesh.cells.is_empty()
         || !boundary.invalid_vertex_degrees.is_empty()
         || mesh.cells.iter().any(|cell| {
@@ -209,12 +216,12 @@ pub fn genus_zero_euler_expectation(
                 || distinct.iter().any(|&vertex| vertex >= mesh.vertices.len())
         })
         || edge_cells.values().any(|incidents| incidents.len() > 2)
-        || !non_manifold_vertex_fans_from_edges(mesh, &edge_cells).is_empty()
+        || !non_manifold_vertex_fans_from_edges(mesh, edge_cells).is_empty()
     {
         return None;
     }
     Some(
-        2 * connected_component_count_from_edges(mesh, &edge_cells) as isize
+        2 * connected_component_count_from_edges(mesh, edge_cells) as isize
             - isize::try_from(boundary.loops.len()).ok()?,
     )
 }
@@ -487,19 +494,15 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_duplicate_edges(&self) -> Vec<TopologyIssue> {
-        let mut edge_cells: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-        for (ci, cell) in self.mesh.cells.iter().enumerate() {
-            let m = cell.vertices.len();
-            for k in 0..m {
-                let a = cell.vertices[k];
-                let b = cell.vertices[(k + 1) % m];
-                if a < self.nv() && b < self.nv() && a != b {
-                    edge_cells.entry(edge_key(a, b)).or_default().push(ci);
-                }
-            }
-        }
+        self.validate_duplicate_edges_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    fn validate_duplicate_edges_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
         let mut issues = Vec::new();
-        for (edge, cells) in edge_cells {
+        for (&edge, cells) in edge_cells {
             if cells.len() > 2 {
                 push_capped(
                     &mut issues,
@@ -562,18 +565,13 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_closed_cell_neighbors(&self) -> Vec<TopologyIssue> {
-        let mut edge_cells: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-        for (ci, cell) in self.mesh.cells.iter().enumerate() {
-            let m = cell.vertices.len();
-            for k in 0..m {
-                let a = cell.vertices[k];
-                let b = cell.vertices[(k + 1) % m];
-                if a < self.nv() && b < self.nv() && a != b {
-                    edge_cells.entry(edge_key(a, b)).or_default().push(ci);
-                }
-            }
-        }
+        self.validate_closed_cell_neighbors_from_edges(&valid_edge_cells(self.mesh))
+    }
 
+    fn validate_closed_cell_neighbors_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
         let mut issues = Vec::new();
         for (ci, cell) in self.mesh.cells.iter().enumerate() {
             let m = cell.vertices.len();
@@ -712,17 +710,13 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_orphan_cells(&self) -> Vec<TopologyIssue> {
-        let mut edge_cells: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-        for (ci, cell) in self.mesh.cells.iter().enumerate() {
-            let m = cell.vertices.len();
-            for k in 0..m {
-                let a = cell.vertices[k];
-                let b = cell.vertices[(k + 1) % m];
-                if a < self.nv() && b < self.nv() && a != b {
-                    edge_cells.entry(edge_key(a, b)).or_default().push(ci);
-                }
-            }
-        }
+        self.validate_orphan_cells_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    fn validate_orphan_cells_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
         let mut issues = Vec::new();
         for (ci, cell) in self.mesh.cells.iter().enumerate() {
             if cell.vertices.len() < 3 {
@@ -820,7 +814,14 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_connected_components(&self) -> Vec<TopologyIssue> {
-        let count = connected_component_count(self.mesh);
+        self.validate_connected_components_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    fn validate_connected_components_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
+        let count = connected_component_count_from_edges(self.mesh, edge_cells);
         if count <= 1 {
             return Vec::new();
         }
@@ -835,7 +836,14 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_non_manifold_vertex_fans(&self) -> Vec<TopologyIssue> {
-        non_manifold_vertex_fans(self.mesh)
+        self.validate_non_manifold_vertex_fans_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    fn validate_non_manifold_vertex_fans_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
+        non_manifold_vertex_fans_from_edges(self.mesh, edge_cells)
             .into_iter()
             .take(MAX_ISSUES_PER_TYPE)
             .map(|(vertex, cell)| {
@@ -875,15 +883,22 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_genus_zero_euler(&self) -> Vec<TopologyIssue> {
-        let boundary = boundary_topology(self.mesh);
-        self.genus_zero_euler_issues(&boundary)
+        let edge_cells = valid_edge_cells(self.mesh);
+        let boundary = boundary_topology_from_edges(&edge_cells);
+        self.genus_zero_euler_issues(&boundary, &edge_cells)
     }
 
-    fn genus_zero_euler_issues(&self, boundary: &BoundaryTopology) -> Vec<TopologyIssue> {
-        let Some(expected) = genus_zero_euler_expectation(self.mesh, boundary) else {
+    fn genus_zero_euler_issues(
+        &self,
+        boundary: &BoundaryTopology,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
+        let Some(expected) =
+            genus_zero_euler_expectation_from_edges(self.mesh, boundary, edge_cells)
+        else {
             return Vec::new();
         };
-        let actual = euler_characteristic(self.mesh);
+        let actual = euler_characteristic_from_edges(self.mesh, edge_cells);
         if actual == expected {
             return Vec::new();
         }
@@ -894,7 +909,7 @@ impl<'a> MeshTopologyValidator<'a> {
             None,
             format!(
                 "Euler characteristic {actual} differs from genus-zero boundary expectation {expected} (components={}, boundary_loops={})",
-                connected_component_count(self.mesh),
+                connected_component_count_from_edges(self.mesh, edge_cells),
                 boundary.loops.len()
             ),
             "repair missing/duplicate cells or boundary connectivity",
@@ -902,29 +917,44 @@ impl<'a> MeshTopologyValidator<'a> {
     }
 
     pub fn validate_boundary_contract(&self) -> Vec<TopologyIssue> {
-        let boundary = boundary_topology(self.mesh);
+        self.validate_boundary_contract_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    fn validate_boundary_contract_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
+        let boundary = boundary_topology_from_edges(edge_cells);
         let mut issues = self.boundary_degree_issues(&boundary);
-        issues.extend(self.genus_zero_euler_issues(&boundary));
+        issues.extend(self.genus_zero_euler_issues(&boundary, edge_cells));
         issues
     }
 
     /// Run every validator. Issues are capped per type ([`MAX_ISSUES_PER_TYPE`]).
     pub fn validate_all(&self) -> Vec<TopologyIssue> {
+        self.validate_all_from_edges(&valid_edge_cells(self.mesh))
+    }
+
+    // Incidences must use valid, non-degenerate edges in cell/ring traversal order.
+    pub(crate) fn validate_all_from_edges(
+        &self,
+        edge_cells: &BTreeMap<(usize, usize), Vec<usize>>,
+    ) -> Vec<TopologyIssue> {
         let mut all = Vec::new();
         all.extend(self.validate_indices());
         all.extend(self.validate_dangling_edges());
-        all.extend(self.validate_duplicate_edges());
+        all.extend(self.validate_duplicate_edges_from_edges(edge_cells));
         all.extend(self.validate_shared_edge_orientation());
-        all.extend(self.validate_closed_cell_neighbors());
+        all.extend(self.validate_closed_cell_neighbors_from_edges(edge_cells));
         all.extend(self.validate_neighbors());
         all.extend(self.validate_cell_vertex_incidence());
         all.extend(self.validate_polygon_edge_counts());
-        all.extend(self.validate_orphan_cells());
+        all.extend(self.validate_orphan_cells_from_edges(edge_cells));
         all.extend(self.validate_refinement_levels());
         all.extend(self.validate_transition_continuity());
-        all.extend(self.validate_connected_components());
-        all.extend(self.validate_non_manifold_vertex_fans());
-        all.extend(self.validate_boundary_contract());
+        all.extend(self.validate_connected_components_from_edges(edge_cells));
+        all.extend(self.validate_non_manifold_vertex_fans_from_edges(edge_cells));
+        all.extend(self.validate_boundary_contract_from_edges(edge_cells));
         all
     }
 }
@@ -1211,7 +1241,38 @@ mod tests {
         empty.cells.clear();
         cases.push(empty);
 
+        let mut reversed = two_square_mesh();
+        reversed.cells[1].vertices.reverse();
+        reversed.cells[0].neighbors.push(99);
+        reversed.cells[1].refine_level = Some(3);
+        cases.push(reversed);
+        let mut capped = two_square_mesh();
+        capped.cells = vec![capped.cells[0].clone(); MAX_ISSUES_PER_TYPE + 2];
+        cases.push(capped);
+
         for mesh in cases {
+            let validator = MeshTopologyValidator::new(&mesh);
+            let standalone_issues = [
+                validator.validate_indices(),
+                validator.validate_dangling_edges(),
+                validator.validate_duplicate_edges(),
+                validator.validate_shared_edge_orientation(),
+                validator.validate_closed_cell_neighbors(),
+                validator.validate_neighbors(),
+                validator.validate_cell_vertex_incidence(),
+                validator.validate_polygon_edge_counts(),
+                validator.validate_orphan_cells(),
+                validator.validate_refinement_levels(),
+                validator.validate_transition_continuity(),
+                validator.validate_connected_components(),
+                validator.validate_non_manifold_vertex_fans(),
+                validator.validate_boundary_contract(),
+            ]
+            .concat();
+            assert_eq!(
+                format!("{:?}", validator.validate_all()),
+                format!("{standalone_issues:?}")
+            );
             let report = crate::compute(&mesh, &crate::QualityThresholds::default());
             let boundary = boundary_topology(&mesh);
             assert_eq!(report.topology.boundary_edge_count, boundary.edge_count);
