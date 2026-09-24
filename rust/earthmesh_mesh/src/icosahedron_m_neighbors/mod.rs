@@ -78,11 +78,28 @@ pub fn derive_icosahedron_m_neighbors_canonical_checked_with_prognostic(
                 })?;
                 walk_trace.push((iunow, edge_now.im, edge_now.iw, edge_now.iu));
                 if npoly > 7 {
+                    let nonincident = walk_trace
+                        .iter()
+                        .position(|(_, ends, ..)| !ends.contains(&im))
+                        .map(|step| step + 1);
+                    let self_loop = walk_trace
+                        .iter()
+                        .position(|(_, ends, ..)| ends[0] == ends[1])
+                        .map(|step| step + 1);
+                    let repeated = walk_trace
+                        .iter()
+                        .enumerate()
+                        .find_map(|(step, (edge, ..))| {
+                            walk_trace[..step]
+                                .iter()
+                                .any(|(previous, ..)| previous == edge)
+                                .then_some(step + 1)
+                        });
                     return Err(repairable_error(
                         RepairableKind::Valence,
                         Some(im),
                         format!(
-                            "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge Method-C ring while walking from U edge {iu}; trace {:?}",
+                            "Method-C perimeter length invalid: Current nested grid crosses (or is too close to) the next coarser grid boundary; M point {im} exceeds 7-edge Method-C ring while walking from U edge {iu}; trace first nonincident step={nonincident:?}, self-loop step={self_loop:?}, repeated-edge step={repeated:?} (1-based); trace {:?}",
                             walk_trace
                         ),
                     ));

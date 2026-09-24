@@ -220,6 +220,33 @@ fn icosahedron_m_neighbor_derivation_matches_tri_neighbors_m_loop() {
 }
 
 #[test]
+fn m_ring_overflow_reports_broken_walk_without_changing_repair_kind() {
+    let mut u_edges = vec![earthmesh_mesh::IcosahedronUEdge::default(); 4];
+    let mut w_faces = vec![earthmesh_mesh::IcosahedronWFace::default(); 9];
+    u_edges[2].im = [10, 20];
+    u_edges[2].iw[..2].copy_from_slice(&[5, 6]);
+    u_edges[2].iu[2] = 3;
+    u_edges[3].im = [30, 40];
+    u_edges[3].iw[..2].copy_from_slice(&[7, 8]);
+    u_edges[3].iu[1] = 3;
+    w_faces[5].npoly = 3;
+    w_faces[7].npoly = 3;
+
+    let error =
+        earthmesh_mesh::derive_icosahedron_m_neighbors_canonical_checked(40, &u_edges, &w_faces)
+            .unwrap_err();
+    assert_eq!(
+        earthmesh_mesh::method_c_repairable_payload(&error)
+            .unwrap()
+            .kind,
+        earthmesh_mesh::RepairableKind::Valence
+    );
+    let message = error.to_string();
+    assert!(message.contains("first nonincident step=Some(2)"));
+    assert!(message.contains("repeated-edge step=Some(3)"));
+}
+
+#[test]
 fn icosahedron_tri_neighbors_wrapper_matches_manual_w_u_m_sequence() {
     let grid = earthmesh_mesh::icosahedron_initial_grid_canonical(1).expect("valid nxp grid");
     let mut manual = earthmesh_mesh::icosahedron_fill_diamonds_canonical(1)
