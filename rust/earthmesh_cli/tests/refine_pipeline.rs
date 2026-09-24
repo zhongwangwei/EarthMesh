@@ -3066,6 +3066,55 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
     );
 }
 
+#[test]
+fn redgreen_three_level_tri_publishes_high_degree_w_fans() {
+    let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
+    let root = temp_root("redgreen_three_level_tri");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).expect("create sources");
+    write_bbox_mask_netcdf(
+        sources.join("refine_bbox_001.nc4"),
+        &BBoxMask {
+            refine_degree: 3,
+            points: vec![BBoxPoint {
+                west: -35.0,
+                east: 35.0,
+                south: -30.0,
+                north: 30.0,
+            }],
+        },
+    )
+    .expect("write bbox source");
+    let namelist = root.join("redgreen_three_level_tri.nml");
+    fs::write(
+        &namelist,
+        format!(
+            "&mkgrd\n  NL%EXPNME='redgreen_three_level_tri'\n  NL%base_dir='{}/'\n  NL%NXP=12\n  NL%mesh_type='oceanmesh'\n  NL%mode_grid='tri'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='red_green'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='FVCOM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.true.\n  RL%refine_cal=.false.\n  RL%max_iter_spc=3\n  RL%max_iter_cal=0\n  RL%niter_refine=0\n  RL%num_rc=1\n  RL%set_dis_type='linear'\n  RL%halo=3,3,3,0,0,0,0,0,0\n  RL%max_transition_row=3,3,3,0,0,0,0,0,0\n  RL%mask_refine_spc_type='bbox'\n  RL%mask_refine_spc_fprefix='{}'\n/\n",
+            root.display(),
+            sources.join("refine_bbox").display(),
+        ),
+    )
+    .expect("write namelist");
+
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 100_000, None)
+        .expect("three-level TRI refinement must publish");
+    let mesh =
+        earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
+            .expect("read published TRI gridfile");
+    assert_eq!(run.max_level, 3);
+    assert!(mesh.n_w_to_m.iter().any(|&degree| degree > 7));
+    assert!(
+        earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&mesh)
+            .is_consistent()
+    );
+    earthmesh_cli::unstructured_mesh_support::validate_published_cell_degrees(&mesh, "tri")
+        .unwrap();
+    assert!(
+        earthmesh_cli::unstructured_mesh_support::validate_published_cell_degrees(&mesh, "hex")
+            .is_err()
+    );
+}
+
 /// A request red-green cannot serve is refused, not served with less.
 ///
 /// The marking comes from named regions; an h-field's target levels are simply
