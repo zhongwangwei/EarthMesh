@@ -352,8 +352,8 @@ body.map-window #mapStage{height:100%!important;min-height:0!important;border-ra
           <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
             <span class="rdot" id="logDot" style="flex:none"></span>
             <span id="logStatus" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--muted)"></span>
-            <span class="btn-ghost" id="copyLogBtn" title="copy log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">⧉ <span data-i18n="log.copy">Copy</span></span>
-            <span class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px;cursor:pointer">🗑 <span data-i18n="log.clear">Clear</span></span>
+            <button type="button" class="btn-ghost" id="copyLogBtn" title="copy log" style="flex:none;padding:2px 9px;font-size:11px">⧉ <span data-i18n="log.copy">Copy</span></button>
+            <button type="button" class="btn-ghost" id="clearLogBtn" title="clear log" style="flex:none;padding:2px 9px;font-size:11px">🗑 <span data-i18n="log.clear">Clear</span></button>
           </div>
         </div>
         <div class="logbox" id="logbox" style="flex:1"></div>
@@ -919,7 +919,7 @@ function renderStep(i){
       html+=`<div class="verdict" style="${ok?'':'background:rgba(229,72,77,.08);border-color:#e5484d'}"><span class="vb" style="background:${ok?'var(--pass)':'#e5484d'}">${ok?'DONE':'FAIL'}</span>
         <div style="min-width:0;overflow-wrap:anywhere"><div class="vt">${ok?(lang?"网格已生成":"Mesh generated"):(lang?"运行失败":"Run failed")}</div>
         <div class="vs" id="runOutputSummary"></div></div></div>
-        ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><span class="btn-ghost" id="openOutBtn" style="cursor:pointer">📂 ${lang?"打开输出文件夹":"Open output folder"}</span></div>`:""}
+        ${runInfo&&runInfo.outdir?`<div style="margin-top:12px"><button type="button" class="btn-ghost" id="openOutBtn">📂 ${lang?"打开输出文件夹":"Open output folder"}</button></div>`:""}
         <div class="card" id="deliveryCard" style="margin-top:16px;overflow-wrap:anywhere"></div>
         <div class="card" id="certifiedCard" style="margin-top:16px;display:none"></div>
         <div class="card" id="autoRefineCard" style="margin-top:16px;display:none"></div>

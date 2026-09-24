@@ -47,6 +47,14 @@ check(
 log("frontend has no inline HTML event handlers");
 
 check(
+  ["copyLogBtn", "clearLogBtn", "openOutBtn"].every((id) =>
+    html.includes(`<button type="button" class="btn-ghost" id="${id}"`),
+  ),
+  "log actions and the output-folder action must be native keyboard-accessible buttons",
+);
+log("log and output-folder actions are keyboard-accessible buttons");
+
+check(
   html.includes('href="vendor/openlayers/ol.css"') &&
     html.includes('src="vendor/openlayers/ol.js"') &&
     html.includes('href="vendor/maplibre/maplibre-gl.css"') &&
