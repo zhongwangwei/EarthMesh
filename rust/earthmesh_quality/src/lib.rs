@@ -1607,6 +1607,14 @@ pub fn attach_adaptive_diagnostics(
     config: AdaptiveConfigDiagnostics,
 ) {
     let diagnostics = compute_adaptive_diagnostics(input, target_levels, config);
+    let short_by_more_than_one = input
+        .cells
+        .iter()
+        .zip(target_levels)
+        .any(|(cell, &target)| {
+            cell.refine_level
+                .is_some_and(|actual| target.saturating_sub(actual) > 1)
+        });
     let mut add_gate = |metric: &str, value: usize, detail: &str| {
         let level = if value > 0 {
             QualityLevel::Warn
@@ -1623,7 +1631,7 @@ pub fn attach_adaptive_diagnostics(
     };
     add_gate(
         "adaptive_target_short_by_more_than_one_level",
-        usize::from(diagnostics.max_target_actual_delta > 1),
+        usize::from(short_by_more_than_one),
         "a circle asked for a level the mesh missed by more than one, which a \
          hard circle edge cannot explain",
     );
@@ -2184,6 +2192,37 @@ mod tests {
         // 3D chord corner angle of a 1°×1° equatorial square is ~90° (not exactly,
         // since the chord vectors live on the sphere) — sane, not a planar artifact.
         assert!((r.geometry.min_angle_deg - 90.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn adaptive_shortfall_gate_ignores_over_refinement() {
+        let mut mesh = two_square_mesh();
+        for cell in &mut mesh.cells {
+            cell.refine_level = Some(2);
+        }
+        for (targets, expected) in [
+            ([0, 0], QualityLevel::Pass),
+            ([0, 3], QualityLevel::Pass),
+            ([4, 4], QualityLevel::Warn),
+        ] {
+            let mut report = compute(&mesh, &QualityThresholds::default());
+            assert_eq!(report.verdict, QualityLevel::Pass);
+            attach_adaptive_diagnostics(
+                &mut report,
+                &mesh,
+                &targets,
+                AdaptiveConfigDiagnostics {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+            let gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.metric == "adaptive_target_short_by_more_than_one_level")
+                .unwrap();
+            assert_eq!(gate.level, expected, "targets={targets:?}");
+        }
     }
 
     #[test]
