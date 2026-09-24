@@ -853,6 +853,19 @@ fn cell_ring(input: &QualityMeshInput, cell: &QualityCell) -> Option<Vec<Point>>
     Some(ring)
 }
 
+// Bounded even for malformed but finite coordinates (e.g. a NetCDF fill value).
+fn wrap_lon(lon: f64) -> f64 {
+    if (-180.0..=180.0).contains(&lon) {
+        return lon;
+    }
+    let wrapped = lon.rem_euclid(360.0);
+    if wrapped > 180.0 || (wrapped == 180.0 && lon.is_sign_negative()) {
+        wrapped - 360.0
+    } else {
+        wrapped
+    }
+}
+
 /// Copy of `ring` with longitudes unwrapped to within ±180° of the first
 /// vertex, so dateline-crossing cells are measured as compact polygons rather
 /// than world-spanning slivers (raw lon averaging/shoelace flips sign there).
@@ -860,14 +873,14 @@ fn unwrap_ring_lon(ring: &[Point]) -> Vec<Point> {
     let Some(first) = ring.first() else {
         return Vec::new();
     };
-    let lon0 = first.x;
+    let lon0 = wrap_lon(first.x);
     ring.iter()
         .map(|p| {
-            let mut lon = p.x;
-            while lon - lon0 > 180.0 {
+            let mut lon = wrap_lon(p.x);
+            if lon - lon0 > 180.0 {
                 lon -= 360.0;
             }
-            while lon - lon0 < -180.0 {
+            if lon - lon0 < -180.0 {
                 lon += 360.0;
             }
             Point::new(lon, p.y)
@@ -883,13 +896,7 @@ fn centroid(ring: &[Point]) -> Point {
     // land on the wrong side of the globe, then wrap back to [-180, 180].
     let unwrapped = unwrap_ring_lon(ring);
     let n = unwrapped.len() as f64;
-    let mut lon = unwrapped.iter().map(|p| p.x).sum::<f64>() / n;
-    while lon > 180.0 {
-        lon -= 360.0;
-    }
-    while lon < -180.0 {
-        lon += 360.0;
-    }
+    let lon = wrap_lon(unwrapped.iter().map(|p| p.x).sum::<f64>() / n);
     Point::new(lon, unwrapped.iter().map(|p| p.y).sum::<f64>() / n)
 }
 
@@ -2613,6 +2620,32 @@ mod tests {
         assert!(r.geometry.cell_area.mean.is_finite());
         assert!(r.geometry.cell_area.std.is_finite());
         assert!(r.geometry.edge_length_km.mean.is_finite());
+    }
+
+    #[test]
+    fn huge_finite_longitude_reports_invalid_cell_without_hanging() {
+        let m = QualityMeshInput {
+            vertices: vec![
+                Point::new(1.0e30, 0.0),
+                Point::new(1.0e30, 0.0),
+                Point::new(0.0, 1.0),
+            ],
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2],
+                refine_level: Some(0),
+                neighbors: vec![],
+            }],
+        };
+        let report = compute(&m, &QualityThresholds::default());
+        assert_eq!(report.geometry.invalid_polygon_count, 1);
+        assert_eq!(report.verdict, QualityLevel::Fail);
+        assert_eq!(report.worst_cells[0].metric, "invalid_polygon");
+        assert!((-180.0..=180.0).contains(&report.worst_cells[0].centroid.x));
+
+        for lon in [f64::MAX, -f64::MAX] {
+            let center = centroid(&[Point::new(lon, 0.0), Point::new(0.0, 1.0)]);
+            assert!((-180.0..=180.0).contains(&center.x));
+        }
     }
 
     #[test]
