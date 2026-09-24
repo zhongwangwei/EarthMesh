@@ -38,17 +38,100 @@ struct EmittedRefinement {
 
 impl EmittedRefinement {
     /// Deepest level whose circles cover this point, zero where none do.
+    ///
+    /// Tests every circle. Kept as the oracle for [`CircleIndex`]; a quality run
+    /// asks it once per cell, and a global red-green run emits ~190 000 circles
+    /// for ~700 000 cells.
+    #[cfg(test)]
     fn target_level_at(&self, lon_degrees: f64, lat_degrees: f64) -> u32 {
         self.circles
             .iter()
-            .filter(|circle| {
-                earthmesh_hfield::great_circle_distance_m(
-                    circle.lon_degrees,
-                    circle.lat_degrees,
-                    lon_degrees,
-                    lat_degrees,
-                ) <= circle.radius_meters
-            })
+            .filter(|circle| circle.covers(lon_degrees, lat_degrees))
+            .map(|circle| circle.level)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+impl EmittedCircle {
+    fn covers(&self, lon_degrees: f64, lat_degrees: f64) -> bool {
+        earthmesh_hfield::great_circle_distance_m(
+            self.lon_degrees,
+            self.lat_degrees,
+            lon_degrees,
+            lat_degrees,
+        ) <= self.radius_meters
+    }
+}
+
+/// Circles bucketed by one-degree longitude/latitude cells, so a point tests
+/// only the circles whose bounding box reaches its cell.
+///
+/// Every cell a qualifying point can lie in is listed conservatively and the
+/// exact great-circle test still decides, so the answer is the full scan's.
+/// Without it the quality step spent hours on a global run: every cell tested
+/// every circle, 1.3e11 great-circle distances, single-threaded.
+struct CircleIndex<'a> {
+    circles: &'a [EmittedCircle],
+    buckets: Vec<Vec<u32>>,
+}
+
+impl<'a> CircleIndex<'a> {
+    const NLON: usize = 360;
+    const NLAT: usize = 180;
+    /// Degrees added to every box, far above floating-point noise in the exact
+    /// test and far below a bucket.
+    const MARGIN_DEGREES: f64 = 0.01;
+
+    fn new(circles: &'a [EmittedCircle]) -> Self {
+        let mut buckets = vec![Vec::new(); Self::NLON * Self::NLAT];
+        for (index, circle) in circles.iter().enumerate() {
+            let angle = circle.radius_meters.max(0.0) / earthmesh_hfield::EARTH_RADIUS_METERS;
+            let angle_degrees = angle.to_degrees() + Self::MARGIN_DEGREES;
+            let south = circle.lat_degrees - angle_degrees;
+            let north = circle.lat_degrees + angle_degrees;
+            // A circle reaching a pole, or one wide enough that its longitude
+            // extent is not bounded, spans every longitude.
+            let cos_lat = circle.lat_degrees.to_radians().cos();
+            let lon_half = if north >= 90.0 || south <= -90.0 || angle.sin() >= cos_lat {
+                None
+            } else {
+                Some((angle.sin() / cos_lat).asin().to_degrees() + Self::MARGIN_DEGREES)
+            };
+            let lat_rows = Self::lat_row(south)..=Self::lat_row(north);
+            let lon_cols: Vec<usize> = match lon_half {
+                Some(half) if 2.0 * half < 359.0 => {
+                    let west = (circle.lon_degrees - half).floor() as i64;
+                    let east = (circle.lon_degrees + half).floor() as i64;
+                    (west..=east)
+                        .map(|lon| (lon + 180).rem_euclid(Self::NLON as i64) as usize)
+                        .collect()
+                }
+                _ => (0..Self::NLON).collect(),
+            };
+            for row in lat_rows {
+                for &col in &lon_cols {
+                    buckets[row * Self::NLON + col].push(index as u32);
+                }
+            }
+        }
+        Self { circles, buckets }
+    }
+
+    fn lat_row(lat_degrees: f64) -> usize {
+        ((lat_degrees + 90.0).floor().max(0.0) as usize).min(Self::NLAT - 1)
+    }
+
+    fn lon_col(lon_degrees: f64) -> usize {
+        ((lon_degrees + 180.0).floor() as i64).rem_euclid(Self::NLON as i64) as usize
+    }
+
+    fn target_level_at(&self, lon_degrees: f64, lat_degrees: f64) -> u32 {
+        let bucket = Self::lat_row(lat_degrees) * Self::NLON + Self::lon_col(lon_degrees);
+        self.buckets[bucket]
+            .iter()
+            .map(|&index| &self.circles[index as usize])
+            .filter(|circle| circle.covers(lon_degrees, lat_degrees))
             .map(|circle| circle.level)
             .max()
             .unwrap_or(0)
@@ -148,14 +231,15 @@ fn adaptive_target_levels_for_quality_cells(
     kind: &str,
     emitted: &EmittedRefinement,
 ) -> io::Result<Vec<u32>> {
+    let index = CircleIndex::new(&emitted.circles);
     match kind.trim() {
         "tri" => Ok(super::gridfile::tri_quality_cells_from_gridfile(mesh)?
             .into_iter()
-            .map(|(mi, _)| emitted.target_level_at(mesh.m_lon[mi], mesh.m_lat[mi]))
+            .map(|(mi, _)| index.target_level_at(mesh.m_lon[mi], mesh.m_lat[mi]))
             .collect()),
         "hex" => Ok(super::gridfile::hex_quality_cells_from_gridfile(mesh)?
             .into_iter()
-            .map(|(wi, _corners)| emitted.target_level_at(mesh.w_lon[wi], mesh.w_lat[wi]))
+            .map(|(wi, _corners)| index.target_level_at(mesh.w_lon[wi], mesh.w_lat[wi]))
             .collect()),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -249,6 +333,74 @@ mod tests {
         assert_eq!(emitted.target_level_at(116.0, 22.0), 1);
         // Outside everything.
         assert_eq!(emitted.target_level_at(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn the_circle_index_answers_exactly_as_the_full_scan() {
+        // Circles at the poles, across the antimeridian, near the equator and
+        // wide enough to span every longitude; points on a fine global lattice
+        // plus each circle's own centre and rim.
+        let mut circles = Vec::new();
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for level in 1..=3u32 {
+            for _ in 0..400 {
+                circles.push(EmittedCircle {
+                    lon_degrees: next() * 360.0 - 180.0,
+                    lat_degrees: next() * 180.0 - 90.0,
+                    radius_meters: 5_000.0 + next() * 400_000.0,
+                    level,
+                });
+            }
+        }
+        for (lon, lat, radius) in [
+            (0.0, 90.0, 300_000.0),
+            (37.0, -89.5, 120_000.0),
+            (179.95, 10.0, 200_000.0),
+            (-179.99, -45.0, 250_000.0),
+            (180.0, 60.0, 150_000.0),
+            (10.0, 0.0, 6_000_000.0),
+            (0.0, 88.0, 50_000.0),
+        ] {
+            circles.push(EmittedCircle {
+                lon_degrees: lon,
+                lat_degrees: lat,
+                radius_meters: radius,
+                level: 4,
+            });
+        }
+        let emitted = EmittedRefinement {
+            circles: circles.clone(),
+            ..EmittedRefinement::default()
+        };
+        let index = CircleIndex::new(&emitted.circles);
+        let mut points = Vec::new();
+        for i in 0..720 {
+            for j in 0..=360 {
+                points.push((i as f64 * 0.5 - 180.0 + 0.123, j as f64 * 0.5 - 90.0));
+            }
+        }
+        for circle in &circles {
+            let angle = (circle.radius_meters / earthmesh_hfield::EARTH_RADIUS_METERS).to_degrees();
+            points.push((circle.lon_degrees, circle.lat_degrees));
+            points.push((
+                circle.lon_degrees,
+                (circle.lat_degrees + angle * 0.999).min(90.0),
+            ));
+            points.push((circle.lon_degrees + 360.0, circle.lat_degrees));
+        }
+        let mut covered = 0usize;
+        for (lon, lat) in points {
+            let expected = emitted.target_level_at(lon, lat);
+            covered += usize::from(expected > 0);
+            assert_eq!(index.target_level_at(lon, lat), expected, "({lon}, {lat})");
+        }
+        assert!(covered > 1000, "fixture must exercise covered points");
     }
 
     #[test]
