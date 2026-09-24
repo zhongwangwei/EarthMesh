@@ -1,6 +1,57 @@
 use super::super::*;
 
 #[test]
+fn method_c_region_selection_matches_full_mask_footprints() {
+    let cases = [
+        (
+            MethodCMesh::from_icosahedron(16, 0, 1.0, 0.25).unwrap(),
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(115.0, 25.0),
+                radius_meters: 2_500_000.0,
+                level: 1,
+            },
+            false,
+        ),
+        (
+            MethodCMesh::from_cart_hex(18, 1_000_000.0).unwrap(),
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(10_200_000.0, -310_000.0),
+                radius_meters: 500_000.0,
+                level: 1,
+            },
+            true,
+        ),
+    ];
+    for (mesh, region, cartesian) in cases {
+        let neighbors = mesh.method_c_m_neighbors().unwrap();
+        let seeds = mesh
+            .selected_region_thirdm_seed_points_with_neighbors(
+                std::slice::from_ref(&region),
+                1,
+                active_mesh_radius(&mesh).unwrap(),
+                &neighbors,
+                cartesian,
+            )
+            .unwrap();
+        assert!(!seeds.is_empty());
+        let mut expected = vec![false; mesh.nwd + 1];
+        for im in seeds {
+            let mut footprint = vec![false; mesh.nwd + 1];
+            mesh.mark_fill_rad3_faces_with_neighbors(im, &mut footprint, &neighbors)
+                .unwrap();
+            for iw in 2..=mesh.nwd {
+                expected[iw] |= footprint[iw] && mesh.w_faces[iw].mrlw == mesh.m_metadata[im].mrlm;
+            }
+        }
+        assert_eq!(
+            mesh.selected_regions_faces(std::slice::from_ref(&region), 1, cartesian)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn method_c_selected_faces_close_sharp_concavity_around_m_point() {
     let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let point_id = (2..=mesh.nmd)

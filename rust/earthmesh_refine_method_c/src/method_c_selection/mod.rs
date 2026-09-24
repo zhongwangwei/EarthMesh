@@ -105,10 +105,8 @@ impl MethodCMesh {
         )?;
         for im in seed_points {
             let mrlo = self.m_metadata[im].mrlm;
-            let mut footprint = vec![false; self.nwd + 1];
-            self.mark_fill_rad3_faces_with_neighbors(im, &mut footprint, &method_c_m_neighbors)?;
-            for iw in 2..=self.nwd {
-                if footprint[iw] && self.w_faces[iw].mrlw == mrlo {
+            for iw in self.method_c_rad3_faces_with_neighbors(im, &method_c_m_neighbors)? {
+                if iw >= 2 && self.w_faces[iw].mrlw == mrlo {
                     selected[iw] = true;
                 }
             }
