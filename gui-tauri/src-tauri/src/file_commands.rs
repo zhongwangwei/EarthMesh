@@ -1,6 +1,7 @@
 //! File-system and native dialog command handlers.
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -100,10 +101,25 @@ pub(crate) fn save_map_png(
         return Ok(None);
     };
 
-    let path = ensure_png_extension(PathBuf::from(fp.to_string()));
+    let selected_path = PathBuf::from(fp.to_string());
+    let path = ensure_png_extension(selected_path.clone());
     let display_path = path.to_string_lossy().into_owned();
-    fs::write(&path, bytes).map_err(|e| format!("write {display_path}: {e}"))?;
+    write_png_output(&selected_path, bytes).map_err(|e| format!("write {display_path}: {e}"))?;
     Ok(Some(display_path))
+}
+
+pub(crate) fn write_png_output(selected_path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let path = ensure_png_extension(selected_path.to_path_buf());
+    if path == selected_path {
+        fs::write(path, bytes)
+    } else {
+        // The dialog did not confirm overwriting this normalized destination.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?
+            .write_all(bytes)
+    }
 }
 
 pub(crate) fn validate_png_bytes(bytes: &[u8]) -> Result<(), String> {

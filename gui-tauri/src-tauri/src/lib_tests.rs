@@ -4042,6 +4042,36 @@ fn png_payload_validation_rejects_invalid_structure() {
 }
 
 #[test]
+fn png_output_does_not_overwrite_an_unconfirmed_normalized_path() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = env::temp_dir().join(format!("earthmesh-png-save-{}-{nonce}", process::id()));
+    fs::create_dir(&dir).unwrap();
+    let output = dir.join("map.png");
+    fs::write(&output, b"existing image").unwrap();
+    for selected in [dir.join("map.jpg"), dir.join("map")] {
+        let error = write_png_output(&selected, b"replacement image").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&output).unwrap(), b"existing image");
+        assert!(!selected.exists());
+    }
+    write_png_output(&output, b"confirmed replacement").unwrap();
+    assert_eq!(fs::read(&output).unwrap(), b"confirmed replacement");
+    for name in ["new.jpg", "extensionless"] {
+        let selected = dir.join(name);
+        write_png_output(&selected, b"new image").unwrap();
+        assert_eq!(
+            fs::read(ensure_png_extension(selected.clone())).unwrap(),
+            b"new image"
+        );
+        assert!(!selected.exists());
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn png_output_path_enforces_png_extension() {
     assert_eq!(
         ensure_png_extension(PathBuf::from("/tmp/map")),
