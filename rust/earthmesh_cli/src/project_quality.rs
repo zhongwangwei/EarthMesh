@@ -229,6 +229,7 @@ fn final_mesh_contract(
     input: &earthmesh_quality::QualityMeshInput,
     report: &earthmesh_quality::MeshQualityReport,
 ) -> Result<(), String> {
+    let mut footprints = std::collections::HashMap::with_capacity(input.cells.len());
     for (cell, polygon) in input.cells.iter().enumerate() {
         let edges = polygon.vertices.len();
         let valid = match spec.cell_kind {
@@ -238,6 +239,59 @@ fn final_mesh_contract(
         if !valid {
             return Err(format!(
                 "physical {:?} cell {cell} has {edges} edges; HEX requires 5..=7, TRI requires 3",
+                spec.cell_kind
+            ));
+        }
+        // IDs may legitimately split boundary vertices. Compare whole physical
+        // rings instead, independent of their starting vertex and winding.
+        // Fixed-size keys avoid a heap allocation per TRI/5..=7-sided HEX cell.
+        let mut ring = [[0_u64; 2]; 7];
+        for (key, &vertex) in ring.iter_mut().zip(&polygon.vertices) {
+            let point = input.vertices.get(vertex).ok_or_else(|| {
+                format!("physical cell {cell} references invalid vertex {vertex}")
+            })?;
+            if !point.x.is_finite() || !point.y.is_finite() {
+                return Err(format!(
+                    "physical cell {cell} has non-finite vertex {vertex}"
+                ));
+            }
+            let lon = if point.y.abs() == 90.0 {
+                0.0
+            } else if (-180.0..180.0).contains(&point.x) {
+                point.x
+            } else {
+                let wrapped = point.x % 360.0;
+                if wrapped >= 180.0 {
+                    wrapped - 360.0
+                } else if wrapped < -180.0 {
+                    wrapped + 360.0
+                } else {
+                    wrapped
+                }
+            };
+            *key = [
+                if lon == 0.0 { 0 } else { lon.to_bits() },
+                if point.y == 0.0 { 0 } else { point.y.to_bits() },
+            ];
+        }
+        let mut canonical = ring;
+        for start in 0..edges {
+            for reverse in [false, true] {
+                let mut candidate = [[0_u64; 2]; 7];
+                for (offset, key) in candidate.iter_mut().take(edges).enumerate() {
+                    let index = if reverse {
+                        (start + edges - offset) % edges
+                    } else {
+                        (start + offset) % edges
+                    };
+                    *key = ring[index];
+                }
+                canonical = canonical.min(candidate);
+            }
+        }
+        if let Some(previous) = footprints.insert((edges, canonical), cell) {
+            return Err(format!(
+                "duplicate physical {:?} cells {previous} and {cell}",
                 spec.cell_kind
             ));
         }
@@ -503,6 +557,123 @@ mod tests {
         )
         .unwrap();
         crate::unstructured_mesh_io::write_unstructured_mesh_netcdf(path, &mesh).unwrap();
+    }
+
+    #[test]
+    fn final_contract_rejects_duplicate_physical_cells_but_allows_split_vertices_and_islands() {
+        use earthmesh_quality::topology::{Severity, TopologyIssueType};
+
+        for (kind, ring) in [
+            (
+                MeshCellKind::Tri,
+                vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(2.0, 0.0),
+                    Point::new(0.0, 2.0),
+                ],
+            ),
+            (
+                MeshCellKind::Hex,
+                vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(2.0, 0.0),
+                    Point::new(3.0, 1.0),
+                    Point::new(2.0, 2.0),
+                    Point::new(0.0, 2.0),
+                    Point::new(-1.0, 1.0),
+                ],
+            ),
+        ] {
+            let n = ring.len();
+            let spec = FinalAdmissionSpec {
+                cell_kind: kind,
+                expected_euler_characteristic: None,
+                thresholds: QualityThresholds::default(),
+                repair_level_cap: None,
+            };
+            let check = |input: &QualityMeshInput| {
+                let mut report = earthmesh_quality::compute(input, &spec.thresholds);
+                // Match regional final admission's permission for disconnected islands.
+                for issue in &mut report.topology_issues {
+                    if matches!(
+                        issue.issue_type,
+                        TopologyIssueType::DisconnectedMesh | TopologyIssueType::OrphanCell
+                    ) {
+                        issue.severity = Severity::Warn;
+                    }
+                }
+                final_mesh_contract(&spec, input, &report)
+            };
+            let mut input = QualityMeshInput {
+                vertices: ring.iter().chain(&ring).copied().collect(),
+                cells: vec![
+                    QualityCell {
+                        vertices: (0..n).collect(),
+                        refine_level: None,
+                        neighbors: vec![],
+                    },
+                    QualityCell {
+                        vertices: (n..2 * n).collect(),
+                        refine_level: None,
+                        neighbors: vec![],
+                    },
+                ],
+            };
+            // Separate IDs must not hide a duplicate; cyclic ordering does not matter.
+            input.cells[1].vertices.rotate_left(1);
+            assert!(check(&input).unwrap_err().contains("duplicate physical"));
+            input.cells[1].vertices.reverse();
+            assert!(check(&input).unwrap_err().contains("duplicate physical"));
+            input.cells[1].vertices.reverse();
+            // Longitude aliases (including -180/+180) and signed zero are
+            // identical locations, without a tolerance that merges nearby cells.
+            for (point, original) in input.vertices[..n].iter_mut().zip(&ring) {
+                *point = Point::new(original.x - 180.0, original.y);
+            }
+            for (point, original) in input.vertices[n..].iter_mut().zip(&ring) {
+                *point = Point::new(
+                    original.x + 180.0,
+                    if original.y == 0.0 { -0.0 } else { original.y },
+                );
+            }
+            assert!(check(&input).unwrap_err().contains("duplicate physical"));
+            // Adding 180 before wrapping rounds this non-integer alias to -180.
+            let x = -179.99999999999997;
+            input.vertices[0].x = x;
+            input.vertices[n].x = x + 360.0;
+            for (point, original) in input.vertices[1..n].iter_mut().zip(&ring[1..]) {
+                *point = *original;
+            }
+            for (point, original) in input.vertices[n + 1..].iter_mut().zip(&ring[1..]) {
+                *point = *original;
+            }
+            assert!(check(&input).unwrap_err().contains("duplicate physical"));
+            input.vertices[..n].copy_from_slice(&ring);
+            input.vertices[n..].copy_from_slice(&ring);
+            // Two genuinely separate islands remain admissible.
+            for point in &mut input.vertices[n..] {
+                point.x += 10.0;
+            }
+            assert!(check(&input).is_ok());
+            // Reflect through the common edge and reverse winding: touching polygons
+            // have duplicated boundary coordinates/IDs, but different footprints.
+            for (point, original) in input.vertices[n..].iter_mut().zip(&ring) {
+                *point = Point::new(original.x, -original.y);
+            }
+            input.cells[1].vertices.reverse();
+            assert!(check(&input).is_ok());
+            let report = earthmesh_quality::compute(&input, &spec.thresholds);
+            let vertex = input.cells[1].vertices[0];
+            input.cells[1].vertices[0] = usize::MAX;
+            assert!(final_mesh_contract(&spec, &input, &report)
+                .unwrap_err()
+                .contains("invalid vertex"));
+            input.cells[1].vertices[0] = vertex;
+            input.vertices[vertex].x = f64::NAN;
+            assert!(final_mesh_contract(&spec, &input, &report)
+                .unwrap_err()
+                .contains("non-finite vertex"));
+        }
     }
 
     #[test]
