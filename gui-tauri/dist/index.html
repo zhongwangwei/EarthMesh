@@ -4785,11 +4785,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   }
 
   function renderQualityCard(q) {
-    const card = document.getElementById("qualityCard"); if (!card) return;
     const z = zh();
     const verdict = (q.verdict || "unknown").toUpperCase();
     const color = q.verdict === "pass" ? "var(--pass)" : (q.verdict === "fail" ? "#e5484d" : "var(--warn)");
     const num = (n) => (typeof n === "number" ? n.toLocaleString() : n);
+    // reflect into the right-panel Quality tab (mini-metrics + verdict badge)
+    const minis = document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b');
+    const setMini = (i, txt, col) => { if (minis[i]) { minis[i].textContent = txt; minis[i].style.color = col || "var(--text)"; } };
+    setMini(0, num(q.cell_count));
+    setMini(1, num(q.vertex_count));
+    setMini(2, typeof q.min_angle_deg === "number" ? q.min_angle_deg.toFixed(1) + "°" : "N/A", color);
+    if (q.aspect_ratio) setMini(3, q.aspect_ratio.max.toFixed(2));
+    document.querySelectorAll('.live-pane[data-pane="quality"] .badge').forEach((b) => { b.style.display = ""; b.style.background = color; b.textContent = "● " + verdict; });
+
+    const card = document.getElementById("qualityCard"); if (!card) return;
     card.innerHTML = `<h3>${z ? "质量指标" : "Quality metrics"}</h3>
       <div style="margin:6px 0"><span id="qualityVerdictBadge" style="display:inline-block;padding:3px 10px;border-radius:6px;color:#fff;font-weight:800;font-size:12px;letter-spacing:.03em;background:${color}"></span></div>
       <div class="grid2">
@@ -4910,15 +4919,6 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (rb && q.report_path) rb.onclick = () => invoke("open_path", { path: q.report_path }).catch((e) => logLine("✗ " + e));
     const wb = document.getElementById("qWorstBtn");
     if (wb && q.worst_cells_path) wb.onclick = () => invoke("open_path", { path: q.worst_cells_path }).catch((e) => logLine("✗ " + e));
-
-    // reflect into the right-panel Quality tab (mini-metrics + verdict badge)
-    const minis = document.querySelectorAll('.live-pane[data-pane="quality"] .mini-metric b');
-    const setMini = (i, txt, col) => { if (minis[i]) { minis[i].textContent = txt; minis[i].style.color = col || "var(--text)"; } };
-    setMini(0, num(q.cell_count));
-    setMini(1, num(q.vertex_count));
-    setMini(2, typeof q.min_angle_deg === "number" ? q.min_angle_deg.toFixed(1) + "°" : "N/A", color);
-    if (q.aspect_ratio) setMini(3, q.aspect_ratio.max.toFixed(2));
-    document.querySelectorAll('.live-pane[data-pane="quality"] .badge').forEach((b) => { b.style.display = ""; b.style.background = color; b.textContent = "● " + verdict; });
   }
 
   // The Run button moved into step 6's footer; enhanceRunStep() wires it each

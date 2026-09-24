@@ -1544,6 +1544,35 @@ async function checkAnalysisOwnership() {
 }
 checkAnalysisOwnership().catch(error => { console.error(error); process.exitCode=1; });
 
+// A current quality response must update the persistent sidebar after leaving Results.
+async function checkQualityAfterNavigation() {
+  const definitions = ["loadQualityAndMesh", "renderQualityCard", "renderQualityNote"].map(name => section(html,
+    new RegExp(`  ((?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n  \\})`), name));
+  const h = new Function(`
+    let card={textContent:"",append(){}},resolveQuality,_lastQuality=null,_meshPreview=null;
+    const minis=Array.from({length:4},()=>({textContent:"",style:{}})),badge={textContent:"",style:{}},errors=[];
+    const document={getElementById:()=>card,createElement:()=>({}),
+      querySelectorAll:selector=>selector.includes(".mini-metric")?minis:[badge]};
+    const _runArtifactEpoch=0,_meshPreviewToken=0,runInfo={certified:true},MESH_VIEW_CELLS=50000;
+    const zh=()=>false,meshViewKind=()=>"tri",certifiedPreviewCellCount=()=>0;
+    const readMeshQuality=()=>new Promise(resolve=>{resolveQuality=resolve;});
+    const loadMeshPreview=()=>Promise.resolve(false),logLine=error=>errors.push(error);
+    ${definitions.join("\n")}
+    return {minis,badge,errors,load:()=>loadQualityAndMesh("/current.nc"),
+      leave:()=>{card=null;},resolve:q=>resolveQuality(q),quality:()=>_lastQuality};
+  `)();
+  await h.load();
+  h.leave();
+  const q={verdict:"pass",cell_count:92,vertex_count:180,min_angle_deg:32,aspect_ratio:{max:1.25}};
+  h.resolve(q);
+  await new Promise(resolve=>setImmediate(resolve));
+  check(h.quality()===q && h.minis.map(m=>m.textContent).join(",")==="92,180,32.0°,1.25" &&
+    h.badge.textContent==="● PASS" && h.badge.style.background==="var(--pass)" && !h.errors.length,
+    "quality arriving after Results navigation must update sidebar metrics and verdict");
+  log("deferred quality after Results navigation updates persistent sidebar metrics and verdict");
+}
+checkQualityAfterNavigation().catch(error => { console.error(error); process.exitCode=1; });
+
 // Exercise the actual run/stop handlers with delayed command completion.
 async function checkRunSettlement() {
   const extract = (name, indent) => section(html, new RegExp(`${indent}((?:async )?function ${name}\\([^\\n]*\\) ?\\{[\\s\\S]*?\\n${indent}\\})`), name);
