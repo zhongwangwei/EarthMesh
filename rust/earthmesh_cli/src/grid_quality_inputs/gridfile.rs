@@ -184,34 +184,40 @@ pub(crate) fn hex_quality_cells_from_gridfile(
     let wn = mesh.w_lon.len();
     let m_layout = gridfile_m_row_layout(mesh);
     let w_layout = gridfile_w_row_layout(mesh);
-    let mut incident: Vec<Vec<usize>> = vec![Vec::new(); wn];
-    if !mesh.m_to_w.is_empty() {
-        let expected = mn
-            .checked_mul(3)
-            .ok_or_else(|| invalid("M connectivity size overflow"))?;
-        if mesh.m_to_w.len() != expected {
-            return Err(invalid(format!(
-                "M coordinate rows {mn} require {expected} triangle connectivity values, found {}",
-                mesh.m_to_w.len()
-            )));
+    let has_w_to_m = mesh.w_to_m_width != 0 || !mesh.w_to_m.is_empty() || !mesh.n_w.is_empty();
+    let mut incident: Vec<Vec<usize>> = Vec::new();
+    if has_w_to_m {
+        validate_authoritative_w_connectivity_shape(mesh)?;
+    } else {
+        incident = vec![Vec::new(); wn];
+        if !mesh.m_to_w.is_empty() {
+            let expected = mn
+                .checked_mul(3)
+                .ok_or_else(|| invalid("M connectivity size overflow"))?;
+            if mesh.m_to_w.len() != expected {
+                return Err(invalid(format!(
+                    "M coordinate rows {mn} require {expected} triangle connectivity values, found {}",
+                    mesh.m_to_w.len()
+                )));
+            }
         }
-    }
-    for (mi, tri) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
-        if !m_layout.is_physical_row(mi) {
-            continue;
-        }
-        for &v in tri {
-            let w_row = w_layout
-                .physical_row_for_canonical_id(v, wn)
-                .ok_or_else(|| {
-                    invalid(format!("M cell row {mi} contains invalid W vertex id {v}"))
-                })?;
-            incident[w_row].push(mi);
+        for (mi, tri) in mesh.m_to_w.as_chunks::<3>().0.iter().enumerate() {
+            if !m_layout.is_physical_row(mi) {
+                continue;
+            }
+            for &v in tri {
+                let w_row = w_layout
+                    .physical_row_for_canonical_id(v, wn)
+                    .ok_or_else(|| {
+                        invalid(format!("M cell row {mi} contains invalid W vertex id {v}"))
+                    })?;
+                incident[w_row].push(mi);
+            }
         }
     }
 
     let mut cells = Vec::new();
-    for (wi, incident_corners) in incident.iter().enumerate().take(wn) {
+    for wi in 0..wn {
         if !w_layout.is_physical_row(wi) {
             continue;
         }
@@ -219,7 +225,7 @@ pub(crate) fn hex_quality_cells_from_gridfile(
         // Prefer it over reconstructing incidence from M triangles, but retain the
         // inverse-connectivity path for legacy gridfiles that do not carry it.
         let corners = authoritative_w_corners(mesh, wi, mn, m_layout)?.unwrap_or_else(|| {
-            let mut corners = incident_corners
+            let mut corners = incident[wi]
                 .iter()
                 .copied()
                 .filter(|&mi| mi < mn && m_layout.is_physical_row(mi))
@@ -936,8 +942,10 @@ mod tests {
         };
 
         let input = quality_input_from_gridfile_hex_native(&mesh).unwrap();
+        let normalized = quality_input_from_gridfile_hex(&mesh).unwrap();
 
         assert_eq!(input.cells.len(), 2);
+        assert_eq!(normalized.cells.len(), input.cells.len());
         assert_eq!(input.cells[0].vertices, vec![0, 1, 4, 3]);
         assert_eq!(input.cells[1].vertices, vec![1, 2, 5, 4]);
         assert_eq!(input.cells[0].neighbors, vec![1]);
