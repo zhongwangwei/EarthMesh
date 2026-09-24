@@ -1746,7 +1746,7 @@ function ensureOlMap(elId){
   const inspector=document.createElement("section"), inspectorHead=document.createElement("div"), inspectorTitle=document.createElement("span"), inspectorClose=document.createElement("button"), inspectorBody=document.createElement("div");
   inspector.className="ol-cell-inspector"; inspector.hidden=true; inspectorTitle.id=elId+"CellInspectorTitle"; inspector.setAttribute("aria-labelledby",inspectorTitle.id); inspectorHead.className="ol-cell-inspector-head"; inspectorTitle.textContent=lang?"单元详情":"Cell details"; inspectorClose.className="ol-cell-inspector-close"; inspectorClose.type="button"; inspectorClose.textContent="×"; inspectorClose.setAttribute("aria-label",lang?"关闭单元详情":"Close cell details"); inspectorClose.onclick=()=>{inspector.hidden=true;}; inspectorHead.append(inspectorTitle,inspectorClose); inspector.append(inspectorHead,inspectorBody); overlayParent.appendChild(inspector); map._cellInspectorElement=inspector; map._cellInspectorBody=inspectorBody;
   if(elId==="mapsvgModal"){ const globeTooltip=document.createElement("div"); globeTooltip.className="ol-cell-tooltip globe-cell-tooltip"; globeTooltip.hidden=true; overlayParent.appendChild(globeTooltip); map._globeTooltipElement=globeTooltip; }
-  map.addControl(new ol.control.ScaleLine({units:"metric",bar:true,steps:4,text:true,minWidth:110}));
+  map.addControl(new ol.control.ScaleLine(elId==="mapsvgModal"?{units:"metric",bar:true,steps:4,text:true,minWidth:110}:{units:"metric",minWidth:110}));
   setOlBasemap(map,_olMapPrefs.basemap); bindOlMapTools(map);
   if(window.ResizeObserver){ map._resizeObserver=new ResizeObserver(scheduleMapResize); map._resizeObserver.observe(elId==="mapsvgModal"?(document.getElementById("mapStage")||el):el); }
   el._olmap=map;
