@@ -5162,13 +5162,15 @@ fn refine_with_method_c(
                 base_m,
                 hfield.g,
             )?;
-            let (refined, passes, diagnostics) = mesh.spawn_nest_from_target_levels_with_spring(
-                |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
-                field_max_level,
-                max_mrows,
-                nxp,
-                spring_nest_iterations,
-            )?;
+            let (refined, passes, diagnostics) = mesh
+                .spawn_nest_from_target_levels_with_spring(
+                    |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
+                    field_max_level,
+                    max_mrows,
+                    nxp,
+                    spring_nest_iterations,
+                )
+                .map_err(with_data_shaped_hfield_hint)?;
             hfield_diagnostics = diagnostics;
             hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
                 field,
@@ -5328,6 +5330,29 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 /// source windows avoids the old full-band scan, and the plan inputs still carry
 /// `domain_region` so cells inside the windows but outside the true shape cannot
 /// consume demand budget.
+/// Name the route that can build what a Method-C legality gate refused.
+///
+/// A repairable Method-C error out of an h-field pass means the requested mask
+/// has a shape the transition patch cannot carry -- a one-face spike, a lobe one
+/// seed wide -- and the repair ladder ran out. That is Method-C's measured limit
+/// on data-shaped regions (docs/experiments/2026-08_lattice_invariants.md), not
+/// a broken input, and the red-green backend exists for exactly these runs. A
+/// global coastal ocean project that failed here builds and delivers on it.
+fn with_data_shaped_hfield_hint(error: io::Error) -> io::Error {
+    if earthmesh_mesh::method_c_repairable_payload(&error).is_none() {
+        return error;
+    }
+    io::Error::new(
+        error.kind(),
+        format!(
+            "{error}. Method-C cannot build every data-shaped region an h-field asks for; \
+             criteria-driven refinement is served by the red-green backend: set \
+             refinement.backend: RedGreen and refinement.hfield.enabled: false in the project \
+             (NL%refine_backend = 'red_green' without &hfield in a namelist)"
+        ),
+    )
+}
+
 fn adaptive_demand_inputs<'a>(
     domain_region: Option<&'a GridRegion>,
     config: &'a EarthmeshConfig,
@@ -6583,6 +6608,39 @@ mod tests {
 
     /// A bbox that crosses the antimeridian is two source windows, not a
     /// full-longitude band.
+    #[test]
+    fn a_method_c_legality_failure_names_the_red_green_route() {
+        let gate = earthmesh_mesh::repairable_error(
+            earthmesh_mesh::RepairableKind::Valence,
+            Some(42_521),
+            "Method-C h-field spawn_nest pass 2 failed: M point 53980 exceeds 7-edge Method-C ring",
+        );
+        let hinted = with_data_shaped_hfield_hint(gate);
+        let message = hinted.to_string();
+        assert!(
+            message.starts_with("Method-C h-field spawn_nest pass 2 failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("refinement.backend: RedGreen"),
+            "{message}"
+        );
+        assert!(
+            message.contains("refinement.hfield.enabled: false"),
+            "{message}"
+        );
+        assert!(
+            message.contains("NL%refine_backend = 'red_green'"),
+            "{message}"
+        );
+
+        // Anything that is not a legality gate is left exactly as it was.
+        let plain = io::Error::new(io::ErrorKind::NotFound, "landtype file missing");
+        let untouched = with_data_shaped_hfield_hint(plain);
+        assert_eq!(untouched.kind(), io::ErrorKind::NotFound);
+        assert_eq!(untouched.to_string(), "landtype file missing");
+    }
+
     #[test]
     fn a_bbox_across_the_antimeridian_produces_two_windows() {
         let wrapped = GridRegion::Bbox {

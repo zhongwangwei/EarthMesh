@@ -1130,10 +1130,14 @@ impl MethodCMesh {
                     &coverage,
                 )
                 .map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("Method-C h-field spawn_nest pass {pass} failed: {error}"),
-                    )
+                    let message =
+                        format!("Method-C h-field spawn_nest pass {pass} failed: {error}");
+                    // Keep the legality gate's kind, so a caller can tell "this
+                    // mask has a shape Method-C cannot build" from a broken input.
+                    match method_c_repairable_payload(&error) {
+                        Some(payload) => repairable_error(payload.kind, payload.m_point, message),
+                        None => io::Error::new(error.kind(), message),
+                    }
                 })?;
 
             if let Some((nxp, niter, cartesian_dist00)) = spring {
