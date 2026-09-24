@@ -151,6 +151,8 @@ fn production_spawn_is_measured_on_contiguous_footprint_unions() {
             // [ok, failed] counts split by whether the normalised perimeter
             // passes through a pentagon.
             let mut pentagon_split = [[0usize; 2]; 2];
+            // Predicate verdict vs outcome: [legal ok, legal fail, illegal ok, illegal fail].
+            let mut predicate_split = [0usize; 4];
             // (misaligned corners, failed) -> count, pentagon-free masks only.
             let mut corner_split = BTreeMap::<(usize, bool), usize>::new();
             let samples = 60usize;
@@ -231,6 +233,41 @@ fn production_spawn_is_measured_on_contiguous_footprint_unions() {
                 let outcome = probe
                     .mesh
                     .spawn_nest_pass_with_max_mrows(&selected, 2, 7, true);
+                let illegal = {
+                    let mut mask = selected.clone();
+                    probe
+                        .mesh
+                        .close_method_c_concavities_for_level_with_neighbors(
+                            &mut mask,
+                            &probe.m_neighbors,
+                        )
+                        .ok()
+                        .and_then(|_| {
+                            probe
+                                .mesh
+                                .repair_method_c_non_triplet_perimeter(
+                                    &mut mask,
+                                    &probe.m_neighbors,
+                                    2,
+                                )
+                                .ok()
+                        })
+                        .and_then(|_| {
+                            probe
+                                .mesh
+                                .method_c_perimeters_from_selected_faces(&mask, &probe.m_neighbors)
+                                .ok()
+                        })
+                        .is_none_or(|perimeters| {
+                            !MethodCMesh::method_c_perimeter_shape_violations(
+                                &mask,
+                                &perimeters,
+                                &probe.m_neighbors,
+                            )
+                            .is_empty()
+                        })
+                };
+                predicate_split[2 * usize::from(illegal) + usize::from(outcome.is_err())] += 1;
                 pentagon_split[usize::from(touches_pentagon)][usize::from(outcome.is_err())] += 1;
                 if !touches_pentagon {
                     *corner_split
@@ -253,7 +290,8 @@ fn production_spawn_is_measured_on_contiguous_footprint_unions() {
                 "shape-probe nxp={nxp} size={size}: direct_ok={direct_ok}/{samples} full_ok={full_ok}/{samples} \
                  spiky_after_norm={spiky_masks} (direct failed on {spiky_and_direct_failed}) failures={full_failures:?} \
                  [no pentagon on perimeter ok/fail, pentagon ok/fail]={pentagon_split:?} \
-                 misaligned_corners(no pentagon)={corner_split:?}"
+                 misaligned_corners(no pentagon)={corner_split:?} \
+                 predicate[legal ok, legal fail, illegal ok, illegal fail]={predicate_split:?}"
             );
         }
     }
@@ -538,4 +576,62 @@ fn normalised_failures_are_located_on_their_perimeter() {
             window.unwrap_or_default()
         );
     }
+}
+
+/// The recorded shapes, pinned: the predicate names what the patch refuses,
+/// and the emission agrees on each.
+#[test]
+fn shape_violations_predict_the_transition_patch_on_recorded_masks() {
+    use crate::method_c_perimeter_selection::MethodCShapeViolation;
+    let probe = ShapeProbe::new(21, 800);
+    let normalised = |seeds: &[usize]| {
+        let mut mask = probe
+            .mesh
+            .method_c_footprint_mask(seeds, &probe.m_neighbors)
+            .unwrap();
+        probe
+            .mesh
+            .close_method_c_concavities_for_level_with_neighbors(&mut mask, &probe.m_neighbors)
+            .unwrap();
+        probe
+            .mesh
+            .repair_method_c_non_triplet_perimeter(&mut mask, &probe.m_neighbors, 2)
+            .unwrap();
+        let blocks = probe
+            .mesh
+            .method_c_perimeters_from_selected_faces(&mask, &probe.m_neighbors)
+            .unwrap();
+        let violations =
+            MethodCMesh::method_c_perimeter_shape_violations(&mask, &blocks, &probe.m_neighbors);
+        let builds = probe
+            .mesh
+            .spawn_nest_pass_method_c_without_mask_repair(&mask, 2, 7, true)
+            .is_ok();
+        (violations, builds)
+    };
+
+    // The perimeter crosses a pentagon.
+    let (violations, builds) = normalised(&[20, 614, 677, 740, 743, 806]);
+    assert!(!builds);
+    assert!(violations
+        .iter()
+        .any(|(_, kind)| *kind == MethodCShapeViolation::DefectOnPerimeter));
+
+    // No pentagon, but corners off the first triple position.
+    let (violations, builds) =
+        normalised(&[28, 88, 487, 490, 550, 888, 891, 948, 951, 1011, 1791, 1794]);
+    assert!(!builds);
+    assert!(!violations.is_empty());
+    assert!(violations
+        .iter()
+        .all(|(_, kind)| *kind == MethodCShapeViolation::MisalignedCorner));
+
+    // A clean union: nothing flagged, and it builds.
+    let lattice = &probe.lattice;
+    let seed = lattice[lattice.len() / 2];
+    let mut seeds = vec![seed];
+    seeds.extend(probe.lattice_neighbors[&seed].iter().take(2));
+    let (violations, builds) = normalised(&seeds);
+    assert!(violations.is_empty(), "{violations:?}");
+    assert!(builds);
 }

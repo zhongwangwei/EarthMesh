@@ -23,6 +23,51 @@ impl MethodCMesh {
         perimeters.iter().all(|perimeter| perimeter.len() % 3 == 0)
     }
 
+    /// Perimeter points the transition patch is measured to refuse.
+    ///
+    /// `perim_fill3` works on consecutive triples of each block's perimeter and
+    /// only carries a straight run or a corner that opens a triple. Over 420
+    /// contiguous footprint unions at NXP 21 and 40 (`method_c_shape_probe`),
+    /// every normalised mask with one of these failed to emit and every mask
+    /// without one built:
+    ///
+    /// - a defect on the perimeter: a point whose ring is not six faces (a
+    ///   pentagon, or a transition-band point of an earlier generation);
+    /// - a spike: a point held by a single selected face;
+    /// - a corner (selected-face count other than the straight-edge three) at a
+    ///   triple position other than the first, i.e. a straight run between two
+    ///   corners whose length is not a multiple of three.
+    // Wired into the triplet normaliser next; measured by the shape probe now.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn method_c_perimeter_shape_violations(
+        selected: &[bool],
+        perimeters: &[Vec<MethodCPerimeterPoint>],
+        m_neighbors: &[IcosahedronMPointNeighbors],
+    ) -> Vec<(usize, MethodCShapeViolation)> {
+        let mut violations = Vec::new();
+        for perimeter in perimeters {
+            for (position, point) in perimeter.iter().enumerate() {
+                let neighbors = m_neighbors[point.im];
+                if neighbors.npoly != 6 {
+                    violations.push((point.im, MethodCShapeViolation::DefectOnPerimeter));
+                    continue;
+                }
+                let held = neighbors
+                    .iw
+                    .iter()
+                    .take(neighbors.npoly)
+                    .filter(|&&iw| selected.get(iw).copied().unwrap_or(false))
+                    .count();
+                if held == 1 {
+                    violations.push((point.im, MethodCShapeViolation::Spike));
+                } else if held != 3 && position % 3 != 0 {
+                    violations.push((point.im, MethodCShapeViolation::MisalignedCorner));
+                }
+            }
+        }
+        violations
+    }
+
     pub(crate) fn method_c_perimeter_remainder_score(
         perimeters: &[Vec<MethodCPerimeterPoint>],
     ) -> usize {
@@ -107,4 +152,13 @@ impl MethodCMesh {
             }
         }
     }
+}
+
+/// Why [`MethodCMesh::method_c_perimeter_shape_violations`] flagged a point.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MethodCShapeViolation {
+    DefectOnPerimeter,
+    Spike,
+    MisalignedCorner,
 }
