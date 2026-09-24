@@ -35,3 +35,12 @@ panic = "abort"
 # Line-table debug info so flamegraphs/backtraces have symbols. No runtime
 # cost; only larger binaries and slightly longer builds.
 debug = 1
+
+# The certified backend's frozen N12 snapshot tests replay a research probe
+# that is pure single-threaded arithmetic: 289 s and 267 s unoptimized, 17 s
+# each optimized -- two thirds of `make test-fast` and of CI's fast job.
+# Optimizing this one crate in dev/test builds keeps debug assertions and
+# overflow checks on (opt-level does not touch them) and changes no result:
+# Rust has no fast-math, and the snapshots still match byte for byte.
+[profile.dev.package.earthmesh_refine_certified]
+opt-level = 2
