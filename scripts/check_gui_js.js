@@ -207,6 +207,29 @@ check(
 );
 log("MERIT-Hydro refinement criteria are flat independent rows");
 
+{
+  const criterionRow = section(html, /(const criterionRow = \(l\) => \{[\s\S]*?\n    \};)/, "criterion row");
+  const hydroCriteria = section(html, /(const hydroCriteria = \[[\s\S]*?\n    \];)/, "hydro criteria");
+  const render = new Function("merit", "hydroRefine", `
+    const z=false, zh=()=>false, thresholdRefine={enabled:true}, criterionEdits={}, thresholdEdits={};
+    const document={createElement:()=>({dataset:{},style:{},children:[],setAttribute(){},appendChild(child){this.children.push(child)},append(...children){this.children.push(...children)}})};
+    ${criterionRow}\n${hydroCriteria}
+    return hydroCriteria.map(criterionRow);
+  `);
+  const hydro = {riverWidthEnabled:false,riverUpstreamAreaEnabled:false,coastEnabled:false,
+    coastLandEnabled:false,coastOceanEnabled:false,riverWidthThresholdM:300,
+    riverUpstreamAreaThresholdKm2:50000,coastBufferKm:50};
+  const available = render({path:"/data/MERIT",enabled:true},hydro);
+  check(available.every(row=>row.dataset.has==="1" && !row.children[0].disabled && !row.children[2].disabled),
+    "disabled MERIT criteria must remain editable and re-enableable while their source is available");
+  check(!available[2].children.find(child=>child.className==="select em-hydro-sides").disabled,
+    "coast none must leave the side selector enabled so both can be chosen again");
+  const missing = render(null,hydro);
+  check(missing.every(row=>row.dataset.has==="0" && row.children[0].disabled),
+    "MERIT criteria without an enabled source must stay disabled");
+  log("MERIT criterion switches distinguish source availability from criterion state");
+}
+
 check(
   html.includes("const h=_hydroThresholds;") &&
     html.includes("h.r3WidthM") &&

@@ -3232,18 +3232,21 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const hydroCriteria = [
       {
         id: "hydroRiverWidth", role_kind: "hydro", path: merit ? merit.path : "",
+        sourceEnabled: !!merit,
         enabled: hydroRefine.riverWidthEnabled, hydroKey: "riverWidthEnabled",
         hydroThresholdKey: "riverWidthThresholdM",
         criterion: { label: z ? "河道细化 · MERIT" : "River refinement · MERIT", unit: "m", physical_process: z ? "河宽 ≥" : "river width ≥", help: "", default_value: 300, range_min: hydroRefine.r2WidthM || 50, range_max: null }
       },
       {
         id: "hydroRiverUpstreamArea", role_kind: "hydro", path: merit ? merit.path : "",
+        sourceEnabled: !!merit,
         enabled: hydroRefine.riverUpstreamAreaEnabled, hydroKey: "riverUpstreamAreaEnabled",
         hydroThresholdKey: "riverUpstreamAreaThresholdKm2",
         criterion: { label: z ? "河道细化 · MERIT" : "River refinement · MERIT", unit: "km²", physical_process: z ? "上游汇水面积 ≥" : "upstream area ≥", help: "", default_value: 50000, range_min: hydroRefine.r2UpaKm2 || 5000, range_max: null }
       },
       {
         id: "hydroCoastDistance", role_kind: "hydro", path: merit ? merit.path : "",
+        sourceEnabled: !!merit,
         enabled: hydroRefine.coastEnabled, hydroKey: "coastEnabled",
         hydroThresholdKey: "coastBufferKm", hydroSides: true,
         criterion: { label: z ? "海岸带细化 · MERIT" : "Coast refinement · MERIT", unit: "km", physical_process: z ? "距海岸线 ≤" : "distance to coastline ≤", help: "", default_value: 50, range_min: 0, range_max: 1000 }
