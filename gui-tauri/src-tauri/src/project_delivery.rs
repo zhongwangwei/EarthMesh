@@ -69,8 +69,16 @@ pub(crate) fn read_project_delivery(
             "Project delivery final quality does not match the selected mesh/verdict".into(),
         );
     }
+    let adapter_skipped = cfg.target.model_format == ModelFormat::Icon
+        && cfg.target.cell == earthmesh_project::MeshCellKind::Tri
+        && report["model_delivery_status"] == "native_only"
+        && report["skipped_reason"]
+            .as_str()
+            .and_then(|reason| reason.strip_prefix("ICON adapter skipped: "))
+            .is_some_and(|reason| !reason.trim().is_empty());
     let native_only = target.skipped_adapter_reason().is_some()
-        || (cfg.target.model_format == ModelFormat::CoLM && cfg.delivery.colm_mesh.is_none());
+        || (cfg.target.model_format == ModelFormat::CoLM && cfg.delivery.colm_mesh.is_none())
+        || adapter_skipped;
     let expected_status = if native_only {
         "native_only"
     } else {
@@ -182,6 +190,29 @@ mod tests {
             assert!(scoped_file(&root, Some("escape")).is_err());
         }
         fs::write(root.join("quality.json"), quality.to_string()).unwrap();
+        let mut icon_cfg = cfg.clone();
+        icon_cfg.target.cell = earthmesh_project::MeshCellKind::Tri;
+        icon_cfg.target.model_format = ModelFormat::Icon;
+        let read_icon = |document: &Value| {
+            fs::write(root.join("delivery.json"), document.to_string()).unwrap();
+            read_project_delivery(
+                &icon_cfg,
+                &root,
+                Some("native.nc4"),
+                Some("delivery.json"),
+                true,
+            )
+        };
+        let mut adapter_limited = report.clone();
+        adapter_limited["target"] = json!(ProjectTargetTriple::from(&icon_cfg.target));
+        adapter_limited["skipped_reason"] =
+            json!("ICON adapter skipped: ICON regional adapter cannot represent split vertices");
+        assert!(read_icon(&adapter_limited).is_ok());
+        let mut invalid_skip = adapter_limited.clone();
+        invalid_skip["skipped_reason"] = json!("unclassified failure");
+        assert!(read_icon(&invalid_skip).is_err());
+        invalid_skip["skipped_reason"] = Value::Null;
+        assert!(read_icon(&invalid_skip).is_err());
         cfg.target.cell = earthmesh_project::MeshCellKind::Hex;
         cfg.target.model_format = ModelFormat::Mpas;
         let mut delivered = report.clone();

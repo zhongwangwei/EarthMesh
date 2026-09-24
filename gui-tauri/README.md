@@ -300,8 +300,9 @@ not the configured model, directory contents, or process exit status alone.
 
 - **Model files delivered** means the current successful adapter returned the
   expected model artifacts. It does not mean a model solver has been run.
-- **Native mesh only** is a valid successful outcome for grid-only pairings and
-  CoLM without the optional mesh-raster delivery request; the reason is shown.
+- **Native mesh only** is a valid successful outcome for grid-only pairings,
+  CoLM without the optional mesh-raster delivery request, or an ICON adapter
+  that cannot represent an admitted regional Tri grid; the reason is shown.
 - A compatible older engine without a completion record shows **unconfirmed**,
   not an inferred model-delivered result. A malformed reported record fails the
   GUI run rather than silently downgrading it to success.
