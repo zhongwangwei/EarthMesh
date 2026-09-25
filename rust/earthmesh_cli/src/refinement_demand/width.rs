@@ -13,6 +13,23 @@ use crate::hfield_gridfile_context::HfieldGridfileContext;
 use crate::mpas_gridfile_context::MpasGridfileContext;
 use crate::refinement_demand::nest::AdaptiveNestReport;
 
+/// Region targets a backend has resolved to edge lengths.
+///
+/// The request layer states what the MPAS width needs from them and the
+/// backend adapter implements it, so this module never names the backend.
+pub trait ResolvedTargetWidths {
+    /// The nominal target edge, in metres, at each site; `None` where no
+    /// resolved target covers it.
+    fn nominal_target_edges_m_at(
+        &self,
+        sites: &[earthmesh_mesh::LonLatDegrees],
+    ) -> io::Result<Vec<Option<f64>>>;
+    /// Every resolved target's edge, in metres.
+    fn target_edges_m(&self) -> Vec<f64>;
+    /// The deepest level any resolved target asks for.
+    fn deepest_target_level(&self) -> usize;
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum NominalDemandWidth<'a> {
     /// The gradient-limited target-level field.
@@ -23,7 +40,7 @@ pub(crate) enum NominalDemandWidth<'a> {
         base_m: f64,
     },
     /// Region targets resolved to edge lengths.
-    ResolvedTargets(&'a earthmesh_refine_method_c::AdaptiveHybridReport),
+    ResolvedTargets(&'a dyn ResolvedTargetWidths),
 }
 
 impl<'a> NominalDemandWidth<'a> {
@@ -32,7 +49,7 @@ impl<'a> NominalDemandWidth<'a> {
     pub(crate) fn from_producers(
         hfield: Option<&'a HfieldGridfileContext>,
         region_passes: Option<(&'a AdaptiveNestReport, f64)>,
-        resolved_targets: Option<&'a earthmesh_refine_method_c::AdaptiveHybridReport>,
+        resolved_targets: Option<&'a dyn ResolvedTargetWidths>,
     ) -> io::Result<Option<Self>> {
         match (hfield, region_passes, resolved_targets) {
             (Some(field), None, None) => Ok(Some(Self::Hfield(field))),
@@ -63,9 +80,9 @@ impl<'a> NominalDemandWidth<'a> {
             }
             Self::ResolvedTargets(report) => {
                 let context =
-                    MpasGridfileContext::from_lepp_resolved_demand(mesh, report, base_nxp)?;
+                    MpasGridfileContext::from_resolved_target_demand(mesh, report, base_nxp)?;
                 if context.is_none() {
-                    eprintln!("earthmesh_cli: LEPP MPAS nominal context unavailable: resolved regions do not cover every parent W site; no background width was supplied");
+                    eprintln!("earthmesh_cli: MPAS nominal context unavailable: resolved regions do not cover every parent W site; no background width was supplied");
                 }
                 Ok(context)
             }

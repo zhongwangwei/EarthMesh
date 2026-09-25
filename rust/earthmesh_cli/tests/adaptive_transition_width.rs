@@ -12,11 +12,10 @@
 //! matters to anyone reading the change: without a spring the width is a
 //! classification, and with one it is geometry.
 
-use earthmesh_cli::refinement_demand::{
-    nest::{spawn_nest_adaptive_with_named_regions, AdaptiveNestSpring},
-    plan::DemandPlanInputs,
-    source_bounds_for_bbox,
+use earthmesh_cli::method_c_adaptive_nest::{
+    spawn_nest_adaptive_with_named_regions, AdaptiveNestSpring,
 };
+use earthmesh_cli::refinement_demand::{plan::DemandPlanInputs, source_bounds_for_bbox};
 use earthmesh_core::RefineConfig;
 use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 use earthmesh_refine_method_c::MethodCMesh;

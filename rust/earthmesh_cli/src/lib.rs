@@ -405,6 +405,7 @@ use data_preprocess_types::{DataPreprocessAreaJudgeSourceReport, MkgrdDataPrepro
 pub mod adaptive_refine;
 pub mod boundary_model;
 pub mod coast_refinement_regions;
+pub mod method_c_adaptive_nest;
 pub mod method_c_algorithm;
 pub mod mkgrd_data_preprocess_source;
 pub mod redgreen_bridge;

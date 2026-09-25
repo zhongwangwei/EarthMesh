@@ -146,53 +146,46 @@ impl MpasGridfileContext {
         Ok(context)
     }
 
-    /// Resolved LEPP nominal region demand only. No target outside its regions
+    /// Resolved nominal region demand only. No target outside its regions
     /// means no complete MPAS context, never a guessed background width.
-    pub fn from_lepp_resolved_demand(
+    pub fn from_resolved_target_demand(
         mesh: &crate::UnstructuredMesh,
-        report: &earthmesh_refine_method_c::AdaptiveHybridReport,
+        report: &dyn crate::refinement_demand::width::ResolvedTargetWidths,
         base_nxp: usize,
     ) -> io::Result<Option<Self>> {
         let first =
             crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
         if first >= mesh.w_points.len() || base_nxp == 0 || i32::try_from(base_nxp).is_err() {
             return Err(invalid(
-                "LEPP MPAS demand requires physical W cells and positive i32 NXP",
+                "resolved-target MPAS demand requires physical W cells and positive i32 NXP",
             ));
         }
         let sites = mesh.w_points[first..]
             .iter()
             .map(|point| earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
             .collect::<Vec<_>>();
-        let targets = report
-            .nominal_target_edges_at(&sites)
-            .map_err(|error| invalid(error.to_string()))?;
+        let targets = report.nominal_target_edges_m_at(&sites)?;
         let reference = report
-            .resolved_targets
-            .iter()
-            .map(|target| target.target_edge_m / 1000.0)
+            .target_edges_m()
+            .into_iter()
+            .map(|edge_m| edge_m / 1000.0)
             .reduce(f64::min);
         if reference.is_some_and(|value| !value.is_finite() || value <= 0.0) {
             return Err(invalid(
-                "LEPP MPAS target scale cannot be represented in km",
+                "resolved-target MPAS scale cannot be represented in km",
             ));
         }
         let Some(widths) = targets.into_iter().collect::<Option<Vec<_>>>() else {
             return Ok(None);
         };
-        let reference = reference.ok_or_else(|| invalid("LEPP covered demand has no targets"))?;
+        let reference =
+            reference.ok_or_else(|| invalid("resolved-target covered demand has no targets"))?;
         let mut cellwidth_km = vec![reference; first];
         cellwidth_km.extend(widths.into_iter().map(|width| width / 1000.0));
         let context = Self {
             cellwidth_km,
             base_nxp,
-            step: report
-                .resolved_targets
-                .iter()
-                .map(|target| target.demand.region.level())
-                .max()
-                .unwrap_or(0)
-                + 1,
+            step: report.deepest_target_level() + 1,
             density_reference_width_km: reference,
             source: LEPP_RESOLVED_REGION_DEMAND_V1.to_string(),
         };

@@ -12,9 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use earthmesh_cli::refinement_demand::{
-    nest::spawn_nest_adaptive, plan::DemandPlanInputs, source_bounds_for_bbox,
-};
+use earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive;
+use earthmesh_cli::refinement_demand::{plan::DemandPlanInputs, source_bounds_for_bbox};
 use earthmesh_core::RefineConfig;
 
 static ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -171,7 +170,7 @@ fn a_named_region_is_refined_even_when_no_criterion_asks() {
     }];
     let refine = RefineConfig::default();
     let (refined, report) =
-        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+        earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive_with_named_regions(
             &base_mesh(),
             &refine,
             &plan_inputs(&path, true),
@@ -211,7 +210,7 @@ fn a_gap_between_named_region_levels_does_not_drop_the_deeper_region() {
         level: 3,
     }];
     let (_refined, report) =
-        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+        earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive_with_named_regions(
             &base_mesh(),
             &RefineConfig::default(),
             &plan_inputs(&path, true),
@@ -240,7 +239,7 @@ fn gap_error_for(region: earthmesh_mesh::RefinementRegion) -> String {
     let path = root.join("landtype.nc");
     write_landtype(&path, |_, _| 0);
 
-    let error = earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+    let error = earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive_with_named_regions(
         &base_mesh(),
         &RefineConfig::default(),
         &plan_inputs(&path, true),
@@ -304,7 +303,7 @@ fn a_named_region_deeper_than_the_run_is_refused_rather_than_dropped() {
             level: 3,
         },
     ];
-    let error = earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+    let error = earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive_with_named_regions(
         &base_mesh(),
         &RefineConfig::default(),
         &plan_inputs(&path, true),
@@ -343,7 +342,7 @@ fn a_configured_spring_moves_points_on_the_adaptive_route() {
     }];
     let refine = RefineConfig::default();
     let run = |spring| {
-        earthmesh_cli::refinement_demand::nest::spawn_nest_adaptive_with_named_regions(
+        earthmesh_cli::method_c_adaptive_nest::spawn_nest_adaptive_with_named_regions(
             &base_mesh(),
             &refine,
             &plan_inputs(&path, true),
@@ -357,7 +356,7 @@ fn a_configured_spring_moves_points_on_the_adaptive_route() {
 
     let (still, still_report) = run(None);
     let (sprung, sprung_report) = run(Some(
-        earthmesh_cli::refinement_demand::nest::AdaptiveNestSpring {
+        earthmesh_cli::method_c_adaptive_nest::AdaptiveNestSpring {
             nxp: NXP,
             iterations: 200,
             max_mrows: MethodCMesh::MAX_MROWS_SURFACE,

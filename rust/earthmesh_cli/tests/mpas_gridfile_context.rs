@@ -745,7 +745,7 @@ fn builds_mpas_context_from_complete_lepp_resolved_demand_and_roundtrips() {
         assert_eq!(first_physical_w_row(&mesh), first, "{name} layout changed");
         let report = lepp_complete_report(&mesh, first);
 
-        let context = MpasGridfileContext::from_lepp_resolved_demand(&mesh, &report, 6)
+        let context = MpasGridfileContext::from_resolved_target_demand(&mesh, &report, 6)
             .unwrap()
             .unwrap();
 
@@ -783,7 +783,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     let first = first_physical_w_row(&mesh);
     let empty = lepp_report(Vec::new());
     assert_eq!(
-        MpasGridfileContext::from_lepp_resolved_demand(&mesh, &empty, 6).unwrap(),
+        MpasGridfileContext::from_resolved_target_demand(&mesh, &empty, 6).unwrap(),
         None
     );
     let partial = lepp_report(vec![lepp_target(
@@ -792,7 +792,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
         200_000.0,
     )]);
     assert_eq!(
-        MpasGridfileContext::from_lepp_resolved_demand(&mesh, &partial, 6).unwrap(),
+        MpasGridfileContext::from_resolved_target_demand(&mesh, &partial, 6).unwrap(),
         None
     );
 
@@ -832,14 +832,14 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
             _ => unreachable!(),
         }
         assert!(
-            MpasGridfileContext::from_lepp_resolved_demand(&local_mesh, &report, nxp).is_err(),
+            MpasGridfileContext::from_resolved_target_demand(&local_mesh, &report, nxp).is_err(),
             "case {case} should fail instead of silently returning None"
         );
     }
 
     let root = root("reserved_lepp_source");
     let output = root.join("bad.nc4");
-    let mut context = MpasGridfileContext::from_lepp_resolved_demand(
+    let mut context = MpasGridfileContext::from_resolved_target_demand(
         &mesh,
         &lepp_complete_report(&mesh, first),
         6,
@@ -858,7 +858,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     .unwrap_err();
     assert!(err.to_string().contains("unsupported"), "{err}");
 
-    let mut valid = MpasGridfileContext::from_lepp_resolved_demand(
+    let mut valid = MpasGridfileContext::from_resolved_target_demand(
         &mesh,
         &lepp_complete_report(&mesh, first),
         6,

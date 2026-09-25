@@ -257,3 +257,29 @@ Red-Green 的 green 闭合必然产生约 30°/90° 的过渡三角形，原本�
 - 验证：CLI clippy 与全量测试 1,159 通过，其中 `certified_close_ocean_publishes_regional_fvcom_after_global_certificate`
   逐字节比较流水线产出的 `.2dm` 与 `write_fvcom_from_final_gridfile` 的产出；CMRC 全球海洋 FVCOM、
   gridinit 区域海洋、清洁海洋窗口各有集成测试覆盖。gridfile 本身不变，这一步只改 `.2dm` 的来源。
+
+### 2026-09-25 第 5 步（第一部分）：先立门禁，再搬 crate
+
+整体拆出 `earthmesh_delivery` 是几万行、牵动 `UnstructuredMesh` 与全部 NetCDF 读写的搬迁；先把
+“输入/输出代码不得依赖算法”变成机械规则，让后续逐块搬迁每一步都有门禁把守。
+
+- 需求层清理：`refinement_demand/nest.rs` 里的 Method-C 逐层嵌套驱动（`spawn_nest_adaptive*`、
+  `AdaptiveNestSpring`、超大分组拆分、判据驱动暂停说明）搬到 `method_c_adaptive_nest.rs`，与
+  `redgreen_bridge.rs` 对称；需求层只留各后端共用的逐层需求、报告与目标层级函数。
+- MPAS 宽度的第三种来源不再以 LEPP 的报告类型出现：需求层定义 `ResolvedTargetWidths` 接口（目标边长
+  取样、目标边长列表、最深层级），LEPP 报告在 `refine_pipeline/lepp_targets.rs` 实现它；
+  `MpasGridfileContext::from_lepp_resolved_demand` 改名为 `from_resolved_target_demand`，写进文件的
+  来源字符串不变。
+- 写出层清理：`outputs.rs` 中构造 Red-Green 宽环的测试移到 `global_source.rs` 的测试里，写出层源码
+  不再出现后端 crate。
+- 门禁（`scripts/check_architecture.py`，由 `make check-architecture` 调用，CI `fast` 任务运行）：
+  1. 基础层与需求层 crate（core、geometry、boundary、mesh、hfield、quality、project、refine、
+     refine_planner）的 `Cargo.toml` 不得依赖任何后端 crate，源码（去掉注释后）不得出现后端 crate 名；
+  2. CLI 中只有 `CLI_BACKEND_ADAPTERS` 列出的编排与适配模块（`refine_pipeline/global_source.rs`、
+     `cmrc_local_updates.rs`、`lepp_targets.rs`、`redgreen_bridge.rs`、`method_c_adaptive_nest.rs`、
+     `certified_options.rs`、运行记录 `mkgrd_run_types/refine.rs`）可以引用后端 crate。新文件引用后端
+     会被拒绝，除非它是适配层并加入名单。
+  3 条自测试覆盖：写出层引用后端被拒、适配层与注释不算、基础/需求 crate 依赖后端被拒。
+- 仍待做：把 CLI 内的输入层模块收进 `earthmesh_refine`、输出层拆成 `earthmesh_delivery` crate；
+  门禁的“算法名标识符”规则（`method_c`、`lepp` 等出现在输出层函数名里，如
+  `write_method_c_mesh_with_optional_domain_and_metadata`）留到搬迁时一起处理。

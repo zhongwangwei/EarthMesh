@@ -448,7 +448,9 @@ mod tests {
     }
 }
 
-fn oriented_spherical_native_w_rings(mesh: &UnstructuredMesh) -> io::Result<UnstructuredMesh> {
+pub(super) fn oriented_spherical_native_w_rings(
+    mesh: &UnstructuredMesh,
+) -> io::Result<UnstructuredMesh> {
     use crate::unstructured_mesh_support::{
         mesh_canonical_id_for_row, mesh_m_has_two_placeholder_rows, unstructured_w_row_layout,
     };
@@ -623,56 +625,5 @@ mod native_ring_tests {
             }
             assert!(oriented_spherical_native_w_rings(&mesh).is_err(), "{case}");
         }
-    }
-
-    #[test]
-    fn triangular_publication_orients_a_high_degree_redgreen_ring() {
-        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
-        let mut mesh =
-            earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &base.m_neighbors)
-                .unwrap();
-        let settings = earthmesh_refine_redgreen::RedGreenSettings {
-            protect_triangle_quality: true,
-            min_triangle_angle_deg: 25.0,
-            ..Default::default()
-        };
-        let mut previous = None;
-        for _ in 0..3 {
-            let marks = mesh
-                .triangle_points
-                .iter()
-                .enumerate()
-                .map(|(face, point)| {
-                    i32::from(
-                        face > mesh.num_vertex
-                            && point.lon_degrees.abs() < 35.0
-                            && point.lat_degrees.abs() < 30.0,
-                    )
-                })
-                .collect::<Vec<_>>();
-            let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
-                &mesh,
-                &marks,
-                &settings,
-                previous.as_deref(),
-            )
-            .unwrap();
-            previous = Some(outcome.interior_marks);
-            mesh = outcome.mesh;
-        }
-        crate::redgreen_bridge::finalize_redgreen_mesh(&mut mesh).unwrap();
-        let native = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&mesh).unwrap();
-        let widest = native.n_w_to_m.iter().max().copied().unwrap();
-        assert!(
-            widest > 7,
-            "fixture must exercise a high-degree ring: {widest}"
-        );
-        let oriented = oriented_spherical_native_w_rings(&native).unwrap();
-        assert!(
-            crate::unstructured_mesh_support::check_unstructured_mesh_topology(&oriented)
-                .is_consistent()
-        );
-        crate::validate_published_cell_degrees(&oriented, "tri").unwrap();
-        assert!(crate::validate_published_cell_degrees(&oriented, "hex").is_err());
     }
 }

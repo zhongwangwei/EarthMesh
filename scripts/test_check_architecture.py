@@ -73,6 +73,43 @@ const DATA: &str = "reference_meshes/mesh.nc";
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("single-child forwarding directory", result.stdout)
 
+    def write(self, relative, text):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def test_cli_output_code_may_not_name_a_backend(self):
+        self.write("rust/earthmesh_cli/src/writer.rs",
+                   "use earthmesh_refine_redgreen::RedGreenMesh;\n")
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the backend adapters", result.stdout)
+        self.assertIn("writer.rs", result.stdout)
+
+    def test_cli_adapters_may_name_a_backend_and_comments_never_count(self):
+        self.write("rust/earthmesh_cli/src/redgreen_bridge.rs",
+                   "use earthmesh_refine_redgreen::RedGreenMesh;\n")
+        self.write("rust/earthmesh_cli/src/refine_pipeline/global_source.rs",
+                   "fn f() { earthmesh_refine_method_c::run(); }\n")
+        self.write("rust/earthmesh_cli/src/writer.rs",
+                   "/// Unlike `earthmesh_refine_certified`, this names nothing.\npub fn w() {}\n")
+        result = self.gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_foundation_and_request_crates_may_not_depend_on_a_backend(self):
+        self.write("rust/earthmesh_refine/Cargo.toml",
+                   '[dependencies]\nearthmesh_refine_method_c = { path = "../x" }\n')
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not depend on one", result.stdout)
+        (self.root / "rust/earthmesh_refine/Cargo.toml").write_text("[dependencies]\n")
+        self.write("rust/earthmesh_mesh/src/lib.rs",
+                   "pub fn f() { earthmesh_refine_certified::g(); }\n")
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not depend on a refinement backend", result.stdout)
+
     def test_grep_errors_fail_closed(self):
         for status in [2, 127]:
             with self.subTest(status=status):

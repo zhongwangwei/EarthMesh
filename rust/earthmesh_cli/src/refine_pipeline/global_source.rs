@@ -1040,7 +1040,9 @@ pub(super) fn run_refine_pipeline_in_workspace(
             adaptive_run
                 .as_ref()
                 .map(|(report, _, base_m, _)| (report, *base_m)),
-            lepp_adaptive_hybrid.as_ref(),
+            lepp_adaptive_hybrid
+                .as_ref()
+                .map(|report| report as &dyn crate::refinement_demand::width::ResolvedTargetWidths),
         )?,
         hard_center_demand.as_deref(),
         "",
@@ -5118,7 +5120,7 @@ fn refine_with_method_c(
         // same namelist with and without `&adaptive`: the direct route moved
         // 5182 of 7023 points in two passes, this one moved none. Guide 11.39.
         let spring = (spring_nest_iterations > 0).then_some(
-            crate::refinement_demand::nest::AdaptiveNestSpring {
+            crate::method_c_adaptive_nest::AdaptiveNestSpring {
                 nxp: method_c_nxp,
                 iterations: spring_nest_iterations,
                 max_mrows: if is_atmosmesh {
@@ -5129,7 +5131,7 @@ fn refine_with_method_c(
             },
         );
         let (refined, report) =
-            crate::refinement_demand::nest::spawn_nest_adaptive_with_named_region_windows(
+            crate::method_c_adaptive_nest::spawn_nest_adaptive_with_named_region_windows(
                 &mesh, refine, &inputs, regions, base_m, depth, spring,
             )?;
         for pass in &report.passes {
@@ -6979,5 +6981,58 @@ mod tests {
             )
             .expect("a wrapped window must produce source bounds");
         }
+    }
+
+    /// Moved from the writer's tests so the writer's module names no backend:
+    /// the ring orientation it checks is the writer's, the wide ring red-green's.
+    #[test]
+    fn triangular_publication_orients_a_high_degree_redgreen_ring() {
+        let base = earthmesh_mesh::TriangularMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
+        let mut mesh =
+            earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&base, &base.m_neighbors)
+                .unwrap();
+        let settings = earthmesh_refine_redgreen::RedGreenSettings {
+            protect_triangle_quality: true,
+            min_triangle_angle_deg: 25.0,
+            ..Default::default()
+        };
+        let mut previous = None;
+        for _ in 0..3 {
+            let marks = mesh
+                .triangle_points
+                .iter()
+                .enumerate()
+                .map(|(face, point)| {
+                    i32::from(
+                        face > mesh.num_vertex
+                            && point.lon_degrees.abs() < 35.0
+                            && point.lat_degrees.abs() < 30.0,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
+                &mesh,
+                &marks,
+                &settings,
+                previous.as_deref(),
+            )
+            .unwrap();
+            previous = Some(outcome.interior_marks);
+            mesh = outcome.mesh;
+        }
+        crate::redgreen_bridge::finalize_redgreen_mesh(&mut mesh).unwrap();
+        let native = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&mesh).unwrap();
+        let widest = native.n_w_to_m.iter().max().copied().unwrap();
+        assert!(
+            widest > 7,
+            "fixture must exercise a high-degree ring: {widest}"
+        );
+        let oriented = super::super::outputs::oriented_spherical_native_w_rings(&native).unwrap();
+        assert!(
+            crate::unstructured_mesh_support::check_unstructured_mesh_topology(&oriented)
+                .is_consistent()
+        );
+        crate::validate_published_cell_degrees(&oriented, "tri").unwrap();
+        assert!(crate::validate_published_cell_degrees(&oriented, "hex").is_err());
     }
 }
