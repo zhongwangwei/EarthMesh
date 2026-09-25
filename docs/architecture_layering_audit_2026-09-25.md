@@ -23,6 +23,7 @@
 | 基础层 | `core` / `geometry` / `mesh` / `boundary` / `hfield` 不依赖任何算法 |
 | 质量检查 | `earthmesh_quality` 独立 crate，只依赖基础层 |
 | 项目配置 | `earthmesh_project` 独立 crate（schema、校验、降级为 namelist） |
+| 需求层雏形 | `earthmesh_refine`（`api`、`criteria`、`demand`、`hfield`）的定位就是“项目需求与后端之间的那一层”，已有 `RefinementDemand` / `RefinementCause`；但 CLI 仍在 `refinement_demand`、`hfield_refine` 里各做一套，后端也没有统一从它取需求 |
 | 网格写出 | 写出器接收统一的 `UnstructuredMesh`；任何后端写出的文件格式相同 |
 
 ## 3. 耦合清单
@@ -132,13 +133,14 @@ gridfile 写出、掩膜后处理、模型格式交付（FVCOM/MPAS/ICON/CoLM）
 
 ```
 earthmesh_core / geometry / mesh / boundary / hfield     基础层
-earthmesh_request   (新)  输入层：数据读取、判据、目标尺寸场       → 只依赖基础层
+earthmesh_refine    (扩展) 输入层：数据读取、判据、目标尺寸场     → 只依赖基础层
+                          （已有 api/criteria/demand/hfield，在它上面扩展，而不是另建 crate）
 earthmesh_refine_*        算法层：消费 RefinementRequest，产出 RefinedMesh → 只依赖基础层
 earthmesh_delivery  (新)  输出层：写出、交付、质量对账             → 只依赖基础层 + quality
 earthmesh_cli             编排：解析配置、选择算法、串接三层
 ```
 
-`check-architecture` 增加机械规则：`earthmesh_delivery` 与 `earthmesh_request` 的
+`check-architecture` 增加机械规则：`earthmesh_delivery` 与 `earthmesh_refine` 的
 `Cargo.toml` 不得依赖任何 `earthmesh_refine_*`；两者源码中不得出现 `method_c`、
 `redgreen`、`certified`、`lepp` 等标识。
 
@@ -153,7 +155,7 @@ earthmesh_cli             编排：解析配置、选择算法、串接三层
 | 2 | 输出层只读 `RefinedMesh`：`RefinedGrid` 的算法专属字段移入诊断存档；写出函数去掉 `method_c` 命名；MPAS 宽度上下文改由 `RefinementRequest` + 实际层级推导 | A/B 回归；MPAS 交付逐字节比对 | MPAS 上下文三种来源需逐一核对等价 |
 | 3 | 交付契约：开边界上下文由输出层按计算域推导，删除散落在生成路径里的写入点 | FVCOM 交付：全球/区域/清洁海洋三类样本 | 区域开边界分类逻辑需整体搬迁 |
 | 4 | `RefinementRequest`：目标尺寸场作为唯一需求形式；圆与命名区域先求值成场；Red-Green 改为按场打标记 | Red-Green 在 h-field 配置下可运行；原有 `adaptive` 样本输出变化须逐项解释 | 会改变 Red-Green 的输出（打标记方式变了），需单独评审 |
-| 5 | 拆出 `earthmesh_request` / `earthmesh_delivery` crate，编排瘦身；加门禁规则 | `make check-architecture` 新规则通过；全部门禁 | 纯搬迁，风险低但改动面大 |
+| 5 | 把输入层收拢进 `earthmesh_refine`、拆出 `earthmesh_delivery` crate，编排瘦身；加门禁规则 | `make check-architecture` 新规则通过；全部门禁 | 纯搬迁，风险低但改动面大 |
 | 6 | 初始网格与 CMRC 流水线：初始网格由基础层构造；CMRC 在同一编排下接收 `RefinementRequest`、交付 `RefinedMesh`，质量修复作为算法内部行为 | CMRC 冻结快照与生产验收测试 | CMRC 证书语义需保持 |
 
 建议顺序为 1 → 2 → 3 → 5 → 4 → 6：先把“输出不依赖算法”做实（收益直接、可逐变量验证），
@@ -174,3 +176,29 @@ earthmesh_cli             编排：解析配置、选择算法、串接三层
 - 不解决 Method-C 过渡模板的形状局限（见技术指南 11.70）；分层只保证“换算法不必改输入”，
   不保证每个算法都能满足每种需求。
 - 不改变任何算法的数值行为，第 4 步除外，且该步需要单独评审。
+
+## 8. 进展记录
+
+### 2026-09-25 第 1 步（部分）：每单元细化层级成为与后端无关的字段
+
+- `RefinedGrid` 新增 `cell_levels: Option<CellRefineLevels>`（每个 M 行、W 行的深度，基础网格为 0）；
+  Method-C 从自身元数据填写，Red-Green 三角形模式从面深度填写（W 行取周围面的最大值），
+  LEPP 与 Red-Green 经典过渡行路径暂为 `None`。
+- 写出层只在没有 Method-C 元数据时使用它，Method-C 的写出路径不变。
+- Red-Green 的最终 Lawson 抛光不再清空面深度：被翻边的面取它所由切出的旧面中最深者
+  （`redgreen_bridge::flipped_refinement_levels`）。
+- 验证：Method-C 的 A/B（3 个例子项目 + Case9 海洋 Tri 全球变体）逐变量一致；Red-Green 全球
+  海岸案例只多出 `earthmesh_{m,w}_refine_level` 两个变量，其余逐变量一致。按层级分组的三角形
+  面积中位数之比为 4.03 / 4.03 / 4.02，与每层面积缩小到 1/4 一致。
+- 质量报告对 Red-Green 首次有了层级对账：该案例 428,629 个单元比目标细、32,829 个比目标粗，
+  并出现“比目标差一层以上”与 194 个孤立细化单元两条新 warn——这是 Red-Green 的真实行为
+  （大面积过度细化；halo 外取消的标记造成不足），此前无从测量。
+- 待做：Red-Green 经典过渡行路径（Hex）的面深度跟踪；把 `method_c_metadata` 中的层级改为只从
+  `cell_levels` 流向写出层（第 2 步）。
+
+### HARP-DV
+
+`earthmesh_refine_harp_dv` 已从工作区移除，仓库中不再有 HARP-DV 的实现或被他处调用的函数。
+仅保留显式退役防护（core 的 namelist 解析、CLI 的 `&harp_dv` 段与后端名、GUI 的后端选择）及其
+测试：删掉它们会让旧 namelist 的 `&harp_dv` 段被当作未知段静默忽略、运行照常进行，属于
+指南 11.1 所列的静默失败类。
