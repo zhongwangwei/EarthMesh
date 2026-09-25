@@ -758,9 +758,6 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
             cfg.refinement.method_c = Default::default();
             earthmesh_project::RefinementBackend::RedGreen
         }
-        "harp_dv" | "HARP_DV" | "harp-dv" | "harpdv" => {
-            return Err("HARP-DV was retired; use method_c, lepp_delaunay, red_green, or certified".to_string());
-        }
         "certified" => {
             cfg.quality.lepp_post_quality = None;
             cfg.refinement.method_c = Default::default();

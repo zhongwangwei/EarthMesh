@@ -39,9 +39,9 @@ closed region and surrounds it with transition rows. `earthmesh_refine_certified
 is CMRC, which starts from a certified mother grid and only accepts
 reverse-coarsening changes that preserve the active certificate contract.
 
-HARP-DV was retired before this active architecture contract: `harp_dv` backend
-names and `&harp_dv` namelist sections now fail explicitly instead of falling
-back to another backend.
+HARP-DV was retired before this active architecture contract and its code has
+been removed; its names get no special treatment (an unknown backend name is
+refused like any other).
 
 The backends consume shared demand data through algorithm-specific adapters;
 they do not promise identical admissible markings. Red-green grows the marked

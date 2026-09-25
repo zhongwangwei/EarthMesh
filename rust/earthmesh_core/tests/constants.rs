@@ -896,15 +896,6 @@ fn the_retained_backends_are_accepted_in_any_case() {
     }
 }
 
-#[test]
-fn retired_harp_refine_backend_is_rejected_explicitly() {
-    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
-        let error = EarthmeshConfig::from_mkgrd_namelist(&backend_namelist(name, "hex"))
-            .expect_err("HARP-DV is retired");
-        assert!(error.contains("retired"), "{name}: {error}");
-    }
-}
-
 /// A grid mode that is not one is refused; the canonical unset placeholder is
 /// not.
 #[test]

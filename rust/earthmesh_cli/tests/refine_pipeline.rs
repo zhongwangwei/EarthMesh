@@ -3346,39 +3346,3 @@ fn native_grids_refuse_a_route_they_would_swallow_and_not_one_they_share() {
         "{error}"
     );
 }
-
-#[test]
-fn retired_harp_backend_is_rejected_before_refinement() {
-    let root = temp_root("retired_harp_backend");
-    let namelist = root.join("mkgrd_retired_harp.nml");
-    let base_dir = root.to_string_lossy();
-    fs::write(
-        &namelist,
-        format!(
-            "&mkgrd\n  NL%EXPNME='case_retired_harp'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%refine_backend='harp_dv'\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n"
-        ),
-    )
-    .expect("write retired HARP namelist");
-
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
-        .expect_err("HARP-DV is retired");
-    assert!(error.to_string().contains("retired"), "{error}");
-}
-
-#[test]
-fn retired_harp_namelist_section_is_rejected_even_with_default_backend() {
-    let root = temp_root("retired_harp_section");
-    let namelist = root.join("mkgrd_retired_harp_section.nml");
-    let base_dir = root.to_string_lossy();
-    fs::write(
-        &namelist,
-        format!(
-            "&mkgrd\n  NL%EXPNME='case_retired_harp_section'\n  NL%base_dir='{base_dir}'\n  NL%NXP=6\n  NL%mesh_type='landmesh'\n  NL%mode_grid='hex'\n  NL%mode_file='none'\n  NL%mode_file_description='none'\n  NL%refine=.true.\n  NL%niter=0\n  NL%beta=1.0\n  NL%relax=0.25\n  NL%landtype_file='none'\n  NL%mask_domain_global=.true.\n  NL%mask_patch_on=.false.\n  NL%output_format='CoLM'\n/\n&mkrefine\n  RL%Istransition=.true.\n  RL%SpringGlobal_type=0\n  RL%SpringRegional_type=0\n  RL%refine_spc=.false.\n  RL%refine_cal=.false.\n/\n&harp_dv\n  NL%max_cycles=1\n/\n"
-        ),
-    )
-    .expect("write retired HARP section namelist");
-
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
-        .expect_err("HARP-DV section is retired");
-    assert!(error.to_string().contains("retired"), "{error}");
-}

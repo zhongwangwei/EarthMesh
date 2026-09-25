@@ -28,7 +28,7 @@ rust/
 | 目标 | 状态 |
 |---|---|
 | `earthmesh_boundary/` | **新建**。中立边界拓扑：`BoundaryRole`（6 种角色）、`LoopType`、`SphericalBoundaryModel`，逐项不变量校验（孤儿 hole、hole 套 hole、捏合环、退化环），`topology_counts` 给出细化必须保持的那对数。6 个测试 |
-| `earthmesh_refine/api/` | **已建，现保留 Method-C / Red-Green / Certified CMRC 三类入口**；HARP-DV 名称作为退役输入显式报错 |
+| `earthmesh_refine/api/` | **已建，现保留 Method-C / Red-Green / Certified CMRC 三类入口**；HARP-DV 代码与退役防护均已删除，其名称按未知后端处理 |
 | `earthmesh_refine/criteria/` | **新建**。`CriterionSemantics` 四种停止语义、`EvidenceStopReason`、`DemandEvidence` |
 | `earthmesh_refine/demand/` | **新建**。`RefinementCause`（物理因与簿记因分开计数）、`RefinementDemand`（取最细尺度、最强违反给 witness）、`order_demands`（硬→优先级→id，末项保证跨机一致） |
 | `earthmesh_refine/hfield/` | **就位**，以 re-export 形式。h 场是自带测试与自带调用方的数值内核，搬文件是独立一刀 |

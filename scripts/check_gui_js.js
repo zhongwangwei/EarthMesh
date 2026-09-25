@@ -36,9 +36,6 @@ const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/scri
 );
 new Function(scripts.join("\n"));
 log(`parsed ${scripts.length} inline scripts`);
-check(!/harp[_-]?dv|harp[A-Z]/i.test(html), "retired HARP controls must not be exposed");
-check(!libRs.includes("set_harp_dv_options"), "retired HARP command must not be registered");
-log("retired HARP UI and commands are absent");
 
 check(
   !/<[^>]+\s+on[a-z]+\s*=/i.test(html),

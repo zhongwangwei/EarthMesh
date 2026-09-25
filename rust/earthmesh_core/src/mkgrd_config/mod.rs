@@ -315,9 +315,6 @@ impl EarthmeshConfig {
         // Named here rather than at each match, because there are a dozen
         // matches on `mode_grid` alone and one of them will always be missed.
         let refine_backend = self.refine_backend.trim().to_ascii_lowercase();
-        if matches!(refine_backend.as_str(), "harp_dv" | "harp-dv" | "harpdv") {
-            return Err("refine_backend harp_dv has been retired; expected method_c, red_green, or certified".to_string());
-        }
         if !matches!(
             refine_backend.as_str(),
             "method_c" | "red_green" | "certified"

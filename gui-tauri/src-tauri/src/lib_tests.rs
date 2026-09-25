@@ -4179,24 +4179,6 @@ fn every_refinement_algorithm_is_selectable_from_a_project() {
 }
 
 #[test]
-fn retired_harp_backend_cannot_be_selected_or_restored() {
-    let base = circle_project("retired backend").to_yaml().expect("yaml");
-    for name in ["harp_dv", "HARP_DV", "harp-dv", "harpdv"] {
-        let error = crate::project_edits::set_refinement_backend(base.clone(), name.to_string())
-            .expect_err("retired backend must not silently select another algorithm");
-        assert!(error.contains("retired"), "{name}: {error}");
-    }
-    let capabilities = serde_json::to_value(project_capabilities()).unwrap();
-    assert!(capabilities.get("harp_dv_defaults").is_none());
-    let summary = serde_json::to_value(project_summary(base).unwrap()).unwrap();
-    assert!(summary
-        .as_object()
-        .unwrap()
-        .keys()
-        .all(|name| !name.starts_with("harp_dv")));
-}
-
-#[test]
 fn algorithm_specific_controls_round_trip_through_the_gui_commands() {
     let base = circle_project("algorithm controls")
         .to_yaml()

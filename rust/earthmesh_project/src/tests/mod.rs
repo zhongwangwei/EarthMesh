@@ -2751,26 +2751,6 @@ fn coupling_config_lowers_overlay_and_feature_detection_options() {
 }
 
 #[test]
-fn project_yaml_rejects_retired_harp_backend_and_options() {
-    let yaml = sample().to_yaml().unwrap();
-
-    let backend_yaml = yaml.replace("backend: MethodC", "backend: HarpDv");
-    let error = ProjectConfig::from_yaml(&backend_yaml).expect_err("HARP-DV backend is retired");
-    assert!(
-        error.contains("HarpDv") || error.contains("unknown"),
-        "{error}"
-    );
-
-    let option_yaml = yaml.replace("refinement:\n", "refinement:\n  harp_dv: {}\n");
-    let error =
-        ProjectConfig::from_yaml(&option_yaml).expect_err("retired HARP options are unknown");
-    assert!(
-        error.contains("harp_dv") || error.contains("unknown"),
-        "{error}"
-    );
-}
-
-#[test]
 fn project_rejects_unsupported_schema_versions_and_unknown_fields() {
     let mut p = sample();
     p.schema_version = "4.0.0".into();

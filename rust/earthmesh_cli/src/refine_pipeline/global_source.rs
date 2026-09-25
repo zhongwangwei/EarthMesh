@@ -233,12 +233,6 @@ pub(super) fn run_refine_pipeline_in_workspace(
     let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
-    if earthmesh_core::namelist_has_section(&contents, "harp_dv") {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "retired &harp_dv namelist section is no longer supported; use method_c, red_green, or certified",
-        ));
-    }
     if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
         && backend != RefineBackend::Certified
     {
@@ -5528,17 +5522,13 @@ fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usi
     }
 }
 
-/// Resolve `NL%refine_backend`, refusing retired HARP-DV spellings explicitly.
+/// Resolve `NL%refine_backend`.
 fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
     let name = requested.trim().to_ascii_lowercase();
     match name.as_str() {
         "method_c" => Ok(RefineBackend::MethodC),
         "red_green" => Ok(RefineBackend::RedGreen),
         "certified" => Ok(RefineBackend::Certified),
-        "harp_dv" | "harp-dv" | "harpdv" => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "NL%refine_backend = harp_dv has been retired; use method_c, red_green, or certified",
-        )),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
