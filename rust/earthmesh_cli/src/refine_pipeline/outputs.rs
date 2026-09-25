@@ -81,6 +81,7 @@ pub(super) fn write_refined_outputs(
     output_mesh: &UnstructuredMesh,
     domain_region: Option<&GridRegion>,
     metadata: Option<MethodCMetadataSlices<'_>>,
+    cell_levels: Option<(&[i32], &[i32])>,
     hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive: Option<(&crate::refinement_demand::nest::AdaptiveNestReport, f64)>,
     lepp: Option<&earthmesh_refine_method_c::AdaptiveHybridReport>,
@@ -157,6 +158,15 @@ pub(super) fn write_refined_outputs(
     if let Some((m, w)) = &snapshot_lineage {
         metadata.m_lineage = Some(m);
         metadata.w_lineage = Some(w);
+    }
+    // Per-cell depth from a backend without Method-C metadata. Method-C's own
+    // levels already travel in `metadata`, so a Method-C run writes exactly
+    // what it did before; this only fills what was absent.
+    if metadata.m_refine_level.is_none() && metadata.w_refine_level.is_none() {
+        if let Some((m, w)) = cell_levels {
+            metadata.m_refine_level = Some(m);
+            metadata.w_refine_level = Some(w);
+        }
     }
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}{name_suffix}.nc4",

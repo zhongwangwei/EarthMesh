@@ -253,6 +253,58 @@ fn resolution_safe_after_flip(
 
 /// Improve admissible edges independently; never discard a safe flip merely
 /// because another quadrilateral needs a different geometric repair.
+/// Per-face depth after edge flips: a face the flips rewrote takes the deepest
+/// depth among the rewritten faces whose old triangle shared an edge with it,
+/// which are the faces it was cut from. Faces the flips did not touch keep
+/// theirs. Returns no depths when none were tracked on the way in.
+fn flipped_refinement_levels(
+    old: &[[usize; 3]],
+    new: &[[usize; 3]],
+    levels: &[usize],
+) -> Vec<usize> {
+    if levels.len() != old.len() || new.len() != old.len() {
+        return Vec::new();
+    }
+    let sorted = |t: [usize; 3]| {
+        let mut t = t;
+        t.sort_unstable();
+        t
+    };
+    let edges = |t: [usize; 3]| [(t[0], t[1]), (t[1], t[2]), (t[0], t[2])];
+    let changed: Vec<usize> = (0..old.len())
+        .filter(|&face| sorted(old[face]) != sorted(new[face]))
+        .collect();
+    let mut old_faces_on_edge = std::collections::HashMap::<(usize, usize), Vec<usize>>::new();
+    for &face in &changed {
+        let corners = sorted(old[face]);
+        if corners[0] <= 1 {
+            continue;
+        }
+        for edge in edges(corners) {
+            old_faces_on_edge.entry(edge).or_default().push(face);
+        }
+    }
+    let mut result = levels.to_vec();
+    for &face in &changed {
+        let corners = sorted(new[face]);
+        if corners[0] <= 1 {
+            continue;
+        }
+        let mut depth = levels[face];
+        for edge in edges(corners) {
+            for &source in old_faces_on_edge
+                .get(&edge)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
+                depth = depth.max(levels[source]);
+            }
+        }
+        result[face] = depth;
+    }
+    result
+}
+
 pub fn polish_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPolishReport> {
     polish_redgreen_mesh_impl(mesh, false)
 }
@@ -356,7 +408,16 @@ fn polish_redgreen_mesh_impl(
     // This is a terminal triangulation step. Flips invalidate green ancestry;
     // reject any later attempt to refine this finalized mesh as a red hierarchy.
     mesh.green_parents.clear();
-    mesh.refinement_levels.clear();
+    // The per-face depth is still what the output reports as each cell's
+    // refinement level, so carry it across the flips rather than dropping it:
+    // a flipped face covers parts of the old faces it was cut from, and takes
+    // the deepest of them. Balance keeps neighbouring depths within one, so
+    // this can only round a transition face up by at most one level.
+    mesh.refinement_levels = flipped_refinement_levels(
+        &mesh.cells_on_triangle,
+        state.triangles(),
+        &mesh.refinement_levels,
+    );
     mesh.cells_on_triangle = state.triangles().to_vec();
     mesh.triangle_points.resize(
         mesh.cells_on_triangle.len(),
@@ -396,6 +457,26 @@ fn polish_redgreen_mesh_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flipped_faces_take_the_deepest_face_they_were_cut_from() {
+        // Quad 2-3-4-5 split along 2-4 into depths 1 and 2, flipped onto 3-5;
+        // face 3 is elsewhere and untouched.
+        let old = [[1, 1, 1], [2, 3, 4], [2, 4, 5], [6, 7, 8]];
+        let new = [[1, 1, 1], [2, 3, 5], [3, 4, 5], [6, 7, 8]];
+        let levels = [0, 1, 2, 1];
+        assert_eq!(
+            flipped_refinement_levels(&old, &new, &levels),
+            vec![0, 2, 2, 1]
+        );
+        // Nothing flipped: depths pass through untouched.
+        assert_eq!(
+            flipped_refinement_levels(&old, &old, &levels),
+            levels.to_vec()
+        );
+        // Depth that was never tracked stays absent.
+        assert!(flipped_refinement_levels(&old, &new, &[]).is_empty());
+    }
 
     #[test]
     fn a_refined_mesh_arrives_with_every_table_intact() {

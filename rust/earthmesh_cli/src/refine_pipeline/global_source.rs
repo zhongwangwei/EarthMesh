@@ -680,6 +680,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
         state,
         output_mesh,
         method_c_metadata,
+        cell_levels,
         pentagon_indices,
         transition_faces,
         spring_nest_passes,
@@ -852,7 +853,12 @@ pub(super) fn run_refine_pipeline_in_workspace(
                 };
                 let output_mesh = gridfile_mesh_from_one_based_state(&state.grid, &state.tabs)?;
                 let method_c_metadata = Some(gridfile_metadata(&state, &mesh)?);
+                let cell_levels = method_c_metadata.as_ref().map(|meta| CellRefineLevels {
+                    m: meta.m_refine_levels.clone(),
+                    w: meta.w_refine_levels.clone(),
+                });
                 RefinedGrid {
+                    cell_levels,
                     transition_faces: mesh.boundary_rows().len(),
                     // The twelve pentagons are the icosahedron's, taken here off the
                     // refined mesh -- which is the numbering the run record wants --
@@ -1031,6 +1037,9 @@ pub(super) fn run_refine_pipeline_in_workspace(
                 w_refine_level_orig: &meta.w_refine_levels_orig,
                 w_ngr: &meta.w_ngr,
             }),
+        cell_levels
+            .as_ref()
+            .map(|levels| (levels.m.as_slice(), levels.w.as_slice())),
         hfield_context.as_ref(),
         adaptive_run
             .as_ref()
@@ -1196,6 +1205,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
             nxp,
             max_level,
             &lepp.output_mesh,
+            None,
             None,
             None,
             hfield_context.as_ref(),
@@ -3871,6 +3881,12 @@ struct MethodCMetadataOwned {
     w_lineages: Vec<i64>,
 }
 
+/// Backend-neutral per-row refinement depth of an output mesh.
+struct CellRefineLevels {
+    m: Vec<i32>,
+    w: Vec<i32>,
+}
+
 /// A refined mesh in the shape the rest of the pipeline reads, whichever
 /// backend built it.
 ///
@@ -3883,6 +3899,11 @@ struct RefinedGrid {
     state: Option<earthmesh_mesh::VoronoiGridState>,
     output_mesh: crate::UnstructuredMesh,
     method_c_metadata: Option<MethodCMetadataOwned>,
+    /// Each output cell's refinement depth -- zero is the base mesh -- per M
+    /// row and per W row of `output_mesh`, whatever backend built it. `None`
+    /// where the backend does not record depth; the quality step then reports
+    /// the target/actual reconciliation as not measured.
+    cell_levels: Option<CellRefineLevels>,
     /// The twelve pentagons, in the numbering of the mesh that was produced.
     pentagon_indices: [usize; 12],
     /// Method-C's refinement-boundary rows. Zero from red-green: it builds its
@@ -4247,6 +4268,38 @@ struct RedGreenAdaptive<'a> {
 /// grows a marking until the triangulation closes -- which is the whole reason
 /// the backend exists, and why the criteria route is served here and suspended
 /// there. A criterion's demand has whatever shape the data has.
+/// Red-green's per-face depth as per-row levels of the mesh it wrote: M rows
+/// are its triangles, W rows its cells, and a cell takes the deepest face
+/// around it. `None` when the depth was not tracked (the classic transition-row
+/// closure does not) or no longer lines up with the written mesh.
+fn redgreen_cell_levels(
+    mesh: &earthmesh_refine_redgreen::RedGreenMesh,
+    written: &crate::UnstructuredMesh,
+) -> Option<CellRefineLevels> {
+    let depth = &mesh.refinement_levels;
+    if depth.is_empty()
+        || depth.len() != mesh.cells_on_triangle.len()
+        || written.m_points.len() != depth.len()
+        || written.w_points.len() != mesh.cell_points.len()
+    {
+        return None;
+    }
+    let m = depth
+        .iter()
+        .map(|&level| i32::try_from(level).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let mut w = vec![0_i32; mesh.cell_points.len()];
+    for (face, corners) in mesh.cells_on_triangle.iter().enumerate() {
+        if corners.iter().any(|&cell| cell <= 1 || cell >= w.len()) {
+            continue;
+        }
+        for &cell in corners {
+            w[cell] = w[cell].max(m[face]);
+        }
+    }
+    Some(CellRefineLevels { m, w })
+}
+
 fn refine_with_redgreen(
     mesh: &TriangularMesh,
     named_regions: &[earthmesh_mesh::RefinementRegion],
@@ -4467,10 +4520,12 @@ fn refine_with_redgreen(
             (smoothed, passes)
         }
     };
+    let cell_levels = redgreen_cell_levels(&redgreen, &output_mesh);
     Ok(RefinedGrid {
         state: None,
         output_mesh,
         method_c_metadata: None,
+        cell_levels,
         // Red-green renumbers each round, but `vertex_mapping` is the identity
         // over the cells that went in, so a base-mesh cell keeps its id through
         // every level. The pentagons are base-mesh cells.
@@ -4744,6 +4799,7 @@ fn refine_with_method_c_lepp(
         state: Some(voronoi),
         output_mesh,
         method_c_metadata: None,
+        cell_levels: None,
         pentagon_indices: pentagons,
         transition_faces: 0,
         spring_nest_passes,
