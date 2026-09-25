@@ -23,6 +23,7 @@ pub mod api;
 pub mod criteria;
 pub mod demand;
 pub mod hfield;
+pub mod target_level;
 
 pub use api::RefinementBackend;
 pub use criteria::{
@@ -30,6 +31,7 @@ pub use criteria::{
     CriterionSemantics, DemandEvidence, EvidenceStopReason, RequirementBound, SphericalPatch,
 };
 pub use demand::{order_demands, RefinementCause, RefinementDemand};
+pub use target_level::{HfieldTargets, RegionTargets, TargetLevelField};
 
 #[cfg(test)]
 mod tests;

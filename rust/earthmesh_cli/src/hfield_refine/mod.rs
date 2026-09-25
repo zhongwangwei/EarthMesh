@@ -1978,6 +1978,38 @@ fn apply_landtype_basic_thresholds_from_bins(
     Ok(applied)
 }
 
+/// The h-field a spherical run asks for: named regions and threshold rasters
+/// composed, the hydro target applied, and the whole constrained to the
+/// domain. This is the request, not a backend's: Method-C spawns from its
+/// quantised levels and red-green marks from them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compose_spherical_hfield(
+    regions: &[RefinementRegion],
+    refine: &RefineConfig,
+    mesh_type: &str,
+    config: &EarthmeshConfig,
+    base_m: f64,
+    options: &HfieldRefineOptions,
+    threshold_level: usize,
+    domain: Option<&GridRegion>,
+) -> io::Result<HField> {
+    let mut field = build_composed_hfield(
+        regions,
+        refine,
+        mesh_type,
+        Some(config),
+        base_m,
+        options,
+        threshold_level,
+        domain,
+    )?;
+    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
+        &mut field, options, base_m, domain,
+    )?;
+    constrain_hfield_to_domain(&mut field, domain, base_m, options.g)?;
+    Ok(field)
+}
+
 pub(crate) fn build_composed_hfield(
     regions: &[RefinementRegion],
     refine: &RefineConfig,

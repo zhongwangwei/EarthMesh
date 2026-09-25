@@ -3134,7 +3134,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const algorithm = specifiedRefine.algorithm || "method_c";
-    const hfieldServed = algorithm === "method_c";
+    const hfieldServed = algorithm === "method_c" || algorithm === "red_green";
     if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";
     const backend = specifiedRefine.route || "adaptive";
     const algorithmInfo = {

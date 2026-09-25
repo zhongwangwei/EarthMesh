@@ -554,13 +554,14 @@ pub(super) fn run_refine_pipeline_in_workspace(
     if backend == RefineBackend::RedGreen
         && refine.refine_cal
         && adaptive_options.is_none()
+        && !has_threshold_hfield_sources
         && !has_configured_calculated_regions
     {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "NL%refine_backend = red_green has no reader for calculated criteria with the \
-             point+radius route off: it refines named regions, and &hfield is Method-C's. Enable \
-             &adaptive, point RL%mask_refine_cal_fprefix at mask files, or use method_c",
+            "NL%refine_backend = red_green has no reader for calculated criteria with both the \
+             point+radius route and the h-field off. Enable &adaptive or &hfield, point \
+             RL%mask_refine_cal_fprefix at mask files, or use method_c",
         ));
     }
     if refine.refine_cal && (!backend_consumes_criteria || has_configured_calculated_regions) {
@@ -700,9 +701,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
             // upstream -- raster work that produces an ordinary circle list --
             // and red-green consumes it below. Only turning circles into mesh is
             // per-backend, which is exactly the half suspended on Method-C.
-            let unsupported = if active_hfield_options.is_some() {
-                Some("an h-field (&hfield)")
-            } else if native_cartesian_xy {
+            let unsupported = if native_cartesian_xy {
                 Some("a Cartesian-XY mesh")
             } else if native_surface_global_expansion {
                 Some("the native surface expansion (NL%sfcgrid_res_factor)")
@@ -714,7 +713,8 @@ pub(super) fn run_refine_pipeline_in_workspace(
                     io::ErrorKind::Unsupported,
                     format!(
                         "NL%refine_backend = red_green does not serve {unsupported}; it refines \
-                         named regions and the point+radius criteria. Use method_c for this run"
+                         named regions, the point+radius criteria and the h-field. Use method_c \
+                         for this run"
                     ),
                 ));
             }
@@ -737,12 +737,44 @@ pub(super) fn run_refine_pipeline_in_workspace(
                     })
                 })
                 .transpose()?;
+            // The h-field is the same request Method-C spawns from, composed
+            // the same way; red-green marks the triangles whose centres it asks
+            // deeper. `&adaptive` takes precedence, as it does on Method-C.
+            let (hfield, max_level) = match active_hfield_options {
+                Some(options) if adaptive.is_none() => {
+                    let base_m = options.base_m.unwrap_or_else(|| {
+                        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                            / (5.0 * method_c_nxp as f64)
+                    });
+                    let field_max_level = options.max_level.unwrap_or(max_level).clamp(1, 5);
+                    let field = crate::hfield_refine::compose_spherical_hfield(
+                        &regions,
+                        &refine,
+                        mesh_type,
+                        &config,
+                        base_m,
+                        options,
+                        max_cal_level.clamp(1, field_max_level),
+                        domain_region.as_ref(),
+                    )?;
+                    (
+                        Some(crate::hfield_gridfile_context::HfieldGridfileContext {
+                            field,
+                            base_m,
+                            max_level: field_max_level as u8,
+                        }),
+                        field_max_level,
+                    )
+                }
+                _ => (None, max_level),
+            };
             refine_with_redgreen(
                 &mesh,
                 &regions,
                 &refine,
                 max_level,
                 adaptive,
+                hfield,
                 config.mode_grid.trim() == "tri",
                 spring_nest_iterations,
             )?
@@ -4331,6 +4363,7 @@ fn refine_with_redgreen(
     refine: &RefineConfig,
     max_level: usize,
     adaptive: Option<RedGreenAdaptive<'_>>,
+    hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     preserve_locality: bool,
     spring_iterations: usize,
 ) -> io::Result<RefinedGrid> {
@@ -4360,6 +4393,14 @@ fn refine_with_redgreen(
     let mut spring_regions = named_regions.to_vec();
     let mut deepest_level = 0usize;
     let mut stopped_on_empty_demand = false;
+    // With an h-field the named regions are already composed into it, as on
+    // Method-C's h-field route, so each level marks from the field alone.
+    let hfield_targets = hfield
+        .as_ref()
+        .map(|context| {
+            earthmesh_refine::HfieldTargets::new(&context.field, context.base_m, context.max_level)
+        })
+        .transpose()?;
     for level in 1..=max_level {
         let before = redgreen.triangle_count();
         // Named regions carry their own target level, so a deeper one is also
@@ -4389,15 +4430,20 @@ fn refine_with_redgreen(
             spring_regions.extend(demand.circles.iter().cloned());
             level_regions.extend(demand.circles);
         }
+        let region_targets = earthmesh_refine::RegionTargets::new(&level_regions);
+        let targets: &dyn earthmesh_refine::TargetLevelField = match &hfield_targets {
+            Some(field) => field,
+            None => &region_targets,
+        };
         // Nothing asks at this depth, and nothing deeper will either: the
         // criteria stopped and the named regions that reach here are gone.
-        if !level_regions.iter().any(|region| region.level() >= level) {
+        if !targets.demands_anywhere(level) {
             stopped_on_empty_demand = true;
             break;
         }
         let (written, outcome) = crate::redgreen_bridge::refine_redgreen_level(
             &redgreen,
-            &level_regions,
+            targets,
             refine,
             level,
             previous_marks.as_deref(),
@@ -4590,6 +4636,9 @@ fn refine_with_redgreen(
         // every level. The pentagons are base-mesh cells.
         pentagon_indices: mesh.impent,
         demand: RefinedDemandRecord {
+            // The field this run marked from: the MPAS width and the quality
+            // step's target/actual reconciliation read it, as for Method-C.
+            hfield_context: hfield,
             // Reported for the same two reasons Method-C reports it: the ocean
             // carve reads it to protect the cells a criterion demanded from its
             // largest-component rule, and the quality step reads the written
@@ -5256,27 +5305,15 @@ fn refine_with_method_c(
             hfield_diagnostics = diagnostics;
             (refined, passes)
         } else {
-            let mut field = crate::hfield_refine::build_composed_hfield(
+            let field = crate::hfield_refine::compose_spherical_hfield(
                 regions,
                 refine,
                 mesh_type,
-                Some(config),
+                config,
                 base_m,
                 hfield,
                 max_cal_level.clamp(1, field_max_level),
                 domain_region,
-            )?;
-            crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-                &mut field,
-                hfield,
-                base_m,
-                domain_region,
-            )?;
-            crate::hfield_refine::constrain_hfield_to_domain(
-                &mut field,
-                domain_region,
-                base_m,
-                hfield.g,
             )?;
             let (refined, passes, diagnostics) = mesh
                 .spawn_nest_from_target_levels_with_spring(
@@ -6419,7 +6456,7 @@ mod tests {
             ..RefineConfig::default()
         };
 
-        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, true, 1)
+        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, true, 1)
             .expect("red-green with spring configured");
 
         assert_eq!(refined.diagnostics.spring_nest_passes, 0);
@@ -6455,7 +6492,8 @@ mod tests {
             is_transition: true,
             ..RefineConfig::default()
         };
-        let result = refine_with_redgreen(&mesh, &[region], &refine, 3, None, true, 0).unwrap();
+        let result =
+            refine_with_redgreen(&mesh, &[region], &refine, 3, None, None, true, 0).unwrap();
         assert_eq!(result.diagnostics.spring_nest_passes, 0);
         let angles = unstructured_triangle_angle_range(&result.output_mesh).unwrap();
         let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;

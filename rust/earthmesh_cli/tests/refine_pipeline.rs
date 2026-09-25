@@ -3134,13 +3134,13 @@ fn redgreen_three_level_tri_publishes_inside_the_angle_window() {
     assert!(checked > 0);
 }
 
-/// A request red-green cannot serve is refused, not served with less.
-///
-/// The marking comes from named regions; an h-field's target levels are simply
-/// not read on this route. Ignoring them would produce a mesh that is valid,
-/// passes its quality checks, and is not what the project asked for.
+/// Red-green serves the h-field the way Method-C does: the named regions are
+/// composed into the gradient-limited field, the triangles whose centres it
+/// asks deeper are marked, and the field travels in the gridfile for the MPAS
+/// width and the quality reconciliation. (It used to refuse, because an
+/// h-field it could not read would have been dropped in silence.)
 #[test]
-fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
+fn redgreen_backend_serves_the_hfield() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("redgreen_hfield_refusal");
     let sources = root.join("sources");
@@ -3169,13 +3169,24 @@ fn redgreen_backend_refuses_a_request_it_would_have_to_ignore() {
     )
     .expect("write red-green h-field namelist");
 
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
-        .expect_err("red_green must not silently drop an h-field");
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&namelist, &root, 20_000, None)
+        .expect("red_green serves an h-field");
+    assert_eq!(run.max_level, 1);
+    // More triangles than the uniform NXP-6 icosahedron's 20 * 6^2 (plus the
+    // two placeholder rows): the field's level-one target was refined. Hex
+    // output goes through red-green's transition-row closure, which does not
+    // record per-cell depth, so `realized_max_level` cannot say this here.
     assert!(
-        error.to_string().contains("does not serve an h-field"),
-        "unexpected error: {error}"
+        run.output.sjx_points > 20 * 6 * 6 + 2,
+        "no refinement: {} triangle rows",
+        run.output.sjx_points
     );
+    let context =
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(&run.output.output)
+            .expect("read h-field context")
+            .expect("the field red-green marked from is recorded");
+    assert_eq!(context.max_level, 1);
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// Method-C's adaptive section does not stop a red-green run.

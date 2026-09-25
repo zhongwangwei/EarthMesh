@@ -738,7 +738,7 @@ pub(crate) fn set_expert(
 /// plans -- so either algorithm serves it. What differs is the other half:
 /// criteria-driven refinement is *suspended* on Method-C, which refuses a shape
 /// off its lattice, so a run with a criterion enabled needs red-green. The h
-/// field is the exception: only Method-C reads it, and red-green refuses.
+/// field is read by Method-C and red-green; LEPP and CMRC do not read it.
 #[tauri::command]
 pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;

@@ -324,12 +324,8 @@ impl ProjectConfig {
             );
         }
         match self.refinement.backend {
-            crate::RefinementBackend::MethodC => Ok(()),
-            crate::RefinementBackend::RedGreen => Err(
-                "refinement.backend red_green does not serve an h-field; it refines named regions \
-                 and the point+radius criteria. Use method_c, or turn refinement.hfield off"
-                    .to_string(),
-            ),
+            // Red-green marks the triangles whose centres the field asks deeper.
+            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => Ok(()),
             crate::RefinementBackend::Certified => Err(
                 "refinement.backend certified does not consume the Method-C h-field route; use threshold or named requirement sources, or turn refinement.hfield off"
                     .to_string(),
@@ -409,15 +405,21 @@ impl ProjectConfig {
                     .is_some_and(|recipe| recipe.enabled)
                     || (self.refinement.threshold_region.is_none() && adaptive_enabled)
             }
-            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => {
+            crate::RefinementBackend::RedGreen => {
                 adaptive_enabled
+                    || self
+                        .refinement
+                        .hfield
+                        .as_ref()
+                        .is_some_and(|recipe| recipe.enabled)
             }
+            crate::RefinementBackend::MethodC => adaptive_enabled,
         };
         if !supported {
             return Err(if self.refinement.threshold_region.is_some() {
-                "refinement.threshold_region requires Certified, canonical MethodC with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled"
+                "refinement.threshold_region requires Certified, canonical MethodC or RedGreen with hfield, or RedGreen/LEPP-Delaunay with adaptive enabled"
             } else {
-                "statistical threshold refinement requires Certified, canonical MethodC with hfield, or adaptive enabled; disable threshold refinement for named regions only"
+                "statistical threshold refinement requires Certified, canonical MethodC or RedGreen with hfield, or adaptive enabled; disable threshold refinement for named regions only"
             }.into());
         }
         Ok(())

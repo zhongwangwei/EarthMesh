@@ -170,6 +170,7 @@ dependencies = [
  "earthmesh_mesh",
  "earthmesh_project",
  "earthmesh_quality",
+ "earthmesh_refine",
  "earthmesh_refine_certified",
  "earthmesh_refine_method_c",
  "earthmesh_refine_planner",

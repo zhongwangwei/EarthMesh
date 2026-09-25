@@ -16,6 +16,7 @@ earthmesh_refine_certified = { path = "../earthmesh_refine_certified" }
 earthmesh_refine_method_c = { path = "../earthmesh_refine_method_c" }
 earthmesh_refine_redgreen = { path = "../earthmesh_refine_redgreen" }
 earthmesh_quality = { path = "../earthmesh_quality" }
+earthmesh_refine = { path = "../earthmesh_refine" }
 earthmesh_refine_planner = { path = "../earthmesh_refine_planner" }
 earthmesh_project = { path = "../earthmesh_project" }
 flate2 = "1"

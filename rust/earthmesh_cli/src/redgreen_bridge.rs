@@ -798,20 +798,32 @@ pub fn redgreen_marking_from_regions(
     regions: &[earthmesh_mesh::RefinementRegion],
     level: usize,
 ) -> Vec<i32> {
+    redgreen_marking(mesh, &earthmesh_refine::RegionTargets::new(regions), level)
+        .expect("region containment cannot fail")
+}
+
+/// Mark every triangle whose centre the demand asks to be at least `level`
+/// deep. The demand is read only as a point query, so named regions, criteria
+/// circles and the h-field all mark the same way.
+pub fn redgreen_marking(
+    mesh: &earthmesh_refine_redgreen::RedGreenMesh,
+    targets: &dyn earthmesh_refine::TargetLevelField,
+    level: usize,
+) -> io::Result<Vec<i32>> {
     let mut marking = vec![0i32; mesh.triangle_count() + 1];
-    if regions.is_empty() {
-        return marking;
+    if !targets.demands_anywhere(level) {
+        return Ok(marking);
     }
-    let region_index = earthmesh_mesh::RefinementRegionIndex::new(regions);
     marking
         .par_iter_mut()
         .enumerate()
         .skip(mesh.num_vertex + 1)
-        .for_each(|(triangle, mark)| {
+        .try_for_each(|(triangle, mark)| -> io::Result<()> {
             let centre = mesh.triangle_points[triangle];
-            *mark = i32::from(region_index.contains_lonlat_canonical(centre, level));
-        });
-    marking
+            *mark = i32::from(targets.demands(centre, level)?);
+            Ok(())
+        })?;
+    Ok(marking)
 }
 
 #[cfg(test)]
@@ -905,13 +917,13 @@ mod marking_tests {
 /// deeper round cannot split them again.
 pub fn refine_redgreen_level(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
-    regions: &[earthmesh_mesh::RefinementRegion],
+    targets: &dyn earthmesh_refine::TargetLevelField,
     refine: &earthmesh_core::RefineConfig,
     level: usize,
     previous_level_marks: Option<&[i32]>,
     preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
-    let marking = redgreen_marking_from_regions(mesh, regions, level);
+    let marking = redgreen_marking(mesh, targets, level)?;
     let mut settings = redgreen_settings_for_level(refine, level);
     // TRI can publish variable-width W fans; HEX still needs the canonical dual.
     settings.protect_triangle_quality = preserve_locality;
@@ -946,11 +958,11 @@ mod level_tests {
 
         let (written, outcome) = refine_redgreen_level(
             &mesh,
-            &[RefinementRegion::Circle {
+            &earthmesh_refine::RegionTargets::new(&[RefinementRegion::Circle {
                 center: LonLatDegrees::new(0.0, 0.0),
                 radius_meters: 3_000_000.0,
                 level: 1,
-            }],
+            }]),
             &earthmesh_core::RefineConfig::default(),
             1,
             None,
@@ -993,11 +1005,11 @@ mod level_tests {
 
         let (written, _) = refine_redgreen_level(
             &mesh,
-            &[RefinementRegion::Circle {
+            &earthmesh_refine::RegionTargets::new(&[RefinementRegion::Circle {
                 center: LonLatDegrees::new(0.0, 0.0),
                 radius_meters: 3_000_000.0,
                 level: 1,
-            }],
+            }]),
             // With the transition rows off the round leaves hanging nodes by
             // design -- only the hexagonal dual reads such a mesh -- so the
             // triangular view is only a mesh to check when they are on.
@@ -1054,8 +1066,15 @@ mod level_tests {
             ..earthmesh_core::RefineConfig::default()
         };
 
-        let (_, first) =
-            refine_redgreen_level(&mesh, &regions, &refine, 1, None, false).expect("level one");
+        let (_, first) = refine_redgreen_level(
+            &mesh,
+            &earthmesh_refine::RegionTargets::new(&regions),
+            &refine,
+            1,
+            None,
+            false,
+        )
+        .expect("level one");
         let previous = first.interior_marks.clone();
         assert_eq!(
             previous.len(),
@@ -1068,11 +1087,24 @@ mod level_tests {
             "and cell_renumbering is not that mapping -- it is per cell"
         );
 
-        let (_, held) =
-            refine_redgreen_level(&first.mesh, &regions, &refine, 2, Some(&previous), false)
-                .expect("level two, held inside level one");
-        let (_, free) = refine_redgreen_level(&first.mesh, &regions, &refine, 2, None, false)
-            .expect("level two, free");
+        let (_, held) = refine_redgreen_level(
+            &first.mesh,
+            &earthmesh_refine::RegionTargets::new(&regions),
+            &refine,
+            2,
+            Some(&previous),
+            false,
+        )
+        .expect("level two, held inside level one");
+        let (_, free) = refine_redgreen_level(
+            &first.mesh,
+            &earthmesh_refine::RegionTargets::new(&regions),
+            &refine,
+            2,
+            None,
+            false,
+        )
+        .expect("level two, free");
 
         assert!(
             held.halo_cancelled_count > 0,

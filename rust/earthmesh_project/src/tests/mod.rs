@@ -3048,15 +3048,14 @@ fn a_backend_that_cannot_serve_the_h_field_is_refused_at_validation() {
     );
     p.refinement.method_c.algorithm = crate::MethodCAlgorithm::Canonical;
 
-    for (backend, name) in [
-        (crate::RefinementBackend::RedGreen, "red_green"),
-        (crate::RefinementBackend::Certified, "certified"),
-    ] {
-        p.refinement.backend = backend;
-        let error = p.validate().expect_err("refused");
-        assert!(error.contains(name), "{error}");
-        assert!(error.contains("h-field"), "{error}");
-    }
+    p.refinement.backend = crate::RefinementBackend::RedGreen;
+    p.validate()
+        .expect("red-green marks from the h-field's target levels");
+
+    p.refinement.backend = crate::RefinementBackend::Certified;
+    let error = p.validate().expect_err("refused");
+    assert!(error.contains("certified"), "{error}");
+    assert!(error.contains("h-field"), "{error}");
 
     // Turning the h-field off is what makes the project runnable again, and the
     // refusal must not outlive the thing it objects to.

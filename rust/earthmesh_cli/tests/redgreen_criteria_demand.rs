@@ -93,7 +93,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
 
     let (written, outcome) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
         &mesh,
-        &demand.circles,
+        &earthmesh_refine::RegionTargets::new(&demand.circles),
         &refine,
         1,
         None,
@@ -176,7 +176,12 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             .collect();
 
         let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
-            &mesh, &regions, &refine, 1, None, false,
+            &mesh,
+            &earthmesh_refine::RegionTargets::new(&regions),
+            &refine,
+            1,
+            None,
+            false,
         )
         .unwrap_or_else(|error| panic!("{place} level 1: {error}"));
         assert_eq!(open_edges(&first.mesh), 0, "{place} level 1 left a hole");
@@ -187,7 +192,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
         let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
             &first.mesh,
-            &regions,
+            &earthmesh_refine::RegionTargets::new(&regions),
             &refine,
             2,
             Some(&previous),
@@ -250,7 +255,12 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         .collect();
 
     let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
-        &mesh, &regions, &refine, 1, None, false,
+        &mesh,
+        &earthmesh_refine::RegionTargets::new(&regions),
+        &refine,
+        1,
+        None,
+        false,
     )
     .expect("level one");
     assert!(
@@ -267,7 +277,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
     let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
         &first.mesh,
-        &regions,
+        &earthmesh_refine::RegionTargets::new(&regions),
         &refine,
         2,
         Some(&previous),

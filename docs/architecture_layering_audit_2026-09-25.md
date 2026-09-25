@@ -283,3 +283,25 @@ Red-Green 的 green 闭合必然产生约 30°/90° 的过渡三角形，原本�
 - 仍待做：把 CLI 内的输入层模块收进 `earthmesh_refine`、输出层拆成 `earthmesh_delivery` crate；
   门禁的“算法名标识符”规则（`method_c`、`lepp` 等出现在输出层函数名里，如
   `write_method_c_mesh_with_optional_domain_and_metadata`）留到搬迁时一起处理。
+
+### 2026-09-26 第 4 步拆分，4a + 4b：统一的目标层级查询，Red-Green 读 h-field
+
+第 4 步原写法（圆与命名区域先“求值成场”）会因栅格化与梯度限制改变 Red-Green 输出，但那是表示方式
+的选择，不是分层本身的要求。拆成三步：4a 统一接口、输出不变；4b 新能力；4c 有意改输出（11.71 的
+green 下限与需求嵌套），单独决定。
+
+- 4a：需求层 `earthmesh_refine::target_level` 定义 `TargetLevelField`（“这个点是否要求至少第 L 层”，
+  以及“是否有任何点要求第 L 层”）。`RegionTargets` 用标记一直在用的精确包含判定，不做栅格化；
+  `HfieldTargets` 按 h-field 量化后的目标层级回答。Red-Green 的标记只经由这个接口读取需求
+  （`redgreen_bridge::redgreen_marking`）。Method-C 由区域形状（种子、周界）构造，继续直接读形状。
+- 4b：球面 h-field 的合成（区域与阈值栅格组合、水文目标、裁到计算域）从 Method-C 函数中提出为
+  `hfield_refine::compose_spherical_hfield`，两个后端共用。Red-Green 遇到 h-field 配置时按场的目标
+  层级标记，命名区域已合成进场里（与 Method-C 的 h-field 路线一致），并把 h-field 记入结果，
+  MPAS 宽度与质量对账照常可用。解除了运行时、项目校验与 GUI 三处对“Red-Green + h-field”的拒绝；
+  没有 `&adaptive` 时，带阈值来源的 h-field 也能承接 Red-Green 的计算判据。Case9 不再需要为换
+  Red-Green 而关掉 h-field。
+- 验证：A/B 回归 4 个样本（3 个例子项目、Case9 Red-Green h-field 关）逐变量一致；原“Red-Green 拒绝
+  h-field”的测试改为断言它能按场细化并记录 h-field；fast（1,619）、CLI 全量（1,159）、GUI 四项门禁、
+  架构门禁通过。
+- 已知缺口：Red-Green 经典过渡行路径（Hex 输出）仍不记录每单元深度，所以 h-field 驱动的 Hex 运行
+  `realized_max_level` 报 0，质量对账为“未测量”。
