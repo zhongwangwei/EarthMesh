@@ -671,19 +671,25 @@ pub(super) fn run_refine_pipeline_in_workspace(
     // needs is the same from either -- a gridfile mesh, and whatever each one
     // can honestly say about how it was built.
     let RefinedGrid {
-        state,
         output_mesh,
-        method_c_metadata,
         cell_levels,
         pentagon_indices,
-        transition_faces,
-        spring_nest_passes,
-        hfield_diagnostics,
-        hfield_context,
-        adaptive_run,
-        lepp_hard_regions,
-        lepp_adaptive_hybrid,
-        lepp_post_quality,
+        demand:
+            RefinedDemandRecord {
+                hfield_context,
+                adaptive_run,
+                lepp_hard_regions,
+            },
+        diagnostics:
+            BackendDiagnostics {
+                state,
+                method_c_metadata,
+                transition_faces,
+                spring_nest_passes,
+                hfield_diagnostics,
+                lepp_adaptive_hybrid,
+                lepp_post_quality,
+            },
     } = match backend {
         RefineBackend::RedGreen => {
             // What this route does not read, said outright rather than served
@@ -852,42 +858,39 @@ pub(super) fn run_refine_pipeline_in_workspace(
                     w: meta.w_refine_levels.clone(),
                 });
                 RefinedGrid {
+                    output_mesh,
                     cell_levels,
-                    transition_faces: mesh.boundary_rows().len(),
                     // The twelve pentagons are the icosahedron's, taken here off the
                     // refined mesh -- which is the numbering the run record wants --
                     // rather than off the Voronoi `state`, which not every backend
                     // has.
                     pentagon_indices: mesh.impent,
-                    state: Some(state),
-                    output_mesh,
-                    method_c_metadata,
-                    spring_nest_passes,
-                    hfield_diagnostics,
-                    hfield_context,
-                    adaptive_run,
-                    lepp_hard_regions: Vec::new(),
-                    lepp_adaptive_hybrid: None,
-                    lepp_post_quality,
+                    demand: RefinedDemandRecord {
+                        hfield_context,
+                        adaptive_run,
+                        lepp_hard_regions: Vec::new(),
+                    },
+                    diagnostics: BackendDiagnostics {
+                        state: Some(state),
+                        method_c_metadata,
+                        transition_faces: mesh.boundary_rows().len(),
+                        spring_nest_passes,
+                        hfield_diagnostics,
+                        lepp_adaptive_hybrid: None,
+                        lepp_post_quality,
+                    },
                 }
             }
         }
         RefineBackend::Certified => unreachable!("CMRC is dispatched before source-grid setup"),
     };
 
-    // Measured from backend output, not from the request: Method-C records face
-    // generations; criteria-driven Red-Green records the deepest pass it
-    // actually completed. A backend with neither still reports zero.
-    let realized_max_level = method_c_metadata
+    // Measured from backend output, not from the request: the deepest per-cell
+    // level any backend recorded. A backend that records none (LEPP) falls back
+    // to the deepest criteria pass it completed, and otherwise reports zero.
+    let realized_max_level = cell_levels
         .as_ref()
-        .map(|meta| {
-            meta.w_refine_levels
-                .iter()
-                .copied()
-                .max()
-                .unwrap_or(0)
-                .max(0) as usize
-        })
+        .map(|levels| levels.w.iter().copied().max().unwrap_or(0).max(0) as usize)
         .or_else(|| {
             adaptive_run
                 .as_ref()
@@ -1033,10 +1036,13 @@ pub(super) fn run_refine_pipeline_in_workspace(
             .as_ref()
             .map(|levels| (levels.m.as_slice(), levels.w.as_slice())),
         hfield_context.as_ref(),
-        adaptive_run
-            .as_ref()
-            .map(|(report, _, base_m, _)| (report, *base_m)),
-        lepp_adaptive_hybrid.as_ref(),
+        crate::refinement_demand::width::NominalDemandWidth::from_producers(
+            hfield_context.as_ref(),
+            adaptive_run
+                .as_ref()
+                .map(|(report, _, base_m, _)| (report, *base_m)),
+            lepp_adaptive_hybrid.as_ref(),
+        )?,
         hard_center_demand.as_deref(),
         "",
         native_cartesian_xy,
@@ -1201,10 +1207,13 @@ pub(super) fn run_refine_pipeline_in_workspace(
             None,
             None,
             hfield_context.as_ref(),
-            adaptive_run
-                .as_ref()
-                .map(|(report, _, base_m, _)| (report, *base_m)),
-            None,
+            crate::refinement_demand::width::NominalDemandWidth::from_producers(
+                hfield_context.as_ref(),
+                adaptive_run
+                    .as_ref()
+                    .map(|(report, _, base_m, _)| (report, *base_m)),
+                None,
+            )?,
             hard_center_demand.as_deref(),
             "_lepp",
             native_cartesian_xy,
@@ -3885,12 +3894,16 @@ struct CellRefineLevels {
 /// The fields a backend cannot fill are `Option` or zero rather than invented:
 /// a fabricated level count or a fabricated ngr table would read as measured
 /// and be wrong, which is the failure this whole path is built to avoid.
+/// What a refinement backend hands the output tail.
+///
+/// Three parts, and only the first is the mesh: the output layer writes
+/// `output_mesh` and `cell_levels` the same way whichever backend produced
+/// them; `demand` records what was asked for, which delivery reads for the
+/// nominal MPAS width, carve protection and target/actual reconciliation; and
+/// `diagnostics` is the backend's own account, reported or archived beside the
+/// mesh but never used to decide what the mesh looks like.
 struct RefinedGrid {
-    /// Method-C's Voronoi state. Red-green has none -- its mesh is already in
-    /// lon/lat -- and the run record fills its counts from `output_mesh`.
-    state: Option<earthmesh_mesh::VoronoiGridState>,
     output_mesh: crate::UnstructuredMesh,
-    method_c_metadata: Option<MethodCMetadataOwned>,
     /// Each output cell's refinement depth -- zero is the base mesh -- per M
     /// row and per W row of `output_mesh`, whatever backend built it. `None`
     /// where the backend does not record depth; the quality step then reports
@@ -3898,19 +3911,34 @@ struct RefinedGrid {
     cell_levels: Option<CellRefineLevels>,
     /// The twelve pentagons, in the numbering of the mesh that was produced.
     pentagon_indices: [usize; 12],
-    /// Method-C's refinement-boundary rows. Zero from red-green: it builds its
-    /// transition band a different way and does not count it in these terms, so
-    /// zero here reads "not measured from this mesh", the same answer
-    /// `realized_max_level` gives.
-    transition_faces: usize,
-    spring_nest_passes: usize,
-    hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    demand: RefinedDemandRecord,
+    diagnostics: BackendDiagnostics,
+}
+
+/// The demand as the backend consumed it.
+#[derive(Default)]
+struct RefinedDemandRecord {
     hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     adaptive_run: Option<AdaptiveRunRecord>,
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
     lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
-    /// LEPP-Delaunay AdaptiveHybrid's own run report.
+}
+
+/// A backend's own account of the run. Reported and archived, not interpreted.
+#[derive(Default)]
+struct BackendDiagnostics {
+    /// Method-C's Voronoi state. Red-green has none -- its mesh is already in
+    /// lon/lat -- and the run record fills its counts from `output_mesh`.
+    state: Option<earthmesh_mesh::VoronoiGridState>,
+    /// Method-C's lineage, original levels and `ngr`, archived in the gridfile.
+    method_c_metadata: Option<MethodCMetadataOwned>,
+    /// Method-C's refinement-boundary rows; red-green counts its closure faces.
+    transition_faces: usize,
+    spring_nest_passes: usize,
+    hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    /// LEPP-Delaunay AdaptiveHybrid's own run report. Its resolved targets are
+    /// also the run's nominal demand width.
     lepp_adaptive_hybrid: Option<earthmesh_refine_method_c::AdaptiveHybridReport>,
     /// Optional repair derived from, but never replacing, the canonical mesh.
     lepp_post_quality: Option<LeppPostQualityGrid>,
@@ -4550,40 +4578,39 @@ fn refine_with_redgreen(
     };
     let cell_levels = redgreen_cell_levels(&redgreen, &output_mesh);
     Ok(RefinedGrid {
-        state: None,
         output_mesh,
-        method_c_metadata: None,
         cell_levels,
         // Red-green renumbers each round, but `vertex_mapping` is the identity
         // over the cells that went in, so a base-mesh cell keeps its id through
         // every level. The pentagons are base-mesh cells.
         pentagon_indices: mesh.impent,
-        transition_faces,
-        spring_nest_passes,
-        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
-        hfield_context: None,
-        // Reported for the same two reasons Method-C reports it: the ocean
-        // carve reads it to protect the cells a criterion demanded from its
-        // largest-component rule, and the quality step reads the written file
-        // to ask whether the mesh reached the level the circles asked for.
-        // Without it a coastal circle sitting on a small bay is carved away and
-        // nothing says the region asked for is gone.
-        adaptive_run: adaptive.map(|adaptive| {
-            (
-                crate::refinement_demand::nest::AdaptiveNestReport {
-                    passes,
-                    deepest_level,
-                    stopped_on_empty_demand,
-                    spring_passes: spring_nest_passes,
-                },
-                max_level,
-                adaptive.base_cell_meters,
-                adaptive.coastline,
-            )
-        }),
-        lepp_hard_regions: Vec::new(),
-        lepp_adaptive_hybrid: None,
-        lepp_post_quality: None,
+        demand: RefinedDemandRecord {
+            // Reported for the same two reasons Method-C reports it: the ocean
+            // carve reads it to protect the cells a criterion demanded from its
+            // largest-component rule, and the quality step reads the written
+            // file to ask whether the mesh reached the level the circles asked
+            // for. Without it a coastal circle sitting on a small bay is carved
+            // away and nothing says the region asked for is gone.
+            adaptive_run: adaptive.map(|adaptive| {
+                (
+                    crate::refinement_demand::nest::AdaptiveNestReport {
+                        passes,
+                        deepest_level,
+                        stopped_on_empty_demand,
+                        spring_passes: spring_nest_passes,
+                    },
+                    max_level,
+                    adaptive.base_cell_meters,
+                    adaptive.coastline,
+                )
+            }),
+            ..RefinedDemandRecord::default()
+        },
+        diagnostics: BackendDiagnostics {
+            transition_faces,
+            spring_nest_passes,
+            ..BackendDiagnostics::default()
+        },
     })
 }
 
@@ -4824,19 +4851,19 @@ fn refine_with_method_c_lepp(
         (initial_voronoi, output_mesh)
     };
     Ok(RefinedGrid {
-        state: Some(voronoi),
         output_mesh,
-        method_c_metadata: None,
         cell_levels: None,
         pentagon_indices: pentagons,
-        transition_faces: 0,
-        spring_nest_passes,
-        hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics::default(),
-        hfield_context: None,
-        adaptive_run: None,
-        lepp_hard_regions: hard_regions,
-        lepp_adaptive_hybrid: Some(report),
-        lepp_post_quality: None,
+        demand: RefinedDemandRecord {
+            lepp_hard_regions: hard_regions,
+            ..RefinedDemandRecord::default()
+        },
+        diagnostics: BackendDiagnostics {
+            state: Some(voronoi),
+            spring_nest_passes,
+            lepp_adaptive_hybrid: Some(report),
+            ..BackendDiagnostics::default()
+        },
     })
 }
 
@@ -6390,7 +6417,7 @@ mod tests {
         let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, true, 1)
             .expect("red-green with spring configured");
 
-        assert_eq!(refined.spring_nest_passes, 0);
+        assert_eq!(refined.diagnostics.spring_nest_passes, 0);
         let (lo, hi) = unstructured_triangle_angle_range(&refined.output_mesh).unwrap();
         let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
         assert!(
@@ -6398,7 +6425,7 @@ mod tests {
             "angles {lo:.2}..{hi:.2} outside {window:?}"
         );
         assert!(
-            refined.transition_faces > 0,
+            refined.diagnostics.transition_faces > 0,
             "green closure must be reported"
         );
         assert!(
@@ -6424,11 +6451,15 @@ mod tests {
             ..RefineConfig::default()
         };
         let result = refine_with_redgreen(&mesh, &[region], &refine, 3, None, true, 0).unwrap();
-        assert_eq!(result.spring_nest_passes, 0);
+        assert_eq!(result.diagnostics.spring_nest_passes, 0);
         let angles = unstructured_triangle_angle_range(&result.output_mesh).unwrap();
-        assert!(angles.0 >= 25.0 && angles.1 <= 105.0, "{angles:?}");
+        let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+        assert!(
+            angles.0 >= window.0 && angles.1 <= window.1,
+            "{angles:?} outside {window:?}"
+        );
         crate::validate_published_cell_degrees(&result.output_mesh, "tri").unwrap();
-        assert!(result.transition_faces > 0);
+        assert!(result.diagnostics.transition_faces > 0);
         assert!(
             crate::unstructured_mesh_support::check_unstructured_mesh_topology(&result.output_mesh)
                 .is_consistent()

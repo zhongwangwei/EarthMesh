@@ -13,6 +13,7 @@ pub mod nest;
 pub mod plan;
 pub mod threshold;
 pub(crate) mod threshold_support;
+pub(crate) mod width;
 
 use std::io;
 

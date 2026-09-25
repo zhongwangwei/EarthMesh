@@ -3067,7 +3067,11 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
 }
 
 #[test]
-fn redgreen_three_level_tri_publishes_high_degree_w_fans() {
+/// Three levels of red-green closure used to publish W fans wider than seven
+/// and 25-105 degree triangles; the angle-window repair balances the fans and
+/// brings every angle into the enforced window. (Tri accepting a wide fan and
+/// hex refusing it is covered by the writer's own test.)
+fn redgreen_three_level_tri_publishes_inside_the_angle_window() {
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("redgreen_three_level_tri");
     let sources = root.join("sources");
@@ -3102,17 +3106,32 @@ fn redgreen_three_level_tri_publishes_high_degree_w_fans() {
         earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&run.output.output)
             .expect("read published TRI gridfile");
     assert_eq!(run.max_level, 3);
-    assert!(mesh.n_w_to_m.iter().any(|&degree| degree > 7));
     assert!(
         earthmesh_cli::unstructured_mesh_support::check_unstructured_mesh_topology(&mesh)
             .is_consistent()
     );
     earthmesh_cli::unstructured_mesh_support::validate_published_cell_degrees(&mesh, "tri")
         .unwrap();
-    assert!(
-        earthmesh_cli::unstructured_mesh_support::validate_published_cell_degrees(&mesh, "hex")
-            .is_err()
-    );
+    let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+    let mut checked = 0;
+    for corners in &mesh.m_to_w {
+        if corners.iter().any(|&w| w <= 1) {
+            continue;
+        }
+        let triangle = corners.map(|w| {
+            let point = mesh.w_points[w as usize];
+            earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat)
+        });
+        let metrics = earthmesh_mesh::polygon_length_angle_metrics(&triangle).unwrap();
+        for angle in metrics.angles_degrees {
+            assert!(
+                (lo..=hi).contains(&angle),
+                "angle {angle} outside {lo}..{hi}"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0);
 }
 
 /// A request red-green cannot serve is refused, not served with less.

@@ -206,9 +206,21 @@ earthmesh_cli             编排：解析配置、选择算法、串接三层
   `cell_levels`。Method-C 的 `cell_levels` 与原元数据同源，输出不变。
 - 验证：A/B 回归 6 个样本（3 个例子项目；Method-C 海洋 Tri、陆地 Hex 全球；Red-Green 全球海岸）
   最终网格逐变量一致、`refine_*` 统计一致；CLI clippy 与全量测试 1,159 通过。
-- 待做（2c+2d 合并）：`write_refined_outputs` 仍同时接收 h-field 上下文、`adaptive` 报告与 LEPP
-  报告，并据此三选一生成 MPAS 宽度上下文；应改为由需求与实际层级统一推导，届时再把
-  `RefinedGrid` 的算法专属字段归入诊断存档。三种来源需逐一证明等价。
+- 2c：MPAS 宽度上下文改由需求层的 `refinement_demand::width::NominalDemandWidth` 提供。三种来源
+  （h-field、`adaptive` 逐层区域、LEPP 已解析目标）本来就都是“名义需求宽度在最终 W 点上的取样”，
+  区别只在读哪种需求；现在由编排从“哪个生产者运行了”构造一次，写出层只调用 `mpas_context`，
+  不再接收 `adaptive` 与 LEPP 报告、也不再三选一。仍然是名义需求而不是实际层级——MPAS 交付要的是
+  “被要求的宽度”，这是原设计的有意选择，没有改。
+- 2d：`RefinedGrid` 分成三部分：中立结果（`output_mesh`、`cell_levels`、`pentagon_indices`）、
+  `RefinedDemandRecord`（h-field 上下文、`adaptive` 记录、LEPP 硬区域——交付读取它做 MPAS 宽度、
+  切割保护与目标/实际对账）、`BackendDiagnostics`（Voronoi `state`、Method-C 元数据、过渡面数、
+  弹簧轮数、h-field 诊断、LEPP 报告与后处理——只报告或存档，不决定网格的样子）。
+  `realized_max_level` 改为从 `cell_levels` 读取：Method-C 与原来同源，结果不变；只有命名区域、
+  没有逐层判据的 Red-Green 运行过去报 0，现在报实际深度。
+- 验证：A/B 回归 5 个样本（3 个 MPAS 例子项目；Method-C 海洋 Tri、陆地 Hex 全球）逐变量一致，
+  `refine_*` 统计一致。
+- 仍在编排里、留给第 5 步的：`method_c_metadata` 的谱系/`ngr` 仍作为额外变量写进 gridfile；
+  LEPP 报告同时是诊断和需求宽度来源；`write_refined_outputs` 仍在 `refine_pipeline` 模块内。
 
 ### 2026-09-25 输出契约：三角形内角 35°–85° 强制窗口（d1f6633a）
 

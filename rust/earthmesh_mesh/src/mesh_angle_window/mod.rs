@@ -203,7 +203,11 @@ impl Work<'_> {
         }
     }
 
-    fn valence_flip(&mut self, a: usize, b: usize) -> bool {
+    /// Flip edge a-b to c-d. By valence: when the four valences move toward
+    /// six and no angle falls below the flip floor. By margin: when the pair's
+    /// worst margin to the window improves -- the endgame, where single-vertex
+    /// moves have stalled a fraction of a degree outside.
+    fn flip_edge(&mut self, a: usize, b: usize, by_margin: bool) -> bool {
         if self.fixed[a] && self.fixed[b] {
             return false;
         }
@@ -229,7 +233,20 @@ impl Work<'_> {
             + dev(self.valence(b) - 1)
             + dev(self.valence(c) + 1)
             + dev(self.valence(d) + 1);
-        if after >= before
+        // Sum-neutral flips count when they lower the worst valence: an 8 that
+        // becomes a 7 while three sixes move one step is still progress.
+        let spread = |values: [usize; 4]| {
+            values
+                .iter()
+                .map(|&v| (v as i64 - 6).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let [va, vb, vc, vd] = [a, b, c, d].map(|v| self.valence(v));
+        let lowers_valence = after < before
+            || (after == before
+                && spread([va - 1, vb - 1, vc + 1, vd + 1]) < spread([va, vb, vc, vd]));
+        if (!by_margin && !lowers_valence)
             || self.valence(a) <= 4
             || self.valence(b) <= 4
             || self.valence(c) + 1 > self.options.max_valence
@@ -247,14 +264,30 @@ impl Work<'_> {
         if self.orient(new1) * self.sign[f1] <= 0.0 || self.orient(new2) * self.sign[f2] <= 0.0 {
             return false;
         }
-        let floor = self.options.flip_floor_deg;
-        if self
-            .angles(new1)
-            .iter()
-            .chain(self.angles(new2).iter())
-            .any(|&angle| angle < floor)
-        {
-            return false;
+        if by_margin {
+            let worst = |w: &Self, pair: [[usize; 3]; 2]| {
+                let margins = pair.map(|f| w.margin_of(f));
+                (
+                    margins[0].min(margins[1]),
+                    margins[0].min(0.0) + margins[1].min(0.0),
+                )
+            };
+            if !Self::better(
+                worst(self, [new1, new2]),
+                worst(self, [self.faces[f1], self.faces[f2]]),
+            ) {
+                return false;
+            }
+        } else {
+            let floor = self.options.flip_floor_deg;
+            if self
+                .angles(new1)
+                .iter()
+                .chain(self.angles(new2).iter())
+                .any(|&angle| angle < floor)
+            {
+                return false;
+            }
         }
         self.detach(f1);
         self.detach(f2);
@@ -559,7 +592,7 @@ pub fn repair_triangle_angle_window(
         edges.sort_unstable();
         edges.dedup();
         for (a, b) in edges {
-            if work.valence_flip(a, b) {
+            if work.flip_edge(a, b, false) {
                 report.flips += 1;
                 changed += 1;
             }
@@ -589,6 +622,23 @@ pub fn repair_triangle_angle_window(
                     report.moves += 1;
                     changed += 1;
                 }
+            }
+        }
+        let mut bad_edges: Vec<(usize, usize)> = work
+            .live_faces()
+            .filter(|&f| work.outside(f))
+            .flat_map(|f| {
+                let [a, b, c] = work.faces[f];
+                [(a, b), (b, c), (c, a)]
+            })
+            .map(|(x, y)| (x.min(y), x.max(y)))
+            .collect();
+        bad_edges.sort_unstable();
+        bad_edges.dedup();
+        for (a, b) in bad_edges {
+            if work.flip_edge(a, b, true) {
+                report.flips += 1;
+                changed += 1;
             }
         }
         bad = work.live_faces().filter(|&f| work.outside(f)).collect();
