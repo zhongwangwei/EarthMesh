@@ -175,6 +175,8 @@ fn quality_thresholds_from_namelist(
     earthmesh_quality::QualityThresholds {
         min_angle_warn_deg: q.min_angle_warn_deg,
         min_angle_fail_deg: q.min_angle_fail_deg,
+        // Enforced, not a namelist setting.
+        triangle_angle_window_deg: earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG,
         angle_deviation_warn_deg: q.angle_deviation_warn_deg,
         aspect_ratio_warn: q.aspect_ratio_warn,
         aspect_ratio_fail: q.aspect_ratio_fail,

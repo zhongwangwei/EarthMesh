@@ -235,8 +235,10 @@ fn regional_islands_have_the_same_candidate_and_final_quality_verdict() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// The triangle angle window is enforced: a project cannot relax it by
+/// lowering its own `min_angle_deg`.
 #[test]
-fn project_min_angle_below_default_fail_is_honored_at_final_admission() {
+fn project_min_angle_setting_cannot_relax_the_triangle_angle_window() {
     let root = std::env::temp_dir().join(format!("project_low_angle_{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let file = root.join("angle.nc4");
@@ -250,15 +252,16 @@ fn project_min_angle_below_default_fail_is_honored_at_final_admission() {
     p.quality.on_violation = ViolationPolicy::Block;
     p.quality.min_angle_deg = 2.0;
     let candidate = write_project_quality_report(&p, &file, &root.join("candidate")).unwrap();
-    let final_report = admit(&p, &file, &root.join("final"), None).unwrap();
-    let angle_gate = final_report
+    let angle_gate = candidate
         .gates
         .iter()
         .find(|gate| gate.metric == "min_angle_deg")
         .unwrap();
     assert!(angle_gate.value > 2.0 && angle_gate.value < 5.0);
-    assert_eq!(angle_gate.level, earthmesh_quality::QualityLevel::Pass);
-    assert_eq!(candidate.verdict, final_report.verdict);
+    assert_eq!(angle_gate.level, earthmesh_quality::QualityLevel::Fail);
+    assert_eq!(candidate.verdict, earthmesh_quality::QualityLevel::Fail);
+    let refused = admit(&p, &file, &root.join("final"), None).unwrap_err();
+    assert!(refused.contains("verdict=fail"), "{refused}");
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -370,11 +370,19 @@ impl WorstCell {
     }
 }
 
+/// Every triangle of a delivered triangular mesh keeps its interior angles in
+/// this window; outside it the mesh fails, it does not merely warn.
+pub const TRIANGLE_ANGLE_WINDOW_DEG: (f64, f64) = (35.0, 85.0);
+
 /// Conservative default thresholds; future config can override fields.
 #[derive(Clone, Copy, Debug)]
 pub struct QualityThresholds {
     pub min_angle_warn_deg: f64,
     pub min_angle_fail_deg: f64,
+    /// Hard interior-angle window for an all-triangle mesh: any angle outside
+    /// it fails the mesh. Polygonal (hex) cells have interior angles near 120
+    /// degrees and are judged by the other gates only.
+    pub triangle_angle_window_deg: (f64, f64),
     pub angle_deviation_warn_deg: f64,
     pub aspect_ratio_warn: f64,
     pub aspect_ratio_fail: f64,
@@ -397,6 +405,7 @@ impl Default for QualityThresholds {
         Self {
             min_angle_warn_deg: earthmesh_core::DEFAULT_MIN_ANGLE_WARN_DEG,
             min_angle_fail_deg: 5.0,
+            triangle_angle_window_deg: TRIANGLE_ANGLE_WINDOW_DEG,
             angle_deviation_warn_deg: 35.0,
             aspect_ratio_warn: 4.0,
             aspect_ratio_fail: 10.0,
@@ -1836,10 +1845,15 @@ fn evaluate(
         );
     }
 
-    // Suspicious geometry degradation -> Warn (fail only when extreme).
+    // Suspicious geometry degradation -> Warn (fail only when extreme). An
+    // all-triangle mesh is held to a hard window on both ends instead.
+    let triangle_mesh = geom.cell_count > 0 && topo.triangle_cell_count == geom.cell_count;
+    let (window_min, window_max) = th.triangle_angle_window_deg;
     let min_angle_level = if !geom.min_angle_deg.is_finite() {
         QualityLevel::Pass
-    } else if geom.min_angle_deg < th.min_angle_fail_deg {
+    } else if geom.min_angle_deg < th.min_angle_fail_deg
+        || (triangle_mesh && geom.min_angle_deg < window_min)
+    {
         QualityLevel::Fail
     } else if geom.min_angle_deg < th.min_angle_warn_deg {
         QualityLevel::Warn
@@ -1852,10 +1866,24 @@ fn evaluate(
         min_angle_level,
         if !geom.min_angle_deg.is_finite() {
             "N/A: no valid spherical corner-angle sample"
+        } else if triangle_mesh {
+            "smallest interior angle; triangles must stay within the hard angle window"
         } else {
             "smallest interior angle"
         },
     );
+    if triangle_mesh && geom.max_angle_deg.is_finite() {
+        push(
+            "max_angle_deg",
+            geom.max_angle_deg,
+            if geom.max_angle_deg > window_max {
+                QualityLevel::Fail
+            } else {
+                QualityLevel::Pass
+            },
+            "largest interior angle; triangles must stay within the hard angle window",
+        );
+    }
 
     // Strict comparisons on both graded gates so a value landing exactly on a
     // threshold stays in the less severe tier, matching the min_angle gate.
@@ -2206,6 +2234,52 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn triangle_meshes_fail_outside_the_hard_angle_window() {
+        let triangle = |corners: [(f64, f64); 3]| QualityMeshInput {
+            vertices: corners.iter().map(|&(x, y)| Point::new(x, y)).collect(),
+            cells: vec![QualityCell {
+                vertices: vec![0, 1, 2],
+                refine_level: None,
+                neighbors: vec![],
+            }],
+        };
+        let gate = |mesh: &QualityMeshInput, metric: &str| {
+            compute(mesh, &QualityThresholds::default())
+                .gates
+                .into_iter()
+                .find(|gate| gate.metric == metric)
+        };
+        // Near-equilateral: inside the window.
+        let fine = triangle([(0.0, 0.0), (1.0, 0.0), (0.5, 0.866)]);
+        assert_eq!(
+            gate(&fine, "min_angle_deg").unwrap().level,
+            QualityLevel::Pass
+        );
+        assert_eq!(
+            gate(&fine, "max_angle_deg").unwrap().level,
+            QualityLevel::Pass
+        );
+        // Right angle: the largest angle is past 85 degrees.
+        let right = triangle([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]);
+        assert_eq!(
+            gate(&right, "max_angle_deg").unwrap().level,
+            QualityLevel::Fail
+        );
+        // A 30 degree corner: the smallest angle is below 35 degrees.
+        let sharp = triangle([(0.0, 0.0), (1.0, 0.0), (0.866, 0.5)]);
+        assert_eq!(
+            gate(&sharp, "min_angle_deg").unwrap().level,
+            QualityLevel::Fail
+        );
+        // Polygonal cells are not held to the triangle window.
+        assert!(gate(&two_square_mesh(), "max_angle_deg").is_none());
+        assert_eq!(
+            gate(&two_square_mesh(), "min_angle_deg").unwrap().level,
+            QualityLevel::Pass
+        );
     }
 
     #[test]
