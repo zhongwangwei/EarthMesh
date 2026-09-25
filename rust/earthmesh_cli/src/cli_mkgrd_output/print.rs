@@ -206,8 +206,10 @@ pub(crate) fn print_refine_pipeline_report(
     if hfield.dropped_block_count > 0 {
         eprintln!(
             "earthmesh_cli: warning: {} refinement block(s) ({} parent faces) were left at the \
-             coarser level: Method-C's transition patch cannot build their shape. The rest of \
-             the mesh reached its requested levels; the red-green backend refines such regions",
+             coarser level: Method-C's transition patch cannot build their shape. Deeper levels \
+             inside those blocks are missing too; refine_hfield_unmet_faces counts only the \
+             level that failed, and the quality report's hfield_target_above_actual_count gives \
+             the full shortfall. The red-green backend refines such regions",
             hfield.dropped_block_count, hfield.dropped_face_count
         );
     }

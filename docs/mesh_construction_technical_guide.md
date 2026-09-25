@@ -3637,7 +3637,11 @@ cycle 1 的数字与显式给 4,000,000 时逐项一致。
 丢掉单独也建不成的块；若每块单独都能建、只有合在一起才失败（修复阶梯是全局的，几十块
 一起时会被拖垮），就丢离闸门报点最近的那块。丢掉的块及其需求计入
 `MethodCHfieldSpawnDiagnostics::{dropped_block_count, dropped_face_count, unmet_face_count}`，
-CLI 输出 `refine_hfield_dropped_*` 并警告。能建成的代完全不经过这条路。Case9 在默认
+CLI 输出 `refine_hfield_dropped_*` 并警告。能建成的代完全不经过这条路。
+**统计口径注意：** 丢块数/面数和 `unmet_face_count` 只记失败的那一代；被丢块内更深的
+需求因为没有父层，根本不会成为锚点，不计入 `unmet_face_count`。完整的欠细化量看最终
+质量报告的 `hfield_target_above_actual_count`（逐单元比较目标与实际层级，Case9 为
+1,715 个单元）。Case9 在默认
 Method-C 路线上由此从“整代失败”变为交付：丢 3 块（6,920 个父面），41,607 个需求面中
 8,077 个（19.4%）未满足，最小角 37.5°；同一项目用 RedGreen 则全部满足但最小角 26.3°、
 单元多约 5 倍。

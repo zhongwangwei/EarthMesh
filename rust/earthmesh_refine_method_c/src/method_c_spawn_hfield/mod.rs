@@ -30,6 +30,12 @@ pub struct MethodCHfieldSpawnDiagnostics {
     /// Refinement blocks a pass dropped, whole, because Method-C's transition
     /// patch could not build them, and the parent faces they held. The run
     /// still builds; these are where it refined less than the field asked.
+    ///
+    /// Counted at the pass that dropped them only. Deeper demand inside a
+    /// dropped block is not refined either -- it has no parent there -- and
+    /// never becomes an anchor, so `unmet_face_count` does not see it. The
+    /// final mesh's per-cell target/actual comparison
+    /// (`hfield_target_above_actual_count` in the quality report) does.
     pub dropped_block_count: usize,
     pub dropped_face_count: usize,
 }
