@@ -207,9 +207,7 @@ mod mesh_conversion_iap;
 pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_one_based;
 pub mod fvcom_mesh_writer;
 pub(crate) use fvcom_mesh_writer::write_fvcom_ns_records;
-use fvcom_mesh_writer::{
-    fvcom_mesh_2dm_output_path, write_fvcom_mesh_2dm, FvcomMesh2dmWriteReport,
-};
+use fvcom_mesh_writer::{fvcom_mesh_2dm_output_path, FvcomMesh2dmWriteReport};
 pub mod obc_boundary_io;
 use obc_boundary_io::{
     obc_boundary_output_path, obcv2_boundary_output_path, read_obc_order_netcdf,
@@ -375,8 +373,8 @@ pub mod mpas_gridfile_context;
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{
-    write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved,
-    write_landtype_masked_gridfile_with_refine_levels, write_regional_gridfile_with_refine_levels,
+    write_clean_regional_ocean_gridfile, write_landtype_masked_gridfile_with_refine_levels,
+    write_regional_gridfile_with_refine_levels,
 };
 pub mod mask_counts;
 use mask_counts::MaskCountState;

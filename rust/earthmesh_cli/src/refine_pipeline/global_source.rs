@@ -27,7 +27,6 @@ use crate::read_native_grid_refine_controls;
 use crate::read_native_grid_refinement_regions;
 use crate::read_native_grid_refinement_regions_for_grid;
 use crate::read_native_grid_sfcgrid_res_factor;
-use crate::read_obc_order_netcdf;
 use crate::read_unstructured_mesh_netcdf;
 use crate::refinement_spring_iterations;
 use crate::run_mkgrd_gridinit_global_namelist;
@@ -56,7 +55,7 @@ use earthmesh_mesh::{
 use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
-use crate::{write_clean_regional_ocean_gridfile, write_fvcom_2dm_from_carved};
+use crate::write_clean_regional_ocean_gridfile;
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
 
@@ -2095,16 +2094,15 @@ fn publish_certified_domain_gridfile(
                 workdir,
             )?;
             fs::copy(&plan.result_gridfile, output_gridfile)?;
-            let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
-            let obc_order = match &plan.obc_output {
-                Some(path) if path.exists() => read_obc_order_netcdf(path)?,
-                _ => Vec::new(),
-            };
-            let fvcom = if let Some(output) = fvcom_output {
-                Some(write_fvcom_2dm_from_carved(&carved, &obc_order, output)?)
-            } else {
-                None
-            };
+            // The boundary context travels in the gridfile; FVCOM reads it there.
+            let fvcom = fvcom_output
+                .map(|output| {
+                    crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+                        output_gridfile,
+                        output,
+                    )
+                })
+                .transpose()?;
             (None, fvcom)
         } else if let (Some(region), "landmesh", "tri") = (domain_region, mesh_type, mode_grid) {
             fs::create_dir_all(workdir)?;
@@ -2141,12 +2139,17 @@ fn publish_certified_domain_gridfile(
                 config.isolated_ocean || mesh_type == "oceanmesh",
                 None,
             )?;
-            let fvcom = if let Some(output) = fvcom_output {
-                let carved = crate::read_unstructured_mesh_netcdf(output_gridfile)?;
-                Some(write_fvcom_2dm_from_carved(&carved, &[], output)?)
-            } else {
-                None
-            };
+            // Not an empty boundary list assumed here: the carve records
+            // whether its boundary is coastline only, and a bounded mesh
+            // without that record is refused rather than exported as all wall.
+            let fvcom = fvcom_output
+                .map(|output| {
+                    crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+                        output_gridfile,
+                        output,
+                    )
+                })
+                .transpose()?;
             (Some(kept), fvcom)
         }
     };

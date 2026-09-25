@@ -89,7 +89,7 @@
 FVCOM 需要的开边界上下文 `earthmesh_fvcom_obc_order` 只由三条路径写入：
 `mask_postproc_domain/runners.rs:361`、`regional_gridfile_writers/clean_ocean.rs:225`、
 `regional_gridfile_writers/landtype.rs:202`（最后这条是 7a04c8a1 补的，此前所有全球海洋
-FVCOM 交付都失败）。“交付需要什么”没有统一契约，而是散落在各生成路径里。
+FVCOM 交付都失败）。“交付需要什么”没有统一契约，而是散落在各生成路径里。*（第 3 步：写入留在切割步骤，读取收拢为一处，见第 8 节。）*
 
 ### F. 编排集中，边界无人把守
 
@@ -236,3 +236,24 @@ Red-Green 的 green 闭合必然产生约 30°/90° 的过渡三角形，原本�
 
 `earthmesh_refine_harp_dv` 早已从工作区移除；2026-09-25（e8d028df）连同退役防护一并删除——用户
 只有一人，没有需要保护的旧配置。HARP-DV 的名称不再有任何特殊处理，未知后端名按通用规则拒绝。
+
+### 2026-09-25 第 3 步：FVCOM 只从 gridfile 自带的开边界上下文导出
+
+- 核查后的实际情况比第 3 节 E 写的具体：三个写入点（区域切割分类器 `mask_postproc_domain/runners.rs`、
+  清洁区域海洋 `clean_ocean.rs`、全球陆地切割 `landtype.rs`）都在切割步骤里，切割本身已是输出层、与后端
+  无关；开边界分类要知道哪些边界边是计算域切口、哪些是海岸线，只有切割时知道，所以由切割记录、写进
+  gridfile 是合理的位置。真正分散的是**读取**：FVCOM `.2dm` 有 8 个写出点，开边界列表来自 4 种来源
+  ——gridfile 属性、`obc.nc4` 旁路文件、内存中的列表、以及硬编码的 `&[]`。
+- 改动：CMRC 的两条路线、gridinit 的区域路线、`write_clean_regional_ocean_fvcom` 全部改为调用
+  `write_fvcom_from_final_gridfile`，它只读 gridfile 自带的上下文并逐项校验（必须是边界顶点、相邻两点
+  必须是边界边、有边界而无上下文则拒绝）。`write_fvcom_2dm_from_carved` 改为私有，不再有调用方能传入
+  旁路列表或假定的空列表；无调用方的 `write_standard_fvcom_from_gridfile` 删除。
+- 修掉的一个静默缺陷：CMRC 全球陆地切割路线原来直接以 `&[]` 写 FVCOM，也就是把任何边界都当成墙。现在
+  它读切割写下的上下文——闭合球面切出来的只有海岸线，上下文就是空；若输入本身有边界、切割无法判断，
+  上下文缺失，导出被拒绝而不是写成全墙。
+- 旁路 `obc.nc4` 仍作为辅助产物交付（测试断言它与嵌入上下文一致），但不再是任何导出的输入。
+  `fvcom_mesh_writer::write_fvcom_mesh_save_outputs`（Fortran `FVCOM_Mesh_Save` 的文件级移植）只有测试
+  调用，保留。
+- 验证：CLI clippy 与全量测试 1,159 通过，其中 `certified_close_ocean_publishes_regional_fvcom_after_global_certificate`
+  逐字节比较流水线产出的 `.2dm` 与 `write_fvcom_from_final_gridfile` 的产出；CMRC 全球海洋 FVCOM、
+  gridinit 区域海洋、清洁海洋窗口各有集成测试覆盖。gridfile 本身不变，这一步只改 `.2dm` 的来源。

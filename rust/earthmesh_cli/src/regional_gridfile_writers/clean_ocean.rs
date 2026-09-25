@@ -1,8 +1,6 @@
 use crate::build_area_judge_close_area_source_cells_one_based;
 use crate::build_global_source_axes_one_based;
 use crate::plan_mask_postproc_domain_io;
-use crate::read_obc_order_netcdf;
-use crate::read_unstructured_mesh_netcdf;
 use crate::run_getcontain_refine_file_one_based;
 use crate::run_mask_postproc_ocean_domain;
 use crate::write_area_judge_grid_netcdf;
@@ -19,7 +17,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use super::fvcom::write_fvcom_2dm_from_carved;
 use super::levels::{final_method_c_metadata_for_mask_postproc, refine_levels_from_gridfile};
 
 /// Carve a CLEAN regional ocean (FVCOM) mesh from a global gridfile + a close
@@ -49,12 +46,7 @@ pub fn write_clean_regional_ocean_fvcom(
         work_dir,
     )?;
 
-    let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
-    let obc_order = match &plan.obc_output {
-        Some(p) if p.exists() => read_obc_order_netcdf(p)?,
-        _ => Vec::new(),
-    };
-    let report = write_fvcom_2dm_from_carved(&carved, &obc_order, output_2dm)?;
+    let report = super::fvcom::write_fvcom_from_final_gridfile(&plan.result_gridfile, output_2dm)?;
     Ok(report.triangles)
 }
 

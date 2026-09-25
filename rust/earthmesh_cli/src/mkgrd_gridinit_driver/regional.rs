@@ -1,11 +1,8 @@
 use crate::fvcom_mesh_2dm_output_path;
 use crate::read_method_c_domain_region;
-use crate::read_obc_order_netcdf;
-use crate::read_unstructured_mesh_netcdf;
 use crate::regional_gridfile_writers::write_regional_gridfile;
 use crate::unstructured_mesh_write_report_from_file;
 use crate::write_clean_regional_ocean_gridfile;
-use crate::write_fvcom_2dm_from_carved;
 use crate::write_landtype_masked_gridfile_with_refine_levels;
 use crate::GridRegion;
 use crate::LonLatPoint;
@@ -95,16 +92,12 @@ pub(crate) fn run_mkgrd_regional_clip_base(
             &file_dir,
         )?;
         if !config.defer_model_exports {
-            let carved = read_unstructured_mesh_netcdf(&plan.result_gridfile)?;
-            let obc_order = match &plan.obc_output {
-                Some(path) if path.exists() => read_obc_order_netcdf(path)?,
-                _ => Vec::new(),
-            };
-            gridinit.fvcom_2dm = Some(write_fvcom_2dm_from_carved(
-                &carved,
-                &obc_order,
-                &fvcom_mesh_2dm_output_path(&file_dir),
-            )?);
+            gridinit.fvcom_2dm = Some(
+                crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
+                    &plan.result_gridfile,
+                    &fvcom_mesh_2dm_output_path(&file_dir),
+                )?,
+            );
         }
         gridinit.raw_output = Some(gridinit.gridfile.clone());
         gridinit.gridfile = unstructured_mesh_write_report_from_file(&plan.result_gridfile)?;

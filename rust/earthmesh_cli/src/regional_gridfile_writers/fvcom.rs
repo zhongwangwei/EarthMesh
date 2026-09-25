@@ -4,7 +4,6 @@ use crate::unstructured_mesh_support::{
     mesh_w_has_two_placeholder_rows,
 };
 use crate::validate_unstructured_mesh;
-use crate::write_fvcom_mesh_2dm;
 use crate::write_fvcom_ns_records;
 use crate::FvcomMesh2dmWriteReport;
 use crate::LonLatPoint;
@@ -18,7 +17,12 @@ use std::path::Path;
 /// are renumbered 1-based; triangles touching a placeholder/marker are dropped;
 /// the open boundary (`obc_order`, in carved-id space) is re-mapped and written
 /// as NS records so the `.2dm` carries its open-boundary specification.
-pub(crate) fn write_fvcom_2dm_from_carved(
+///
+/// Private on purpose: every FVCOM export goes through
+/// `write_fvcom_from_final_gridfile`, which takes the open boundary from the
+/// gridfile's own context and validates it, so no caller can hand in a
+/// sidecar's list or an assumed empty one.
+fn write_fvcom_2dm_from_carved(
     mesh: &UnstructuredMesh,
     obc_order: &[usize],
     output: &Path,
@@ -101,16 +105,6 @@ pub(crate) fn write_fvcom_2dm_from_carved(
         nodes: nodes.len(),
         boundary_segments: 0,
     })
-}
-
-/// Write the standard FVCOM `.2dm` mesh straight from a base gridfile, in pure
-/// Rust. Open-boundary segments are omitted (none for a from-scratch mesh).
-pub fn write_standard_fvcom_from_gridfile(
-    gridfile: impl AsRef<Path>,
-    output_2dm: impl AsRef<Path>,
-) -> io::Result<FvcomMesh2dmWriteReport> {
-    let mesh = read_unstructured_mesh_netcdf(gridfile)?;
-    write_fvcom_mesh_2dm(output_2dm, &mesh, &[])
 }
 
 /// Model-format adapter for an admitted final TRI gridfile. Boundary context
