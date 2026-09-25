@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::{
     lat_values, lon_values, netcdf_to_io_error, unstructured_dimc, validate_unstructured_mesh,
-    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
+    GridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
 use super::rows::{flatten_m_to_w, flatten_w_to_m};
@@ -12,7 +12,7 @@ pub fn write_unstructured_mesh_netcdf(
     output: impl AsRef<Path>,
     mesh: &UnstructuredMesh,
 ) -> io::Result<UnstructuredMeshWriteReport> {
-    write_unstructured_mesh_netcdf_with_method_c_metadata(output, mesh, Default::default())
+    write_unstructured_mesh_netcdf_with_metadata(output, mesh, Default::default())
 }
 
 pub fn write_unstructured_mesh_netcdf_with_refine_levels(
@@ -21,10 +21,10 @@ pub fn write_unstructured_mesh_netcdf_with_refine_levels(
     m_refine_level: Option<&[i32]>,
     w_refine_level: Option<&[i32]>,
 ) -> io::Result<UnstructuredMeshWriteReport> {
-    write_unstructured_mesh_netcdf_with_method_c_metadata(
+    write_unstructured_mesh_netcdf_with_metadata(
         output,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             m_refine_level,
             w_refine_level,
             ..Default::default()
@@ -32,10 +32,10 @@ pub fn write_unstructured_mesh_netcdf_with_refine_levels(
     )
 }
 
-pub fn write_unstructured_mesh_netcdf_with_method_c_metadata(
+pub fn write_unstructured_mesh_netcdf_with_metadata(
     output: impl AsRef<Path>,
     mesh: &UnstructuredMesh,
-    metadata: MethodCGridfileMetadataSlices<'_>,
+    metadata: GridfileMetadataSlices<'_>,
 ) -> io::Result<UnstructuredMeshWriteReport> {
     validate_unstructured_mesh(mesh)?;
     if let Some(context) = metadata.mpas {

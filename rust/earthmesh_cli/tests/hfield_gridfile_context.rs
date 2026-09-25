@@ -6,7 +6,7 @@ use std::{
 use earthmesh_cli::{
     coordinate_types::{GridRegion, LonLatPoint},
     hfield_gridfile_context::{read_hfield_gridfile_context, HfieldGridfileContext},
-    unstructured_mesh_support::{MethodCGridfileMetadataSlices, UnstructuredMesh},
+    unstructured_mesh_support::{GridfileMetadataSlices, UnstructuredMesh},
 };
 use earthmesh_hfield::HField;
 
@@ -98,10 +98,10 @@ fn write_mesh_gridfile(
     mesh: &UnstructuredMesh,
     hfield: Option<&HfieldGridfileContext>,
 ) {
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             hfield,
             ..Default::default()
         },
@@ -318,16 +318,15 @@ fn invalid_hfield_metadata_does_not_overwrite_existing_gridfile() {
     let mut invalid = old;
     invalid.max_level = 6;
 
-    let err =
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
-            &output,
-            &mesh(),
-            MethodCGridfileMetadataSlices {
-                hfield: Some(&invalid),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
+    let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
+        &output,
+        &mesh(),
+        GridfileMetadataSlices {
+            hfield: Some(&invalid),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
 
     assert!(matches!(
         err.kind(),
@@ -589,10 +588,10 @@ fn builds_mpas_context_from_hfield_quantized_demand_and_roundtrips_schema() {
 
         let root = root(name);
         let output = root.join("grid.nc4");
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
             &output,
             &mesh,
-            MethodCGridfileMetadataSlices {
+            GridfileMetadataSlices {
                 mpas: Some(&mpas),
                 ..Default::default()
             },

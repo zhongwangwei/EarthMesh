@@ -9,7 +9,7 @@ use crate::write_mask_postproc_final_gridfile;
 use crate::write_mask_postproc_patchtype_netcdf;
 use crate::write_obc_boundary_netcdf;
 use crate::write_obcv2_boundary_netcdf;
-use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::write_unstructured_mesh_netcdf_with_metadata;
 use crate::MaskPostprocDomainIoPlan;
 use crate::MaskPostprocEarthDomainReport;
 use crate::MaskPostprocEarthRunOptions;
@@ -213,7 +213,7 @@ where
             &renewal.is_in_domain_ustr,
             inputs.layout.ustr_points,
         )?;
-    let final_gridfile = write_unstructured_mesh_netcdf_with_method_c_metadata(
+    let final_gridfile = write_unstructured_mesh_netcdf_with_metadata(
         &plan.result_gridfile,
         &finalization.mesh,
         final_levels.slices(),

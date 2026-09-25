@@ -67,6 +67,8 @@
 - 写出函数名 `write_unstructured_mesh_netcdf_with_method_c_metadata`，元数据切片类型
   `MethodCMetadataSlices` / `MethodCGridfileMetadataSlices`
   （`rust/earthmesh_cli/src/refine_pipeline/outputs.rs:52`、`:149`）。
+  *（第 2a 步已改名为 `write_unstructured_mesh_netcdf_with_metadata` /
+  `GridfileMetadataSlices`；`MethodCMetadataSlices` 只剩 Method-C 独有的原始层级、`ngr` 与谱系。）*
 - **每单元细化层级、谱系、`ngr` 只有 Method-C 提供。** Red-Green 的层级在生产路径上被丢弃
   （`rust/earthmesh_refine_redgreen/src/refine_loop/mod.rs:730`；
   `rust/earthmesh_cli/src/redgreen_bridge.rs:359`），导致质量报告对 Red-Green 网格无法做
@@ -196,9 +198,19 @@ earthmesh_cli             编排：解析配置、选择算法、串接三层
 - 待做：Red-Green 经典过渡行路径（Hex）的面深度跟踪；把 `method_c_metadata` 中的层级改为只从
   `cell_levels` 流向写出层（第 2 步）。
 
+### 2026-09-25 第 2 步（部分）：写出层不再以算法命名、层级只走中立通道
+
+- 2a：`write_unstructured_mesh_netcdf_with_method_c_metadata` → `write_unstructured_mesh_netcdf_with_metadata`，
+  `MethodCGridfileMetadataSlices` → `GridfileMetadataSlices`（26 个文件、103 处，纯改名）。
+- 2b：`MethodCMetadataSlices` 去掉每单元层级；写出层的 `earthmesh_{m,w}_refine_level` 只来自
+  `cell_levels`。Method-C 的 `cell_levels` 与原元数据同源，输出不变。
+- 验证：A/B 回归 6 个样本（3 个例子项目；Method-C 海洋 Tri、陆地 Hex 全球；Red-Green 全球海岸）
+  最终网格逐变量一致、`refine_*` 统计一致；CLI clippy 与全量测试 1,159 通过。
+- 待做（2c+2d 合并）：`write_refined_outputs` 仍同时接收 h-field 上下文、`adaptive` 报告与 LEPP
+  报告，并据此三选一生成 MPAS 宽度上下文；应改为由需求与实际层级统一推导，届时再把
+  `RefinedGrid` 的算法专属字段归入诊断存档。三种来源需逐一证明等价。
+
 ### HARP-DV
 
-`earthmesh_refine_harp_dv` 已从工作区移除，仓库中不再有 HARP-DV 的实现或被他处调用的函数。
-仅保留显式退役防护（core 的 namelist 解析、CLI 的 `&harp_dv` 段与后端名、GUI 的后端选择）及其
-测试：删掉它们会让旧 namelist 的 `&harp_dv` 段被当作未知段静默忽略、运行照常进行，属于
-指南 11.1 所列的静默失败类。
+`earthmesh_refine_harp_dv` 早已从工作区移除；2026-09-25（e8d028df）连同退役防护一并删除——用户
+只有一人，没有需要保护的旧配置。HARP-DV 的名称不再有任何特殊处理，未知后端名按通用规则拒绝。

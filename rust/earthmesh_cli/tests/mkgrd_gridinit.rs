@@ -309,10 +309,10 @@ fn write_clean_ocean_source_gridfile(path: &Path) {
         density_reference_width_km: 50.0,
         source: "test_producer".into(),
     };
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         &mesh,
-        earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+        earthmesh_cli::unstructured_mesh_support::GridfileMetadataSlices {
             mpas: Some(&context),
             m_refine_level: Some(&[0, 0, 1]),
             w_refine_level: Some(&[0, 0, 1, 1, 0]),

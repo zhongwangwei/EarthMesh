@@ -95,10 +95,10 @@ pub fn write_springjustment_global_gridfile(
             )
         })
         .transpose()?;
-    crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    crate::write_unstructured_mesh_netcdf_with_metadata(
         output,
         &report.mesh,
-        crate::MethodCGridfileMetadataSlices {
+        crate::GridfileMetadataSlices {
             mpas: context.as_ref(),
             ..Default::default()
         },

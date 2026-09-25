@@ -34,8 +34,8 @@ pub(crate) use unstructured_mesh_support::{
     validate_published_cell_degrees, validate_unstructured_mesh, GridfileRowLayout,
 };
 use unstructured_mesh_support::{
-    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
-    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
+    GridfileCellKind, GridfileMeshPoints, GridfileMetadataSlices, IapMeshReadPayload,
+    MethodCGridfileLineages, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 pub mod merit_tile_selection;
 use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
@@ -183,7 +183,7 @@ use getcontain_geometry::{
 pub mod unstructured_mesh_io;
 use unstructured_mesh_io::{
     gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
-    write_unstructured_mesh_netcdf_with_method_c_metadata,
+    write_unstructured_mesh_netcdf_with_metadata,
 };
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{

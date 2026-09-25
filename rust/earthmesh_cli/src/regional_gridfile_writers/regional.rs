@@ -3,7 +3,7 @@ use crate::finalize_mask_postproc_layout_with_reindex_report;
 use crate::mask_postproc_layout_from_unstructured_mesh;
 use crate::mesh_row_for_canonical_id;
 use crate::read_unstructured_mesh_netcdf;
-use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::write_unstructured_mesh_netcdf_with_metadata;
 use crate::GridRegion;
 use crate::MaskPostprocLayout;
 use std::io;
@@ -76,7 +76,7 @@ pub fn write_regional_gridfile_with_refine_levels(
         layout.ustr_points,
         &source_metadata,
     )?;
-    write_unstructured_mesh_netcdf_with_method_c_metadata(
+    write_unstructured_mesh_netcdf_with_metadata(
         regional_gridfile,
         &report.mesh,
         final_metadata.slices(),

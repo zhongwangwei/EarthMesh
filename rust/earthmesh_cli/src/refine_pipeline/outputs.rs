@@ -13,7 +13,7 @@ use crate::write_method_c_mesh_with_optional_domain_and_metadata;
 use crate::write_regional_gridfile_with_refine_levels;
 use crate::CouplingCsvOptions;
 use crate::GridRegion;
-use crate::MethodCGridfileMetadataSlices;
+use crate::GridfileMetadataSlices;
 use crate::RefineCoupledOutputReport;
 use crate::UnstructuredMesh;
 use crate::UnstructuredMeshWriteReport;
@@ -35,27 +35,28 @@ pub(super) struct MethodCRefinedOutputReports {
     pub output: UnstructuredMeshWriteReport,
 }
 
+/// What only Method-C records about how each cell was built. Per-cell depth is
+/// not here: every backend reports it, through `write_refined_outputs`'s
+/// `cell_levels`.
 pub(super) struct MethodCMetadataSlices<'a> {
     /// Which face of the pre-refinement mesh each final cell descends from.
     pub m_lineage: &'a [i64],
     pub w_lineage: &'a [i64],
-    pub m_refine_level: &'a [i32],
     pub m_refine_level_orig: &'a [i32],
     pub m_ngr: &'a [i32],
-    pub w_refine_level: &'a [i32],
     pub w_refine_level_orig: &'a [i32],
     pub w_ngr: &'a [i32],
 }
 
 impl<'a> MethodCMetadataSlices<'a> {
-    fn gridfile(&self) -> MethodCGridfileMetadataSlices<'a> {
-        MethodCGridfileMetadataSlices {
+    fn gridfile(&self) -> GridfileMetadataSlices<'a> {
+        GridfileMetadataSlices {
             hfield: None,
             mpas: None, // Only a producer with an explicit demand contract fills this below.
-            m_refine_level: Some(self.m_refine_level),
+            m_refine_level: None,
             m_refine_level_orig: Some(self.m_refine_level_orig),
             m_ngr: Some(self.m_ngr),
-            w_refine_level: Some(self.w_refine_level),
+            w_refine_level: None,
             w_refine_level_orig: Some(self.w_refine_level_orig),
             w_ngr: Some(self.w_ngr),
             m_lineage: Some(self.m_lineage),
@@ -147,7 +148,7 @@ pub(super) fn write_refined_outputs(
                 .collect::<Vec<_>>(),
         )
     });
-    let mut metadata = MethodCGridfileMetadataSlices {
+    let mut metadata = GridfileMetadataSlices {
         hfield,
         mpas: mpas.as_ref(),
         ..metadata
@@ -159,14 +160,10 @@ pub(super) fn write_refined_outputs(
         metadata.m_lineage = Some(m);
         metadata.w_lineage = Some(w);
     }
-    // Per-cell depth from a backend without Method-C metadata. Method-C's own
-    // levels already travel in `metadata`, so a Method-C run writes exactly
-    // what it did before; this only fills what was absent.
-    if metadata.m_refine_level.is_none() && metadata.w_refine_level.is_none() {
-        if let Some((m, w)) = cell_levels {
-            metadata.m_refine_level = Some(m);
-            metadata.w_refine_level = Some(w);
-        }
+    // Per-cell depth comes from the backend-neutral levels alone.
+    if let Some((m, w)) = cell_levels {
+        metadata.m_refine_level = Some(m);
+        metadata.w_refine_level = Some(w);
     }
     let output_path = file_dir.join("result").join(format!(
         "gridfile_NXP{nxp:04}_{}{name_suffix}.nc4",
@@ -189,11 +186,8 @@ pub(super) fn write_refined_outputs(
             max_level,
             &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
-        let raw_output = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
-            &raw_path,
-            output_mesh,
-            metadata,
-        )?;
+        let raw_output =
+            crate::write_unstructured_mesh_netcdf_with_metadata(&raw_path, output_mesh, metadata)?;
         if config.mesh_type.trim() == "oceanmesh" && config.mode_grid.trim() == "tri" {
             if let Some(GridRegion::Close { points }) = domain_region {
                 let plan = write_clean_regional_ocean_gridfile(

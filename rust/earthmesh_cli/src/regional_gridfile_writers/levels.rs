@@ -2,8 +2,8 @@ use std::io;
 use std::path::Path;
 
 use crate::{
-    read_gridfile_cell_lineages, read_gridfile_mesh_points, MaskPostprocFinalizationReport,
-    MethodCGridfileMetadataSlices,
+    read_gridfile_cell_lineages, read_gridfile_mesh_points, GridfileMetadataSlices,
+    MaskPostprocFinalizationReport,
 };
 
 pub(crate) struct OptionalRefineLevelVectors {
@@ -33,8 +33,8 @@ pub(crate) struct FinalRefineLevelVectors {
 }
 
 impl FinalRefineLevelVectors {
-    pub(crate) fn slices(&self) -> MethodCGridfileMetadataSlices<'_> {
-        MethodCGridfileMetadataSlices {
+    pub(crate) fn slices(&self) -> GridfileMetadataSlices<'_> {
+        GridfileMetadataSlices {
             mpas: self.mpas.as_ref(),
             hfield: self.hfield.as_ref(),
             m_lineage: self.m_lineage.as_deref(),

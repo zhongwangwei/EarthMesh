@@ -8,13 +8,13 @@ use earthmesh_mesh::{
 
 use crate::{
     read_unstructured_mesh_netcdf, unstructured_dimc, write_regional_gridfile_with_refine_levels,
-    write_unstructured_mesh_netcdf_with_method_c_metadata, GridRegion,
-    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshWriteReport,
+    write_unstructured_mesh_netcdf_with_metadata, GridRegion, GridfileMetadataSlices,
+    UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
 pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
     mesh: &UnstructuredMesh,
-    metadata: MethodCGridfileMetadataSlices<'_>,
+    metadata: GridfileMetadataSlices<'_>,
     nxp: usize,
     nspring: usize,
     beta: f64,
@@ -128,7 +128,7 @@ pub(crate) fn write_method_c_mesh_with_optional_domain_and_metadata(
     output_path: impl AsRef<Path>,
     domain_region: Option<&GridRegion>,
     mode_grid: &str,
-    metadata: MethodCGridfileMetadataSlices<'_>,
+    metadata: GridfileMetadataSlices<'_>,
 ) -> io::Result<(
     Option<UnstructuredMeshWriteReport>,
     UnstructuredMeshWriteReport,
@@ -136,11 +136,8 @@ pub(crate) fn write_method_c_mesh_with_optional_domain_and_metadata(
     let output_path = output_path.as_ref();
     match domain_region {
         Some(region) => {
-            let raw_output = write_unstructured_mesh_netcdf_with_method_c_metadata(
-                raw_output_path,
-                mesh,
-                metadata,
-            )?;
+            let raw_output =
+                write_unstructured_mesh_netcdf_with_metadata(raw_output_path, mesh, metadata)?;
             let kept = write_regional_gridfile_with_refine_levels(
                 &raw_output.output,
                 output_path,
@@ -167,8 +164,7 @@ pub(crate) fn write_method_c_mesh_with_optional_domain_and_metadata(
         }
         None => {
             crate::validate_published_cell_degrees(mesh, mode_grid)?;
-            let output =
-                write_unstructured_mesh_netcdf_with_method_c_metadata(output_path, mesh, metadata)?;
+            let output = write_unstructured_mesh_netcdf_with_metadata(output_path, mesh, metadata)?;
             Ok((None, output))
         }
     }
@@ -255,7 +251,7 @@ mod tests {
             &output,
             None,
             "hex",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .expect("global helper-generated mesh should publish");
         assert_eq!(report.1.lbx_points, mesh.w_points.len());
@@ -275,7 +271,7 @@ mod tests {
             &regional_output,
             Some(&region),
             "hex",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .expect("regional extracted helper-generated mesh should publish");
         assert!(
@@ -302,7 +298,7 @@ mod tests {
             &output,
             None,
             "hex",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .expect("published hex degree 7 is inside the legacy contract");
 
@@ -322,7 +318,7 @@ mod tests {
             &output,
             None,
             "hex",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .unwrap_err();
 
@@ -349,7 +345,7 @@ mod tests {
             &output,
             Some(&region),
             "hex",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .unwrap_err();
 
@@ -373,7 +369,7 @@ mod tests {
             &output,
             None,
             "tri",
-            MethodCGridfileMetadataSlices::default(),
+            GridfileMetadataSlices::default(),
         )
         .expect("tri publication should use triangle cells, not the hex 5..7 gate");
 

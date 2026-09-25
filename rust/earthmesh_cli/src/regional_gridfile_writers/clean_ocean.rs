@@ -7,7 +7,7 @@ use crate::run_getcontain_refine_file_one_based;
 use crate::run_mask_postproc_ocean_domain;
 use crate::write_area_judge_grid_netcdf;
 use crate::write_close_mask_netcdf;
-use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::write_unstructured_mesh_netcdf_with_metadata;
 use crate::AreaJudgeGridPayload;
 use crate::CloseMask;
 use crate::GetContainMeshKind;
@@ -207,7 +207,7 @@ pub fn write_clean_regional_ocean_gridfile(
         || final_metadata.mpas.is_some()
         || final_metadata.hfield.is_some()
     {
-        write_unstructured_mesh_netcdf_with_method_c_metadata(
+        write_unstructured_mesh_netcdf_with_metadata(
             &plan.result_gridfile,
             &report.finalization.mesh,
             final_metadata.slices(),

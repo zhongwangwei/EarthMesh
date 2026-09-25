@@ -7,7 +7,7 @@ use earthmesh_cli::{
     coordinate_types::LonLatPoint,
     hfield_gridfile_context::HfieldGridfileContext,
     mpas_gridfile_context::MpasGridfileContext,
-    unstructured_mesh_support::{MethodCGridfileMetadataSlices, UnstructuredMesh},
+    unstructured_mesh_support::{GridfileMetadataSlices, UnstructuredMesh},
 };
 use earthmesh_hfield::HField;
 use earthmesh_project::ModelFormat;
@@ -136,10 +136,10 @@ fn context_for(mesh: &UnstructuredMesh) -> MpasGridfileContext {
 }
 
 fn write_gridfile(path: &Path, mesh: &UnstructuredMesh, context: Option<&MpasGridfileContext>) {
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             mpas: context,
             ..Default::default()
         },
@@ -164,10 +164,10 @@ fn hfield_context() -> HfieldGridfileContext {
 
 fn write_hfield_only_gridfile(path: &Path, mesh: &UnstructuredMesh) {
     let hfield = hfield_context();
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             hfield: Some(&hfield),
             ..Default::default()
         },
@@ -751,10 +751,10 @@ fn write_gridfile_with_lineage(
     m_lineage: Option<&[i64]>,
     w_lineage: Option<&[i64]>,
 ) {
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             mpas: context,
             m_lineage,
             w_lineage,

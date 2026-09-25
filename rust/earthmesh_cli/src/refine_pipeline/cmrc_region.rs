@@ -231,10 +231,10 @@ mod tests {
             w_to_m: vec![vec![0; 7], vec![1; 7], vec![2, 3, 4, 5, 6, 1, 1]],
             n_w_to_m: vec![0, 0, 5],
         };
-        crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        crate::write_unstructured_mesh_netcdf_with_metadata(
             &path,
             &mesh,
-            crate::MethodCGridfileMetadataSlices {
+            crate::GridfileMetadataSlices {
                 m_lineage: Some(&[0, 0, 2, 3, 4, 5, 6]),
                 w_lineage: Some(&[0, 0, 2]),
                 m_refine_level: Some(&[0, 0, 1, 1, 1, 1, 1]),

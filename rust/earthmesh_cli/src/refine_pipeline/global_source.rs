@@ -33,7 +33,7 @@ use crate::refinement_spring_iterations;
 use crate::run_mkgrd_gridinit_global_namelist;
 use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
-use crate::MethodCGridfileMetadataSlices;
+use crate::GridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
 use earthmesh_refine_method_c::{
     improve_lepp_post_quality, refine_adaptive_hybrid, refine_adaptive_hybrid_constrained,
@@ -597,7 +597,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
             crate::grid_quality_pipeline::read_gridfile_cell_lineages(&gridinit.gridfile.output)?;
         method_c_delaunay_mesh_from_unstructured_gridfile(
             &source_gridfile,
-            MethodCGridfileMetadataSlices {
+            GridfileMetadataSlices {
                 hfield: None,
                 mpas: None,
                 m_refine_level: (!source_levels.m_refine_level.is_empty())
@@ -1024,10 +1024,8 @@ pub(super) fn run_refine_pipeline_in_workspace(
             .map(|meta| MethodCMetadataSlices {
                 m_lineage: &meta.m_lineages,
                 w_lineage: &meta.w_lineages,
-                m_refine_level: &meta.m_refine_levels,
                 m_refine_level_orig: &meta.m_refine_levels_orig,
                 m_ngr: &meta.m_ngr,
-                w_refine_level: &meta.w_refine_levels,
                 w_refine_level_orig: &meta.w_refine_levels_orig,
                 w_ngr: &meta.w_ngr,
             }),
@@ -2962,10 +2960,10 @@ fn run_certified_pipeline(
                     })
                     .collect::<BTreeSet<_>>()
             });
-            let mut parent_report = crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+            let mut parent_report = crate::write_unstructured_mesh_netcdf_with_metadata(
                 &temporary_source_path,
                 &output_mesh,
-                MethodCGridfileMetadataSlices {
+                GridfileMetadataSlices {
                     mpas: Some(&mpas_context),
                     m_lineage: Some(&m_pre_export_lineage),
                     w_lineage: Some(&w_pre_export_lineage),
@@ -3036,10 +3034,10 @@ fn run_certified_pipeline(
             )
         } else {
             (
-                crate::write_unstructured_mesh_netcdf_with_method_c_metadata(
+                crate::write_unstructured_mesh_netcdf_with_metadata(
                     &temporary_path,
                     &output_mesh,
-                    MethodCGridfileMetadataSlices {
+                    GridfileMetadataSlices {
                         mpas: Some(&mpas_context),
                         m_refine_level: Some(&m_refine_levels),
                         w_refine_level: Some(&w_refine_levels),

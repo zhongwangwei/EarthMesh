@@ -59,7 +59,7 @@ pub struct MethodCGridfileLineages {
 /// Refinement levels are zero-based at the file boundary; `ngr` retains its
 /// native one-based Method-C value (placeholder rows may be zero).
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MethodCGridfileMetadataSlices<'a> {
+pub struct GridfileMetadataSlices<'a> {
     /// Effective spherical demand and its quantization inputs, not MPAS widths.
     pub hfield: Option<&'a crate::hfield_gridfile_context::HfieldGridfileContext>,
     /// Optional backend-owned MPAS width context; independent of Method-C levels.

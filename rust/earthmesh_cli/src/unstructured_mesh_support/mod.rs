@@ -12,7 +12,7 @@ pub(crate) use topology::{
     split_non_manifold_triangle_vertex_fans, unstructured_dimc, validate_unstructured_mesh,
 };
 pub use types::{
-    GridfileCellKind, GridfileMeshPoints, IapMeshReadPayload, MethodCGridfileLineages,
-    MethodCGridfileMetadataSlices, UnstructuredMesh, UnstructuredMeshTopologyReport,
+    GridfileCellKind, GridfileMeshPoints, GridfileMetadataSlices, IapMeshReadPayload,
+    MethodCGridfileLineages, UnstructuredMesh, UnstructuredMeshTopologyReport,
     UnstructuredMeshWriteReport,
 };

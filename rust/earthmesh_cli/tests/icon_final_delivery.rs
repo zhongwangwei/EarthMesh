@@ -1,9 +1,9 @@
 use earthmesh_cli::{
     coordinate_types::{GridRegion, LonLatPoint},
     unstructured_mesh_io::{
-        write_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf_with_method_c_metadata,
+        write_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf_with_metadata,
     },
-    unstructured_mesh_support::{MethodCGridfileMetadataSlices, UnstructuredMesh},
+    unstructured_mesh_support::{GridfileMetadataSlices, UnstructuredMesh},
     write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
 };
 use std::{
@@ -248,10 +248,10 @@ fn fixture_lineages(mesh: &UnstructuredMesh) -> (Vec<i64>, Vec<i64>) {
 
 fn write_gridfile_with_context(path: &Path, mesh: &UnstructuredMesh) {
     let (m_lineage, w_lineage) = fixture_lineages(mesh);
-    write_unstructured_mesh_netcdf_with_method_c_metadata(
+    write_unstructured_mesh_netcdf_with_metadata(
         path,
         mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             m_lineage: Some(&m_lineage),
             w_lineage: Some(&w_lineage),
             ..Default::default()
@@ -450,10 +450,10 @@ fn rewrite_without_lineage(path: &Path, omit: &str) {
     let tmp = path.with_extension("rewrite.nc4");
     let mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(path).unwrap();
     let lineages = earthmesh_cli::grid_quality_pipeline::read_gridfile_cell_lineages(path).unwrap();
-    write_unstructured_mesh_netcdf_with_method_c_metadata(
+    write_unstructured_mesh_netcdf_with_metadata(
         &tmp,
         &mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             m_lineage: (omit != "earthmesh_m_lineage").then_some(lineages.m.as_slice()),
             w_lineage: (omit != "earthmesh_w_lineage").then_some(lineages.w.as_slice()),
             ..Default::default()

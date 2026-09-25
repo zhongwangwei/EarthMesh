@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use earthmesh_cli::{
     coordinate_types::LonLatPoint,
     mpas_gridfile_context::{read_mpas_gridfile_context, MpasGridfileContext},
-    unstructured_mesh_support::{MethodCGridfileMetadataSlices, UnstructuredMesh},
+    unstructured_mesh_support::{GridfileMetadataSlices, UnstructuredMesh},
 };
 
 fn root(name: &str) -> std::path::PathBuf {
@@ -48,10 +48,10 @@ fn context() -> MpasGridfileContext {
 }
 
 fn write_with_context(path: &Path, context: &MpasGridfileContext) {
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         path,
         &mesh(),
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             mpas: Some(context),
             ..Default::default()
         },
@@ -233,16 +233,15 @@ fn invalid_mpas_metadata_does_not_overwrite_existing_gridfile() {
     let mut invalid = old.clone();
     invalid.cellwidth_km.pop();
 
-    let err =
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
-            &output,
-            &mesh(),
-            MethodCGridfileMetadataSlices {
-                mpas: Some(&invalid),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
+    let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
+        &output,
+        &mesh(),
+        GridfileMetadataSlices {
+            mpas: Some(&invalid),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
 
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(fs::read(&output).unwrap(), before);
@@ -457,10 +456,10 @@ fn builds_mpas_context_from_adaptive_region_demand_and_roundtrips() {
 
         let root = root(name);
         let output = root.join("grid.nc4");
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
             &output,
             &mesh,
-            MethodCGridfileMetadataSlices {
+            GridfileMetadataSlices {
                 mpas: Some(&context),
                 ..Default::default()
             },
@@ -610,24 +609,23 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
     reserved.source = "adaptive_region_pass_w_demand_v2".to_string();
     let root = root("reserved_adaptive_source");
     let output = root.join("bad.nc4");
-    let err =
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
-            &output,
-            &mesh,
-            MethodCGridfileMetadataSlices {
-                mpas: Some(&reserved),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
+    let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
+        &output,
+        &mesh,
+        GridfileMetadataSlices {
+            mpas: Some(&reserved),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("unsupported"), "{err}");
 
     let valid = MpasGridfileContext::from_adaptive_region_demand(&mesh, &report, base, 42).unwrap();
     let native = root.join("native.nc4");
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &native,
         &mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             mpas: Some(&valid),
             ..Default::default()
         },
@@ -765,10 +763,10 @@ fn builds_mpas_context_from_complete_lepp_resolved_demand_and_roundtrips() {
 
         let root = root(&format!("lepp_{name}"));
         let output = root.join("grid.nc4");
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
             &output,
             &mesh,
-            MethodCGridfileMetadataSlices {
+            GridfileMetadataSlices {
                 mpas: Some(&context),
                 ..Default::default()
             },
@@ -849,16 +847,15 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     .unwrap()
     .unwrap();
     context.source = "lepp_resolved_region_w_demand_v2".to_string();
-    let err =
-        earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
-            &output,
-            &mesh,
-            MethodCGridfileMetadataSlices {
-                mpas: Some(&context),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
+    let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
+        &output,
+        &mesh,
+        GridfileMetadataSlices {
+            mpas: Some(&context),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("unsupported"), "{err}");
 
     let mut valid = MpasGridfileContext::from_lepp_resolved_demand(
@@ -870,10 +867,10 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     .unwrap();
     valid.source = "lepp_resolved_region_w_demand_v1".to_string();
     let native = root.join("native.nc4");
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &native,
         &mesh,
-        MethodCGridfileMetadataSlices {
+        GridfileMetadataSlices {
             mpas: Some(&valid),
             ..Default::default()
         },

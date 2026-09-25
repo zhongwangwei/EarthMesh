@@ -4,7 +4,7 @@ use crate::finalize_mask_postproc_layout_with_reindex_report;
 use crate::mask_postproc_layout_from_unstructured_mesh;
 use crate::read_unstructured_mesh_netcdf;
 use crate::sample_landtype_values_for_points_one_based;
-use crate::write_unstructured_mesh_netcdf_with_method_c_metadata;
+use crate::write_unstructured_mesh_netcdf_with_metadata;
 use crate::AreaJudgeLandtypeClass;
 use earthmesh_mesh::retain_edge_connected_components_with_hard_demand_one_based;
 use std::io;
@@ -185,7 +185,7 @@ pub fn write_landtype_masked_gridfile_with_refine_levels(
             )?;
         final_metadata.duplicate_w_vertices(&duplicate_sources)?;
     }
-    write_unstructured_mesh_netcdf_with_method_c_metadata(
+    write_unstructured_mesh_netcdf_with_metadata(
         &output_gridfile,
         &report.mesh,
         final_metadata.slices(),

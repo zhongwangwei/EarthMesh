@@ -469,10 +469,10 @@ fn gridfile_writer_round_trips_full_method_c_metadata() {
     let w_orig = [0, 1, 1];
     let w_ngr = [0, 8, 9];
 
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &output,
         &mesh,
-        earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+        earthmesh_cli::unstructured_mesh_support::GridfileMetadataSlices {
             hfield: None,
             mpas: None,
             m_refine_level: Some(&m_levels),
@@ -524,10 +524,10 @@ fn regional_clip_preserves_method_c_metadata_after_inserted_placeholder() {
         n_w_to_m: vec![1, 1, 1, 1],
     };
 
-    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_method_c_metadata(
+    earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &input,
         &mesh,
-        earthmesh_cli::unstructured_mesh_support::MethodCGridfileMetadataSlices {
+        earthmesh_cli::unstructured_mesh_support::GridfileMetadataSlices {
             hfield: None,
             mpas: None,
             m_refine_level: Some(&[0, 5]),
