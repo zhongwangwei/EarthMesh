@@ -95,6 +95,11 @@ pub use mesh_repairable_error::{
 };
 mod mesh_triangle_seed;
 pub use mesh_triangle_seed::MethodCTriangleSeed;
+mod mesh_angle_window;
+pub use mesh_angle_window::{
+    repair_triangle_angle_window, spherical_triangle_angles_deg, AngleWindowOptions,
+    AngleWindowReport,
+};
 mod mesh_flip;
 pub use mesh_flip::FlipError;
 pub use spherical_circumcenter_mesh::circumcenter_is_local_enough;

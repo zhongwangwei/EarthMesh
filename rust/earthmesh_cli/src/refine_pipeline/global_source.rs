@@ -4500,8 +4500,44 @@ fn refine_with_redgreen(
             .skip(redgreen.num_vertex + 1)
             .filter(|(i, (old, new))| transitions[*i] || old != new)
             .count();
+        let repair = crate::redgreen_bridge::repair_redgreen_angle_window(&mut redgreen)?;
+        eprintln!(
+            "earthmesh_cli: Red-Green angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
+             {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed, {} rounds)",
+            repair.outside_before,
+            repair.outside_after,
+            repair.min_angle_before,
+            repair.max_angle_before,
+            repair.min_angle_after,
+            repair.max_angle_after,
+            repair.flips,
+            repair.moves,
+            repair.removed_vertices,
+            repair.rounds,
+        );
+        if repair.flips + repair.moves + repair.removed_vertices > 0 {
+            output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
+            let triangles = crate::cells_on_triangle_one_based_from_mesh(&output_mesh)?;
+            let points = output_mesh
+                .w_points
+                .iter()
+                .map(|p| earthmesh_mesh::LonLatDegrees::new(p.lon, p.lat))
+                .collect::<Vec<_>>();
+            let (_, count, ratio) =
+                earthmesh_refine_redgreen::triangle_balance_marks(&points, &triangles, 2)?;
+            eprintln!(
+                "earthmesh_cli: Red-Green angle window left {count} physical 2:1 violations \
+                 (max ratio {ratio:.3})"
+            );
+        }
     }
-    let (output_mesh, spring_nest_passes) = if spring_iterations == 0 || spring_regions.is_empty() {
+    // The triangle output has just been brought into the angle window, and the
+    // regional spring optimises edge lengths, not angles: on the global coast
+    // case it took 26-101 degrees to 21-117. Spring only the classic path.
+    let (output_mesh, spring_nest_passes) = if spring_iterations == 0
+        || spring_regions.is_empty()
+        || preserve_locality
+    {
         (output_mesh, 0)
     } else {
         let (smoothed, passes) =
@@ -6330,8 +6366,11 @@ mod tests {
         );
     }
 
+    /// Triangle output is brought into the enforced angle window after the
+    /// polish; the regional spring, which optimises edge lengths and made the
+    /// angles worse, is left to the classic path even when configured.
     #[test]
-    fn redgreen_consumes_the_configured_refinement_spring() {
+    fn redgreen_triangles_are_repaired_into_the_angle_window_instead_of_sprung() {
         let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25)
             .expect("base mesh")
             .into_inner();
@@ -6349,9 +6388,15 @@ mod tests {
         };
 
         let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, true, 1)
-            .expect("red-green with spring");
+            .expect("red-green with spring configured");
 
-        assert_eq!(refined.spring_nest_passes, 1);
+        assert_eq!(refined.spring_nest_passes, 0);
+        let (lo, hi) = unstructured_triangle_angle_range(&refined.output_mesh).unwrap();
+        let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+        assert!(
+            lo >= window.0 && hi <= window.1,
+            "angles {lo:.2}..{hi:.2} outside {window:?}"
+        );
         assert!(
             refined.transition_faces > 0,
             "green closure must be reported"

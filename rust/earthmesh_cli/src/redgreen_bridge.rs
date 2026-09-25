@@ -419,6 +419,13 @@ fn polish_redgreen_mesh_impl(
         &mesh.refinement_levels,
     );
     mesh.cells_on_triangle = state.triangles().to_vec();
+    rebuild_redgreen_derived_tables(mesh)?;
+    Ok(report)
+}
+
+/// Triangle centres and the ordered triangle ring of every cell, recomputed
+/// from the corner table and cell positions after either has changed.
+fn rebuild_redgreen_derived_tables(mesh: &mut RedGreenMesh) -> io::Result<()> {
     mesh.triangle_points.resize(
         mesh.cells_on_triangle.len(),
         earthmesh_mesh::LonLatDegrees::new(0.0, 0.0),
@@ -433,7 +440,7 @@ fn polish_redgreen_mesh_impl(
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("legalized Red-Green triangle {triangle} has no centroid"),
+                format!("Red-Green triangle {triangle} has no centroid"),
             )
         })?;
     }
@@ -451,6 +458,69 @@ fn polish_redgreen_mesh_impl(
         &mesh.triangle_points,
         &mut mesh.triangles_on_cell,
     )?;
+    Ok(())
+}
+
+/// The output contract's triangle angle window (guide 11.72), aimed at with a
+/// small margin so the coordinates' rounding on the way to the file cannot
+/// carry an angle back out.
+const ANGLE_WINDOW_MARGIN_DEG: f64 = 0.25;
+
+/// Bring red-green's triangles into the enforced angle window.
+///
+/// The bisection closure leaves ~30/60/90 triangles at every level change, and
+/// refinement cannot remove them -- it makes them again one level down. This
+/// is a terminal step on the finished triangulation: valence-balancing flips,
+/// removal of refined vertices of valence 3 or 4, and angle-driven vertex
+/// moves (`earthmesh_mesh::repair_triangle_angle_window`). Base-mesh cells
+/// keep their ids; refined ones above a removed vertex shift down by one.
+pub fn repair_redgreen_angle_window(
+    mesh: &mut RedGreenMesh,
+) -> io::Result<earthmesh_mesh::AngleWindowReport> {
+    let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+    let mut options = earthmesh_mesh::AngleWindowOptions::new((
+        lo + ANGLE_WINDOW_MARGIN_DEG,
+        hi - ANGLE_WINDOW_MARGIN_DEG,
+    ));
+    options.first_vertex = 2;
+    options.first_face = 2;
+    options.removable_from = mesh.num_center.max(2);
+    // Never widen the widest cell: the dual and the mask post-process are
+    // built for the degrees the mesh already has.
+    options.max_valence = (2..mesh.n_triangles_on_cell.len())
+        .map(|cell| mesh.n_triangles_on_cell[cell])
+        .max()
+        .unwrap_or(0)
+        .max(7);
+    let mut points: Vec<[f64; 3]> = mesh
+        .cell_points
+        .iter()
+        .map(|&p| {
+            let xyz = earthmesh_mesh::lonlat_degrees_to_unit_xyz(p);
+            [xyz.x, xyz.y, xyz.z]
+        })
+        .collect();
+    let mut faces = mesh.cells_on_triangle.clone();
+    let mut levels = if mesh.refinement_levels.len() == faces.len() {
+        mesh.refinement_levels.clone()
+    } else {
+        Vec::new()
+    };
+    let report =
+        earthmesh_mesh::repair_triangle_angle_window(&mut points, &mut faces, &mut levels, options);
+    if report.flips + report.moves + report.removed_vertices == 0 {
+        return Ok(report);
+    }
+    mesh.green_parents.clear();
+    mesh.cell_points = points
+        .iter()
+        .map(|&[x, y, z]| {
+            earthmesh_mesh::xyz_to_lonlat_degrees(earthmesh_mesh::CartesianPoint::new(x, y, z))
+        })
+        .collect();
+    mesh.cells_on_triangle = faces;
+    mesh.refinement_levels = levels;
+    rebuild_redgreen_derived_tables(mesh)?;
     Ok(report)
 }
 
