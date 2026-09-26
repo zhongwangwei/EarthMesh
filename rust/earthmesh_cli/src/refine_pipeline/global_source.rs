@@ -916,6 +916,52 @@ pub(super) fn run_refine_pipeline_in_workspace(
         RefineBackend::Certified => unreachable!("CMRC is dispatched before source-grid setup"),
     };
 
+    // The angle contract, once, for whichever backend built the mesh: inside
+    // [35, 85] and as close to 60 as the mesh allows (angle_contract.rs).
+    // Triangle output only -- hex cells are not triangles -- and spherical only.
+    let (mut cell_levels, mut method_c_metadata, mut pentagon_indices, mut state) =
+        (cell_levels, method_c_metadata, pentagon_indices, state);
+    let enforce_angles = config.mode_grid.trim() == "tri" && !native_cartesian_xy;
+    let output_mesh = if enforce_angles {
+        let (mesh, report) = super::angle_contract::enforce_triangle_angles(
+            output_mesh,
+            super::angle_contract::PublishedRows {
+                levels: &mut cell_levels,
+                metadata: &mut method_c_metadata,
+                pentagons: &mut pentagon_indices,
+            },
+        )?;
+        if let Some(report) = report {
+            log_angle_contract("", &report);
+            if report.flips + report.moves + report.removed_vertices > 0 {
+                // The backend's Voronoi tables describe the mesh before the
+                // repair; the run record counts the published rows instead.
+                state = None;
+            }
+        }
+        mesh
+    } else {
+        output_mesh
+    };
+    let lepp_post_quality = match lepp_post_quality {
+        Some(mut grid) if enforce_angles => {
+            let (mesh, report) = super::angle_contract::enforce_triangle_angles(
+                grid.output_mesh,
+                super::angle_contract::PublishedRows {
+                    levels: &mut None,
+                    metadata: &mut None,
+                    pentagons: &mut pentagon_indices.clone(),
+                },
+            )?;
+            if let Some(report) = report {
+                log_angle_contract(" (_lepp)", &report);
+            }
+            grid.output_mesh = mesh;
+            Some(grid)
+        }
+        other => other,
+    };
+
     // Measured from backend output, not from the request: the deepest per-cell
     // level any backend recorded. A backend that records none (LEPP) falls back
     // to the deepest criteria pass it completed, and otherwise reports zero.
@@ -3908,21 +3954,21 @@ fn minor_cell_steradians(area: f64) -> Option<f64> {
 /// Owned rather than borrowed because `MethodCMetadataSlices` borrows all of it
 /// and has to outlive the call that consumes it. A backend with no generations
 /// or ancestry to report leaves this `None` and the writer serves it the same.
-struct MethodCMetadataOwned {
-    m_refine_levels: Vec<i32>,
-    m_refine_levels_orig: Vec<i32>,
-    m_ngr: Vec<i32>,
-    w_refine_levels: Vec<i32>,
-    w_refine_levels_orig: Vec<i32>,
-    w_ngr: Vec<i32>,
-    m_lineages: Vec<i64>,
-    w_lineages: Vec<i64>,
+pub(super) struct MethodCMetadataOwned {
+    pub(super) m_refine_levels: Vec<i32>,
+    pub(super) m_refine_levels_orig: Vec<i32>,
+    pub(super) m_ngr: Vec<i32>,
+    pub(super) w_refine_levels: Vec<i32>,
+    pub(super) w_refine_levels_orig: Vec<i32>,
+    pub(super) w_ngr: Vec<i32>,
+    pub(super) m_lineages: Vec<i64>,
+    pub(super) w_lineages: Vec<i64>,
 }
 
 /// Backend-neutral per-row refinement depth of an output mesh.
-struct CellRefineLevels {
-    m: Vec<i32>,
-    w: Vec<i32>,
+pub(super) struct CellRefineLevels {
+    pub(super) m: Vec<i32>,
+    pub(super) w: Vec<i32>,
 }
 
 /// A refined mesh in the shape the rest of the pipeline reads, whichever
@@ -4223,7 +4269,7 @@ fn spring_unstructured_region_interiors(
     Ok((report.mesh, 1))
 }
 
-fn unstructured_mesh_with_one_based_rows(
+pub(super) fn unstructured_mesh_with_one_based_rows(
     mesh: &crate::UnstructuredMesh,
 ) -> crate::UnstructuredMesh {
     let mut normalized = mesh.clone();
@@ -4309,6 +4355,27 @@ fn triangular_mesh_from_unstructured(
         )
     })?;
     state.to_triangular_mesh(pentagons, None)
+}
+
+fn log_angle_contract(which: &str, report: &earthmesh_mesh::AngleWindowReport) {
+    eprintln!(
+        "earthmesh_cli: triangle angle contract{which}: {} -> {} triangles outside, angles \
+         {:.2}..{:.2} -> {:.2}..{:.2} degrees, |angle-60| max {:.2} -> {:.2} mean {:.2} -> {:.2} \
+         ({} flips, {} moves, {} vertices removed)",
+        report.outside_before,
+        report.outside_after,
+        report.min_angle_before,
+        report.max_angle_before,
+        report.min_angle_after,
+        report.max_angle_after,
+        report.max_deviation_before,
+        report.max_deviation_after,
+        report.mean_deviation_before,
+        report.mean_deviation_after,
+        report.flips,
+        report.moves,
+        report.removed_vertices,
+    );
 }
 
 /// The criteria half of the point+radius route, as red-green consumes it.
@@ -4582,17 +4649,24 @@ fn refine_with_redgreen(
         let repair = crate::redgreen_bridge::repair_redgreen_angle_window(&mut redgreen)?;
         eprintln!(
             "earthmesh_cli: Red-Green angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
-             {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed, {} rounds)",
+             {:.2}..{:.2} degrees, |angle-60| max {:.2} -> {:.2} mean {:.2} -> {:.2} (window \
+             phase {:.2}) ({} flips, {} moves, {} vertices removed, {}+{} rounds)",
             repair.outside_before,
             repair.outside_after,
             repair.min_angle_before,
             repair.max_angle_before,
             repair.min_angle_after,
             repair.max_angle_after,
+            repair.max_deviation_before,
+            repair.max_deviation_after,
+            repair.mean_deviation_before,
+            repair.mean_deviation_after,
+            repair.mean_deviation_window_phase,
             repair.flips,
             repair.moves,
             repair.removed_vertices,
             repair.rounds,
+            repair.equilateral_rounds,
         );
         if repair.flips + repair.moves + repair.removed_vertices > 0 {
             output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;

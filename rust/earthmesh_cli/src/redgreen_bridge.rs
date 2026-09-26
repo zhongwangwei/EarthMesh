@@ -495,6 +495,9 @@ pub fn repair_redgreen_angle_window(
     options.first_vertex = 2;
     options.first_face = 2;
     options.removable_from = mesh.num_center.max(2);
+    // Into the window only: pushing angles toward 60 is the pipeline's
+    // backend-neutral angle contract, which runs on every backend's mesh.
+    options.equilateral_rounds = 0;
     // Never widen the widest cell: the dual and the mask post-process are
     // built for the degrees the mesh already has.
     options.max_valence = (2..mesh.n_triangles_on_cell.len())

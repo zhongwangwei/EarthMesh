@@ -41,6 +41,15 @@ pub struct AngleWindowOptions {
     /// No flip may produce an angle below this.
     pub flip_floor_deg: f64,
     pub max_rounds: usize,
+    /// Allow edge flips and vertex removal. Without them only vertices move,
+    /// so every row of the mesh keeps its meaning.
+    pub allow_topology_changes: bool,
+    /// Rounds of the second phase, which pushes every angle toward 60 degrees
+    /// once the window is met. Zero stops at the window.
+    pub equilateral_rounds: usize,
+    /// A vertex whose triangles all stay within this many degrees of 60 is
+    /// left where it is in the second phase.
+    pub equilateral_tolerance_deg: f64,
 }
 
 impl AngleWindowOptions {
@@ -53,6 +62,9 @@ impl AngleWindowOptions {
             max_valence: usize::MAX,
             flip_floor_deg: 15.0,
             max_rounds: 12,
+            allow_topology_changes: true,
+            equilateral_rounds: 4,
+            equilateral_tolerance_deg: 5.0,
         }
     }
 }
@@ -69,6 +81,15 @@ pub struct AngleWindowReport {
     pub moves: usize,
     pub removed_vertices: usize,
     pub rounds: usize,
+    /// Rounds the second (toward-60) phase ran.
+    pub equilateral_rounds: usize,
+    /// Largest and mean |angle - 60| over every interior angle.
+    pub max_deviation_before: f64,
+    pub mean_deviation_before: f64,
+    pub max_deviation_after: f64,
+    pub mean_deviation_after: f64,
+    /// Mean |angle - 60| once the window phase had finished.
+    pub mean_deviation_window_phase: f64,
 }
 
 type P = [f64; 3];
@@ -122,6 +143,21 @@ struct Work<'a> {
     fixed: Vec<bool>,
     removed: Vec<bool>,
     options: AngleWindowOptions,
+    mode: Mode,
+}
+
+/// What a move is scored against. Larger scores are better in every mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mode {
+    /// Into the contract's window: (worst margin, sum of negative margins).
+    Window,
+    /// Lower the worst deviation from 60 around each vertex.
+    Minimax,
+    /// Inside `cap` -- the window, tightened to the worst deviation the
+    /// minimax pass reached -- minimise the squared deviation from 60 over
+    /// every angle, so the rest of the mesh moves toward equilateral without
+    /// giving back what the minimax pass won at the extremes.
+    Energy { cap: (f64, f64) },
 }
 
 impl Work<'_> {
@@ -134,23 +170,75 @@ impl Work<'_> {
         spherical_triangle_angles_deg(f.map(|i| self.points[i]))
     }
 
-    fn margin_of(&self, f: [usize; 3]) -> f64 {
+    fn margin_to(&self, f: [usize; 3], window: (f64, f64)) -> f64 {
         let a = self.angles(f);
         let lo = a.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = a.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        (lo - self.options.window_deg.0).min(self.options.window_deg.1 - hi)
+        (lo - window.0).min(window.1 - hi)
     }
 
-    /// (smallest margin, sum of negative margins); larger is better.
-    fn score(&self, faces: &[usize]) -> (f64, f64) {
+    fn margin_of(&self, f: [usize; 3]) -> f64 {
+        self.margin_to(f, self.options.window_deg)
+    }
+
+    /// Larger is better. First phase: (worst margin to the window, sum of the
+    /// negative margins). Second phase: (window violation, clamped at zero,
+    /// then minus the sum of squared deviations from 60 over every angle), so
+    /// a move may trade one angle against another but never leave the window.
+    fn score_corners(&self, faces: impl Iterator<Item = [usize; 3]>) -> (f64, f64) {
         let mut worst = f64::INFINITY;
-        let mut deficit = 0.0;
-        for &f in faces {
-            let m = self.margin_of(self.faces[f]);
-            worst = worst.min(m);
-            deficit += m.min(0.0);
+        let mut second = 0.0;
+        for f in faces {
+            match self.mode {
+                Mode::Window => {
+                    let m = self.margin_of(f);
+                    worst = worst.min(m);
+                    second += m.min(0.0);
+                }
+                Mode::Minimax => {
+                    let m = self.margin_to(f, (60.0, 60.0));
+                    worst = worst.min(m);
+                    second += m;
+                }
+                Mode::Energy { cap } => {
+                    worst = worst.min(self.margin_to(f, cap));
+                    second -= self
+                        .angles(f)
+                        .iter()
+                        .map(|a| (a - 60.0) * (a - 60.0))
+                        .sum::<f64>();
+                }
+            }
         }
-        (worst, deficit)
+        match self.mode {
+            Mode::Energy { .. } => (worst.min(0.0), second),
+            _ => (worst, second),
+        }
+    }
+
+    /// Whether the second phase leaves `v` alone: every angle around it is
+    /// already within the tolerance of 60.
+    fn needs_no_move(&self, v: usize) -> bool {
+        match self.mode {
+            Mode::Window => self.score(&self.incident[v]).0 >= 0.0,
+            Mode::Minimax | Mode::Energy { .. } => self.is_settled(v),
+        }
+    }
+
+    fn is_settled(&self, v: usize) -> bool {
+        let tolerance = self.options.equilateral_tolerance_deg;
+        self.incident[v]
+            .iter()
+            .all(|&f| self.deviation(f) <= tolerance)
+    }
+
+    /// Largest |angle - 60| of a face.
+    fn deviation(&self, f: usize) -> f64 {
+        -self.margin_to(self.faces[f], (60.0, 60.0))
+    }
+
+    fn score(&self, faces: &[usize]) -> (f64, f64) {
+        self.score_corners(faces.iter().map(|&f| self.faces[f]))
     }
 
     fn better(new: (f64, f64), old: (f64, f64)) -> bool {
@@ -159,7 +247,7 @@ impl Work<'_> {
     }
 
     fn outside(&self, f: usize) -> bool {
-        self.margin_of(self.faces[f]) < 0.0
+        self.margin_to(self.faces[f], self.options.window_deg) < 0.0
     }
 
     fn orientation_kept(&self, faces: &[usize]) -> bool {
@@ -265,17 +353,8 @@ impl Work<'_> {
             return false;
         }
         if by_margin {
-            let worst = |w: &Self, pair: [[usize; 3]; 2]| {
-                let margins = pair.map(|f| w.margin_of(f));
-                (
-                    margins[0].min(margins[1]),
-                    margins[0].min(0.0) + margins[1].min(0.0),
-                )
-            };
-            if !Self::better(
-                worst(self, [new1, new2]),
-                worst(self, [self.faces[f1], self.faces[f2]]),
-            ) {
+            let before = self.score_corners([self.faces[f1], self.faces[f2]].into_iter());
+            if !Self::better(self.score_corners([new1, new2].into_iter()), before) {
                 return false;
             }
         } else {
@@ -323,7 +402,7 @@ impl Work<'_> {
     }
 
     fn centroid_move(&mut self, v: usize) -> bool {
-        if self.fixed[v] || self.score(&self.incident[v].clone()).0 >= 0.0 {
+        if self.fixed[v] || self.needs_no_move(v) {
             return false;
         }
         let ring = self.neighbours(v);
@@ -349,7 +428,7 @@ impl Work<'_> {
     }
 
     fn pattern_move(&mut self, v: usize) -> bool {
-        if self.fixed[v] || self.score(&self.incident[v].clone()).0 >= 0.0 {
+        if self.fixed[v] || self.needs_no_move(v) {
             return false;
         }
         let ring = self.neighbours(v);
@@ -504,6 +583,29 @@ impl Work<'_> {
         }
         (outside, lo, hi)
     }
+
+    /// (largest, mean) |angle - 60| over every interior angle.
+    fn deviation_stats(&self) -> (f64, f64) {
+        let mut largest = 0.0_f64;
+        let mut total = 0.0;
+        let mut count = 0usize;
+        for f in self.live_faces() {
+            for angle in self.angles(self.faces[f]) {
+                let deviation = (angle - 60.0).abs();
+                largest = largest.max(deviation);
+                total += deviation;
+                count += 1;
+            }
+        }
+        (
+            largest,
+            if count == 0 {
+                0.0
+            } else {
+                total / count as f64
+            },
+        )
+    }
 }
 
 /// Repair the triangulation in place.
@@ -518,6 +620,28 @@ pub fn repair_triangle_angle_window(
     face_levels: &mut Vec<usize>,
     options: AngleWindowOptions,
 ) -> AngleWindowReport {
+    repair_triangle_angle_window_traced(points, faces, face_levels, options).0
+}
+
+/// Where each row of the repaired mesh came from, so records kept per row
+/// beside the mesh can follow it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AngleWindowOrigins {
+    /// For each output face, the input face whose row it took over. A flip
+    /// keeps both rows; a removed vertex's ring reuses the first of its rows.
+    pub face_origin: Vec<usize>,
+    /// For each output vertex, its input id.
+    pub vertex_origin: Vec<usize>,
+}
+
+/// `repair_triangle_angle_window`, also reporting where every output row
+/// came from.
+pub fn repair_triangle_angle_window_traced(
+    points: &mut Vec<[f64; 3]>,
+    faces: &mut Vec<[usize; 3]>,
+    face_levels: &mut Vec<usize>,
+    options: AngleWindowOptions,
+) -> (AngleWindowReport, AngleWindowOrigins) {
     assert!(face_levels.is_empty() || face_levels.len() == faces.len());
     let face_count = faces.len();
     let vertex_count = points.len();
@@ -531,6 +655,7 @@ pub fn repair_triangle_angle_window(
         fixed: vec![false; vertex_count],
         removed: vec![false; vertex_count],
         options,
+        mode: Mode::Window,
     };
     for f in 0..options.first_face.min(face_count) {
         work.alive[f] = false;
@@ -558,10 +683,14 @@ pub fn repair_triangle_angle_window(
     }
 
     let (outside_before, min_before, max_before) = work.angle_extremes();
+    let (max_deviation_before, mean_deviation_before) = work.deviation_stats();
+    let topology = options.allow_topology_changes;
     let mut report = AngleWindowReport {
         outside_before,
         min_angle_before: min_before,
         max_angle_before: max_before,
+        max_deviation_before,
+        mean_deviation_before,
         ..AngleWindowReport::default()
     };
 
@@ -591,13 +720,16 @@ pub fn repair_triangle_angle_window(
             .collect();
         edges.sort_unstable();
         edges.dedup();
+        if !topology {
+            edges.clear();
+        }
         for (a, b) in edges {
             if work.flip_edge(a, b, false) {
                 report.flips += 1;
                 changed += 1;
             }
         }
-        for &v in &widened {
+        for &v in widened.iter().filter(|_| topology) {
             if work.valence(v) <= 4 && work.remove_low_valence(v) {
                 report.removed_vertices += 1;
                 changed += 1;
@@ -635,6 +767,9 @@ pub fn repair_triangle_angle_window(
             .collect();
         bad_edges.sort_unstable();
         bad_edges.dedup();
+        if !topology {
+            bad_edges.clear();
+        }
         for (a, b) in bad_edges {
             if work.flip_edge(a, b, true) {
                 report.flips += 1;
@@ -647,7 +782,87 @@ pub fn repair_triangle_angle_window(
         }
     }
 
+    // Second phase: the window is the pass line, not the goal. Score against
+    // (60, 60) and keep improving the worst angle around each vertex. A move
+    // or flip is taken only when the worst local deviation does not grow, and
+    // the window is symmetric about 60, so no triangle inside it is pushed out.
+    report.mean_deviation_window_phase = work.deviation_stats().1;
+    let window = options.window_deg;
+    for phase in 0..2 {
+        work.mode = if phase == 0 {
+            Mode::Minimax
+        } else {
+            // Tighten the window to the worst deviation the minimax pass left,
+            // clamped to the contract so no triangle is pushed out of it.
+            let reached = work.deviation_stats().0;
+            let cap = (
+                (60.0 - reached).max(window.0).min(60.0),
+                (60.0 + reached).min(window.1).max(60.0),
+            );
+            Mode::Energy { cap }
+        };
+        let mut rounds = 0;
+        while rounds < options.equilateral_rounds {
+            let tolerance = options.equilateral_tolerance_deg;
+            let rough: Vec<usize> = work
+                .live_faces()
+                .filter(|&f| work.deviation(f) > tolerance)
+                .collect();
+            if rough.is_empty() {
+                break;
+            }
+            rounds += 1;
+            report.equilateral_rounds += 1;
+            let mut changed = 0usize;
+            if topology {
+                let mut rough_edges: Vec<(usize, usize)> = rough
+                    .iter()
+                    .flat_map(|&f| {
+                        let [a, b, c] = work.faces[f];
+                        [(a, b), (b, c), (c, a)]
+                    })
+                    .map(|(x, y)| (x.min(y), x.max(y)))
+                    .collect();
+                rough_edges.sort_unstable();
+                rough_edges.dedup();
+                for (a, b) in rough_edges {
+                    if work.flip_edge(a, b, true) {
+                        report.flips += 1;
+                        changed += 1;
+                    }
+                }
+            }
+            let mut vertices: Vec<usize> = rough
+                .iter()
+                .flat_map(|&f| work.faces[f])
+                .filter(|&v| !work.fixed[v] && !work.removed[v])
+                .collect();
+            vertices.sort_unstable();
+            vertices.dedup();
+            for &v in &vertices {
+                if work.centroid_move(v) {
+                    report.moves += 1;
+                    changed += 1;
+                }
+            }
+            for &v in &vertices {
+                if work.pattern_move(v) {
+                    report.moves += 1;
+                    changed += 1;
+                }
+            }
+            // Diminishing returns: stop once a round changes under 1% of the
+            // vertices it looked at.
+            if changed * 100 < vertices.len() {
+                break;
+            }
+        }
+    }
+
     let (outside_after, min_after, max_after) = work.angle_extremes();
+    let (max_deviation_after, mean_deviation_after) = work.deviation_stats();
+    report.max_deviation_after = max_deviation_after;
+    report.mean_deviation_after = mean_deviation_after;
     report.outside_after = outside_after;
     report.min_angle_after = min_after;
     report.max_angle_after = max_after;
@@ -656,6 +871,10 @@ pub fn repair_triangle_angle_window(
     let alive = std::mem::take(&mut work.alive);
     let removed = std::mem::take(&mut work.removed);
     drop(work);
+    let mut origins = AngleWindowOrigins {
+        face_origin: (0..face_count).collect(),
+        vertex_origin: (0..vertex_count).collect(),
+    };
     if report.removed_vertices > 0 {
         let mut new_id = vec![usize::MAX; vertex_count];
         let mut next = 0;
@@ -672,6 +891,10 @@ pub fn repair_triangle_angle_window(
             }
         }
         *points = kept_points;
+        origins.vertex_origin = (0..vertex_count).filter(|&v| !removed[v]).collect();
+        origins.face_origin = (0..face_count)
+            .filter(|&f| f < options.first_face || alive[f])
+            .collect();
         let mut kept_faces = Vec::with_capacity(face_count);
         let mut kept_levels = Vec::with_capacity(face_levels.len());
         for f in 0..face_count {
@@ -689,7 +912,7 @@ pub fn repair_triangle_angle_window(
         *faces = kept_faces;
         *face_levels = kept_levels;
     }
-    report
+    (report, origins)
 }
 
 #[cfg(test)]
@@ -768,5 +991,86 @@ mod tests {
         }
         // Ids above the removed vertex shift down by one.
         assert_eq!(points[0], lonlat(1.0, 0.0));
+    }
+
+    /// A hexagonal fan whose centre sits off-centre enough to leave its
+    /// triangles inside the window but well away from 60 degrees.
+    fn lopsided_fan() -> (Vec<P>, Vec<[usize; 3]>) {
+        let mut points = vec![lonlat(0.25, 0.05)];
+        for k in 0..6 {
+            let theta = (k as f64 * 60.0_f64).to_radians();
+            points.push(lonlat(theta.cos(), theta.sin()));
+        }
+        let faces = (0..6).map(|k| [0, 1 + k, 1 + (k + 1) % 6]).collect();
+        (points, faces)
+    }
+
+    #[test]
+    fn inside_the_window_angles_keep_moving_toward_sixty() {
+        let (mut points, mut faces) = lopsided_fan();
+        let report = repair_triangle_angle_window(
+            &mut points,
+            &mut faces,
+            &mut Vec::new(),
+            AngleWindowOptions::new((35.0, 85.0)),
+        );
+        assert_eq!(report.outside_before, 0, "{report:?}");
+        assert!(report.max_deviation_before > 10.0, "{report:?}");
+        assert!(report.equilateral_rounds >= 1, "{report:?}");
+        assert!(
+            report.max_deviation_after < 1.0,
+            "a regular hexagon's centre is reachable: {report:?}"
+        );
+        assert_eq!(report.outside_after, 0);
+
+        // With the second phase off, the same mesh is left as it came.
+        let (mut points, mut faces) = lopsided_fan();
+        let mut options = AngleWindowOptions::new((35.0, 85.0));
+        options.equilateral_rounds = 0;
+        let report =
+            repair_triangle_angle_window(&mut points, &mut faces, &mut Vec::new(), options);
+        assert_eq!(report.moves, 0, "{report:?}");
+    }
+
+    #[test]
+    fn without_topology_changes_only_vertices_move() {
+        let mut points = vec![
+            lonlat(0.0, 0.0),
+            lonlat(1.0, 0.0),
+            lonlat(0.0, 1.0),
+            lonlat(-1.0, 0.0),
+            lonlat(0.0, -1.0),
+        ];
+        let mut faces = vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+        let before = faces.clone();
+        let mut options = AngleWindowOptions::new((35.0, 85.0));
+        options.allow_topology_changes = false;
+        let (report, origins) =
+            repair_triangle_angle_window_traced(&mut points, &mut faces, &mut Vec::new(), options);
+        assert_eq!(report.removed_vertices, 0);
+        assert_eq!(report.flips, 0);
+        assert_eq!(faces, before);
+        assert_eq!(origins.vertex_origin, vec![0, 1, 2, 3, 4]);
+        assert_eq!(origins.face_origin, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_removed_vertex_is_traced_out_of_the_rows() {
+        let mut points = vec![
+            lonlat(0.0, 0.0),
+            lonlat(1.0, 0.0),
+            lonlat(0.0, 1.0),
+            lonlat(-1.0, 0.0),
+            lonlat(0.0, -1.0),
+        ];
+        let mut faces = vec![[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+        let mut options = AngleWindowOptions::new((35.0, 85.0));
+        options.max_rounds = 1;
+        let (report, origins) =
+            repair_triangle_angle_window_traced(&mut points, &mut faces, &mut Vec::new(), options);
+        assert_eq!(report.removed_vertices, 1);
+        assert_eq!(origins.vertex_origin, vec![1, 2, 3, 4]);
+        assert_eq!(origins.face_origin.len(), faces.len());
+        assert_eq!(faces.len(), 2);
     }
 }

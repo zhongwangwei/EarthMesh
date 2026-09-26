@@ -97,8 +97,8 @@ mod mesh_triangle_seed;
 pub use mesh_triangle_seed::MethodCTriangleSeed;
 mod mesh_angle_window;
 pub use mesh_angle_window::{
-    repair_triangle_angle_window, spherical_triangle_angles_deg, AngleWindowOptions,
-    AngleWindowReport,
+    repair_triangle_angle_window, repair_triangle_angle_window_traced,
+    spherical_triangle_angles_deg, AngleWindowOptions, AngleWindowOrigins, AngleWindowReport,
 };
 mod mesh_flip;
 pub use mesh_flip::FlipError;

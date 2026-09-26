@@ -1,3 +1,4 @@
+mod angle_contract;
 mod cmrc_local_updates;
 mod cmrc_region;
 mod final_delivery;
