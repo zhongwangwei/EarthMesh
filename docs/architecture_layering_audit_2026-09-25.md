@@ -338,3 +338,17 @@ green 下限与需求嵌套），单独决定。
 - 仍待做：把更多写出与交付模块（FVCOM/MPAS/ICON/CoLM 写出器、掩膜后处理、质量写出）逐块移入
   `earthmesh_delivery`，每块先量闭包、切边再搬；输入层模块收进 `earthmesh_refine`。
 
+### 2026-09-26 第 5 步（第三部分）：写出器第二批移入 `earthmesh_delivery`
+
+- 第一批拆出后重算：多数写出模块的闭包已只剩几百到一千多行。共同底座是 5 个互相依赖的模块
+  （`contain_io`、`mask_postproc_types`、`mask_postproc_writers`、`mesh_conversion_support`、
+  `obc_boundary_io`，1,485 行），搬走它就能带走 FVCOM、质量全局写出、网格度量写出、MPAS 一组、CoLM
+  一组、`json_support`、`atomic_output`——共 26 个模块、4,752 行，闭包封闭，外部依赖只多了 core、mesh、
+  serde、serde_json。
+- 用脚本搬迁（`git mv`、`pub(crate)`→`pub`、在 delivery 根上补回被搬代码通过 `crate::` 引用的名字、
+  CLI 里 `mod X;` 改为 `use earthmesh_delivery::X;`），CLI 根上只剩被搬代码才用的导入由 `cargo fix`
+  清掉；delivery 沿用 CLI 的 clippy 允许项（算法式下标循环等）。
+- 验证：3 个例子项目（MPAS）与 Case9 海洋 Tri FVCOM 的 A/B 逐变量一致；fmt、clippy、clippy-full、
+  check-architecture、`make test`（2,782）通过。上一批的 CI heavy 日志已确认跑了 delivery 的测试。
+- 现状：`earthmesh_delivery` 33 个模块、约 7,300 行；CLI 约 7.2 万行。
+

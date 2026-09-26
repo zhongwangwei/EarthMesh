@@ -1,6 +1,6 @@
 //! EarthMesh execution pipelines, format adapters, and CLI-facing reports.
 
-mod atomic_output;
+use earthmesh_delivery::atomic_output;
 
 use earthmesh_core::MkgrdWorkspacePlan;
 use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
@@ -8,15 +8,15 @@ use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 pub mod mask_source_discovery;
 use mask_source_discovery::discover_mask_sources;
 
-use coordinate_types::{lat_values, lon_values, GridRegion, LonLatPoint};
+use coordinate_types::{GridRegion, LonLatPoint};
 pub use earthmesh_delivery::coordinate_types;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
 mod certified_options;
 use earthmesh_delivery::fs_support;
+use earthmesh_delivery::json_support;
 pub(crate) use fs_support::ensure_parent_dir;
 #[doc(hidden)]
 pub use fs_support::resolve_project_path;
-mod json_support;
 pub(crate) use json_support::{
     geojson_feature_nodes, json_escape_string, json_node_to_f64, json_node_to_usize, json_number,
     json_string_array, json_string_usize_map, json_usize_f64_map, json_usize_f64_map_node,
@@ -88,6 +88,8 @@ pub mod project_delivery;
 pub mod project_hydro;
 pub mod project_hydro_closed_loop;
 pub mod project_quality;
+use colm_types::{ColmCouplingNetcdfWriteReport, ColmSurfaceCounts};
+pub use earthmesh_delivery::colm_types;
 use hydro_delivery_colm::write_colm_coupling_csv_from_intersections;
 pub(crate) use hydro_delivery_common::{
     format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
@@ -99,24 +101,13 @@ use hydro_delivery_coupling_quality::{
 };
 use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
 pub(crate) use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
-pub mod colm_types;
-use colm_types::{
-    ColmCouplingNetcdfWriteReport, ColmForcingTemplateNetcdfWriteReport,
-    ColmRestartTemplateNetcdfWriteReport, ColmSurfaceClassPoint, ColmSurfaceCounts,
-};
-mod colm_coupling_csv;
-mod colm_coupling_netcdf;
-mod colm_manifest_writer;
 pub mod colm_mesh_input;
-mod colm_surface_reader;
-mod colm_template_writers;
 use earthmesh_delivery::netcdf_io;
 pub(crate) use netcdf_io::{
     create_netcdf, first_existing_dimension_len, netcdf_to_io_error, open_netcdf,
     optional_values_i32_2d, require_len, required_dimension_len, required_scalar_usize_i32,
     required_values_f64, required_values_f64_any, required_values_i32, required_values_i32_2d,
-    required_values_i32_matrix, required_values_i8, required_values_i8_matrix, write_f64_scalar,
-    write_i32_scalar,
+    required_values_i32_matrix, required_values_i8_matrix, write_i32_scalar,
 };
 
 /// Create a NetCDF file with HDF5's diagnostic stack silenced.
@@ -130,10 +121,10 @@ pub fn create_netcdf_quiet(
 ) -> Result<netcdf::FileMut, netcdf::Error> {
     create_netcdf(path)
 }
-pub mod colm_package_io;
 use colm_package_io::{
     write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
 };
+pub use earthmesh_delivery::colm_package_io;
 pub mod cama_binary_io;
 pub mod cama_binary_params;
 pub mod cama_binary_window_readers;
@@ -160,15 +151,15 @@ pub(crate) use circle_close_mask_io::{
 };
 pub mod mode4mesh_make;
 pub mod mode_file_io;
-use mode_file_io::{
-    convert_fvcom_mode_file_to_earthmesh, convert_iap_ocean_mode_file_to_earthmesh,
-    convert_mpas_mode_file_to_earthmesh, copy_existing_earthmesh_mode_file,
-};
-pub mod contain_io;
 pub(crate) use contain_io::validate_contain_mesh;
 use contain_io::{
     read_contain_netcdf, write_flat_contain_netcdf, ContainMesh, ContainWriteReport,
     FlatContainMesh,
+};
+pub use earthmesh_delivery::contain_io;
+use mode_file_io::{
+    convert_fvcom_mode_file_to_earthmesh, convert_iap_ocean_mode_file_to_earthmesh,
+    convert_mpas_mode_file_to_earthmesh, copy_existing_earthmesh_mode_file,
 };
 pub mod getcontain_types;
 use getcontain_types::{
@@ -176,43 +167,42 @@ use getcontain_types::{
     GetContainRefineFileRunReport, GetContainRuntimeCounts,
 };
 pub mod getcontain_geometry;
+pub use earthmesh_delivery::fvcom_mesh_writer;
+pub use earthmesh_delivery::mesh_conversion_gridfile_state;
+use earthmesh_delivery::mesh_conversion_iap;
+use earthmesh_delivery::mesh_conversion_support;
+pub use earthmesh_delivery::obc_boundary_io;
 pub use earthmesh_delivery::unstructured_mesh_io;
+pub(crate) use fvcom_mesh_writer::write_fvcom_ns_records;
+use fvcom_mesh_writer::{fvcom_mesh_2dm_output_path, FvcomMesh2dmWriteReport};
 pub(crate) use getcontain_geometry::getcontain_validate_source_matrix;
 use getcontain_geometry::{
     getcontain_containment_matrix_flat_one_based, getcontain_is_in_area_ustr_one_based,
 };
-use unstructured_mesh_io::{
-    gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
-    write_unstructured_mesh_netcdf_with_metadata,
+pub(crate) use mesh_conversion_gridfile_state::earthmesh_runtime_state_from_compact_mesh;
+use mesh_conversion_gridfile_state::{
+    gridfile_mesh_from_one_based_state, gridfile_mesh_from_state,
 };
-mod mesh_conversion_support;
+pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_one_based;
 pub(crate) use mesh_conversion_support::{
     cells_on_triangle_one_based_from_mesh, f64_matrix_width, flatten_i32_rows, i32_counts_as_usize,
     i32_matrix_from_flat, i32_rows_as_usize, lonlat_degrees_from_points, lonlat_pairs_from_points,
     lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows, matrix_width,
     n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32, parse_value_after_equals,
-    patchtype_indices, rad_to_deg, rows_from_flat_i32, rows_to_triangle_connectivity,
+    patchtype_indices, rad_to_deg, rows_to_triangle_connectivity,
     scale_cartesian_points_by_earth_radius, split_cartesian_components,
     triangles_on_cell_one_based_from_mesh, usize_from_i32_connectivity, usize_from_i32_nonnegative,
     usize_from_i32_positive, usize_rows_to_i32, usize_to_i32, usize_values_to_i32,
     validate_mask_postproc_layout, write_f64_1d, write_f64_matrix_rows, write_i32_1d,
     write_i32_matrix_rows, write_i32_pair_rows,
 };
-pub mod mesh_conversion_gridfile_state;
-pub(crate) use mesh_conversion_gridfile_state::earthmesh_runtime_state_from_compact_mesh;
-use mesh_conversion_gridfile_state::{
-    gridfile_mesh_from_one_based_state, gridfile_mesh_from_state,
-};
-mod mesh_conversion_iap;
-pub(crate) use mesh_conversion_iap::derive_iap_w_to_m_one_based;
-pub mod fvcom_mesh_writer;
-pub(crate) use fvcom_mesh_writer::write_fvcom_ns_records;
-use fvcom_mesh_writer::{fvcom_mesh_2dm_output_path, FvcomMesh2dmWriteReport};
-pub mod obc_boundary_io;
 use obc_boundary_io::{
-    obc_boundary_output_path, obcv2_boundary_output_path, read_obc_order_netcdf,
-    write_obc_boundary_netcdf, write_obcv2_boundary_netcdf, ObcBoundaryWriteReport,
-    Obcv2BoundaryWriteReport,
+    obc_boundary_output_path, obcv2_boundary_output_path, write_obc_boundary_netcdf,
+    write_obcv2_boundary_netcdf,
+};
+use unstructured_mesh_io::{
+    gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
+    write_unstructured_mesh_netcdf_with_metadata,
 };
 pub mod lambert_mode4_io;
 pub(crate) use lambert_mode4_io::validate_mode4_mesh_for_area_judge;
@@ -286,18 +276,18 @@ use area_judge_lambert_sources::{
     apply_area_judge_lambert_patch_source_one_based, build_area_judge_lambert_area_source_one_based,
 };
 pub mod area_judge_threshold_inputs;
-pub mod mask_postproc_writers;
-use mask_postproc_writers::{
-    write_earthmesh_info_netcdf, write_patchid_netcdf, EarthmeshInfo, EarthmeshInfoWriteReport,
-    PatchIdMesh, PatchIdWriteReport,
-};
-pub mod mask_postproc_types;
+pub use earthmesh_delivery::mask_postproc_types;
+pub use earthmesh_delivery::mask_postproc_writers;
 use mask_postproc_types::{
     EarthPatchtypes, LandPatchtypes, MaskPostprocDomainInputs, MaskPostprocDomainIoPlan,
     MaskPostprocEarthDomainReport, MaskPostprocEarthRunOptions, MaskPostprocFinalizationReport,
     MaskPostprocLandDomainReport, MaskPostprocLandRunOptions, MaskPostprocLayout,
     MaskPostprocOceanDomainReport, MaskPostprocOceanRenewalReport, MaskPostprocOceanRunOptions,
     MaskRestartAction, MaskRestartRemaskPlan,
+};
+use mask_postproc_writers::{
+    write_earthmesh_info_netcdf, write_patchid_netcdf, EarthmeshInfo, EarthmeshInfoWriteReport,
+    PatchIdMesh, PatchIdWriteReport,
 };
 pub mod mask_postproc_atmos;
 use mask_postproc_atmos::{
@@ -319,34 +309,28 @@ use mask_postproc_layout::{
     read_mask_postproc_domain_inputs, write_mask_postproc_final_gridfile,
 };
 pub mod mask_postproc_domain;
+pub use earthmesh_delivery::mesh_metric_writers;
+pub use earthmesh_delivery::mpas_edge_index_io;
+pub use earthmesh_delivery::mpas_mesh_types;
+pub use earthmesh_delivery::quality_global_writer;
 use mask_postproc_domain::{plan_mask_postproc_domain_io, run_mask_postproc_ocean_domain};
-pub mod mesh_metric_writers;
 use mesh_metric_writers::{
     read_cellwidth_netcdf, write_cellwidth_netcdf, write_dists_on_edge_netcdf, CellwidthMesh,
     CellwidthWriteReport, DistsOnEdgeMesh, DistsOnEdgeWriteReport,
 };
-pub mod quality_global_writer;
-use quality_global_writer::{
-    write_quality_global_netcdf, GlobalQualityMesh, GlobalQualityWriteReport, QualityClassMetrics,
-};
-pub mod mpas_edge_index_io;
-pub mod mpas_mesh_types;
-use mpas_mesh_types::{
-    MeshTopologyReport, MpasFullMeshPipelineReport, MpasMesh, MpasMeshWriteReport,
-    RegionalMpasConnectivity,
-};
+use mpas_mesh_types::{MpasFullMeshPipelineReport, MpasMesh, MpasMeshWriteReport};
 mod mpas_netcdf_rows;
-mod mpas_regional_connectivity;
-mod mpas_subset;
+use earthmesh_delivery::mpas_regional_connectivity;
+use earthmesh_delivery::mpas_subset;
 pub mod mpas_topology;
-mod mpas_topology_checker;
+pub use earthmesh_delivery::mpas_graph_info_writer;
+use earthmesh_delivery::mpas_topology_checker;
+use mpas_graph_info_writer::write_mpas_graph_info;
 use mpas_topology::subset_mpas_mesh;
 pub(crate) use mpas_topology::{
     mpas_lat_lon_radians, pad_f64_rows, validate_mpas_mesh, validate_mpas_simple_mesh,
     zero_based_padded_rows, zero_based_pair_rows, zero_based_triplet_rows,
 };
-pub mod mpas_graph_info_writer;
-use mpas_graph_info_writer::{write_mpas_graph_info, MpasGraphInfoWriteReport};
 pub mod mpas_simple_writer;
 use mpas_simple_writer::{
     write_mpas_simple_mesh_netcdf, MpasSimpleMesh, MpasSimpleMeshWriteReport,
@@ -389,7 +373,7 @@ use springjustment_gridfile_types::{
     SpringjustmentRegionalRunOptions,
 };
 mod grid_production_adapters;
-mod grid_quality_global;
+use earthmesh_delivery::grid_quality_global;
 mod grid_quality_inputs;
 pub mod grid_quality_pipeline;
 pub(crate) use grid_quality_pipeline::{
