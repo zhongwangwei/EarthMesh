@@ -208,11 +208,8 @@ fn write_final_mpas(
         let selected_context = required_mpas_context(gridfile)?;
         let selected_points = crate::read_gridfile_mesh_points(gridfile)?;
         validate_final_mpas_topology(&selected_points, false)?;
-        let rows = crate::regional_gridfile_writers::verify_whole_cell_lineage(
-            source,
-            gridfile,
-            &selected_points,
-        )?;
+        let rows =
+            crate::gridfile_lineage::verify_whole_cell_lineage(source, gridfile, &selected_points)?;
         let source_first = crate::gridfile_w_row_layout(&points).first_physical_row;
         let selected_first = crate::gridfile_w_row_layout(&selected_points).first_physical_row;
         if context.base_nxp != selected_context.base_nxp
@@ -380,7 +377,7 @@ fn validate_final_mpas_topology(
         boundary_topology, connected_component_count, euler_characteristic,
         genus_zero_euler_expectation, MeshTopologyValidator, Severity, TopologyIssueType,
     };
-    let input = crate::grid_quality_pipeline::quality_input_from_gridfile_hex_native(points)?;
+    let input = crate::quality_input_from_gridfile_hex_native(points)?;
     if input
         .cells
         .iter()

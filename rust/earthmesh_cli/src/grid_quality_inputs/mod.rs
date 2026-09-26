@@ -1,5 +1,5 @@
 mod adaptive;
-mod gridfile;
+use earthmesh_delivery::gridfile_quality_input as gridfile;
 mod hfield;
 
 pub use adaptive::attach_adaptive_diagnostics_from_gridfile_path;

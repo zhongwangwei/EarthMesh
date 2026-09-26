@@ -1,8 +1,6 @@
 use crate::{LonLatPoint, MaskPostprocLayout};
 
-pub(crate) fn ensure_leading_mask_postproc_placeholder(
-    layout: MaskPostprocLayout,
-) -> MaskPostprocLayout {
+pub fn ensure_leading_mask_postproc_placeholder(layout: MaskPostprocLayout) -> MaskPostprocLayout {
     if has_leading_mask_postproc_placeholder(&layout) {
         layout
     } else {

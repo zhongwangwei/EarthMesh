@@ -1,5 +1,5 @@
 //! Exact whole-cell binding to an explicit parent; no proximity or filename inference.
-use crate::grid_quality_inputs::{
+use crate::gridfile_quality_input::{
     quality_input_from_gridfile_hex_native, read_gridfile_cell_lineages,
 };
 use crate::{gridfile_m_row_layout, gridfile_w_row_layout, GridfileMeshPoints};
@@ -27,7 +27,7 @@ fn lineage_site(id: i64, lon: f64, lat: f64) -> io::Result<(i64, u64, u64)> {
 
 /// Return parent MPAS cell indices in final native W order. Native placeholder
 /// layouts and lineage values may differ from canonical connectivity indices.
-pub(crate) fn verify_whole_cell_lineage(
+pub fn verify_whole_cell_lineage(
     source: &Path,
     output: &Path,
     grid: &GridfileMeshPoints,
@@ -181,14 +181,14 @@ fn match_parent_rows(
 }
 
 /// Return parent M indices for complete native triangles, not truncated W duals.
-pub(crate) fn verify_whole_triangle_lineage(
+pub fn verify_whole_triangle_lineage(
     source: &Path,
     output: &Path,
     grid: &GridfileMeshPoints,
 ) -> io::Result<Vec<usize>> {
     let original = crate::read_gridfile_mesh_points(source)?;
-    crate::grid_quality_pipeline::quality_input_from_gridfile(&original)?;
-    crate::grid_quality_pipeline::quality_input_from_gridfile(grid)?;
+    crate::gridfile_quality_input::quality_input_from_gridfile(&original)?;
+    crate::gridfile_quality_input::quality_input_from_gridfile(grid)?;
     let m_layout = gridfile_m_row_layout(grid);
     let w_layout = gridfile_w_row_layout(grid);
     let source_m = gridfile_m_row_layout(&original);
@@ -228,7 +228,7 @@ pub(crate) fn verify_whole_triangle_lineage(
         .collect())
 }
 
-pub(crate) fn same_cycle(a: &[i64], b: &[i64]) -> bool {
+pub fn same_cycle(a: &[i64], b: &[i64]) -> bool {
     if a.is_empty() || a.len() != b.len() {
         return false;
     }

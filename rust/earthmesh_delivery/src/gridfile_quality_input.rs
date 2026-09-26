@@ -105,7 +105,7 @@ fn quality_input_from_hex_cells(
     Ok(earthmesh_quality::QualityMeshInput { vertices, cells })
 }
 
-pub(crate) fn tri_quality_cells_from_gridfile(
+pub fn tri_quality_cells_from_gridfile(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<Vec<(usize, Vec<usize>)>> {
     validate_coordinate_pairs(mesh)?;
@@ -148,7 +148,7 @@ pub(crate) fn tri_quality_cells_from_gridfile(
 }
 
 #[allow(dead_code)]
-pub(crate) fn hex_native_quality_cells_from_gridfile(
+pub fn hex_native_quality_cells_from_gridfile(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<Vec<(usize, Vec<usize>)>> {
     validate_coordinate_pairs(mesh)?;
@@ -176,7 +176,7 @@ pub(crate) fn hex_native_quality_cells_from_gridfile(
     Ok(cells)
 }
 
-pub(crate) fn hex_quality_cells_from_gridfile(
+pub fn hex_quality_cells_from_gridfile(
     mesh: &GridfileMeshPoints,
 ) -> io::Result<Vec<(usize, Vec<usize>)>> {
     validate_coordinate_pairs(mesh)?;

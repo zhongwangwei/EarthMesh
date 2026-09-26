@@ -4,7 +4,7 @@ use crate::MpasMesh;
 use crate::UnstructuredMesh;
 use std::io;
 
-pub(crate) fn normalize_unstructured_mesh_placeholder_rows(
+pub fn normalize_unstructured_mesh_placeholder_rows(
     mesh: &UnstructuredMesh,
 ) -> io::Result<UnstructuredMesh> {
     validate_unstructured_mesh(mesh)?;

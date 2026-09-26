@@ -192,10 +192,12 @@ version = "3.0.0-alpha5"
 name = "earthmesh_delivery"
 version = "3.0.0-alpha5"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_geometry",
  "earthmesh_hfield",
  "earthmesh_mesh",
+ "earthmesh_project",
  "earthmesh_quality",
  "hdf5-metno-sys",
  "netcdf",

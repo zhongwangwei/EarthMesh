@@ -6,7 +6,7 @@ use crate::{
     MaskPostprocFinalizationReport,
 };
 
-pub(crate) struct OptionalRefineLevelVectors {
+pub struct OptionalRefineLevelVectors {
     pub mpas: Option<crate::mpas_gridfile_context::MpasGridfileContext>,
     pub hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     pub m_lineage: Vec<i64>,
@@ -19,7 +19,7 @@ pub(crate) struct OptionalRefineLevelVectors {
     pub w_ngr: Vec<i32>,
 }
 
-pub(crate) struct FinalRefineLevelVectors {
+pub struct FinalRefineLevelVectors {
     pub mpas: Option<crate::mpas_gridfile_context::MpasGridfileContext>,
     pub hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     pub m_lineage: Option<Vec<i64>>,
@@ -33,7 +33,7 @@ pub(crate) struct FinalRefineLevelVectors {
 }
 
 impl FinalRefineLevelVectors {
-    pub(crate) fn slices(&self) -> GridfileMetadataSlices<'_> {
+    pub fn slices(&self) -> GridfileMetadataSlices<'_> {
         GridfileMetadataSlices {
             mpas: self.mpas.as_ref(),
             hfield: self.hfield.as_ref(),
@@ -48,7 +48,7 @@ impl FinalRefineLevelVectors {
         }
     }
 
-    pub(crate) fn duplicate_w_vertices(&mut self, source_rows: &[usize]) -> io::Result<()> {
+    pub fn duplicate_w_vertices(&mut self, source_rows: &[usize]) -> io::Result<()> {
         if let Some(context) = &mut self.mpas {
             duplicate_metadata_rows(&mut context.cellwidth_km, source_rows, "MPAS cellwidth")?;
         }
@@ -82,7 +82,7 @@ fn duplicate_metadata_rows<T: Copy>(
     Ok(())
 }
 
-pub(crate) fn refine_levels_from_gridfile(
+pub fn refine_levels_from_gridfile(
     gridfile: impl AsRef<Path>,
 ) -> io::Result<OptionalRefineLevelVectors> {
     let gridfile = gridfile.as_ref();
@@ -102,7 +102,7 @@ pub(crate) fn refine_levels_from_gridfile(
     })
 }
 
-pub(crate) fn final_refine_levels_for_mask_postproc(
+pub fn final_refine_levels_for_mask_postproc(
     mode_grid: &str,
     report: &MaskPostprocFinalizationReport,
     is_in_domain: &[i32],
@@ -176,7 +176,7 @@ fn empty_final_metadata() -> FinalRefineLevelVectors {
     }
 }
 
-pub(crate) fn final_method_c_metadata_for_mask_postproc(
+pub fn final_method_c_metadata_for_mask_postproc(
     mode_grid: &str,
     report: &MaskPostprocFinalizationReport,
     is_in_domain: &[i32],
@@ -366,7 +366,7 @@ fn final_lineages_for_mask_postproc(
     }
 }
 
-pub(crate) fn final_refine_levels_from_gridfile_for_mask_postproc(
+pub fn final_refine_levels_from_gridfile_for_mask_postproc(
     mode_grid: &str,
     source_gridfile: impl AsRef<Path>,
     report: &MaskPostprocFinalizationReport,

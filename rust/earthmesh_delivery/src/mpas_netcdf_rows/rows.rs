@@ -12,7 +12,7 @@ fn zero_based_id(name: &str, value: usize) -> io::Result<i32> {
     })
 }
 
-pub(crate) fn zero_based_padded_rows(
+pub fn zero_based_padded_rows(
     name: &str,
     rows: &[Vec<usize>],
     width: usize,
@@ -37,10 +37,7 @@ pub(crate) fn zero_based_padded_rows(
         .collect()
 }
 
-pub(crate) fn zero_based_triplet_rows(
-    name: &str,
-    rows: &[[usize; 3]],
-) -> io::Result<Vec<Vec<i32>>> {
+pub fn zero_based_triplet_rows(name: &str, rows: &[[usize; 3]]) -> io::Result<Vec<Vec<i32>>> {
     rows.iter()
         .map(|row| {
             row.iter()
@@ -51,13 +48,13 @@ pub(crate) fn zero_based_triplet_rows(
         .collect()
 }
 
-pub(crate) fn zero_based_pair_rows(name: &str, rows: &[[usize; 2]]) -> io::Result<Vec<[i32; 2]>> {
+pub fn zero_based_pair_rows(name: &str, rows: &[[usize; 2]]) -> io::Result<Vec<[i32; 2]>> {
     rows.iter()
         .map(|row| Ok([zero_based_id(name, row[0])?, zero_based_id(name, row[1])?]))
         .collect()
 }
 
-pub(crate) fn pad_f64_rows(rows: &[Vec<f64>], width: usize) -> Vec<Vec<f64>> {
+pub fn pad_f64_rows(rows: &[Vec<f64>], width: usize) -> Vec<Vec<f64>> {
     rows.iter()
         .map(|row| {
             let mut output = row.clone();

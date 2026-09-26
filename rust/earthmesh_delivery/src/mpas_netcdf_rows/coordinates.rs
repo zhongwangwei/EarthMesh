@@ -1,6 +1,6 @@
 use crate::LonLatDegrees;
 
-pub(crate) fn mpas_lat_lon_radians(points: &[LonLatDegrees]) -> (Vec<f64>, Vec<f64>) {
+pub fn mpas_lat_lon_radians(points: &[LonLatDegrees]) -> (Vec<f64>, Vec<f64>) {
     let mut lat = Vec::with_capacity(points.len());
     let mut lon = Vec::with_capacity(points.len());
     for point in points {

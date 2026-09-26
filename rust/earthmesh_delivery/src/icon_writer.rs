@@ -86,14 +86,12 @@ fn write_icon_final(
     nxp: usize,
 ) -> io::Result<IconGridWriteReport> {
     let points = crate::read_gridfile_mesh_points(gridfile)?;
-    let input = crate::grid_quality_pipeline::quality_input_from_gridfile(&points)?;
+    let input = crate::quality_input_from_gridfile(&points)?;
     let selected = parent
         .map(|parent| {
             let original = crate::read_gridfile_mesh_points(parent)?;
             validate_closed_triangle_parent(&original)?;
-            crate::regional_gridfile_writers::lineage::verify_whole_triangle_lineage(
-                parent, gridfile, &points,
-            )
+            crate::gridfile_lineage::verify_whole_triangle_lineage(parent, gridfile, &points)
         })
         .transpose()?;
     // The parent dual cannot encode distinct regional W vertices at one physical site.
@@ -149,7 +147,7 @@ fn validate_closed_triangle_parent(points: &crate::GridfileMeshPoints) -> io::Re
         boundary_topology, connected_component_count, euler_characteristic, MeshTopologyValidator,
         Severity,
     };
-    let input = crate::grid_quality_pipeline::quality_input_from_gridfile(points)?;
+    let input = crate::quality_input_from_gridfile(points)?;
     if boundary_topology(&input).edge_count != 0
         || euler_characteristic(&input) != 2
         || connected_component_count(&input) != 1
@@ -1506,7 +1504,7 @@ mod tests {
         let mesh = crate::gridfile_mesh_from_one_based_state(&state.grid, &state.tabs).unwrap();
         crate::write_unstructured_mesh_netcdf(&path, &mesh).unwrap();
         let points = crate::read_gridfile_mesh_points(&path).unwrap();
-        let input = crate::grid_quality_pipeline::quality_input_from_gridfile(&points).unwrap();
+        let input = crate::quality_input_from_gridfile(&points).unwrap();
         let mpas = crate::build_mpas_mesh_from_unstructured_one_based(
             &mesh,
             &vec![1.0; mesh.w_points.len()],

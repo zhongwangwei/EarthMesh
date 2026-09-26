@@ -352,3 +352,21 @@ green 下限与需求嵌套），单独决定。
   check-architecture、`make test`（2,782）通过。上一批的 CI heavy 日志已确认跑了 delivery 的测试。
 - 现状：`earthmesh_delivery` 33 个模块、约 7,300 行；CLI 约 7.2 万行。
 
+### 2026-09-26 第 5 步（第四部分）：ICON、MPAS 其余写出与掩膜后处理移入 `earthmesh_delivery`
+
+- 阻碍点是转发门面 `grid_quality_pipeline`（20 行）与两个宿主模块里的子文件：MPAS 构建器和 ICON 写出
+  经门面取函数，而门面把质量输入、需求层一起拉进来。做法：把纯 gridfile 读取的
+  `grid_quality_inputs/gridfile.rs`、区域 gridfile 写出下的 `lineage.rs`（谱系校验）与 `levels.rs`
+  （层级读取）抽成 delivery 的独立模块 `gridfile_quality_input` / `gridfile_lineage` / `gridfile_levels`，
+  宿主模块以 `use earthmesh_delivery::新名 as 原名;` 接回，旧路径不变；ICON、MPAS 写出、掩膜布局改为
+  直接引用。
+- 随后移入 14 个模块：`grid_production_adapters`、MPAS 行/简版/拓扑/完整写出/构建器/gridfile 写出、
+  `icon_writer`、`gridfile_output_writers`、掩膜后处理的 ocean/patchtypes/layout、`close_mesh_io`、
+  `boundary_model`。delivery 新增依赖 `earthmesh_boundary`、`earthmesh_project`（均为中立 crate）。
+- 验证：3 个例子项目（MPAS）、LEPP 全球 Tri（经 ICON 交付）、Case9 海洋 Tri（FVCOM、掩膜后处理）A/B
+  逐变量一致；fmt、clippy、clippy-full、check-architecture、`make test`（2,782）通过。
+- 现状：`earthmesh_delivery` 约 1.5 万行，CLI 约 6.5 万行。仍在 CLI 的输出侧模块：
+  `mask_postproc_domain`、`mask_postproc_atmos`（依赖项目交付/质量编排）、`regional_gridfile_writers`
+  其余部分（依赖 `area_judge` 等输入侧读取）、`grid_quality_inputs` 的对账部分（依赖需求层）——
+  这些要等输入层的归属（交接文档 3.2 的 A/B 选择）定了再拆。
+

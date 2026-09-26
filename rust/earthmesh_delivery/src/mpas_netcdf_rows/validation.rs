@@ -2,7 +2,7 @@ use std::io;
 
 use crate::{f64_matrix_width, matrix_width, MpasMesh, MpasSimpleMesh};
 
-pub(crate) fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
+pub fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() || mesh.x_edge.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -89,7 +89,7 @@ pub(crate) fn validate_mpas_mesh(mesh: &MpasMesh) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()> {
+pub fn validate_mpas_simple_mesh(mesh: &MpasSimpleMesh) -> io::Result<()> {
     if mesh.x_cell.is_empty() || mesh.x_vertex.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
