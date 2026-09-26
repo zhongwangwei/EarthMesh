@@ -1,0 +1,125 @@
+schema_version: 3.0.0
+metadata:
+  name: earthmesh-project
+  authors: []
+  description: ''
+domain: Global
+target:
+  kind: Ocean
+  cell: Tri
+  intent: CoastalOcean
+  resolution: !ApproxKm 100.0
+  model_format: Fvcom
+data_layers:
+- id: landcover
+  role: LandType
+  path: /Users/zhongwangwei/Desktop/Github/EarthMesh/input/landtype_igbp_update.nc
+  enabled: true
+- id: merit
+  role: MeritHydro
+  path: ''
+  enabled: false
+- id: cama
+  role: Cama
+  path: ''
+  enabled: false
+- id: lai
+  role: !Threshold Lai
+  path: ''
+  enabled: false
+- id: slope_avg
+  role: !Threshold Slope
+  path: ''
+  enabled: false
+- id: dem
+  role: !Threshold Dem
+  path: ''
+  enabled: false
+- id: slope_max
+  role: !Threshold SlopeMax
+  path: ''
+  enabled: false
+- id: k_s
+  role: !Threshold Ks
+  path: ''
+  enabled: false
+- id: k_solids
+  role: !Threshold KSolids
+  path: ''
+  enabled: false
+- id: tkdry
+  role: !Threshold Tkdry
+  path: ''
+  enabled: false
+- id: tksatf
+  role: !Threshold Tksatf
+  path: ''
+  enabled: false
+- id: tksatu
+  role: !Threshold Tksatu
+  path: ''
+  enabled: false
+- id: sst
+  role: !Threshold Sst
+  path: ''
+  enabled: false
+- id: ssh
+  role: !Threshold Ssh
+  path: ''
+  enabled: false
+- id: eke
+  role: !Threshold Eke
+  path: ''
+  enabled: false
+- id: sea_slope
+  role: !Threshold SeaSlope
+  path: ''
+  enabled: false
+- id: typhoon
+  role: !Threshold Typhoon
+  path: ''
+  enabled: false
+refinement:
+  backend: RedGreen
+  enabled: true
+  threshold_enabled: true
+  max_passes: 3
+  threshold_criteria:
+  - id: landcover
+    enabled: true
+    value: 12.0
+  specified_circle: null
+  specified_bbox: null
+  specified_close: null
+  hfield:
+    enabled: false
+    g: 0.2
+    max_level: 0
+    base_m: null
+    nlon: null
+    nlat: null
+    origin_lon: null
+    origin_lat: null
+quality:
+  min_angle_deg: 40.0
+  auto_refine_batch_cells: 1
+  on_violation: AutoRefine
+expert:
+  nxp: null
+  openmp: null
+  niter: null
+  niter_refine: null
+  max_iter_spc: 1
+  max_iter_cal: 3
+  halo: null
+  max_transition_row: null
+  set_dis_type: null
+  num_rc: null
+  vertex_pretect_layers: null
+  spring_global_type: null
+  spring_regional_type: null
+  beta: null
+  relax: null
+  weak_concav_eliminate: null
+hydro_coast: null
+coupling: null
