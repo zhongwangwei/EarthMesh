@@ -1090,6 +1090,9 @@ pub(super) fn run_refine_pipeline_in_workspace(
             &output_mesh,
         ))
     };
+    let lepp_targets = lepp_adaptive_hybrid
+        .as_ref()
+        .map(super::lepp_targets::LeppResolvedTargets);
     let outputs = write_refined_outputs(
         &contents,
         &config,
@@ -1118,9 +1121,9 @@ pub(super) fn run_refine_pipeline_in_workspace(
             adaptive_run
                 .as_ref()
                 .map(|(report, _, base_m, _)| (report, *base_m)),
-            lepp_adaptive_hybrid
-                .as_ref()
-                .map(|report| report as &dyn crate::refinement_demand::width::ResolvedTargetWidths),
+            lepp_targets.as_ref().map(|targets| {
+                targets as &dyn crate::refinement_demand::width::ResolvedTargetWidths
+            }),
         )?,
         hard_center_demand.as_deref(),
         "",

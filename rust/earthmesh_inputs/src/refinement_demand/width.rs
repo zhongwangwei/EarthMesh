@@ -31,7 +31,7 @@ pub trait ResolvedTargetWidths {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum NominalDemandWidth<'a> {
+pub enum NominalDemandWidth<'a> {
     /// The gradient-limited target-level field.
     Hfield(&'a HfieldGridfileContext),
     /// The point+radius regions each emitted pass judged, at its own scale.
@@ -46,7 +46,7 @@ pub(crate) enum NominalDemandWidth<'a> {
 impl<'a> NominalDemandWidth<'a> {
     /// The one producer that ran, if any. Two at once is a pipeline defect:
     /// there would be no single nominal width to deliver.
-    pub(crate) fn from_producers(
+    pub fn from_producers(
         hfield: Option<&'a HfieldGridfileContext>,
         region_passes: Option<(&'a AdaptiveNestReport, f64)>,
         resolved_targets: Option<&'a dyn ResolvedTargetWidths>,
@@ -65,7 +65,7 @@ impl<'a> NominalDemandWidth<'a> {
 
     /// The width field sampled at the mesh's final W sites. `None` when the
     /// demand does not cover every site and nothing may be guessed for the rest.
-    pub(crate) fn mpas_context(
+    pub fn mpas_context(
         &self,
         mesh: &crate::UnstructuredMesh,
         base_nxp: usize,

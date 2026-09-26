@@ -46,7 +46,7 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
     fs::create_dir_all(coarse_sentinel.parent().unwrap()).expect("create coarse result dir");
     fs::write(&coarse_sentinel, "coarse").expect("write coarse sentinel");
 
-    let report = earthmesh_cli::hydro_refinement_adapter::run_hydro_refinement_adapter(
+    let report = earthmesh_cli::hydro_refinement_runs::run_hydro_refinement_adapter(
         &source,
         &initial_gridfile,
         &cells,
@@ -149,7 +149,7 @@ fn hydro_target_levels_execute_the_real_method_c_pipeline() {
         r#"{"kind":"earthmesh_refinement_plan","total_cells":1,"cells":[{"cell":0,"target_level":2}]}"#,
     )
     .expect("write second-pass target levels");
-    let second = earthmesh_cli::hydro_refinement_adapter::run_hydro_refinement_adapter(
+    let second = earthmesh_cli::hydro_refinement_runs::run_hydro_refinement_adapter(
         &source,
         &first_parent,
         &cells,

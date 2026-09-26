@@ -33,6 +33,7 @@ pub mod data_preprocess_types;
 pub mod getcontain_geometry;
 pub mod getcontain_types;
 pub mod global_source_axes;
+pub mod hfield_refine;
 pub mod hydro_close_buffer;
 pub mod hydro_close_composite;
 pub mod hydro_close_envelope_merge;
@@ -48,6 +49,7 @@ pub mod hydro_close_types;
 pub mod hydro_delivery_common;
 pub mod hydro_delivery_complete_mask;
 pub mod hydro_delivery_intersections;
+pub mod hydro_refinement_adapter;
 pub mod hydro_refinement_eval;
 pub mod hydro_sweep;
 pub mod lambert_mode4_io;
@@ -58,6 +60,7 @@ pub mod merit_hydro_region_close;
 pub mod merit_tile_selection;
 pub mod mkgrd_data_preprocess_source;
 pub mod namelist_reader;
+pub mod refinement_demand;
 pub mod region_sources;
 pub mod v3_data_source_io;
 pub use area_judge_bbox_sources::{
@@ -195,3 +198,13 @@ pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
 pub use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
 pub use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
+pub mod hydro_cell_features;
+pub use earthmesh_delivery::hfield_gridfile_context;
+pub use earthmesh_delivery::mpas_gridfile_context;
+pub use earthmesh_delivery::unstructured_mesh_support;
+pub use earthmesh_delivery::UnstructuredMesh;
+pub use hfield_refine::{
+    build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
+};
+pub use mkgrd_data_preprocess_source::{landtype_file_is_real, namelist_sets_landtype_file};
+pub use region_sources::read_method_c_calculated_refinement_regions;

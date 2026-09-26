@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use earthmesh_project::ProjectConfig;
 
-use crate::hydro_refinement_adapter::{
+use crate::hydro_refinement_runs::{
     run_hydro_refinement_adapter, run_hydro_refinement_adapter_with_gradation_cap,
     run_quality_refinement_adapter, HydroRefinementAdapterReport,
 };

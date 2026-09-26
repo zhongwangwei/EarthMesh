@@ -158,14 +158,6 @@ pub fn maybe_infer_restart_refine_initial_gridfile_from_config(
     Ok(path.exists().then_some(path))
 }
 
-pub fn namelist_sets_landtype_file(contents: &str) -> bool {
-    contents
-        .lines()
-        .map(|line| line.split('!').next().unwrap_or(""))
-        .any(|line| line.to_ascii_lowercase().contains("landtype_file"))
-}
-
-pub fn landtype_file_is_real(landtype_file: &str) -> bool {
-    let trimmed = landtype_file.trim();
-    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none") && trimmed != "/tmp"
-}
+pub use earthmesh_inputs::mkgrd_data_preprocess_source::{
+    landtype_file_is_real, namelist_sets_landtype_file,
+};

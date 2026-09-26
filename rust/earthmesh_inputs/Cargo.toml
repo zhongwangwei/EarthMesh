@@ -13,9 +13,14 @@ earthmesh_delivery = { path = "../earthmesh_delivery" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
 earthmesh_project = { path = "../earthmesh_project" }
+earthmesh_quality = { path = "../earthmesh_quality" }
+earthmesh_hfield = { path = "../earthmesh_hfield" }
+earthmesh_refine = { path = "../earthmesh_refine" }
+earthmesh_refine_planner = { path = "../earthmesh_refine_planner" }
 flate2 = "1"
 hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
 netcdf = { version = "0.12.0", default-features = false }
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -450,8 +450,8 @@ fn run_prepared_mkgrd(
                     let repair_dir = quality_dir
                         .join("quality_auto_refine")
                         .join(format!("pass_{next_pass}"));
-                    let adapter = match
-                        earthmesh_cli::hydro_refinement_adapter::run_quality_refinement_adapter(
+                    let adapter =
+                        match earthmesh_cli::hydro_refinement_runs::run_quality_refinement_adapter(
                             PathBuf::from(&namelist),
                             parent_gridfile,
                             quality_dir.join("quality_repair_cells.geojson"),
@@ -460,34 +460,33 @@ fn run_prepared_mkgrd(
                             &workdir,
                             max_tris,
                             source_gridnum_perdegree,
-                        )
-                    {
-                        Ok(adapter) => adapter,
-                        Err(error) if keep_mesh_after_repair_error(verdict) => {
-                            let reason = format!("local quality repair unavailable: {error}");
-                            record_auto_refine_decision(
-                                current_pass,
-                                "kept",
-                                &reason,
-                                None,
-                                gridfile,
-                                gridfile,
-                                None,
-                                verdict,
-                                verdict,
-                                &[],
-                            )?;
-                            eprintln!(
-                                "earthmesh_cli: warning: {reason}; keeping the current mesh"
-                            );
-                            break report;
-                        }
-                        Err(error) => {
-                            return Err(format!(
+                        ) {
+                            Ok(adapter) => adapter,
+                            Err(error) if keep_mesh_after_repair_error(verdict) => {
+                                let reason = format!("local quality repair unavailable: {error}");
+                                record_auto_refine_decision(
+                                    current_pass,
+                                    "kept",
+                                    &reason,
+                                    None,
+                                    gridfile,
+                                    gridfile,
+                                    None,
+                                    verdict,
+                                    verdict,
+                                    &[],
+                                )?;
+                                eprintln!(
+                                    "earthmesh_cli: warning: {reason}; keeping the current mesh"
+                                );
+                                break report;
+                            }
+                            Err(error) => {
+                                return Err(format!(
                                 "auto_refine local quality repair pass {next_pass} failed: {error}"
                             ));
-                        }
-                    };
+                            }
+                        };
                     eprintln!(
                         "earthmesh_cli: auto_refine applying {} local quality targets at pass {next_pass}",
                         quality.repair_cells.len()

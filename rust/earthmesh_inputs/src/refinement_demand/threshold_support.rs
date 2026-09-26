@@ -29,7 +29,7 @@ use crate::{
 
 const MAX_SUPPORTS: usize = 16_777_216;
 
-pub(crate) struct CriterionSupportDemand {
+pub struct CriterionSupportDemand {
     pub id: String,
     pub hits: Vec<bool>,
     pub source_samples: usize,
@@ -37,7 +37,7 @@ pub(crate) struct CriterionSupportDemand {
     pub singleton_supports: usize,
 }
 
-pub(crate) struct ThresholdSupportDemand {
+pub struct ThresholdSupportDemand {
     pub nlon: usize,
     pub nlat: usize,
     pub parent_m: f64,
@@ -50,7 +50,7 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-pub(crate) fn threshold_level_cap(
+pub fn threshold_level_cap(
     refine: &RefineConfig,
     mesh_type: &str,
     outer_cap: usize,
@@ -146,7 +146,7 @@ fn criterion(
     out
 }
 
-pub(crate) fn evaluate_threshold_support(
+pub fn evaluate_threshold_support(
     refine: &RefineConfig,
     mesh_type: &str,
     landtype_file: Option<&Path>,
@@ -308,7 +308,7 @@ fn overlaps(index: usize, src: usize, dst: usize, shifted: bool) -> std::ops::Ra
 }
 
 impl ThresholdSupportDemand {
-    pub(crate) fn criterion_report(&self, criterion: &CriterionSupportDemand) -> serde_json::Value {
+    pub fn criterion_report(&self, criterion: &CriterionSupportDemand) -> serde_json::Value {
         let mut hasher = DefaultHasher::new();
         criterion.hits.hash(&mut hasher);
         serde_json::json!({
@@ -347,12 +347,7 @@ impl ThresholdSupportDemand {
         Ok(())
     }
 
-    pub(crate) fn project_hfield(
-        &self,
-        hits: &[bool],
-        nlon: usize,
-        nlat: usize,
-    ) -> io::Result<Vec<bool>> {
+    pub fn project_hfield(&self, hits: &[bool], nlon: usize, nlat: usize) -> io::Result<Vec<bool>> {
         self.validate_projection(hits, nlon, nlat)?;
         let mut active = vec![false; nlon * nlat];
         for (index, &hit) in hits.iter().enumerate() {
@@ -369,7 +364,7 @@ impl ThresholdSupportDemand {
         Ok(active)
     }
 
-    pub(crate) fn project_source(
+    pub fn project_source(
         &self,
         hits: &[bool],
         bounds: AreaJudgeSourceBounds,

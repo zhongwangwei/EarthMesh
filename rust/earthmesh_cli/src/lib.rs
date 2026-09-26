@@ -24,8 +24,7 @@ pub(crate) use fs_support::ensure_parent_dir;
 pub use fs_support::resolve_project_path;
 use global_source_axes::build_global_source_axes_one_based;
 pub(crate) use json_support::{
-    geojson_feature_nodes, json_escape_string, json_node_to_usize, json_number, JsonNode,
-    JsonParser,
+    geojson_feature_nodes, json_escape_string, json_number, JsonNode, JsonParser,
 };
 #[cfg(test)]
 use merit_tile_selection::MeritLonLatBbox;
@@ -56,7 +55,8 @@ pub use earthmesh_delivery::hydro_delivery_manifest;
 pub use earthmesh_delivery::hydro_delivery_qa;
 pub use earthmesh_inputs::hydro_delivery_intersections;
 pub mod hydro_delivery_refine_workflow;
-pub mod hydro_refinement_adapter;
+pub use earthmesh_inputs::hydro_refinement_adapter;
+pub mod hydro_refinement_runs;
 pub use earthmesh_inputs::hydro_refinement_eval;
 pub use earthmesh_inputs::hydro_sweep;
 pub mod project_delivery;
@@ -121,7 +121,7 @@ pub(crate) use area_judge_grid_runs::write_area_judge_selected_grid_report;
 use area_judge_types::{
     AreaJudgeGridWriteReport, AreaJudgeLandtypeClass, AreaJudgePatchConfig, AreaJudgeRestartReport,
 };
-use contain_io::{read_contain_netcdf, ContainMesh};
+use contain_io::read_contain_netcdf;
 pub use earthmesh_delivery::contain_io;
 pub use earthmesh_delivery::fvcom_mesh_writer;
 pub use earthmesh_delivery::mask_postproc_types;
@@ -276,7 +276,7 @@ pub mod method_c_adaptive_nest;
 pub mod method_c_algorithm;
 pub use earthmesh_inputs::mkgrd_data_preprocess_source;
 pub mod redgreen_bridge;
-pub mod refinement_demand;
+pub use earthmesh_inputs::refinement_demand;
 use mkgrd_data_preprocess_source::sample_landtype_values_for_points_one_based;
 pub mod mkgrd_restart_types;
 use mkgrd_restart_types::{
@@ -295,10 +295,13 @@ use mkgrd_mask_restart::{
     run_mkgrd_mask_restart_patch_namelist,
 };
 pub mod mkgrd_default_restart_handoff;
+use earthmesh_inputs::mkgrd_data_preprocess_source::{
+    landtype_file_is_real, namelist_sets_landtype_file,
+};
 use mkgrd_default_restart_handoff::{
-    infer_mask_restart_ocean_num_vertex_from_config, landtype_file_is_real,
+    infer_mask_restart_ocean_num_vertex_from_config,
     maybe_infer_mask_restart_non_ocean_num_vertex_from_config,
-    maybe_infer_mask_restart_ocean_num_vertex_from_config, namelist_sets_landtype_file,
+    maybe_infer_mask_restart_ocean_num_vertex_from_config,
 };
 pub mod mkgrd_run_types;
 use mkgrd_run_types::{
@@ -319,10 +322,12 @@ pub(crate) use refine_controls::*;
 pub mod mkgrd_gridinit_driver;
 use mkgrd_gridinit_driver::run_mkgrd_gridinit_global_namelist;
 
-mod hfield_refine;
+use earthmesh_inputs::hfield_refine;
 pub use hfield_refine::{
     build_hfield_from_regions, read_hfield_refine_options, HfieldRefineOptions,
 };
 mod refine_pipeline;
-pub use refine_pipeline::{run_refine_pipeline_namelist, run_refine_pipeline_with_delivery};
+pub use refine_pipeline::{
+    run_refine_pipeline_namelist, run_refine_pipeline_with_delivery, LeppResolvedTargets,
+};
 pub mod mkgrd_top_level_dispatch;

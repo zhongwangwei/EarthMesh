@@ -757,7 +757,9 @@ fn builds_mpas_context_from_complete_lepp_resolved_demand_and_roundtrips() {
         let report = lepp_complete_report(&mesh, first);
 
         let context = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
-            &mesh, &report, 6,
+            &mesh,
+            &earthmesh_cli::LeppResolvedTargets(&report),
+            6,
         )
         .unwrap()
         .unwrap();
@@ -797,7 +799,9 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     let empty = lepp_report(Vec::new());
     assert_eq!(
         earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
-            &mesh, &empty, 6
+            &mesh,
+            &earthmesh_cli::LeppResolvedTargets(&empty),
+            6
         )
         .unwrap(),
         None
@@ -809,7 +813,9 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     )]);
     assert_eq!(
         earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
-            &mesh, &partial, 6
+            &mesh,
+            &earthmesh_cli::LeppResolvedTargets(&partial),
+            6
         )
         .unwrap(),
         None
@@ -853,7 +859,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
         assert!(
             earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
                 &local_mesh,
-                &report,
+                &earthmesh_cli::LeppResolvedTargets(&report),
                 nxp
             )
             .is_err(),
@@ -865,7 +871,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     let output = root.join("bad.nc4");
     let mut context = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
         &mesh,
-        &lepp_complete_report(&mesh, first),
+        &earthmesh_cli::LeppResolvedTargets(&lepp_complete_report(&mesh, first)),
         6,
     )
     .unwrap()
@@ -884,7 +890,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
 
     let mut valid = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
         &mesh,
-        &lepp_complete_report(&mesh, first),
+        &earthmesh_cli::LeppResolvedTargets(&lepp_complete_report(&mesh, first)),
         6,
     )
     .unwrap()

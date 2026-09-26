@@ -1,8 +1,7 @@
-mod feature_table;
+use earthmesh_inputs::hydro_cell_features as feature_table;
 mod plan;
 mod workflow;
 
-pub(crate) use feature_table::hydro_cell_feature_groups;
 pub use feature_table::hydro_refine_feature_table;
 pub(crate) use feature_table::HydroRefinementPolicy;
 pub use plan::plan_refinement_from_hydro_geojson;

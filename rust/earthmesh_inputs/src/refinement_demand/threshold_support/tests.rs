@@ -34,7 +34,7 @@ fn write_numeric(
     nlat: usize,
     value: impl Fn(usize, usize) -> f64,
 ) {
-    let mut file = crate::create_netcdf_quiet(path).expect("create numeric file");
+    let mut file = crate::create_netcdf(path).expect("create numeric file");
     file.add_dimension("longitude", nlon).expect("lon dim");
     file.add_dimension("latitude", nlat).expect("lat dim");
     let mut values = Vec::with_capacity(nlon * nlat);
@@ -50,7 +50,7 @@ fn write_numeric(
 }
 
 fn write_landtype(path: &Path, nlon: usize, nlat: usize, value: impl Fn(usize, usize) -> i8) {
-    let mut file = crate::create_netcdf_quiet(path).expect("create landtype file");
+    let mut file = crate::create_netcdf(path).expect("create landtype file");
     file.add_dimension("longitude", nlon).expect("lon dim");
     file.add_dimension("latitude", nlat).expect("lat dim");
     let mut values = Vec::with_capacity(nlon * nlat);

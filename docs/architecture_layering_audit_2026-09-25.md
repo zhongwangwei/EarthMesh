@@ -389,3 +389,29 @@ green 下限与需求嵌套），单独决定。
 - `earthmesh_inputs` 进入中立 crate 名单；需要 NetCDF，由 `heavy` 任务与 `make test`/`clippy-full`
   覆盖（ci.yml、Makefile 已改）；CLAUDE.md 计数 15 / 12 / 15。
 
+### 2026-09-26 第 5 步（第七部分）：拆开 CLI 的核心纠缠，需求构造移入 `earthmesh_inputs`
+
+- 用 Tarjan 算强连通分量（不计测试代码）：CLI 里有一个 15 个模块、2.87 万行的互相依赖团（细化流水线、
+  h-field 合成、需求构造、质量对账、域掩膜后处理、区域 gridfile 写出、mkgrd 分派/恢复）。团内有几条
+  “下层回调上层”的边：
+  1. `hydro_refinement_adapter` 的后半（写 namelist 再跑流水线的四个 `run_*`）调用
+     `run_refine_pipeline_namelist`——拆到 CLI 的新模块 `hydro_refinement_runs`（编排），前半（目标场）
+     留在原模块；
+  2. `hfield_refine` 借用恢复模块里的 `landtype_file_is_real` / `namelist_sets_landtype_file`——移到
+     输入层的地表类型模块。
+  两刀之后大团分成三个小团：{h-field 合成、水文适配、需求构造}（1.13 万行，输入侧）、
+  {mkgrd 恢复/分派三件}（编排）、{域掩膜后处理、区域 gridfile 写出}（输出侧）。
+- 第一个小团移入 `earthmesh_inputs`：`hfield_refine`、`hydro_refinement_adapter`、`refinement_demand`，
+  以及它们从水文交付工作流借用的 `feature_table.rs`（→ `hydro_cell_features`）。`earthmesh_inputs`
+  新增依赖 `earthmesh_refine`、`earthmesh_refine_planner`、`earthmesh_quality`、`earthmesh_hfield`、
+  `rayon`。
+- 孤儿规则：`ResolvedTargetWidths` 现在属于 inputs，LEPP 报告属于 method_c，CLI 不能直接为它实现；改为
+  CLI 里的包装类型 `LeppResolvedTargets`（适配层 `refine_pipeline/lepp_targets.rs`）。
+- 过程教训：辅助脚本里 `open(p, "w").write(open(p).read() + …)` 会先截断再读，把 inputs 的 `lib.rs`
+  清空了一次；已从 HEAD 恢复并逐项重放本轮改动（56 个模块声明与目录一一对应），脚本已修。
+- 验证：3 个例子项目、LEPP、Case9 Method-C h-field、Case9 Red-Green + h-field 的 A/B；fmt、clippy、
+  clippy-full、check-architecture、`make test`（2,782）。
+- 剩下的跨层模块：质量对账（读需求 + 网格）、耦合质量（读 CaMa）、项目交付/质量、域/大气掩膜后处理、
+  水文交付工作流——它们本身就是“读输入、调算法、写输出”的串接，按第 4.4 节属于编排层 CLI；要让输出层
+  只经 `earthmesh_refine` 读需求（而不是读 inputs 的具体类型），是后续的接口工作。
+

@@ -7,18 +7,18 @@ use crate::{
     geojson_feature_nodes, geometry_outer_rings, json_node_to_string, JsonNode, JsonParser,
 };
 
-pub(crate) struct HydroCellFeatureGroup<'a> {
+pub struct HydroCellFeatureGroup<'a> {
     pub cell_id: String,
     pub features: Vec<&'a JsonNode>,
 }
 
 #[derive(Debug)]
-pub(crate) struct HydroRefineFeatureSet {
+pub struct HydroRefineFeatureSet {
     pub table: earthmesh_refine_planner::CellFeatureTable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct HydroRefinementPolicy {
+pub struct HydroRefinementPolicy {
     pub river_width: bool,
     pub river_upstream_area: bool,
     /// Let the `R3`/`R2` class alone drive river demand when a feature carries
@@ -69,7 +69,7 @@ fn feature_cell_id(feature: &JsonNode, feature_index: usize) -> String {
 
 /// Group class-specific intersection features by their canonical mesh cell.
 /// First-occurrence order is stable and is the shared planner/adapter row order.
-pub(crate) fn hydro_cell_feature_groups<'a>(
+pub fn hydro_cell_feature_groups<'a>(
     root: &'a JsonNode,
 ) -> io::Result<Vec<HydroCellFeatureGroup<'a>>> {
     let mut groups = Vec::<HydroCellFeatureGroup<'a>>::new();
@@ -243,18 +243,18 @@ fn feature_centroid(feature: &JsonNode, feature_index: usize) -> io::Result<Poin
     }
 }
 
-pub(crate) fn hydro_refine_feature_set(geojson: &str) -> io::Result<HydroRefineFeatureSet> {
+pub fn hydro_refine_feature_set(geojson: &str) -> io::Result<HydroRefineFeatureSet> {
     hydro_refine_feature_set_with_policy(geojson, HydroRefinementPolicy::default())
 }
 
-pub(crate) fn hydro_refine_feature_set_with_policy(
+pub fn hydro_refine_feature_set_with_policy(
     geojson: &str,
     policy: HydroRefinementPolicy,
 ) -> io::Result<HydroRefineFeatureSet> {
     hydro_refine_feature_set_with_policy_and_secondary(geojson, policy, 2.0 / 3.0)
 }
 
-pub(crate) fn hydro_refine_feature_set_with_policy_and_secondary(
+pub fn hydro_refine_feature_set_with_policy_and_secondary(
     geojson: &str,
     policy: HydroRefinementPolicy,
     secondary_demand: f64,

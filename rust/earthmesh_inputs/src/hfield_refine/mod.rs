@@ -77,10 +77,10 @@ fn invalid(msg: String) -> io::Error {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct HfieldDomainMask {
-    pub(crate) nlon: usize,
-    pub(crate) nlat: usize,
-    pub(crate) active: Vec<bool>,
+pub struct HfieldDomainMask {
+    pub nlon: usize,
+    pub nlat: usize,
+    pub active: Vec<bool>,
 }
 
 // Reporting only: these counters never feed the composed field or its limiter.
@@ -201,7 +201,7 @@ fn record_hfield_phase(phase: &str, started: &mut std::time::Instant) {
 }
 
 impl HfieldDomainMask {
-    pub(crate) fn new(nlon: usize, nlat: usize, domain: &GridRegion) -> Self {
+    pub fn new(nlon: usize, nlat: usize, domain: &GridRegion) -> Self {
         let mut active = vec![false; nlon * nlat];
         for i in 0..nlon {
             let lon = -180.0 + (i as f64 + 0.5) * 360.0 / nlon as f64;
@@ -213,7 +213,7 @@ impl HfieldDomainMask {
         Self { nlon, nlat, active }
     }
 
-    pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
+    pub fn contains(&self, lon: f64, lat: f64) -> bool {
         let i = (((earthmesh_hfield::wrap_lon_degrees(lon) + 180.0) / 360.0) * self.nlon as f64)
             .floor()
             .clamp(0.0, (self.nlon - 1) as f64) as usize;
@@ -395,7 +395,7 @@ pub fn read_hfield_refine_options(contents: &str) -> io::Result<Option<HfieldRef
 }
 
 impl HfieldRefineOptions {
-    pub(crate) fn hydro_target_paths(&self) -> Option<(&Path, &Path)> {
+    pub fn hydro_target_paths(&self) -> Option<(&Path, &Path)> {
         self.target_cells_geojson
             .as_deref()
             .zip(self.target_levels_json.as_deref())
@@ -432,7 +432,7 @@ fn build_hfield_from_regions_in_domain(
 
 /// Sample canonical region footprints before any gradient expansion.
 /// This is a raster source, not an exact analytic-region coverage certificate.
-pub(crate) fn build_raw_region_hfield(
+pub fn build_raw_region_hfield(
     regions: &[RefinementRegion],
     base_m: f64,
     nlon: usize,
@@ -477,7 +477,7 @@ pub(crate) fn build_raw_region_hfield(
 /// size plus a slope-`g` transition based on Euclidean distance from the
 /// region boundary; the pointwise minimum is already the largest field below
 /// those constraints, so no raster or projection is needed.
-pub(crate) fn cartesian_hfield_level_at(
+pub fn cartesian_hfield_level_at(
     regions: &[RefinementRegion],
     x_meters: f64,
     y_meters: f64,
@@ -502,7 +502,7 @@ pub(crate) fn cartesian_hfield_level_at(
     (((base_m / h).log2() - 1e-9).ceil() as usize).min(max_level) as u8
 }
 
-pub(crate) fn cartesian_xy_to_lonlat(
+pub fn cartesian_xy_to_lonlat(
     x_meters: f64,
     y_meters: f64,
     origin_lon: f64,
@@ -591,7 +591,7 @@ fn apply_mean_threshold_hfield_contributions_with_landtype_mask(
 }
 
 #[cfg(test)]
-pub(crate) fn apply_std_threshold_hfield_contributions(
+pub fn apply_std_threshold_hfield_contributions(
     field: &mut HField,
     refine: &RefineConfig,
     mesh_type: &str,
@@ -682,11 +682,11 @@ fn apply_std_threshold_hfield_contributions_with_landtype_mask(
     Ok(applied)
 }
 
-pub(crate) fn has_mean_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &str) -> bool {
+pub fn has_mean_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &str) -> bool {
     !enabled_mean_threshold_field_specs(refine, mesh_type).is_empty()
 }
 
-pub(crate) fn has_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &str) -> bool {
+pub fn has_threshold_hfield_sources(refine: &RefineConfig, mesh_type: &str) -> bool {
     has_mean_threshold_hfield_sources(refine, mesh_type)
         || !enabled_std_threshold_field_specs(refine, mesh_type).is_empty()
         || has_landtype_basic_threshold_hfield_sources(refine, mesh_type)
@@ -713,7 +713,7 @@ fn has_landtype_basic_threshold_hfield_sources(refine: &RefineConfig, mesh_type:
 }
 
 #[derive(Debug)]
-pub(crate) struct LandtypeBinStats {
+pub struct LandtypeBinStats {
     slot_by_hfield: Vec<usize>,
     total: Vec<usize>,
     ocean: Vec<usize>,
@@ -782,15 +782,15 @@ impl LandtypeBinStats {
             .filter(|slot| *slot != usize::MAX)
     }
 
-    pub(crate) fn total_at(&self, out: usize) -> usize {
+    pub fn total_at(&self, out: usize) -> usize {
         self.slot(out).map_or(0, |slot| self.total[slot])
     }
 
-    pub(crate) fn ocean_at(&self, out: usize) -> usize {
+    pub fn ocean_at(&self, out: usize) -> usize {
         self.slot(out).map_or(0, |slot| self.ocean[slot])
     }
 
-    pub(crate) fn land_at(&self, out: usize) -> usize {
+    pub fn land_at(&self, out: usize) -> usize {
         self.slot(out).map_or(0, |slot| self.land[slot])
     }
 
@@ -803,7 +803,7 @@ impl LandtypeBinStats {
         })
     }
 
-    pub(crate) fn class_counts_at(&self, out: usize) -> &[(i32, usize)] {
+    pub fn class_counts_at(&self, out: usize) -> &[(i32, usize)] {
         self.slot(out)
             .map_or(&[], |slot| self.class_counts[slot].as_slice())
     }
@@ -1513,7 +1513,7 @@ fn read_landtype_source_for_hfield(
     read_landtype_source_for_hfield_with_options(path, field, domain, 0.0, false, true, false)
 }
 
-pub(crate) fn read_landtype_support(
+pub fn read_landtype_support(
     path: &Path,
     grid: &HField,
     domain: Option<&HfieldDomainMask>,
@@ -1530,7 +1530,7 @@ pub(crate) fn read_landtype_support(
     )
 }
 
-pub(crate) fn support_landtype_mask(path: &Path) -> io::Result<LandtypeMaskSource> {
+pub fn support_landtype_mask(path: &Path) -> io::Result<LandtypeMaskSource> {
     read_landtype_mask_source_for_hfield_with_options(path, true)
 }
 
@@ -1683,7 +1683,7 @@ fn read_landtype_source_for_hfield_with_options(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct LandtypeMaskSource {
+pub struct LandtypeMaskSource {
     path: std::path::PathBuf,
     nlon: usize,
     nlat: usize,
@@ -1983,7 +1983,7 @@ fn apply_landtype_basic_thresholds_from_bins(
 /// domain. This is the request, not a backend's: Method-C spawns from its
 /// quantised levels and red-green marks from them.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compose_spherical_hfield(
+pub fn compose_spherical_hfield(
     regions: &[RefinementRegion],
     refine: &RefineConfig,
     mesh_type: &str,
@@ -2010,7 +2010,7 @@ pub(crate) fn compose_spherical_hfield(
     Ok(field)
 }
 
-pub(crate) fn build_composed_hfield(
+pub fn build_composed_hfield(
     regions: &[RefinementRegion],
     refine: &RefineConfig,
     mesh_type: &str,
@@ -2033,7 +2033,7 @@ pub(crate) fn build_composed_hfield(
     .map(|(field, _)| field)
 }
 
-pub(crate) fn build_composed_hfield_with_report(
+pub fn build_composed_hfield_with_report(
     regions: &[RefinementRegion],
     refine: &RefineConfig,
     mesh_type: &str,
@@ -2133,7 +2133,7 @@ pub(crate) fn build_composed_hfield_with_report(
 /// the Method-C transition apron free to extend into the surrounding parent
 /// mesh. Regional outputs discard that surrounding mesh after refinement, so
 /// refining unrelated global threshold features is both wasteful and unsafe.
-pub(crate) fn constrain_hfield_to_domain(
+pub fn constrain_hfield_to_domain(
     field: &mut HField,
     domain: Option<&GridRegion>,
     base_m: f64,
@@ -2155,10 +2155,10 @@ pub(crate) fn constrain_hfield_to_domain(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ThresholdStats {
-    pub(crate) samples: Vec<usize>,
-    pub(crate) mean: Vec<f64>,
-    pub(crate) stddev: Vec<f64>,
+pub struct ThresholdStats {
+    pub samples: Vec<usize>,
+    pub mean: Vec<f64>,
+    pub stddev: Vec<f64>,
 }
 
 // Last key component: whether empty-bin nearest means were materialized.
@@ -2198,7 +2198,7 @@ fn read_threshold_stats_on_hfield_for_criteria(
     )
 }
 
-pub(crate) fn read_numeric_support(
+pub fn read_numeric_support(
     file: &netcdf::File,
     name: &str,
     grid: &HField,
@@ -2835,7 +2835,7 @@ mod tests {
             .chain([0.0; 8])
             .flat_map(|value| [value; 2])
             .collect();
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 16).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         for name in ["lai", "sst", "typhoon"] {
@@ -2902,7 +2902,7 @@ mod tests {
                     .join(format!("earthmesh_std_only_cache_{}", std::process::id()));
                 std::fs::create_dir_all(&root).unwrap();
                 let path = root.join(format!("{name}.nc"));
-                let mut file = crate::create_netcdf_quiet(&path).unwrap();
+                let mut file = crate::create_netcdf(&path).unwrap();
                 file.add_dimension("longitude", 4).unwrap();
                 file.add_dimension("latitude", 2).unwrap();
                 file.add_variable::<f64>(name, &["longitude", "latitude"])
@@ -3377,7 +3377,7 @@ mod tests {
             [("f64", false, true, false), ("f32", true, false, true)]
         {
             let threshold_path = root.join(format!("threshold_{case}.nc"));
-            let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+            let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
             threshold_file.add_dimension("longitude", 8).unwrap();
             threshold_file.add_dimension("latitude", 2).unwrap();
             let threshold_values = if threshold_lat_lon {
@@ -3419,7 +3419,7 @@ mod tests {
             drop(threshold_file);
 
             let mask_path = root.join(format!("mask_{case}.nc"));
-            let mut mask_file = crate::create_netcdf_quiet(&mask_path).unwrap();
+            let mut mask_file = crate::create_netcdf(&mask_path).unwrap();
             mask_file.add_dimension("longitude", 8).unwrap();
             mask_file.add_dimension("latitude", 2).unwrap();
             let mask_values = if mask_lat_lon {
@@ -3475,7 +3475,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         // Canonical source order is north-to-south: j=0 is northern.
@@ -3542,7 +3542,7 @@ mod tests {
         );
 
         let threshold_path = root.join("lai.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 4).unwrap();
         threshold_file.add_dimension("latitude", 2).unwrap();
         threshold_file
@@ -3565,7 +3565,7 @@ mod tests {
         }
 
         let landtype_path = root.join("landtype.nc");
-        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        let mut landtype_file = crate::create_netcdf(&landtype_path).unwrap();
         landtype_file.add_dimension("longitude", 4).unwrap();
         landtype_file.add_dimension("latitude", 2).unwrap();
         landtype_file
@@ -3589,7 +3589,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("latitude", &["latitude"])
@@ -3641,7 +3641,7 @@ mod tests {
             ),
         ] {
             let path = root.join(format!("{case}.nc"));
-            let mut file = crate::create_netcdf_quiet(&path).unwrap();
+            let mut file = crate::create_netcdf(&path).unwrap();
             file.add_dimension("longitude", 4).unwrap();
             file.add_dimension("latitude", 2).unwrap();
             file.add_variable::<f64>("longitude", &["longitude"])
@@ -3665,7 +3665,7 @@ mod tests {
         }
 
         let path = root.join("non_monotonic.nc");
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("longitude", &["longitude"])
@@ -3694,7 +3694,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let threshold_path = root.join("threshold.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 8).unwrap();
         threshold_file.add_dimension("latitude", 4).unwrap();
         threshold_file
@@ -3711,7 +3711,7 @@ mod tests {
         drop(threshold_file);
 
         let mask_path = root.join("mask.nc");
-        let mut mask_file = crate::create_netcdf_quiet(&mask_path).unwrap();
+        let mut mask_file = crate::create_netcdf(&mask_path).unwrap();
         mask_file.add_dimension("longitude", 8).unwrap();
         mask_file.add_dimension("latitude", 4).unwrap();
         mask_file
@@ -3786,7 +3786,7 @@ mod tests {
         ];
         for (case, attribute, invalid_value) in cases {
             let path = root.join(format!("{case}.nc"));
-            let mut file = crate::create_netcdf_quiet(&path).unwrap();
+            let mut file = crate::create_netcdf(&path).unwrap();
             file.add_dimension("longitude", 4).unwrap();
             file.add_dimension("latitude", 2).unwrap();
             let mut variable = file
@@ -3829,7 +3829,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("lai", &["longitude", "latitude"])
@@ -3852,7 +3852,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i16>("lai", &["longitude", "latitude"])
@@ -3875,7 +3875,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("row", 4).unwrap();
         file.add_dimension("column", 2).unwrap();
         file.add_variable::<f64>("lai", &["row", "column"])
@@ -3914,7 +3914,7 @@ mod tests {
                     0.0_f64, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                     0.0,
                 ];
-                let mut file = crate::create_netcdf_quiet(&path).unwrap();
+                let mut file = crate::create_netcdf(&path).unwrap();
                 file.add_dimension("longitude", 8).unwrap();
                 file.add_dimension("latitude", 2).unwrap();
                 file.add_variable::<f64>(name, &["longitude", "latitude"])
@@ -3971,7 +3971,7 @@ mod tests {
         let values = vec![
             0.0_f64, 0.0, 2.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ];
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 8).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("lai", &["longitude", "latitude"])
@@ -4062,7 +4062,7 @@ mod tests {
                         }
                     }
                 }
-                let mut file = crate::create_netcdf_quiet(&path).unwrap();
+                let mut file = crate::create_netcdf(&path).unwrap();
                 file.add_dimension("longitude", 8).unwrap();
                 file.add_dimension("latitude", 4).unwrap();
                 file.add_variable::<f64>("longitude", &["longitude"])
@@ -4134,7 +4134,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("nav_lon", &["longitude", "latitude"])
@@ -4164,7 +4164,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("lai", &["longitude", "latitude"])
@@ -4187,7 +4187,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4211,7 +4211,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4237,7 +4237,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let threshold_path = root.join("lai.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 4).unwrap();
         threshold_file.add_dimension("latitude", 2).unwrap();
         threshold_file
@@ -4295,7 +4295,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let threshold_path = root.join("lai.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 4).unwrap();
         threshold_file.add_dimension("latitude", 2).unwrap();
         threshold_file
@@ -4305,7 +4305,7 @@ mod tests {
             .unwrap();
         drop(threshold_file);
         let landtype_path = root.join("landtype.nc");
-        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        let mut landtype_file = crate::create_netcdf(&landtype_path).unwrap();
         landtype_file.add_dimension("longitude", 4).unwrap();
         landtype_file.add_dimension("latitude", 2).unwrap();
         landtype_file
@@ -4528,7 +4528,7 @@ mod tests {
 
         for lat_lon in [false, true] {
             let path = root.join(if lat_lon { "lat_lon.nc" } else { "lon_lat.nc" });
-            let mut file = crate::create_netcdf_quiet(&path).unwrap();
+            let mut file = crate::create_netcdf(&path).unwrap();
             file.add_dimension("longitude", 8).unwrap();
             file.add_dimension("latitude", 2).unwrap();
             let values = if lat_lon {
@@ -4584,7 +4584,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("latitude", &["latitude"])
@@ -4613,7 +4613,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 8).unwrap();
         file.add_dimension("latitude", 4).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4656,7 +4656,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("landtype.nc");
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4691,7 +4691,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("landtype.nc");
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4760,7 +4760,7 @@ mod tests {
         let path = root.join("landtype.nc");
         let replacement = root.join("replacement.nc");
         for (fixture, nlon) in [(&path, 4), (&replacement, 5)] {
-            let mut file = crate::create_netcdf_quiet(fixture).unwrap();
+            let mut file = crate::create_netcdf(fixture).unwrap();
             file.add_dimension("longitude", nlon).unwrap();
             file.add_dimension("latitude", 2).unwrap();
             file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4794,7 +4794,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("landtype.nc");
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4838,7 +4838,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("landtype.nc");
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])
@@ -4871,7 +4871,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 8).unwrap();
         file.add_dimension("latitude", 4).unwrap();
         let mut values = vec![1_i8; 32];
@@ -4913,7 +4913,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         let landtype_path = root.join("landtype.nc");
-        let mut landtype_file = crate::create_netcdf_quiet(&landtype_path).unwrap();
+        let mut landtype_file = crate::create_netcdf(&landtype_path).unwrap();
         landtype_file.add_dimension("longitude", 8).unwrap();
         landtype_file.add_dimension("latitude", 4).unwrap();
         landtype_file
@@ -4924,7 +4924,7 @@ mod tests {
         drop(landtype_file);
 
         let threshold_path = root.join("threshold.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 8).unwrap();
         threshold_file.add_dimension("latitude", 4).unwrap();
         threshold_file
@@ -4972,7 +4972,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 4).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<f64>("longitude", &["longitude"])
@@ -5000,7 +5000,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("row", 4).unwrap();
         file.add_dimension("column", 2).unwrap();
         file.add_variable::<i8>("landtype", &["row", "column"])
@@ -5033,7 +5033,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let threshold_path = root.join("lai.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 4).unwrap();
         threshold_file.add_dimension("latitude", 2).unwrap();
         threshold_file
@@ -5044,7 +5044,7 @@ mod tests {
         drop(threshold_file);
 
         let mask_path = root.join("landtype.nc");
-        let mut mask_file = crate::create_netcdf_quiet(&mask_path).unwrap();
+        let mut mask_file = crate::create_netcdf(&mask_path).unwrap();
         mask_file.add_dimension("longitude", 4).unwrap();
         mask_file.add_dimension("latitude", 2).unwrap();
         mask_file
@@ -5083,7 +5083,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let threshold_path = root.join("lai.nc");
-        let mut threshold_file = crate::create_netcdf_quiet(&threshold_path).unwrap();
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
         threshold_file.add_dimension("longitude", 4).unwrap();
         threshold_file.add_dimension("latitude", 2).unwrap();
         threshold_file
@@ -5094,7 +5094,7 @@ mod tests {
         drop(threshold_file);
 
         let mask_path = root.join("landtype.nc");
-        let mut mask_file = crate::create_netcdf_quiet(&mask_path).unwrap();
+        let mut mask_file = crate::create_netcdf(&mask_path).unwrap();
         mask_file.add_dimension("longitude", 4).unwrap();
         mask_file.add_dimension("latitude", 2).unwrap();
         let mut landtype = mask_file
@@ -5127,7 +5127,7 @@ mod tests {
         let mask = root.join("mask.nml");
         std::fs::write(&mask, "bbox_num = 1\nbbox_refine = 0\n0 90 90 0\n").unwrap();
         let land = root.join("land.nc");
-        let mut file = crate::create_netcdf_quiet(&land).unwrap();
+        let mut file = crate::create_netcdf(&land).unwrap();
         file.add_dimension("longitude", 8).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         let mut values = [1_i8; 16];
@@ -5248,7 +5248,7 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         let values = vec![1_i8, 1, 2, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1];
-        let mut file = crate::create_netcdf_quiet(&path).unwrap();
+        let mut file = crate::create_netcdf(&path).unwrap();
         file.add_dimension("longitude", 8).unwrap();
         file.add_dimension("latitude", 2).unwrap();
         file.add_variable::<i8>("landtype", &["longitude", "latitude"])

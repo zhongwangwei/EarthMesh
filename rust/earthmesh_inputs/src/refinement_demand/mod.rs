@@ -12,7 +12,7 @@ pub mod landtype;
 pub mod nest;
 pub mod plan;
 pub mod threshold;
-pub(crate) mod threshold_support;
+pub mod threshold_support;
 pub mod width;
 
 use std::io;
@@ -135,7 +135,7 @@ impl RefinementDemand {
     }
 
     /// Clear demanded cells that do not pass `keep`.
-    pub(crate) fn retain_where(&mut self, keep: impl Fn(usize, usize) -> bool) {
+    pub fn retain_where(&mut self, keep: impl Fn(usize, usize) -> bool) {
         for lat in self.bounds.maxlat_source..=self.bounds.minlat_source {
             for lon in self.bounds.minlon_source..=self.bounds.maxlon_source {
                 if self.is_demanded(lon, lat) && !keep(lon, lat) {
