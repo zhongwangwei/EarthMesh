@@ -53,6 +53,7 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_certified/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_delivery/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_inputs/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
 
 fmt-gui:
@@ -61,8 +62,8 @@ fmt-gui:
 # Lint gate: deny every clippy + rustc warning. Per-crate `[lints.clippy]` in each
 # Cargo.toml already allows the intentionally-kept algorithm-shaped
 # signatures/loops in mesh+cli; anything else fails CI.
-# `clippy` = no-netcdf crates (CI fast job); `clippy-full` adds delivery and cli
-# (both need NetCDF).
+# `clippy` = no-netcdf crates (CI fast job); `clippy-full` adds delivery, inputs
+# and cli (all need NetCDF).
 clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_core/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_geometry/Cargo.toml --all-targets -- -D warnings
@@ -82,12 +83,13 @@ clippy-gui:
 
 clippy-full: clippy
 	$(CARGO) clippy --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets $(CLI_FEATURES) -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_inputs/Cargo.toml --all-targets $(CLI_FEATURES) -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES) -- -D warnings
 
 # Fast regression gate: no NetCDF, no GUI — pure Rust crates only. Used by CI's
 # `fast` job and as the quick local loop. Builds in seconds (no netcdf-c/HDF5).
 test-fast:
-	$(CARGO) test --workspace --exclude earthmesh_cli --exclude earthmesh_delivery --all-targets
+	$(CARGO) test --workspace --exclude earthmesh_cli --exclude earthmesh_delivery --exclude earthmesh_inputs --all-targets
 
 check-active-taskbook:
 	python3 scripts/check_active_taskbook.py .
@@ -148,6 +150,7 @@ test-gui: check-gui-js
 # Full crate tests (includes cli with static-netcdf — slow first build).
 test: test-fast
 	$(CARGO) test --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets $(CLI_FEATURES)
+	$(CARGO) test --manifest-path rust/earthmesh_inputs/Cargo.toml --all-targets $(CLI_FEATURES)
 	$(CARGO) test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets $(CLI_FEATURES)
 
 # Fixture-backed slow tests require EARTHMESH_LANDTYPE, defaulting to the

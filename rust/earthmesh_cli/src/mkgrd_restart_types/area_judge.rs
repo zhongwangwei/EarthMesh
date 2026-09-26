@@ -21,18 +21,7 @@ pub enum MkgrdFinalDomainPostprocReport {
     AtmosFull(MpasFullMeshPipelineReport),
 }
 
-/// Source-grid geometry supplied by the caller for the restarted `Area_judge`
-/// continuation inside the `mkgrd.F90` mask-restart path.
-#[derive(Debug, Clone, Copy)]
-pub struct MkgrdRestartAreaJudgeOptions<'a> {
-    pub lon_vertex: &'a [f64],
-    pub lat_vertex: &'a [f64],
-    pub lon_i: &'a [f64],
-    pub lat_i: &'a [f64],
-    pub gridnum_perdegree: usize,
-    pub nlons_source: usize,
-    pub nlats_source: usize,
-}
+pub use crate::global_source_axes::MkgrdRestartAreaJudgeOptions;
 
 /// Report for the restarted `Area_judge` continuation of the top-level
 /// `mkgrd.F90` mask-restart branch.

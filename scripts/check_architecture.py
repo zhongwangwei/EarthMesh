@@ -71,6 +71,8 @@ NEUTRAL_CRATES = (
     "earthmesh_refine_planner",
     # The output layer: writes every backend's mesh the same way.
     "earthmesh_delivery",
+    # The input layer: reads the same sources whichever backend refines.
+    "earthmesh_inputs",
 )
 
 # The only CLI sources that may name a backend crate: orchestration, the

@@ -2,19 +2,21 @@
 
 ## There are two Rust workspaces, not one
 
-The root workspace holds fourteen crates, all under `rust/` -- including the
+The root workspace holds fifteen crates, all under `rust/` -- including the
 retained refinement backends (`earthmesh_refine_method_c`,
-`earthmesh_refine_redgreen`, and `earthmesh_refine_certified`) and the output
-layer `earthmesh_delivery` (gridfile mesh types and NetCDF read/write).
+`earthmesh_refine_redgreen`, and `earthmesh_refine_certified`), the output
+layer `earthmesh_delivery` (gridfile mesh types, NetCDF read/write, model
+writers) and the input layer `earthmesh_inputs` (source-data readers and
+`Area_judge`).
 **`gui-tauri/src-tauri` is its own workspace and is not a member of it.**
 
 That means a root-level command silently covers only part of the repository:
 
 | command | covers | misses |
 |---|---|---|
-| `cargo test --workspace` | the fourteen engine crates | the Tauri crate |
-| `cargo fmt --all` | the fourteen engine crates | the Tauri crate |
-| `cargo clippy --workspace` | the fourteen engine crates | the Tauri crate |
+| `cargo test --workspace` | the fifteen engine crates | the Tauri crate |
+| `cargo fmt --all` | the fifteen engine crates | the Tauri crate |
+| `cargo clippy --workspace` | the fifteen engine crates | the Tauri crate |
 
 Nothing fails when the GUI is skipped — the command reports success for what it
 did run, which reads as "everything passed". After touching anything under
@@ -36,13 +38,11 @@ CI (`.github/workflows/ci.yml`) has three jobs. Reproduce them locally with:
 
 - `fast` → `make fmt && make clippy && make test-fast` (no NetCDF, no GUI)
 - `gui` → the four commands above
-- `heavy` → clippy and tests on the two NetCDF crates, `earthmesh_delivery` and
-  `earthmesh_cli`, against **dynamic system NetCDF**:
+- `heavy` → clippy and tests on the three NetCDF crates, `earthmesh_delivery`,
+  `earthmesh_inputs` and `earthmesh_cli`, against **dynamic system NetCDF**:
   ```
-  cargo clippy --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets -- -D warnings
-  cargo clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets -- -D warnings
-  cargo test   --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets
-  cargo test   --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets
+  cargo clippy --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets -- -D warnings
+  cargo test   --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets
   ```
   Locally there may be no system NetCDF library at all; add
   `--features static-netcdf` (what `make test` / `make clippy-full` do).
@@ -52,15 +52,15 @@ CI (`.github/workflows/ci.yml`) has three jobs. Reproduce them locally with:
   thing to check.
 
 `make fmt` and `make clippy` list crates one by one rather than using
-`--workspace`, because `earthmesh_cli` and `earthmesh_delivery` need NetCDF and
-the fast job has none.
+`--workspace`, because `earthmesh_cli`, `earthmesh_delivery` and
+`earthmesh_inputs` need NetCDF and the fast job has none.
 A crate added to the workspace is **not** automatically covered — add it to the
 Makefile lists too. This has already gone wrong once: `earthmesh_boundary`,
 `earthmesh_refine` were skipped by the fast job
 for several commits while it reported success. The counts to check against are
-14 in `fmt` (every crate), 12 in `clippy` and `test-fast` (all but
-`earthmesh_cli` and `earthmesh_delivery`, which need NetCDF), and 14 workspace
-members.
+15 in `fmt` (every crate), 12 in `clippy` and `test-fast` (all but the three
+NetCDF crates `earthmesh_cli`, `earthmesh_delivery` and `earthmesh_inputs`), and
+15 workspace members.
 
 ## End-to-end regressions
 
@@ -81,7 +81,7 @@ The convention is **a branch per version**, not just a tag: `v1.0.0`, `v2.0.0`,
 pushing the branch is what builds the wheels. `master` is a separate lineage and
 is not where the v3 line lives.
 
-1. Bump the version everywhere. It appears in fourteen `Cargo.toml` files plus
+1. Bump the version everywhere. It appears in fifteen `Cargo.toml` files plus
    both `Cargo.lock` files (`cargo update -w` in the root and in
    `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
    title and changelog, and **four `--version` assertions in

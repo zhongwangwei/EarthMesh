@@ -370,3 +370,22 @@ green 下限与需求嵌套），单独决定。
   其余部分（依赖 `area_judge` 等输入侧读取）、`grid_quality_inputs` 的对账部分（依赖需求层）——
   这些要等输入层的归属（交接文档 3.2 的 A/B 选择）定了再拆。
 
+### 2026-09-26 第 5 步（第五部分）：输入层的归属与第一批 `earthmesh_inputs`
+
+- 归属决定（用户两次说“继续”未另选，按推荐的方案 A 执行，可再议）：输入层**不**放进
+  `earthmesh_refine`，新建 `earthmesh_inputs`。原因：数据读取大量使用 NetCDF，而 `earthmesh_refine`
+  被 Method-C 依赖；放进去会让所有算法 crate 间接依赖 NetCDF，`fast` 任务就测不了它们。
+  `earthmesh_refine` 保持为与数据格式无关的需求定义（`TargetLevelField` 等）。
+- `earthmesh_inputs` 依赖 `earthmesh_delivery` 的 gridfile/NetCDF/JSON 辅助（两者都是中立 crate，门禁
+  允许）；若以后需要更干净的“公共底座”，可把这些辅助再拆成单独 crate。
+- 切断两条把 CLI 运行记录拉进来的边：`MkgrdRestartAreaJudgeOptions` 的定义移到使用它的
+  `global_source_axes`，恢复类型模块改为重新导出；`LandtypeDataPreprocessReport` 所在文件移入
+  inputs（`landtype_preprocess_report`）。
+- 移入 33 个模块（约 1.3 万行）：`area_judge_*` 全系、CaMa 二进制读取与河段清单、MERIT Hydro 读取与
+  瓦片选择、bbox/circle/close/Lambert 掩膜文件读写、Get_Contain 几何与类型、海岸带读取、阈值输入、
+  区域来源、地表类型预处理、`v3_data_source_io`、`namelist_reader`、`mask_counts` 等。
+- 注意：`cargo fix` 只看非测试构建，会删掉“只有 CLI 测试用到的根导入”；另外被移模块里带
+  `#[cfg(test)]` 的再导出在 CLI 测试里不可见（条件属于新 crate），需去掉条件。
+- `earthmesh_inputs` 进入中立 crate 名单；需要 NetCDF，由 `heavy` 任务与 `make test`/`clippy-full`
+  覆盖（ci.yml、Makefile 已改）；CLAUDE.md 计数 15 / 12 / 15。
+

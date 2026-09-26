@@ -1,0 +1,29 @@
+[package]
+name = "earthmesh_inputs"
+version = "3.0.0-alpha5"
+edition = "2021"
+description = "EarthMesh input layer: source data readers and the criteria evaluated on them"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_delivery = { path = "../earthmesh_delivery" }
+earthmesh_geometry = { path = "../earthmesh_geometry" }
+earthmesh_mesh = { path = "../earthmesh_mesh" }
+earthmesh_project = { path = "../earthmesh_project" }
+hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
+netcdf = { version = "0.12.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Forwarded by earthmesh_cli's static-netcdf.
+static-netcdf = ["netcdf/static", "earthmesh_delivery/static-netcdf"]
+
+# Same allowances as earthmesh_cli, whose readers moved here.
+[lints.clippy]
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+large_enum_variant = "allow"

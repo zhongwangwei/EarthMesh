@@ -168,6 +168,7 @@ dependencies = [
  "earthmesh_delivery",
  "earthmesh_geometry",
  "earthmesh_hfield",
+ "earthmesh_inputs",
  "earthmesh_mesh",
  "earthmesh_project",
  "earthmesh_quality",
@@ -218,6 +219,21 @@ version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_core",
  "earthmesh_mesh",
+]
+
+[[package]]
+name = "earthmesh_inputs"
+version = "3.0.0-alpha5"
+dependencies = [
+ "earthmesh_core",
+ "earthmesh_delivery",
+ "earthmesh_geometry",
+ "earthmesh_mesh",
+ "earthmesh_project",
+ "hdf5-metno-sys",
+ "netcdf",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

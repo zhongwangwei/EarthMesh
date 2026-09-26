@@ -1,5 +1,5 @@
 mod gridinit;
-mod landtype;
+use earthmesh_inputs::landtype_preprocess_report as landtype;
 mod refine;
 mod top_level;
 
