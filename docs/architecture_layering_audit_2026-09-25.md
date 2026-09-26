@@ -305,3 +305,9 @@ green 下限与需求嵌套），单独决定。
   架构门禁通过。
 - 已知缺口：Red-Green 经典过渡行路径（Hex 输出）仍不记录每单元深度，所以 h-field 驱动的 Hex 运行
   `realized_max_level` 报 0，质量对账为“未测量”。
+
+### 2026-09-26 4c：Red-Green + h-field 的 green 下限固定为 20°
+
+用户决定按建议实施（数据见指南 11.71 补充）。只作用于天然嵌套的需求（h-field）与三角形输出；判据圆
+路线与 Hex 输出不变。GUI 中 Red-Green 默认需求表达为 h-field。这是有意改变 Red-Green + h-field 的
+输出，该路线在 a8083510 才开放，没有依赖它的旧项目。

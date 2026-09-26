@@ -1415,8 +1415,9 @@ log("discrete mask is existing-project-only");
 {
   // Algorithm and route were two selects that knew nothing about each other, so
   // an unsupported backend + h-field was one click away and the run refuses it.
-  // Both halves are needed: the non-Method-C DOM must not contain H-field
-  // controls, and stale projects must be reset before rendering or saving.
+  // Both halves are needed: an algorithm that does not read the h-field (LEPP,
+  // CMRC) must not render H-field controls, and stale projects must be reset
+  // before rendering or saving. Method-C and red-green both read it.
   check(
     html.includes('${hfieldServed?`<option value="hfield"') &&
       html.includes('${hfieldServed?`<div id="hfieldOptions"') &&
@@ -1424,8 +1425,17 @@ log("discrete mask is existing-project-only");
     "non-Method-C algorithms must not render or retain H-field controls",
   );
   check(
-    html.includes('specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield"'),
+    html.includes('const readsHfield = next === "method_c" || next === "red_green";') &&
+      html.includes('if (!readsHfield && (specifiedRefine.route || "adaptive") === "hfield") {') &&
+      html.includes('const hfieldServed = algorithm === "method_c" || algorithm === "red_green";'),
     "switching algorithm must reset a selected h-field route",
+  );
+  // Red-green's recommended demand is the h-field (guide 11.71): switching to
+  // it moves only the default route there, never a route the user chose.
+  check(
+    html.includes('if (next === "red_green" && previousAlgorithm !== "red_green"') &&
+      html.includes('&& (specifiedRefine.route || "adaptive") === "adaptive") {\n          specifiedRefine.route = "hfield";'),
+    "red-green must default the demand route to the h-field",
   );
   log("h-field route is gated on the refinement algorithm");
 }

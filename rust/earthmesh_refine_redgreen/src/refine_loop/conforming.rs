@@ -148,13 +148,17 @@ pub(super) fn refine(
     neighbors: &[Vec<usize>],
     halo_cancelled_count: usize,
     absolute_minimum: f64,
+    fixed_floor: Option<f64>,
 ) -> io::Result<RedGreenOutcome> {
     let baseline = refine_conforming(
         mesh,
         marking,
         neighbors,
         halo_cancelled_count,
-        absolute_minimum,
+        GreenFloor {
+            absolute_minimum,
+            fixed: fixed_floor,
+        },
         None,
         usize::MAX,
     )?;
@@ -162,12 +166,36 @@ pub(super) fn refine(
     // ponytail: bounded local repair, not a new global refinement pass. A cascade
     // beyond 10% (at least 64 faces for small cases) is rolled back, not hidden.
     let budget = count.saturating_add((count / 10).max(64));
-    repair_balance(baseline, absolute_minimum, budget)
+    repair_balance(
+        baseline,
+        GreenFloor {
+            absolute_minimum,
+            fixed: fixed_floor,
+        },
+        budget,
+    )
+}
+
+/// How the green-bisection floor is set: derived from the red leaves and
+/// raised to `absolute_minimum`, unless `fixed` replaces it outright.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GreenFloor {
+    absolute_minimum: f64,
+    fixed: Option<f64>,
+}
+
+impl From<f64> for GreenFloor {
+    fn from(absolute_minimum: f64) -> Self {
+        Self {
+            absolute_minimum,
+            fixed: None,
+        }
+    }
 }
 
 fn repair_balance(
     mut baseline: RedGreenOutcome,
-    absolute_minimum: f64,
+    floor: GreenFloor,
     budget: usize,
 ) -> io::Result<RedGreenOutcome> {
     let (mut marks, warnings, _) = balance_marks(&baseline.mesh)?;
@@ -190,7 +218,7 @@ fn repair_balance(
             &marks,
             &neighbors,
             0,
-            absolute_minimum,
+            floor,
             Some(window),
             budget,
         ) {
@@ -240,11 +268,19 @@ fn refine_conforming(
     marking: &[i32],
     neighbors: &[Vec<usize>],
     halo_cancelled_count: usize,
-    absolute_minimum: f64,
+    floor: GreenFloor,
     balance_window: Option<(f64, f64)>,
     face_budget: usize,
 ) -> io::Result<RedGreenOutcome> {
-    if !absolute_minimum.is_finite() || !(0.0..60.0).contains(&absolute_minimum) {
+    let GreenFloor {
+        absolute_minimum,
+        fixed,
+    } = floor;
+    if [Some(absolute_minimum), fixed]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_finite() || !(0.0..60.0).contains(&value))
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "red-green triangle angle floor must be finite and in [0, 60) degrees",
@@ -379,6 +415,9 @@ fn refine_conforming(
     minimum = minimum
         .max(absolute_minimum)
         .max(balance_window.map_or(0.0, |w| w.0));
+    if let Some(fixed) = fixed {
+        minimum = fixed;
+    }
     let maximum = balance_window.map_or(180.0, |w| w.1);
     let mut active_parents = parents.iter().skip(start).filter(|&&c| c != [1; 3]).count();
     let mut pending = (start..parents.len())
@@ -608,9 +647,16 @@ mod tests {
                 0
             };
             let neighbors = super::super::triangle_neighbor_rows(&mesh).unwrap();
-            let out =
-                refine_conforming(&mesh, &marks, &neighbors, cancelled, 25.0, None, usize::MAX)
-                    .unwrap();
+            let out = refine_conforming(
+                &mesh,
+                &marks,
+                &neighbors,
+                cancelled,
+                25.0.into(),
+                None,
+                usize::MAX,
+            )
+            .unwrap();
             previous = Some(out.interior_marks.clone());
             mesh = out.mesh.clone();
             baseline = Some(out);
@@ -618,19 +664,19 @@ mod tests {
         let baseline = baseline.unwrap();
         assert_eq!(balance_marks(&baseline.mesh).unwrap().1, 2);
         let count = baseline.mesh.triangle_count() - baseline.mesh.num_vertex;
-        let refused = repair_balance(baseline.clone(), 25.0, count).unwrap();
+        let refused = repair_balance(baseline.clone(), 25.0.into(), count).unwrap();
         assert_eq!(refused.mesh, baseline.mesh);
         assert_eq!(refused.interior_marks, baseline.interior_marks);
         let report = refused.balance_repair.unwrap();
         assert_eq!(report.remaining_warning_count, 2);
         assert_eq!(report.added_triangle_count, 0);
         assert!(report.rejection_reason.unwrap().contains("budget"));
-        let repaired = repair_balance(baseline.clone(), 25.0, count + count / 10).unwrap();
+        let repaired = repair_balance(baseline.clone(), 25.0.into(), count + count / 10).unwrap();
         let report = repaired.balance_repair.as_ref().unwrap();
         assert_eq!(report.remaining_warning_count, 0, "{report:?}");
         assert!(report.added_triangle_count > 0 && report.added_triangle_count <= count / 10);
         assert_eq!(
-            repair_balance(baseline.clone(), 25.0, count + count / 10).unwrap(),
+            repair_balance(baseline.clone(), 25.0.into(), count + count / 10).unwrap(),
             repaired
         );
         let old_angles = mesh_angle_range(&baseline.mesh).unwrap();
@@ -757,7 +803,7 @@ fn tighter_green_templates_can_improve_extrema_but_increase_bad_faces() {
         &marks,
         &neighbors,
         0,
-        25.0,
+        25.0.into(),
         Some((40.0, 80.0)),
         budget,
     );
@@ -768,12 +814,12 @@ fn tighter_green_templates_can_improve_extrema_but_increase_bad_faces() {
         &marks,
         &neighbors,
         0,
-        25.0,
+        25.0.into(),
         Some((26.0, 102.0)),
         budget,
     )
     .unwrap();
-    let candidate = repair_balance(candidate, 25.0, budget).unwrap().mesh;
+    let candidate = repair_balance(candidate, 25.0.into(), budget).unwrap().mesh;
     let before = mesh_angle_range(&mesh).unwrap();
     let after = mesh_angle_range(&candidate).unwrap();
     let bad_faces = |mesh: &RedGreenMesh| {

@@ -86,6 +86,16 @@ pub fn finalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPol
 const MAX_ADJACENT_RESOLUTION_RATIO: f64 = 2.0;
 // Geometry contract, independent of the configurable warn/fail quality policy.
 const TRIANGLE_SHAPE_FLOOR_DEG: f64 = 25.0;
+/// Green floor for a demand that nests by construction (the h-field). The
+/// derived floor -- half the red leaves' smallest angle, 26.31 degrees on the
+/// global coast case -- rejected about half the greens and each rejection
+/// cascaded outward as red splits; the final angle-window repair now owns the
+/// published angles, so closure only has to avoid needles. Measured on Case9
+/// (guide 11.71): 151,427 -> 131,752 cells, finer than target 27,641 -> 2,812,
+/// coarser 262 -> 402, still 35-85 after repair. Criteria circles keep the
+/// derived floor: they do not nest, and there the over-refinement was holding
+/// up deeper demand (coarser than target rose 32,829 -> 44,975 at 20 degrees).
+const NESTED_DEMAND_GREEN_FLOOR_DEG: f64 = 20.0;
 
 #[derive(Default)]
 struct LocalResolutionStats {
@@ -734,6 +744,7 @@ pub fn redgreen_settings_for_level(
         halo: at_level(&refine.halo, defaults.halo),
         protect_triangle_quality: false,
         min_triangle_angle_deg: defaults.min_triangle_angle_deg,
+        green_floor_deg: defaults.green_floor_deg,
     }
 }
 
@@ -915,6 +926,46 @@ mod marking_tests {
 /// `previous_level_marks` is the level above's settled red interior **in this
 /// mesh's numbering**. Transition children are deliberately excluded so a
 /// deeper round cannot split them again.
+/// The settings one round runs with. TRI can publish variable-width W fans and
+/// closes with shape-checked greens; HEX still needs the canonical dual.
+fn redgreen_round_settings(
+    refine: &earthmesh_core::RefineConfig,
+    level: usize,
+    preserve_locality: bool,
+    demand_nests: bool,
+) -> earthmesh_refine_redgreen::RedGreenSettings {
+    let mut settings = redgreen_settings_for_level(refine, level);
+    settings.protect_triangle_quality = preserve_locality;
+    if preserve_locality {
+        settings.min_triangle_angle_deg = TRIANGLE_SHAPE_FLOOR_DEG;
+        if demand_nests {
+            settings.green_floor_deg = Some(NESTED_DEMAND_GREEN_FLOOR_DEG);
+        }
+    }
+    settings
+}
+
+#[cfg(test)]
+mod round_settings_tests {
+    use super::*;
+    use earthmesh_refine::TargetLevelField;
+
+    #[test]
+    fn only_triangle_output_from_a_nesting_demand_fixes_the_green_floor() {
+        let refine = earthmesh_core::RefineConfig::default();
+        let floor = |tri, nests| redgreen_round_settings(&refine, 1, tri, nests).green_floor_deg;
+        assert_eq!(floor(true, true), Some(NESTED_DEMAND_GREEN_FLOOR_DEG));
+        assert_eq!(
+            floor(true, false),
+            None,
+            "criteria circles keep the derived floor"
+        );
+        assert_eq!(floor(false, true), None, "hex closes with transition rows");
+        assert_eq!(floor(false, false), None);
+        assert!(!earthmesh_refine::RegionTargets::new(&[]).nests_by_construction());
+    }
+}
+
 pub fn refine_redgreen_level(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
     targets: &dyn earthmesh_refine::TargetLevelField,
@@ -924,12 +975,12 @@ pub fn refine_redgreen_level(
     preserve_locality: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
     let marking = redgreen_marking(mesh, targets, level)?;
-    let mut settings = redgreen_settings_for_level(refine, level);
-    // TRI can publish variable-width W fans; HEX still needs the canonical dual.
-    settings.protect_triangle_quality = preserve_locality;
-    if preserve_locality {
-        settings.min_triangle_angle_deg = TRIANGLE_SHAPE_FLOOR_DEG;
-    }
+    let settings = redgreen_round_settings(
+        refine,
+        level,
+        preserve_locality,
+        targets.nests_by_construction(),
+    );
     let outcome = earthmesh_refine_redgreen::refine_redgreen_round_inside(
         mesh,
         &marking,

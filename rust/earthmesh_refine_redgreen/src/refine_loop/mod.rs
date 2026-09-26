@@ -134,6 +134,12 @@ pub struct RedGreenSettings {
     /// Optional absolute floor in addition to inherited red-leaf shape quality.
     /// Zero selects only the geometric floor; the CLI supplies its warning floor.
     pub min_triangle_angle_deg: f64,
+    /// A fixed floor for green bisection, replacing the one derived above
+    /// (half the red leaves' smallest angle, raised to `min_triangle_angle_deg`).
+    /// The derived floor rejects about half the greens on a real mesh and each
+    /// rejection becomes a red split that leaves new hanging nodes outward --
+    /// the over-refinement of guide 11.71. `None` keeps the derived floor.
+    pub green_floor_deg: Option<f64>,
 }
 
 impl Default for RedGreenSettings {
@@ -145,6 +151,7 @@ impl Default for RedGreenSettings {
             halo: 3,
             protect_triangle_quality: false,
             min_triangle_angle_deg: 0.0,
+            green_floor_deg: None,
         }
     }
 }
@@ -416,6 +423,7 @@ pub fn refine_redgreen_round_inside(
             &triangle_neighbors,
             halo_cancelled_count,
             settings.min_triangle_angle_deg,
+            settings.green_floor_deg,
         );
     }
     let isolated_dropped_count = drop_isolated_marks(

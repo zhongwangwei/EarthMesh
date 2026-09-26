@@ -25,6 +25,14 @@ pub trait TargetLevelField: Sync {
     /// Whether any point asks to be at least `level` deep. `false` ends a
     /// level loop: nothing deeper will be asked either.
     fn demands_anywhere(&self, level: usize) -> bool;
+
+    /// Whether every point that asks for level L also asks for every level
+    /// above it, with the transition between levels already graded -- so a
+    /// deeper demand always sits inside a shallower one. True of the h-field;
+    /// not guaranteed of criteria circles, which are planned level by level.
+    fn nests_by_construction(&self) -> bool {
+        false
+    }
 }
 
 /// Named regions and criteria circles, each carrying its own level.
@@ -94,6 +102,10 @@ impl TargetLevelField for HfieldTargets<'_> {
 
     fn demands_anywhere(&self, level: usize) -> bool {
         self.deepest >= level
+    }
+
+    fn nests_by_construction(&self) -> bool {
+        true
     }
 }
 

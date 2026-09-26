@@ -3214,7 +3214,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${z?"点 + 半径（默认）":"Point + radius (default)"}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${z?"H 场":"H-field"}</option>`:""}${backend==="discrete"?`<option value="discrete" selected>${z?"离散硬掩膜（现有工程）":"Discrete hard mask (existing project)"}</option>`:""}</select>`,z?"新工程只提供界面能完整配置的需求表达；已有离散掩膜工程会保留原配置。":"New projects expose only fully configurable demand routes; existing discrete-mask projects retain their configuration.")}
+        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${algorithm==="red_green"?(z?"点 + 半径":"Point + radius"):(z?"点 + 半径（默认）":"Point + radius (default)")}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${algorithm==="red_green"?(z?"H 场（推荐）":"H-field (recommended)"):(z?"H 场":"H-field")}</option>`:""}${backend==="discrete"?`<option value="discrete" selected>${z?"离散硬掩膜（现有工程）":"Discrete hard mask (existing project)"}</option>`:""}</select>`,z?"新工程只提供界面能完整配置的需求表达；已有离散掩膜工程会保留原配置。":"New projects expose only fully configurable demand routes; existing discrete-mask projects retain their configuration.")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
@@ -3349,15 +3349,27 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const familySel = document.getElementById("refineBackendFamily");
       const methodCAlgorithmSel = document.getElementById("methodCAlgorithm");
       const selectAlgorithm = (next) => {
+        const previousAlgorithm = specifiedRefine.algorithm || "method_c";
         specifiedRefine.algorithm = next;
-        // Switching away from the nested algorithm with the h-field selected
-        // would leave a project the run refuses. Disabling the option is not
-        // enough on its own -- a browser keeps a disabled option selected if it
-        // already was.
-        if (specifiedRefine.algorithm !== "method_c" && (specifiedRefine.route || "adaptive") === "hfield") {
+        const readsHfield = next === "method_c" || next === "red_green";
+        // Switching to an algorithm that does not read the h-field with it
+        // selected would leave a project the run refuses. Disabling the option
+        // is not enough on its own -- a browser keeps a disabled option
+        // selected if it already was.
+        if (!readsHfield && (specifiedRefine.route || "adaptive") === "hfield") {
           specifiedRefine.route = "adaptive";
           if (backendSel) backendSel.value = "adaptive";
           syncBackend();
+        }
+        // Red-green's recommended demand is the h-field: it nests by
+        // construction, so no deeper mark is cancelled, and the closure runs
+        // with the fixed 20-degree green floor (guide 11.71). Only the default
+        // route is moved; a route the user chose stays. The select may not
+        // offer the option yet, so the state is set directly and re-rendered.
+        if (next === "red_green" && previousAlgorithm !== "red_green"
+            && (specifiedRefine.route || "adaptive") === "adaptive") {
+          specifiedRefine.route = "hfield";
+          specifiedRefine.hfieldEnabled = true;
         }
         if (specifiedRefine.algorithm === "certified") {
           specifiedRefine.route = "discrete";
