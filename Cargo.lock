@@ -225,11 +225,13 @@ dependencies = [
 name = "earthmesh_inputs"
 version = "3.0.0-alpha5"
 dependencies = [
+ "earthmesh_boundary",
  "earthmesh_core",
  "earthmesh_delivery",
  "earthmesh_geometry",
  "earthmesh_mesh",
  "earthmesh_project",
+ "flate2",
  "hdf5-metno-sys",
  "netcdf",
  "serde",

@@ -33,10 +33,28 @@ pub mod data_preprocess_types;
 pub mod getcontain_geometry;
 pub mod getcontain_types;
 pub mod global_source_axes;
+pub mod hydro_close_buffer;
+pub mod hydro_close_composite;
+pub mod hydro_close_envelope_merge;
+pub mod hydro_close_geometry;
+pub mod hydro_close_geometry_utils;
+pub mod hydro_close_hole_decomposition;
+pub mod hydro_close_hole_slabs;
+pub mod hydro_close_hole_spans;
+pub mod hydro_close_masks;
+pub mod hydro_close_proximity;
+pub mod hydro_close_recipe;
+pub mod hydro_close_types;
+pub mod hydro_delivery_common;
+pub mod hydro_delivery_complete_mask;
+pub mod hydro_delivery_intersections;
+pub mod hydro_refinement_eval;
+pub mod hydro_sweep;
 pub mod lambert_mode4_io;
 pub mod mask_counts;
 pub mod mask_source_discovery;
 pub mod merit_hydro_io;
+pub mod merit_hydro_region_close;
 pub mod merit_tile_selection;
 pub mod mkgrd_data_preprocess_source;
 pub mod namelist_reader;
@@ -139,6 +157,7 @@ pub use v3_data_source_io::{
 
 // Gridfile, NetCDF and JSON helpers the readers share with the output layer.
 pub use earthmesh_delivery::boundary_model;
+pub use earthmesh_delivery::hydro_workflow_types;
 pub use earthmesh_delivery::netcdf_io::first_existing_dimension_len;
 pub use earthmesh_delivery::netcdf_io::optional_values_i32_2d;
 pub use earthmesh_delivery::netcdf_io::required_scalar_usize_i32;
@@ -154,3 +173,25 @@ pub use earthmesh_delivery::{
     write_i32_matrix_rows, ContainMesh, ContainWriteReport, FlatContainMesh, GridRegion, JsonNode,
     JsonParser, LonLatPoint,
 };
+pub use earthmesh_delivery::{
+    json_node_to_f64, json_node_to_usize, json_string_usize_map, json_usize_f64_map,
+    json_usize_f64_map_node, json_usize_map,
+};
+pub use hydro_close_composite::write_hydro_composite_close_mask_nmls;
+pub use hydro_close_masks::{
+    read_hydro_close_mask_specs, write_hydro_close_mask_nmls, write_hydro_close_mask_specs,
+};
+pub use hydro_close_recipe::default_hydro_close_class_refine;
+pub use hydro_close_types::{
+    HydroCloseMaskNmlOptions, HydroCloseMaskNmlWriteReport, HydroCloseMaskSpec,
+    HydroCloseRefinementRecipeOptions, HydroCloseRefinementRecipeWriteReport,
+    HydroCompositeCloseMaskComponentSummary, HydroCompositeCloseMaskNmlWriteReport,
+    MeritHydroRegionWorkflowReport,
+};
+pub use hydro_delivery_common::{
+    format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
+};
+pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
+pub use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
+pub use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
+pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;

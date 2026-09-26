@@ -33,6 +33,9 @@ pub mod gridfile_levels;
 pub mod gridfile_lineage;
 pub mod gridfile_output_writers;
 pub mod gridfile_quality_input;
+pub mod hydro_delivery_manifest;
+pub mod hydro_delivery_qa;
+pub mod hydro_workflow_types;
 pub mod icon_writer;
 pub mod json_support;
 pub mod mask_postproc_layout;
@@ -87,6 +90,7 @@ pub use gridfile_quality_input::{
     quality_input_from_gridfile, quality_input_from_gridfile_hex,
     quality_input_from_gridfile_hex_native, read_gridfile_cell_lineages, read_gridfile_mesh_points,
 };
+pub use hydro_workflow_types::{HydroMeshQaCheck, HydroMeshQaReport, HydroWorkflowReport};
 pub use icon_writer::{
     write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
     write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS,

@@ -24,11 +24,11 @@ pub(crate) use fs_support::ensure_parent_dir;
 pub use fs_support::resolve_project_path;
 use global_source_axes::build_global_source_axes_one_based;
 pub(crate) use json_support::{
-    geojson_feature_nodes, json_escape_string, json_node_to_f64, json_node_to_usize, json_number,
-    json_string_array, json_string_usize_map, json_usize_f64_map, json_usize_f64_map_node,
-    json_usize_map, JsonNode, JsonParser,
+    geojson_feature_nodes, json_escape_string, json_node_to_usize, json_number, JsonNode,
+    JsonParser,
 };
-use merit_tile_selection::{select_merit_hydro_tiles, MeritLonLatBbox};
+#[cfg(test)]
+use merit_tile_selection::MeritLonLatBbox;
 pub(crate) use unstructured_mesh_support::{
     gridfile_m_row_layout, gridfile_w_row_layout, mesh_row_for_canonical_id, unstructured_dimc,
     validate_published_cell_degrees, validate_unstructured_mesh,
@@ -38,49 +38,27 @@ use unstructured_mesh_support::{
     MethodCGridfileLineages, UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 mod project_coast_refinement;
-use merit_hydro_io::{
-    read_merit_hydro_window, write_merit_hydro_mask_geojson_layers,
-    MeritHydroGeoJsonLayerWriteReport, MeritMaskThresholds,
-};
-pub mod hydro_close_types;
-use hydro_close_types::{
-    HydroCloseMaskNmlOptions, HydroCloseMaskNmlWriteReport, HydroCloseMaskSpec,
-    HydroCloseRefinementRecipeOptions, HydroCloseRefinementRecipeWriteReport,
-    HydroCompositeCloseMaskComponentSummary, HydroCompositeCloseMaskNmlWriteReport,
-    MeritHydroRegionWorkflowReport,
-};
-mod hydro_close_buffer;
-mod hydro_close_composite;
-mod hydro_close_envelope_merge;
-mod hydro_close_geometry;
-mod hydro_close_geometry_utils;
-mod hydro_close_hole_decomposition;
-mod hydro_close_hole_slabs;
-mod hydro_close_hole_spans;
-pub mod hydro_close_masks;
-mod hydro_close_proximity;
-pub mod hydro_close_recipe;
-mod merit_hydro_region_close;
+pub use earthmesh_delivery::hydro_workflow_types;
+use earthmesh_inputs::hydro_close_composite;
+pub use earthmesh_inputs::hydro_close_masks;
+pub use earthmesh_inputs::hydro_close_recipe;
+pub use earthmesh_inputs::hydro_close_types;
+use earthmesh_inputs::merit_hydro_region_close;
 pub use hydro_close_composite::write_hydro_composite_close_mask_nmls;
-use hydro_close_masks::{
-    read_hydro_close_mask_specs, write_hydro_close_mask_nmls, write_hydro_close_mask_specs,
-};
-use hydro_close_recipe::default_hydro_close_class_refine;
+use hydro_workflow_types::HydroWorkflowReport;
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
-pub mod hydro_workflow_types;
-use hydro_workflow_types::{HydroMeshQaCheck, HydroMeshQaReport, HydroWorkflowReport};
 pub mod hydro_delivery_cells;
 pub mod hydro_delivery_colm;
-mod hydro_delivery_common;
-mod hydro_delivery_complete_mask;
+use earthmesh_inputs::hydro_delivery_common;
+use earthmesh_inputs::hydro_delivery_complete_mask;
 pub mod hydro_delivery_coupling_quality;
-pub mod hydro_delivery_intersections;
-pub mod hydro_delivery_manifest;
-pub mod hydro_delivery_qa;
+pub use earthmesh_delivery::hydro_delivery_manifest;
+pub use earthmesh_delivery::hydro_delivery_qa;
+pub use earthmesh_inputs::hydro_delivery_intersections;
 pub mod hydro_delivery_refine_workflow;
 pub mod hydro_refinement_adapter;
-pub mod hydro_refinement_eval;
-pub mod hydro_sweep;
+pub use earthmesh_inputs::hydro_refinement_eval;
+pub use earthmesh_inputs::hydro_sweep;
 pub mod project_delivery;
 pub mod project_hydro;
 pub mod project_hydro_closed_loop;
@@ -88,9 +66,7 @@ pub mod project_quality;
 use colm_types::{ColmCouplingNetcdfWriteReport, ColmSurfaceCounts};
 pub use earthmesh_delivery::colm_types;
 use hydro_delivery_colm::write_colm_coupling_csv_from_intersections;
-pub(crate) use hydro_delivery_common::{
-    format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
-};
+pub(crate) use hydro_delivery_common::{format_coupling_number, read_text_maybe_gzip};
 pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
 use hydro_delivery_coupling_quality::{
     write_colm_coupling_csv_from_mesh_with_options, write_coupling_quality_from_gridfile,
