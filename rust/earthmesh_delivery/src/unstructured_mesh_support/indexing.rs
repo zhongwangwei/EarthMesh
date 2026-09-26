@@ -12,9 +12,9 @@ use crate::LonLatPoint;
 /// array off the origin gets the two read differently, and every connectivity id
 /// resolves one row off in a file that otherwise opens fine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct GridfileRowLayout {
-    pub(crate) first_physical_row: usize,
-    pub(crate) has_two_placeholder_rows: bool,
+pub struct GridfileRowLayout {
+    pub first_physical_row: usize,
+    pub has_two_placeholder_rows: bool,
 }
 
 impl GridfileRowLayout {
@@ -32,22 +32,22 @@ impl GridfileRowLayout {
         }
     }
 
-    pub(crate) fn is_physical_row(self, row: usize) -> bool {
+    pub fn is_physical_row(self, row: usize) -> bool {
         row >= self.first_physical_row
     }
 
-    pub(crate) fn physical_row_for_canonical_id(self, id: i32, rows: usize) -> Option<usize> {
+    pub fn physical_row_for_canonical_id(self, id: i32, rows: usize) -> Option<usize> {
         let row = mesh_row_for_canonical_id(id, rows, self.has_two_placeholder_rows)?;
         self.is_physical_row(row).then_some(row)
     }
 
-    pub(crate) fn canonical_id_for_physical_row(self, row: usize) -> Option<i32> {
+    pub fn canonical_id_for_physical_row(self, row: usize) -> Option<i32> {
         self.is_physical_row(row)
             .then(|| mesh_canonical_id_for_row(row, self.has_two_placeholder_rows))?
     }
 }
 
-pub(crate) fn unstructured_w_row_layout(mesh: &super::UnstructuredMesh) -> GridfileRowLayout {
+pub fn unstructured_w_row_layout(mesh: &super::UnstructuredMesh) -> GridfileRowLayout {
     // Coordinates alone are not a sentinel: a real polygon can be at (0, 0).
     let is_sentinel = |row: usize| {
         mesh.w_points
@@ -68,7 +68,7 @@ pub(crate) fn unstructured_w_row_layout(mesh: &super::UnstructuredMesh) -> Gridf
     }
 }
 
-pub(crate) fn gridfile_m_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLayout {
+pub fn gridfile_m_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLayout {
     let first_is_origin = coordinate_row_is_origin(&mesh.m_lon, &mesh.m_lat, 0);
     let first_is_sentinel = m_row_is_sentinel(&mesh.m_to_w, 0);
     let second_is_sentinel = m_row_is_sentinel(&mesh.m_to_w, 1);
@@ -88,7 +88,7 @@ pub(crate) fn gridfile_m_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLay
     GridfileRowLayout::compact(0)
 }
 
-pub(crate) fn gridfile_w_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLayout {
+pub fn gridfile_w_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLayout {
     let first_is_origin = coordinate_row_is_origin(&mesh.w_lon, &mesh.w_lat, 0);
     let first_is_sentinel = w_row_is_sentinel(mesh, 0);
     let second_is_sentinel = w_row_is_sentinel(mesh, 1);
@@ -112,7 +112,7 @@ pub(crate) fn gridfile_w_row_layout(mesh: &GridfileMeshPoints) -> GridfileRowLay
     GridfileRowLayout::compact(0)
 }
 
-pub(crate) fn gridfile_lonlat_has_two_placeholders(lon: &[f64], lat: &[f64]) -> bool {
+pub fn gridfile_lonlat_has_two_placeholders(lon: &[f64], lat: &[f64]) -> bool {
     coordinate_row_is_origin(lon, lat, 0) && coordinate_row_is_origin(lon, lat, 1)
 }
 
@@ -171,7 +171,7 @@ fn authoritative_w_connectivity_references_id(mesh: &GridfileMeshPoints, id: usi
     })
 }
 
-pub(crate) fn mesh_row_for_canonical_id(
+pub fn mesh_row_for_canonical_id(
     id: i32,
     rows: usize,
     has_two_placeholder_rows: bool,
@@ -191,7 +191,7 @@ pub(crate) fn mesh_row_for_canonical_id(
     (row < rows).then_some(row)
 }
 
-pub(crate) fn mesh_canonical_id_for_row(row: usize, has_two_placeholder_rows: bool) -> Option<i32> {
+pub fn mesh_canonical_id_for_row(row: usize, has_two_placeholder_rows: bool) -> Option<i32> {
     if has_two_placeholder_rows {
         if row < 2 {
             return None;
@@ -211,7 +211,7 @@ fn mesh_points_have_two_placeholder_rows(points: &[LonLatPoint]) -> bool {
 }
 
 // A physical row may also sit at (0, 0); confirm placeholders in connectivity.
-pub(crate) fn mesh_m_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
+pub fn mesh_m_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
     mesh_points_have_two_placeholder_rows(&mesh.m_points)
         && mesh
             .m_to_w
@@ -223,7 +223,7 @@ pub(crate) fn mesh_m_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
             .is_some_and(|row| row.iter().all(|&id| (0..=1).contains(&id)))
 }
 
-pub(crate) fn mesh_w_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
+pub fn mesh_w_has_two_placeholder_rows(mesh: &UnstructuredMesh) -> bool {
     mesh_points_have_two_placeholder_rows(&mesh.w_points)
         && (0..2).all(|row| {
             mesh.n_w_to_m

@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-pub(crate) fn netcdf_to_io_error(err: netcdf::Error) -> io::Error {
+pub fn netcdf_to_io_error(err: netcdf::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
@@ -13,7 +13,7 @@ pub(crate) fn netcdf_to_io_error(err: netcdf::Error) -> io::Error {
 /// which, and the one the user has to fix is the only thing they need to know.
 /// Reported through `Error::Str` so the signature is unchanged and every caller
 /// keeps its own context on top.
-pub(crate) fn open_netcdf(path: impl AsRef<Path>) -> Result<netcdf::File, netcdf::Error> {
+pub fn open_netcdf(path: impl AsRef<Path>) -> Result<netcdf::File, netcdf::Error> {
     let path = path.as_ref();
     let _guard = hdf5_sys::LOCK.lock();
     suppress_hdf5_error_stack();
@@ -29,7 +29,7 @@ pub(crate) fn open_netcdf(path: impl AsRef<Path>) -> Result<netcdf::File, netcdf
     })
 }
 
-pub(crate) fn create_netcdf(path: impl AsRef<Path>) -> Result<netcdf::FileMut, netcdf::Error> {
+pub fn create_netcdf(path: impl AsRef<Path>) -> Result<netcdf::FileMut, netcdf::Error> {
     let _guard = hdf5_sys::LOCK.lock();
     suppress_hdf5_error_stack();
     if !path.as_ref().exists() {

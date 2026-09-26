@@ -561,12 +561,9 @@ fn builds_mpas_context_from_hfield_quantized_demand_and_roundtrips_schema() {
         hfield.max_level = 2;
         mesh.w_points[first] = LonLatPoint { lon: 0.0, lat: 0.0 };
 
-        let mpas = earthmesh_cli::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
-            &mesh,
-            &hfield,
-            12,
-        )
-        .unwrap();
+        let mpas =
+            earthmesh_cli::refinement_demand::width::mpas_context_from_hfield(&mesh, &hfield, 12)
+                .unwrap();
 
         assert_eq!(mpas.source, "method_c_hfield_quantized_w_demand_v1");
         assert_eq!(mpas.base_nxp, 12);
@@ -617,10 +614,8 @@ fn builds_mpas_context_from_hfield_quantized_demand_and_roundtrips_schema() {
         };
     }
     let mpas =
-        earthmesh_cli::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
-            &mesh, &hfield, 12,
-        )
-        .unwrap();
+        earthmesh_cli::refinement_demand::width::mpas_context_from_hfield(&mesh, &hfield, 12)
+            .unwrap();
     assert_eq!(mpas.density_reference_width_km, 0.16);
     assert!(mpas.cellwidth_km[1..].iter().all(|&width| width == 0.32));
 }
@@ -640,12 +635,8 @@ fn rejects_invalid_hfield_quantized_demand_inputs() {
         }
 
         assert!(
-            earthmesh_cli::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
-                &mesh,
-                &hfield,
-                12,
-            )
-            .is_err(),
+            earthmesh_cli::refinement_demand::width::mpas_context_from_hfield(&mesh, &hfield, 12,)
+                .is_err(),
             "case {case} should fail"
         );
     }

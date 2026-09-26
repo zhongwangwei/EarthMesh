@@ -12,9 +12,9 @@ pub(crate) use netcdf_rows::{
     write_i32_matrix_rows, write_i32_pair_rows,
 };
 pub(crate) use primitives::{
-    i32_counts_as_usize, i32_rows_as_usize, lat_values, lon_values, lonlat_degrees_from_points,
-    lonlat_pairs_from_points, lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows,
-    normalize_degrees, patchtype_indices, rad_to_deg, require_len, rows_to_triangle_connectivity,
+    i32_counts_as_usize, i32_rows_as_usize, lonlat_degrees_from_points, lonlat_pairs_from_points,
+    lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows, normalize_degrees,
+    patchtype_indices, rad_to_deg, rows_to_triangle_connectivity,
     scale_cartesian_points_by_earth_radius, split_cartesian_components,
     usize_from_i32_connectivity, usize_from_i32_nonnegative, usize_from_i32_positive,
     usize_rows_to_i32, usize_to_i32, validate_mask_postproc_layout,

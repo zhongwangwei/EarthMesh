@@ -8,11 +8,11 @@ use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
 pub mod mask_source_discovery;
 use mask_source_discovery::discover_mask_sources;
 
+use coordinate_types::{lat_values, lon_values, GridRegion, LonLatPoint};
+pub use earthmesh_delivery::coordinate_types;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
-pub mod coordinate_types;
-use coordinate_types::{GridRegion, LonLatPoint};
 mod certified_options;
-mod fs_support;
+use earthmesh_delivery::fs_support;
 pub(crate) use fs_support::ensure_parent_dir;
 #[doc(hidden)]
 pub use fs_support::resolve_project_path;
@@ -27,8 +27,8 @@ use v3_data_source_io::{
     build_v3_data_source_descriptor, V3DataSourceDescriptor, V3DataSourceKind,
 };
 pub mod global_source_axes;
+pub use earthmesh_delivery::unstructured_mesh_support;
 use global_source_axes::build_global_source_axes_one_based;
-pub mod unstructured_mesh_support;
 pub(crate) use unstructured_mesh_support::{
     gridfile_m_row_layout, gridfile_w_row_layout, mesh_row_for_canonical_id, unstructured_dimc,
     validate_published_cell_degrees, validate_unstructured_mesh, GridfileRowLayout,
@@ -110,11 +110,11 @@ mod colm_manifest_writer;
 pub mod colm_mesh_input;
 mod colm_surface_reader;
 mod colm_template_writers;
-mod netcdf_io;
+use earthmesh_delivery::netcdf_io;
 pub(crate) use netcdf_io::{
     create_netcdf, first_existing_dimension_len, netcdf_to_io_error, open_netcdf,
-    optional_values_i32_2d, required_dimension_len, required_scalar_usize_i32, required_values_f64,
-    required_values_f64_any, required_values_i32, required_values_i32_2d,
+    optional_values_i32_2d, require_len, required_dimension_len, required_scalar_usize_i32,
+    required_values_f64, required_values_f64_any, required_values_i32, required_values_i32_2d,
     required_values_i32_matrix, required_values_i8, required_values_i8_matrix, write_f64_scalar,
     write_i32_scalar,
 };
@@ -176,11 +176,11 @@ use getcontain_types::{
     GetContainRefineFileRunReport, GetContainRuntimeCounts,
 };
 pub mod getcontain_geometry;
+pub use earthmesh_delivery::unstructured_mesh_io;
 pub(crate) use getcontain_geometry::getcontain_validate_source_matrix;
 use getcontain_geometry::{
     getcontain_containment_matrix_flat_one_based, getcontain_is_in_area_ustr_one_based,
 };
-pub mod unstructured_mesh_io;
 use unstructured_mesh_io::{
     gridfile_output_path, read_unstructured_mesh_netcdf, write_unstructured_mesh_netcdf,
     write_unstructured_mesh_netcdf_with_metadata,
@@ -188,15 +188,15 @@ use unstructured_mesh_io::{
 mod mesh_conversion_support;
 pub(crate) use mesh_conversion_support::{
     cells_on_triangle_one_based_from_mesh, f64_matrix_width, flatten_i32_rows, i32_counts_as_usize,
-    i32_matrix_from_flat, i32_rows_as_usize, lat_values, lon_values, lonlat_degrees_from_points,
-    lonlat_pairs_from_points, lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows,
-    matrix_width, n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32,
-    parse_value_after_equals, patchtype_indices, rad_to_deg, require_len, rows_from_flat_i32,
-    rows_to_triangle_connectivity, scale_cartesian_points_by_earth_radius,
-    split_cartesian_components, triangles_on_cell_one_based_from_mesh, usize_from_i32_connectivity,
-    usize_from_i32_nonnegative, usize_from_i32_positive, usize_rows_to_i32, usize_to_i32,
-    usize_values_to_i32, validate_mask_postproc_layout, write_f64_1d, write_f64_matrix_rows,
-    write_i32_1d, write_i32_matrix_rows, write_i32_pair_rows,
+    i32_matrix_from_flat, i32_rows_as_usize, lonlat_degrees_from_points, lonlat_pairs_from_points,
+    lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows, matrix_width,
+    n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32, parse_value_after_equals,
+    patchtype_indices, rad_to_deg, rows_from_flat_i32, rows_to_triangle_connectivity,
+    scale_cartesian_points_by_earth_radius, split_cartesian_components,
+    triangles_on_cell_one_based_from_mesh, usize_from_i32_connectivity, usize_from_i32_nonnegative,
+    usize_from_i32_positive, usize_rows_to_i32, usize_to_i32, usize_values_to_i32,
+    validate_mask_postproc_layout, write_f64_1d, write_f64_matrix_rows, write_i32_1d,
+    write_i32_matrix_rows, write_i32_pair_rows,
 };
 pub mod mesh_conversion_gridfile_state;
 pub(crate) use mesh_conversion_gridfile_state::earthmesh_runtime_state_from_compact_mesh;
@@ -365,11 +365,11 @@ use mpas_unstructured_mesh_builders::{
     build_mpas_mesh_from_unstructured_one_based, build_mpas_simple_mesh_from_unstructured_one_based,
 };
 pub mod gridfile_output_writers;
+pub use earthmesh_delivery::hfield_gridfile_context;
+pub use earthmesh_delivery::mpas_gridfile_context;
 use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
-pub mod hfield_gridfile_context;
-pub mod mpas_gridfile_context;
 pub mod mpas_gridfile_writers;
 pub mod regional_gridfile_writers;
 use regional_gridfile_writers::{

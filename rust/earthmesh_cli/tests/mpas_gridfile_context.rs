@@ -435,8 +435,10 @@ fn builds_mpas_context_from_adaptive_region_demand_and_roundtrips() {
             adaptive_pass(3, base / 4.0, vec![circle(179.0, 80.0, 1_000.0, 5)]),
         ]);
 
-        let context =
-            MpasGridfileContext::from_adaptive_region_demand(&mesh, &report, base, 42).unwrap();
+        let context = earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
+            &mesh, &report, base, 42,
+        )
+        .unwrap();
 
         assert_eq!(context.source, "adaptive_region_pass_w_demand_v1");
         assert_eq!(context.base_nxp, 42);
@@ -504,15 +506,19 @@ fn adaptive_region_demand_uses_shared_region_shapes_and_empty_report() {
         ),
     ]);
 
-    let context =
-        MpasGridfileContext::from_adaptive_region_demand(&mesh, &report, base, 42).unwrap();
+    let context = earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
+        &mesh, &report, base, 42,
+    )
+    .unwrap();
 
     assert_eq!(context.cellwidth_km[first], base / 2.0 / 1000.0);
     assert_eq!(context.cellwidth_km[first + 1], base / 4.0 / 1000.0);
     assert_eq!(context.cellwidth_km[first + 2], base / 8.0 / 1000.0);
     let empty = adaptive_report(Vec::new());
-    let empty_context =
-        MpasGridfileContext::from_adaptive_region_demand(&mesh, &empty, base, 42).unwrap();
+    let empty_context = earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
+        &mesh, &empty, base, 42,
+    )
+    .unwrap();
     assert_eq!(empty_context.step, 1);
     assert_eq!(empty_context.density_reference_width_km, base / 1000.0);
     assert!(empty_context
@@ -588,7 +594,7 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
             _ => unreachable!(),
         }
         assert!(
-            MpasGridfileContext::from_adaptive_region_demand(
+            earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
                 &local_mesh,
                 &report,
                 local_base,
@@ -604,8 +610,10 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
         base,
         vec![circle(0.0, 0.0, 1_000.0, 1)],
     )]);
-    let mut reserved =
-        MpasGridfileContext::from_adaptive_region_demand(&mesh, &report, base, 42).unwrap();
+    let mut reserved = earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
+        &mesh, &report, base, 42,
+    )
+    .unwrap();
     reserved.source = "adaptive_region_pass_w_demand_v2".to_string();
     let root = root("reserved_adaptive_source");
     let output = root.join("bad.nc4");
@@ -620,7 +628,10 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
     .unwrap_err();
     assert!(err.to_string().contains("unsupported"), "{err}");
 
-    let valid = MpasGridfileContext::from_adaptive_region_demand(&mesh, &report, base, 42).unwrap();
+    let valid = earthmesh_cli::refinement_demand::width::mpas_context_from_region_passes(
+        &mesh, &report, base, 42,
+    )
+    .unwrap();
     let native = root.join("native.nc4");
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &native,
@@ -745,9 +756,11 @@ fn builds_mpas_context_from_complete_lepp_resolved_demand_and_roundtrips() {
         assert_eq!(first_physical_w_row(&mesh), first, "{name} layout changed");
         let report = lepp_complete_report(&mesh, first);
 
-        let context = MpasGridfileContext::from_resolved_target_demand(&mesh, &report, 6)
-            .unwrap()
-            .unwrap();
+        let context = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
+            &mesh, &report, 6,
+        )
+        .unwrap()
+        .unwrap();
 
         assert_eq!(context.source, "lepp_resolved_region_w_demand_v1");
         assert_eq!(context.base_nxp, 6);
@@ -783,7 +796,10 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     let first = first_physical_w_row(&mesh);
     let empty = lepp_report(Vec::new());
     assert_eq!(
-        MpasGridfileContext::from_resolved_target_demand(&mesh, &empty, 6).unwrap(),
+        earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
+            &mesh, &empty, 6
+        )
+        .unwrap(),
         None
     );
     let partial = lepp_report(vec![lepp_target(
@@ -792,7 +808,10 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
         200_000.0,
     )]);
     assert_eq!(
-        MpasGridfileContext::from_resolved_target_demand(&mesh, &partial, 6).unwrap(),
+        earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
+            &mesh, &partial, 6
+        )
+        .unwrap(),
         None
     );
 
@@ -832,14 +851,19 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
             _ => unreachable!(),
         }
         assert!(
-            MpasGridfileContext::from_resolved_target_demand(&local_mesh, &report, nxp).is_err(),
+            earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
+                &local_mesh,
+                &report,
+                nxp
+            )
+            .is_err(),
             "case {case} should fail instead of silently returning None"
         );
     }
 
     let root = root("reserved_lepp_source");
     let output = root.join("bad.nc4");
-    let mut context = MpasGridfileContext::from_resolved_target_demand(
+    let mut context = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
         &mesh,
         &lepp_complete_report(&mesh, first),
         6,
@@ -858,7 +882,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     .unwrap_err();
     assert!(err.to_string().contains("unsupported"), "{err}");
 
-    let mut valid = MpasGridfileContext::from_resolved_target_demand(
+    let mut valid = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
         &mesh,
         &lepp_complete_report(&mesh, first),
         6,

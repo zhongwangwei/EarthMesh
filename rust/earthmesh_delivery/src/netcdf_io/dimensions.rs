@@ -1,6 +1,6 @@
 use std::io;
 
-pub(crate) fn required_dimension_len(file: &netcdf::File, name: &str) -> io::Result<usize> {
+pub fn required_dimension_len(file: &netcdf::File, name: &str) -> io::Result<usize> {
     file.dimension(name)
         .map(|dimension| dimension.len())
         .ok_or_else(|| {
@@ -11,10 +11,7 @@ pub(crate) fn required_dimension_len(file: &netcdf::File, name: &str) -> io::Res
         })
 }
 
-pub(crate) fn first_existing_dimension_len(
-    file: &netcdf::File,
-    names: &[&str],
-) -> io::Result<usize> {
+pub fn first_existing_dimension_len(file: &netcdf::File, names: &[&str]) -> io::Result<usize> {
     for name in names {
         if let Some(dimension) = file.dimension(name) {
             return Ok(dimension.len());
@@ -24,4 +21,14 @@ pub(crate) fn first_existing_dimension_len(
         io::ErrorKind::InvalidData,
         format!("missing dimension; expected one of {}", names.join(", ")),
     ))
+}
+
+pub fn require_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
+    if actual < required {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} length {actual} is shorter than required {required}"),
+        ));
+    }
+    Ok(())
 }

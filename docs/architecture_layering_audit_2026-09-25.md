@@ -318,3 +318,23 @@ green 下限与需求嵌套），单独决定。
 （`refine_pipeline/angle_contract.rs`，指南 11.74），按行记录随修复跟随。这让“输出长什么样”对三角形
 网格有了与算法无关的实现，而不只是判定。
 
+### 2026-09-26 第 5 步（第二部分）：拆出 `earthmesh_delivery` crate 的第一块
+
+- 先量依赖闭包：从“gridfile 网格类型 + NetCDF 读写”出发，经 `crate::` 引用可达 109 个模块、约 6 万行
+  （CLI 的四分之三）。拉进来的只有两条边：MPAS 宽度上下文里“由需求推导宽度”的三个构造函数
+  （→ 需求层 → h-field 合成、阈值读取……），以及杂物模块 `mesh_conversion_support` 里被网格读写借用的
+  三个小函数（→ 掩膜后处理类型）。
+- 切断：三个构造函数改为需求层 `refinement_demand::width` 的普通函数
+  （`mpas_context_from_hfield` / `_from_region_passes` / `_from_resolved_targets`），MPAS 上下文模块只留
+  数据结构与读写；`lon_values`/`lat_values` 移到坐标类型模块，`require_len` 移到 NetCDF 模块。闭包降到
+  7 个模块、2,541 行。
+- 拆出：这 7 个模块（坐标类型、NetCDF 读写、文件辅助、网格类型与拓扑检查、网格 NetCDF 读写、h-field 与
+  MPAS 的 gridfile 记录）用 `git mv` 移入新 crate `rust/earthmesh_delivery`，依赖只有 geometry、hfield、
+  quality 与 netcdf。CLI 以 `pub use earthmesh_delivery::模块` 重新导出，外部路径 `earthmesh_cli::…`
+  不变。
+- 门禁：`earthmesh_delivery` 加入 `check_architecture.py` 的中立 crate 名单（不得依赖、不得命名任何后端）。
+  它需要 NetCDF，所以和 CLI 一样不进 `fast`，由 `heavy` 任务 clippy 与测试（ci.yml 已改），`make test` /
+  `make clippy-full` 也包含它；CLAUDE.md 的计数改为 14 / 12 / 14。
+- 仍待做：把更多写出与交付模块（FVCOM/MPAS/ICON/CoLM 写出器、掩膜后处理、质量写出）逐块移入
+  `earthmesh_delivery`，每块先量闭包、切边再搬；输入层模块收进 `earthmesh_refine`。
+

@@ -16,7 +16,7 @@ fn required_scalar_i32(file: &netcdf::File, name: &str) -> io::Result<i32> {
     }
 }
 
-pub(crate) fn required_scalar_usize_i32(file: &netcdf::File, name: &str) -> io::Result<usize> {
+pub fn required_scalar_usize_i32(file: &netcdf::File, name: &str) -> io::Result<usize> {
     let value = required_scalar_i32(file, name)?;
     usize::try_from(value).map_err(|_| {
         io::Error::new(
@@ -26,22 +26,14 @@ pub(crate) fn required_scalar_usize_i32(file: &netcdf::File, name: &str) -> io::
     })
 }
 
-pub(crate) fn write_i32_scalar(
-    file: &mut netcdf::FileMut,
-    name: &str,
-    value: i32,
-) -> io::Result<()> {
+pub fn write_i32_scalar(file: &mut netcdf::FileMut, name: &str, value: i32) -> io::Result<()> {
     let mut var = file
         .add_variable::<i32>(name, &[])
         .map_err(netcdf_to_io_error)?;
     var.put_values(&[value], ..).map_err(netcdf_to_io_error)
 }
 
-pub(crate) fn write_f64_scalar(
-    file: &mut netcdf::FileMut,
-    name: &str,
-    value: f64,
-) -> io::Result<()> {
+pub fn write_f64_scalar(file: &mut netcdf::FileMut, name: &str, value: f64) -> io::Result<()> {
     let mut var = file
         .add_variable::<f64>(name, &[])
         .map_err(netcdf_to_io_error)?;

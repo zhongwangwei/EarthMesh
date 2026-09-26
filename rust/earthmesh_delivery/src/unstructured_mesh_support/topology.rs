@@ -6,7 +6,7 @@ use super::indexing::{
 };
 use super::{UnstructuredMesh, UnstructuredMeshTopologyReport};
 
-pub(crate) fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<()> {
+pub fn validate_unstructured_mesh(mesh: &UnstructuredMesh) -> io::Result<()> {
     if mesh.m_to_w.len() != mesh.m_points.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -242,7 +242,7 @@ pub fn check_unstructured_mesh_topology(mesh: &UnstructuredMesh) -> Unstructured
 ///
 /// Returns the source row for each appended W vertex so optional per-vertex
 /// metadata can copy the same value.
-pub(crate) fn split_non_manifold_triangle_vertex_fans(
+pub fn split_non_manifold_triangle_vertex_fans(
     mesh: &mut UnstructuredMesh,
 ) -> io::Result<Vec<usize>> {
     validate_unstructured_mesh(mesh)?;
@@ -394,7 +394,7 @@ fn rebuild_triangle_vertex_neighbors(
     Ok(())
 }
 
-pub(crate) fn unstructured_dimc(mesh: &UnstructuredMesh) -> usize {
+pub fn unstructured_dimc(mesh: &UnstructuredMesh) -> usize {
     mesh.n_w_to_m
         .iter()
         .filter_map(|&value| usize::try_from(value).ok())

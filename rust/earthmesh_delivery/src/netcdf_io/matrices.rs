@@ -32,7 +32,7 @@ fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
             .any(|token| aliases.contains(&token))
 }
 
-pub(crate) fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> {
+pub fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Vec<i32>> {
     file.variable(name)
         .ok_or_else(|| {
             io::Error::new(
@@ -44,7 +44,7 @@ pub(crate) fn required_values_i32_2d(file: &netcdf::File, name: &str) -> io::Res
         .map_err(netcdf_to_io_error)
 }
 
-pub(crate) fn required_values_i8_matrix(
+pub fn required_values_i8_matrix(
     file: &netcdf::File,
     name: &str,
     outer_dim: &str,
@@ -118,7 +118,7 @@ pub(crate) fn required_values_i8_matrix(
     ))
 }
 
-pub(crate) fn required_values_i32_matrix(
+pub fn required_values_i32_matrix(
     file: &netcdf::File,
     name: &str,
     outer_dim: &str,
@@ -190,7 +190,7 @@ pub(crate) fn required_values_i32_matrix(
 ///
 /// The reversed `(inner, outer)` order is accepted and explicitly transposed;
 /// unrelated dimension names are rejected even when their lengths happen to fit.
-pub(crate) fn required_values_i32_matrix_named(
+pub fn required_values_i32_matrix_named(
     file: &netcdf::File,
     name: &str,
     outer_dim: &str,
@@ -269,10 +269,7 @@ pub(crate) fn required_values_i32_matrix_named(
     })
 }
 
-pub(crate) fn optional_values_i32_2d(
-    file: &netcdf::File,
-    name: &str,
-) -> io::Result<Option<Vec<i32>>> {
+pub fn optional_values_i32_2d(file: &netcdf::File, name: &str) -> io::Result<Option<Vec<i32>>> {
     let Some(variable) = file.variable(name) else {
         return Ok(None);
     };

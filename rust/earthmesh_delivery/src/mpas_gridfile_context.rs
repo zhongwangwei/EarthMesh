@@ -8,9 +8,9 @@ const NXP: &str = "earthmesh_mpas_base_nxp";
 const STEP: &str = "earthmesh_mpas_step";
 const REFERENCE: &str = "earthmesh_mpas_density_reference_width_km";
 const SOURCE: &str = "earthmesh_mpas_cellwidth_source";
-pub(crate) const LEPP_RESOLVED_REGION_DEMAND_V1: &str = "lepp_resolved_region_w_demand_v1";
-pub(crate) const ADAPTIVE_REGION_PASS_DEMAND_V1: &str = "adaptive_region_pass_w_demand_v1";
-pub(crate) const HFIELD_QUANTIZED_DEMAND_V1: &str = "method_c_hfield_quantized_w_demand_v1";
+pub const LEPP_RESOLVED_REGION_DEMAND_V1: &str = "lepp_resolved_region_w_demand_v1";
+pub const ADAPTIVE_REGION_PASS_DEMAND_V1: &str = "adaptive_region_pass_w_demand_v1";
+pub const HFIELD_QUANTIZED_DEMAND_V1: &str = "method_c_hfield_quantized_w_demand_v1";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MpasGridfileContext {
@@ -24,176 +24,12 @@ pub struct MpasGridfileContext {
     pub source: String,
 }
 
-fn invalid(message: impl Into<String>) -> io::Error {
+pub fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 impl MpasGridfileContext {
-    /// Nominal generation demand evaluated at final W sites, not realized
-    /// geometry, birth levels or the legacy Spring U-edge targets. The complete
-    /// field defines the reference even when no W site reaches its finest level.
-    pub fn from_hfield_quantized_demand(
-        mesh: &crate::UnstructuredMesh,
-        hfield: &crate::hfield_gridfile_context::HfieldGridfileContext,
-        base_nxp: usize,
-    ) -> io::Result<Self> {
-        hfield.validate()?;
-        let finest = hfield
-            .field
-            .level_map(hfield.base_m, hfield.max_level)?
-            .into_iter()
-            .max()
-            .ok_or_else(|| invalid("HField demand is empty"))?;
-        let width_km = |level: u8| hfield.base_m / 2.0_f64.powi(i32::from(level)) / 1000.0;
-        let reference = width_km(finest);
-        let first =
-            crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
-        if first >= mesh.w_points.len() {
-            return Err(invalid("HField MPAS demand requires physical W cells"));
-        }
-        let mut cellwidth_km = vec![reference; mesh.w_points.len()];
-        for (width, point) in cellwidth_km[first..]
-            .iter_mut()
-            .zip(&mesh.w_points[first..])
-        {
-            *width = width_km(hfield.field.try_level_at(
-                point.lon,
-                point.lat,
-                hfield.base_m,
-                hfield.max_level,
-            )?);
-        }
-        let context = Self {
-            cellwidth_km,
-            base_nxp,
-            step: usize::from(finest) + 1,
-            density_reference_width_km: reference,
-            source: HFIELD_QUANTIZED_DEMAND_V1.to_string(),
-        };
-        context.validate(mesh.w_points.len())?;
-        Ok(context)
-    }
-
-    /// Nominal emitted-pass demand, not achieved resolution or unexecuted requests.
-    /// The shared region predicate is sampled at final W sites; closure/transition
-    /// geometry does not change the nominal field. Missing reports never call this.
-    pub fn from_adaptive_region_demand(
-        mesh: &crate::UnstructuredMesh,
-        report: &crate::refinement_demand::nest::AdaptiveNestReport,
-        base_m: f64,
-        base_nxp: usize,
-    ) -> io::Result<Self> {
-        if !base_m.is_finite()
-            || base_m <= 0.0
-            || report.deepest_level != report.passes.len()
-            || report.passes.len() > 5
-        {
-            return Err(invalid("adaptive MPAS demand requires a finite positive base and consistent depth in 0..=5"));
-        }
-        let width_m = |level: usize| base_m / 2.0_f64.powi(level as i32);
-        let mut indices = Vec::with_capacity(report.passes.len());
-        for (index, pass) in report.passes.iter().enumerate() {
-            if pass.level != index + 1
-                || pass.cell_meters != width_m(index)
-                || !pass
-                    .regions
-                    .iter()
-                    .any(|region| region.level() >= pass.level)
-            {
-                return Err(invalid("adaptive MPAS demand requires contiguous active passes and the actual judging-generation scale"));
-            }
-            for region in &pass.regions {
-                region.validate()?;
-            }
-            indices.push(earthmesh_mesh::RefinementRegionIndex::new(&pass.regions));
-        }
-        let first =
-            crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
-        if first >= mesh.w_points.len() {
-            return Err(invalid("adaptive MPAS demand requires physical W cells"));
-        }
-        let reference = width_m(report.deepest_level) / 1000.0;
-        let mut cellwidth_km = vec![reference; mesh.w_points.len()];
-        for (width, point) in cellwidth_km[first..]
-            .iter_mut()
-            .zip(&mesh.w_points[first..])
-        {
-            if !point.lon.is_finite()
-                || !point.lat.is_finite()
-                || !(-90.0..=90.0).contains(&point.lat)
-            {
-                return Err(invalid(
-                    "adaptive MPAS demand requires finite geographic W sites",
-                ));
-            }
-            let site = earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat);
-            let level = indices
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(index, regions)| regions.contains_lonlat_canonical(site, index + 1))
-                .map_or(0, |(index, _)| index + 1);
-            *width = width_m(level) / 1000.0;
-        }
-        let context = Self {
-            cellwidth_km,
-            base_nxp,
-            step: report.deepest_level + 1,
-            density_reference_width_km: reference,
-            source: ADAPTIVE_REGION_PASS_DEMAND_V1.to_string(),
-        };
-        context.validate(mesh.w_points.len())?;
-        Ok(context)
-    }
-
-    /// Resolved nominal region demand only. No target outside its regions
-    /// means no complete MPAS context, never a guessed background width.
-    pub fn from_resolved_target_demand(
-        mesh: &crate::UnstructuredMesh,
-        report: &dyn crate::refinement_demand::width::ResolvedTargetWidths,
-        base_nxp: usize,
-    ) -> io::Result<Option<Self>> {
-        let first =
-            crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
-        if first >= mesh.w_points.len() || base_nxp == 0 || i32::try_from(base_nxp).is_err() {
-            return Err(invalid(
-                "resolved-target MPAS demand requires physical W cells and positive i32 NXP",
-            ));
-        }
-        let sites = mesh.w_points[first..]
-            .iter()
-            .map(|point| earthmesh_mesh::LonLatDegrees::new(point.lon, point.lat))
-            .collect::<Vec<_>>();
-        let targets = report.nominal_target_edges_m_at(&sites)?;
-        let reference = report
-            .target_edges_m()
-            .into_iter()
-            .map(|edge_m| edge_m / 1000.0)
-            .reduce(f64::min);
-        if reference.is_some_and(|value| !value.is_finite() || value <= 0.0) {
-            return Err(invalid(
-                "resolved-target MPAS scale cannot be represented in km",
-            ));
-        }
-        let Some(widths) = targets.into_iter().collect::<Option<Vec<_>>>() else {
-            return Ok(None);
-        };
-        let reference =
-            reference.ok_or_else(|| invalid("resolved-target covered demand has no targets"))?;
-        let mut cellwidth_km = vec![reference; first];
-        cellwidth_km.extend(widths.into_iter().map(|width| width / 1000.0));
-        let context = Self {
-            cellwidth_km,
-            base_nxp,
-            step: report.deepest_target_level() + 1,
-            density_reference_width_km: reference,
-            source: LEPP_RESOLVED_REGION_DEMAND_V1.to_string(),
-        };
-        context.validate(mesh.w_points.len())?;
-        Ok(Some(context))
-    }
-
-    pub(crate) fn from_producer(
+    pub fn from_producer(
         mesh: &crate::UnstructuredMesh,
         cellwidth_km: Vec<f64>,
         base_nxp: usize,
@@ -219,7 +55,7 @@ impl MpasGridfileContext {
         Ok(context)
     }
 
-    pub(crate) fn validate(&self, rows: usize) -> io::Result<()> {
+    pub fn validate(&self, rows: usize) -> io::Result<()> {
         if self
             .source
             .starts_with("method_c_hfield_quantized_w_demand_")
@@ -267,7 +103,7 @@ impl MpasGridfileContext {
         Ok(())
     }
 
-    pub(crate) fn write_delivery_provenance(&self, path: &Path) -> io::Result<()> {
+    pub fn write_delivery_provenance(&self, path: &Path) -> io::Result<()> {
         let mut file = netcdf::append(path).map_err(netcdf_to_io_error)?;
         file.add_attribute(SOURCE, self.source.as_str())
             .map_err(netcdf_to_io_error)?;
@@ -276,7 +112,7 @@ impl MpasGridfileContext {
         file.close().map_err(netcdf_to_io_error)
     }
 
-    pub(crate) fn write(&self, file: &mut netcdf::FileMut) -> io::Result<()> {
+    pub fn write(&self, file: &mut netcdf::FileMut) -> io::Result<()> {
         let mut var = file
             .add_variable::<f64>(WIDTH, &["lbx_points"])
             .map_err(netcdf_to_io_error)?;

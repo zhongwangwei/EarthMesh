@@ -26,7 +26,7 @@ fn invalid(message: &str) -> io::Error {
 }
 
 impl HfieldGridfileContext {
-    pub(crate) fn validate(&self) -> io::Result<()> {
+    pub fn validate(&self) -> io::Result<()> {
         if !self.base_m.is_finite() || self.base_m <= 0.0 || !(1..=5).contains(&self.max_level) {
             return Err(invalid(
                 "HField demand requires positive finite base_m and max_level in 1..=5",
@@ -43,7 +43,7 @@ impl HfieldGridfileContext {
         Ok(())
     }
 
-    pub(crate) fn write(&self, file: &mut netcdf::FileMut) -> io::Result<()> {
+    pub fn write(&self, file: &mut netcdf::FileMut) -> io::Result<()> {
         file.add_dimension(NLON, self.field.nlon())
             .map_err(netcdf_to_io_error)?;
         file.add_dimension(NLAT, self.field.nlat())

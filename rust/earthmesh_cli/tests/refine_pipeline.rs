@@ -259,7 +259,7 @@ fn method_c_hfield_direct_refine_can_use_threshold_source_without_region_masks()
     .unwrap();
     assert_eq!(
         derivative_widths,
-        earthmesh_cli::mpas_gridfile_context::MpasGridfileContext::from_hfield_quantized_demand(
+        earthmesh_cli::refinement_demand::width::mpas_context_from_hfield(
             &derivative_mesh,
             &restored,
             6,

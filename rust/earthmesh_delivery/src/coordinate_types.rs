@@ -28,7 +28,7 @@ pub enum GridRegion {
 }
 
 impl GridRegion {
-    pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
+    pub fn contains(&self, lon: f64, lat: f64) -> bool {
         let norm = normalize_lon_degrees;
         match self {
             GridRegion::Bbox {
@@ -193,6 +193,14 @@ fn point_in_close_region(points: &[LonLatPoint], lon: f64, lat: f64) -> bool {
     } else {
         turned < -std::f64::consts::PI
     }
+}
+
+pub fn lon_values(points: &[LonLatPoint]) -> Vec<f64> {
+    points.iter().map(|point| point.lon).collect()
+}
+
+pub fn lat_values(points: &[LonLatPoint]) -> Vec<f64> {
+    points.iter().map(|point| point.lat).collect()
 }
 
 #[cfg(test)]

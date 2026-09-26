@@ -8,6 +8,7 @@ repository = "https://github.com/zhongwangwei/EarthMesh"
 
 [dependencies]
 earthmesh_core = { path = "../earthmesh_core" }
+earthmesh_delivery = { path = "../earthmesh_delivery" }
 earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_geometry = { path = "../earthmesh_geometry" }
 earthmesh_hfield = { path = "../earthmesh_hfield" }
@@ -30,7 +31,7 @@ serde_json = "1"
 # Statically bundle netCDF-c + HDF5 + zlib so the CLI / packaged mkgrd.x
 # can produce a self-contained, zero-runtime-dependency binary. Off by default
 # so the normal CLI build keeps linking the system NetCDF.
-static-netcdf = ["netcdf/static"]
+static-netcdf = ["netcdf/static", "earthmesh_delivery/static-netcdf"]
 
 # Numeric kernels retain algorithm-shaped data flow (multi-argument routines,
 # 1-based index loops over parallel arrays, flattened connectivity/report types,

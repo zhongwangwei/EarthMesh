@@ -89,15 +89,20 @@ jobs:
         run: rustup component add clippy
       - name: CLI lint gate (clippy -D warnings, dynamic system NetCDF)
         # No `static-netcdf`: lint against the apt libnetcdf, matching the test step.
-        run: cargo clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets -- -D warnings
+        # earthmesh_delivery needs NetCDF too, so it is linted and tested here, not in `fast`.
+        run: |
+          cargo clippy --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets -- -D warnings
       - name: CLI tests (dynamic system NetCDF — reproduce with `make test`)
         # No `static-netcdf` feature: link the apt libnetcdf instead of building netcdf-c.
-        run: cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets
+        run: |
+          cargo test --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets
+          cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets
       - name: How to reproduce a failure
         if: failure()
         run: |
           echo "::error::Heavy gate failed. Reproduce locally (needs NetCDF):"
-          echo "  cargo clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets -- -D warnings"
-          echo "  cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets   # system NetCDF"
+          echo "  cargo clippy --manifest-path rust/earthmesh_{delivery,cli}/Cargo.toml --all-targets -- -D warnings"
+          echo "  cargo test --manifest-path rust/earthmesh_{delivery,cli}/Cargo.toml --all-targets   # system NetCDF"
           echo "  make clippy-full  # clippy -D warnings, all crates (bundled static-netcdf)"
           echo "  make test         # CLI with bundled static-netcdf (no system NetCDF needed)"

@@ -264,24 +264,6 @@ pub(crate) fn normalize_degrees(mut degrees: f64) -> f64 {
     degrees
 }
 
-pub(crate) fn require_len(name: &str, actual: usize, required: usize) -> io::Result<()> {
-    if actual < required {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{name} length {actual} is shorter than required {required}"),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn lon_values(points: &[LonLatPoint]) -> Vec<f64> {
-    points.iter().map(|point| point.lon).collect()
-}
-
-pub(crate) fn lat_values(points: &[LonLatPoint]) -> Vec<f64> {
-    points.iter().map(|point| point.lat).collect()
-}
-
 pub(crate) fn usize_values_to_i32(name: &str, values: &[usize]) -> io::Result<Vec<i32>> {
     values
         .iter()

@@ -57,7 +57,8 @@ BACKEND_CRATES = (
 )
 BACKEND_REFERENCE = re.compile(r"\b(" + "|".join(BACKEND_CRATES) + r")\b")
 
-# Crates below the backends, and the request layer above the inputs.
+# Crates below the backends, the request layer above the inputs, and the
+# output layer that writes what any backend produced.
 NEUTRAL_CRATES = (
     "earthmesh_core",
     "earthmesh_geometry",
@@ -68,6 +69,8 @@ NEUTRAL_CRATES = (
     "earthmesh_project",
     "earthmesh_refine",
     "earthmesh_refine_planner",
+    # The output layer: writes every backend's mesh the same way.
+    "earthmesh_delivery",
 )
 
 # The only CLI sources that may name a backend crate: orchestration, the

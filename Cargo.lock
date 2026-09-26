@@ -165,6 +165,7 @@ version = "3.0.0-alpha5"
 dependencies = [
  "earthmesh_boundary",
  "earthmesh_core",
+ "earthmesh_delivery",
  "earthmesh_geometry",
  "earthmesh_hfield",
  "earthmesh_mesh",
@@ -186,6 +187,17 @@ dependencies = [
 [[package]]
 name = "earthmesh_core"
 version = "3.0.0-alpha5"
+
+[[package]]
+name = "earthmesh_delivery"
+version = "3.0.0-alpha5"
+dependencies = [
+ "earthmesh_geometry",
+ "earthmesh_hfield",
+ "earthmesh_quality",
+ "hdf5-metno-sys",
+ "netcdf",
+]
 
 [[package]]
 name = "earthmesh_geometry"
