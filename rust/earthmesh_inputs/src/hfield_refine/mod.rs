@@ -769,6 +769,33 @@ impl LandtypeBinStats {
         Ok(())
     }
 
+    /// Add counts gathered elsewhere, as if each sample had been recorded here
+    /// in order: a class already present keeps its place, a new one goes last.
+    fn merge(
+        &mut self,
+        out: usize,
+        total: usize,
+        ocean: usize,
+        land: usize,
+        classes: &[(i32, usize)],
+    ) {
+        let Some(slot) = self.slot(out) else {
+            return;
+        };
+        self.total[slot] += total;
+        self.ocean[slot] += ocean;
+        self.land[slot] += land;
+        for &(class, count) in classes {
+            match self.class_counts[slot]
+                .iter_mut()
+                .find(|(seen, _)| *seen == class)
+            {
+                Some((_, existing)) => *existing += count,
+                None => self.class_counts[slot].push((class, count)),
+            }
+        }
+    }
+
     fn exclude_class(&mut self, landtype: i32) {
         for counts in &mut self.class_counts {
             counts.retain(|(class, _)| *class != landtype);
@@ -1615,28 +1642,17 @@ fn read_landtype_source_for_hfield_with_options(
             &variable, lat_lon, lon_start, lon_count, lat_start, lat_count,
         )?;
         crate::require_len("landtype tile", raw.len(), lon_count * lat_count)?;
-        for (local_i, field_i) in active_local_lon {
-            for &(local_file_j, field_j) in &active_local_lat {
-                let raw_index = if lat_lon {
-                    local_file_j * lon_count + local_i
-                } else {
-                    local_i * lat_count + local_file_j
-                };
-                let value = raw[raw_index];
-                if is_missing_numeric(value, &missing) {
-                    continue;
-                }
-                if exclude_maxlc_before_counts && i32::from(value) == maxlc {
-                    continue;
-                }
-                if domain.is_some_and(|domain| !domain.is_active(field_i, field_j)) {
-                    continue;
-                }
-                has_valid = true;
-                let out = field_i * field.nlat() + field_j;
-                bins.record(out, i32::from(value))?;
-            }
-        }
+        let tile = TileView {
+            raw: &raw,
+            lat_lon,
+            lon_count,
+            lat_count,
+            missing: &missing,
+            excluded: exclude_maxlc_before_counts.then_some(maxlc),
+            domain,
+            nlat: field.nlat(),
+        };
+        has_valid |= bin_tile(&mut bins, &tile, &active_local_lon, &active_local_lat)?;
     }
     // Preserve dense categorical behavior when the HField is finer than the
     // LandType raster (or an active longitude column contains no source
@@ -1680,6 +1696,162 @@ fn read_landtype_source_for_hfield_with_options(
         bins.exclude_class(maxlc);
     }
     Ok(bins)
+}
+
+/// One raster tile as the binning reads it.
+struct TileView<'a> {
+    raw: &'a [i8],
+    lat_lon: bool,
+    lon_count: usize,
+    lat_count: usize,
+    missing: &'a [f64],
+    /// The class dropped before the counts, if it is.
+    excluded: Option<i32>,
+    domain: Option<&'a HfieldDomainMask>,
+    nlat: usize,
+}
+
+impl TileView<'_> {
+    /// The sample at a tile column and row, if it is counted at all.
+    fn sample(&self, local_i: usize, local_file_j: usize) -> Option<i8> {
+        let index = if self.lat_lon {
+            local_file_j * self.lon_count + local_i
+        } else {
+            local_i * self.lat_count + local_file_j
+        };
+        let value = self.raw[index];
+        if is_missing_numeric(value, self.missing) || self.excluded == Some(i32::from(value)) {
+            None
+        } else {
+            Some(value)
+        }
+    }
+}
+
+/// Bin one tile, one sample at a time: the reader's original loop, kept as the
+/// oracle for [`bin_tile`]. Returns whether any sample was counted.
+#[cfg(test)]
+fn bin_tile_serial(
+    bins: &mut LandtypeBinStats,
+    tile: &TileView<'_>,
+    columns: &[(usize, usize)],
+    rows: &[(usize, usize)],
+) -> io::Result<bool> {
+    let mut has_valid = false;
+    for &(local_i, field_i) in columns {
+        for &(local_file_j, field_j) in rows {
+            let Some(value) = tile.sample(local_i, local_file_j) else {
+                continue;
+            };
+            if tile
+                .domain
+                .is_some_and(|domain| !domain.is_active(field_i, field_j))
+            {
+                continue;
+            }
+            has_valid = true;
+            bins.record(field_i * tile.nlat + field_j, i32::from(value))?;
+        }
+    }
+    Ok(has_valid)
+}
+
+/// One HField column's counts from one tile.
+struct ColumnCounts {
+    field_i: usize,
+    total: Vec<usize>,
+    ocean: Vec<usize>,
+    land: Vec<usize>,
+    classes: Vec<Vec<(i32, usize)>>,
+}
+
+/// Bin one tile across threads.
+///
+/// A bin is one HField cell, `(field_i, field_j)`, so the tile's columns are
+/// split by `field_i` -- every column of one `field_i` in the same task, in
+/// ascending order -- and each task counts into its own arrays. A bin's
+/// samples are therefore seen in exactly the order the one-at-a-time loop saw
+/// them, and merging the tasks in order gives the same counts and the same
+/// class order. The decompression before this is serial (the NetCDF library
+/// holds a lock); this was the part that was not.
+fn bin_tile(
+    bins: &mut LandtypeBinStats,
+    tile: &TileView<'_>,
+    columns: &[(usize, usize)],
+    rows: &[(usize, usize)],
+) -> io::Result<bool> {
+    use rayon::prelude::*;
+    // Tile columns grouped by the HField column they land in, in order of
+    // first appearance; a wrap at the seam can return to an earlier column.
+    let mut by_field: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut position = std::collections::HashMap::new();
+    for &(local_i, field_i) in columns {
+        let index = *position.entry(field_i).or_insert_with(|| {
+            by_field.push((field_i, Vec::new()));
+            by_field.len() - 1
+        });
+        by_field[index].1.push(local_i);
+    }
+    let counted = by_field
+        .par_iter()
+        .map(|(field_i, locals)| -> io::Result<ColumnCounts> {
+            let mut column = ColumnCounts {
+                field_i: *field_i,
+                total: vec![0; tile.nlat],
+                ocean: vec![0; tile.nlat],
+                land: vec![0; tile.nlat],
+                classes: vec![Vec::new(); tile.nlat],
+            };
+            for &local_i in locals {
+                for &(local_file_j, field_j) in rows {
+                    let Some(value) = tile.sample(local_i, local_file_j) else {
+                        continue;
+                    };
+                    if tile
+                        .domain
+                        .is_some_and(|domain| !domain.is_active(*field_i, field_j))
+                    {
+                        continue;
+                    }
+                    let landtype = i32::from(value);
+                    if landtype < 0 {
+                        return Err(invalid(format!(
+                            "landtype value {landtype} must be non-negative"
+                        )));
+                    }
+                    column.total[field_j] += 1;
+                    if landtype == 0 {
+                        column.ocean[field_j] += 1;
+                    } else {
+                        column.land[field_j] += 1;
+                        let classes = &mut column.classes[field_j];
+                        match classes.iter_mut().find(|(class, _)| *class == landtype) {
+                            Some((_, count)) => *count += 1,
+                            None => classes.push((landtype, 1)),
+                        }
+                    }
+                }
+            }
+            Ok(column)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut has_valid = false;
+    for column in counted {
+        for field_j in 0..tile.nlat {
+            if column.total[field_j] == 0 {
+                continue;
+            }
+            has_valid = true;
+            bins.merge(
+                column.field_i * tile.nlat + field_j,
+                column.total[field_j],
+                column.ocean[field_j],
+                column.land[field_j],
+                &column.classes[field_j],
+            );
+        }
+    }
+    Ok(has_valid)
 }
 
 #[derive(Clone, Debug)]
@@ -4202,6 +4374,80 @@ mod tests {
         assert_eq!(bins.total_at(1), 0, "maxlc support is not counted as total");
         assert!(!bins.contains_class(1, 9));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parallel_tile_binning_matches_the_one_sample_loop_bin_for_bin() {
+        // Two tiles, both storage orders, a domain mask, missing values, the
+        // excluded class, and one HField column met at both ends of a tile
+        // (the seam wrap) -- counts and class order must be the serial loop's.
+        let field = HField::uniform(12, 6, four_by_two_parent_m()).unwrap();
+        let mask = HfieldDomainMask {
+            nlon: 12,
+            nlat: 6,
+            active: (0..72).map(|index| index % 7 != 3).collect(),
+        };
+        let mut state = 0x1234_5678_9abc_def1_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for lat_lon in [true, false] {
+            for domain in [None, Some(&mask)] {
+                let mut serial = LandtypeBinStats::new(&field, domain);
+                let mut parallel = LandtypeBinStats::new(&field, domain);
+                let (lon_count, lat_count) = (40usize, 30usize);
+                let rows = (0..lat_count)
+                    .map(|local| (local, local * 6 / lat_count))
+                    .collect::<Vec<_>>();
+                for tile_index in 0..2 {
+                    let raw = (0..lon_count * lat_count)
+                        .map(|_| match next() % 13 {
+                            0 => -99, // missing
+                            1..=4 => 0,
+                            k => (k as i8 - 4).min(7), // 7 is excluded below
+                        })
+                        .collect::<Vec<i8>>();
+                    let tile = TileView {
+                        raw: &raw,
+                        lat_lon,
+                        lon_count,
+                        lat_count,
+                        missing: &[-99.0],
+                        excluded: Some(7),
+                        domain,
+                        nlat: 6,
+                    };
+                    // Columns land in HField columns 4 per step; the last two
+                    // wrap back to the tile's first HField column.
+                    let base = tile_index * 5;
+                    let mut columns = (0..lon_count - 2)
+                        .map(|local| (local, (base + local / 8) % 12))
+                        .collect::<Vec<_>>();
+                    columns.push((lon_count - 2, base));
+                    columns.push((lon_count - 1, base));
+                    let a = bin_tile_serial(&mut serial, &tile, &columns, &rows).unwrap();
+                    let b = bin_tile(&mut parallel, &tile, &columns, &rows).unwrap();
+                    assert_eq!(a, b);
+                }
+                for out in 0..72 {
+                    assert_eq!(serial.total_at(out), parallel.total_at(out), "bin {out}");
+                    assert_eq!(serial.ocean_at(out), parallel.ocean_at(out), "bin {out}");
+                    assert_eq!(serial.land_at(out), parallel.land_at(out), "bin {out}");
+                    assert_eq!(
+                        serial.class_counts_at(out),
+                        parallel.class_counts_at(out),
+                        "bin {out}: class order included"
+                    );
+                }
+                assert!(
+                    serial.total_samples() > 1000,
+                    "the fixture must count samples"
+                );
+            }
+        }
     }
 
     #[test]
