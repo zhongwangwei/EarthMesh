@@ -2982,6 +2982,53 @@ fn project_declares_only_topology_expectations_known_before_masking() {
 }
 
 #[test]
+fn icon_refinement_is_refused_only_where_the_mesh_is_a_closed_sphere() {
+    const ICON_REFUSAL: &str = "cannot be refined on a closed global mesh";
+    let refused = |project: &ProjectConfig| {
+        project
+            .validate()
+            .err()
+            .is_some_and(|error| error.contains(ICON_REFUSAL))
+    };
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Icon;
+    project.refinement.enabled = true;
+    // A closed sphere with degree <= 6 everywhere is an icosahedral grid, so
+    // any refinement fails the ICON export after the run.
+    assert!(refused(&project), "{:?}", project.validate());
+    project.target.kind = MeshDomainKind::Earth;
+    assert!(refused(&project), "{:?}", project.validate());
+
+    // A uniform ICON grid is fine.
+    project.refinement.enabled = false;
+    assert!(!refused(&project), "{:?}", project.validate());
+
+    // Masked or regional meshes gain boundaries that can absorb the
+    // degree-5/7 pairs; the export checks the real degrees there.
+    project.refinement.enabled = true;
+    project.target.kind = MeshDomainKind::Ocean;
+    assert!(!refused(&project), "{:?}", project.validate());
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Hex;
+    assert!(!refused(&project), "{:?}", project.validate());
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Fvcom;
+    assert!(!refused(&project), "{:?}", project.validate());
+
+    // CMRC's safe mother is the uniform certified grid: nothing is graded.
+    project.target.model_format = ModelFormat::Icon;
+    project.refinement.backend = RefinementBackend::Certified;
+    project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    project.refinement.certified.mode = CertifiedMode::SafeMotherOnly;
+    assert!(!refused(&project), "{:?}", project.validate());
+    project.refinement.certified.mode = CertifiedMode::ReverseCoarsening;
+    assert!(refused(&project), "{:?}", project.validate());
+}
+
+#[test]
 fn auto_refine_state_machine_covers_pass_retry_cap_and_engine_failure() {
     let mut uniform = AutoRefineState::new(0, 40);
     assert_eq!(uniform.current_pass(), 0);

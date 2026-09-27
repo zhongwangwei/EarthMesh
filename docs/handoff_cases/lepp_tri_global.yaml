@@ -11,7 +11,9 @@ target:
   kind: Atmosphere
   cell: Tri
   resolution: !Nxp 40
-  model_format: Icon
+  # Not Icon: ICON allows at most 6 edges per vertex, which a refined closed
+  # global mesh cannot meet (guide 11.76); project validation refuses it.
+  model_format: Fvcom
 data_layers: []
 refinement:
   enabled: true

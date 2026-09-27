@@ -360,6 +360,13 @@ independent of backend or intent. The authoritative artifact is
 stdout also records physical cell/vertex/edge counts and `icon_global_grid`.
 HEX/ICON retains the explicit grid-only contract.
 
+Refinement on a closed global mesh (Global domain, Atmosphere or Earth target)
+is refused by project validation for TRI/ICON: ICON allows at most six edges
+per vertex, and on a closed sphere that admits only an icosahedral grid, while
+every local refinement adds paired degree-5/degree-7 vertices (guide 11.76).
+Masked and regional meshes can absorb those pairs at their boundaries, so they
+are still checked against the actual vertex degrees at export.
+
 The explicit parent is checked as native M triangles: one closed sphere with
 Euler 2 and manifold, consistently wound connectivity. W vertex valence is not
 the HEX cell-degree contract; ICON checks the selected vertex fan against its

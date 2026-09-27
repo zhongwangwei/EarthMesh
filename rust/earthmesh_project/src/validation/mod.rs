@@ -62,6 +62,7 @@ impl ProjectConfig {
         self.validate_refinement_sources()?;
         self.validate_backend_serves_refinement_route()?;
         self.validate_certified_delivery_matches_target_cell()?;
+        self.validate_icon_refinement_on_closed_sphere()?;
         self.validate_statistical_refinement_route()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
@@ -122,6 +123,33 @@ impl ProjectConfig {
             if self.target.model_format != crate::ModelFormat::CoLM {
                 return Err("delivery colm_mesh requires target.model_format=CoLM".to_string());
             }
+        }
+        Ok(())
+    }
+
+    /// ICON allows at most six edges per vertex (`ne=6`). On a closed sphere
+    /// a triangulation always has sum(6 - degree) = 12, so with no vertex
+    /// above six only the twelve icosahedral pentagons can differ from six:
+    /// the mesh has to be a plain icosahedral grid. Local refinement grades
+    /// the mesh through paired degree-5/degree-7 vertices whatever the backend
+    /// (LEPP, Method-C, red-green and CMRC all produce them), so the ICON
+    /// export would fail after the whole run. A masked or regional mesh gains
+    /// boundaries that can absorb those pairs, so it is left to the export,
+    /// which checks the actual degrees. CMRC's safe-mother mode delivers the
+    /// uniform certified mother grid, which grades nothing.
+    fn validate_icon_refinement_on_closed_sphere(&self) -> Result<(), String> {
+        let grades = self.refinement.enabled
+            && !(self.refinement.backend == RefinementBackend::Certified
+                && self.refinement.certified.mode == crate::CertifiedMode::SafeMotherOnly);
+        if grades
+            && self.target.cell == MeshCellKind::Tri
+            && self.target.model_format == crate::ModelFormat::Icon
+            && self.expected_euler_characteristic() == Some(2)
+        {
+            return Err(
+                "target.model_format=Icon cannot be refined on a closed global mesh: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Set refinement.enabled=false for a uniform ICON grid, or keep the refinement and choose another model_format (the refined EarthMesh gridfile is written for every format)"
+                    .to_string(),
+            );
         }
         Ok(())
     }

@@ -307,7 +307,10 @@ fn project_icon_hfield_block_failure_publishes_no_icon_artifact() {
 }
 
 #[test]
-fn project_icon_refined_tri_degree_seven_fails_closed_without_icon_artifact() {
+fn project_icon_refined_tri_on_closed_sphere_is_refused_before_the_run() {
+    // A refined closed global mesh always carries degree-7 vertices, which
+    // ICON (ne=6) cannot hold (guide 11.76). Validation refuses the project
+    // before any refinement runs, instead of failing at ICON export.
     for (label, backend) in [
         ("method_c", RefinementBackend::MethodC),
         ("red_green", RefinementBackend::RedGreen),
@@ -322,21 +325,12 @@ fn project_icon_refined_tri_degree_seven_fails_closed_without_icon_artifact() {
             "{label} unexpectedly succeeded:\n{stdout}\n{stderr}"
         );
         assert!(
-            maybe_field(&stdout, "project_final_quality=").is_some(),
-            "{label} must reach final admission before ICON schema rejection:\n{stdout}"
+            stderr.contains("cannot be refined on a closed global mesh")
+                && stderr.contains("6 edges per vertex"),
+            "{label} must be refused by project validation, got:\n{stderr}"
         );
-        assert!(
-            stderr.contains("ICON ne=6 cannot represent") && stderr.contains("degree 7"),
-            "{label} must fail explicitly on ICON degree-7 schema, got:\n{stderr}"
-        );
+        assert!(maybe_field(&stdout, "project_final_quality=").is_none());
         assert!(!stdout.contains("project_delivery_report="));
-        assert!(!stdout.contains("project_model_delivery_status="));
-        let quality = Path::new(field(&stdout, "project_final_quality="));
-        assert!(!quality
-            .parent()
-            .unwrap()
-            .join("project_delivery.json")
-            .exists());
         assert_no_icon_artifact(&root, &stdout);
         fs::remove_dir_all(root).unwrap();
     }

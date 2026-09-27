@@ -91,11 +91,17 @@ fn project_execution_cannot_bypass_final_admission_with_low_level_modes() {
                     .unwrap();
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let stderr = String::from_utf8_lossy(&output.stderr);
+                    // Refined TRI/ICON on a closed global mesh is refused by
+                    // project validation before the flag is looked at
+                    // (guide 11.76); every other pairing reaches the flag.
+                    let refused = if format == ModelFormat::Icon && cell == MeshCellKind::Tri {
+                        stderr.contains("cannot be refined on a closed global mesh")
+                    } else {
+                        stderr.contains("project execution requires the default --project path")
+                            && stderr.contains("standalone namelist")
+                    };
                     assert!(
-                        !output.status.success()
-                            && stderr
-                                .contains("project execution requires the default --project path")
-                            && stderr.contains("standalone namelist"),
+                        !output.status.success() && refused,
                         "{format:?}/{cell:?}/{policy:?}/{flag}\n{stdout}\n{stderr}"
                     );
                     assert!(!stdout.contains("project_final_quality="));
