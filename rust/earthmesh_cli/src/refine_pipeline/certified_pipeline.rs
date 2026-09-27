@@ -1130,22 +1130,55 @@ pub(super) struct CertifiedRefinement {
     remap: earthmesh_refine_certified::remap::ConservativeRemap,
     pentagons: [usize; 12],
     state: earthmesh_mesh::VoronoiGridState,
-    output_mesh: crate::UnstructuredMesh,
     started: Instant,
     timing_enabled: bool,
     phase_started: Instant,
 }
 
-pub(super) fn run_certified_pipeline(
+/// CMRC's construction in the shape the shared dispatch hands the tail: the
+/// published mesh and its per-cell levels as the `RefinedGrid`, the rest of the
+/// construction record in `diagnostics.certified` for certified delivery.
+pub(super) fn refine_with_certified_as_grid(
     contents: &str,
     config: &EarthmeshConfig,
     options: CertifiedRunOptions,
     workdir: &Path,
     max_tris: usize,
     output_dir: Option<&Path>,
-) -> io::Result<RefinePipelineRunReport> {
-    let refinement = refine_with_certified(contents, config, options, max_tris)?;
-    deliver_certified(refinement, config, workdir, output_dir)
+) -> io::Result<(RefinedGrid, TailInputs)> {
+    let (refinement, output_mesh) = refine_with_certified(contents, config, options, max_tris)?;
+    let configured_dir = PathBuf::from(config.file_dir());
+    let file_dir = if let Some(directory) = output_dir {
+        directory.to_path_buf()
+    } else if configured_dir.is_absolute() {
+        configured_dir
+    } else {
+        workdir.join(configured_dir)
+    };
+    let (m, w) =
+        certified_gridfile_refine_levels(&output_mesh, refinement.delivered_levels.levels())?;
+    let inputs = TailInputs {
+        refine: refinement.refine.clone(),
+        max_level: refinement.chosen_level,
+        native_cartesian_xy: false,
+        domain_region: refinement.regional_domain.clone(),
+        gridinit: None,
+        regions: refinement.requirements.regions.clone(),
+        nxp: refinement.base_nxp,
+        spring_nest_iterations: 0,
+        file_dir,
+    };
+    let refined = RefinedGrid {
+        output_mesh,
+        cell_levels: Some(CellRefineLevels { m, w }),
+        pentagon_indices: refinement.pentagons,
+        demand: RefinedDemandRecord::default(),
+        diagnostics: BackendDiagnostics {
+            certified: Some(Box::new(refinement)),
+            ..Default::default()
+        },
+    };
+    Ok((refined, inputs))
 }
 
 /// CMRC's construction: requirement plan, certified mother grid, reverse
@@ -1155,7 +1188,7 @@ pub(super) fn refine_with_certified(
     config: &EarthmeshConfig,
     options: CertifiedRunOptions,
     max_tris: usize,
-) -> io::Result<CertifiedRefinement> {
+) -> io::Result<(CertifiedRefinement, crate::UnstructuredMesh)> {
     let started = Instant::now();
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1494,7 +1527,7 @@ pub(super) fn refine_with_certified(
         "final_certification_and_dual",
         &mut phase_started,
     );
-    Ok(CertifiedRefinement {
+    let refinement = CertifiedRefinement {
         options,
         regional_domain,
         is_surface_masked,
@@ -1525,20 +1558,21 @@ pub(super) fn refine_with_certified(
         remap,
         pentagons,
         state,
-        output_mesh,
         started,
         timing_enabled,
         phase_started,
-    })
+    };
+    Ok((refinement, output_mesh))
 }
 
 /// CMRC's delivery: gridfile(s), remap table, certificate, manifest and model
 /// exports, staged and published atomically.
 pub(super) fn deliver_certified(
     refinement: CertifiedRefinement,
+    output_mesh: crate::UnstructuredMesh,
+    cell_levels: CellRefineLevels,
     config: &EarthmeshConfig,
-    workdir: &Path,
-    output_dir: Option<&Path>,
+    file_dir: &Path,
 ) -> io::Result<RefinePipelineRunReport> {
     let CertifiedRefinement {
         options,
@@ -1571,7 +1605,6 @@ pub(super) fn deliver_certified(
         remap,
         pentagons,
         state,
-        output_mesh,
         started,
         timing_enabled,
         mut phase_started,
@@ -1580,14 +1613,6 @@ pub(super) fn deliver_certified(
     let required_levels = &requirements.effective_levels;
     let requirement_nlon = requirements.nlon;
     let requirement_nlat = requirements.nlat;
-    let configured_dir = PathBuf::from(config.file_dir());
-    let file_dir = if let Some(directory) = output_dir {
-        directory.to_path_buf()
-    } else if configured_dir.is_absolute() {
-        configured_dir
-    } else {
-        workdir.join(configured_dir)
-    };
     let result_dir = file_dir.join("result");
     fs::create_dir_all(&result_dir)?;
     let gridfile_suffix = if safe_fallback {
@@ -1774,7 +1799,7 @@ pub(super) fn deliver_certified(
         && config.mesh_type.trim() == "oceanmesh"
         && config.mode_grid.trim() == "tri"
         && config.output_format.trim().eq_ignore_ascii_case("FVCOM"))
-    .then(|| fvcom_mesh_2dm_output_path(&file_dir));
+    .then(|| fvcom_mesh_2dm_output_path(file_dir));
     let temporary_fvcom_path =
         result_dir.join(format!(".fvcom.2dm.cmrc-tmp-{}", std::process::id()));
     let mpas_suffix = if safe_fallback {
@@ -1837,8 +1862,10 @@ pub(super) fn deliver_certified(
         manifest["experimental_local_update"] = report;
     }
     let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?;
-    let (m_refine_levels, w_refine_levels) =
-        certified_gridfile_refine_levels(&output_mesh, delivered_levels.levels())?;
+    let CellRefineLevels {
+        m: m_refine_levels,
+        w: w_refine_levels,
+    } = cell_levels;
     let temporary_paths = [
         temporary_path.as_path(),
         temporary_source_path.as_path(),

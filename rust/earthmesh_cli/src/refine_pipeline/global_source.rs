@@ -49,7 +49,7 @@ use rayon::prelude::*;
 
 use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 
-use super::certified_pipeline::run_certified_pipeline;
+use super::certified_pipeline::{deliver_certified, refine_with_certified_as_grid};
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
 
@@ -155,27 +155,29 @@ pub(super) fn run_refine_pipeline_in_workspace(
             "LEPP AdaptiveHybrid and LEPP post-quality cannot both own the same Method-C run",
         ));
     }
-    if backend == RefineBackend::Certified {
-        return run_certified_pipeline(
+    let (refined, inputs) = match backend {
+        // CMRC builds its own certified mother grid rather than refining the
+        // shared source mesh, so it skips that preparation.
+        RefineBackend::Certified => refine_with_certified_as_grid(
             &contents,
             &config,
             read_certified_options(&contents)?,
             workdir,
             max_tris,
             output_dir,
-        );
-    }
-    let (refined, inputs) = refine_from_shared_source(
-        &contents,
-        &config,
-        backend,
-        &quality,
-        &method_c_algorithm,
-        namelist_source,
-        workdir,
-        max_tris,
-        output_dir,
-    )?;
+        )?,
+        RefineBackend::MethodC | RefineBackend::RedGreen => refine_from_shared_source(
+            &contents,
+            &config,
+            backend,
+            &quality,
+            &method_c_algorithm,
+            namelist_source,
+            workdir,
+            max_tris,
+            output_dir,
+        )?,
+    };
     finish_refined(
         contents,
         config,
@@ -818,11 +820,12 @@ fn refine_from_shared_source(
                         hfield_diagnostics,
                         lepp_adaptive_hybrid: None,
                         lepp_post_quality,
+                        certified: None,
                     },
                 }
             }
         }
-        RefineBackend::Certified => unreachable!("CMRC is dispatched before source-grid setup"),
+        RefineBackend::Certified => unreachable!("CMRC does not refine the shared source mesh"),
     };
     Ok((
         refined,
@@ -865,6 +868,21 @@ fn finish_refined(
     inputs: TailInputs,
     source_gridnum_perdegree: Option<usize>,
 ) -> io::Result<RefinePipelineRunReport> {
+    let mut refined = refined;
+    // A certified mesh is published exactly as certified: no angle repair, and
+    // delivery carries the certificate, the remap table and the manifest.
+    if let Some(certified) = refined.diagnostics.certified.take() {
+        let cell_levels = refined
+            .cell_levels
+            .ok_or_else(|| io::Error::other("certified refinement recorded no per-cell levels"))?;
+        return deliver_certified(
+            *certified,
+            refined.output_mesh,
+            cell_levels,
+            &config,
+            &inputs.file_dir,
+        );
+    }
     let TailInputs {
         refine,
         max_level,
@@ -895,6 +913,7 @@ fn finish_refined(
                 hfield_diagnostics,
                 lepp_adaptive_hybrid,
                 lepp_post_quality,
+                certified: _,
             },
     } = refined;
 
@@ -1552,49 +1571,52 @@ pub(super) struct CellRefineLevels {
 /// nominal MPAS width, carve protection and target/actual reconciliation; and
 /// `diagnostics` is the backend's own account, reported or archived beside the
 /// mesh but never used to decide what the mesh looks like.
-struct RefinedGrid {
-    output_mesh: crate::UnstructuredMesh,
+pub(super) struct RefinedGrid {
+    pub(super) output_mesh: crate::UnstructuredMesh,
     /// Each output cell's refinement depth -- zero is the base mesh -- per M
     /// row and per W row of `output_mesh`, whatever backend built it. `None`
     /// where the backend does not record depth; the quality step then reports
     /// the target/actual reconciliation as not measured.
-    cell_levels: Option<CellRefineLevels>,
+    pub(super) cell_levels: Option<CellRefineLevels>,
     /// The twelve pentagons, in the numbering of the mesh that was produced.
-    pentagon_indices: [usize; 12],
-    demand: RefinedDemandRecord,
-    diagnostics: BackendDiagnostics,
+    pub(super) pentagon_indices: [usize; 12],
+    pub(super) demand: RefinedDemandRecord,
+    pub(super) diagnostics: BackendDiagnostics,
 }
 
 /// The demand as the backend consumed it.
 #[derive(Default)]
-struct RefinedDemandRecord {
-    hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
-    adaptive_run: Option<AdaptiveRunRecord>,
+pub(super) struct RefinedDemandRecord {
+    pub(super) hfield_context: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
+    pub(super) adaptive_run: Option<AdaptiveRunRecord>,
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
-    lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
+    pub(super) lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
 }
 
 /// A backend's own account of the run. Reported and archived, not interpreted.
 #[derive(Default)]
-struct BackendDiagnostics {
+pub(super) struct BackendDiagnostics {
     /// Method-C's Voronoi state. Red-green has none -- its mesh is already in
     /// lon/lat -- and the run record fills its counts from `output_mesh`.
-    state: Option<earthmesh_mesh::VoronoiGridState>,
+    pub(super) state: Option<earthmesh_mesh::VoronoiGridState>,
     /// Method-C's lineage, original levels and `ngr`, archived in the gridfile.
-    method_c_metadata: Option<MethodCMetadataOwned>,
+    pub(super) method_c_metadata: Option<MethodCMetadataOwned>,
     /// Method-C's refinement-boundary rows; red-green counts its closure faces.
-    transition_faces: usize,
-    spring_nest_passes: usize,
-    hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    pub(super) transition_faces: usize,
+    pub(super) spring_nest_passes: usize,
+    pub(super) hfield_diagnostics: earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
     /// LEPP-Delaunay AdaptiveHybrid's own run report. Its resolved targets are
     /// also the run's nominal demand width.
-    lepp_adaptive_hybrid: Option<earthmesh_refine_method_c::AdaptiveHybridReport>,
+    pub(super) lepp_adaptive_hybrid: Option<earthmesh_refine_method_c::AdaptiveHybridReport>,
     /// Optional repair derived from, but never replacing, the canonical mesh.
-    lepp_post_quality: Option<LeppPostQualityGrid>,
+    pub(super) lepp_post_quality: Option<LeppPostQualityGrid>,
+    /// CMRC's construction record. Its presence routes the tail to certified
+    /// delivery, which must not alter the certified geometry.
+    pub(super) certified: Option<Box<super::certified_pipeline::CertifiedRefinement>>,
 }
 
-struct LeppPostQualityGrid {
+pub(super) struct LeppPostQualityGrid {
     output_mesh: crate::UnstructuredMesh,
     report: LeppPostQualityReport,
 }
