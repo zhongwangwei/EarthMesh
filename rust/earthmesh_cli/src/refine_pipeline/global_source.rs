@@ -165,17 +165,55 @@ pub(super) fn run_refine_pipeline_in_workspace(
             output_dir,
         );
     }
+    let (refined, inputs) = refine_from_shared_source(
+        &contents,
+        &config,
+        backend,
+        &quality,
+        &method_c_algorithm,
+        namelist_source,
+        workdir,
+        max_tris,
+        output_dir,
+    )?;
+    finish_refined(
+        contents,
+        config,
+        quality,
+        method_c_algorithm,
+        refined,
+        inputs,
+        source_gridnum_perdegree,
+    )
+}
+
+/// Everything the backends that refine a shared source mesh (Method-C,
+/// LEPP-Delaunay, red-green) need before they run: the native-grid and
+/// criteria checks, the gridinit carrier, the named regions and the initial
+/// triangulation -- then the backend itself.
+#[allow(clippy::too_many_arguments)]
+fn refine_from_shared_source(
+    contents: &str,
+    config: &EarthmeshConfig,
+    backend: RefineBackend,
+    quality: &QualityNamelist,
+    method_c_algorithm: &MethodCAlgorithmOptions,
+    namelist_source: &Path,
+    workdir: &Path,
+    max_tris: usize,
+    output_dir: Option<&Path>,
+) -> io::Result<(RefinedGrid, TailInputs)> {
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
-    let native_mdomain = read_native_grid_mdomain(&contents)?;
-    let native_deltax = read_native_grid_deltax(&contents)?;
+    let native_mdomain = read_native_grid_mdomain(contents)?;
+    let native_deltax = read_native_grid_deltax(contents)?;
     let native_global_like_domain =
         native_mdomain.map_or(config.mask_domain_global, |mdomain| mdomain < 2);
     let native_surface_global_domain =
         native_mdomain.map_or(config.mask_domain_global, |mdomain| mdomain == 0);
-    let native_sfcgrid_res_factor = read_native_grid_sfcgrid_res_factor(&contents)?;
+    let native_sfcgrid_res_factor = read_native_grid_sfcgrid_res_factor(contents)?;
     let native_surface_global_expansion = !is_atmosmesh && native_sfcgrid_res_factor > 1;
     let native_refine_regions_requested =
-        native_grid_refinement_requested(&contents, config.mesh_type.trim())?;
+        native_grid_refinement_requested(contents, config.mesh_type.trim())?;
     if !config.refine && !native_surface_global_expansion && !native_refine_regions_requested {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -197,8 +235,8 @@ pub(super) fn run_refine_pipeline_in_workspace(
             "NXP must be positive for Method-C specified refine",
         ));
     }
-    let hfield_options = crate::hfield_refine::read_hfield_refine_options(&contents)?;
-    let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(&contents)?;
+    let hfield_options = crate::hfield_refine::read_hfield_refine_options(contents)?;
+    let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(contents)?;
     if hfield_options.is_some() && config.nxp % 3 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -238,11 +276,11 @@ pub(super) fn run_refine_pipeline_in_workspace(
         ));
     }
     let native_atmosphere_regions =
-        read_native_grid_refinement_regions_for_grid(&contents, true, native_global_like_domain)?;
+        read_native_grid_refinement_regions_for_grid(contents, true, native_global_like_domain)?;
     let native_surface_regions = if is_atmosmesh {
         Vec::new()
     } else {
-        read_native_grid_refinement_regions_for_grid(&contents, false, native_global_like_domain)?
+        read_native_grid_refinement_regions_for_grid(contents, false, native_global_like_domain)?
     };
     if !is_atmosmesh
         && !native_surface_global_domain
@@ -256,19 +294,19 @@ pub(super) fn run_refine_pipeline_in_workspace(
         ));
     }
     let native_regions =
-        read_native_grid_refinement_regions(&contents, is_atmosmesh, native_global_like_domain)?;
+        read_native_grid_refinement_regions(contents, is_atmosmesh, native_global_like_domain)?;
     if !native_regions.is_empty() {
         validate_native_spawn_mdomain(native_mdomain)?;
     }
     let refine = match RefineConfig::from_mkrefine_namelist_with_external_field(
-        &contents,
+        contents,
         config.mesh_type.trim(),
         config.mode_grid.trim(),
         has_hydro_hfield_source,
     ) {
         Ok(refine) => refine,
         Err(_err) if !native_regions.is_empty() || native_surface_global_expansion => {
-            read_native_grid_refine_controls(&contents)?
+            read_native_grid_refine_controls(contents)?
         }
         Err(err) => return Err(io::Error::new(io::ErrorKind::InvalidInput, err)),
     };
@@ -299,7 +337,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
     } else {
         0
     };
-    let max_native_level = native_grid_refinement_depth(&contents, is_atmosmesh)?;
+    let max_native_level = native_grid_refinement_depth(contents, is_atmosmesh)?;
     let max_surface_expansion_level = usize::from(native_surface_global_expansion);
     let max_level = max_spc_level
         .max(max_cal_level)
@@ -342,7 +380,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
     let method_c_nxp = usize::try_from(config.nxp)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NXP must fit usize"))?;
     let active_hfield_options = hfield_options.as_ref();
-    let domain_region = read_method_c_domain_region(&config)?;
+    let domain_region = read_method_c_domain_region(config)?;
     let use_hfield_regions = active_hfield_options.is_some();
     let mesh_type = config.mesh_type.trim();
     let has_threshold_sources =
@@ -361,7 +399,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
             namelist_source,
             workdir,
             max_tris,
-            &config,
+            config,
             directory,
         )?,
         None => run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?,
@@ -561,27 +599,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
     // mesh is already in lon/lat and skips it entirely. What the tail below
     // needs is the same from either -- a gridfile mesh, and whatever each one
     // can honestly say about how it was built.
-    let RefinedGrid {
-        output_mesh,
-        cell_levels,
-        pentagon_indices,
-        demand:
-            RefinedDemandRecord {
-                hfield_context,
-                adaptive_run,
-                lepp_hard_regions,
-            },
-        diagnostics:
-            BackendDiagnostics {
-                state,
-                method_c_metadata,
-                transition_faces,
-                spring_nest_passes,
-                hfield_diagnostics,
-                lepp_adaptive_hybrid,
-                lepp_post_quality,
-            },
-    } = match backend {
+    let refined = match backend {
         RefineBackend::RedGreen => {
             // What this route does not read, said outright rather than served
             // quietly with less: any of these would simply be dropped, and the
@@ -615,8 +633,8 @@ pub(super) fn run_refine_pipeline_in_workspace(
                     Ok(RedGreenAdaptive {
                         inputs: adaptive_demand_inputs(
                             domain_region.as_ref(),
-                            &config,
-                            adaptive_landtype_file(&config),
+                            config,
+                            adaptive_landtype_file(config),
                             mesh_type,
                             adaptive.coastline,
                         )?,
@@ -642,7 +660,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
                         &regions,
                         &refine,
                         mesh_type,
-                        &config,
+                        config,
                         base_m,
                         options,
                         max_cal_level.clamp(1, field_max_level),
@@ -677,12 +695,12 @@ pub(super) fn run_refine_pipeline_in_workspace(
                     &regions,
                     adaptive_options.as_ref(),
                     &refine,
-                    &config,
+                    config,
                     domain_region.as_ref(),
                     mesh_type,
                     method_c_nxp,
                     max_level,
-                    method_c_algorithm,
+                    *method_c_algorithm,
                     spring_nest_iterations,
                 )?
             } else {
@@ -695,7 +713,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
                 } = refine_with_method_c(
                     mesh,
                     MethodCRefineRequest {
-                        config: &config,
+                        config,
                         refine: &refine,
                         mesh_type,
                         regions: &regions,
@@ -806,6 +824,79 @@ pub(super) fn run_refine_pipeline_in_workspace(
         }
         RefineBackend::Certified => unreachable!("CMRC is dispatched before source-grid setup"),
     };
+    Ok((
+        refined,
+        TailInputs {
+            refine,
+            max_level,
+            native_cartesian_xy,
+            domain_region,
+            gridinit: Some(gridinit),
+            regions,
+            nxp,
+            spring_nest_iterations,
+            file_dir,
+        },
+    ))
+}
+
+/// What the shared tail needs from the stage that prepared the source mesh.
+pub(super) struct TailInputs {
+    pub(super) refine: RefineConfig,
+    pub(super) max_level: usize,
+    pub(super) native_cartesian_xy: bool,
+    pub(super) domain_region: Option<GridRegion>,
+    pub(super) gridinit: Option<crate::MkgrdGridinitRunReport>,
+    pub(super) regions: Vec<earthmesh_mesh::RefinementRegion>,
+    pub(super) nxp: usize,
+    pub(super) spring_nest_iterations: usize,
+    pub(super) file_dir: PathBuf,
+}
+
+/// The shared tail: angle contract, realized-resolution measures, outputs,
+/// reports and the run record -- the same for whichever backend refined.
+#[allow(clippy::too_many_arguments)]
+fn finish_refined(
+    contents: String,
+    config: EarthmeshConfig,
+    quality: QualityNamelist,
+    method_c_algorithm: MethodCAlgorithmOptions,
+    refined: RefinedGrid,
+    inputs: TailInputs,
+    source_gridnum_perdegree: Option<usize>,
+) -> io::Result<RefinePipelineRunReport> {
+    let TailInputs {
+        refine,
+        max_level,
+        native_cartesian_xy,
+        domain_region,
+        gridinit,
+        regions,
+        nxp,
+        spring_nest_iterations,
+        file_dir,
+    } = inputs;
+    let RefinedGrid {
+        output_mesh,
+        cell_levels,
+        pentagon_indices,
+        demand:
+            RefinedDemandRecord {
+                hfield_context,
+                adaptive_run,
+                lepp_hard_regions,
+            },
+        diagnostics:
+            BackendDiagnostics {
+                state,
+                method_c_metadata,
+                transition_faces,
+                spring_nest_passes,
+                hfield_diagnostics,
+                lepp_adaptive_hybrid,
+                lepp_post_quality,
+            },
+    } = refined;
 
     // The angle contract, once, for whichever backend built the mesh: inside
     // [35, 85] and as close to 60 as the mesh allows (angle_contract.rs).
@@ -1301,7 +1392,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
     Ok(RefinePipelineRunReport {
-        gridinit: Some(gridinit),
+        gridinit,
         refine,
         regions,
         max_level,
