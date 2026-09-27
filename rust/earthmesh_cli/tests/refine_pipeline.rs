@@ -3042,10 +3042,9 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
         run.output.lbx_points,
         run.gridinit.as_ref().unwrap().gridfile.lbx_points
     );
-    // Not synthesised to make a log line look better: red-green reports no
-    // per-cell generations, so nothing was measured off this mesh. The
-    // requested depth travels as `max_level`.
-    assert_eq!(run.realized_max_level, 0);
+    // Measured off this mesh: the hex (transition-row) route now carries each
+    // face's red depth through its rounds, and the named circle asked for two.
+    assert_eq!(run.realized_max_level, 2);
     assert_eq!(run.transition_faces, 0);
     // The run record's counts come from the gridfile when there is no Voronoi
     // state to take them from.
@@ -3173,14 +3172,14 @@ fn redgreen_backend_serves_the_hfield() {
         .expect("red_green serves an h-field");
     assert_eq!(run.max_level, 1);
     // More triangles than the uniform NXP-6 icosahedron's 20 * 6^2 (plus the
-    // two placeholder rows): the field's level-one target was refined. Hex
-    // output goes through red-green's transition-row closure, which does not
-    // record per-cell depth, so `realized_max_level` cannot say this here.
+    // two placeholder rows): the field's level-one target was refined, and the
+    // transition-row closure's per-face depth says so.
     assert!(
         run.output.sjx_points > 20 * 6 * 6 + 2,
         "no refinement: {} triangle rows",
         run.output.sjx_points
     );
+    assert_eq!(run.realized_max_level, 1);
     let context =
         earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_context(&run.output.output)
             .expect("read h-field context")

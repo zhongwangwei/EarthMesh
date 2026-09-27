@@ -2055,6 +2055,85 @@ fn redgreen_cell_levels(
     Some(CellRefineLevels { m, w })
 }
 
+/// Angle between two points, in radians: an edge length on the unit sphere,
+/// whatever radius the coordinates carry.
+fn arc_radians(a: earthmesh_mesh::CartesianPoint, b: earthmesh_mesh::CartesianPoint) -> f64 {
+    let cross = [
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    ];
+    let sine = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    sine.atan2(a.x * b.x + a.y * b.y + a.z * b.z)
+}
+
+/// Median longest edge of a mesh's faces, in radians: LEPP's base edge `h0`,
+/// taken as its targets take it (`adaptive_hybrid_target_edge_from_level`).
+fn median_longest_edge_radians(state: &MeshState) -> Option<f64> {
+    let points = state.vertices();
+    let mut longest = state
+        .active_triangle_slots()
+        .map(|face| {
+            let [a, b, c] = state.triangles()[face].map(|v| points[v]);
+            arc_radians(a, b)
+                .max(arc_radians(b, c))
+                .max(arc_radians(c, a))
+        })
+        .filter(|edge| edge.is_finite() && *edge > 0.0)
+        .collect::<Vec<_>>();
+    if longest.is_empty() {
+        return None;
+    }
+    longest.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(longest[longest.len() / 2])
+}
+
+/// Each output cell's refinement depth measured from its size, for a backend
+/// with no subdivision lineage (LEPP-Delaunay inserts points and flips).
+///
+/// It is LEPP's own definition read backwards: a depth-L demand asks for a
+/// longest edge of `h0 / 2^L`, so a triangle's depth is `log2(h0 / longest
+/// edge)` rounded, never below zero. Each hex cell (W row) takes the deepest
+/// triangle around it, as red-green's do.
+fn measured_cell_levels(mesh: &crate::UnstructuredMesh, h0_radians: f64) -> CellRefineLevels {
+    use crate::unstructured_mesh_support::{
+        mesh_canonical_id_for_row, mesh_m_has_two_placeholder_rows, mesh_row_for_canonical_id,
+        mesh_w_has_two_placeholder_rows,
+    };
+    let m_placeholders = mesh_m_has_two_placeholder_rows(mesh);
+    let w_placeholders = mesh_w_has_two_placeholder_rows(mesh);
+    let point = |p: &crate::LonLatPoint| {
+        earthmesh_mesh::lonlat_degrees_to_unit_xyz(earthmesh_mesh::LonLatDegrees::new(p.lon, p.lat))
+    };
+    let mut m = vec![0_i32; mesh.m_points.len()];
+    let mut w = vec![0_i32; mesh.w_points.len()];
+    for (m_row, corners) in mesh.m_to_w.iter().enumerate() {
+        if mesh_canonical_id_for_row(m_row, m_placeholders).is_none() {
+            continue;
+        }
+        let Some(rows) = corners
+            .iter()
+            .map(|&id| mesh_row_for_canonical_id(id, mesh.w_points.len(), w_placeholders))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let [a, b, c] = [rows[0], rows[1], rows[2]].map(|row| point(&mesh.w_points[row]));
+        let longest = arc_radians(a, b)
+            .max(arc_radians(b, c))
+            .max(arc_radians(c, a));
+        if !(longest.is_finite() && longest > 0.0) {
+            continue;
+        }
+        let depth = (h0_radians / longest).log2().round().max(0.0) as i32;
+        m[m_row] = depth;
+        for row in rows {
+            w[row] = w[row].max(depth);
+        }
+    }
+    CellRefineLevels { m, w }
+}
+
 fn refine_with_redgreen(
     mesh: &TriangularMesh,
     named_regions: &[earthmesh_mesh::RefinementRegion],
@@ -2437,6 +2516,9 @@ fn refine_with_method_c_lepp(
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
     let mut state = MeshState::from_triangular_mesh(&mesh)?;
+    // LEPP's base edge, before anything is inserted: what its depths are
+    // measured against.
+    let h0_radians = median_longest_edge_radians(&state);
     for (index, region) in named_regions.iter().enumerate() {
         region.validate().map_err(|error| {
             io::Error::new(
@@ -2609,9 +2691,10 @@ fn refine_with_method_c_lepp(
     } else {
         (initial_voronoi, output_mesh)
     };
+    let cell_levels = h0_radians.map(|h0| measured_cell_levels(&output_mesh, h0));
     Ok(RefinedGrid {
         output_mesh,
-        cell_levels: None,
+        cell_levels,
         pentagon_indices: pentagons,
         demand: RefinedDemandRecord {
             lepp_hard_regions: hard_regions,

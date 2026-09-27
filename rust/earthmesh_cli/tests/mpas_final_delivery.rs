@@ -1453,9 +1453,46 @@ fn adaptive_region_pipeline_delivery(backend: &str) {
                 (1..=rows).map(|row| row as i64).collect::<Vec<_>>()
             );
         }
+        // The classic (hex) route now carries each face's red depth through
+        // its rounds, so the snapshot records measured levels: the cells the
+        // demand circle covers are at least one level deep.
+        let levels = file
+            .variable("earthmesh_w_refine_level")
+            .expect("red-green hex records its refinement levels")
+            .get_values::<i32, _>(..)
+            .unwrap();
+        let lon = file
+            .variable("GLONW")
+            .unwrap()
+            .get_values::<f64, _>(..)
+            .unwrap();
+        let lat = file
+            .variable("GLATW")
+            .unwrap()
+            .get_values::<f64, _>(..)
+            .unwrap();
+        let core = earthmesh_mesh::RefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(114.0, 22.0),
+            radius_meters: 350_000.0,
+            level: 1,
+        };
+        let mut inside = 0;
+        for row in 2..levels.len() {
+            if core
+                .contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(lon[row], lat[row]))
+            {
+                inside += 1;
+                assert!(
+                    levels[row] >= 1,
+                    "W row {row} inside the demand is level {}",
+                    levels[row]
+                );
+            }
+        }
+        assert!(inside > 0, "the fixture must place cells inside the demand");
         assert!(
-            file.variable("earthmesh_w_refine_level").is_none(),
-            "snapshot identity must not invent algorithm generations"
+            levels.contains(&0),
+            "cells outside the demand stay at the base level"
         );
     }
     let points =

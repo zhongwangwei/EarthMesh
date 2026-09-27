@@ -660,6 +660,9 @@ pub fn refine_redgreen_round_inside(
     )?;
 
     let mut flipped_triangle_count = 0usize;
+    // Which old triangle each transition row was cut from, and which rows
+    // the flips rewrote.
+    let mut lineage = TransitionLineage::default();
     if settings.build_transition_rows {
         // The curve table is fixed-width with a placeholder row; the segment
         // builder wants each curve's real vertices and nothing else, so trim to
@@ -685,7 +688,7 @@ pub fn refine_redgreen_round_inside(
             ));
         }
         if needs_transition_boundary {
-            flipped_triangle_count = close_transition_rows(
+            (flipped_triangle_count, lineage) = close_transition_rows(
                 mesh,
                 settings,
                 weak_concavity_count,
@@ -715,6 +718,14 @@ pub fn refine_redgreen_round_inside(
 
     let mut cells_on_triangle = renewed.cells_on_triangle;
     orient_triangles_outward(&renewed.cell_points, &mut cells_on_triangle)?;
+    let refinement_levels = classic_round_levels(
+        mesh,
+        &segment,
+        &lineage,
+        cells_on_triangle_new.len(),
+        &renewed.triangle_mapping,
+        cells_on_triangle.len(),
+    );
     let mut interior_marks = vec![0i32; renewed.num_sjx + 1];
     let first_red_child = sjx_points + 1;
     let last_red_child = sjx_points + 4 * refined_triangle_count;
@@ -735,7 +746,7 @@ pub fn refine_redgreen_round_inside(
             triangles_on_cell: renewed.triangles_on_cell,
             n_triangles_on_cell: renewed.n_triangles_on_cell,
             green_parents: Vec::new(),
-            refinement_levels: Vec::new(),
+            refinement_levels,
         },
         interior_marks,
         refined_triangle_count,
@@ -746,6 +757,119 @@ pub fn refine_redgreen_round_inside(
         weak_concavity_count,
         cell_renumbering: renewed.vertex_mapping,
     })
+}
+
+/// Red subdivision depth of every triangle a classic round wrote, from its
+/// lineage: a four-way child is one deeper than the triangle it split, a
+/// one-into-two transition child keeps its parent's depth (as a green child
+/// does on the conforming route), and an untouched triangle keeps its own.
+/// A Lawson flip deletes two triangles sharing an edge and writes the other
+/// diagonal's pair to new rows, mixing their areas, so both take the deeper
+/// depth -- as the conforming route's flips and the angle repair do. Unknown
+/// input depths stay unknown: empty.
+fn classic_round_levels(
+    mesh: &RedGreenMesh,
+    four_way: &[i32],
+    lineage: &TransitionLineage,
+    source_rows: usize,
+    triangle_mapping: &[usize],
+    output_rows: usize,
+) -> Vec<usize> {
+    let old = &mesh.refinement_levels;
+    if old.len() != mesh.cells_on_triangle.len() {
+        return Vec::new();
+    }
+    let sjx_points = mesh.triangle_count();
+    let mut row_levels = vec![0usize; source_rows];
+    row_levels[..old.len().min(source_rows)].copy_from_slice(&old[..old.len().min(source_rows)]);
+    // Four-way children are written in ascending order of the triangle split,
+    // four rows each, straight after the old triangles.
+    let mut next = sjx_points + 1;
+    for triangle in mesh.num_vertex + 1..=sjx_points {
+        if four_way.get(triangle).copied().unwrap_or(0) == 0 {
+            continue;
+        }
+        for row in next..next + 4 {
+            if let Some(level) = row_levels.get_mut(row) {
+                *level = old[triangle] + 1;
+            }
+        }
+        next += 4;
+    }
+    for &(parent, children) in &lineage.split_parents {
+        for row in children {
+            if let Some(level) = row_levels.get_mut(row) {
+                *level = old[parent];
+            }
+        }
+    }
+    // A flip replaces two triangles sharing an edge with the other diagonal
+    // of the same quadrilateral, so a created pair and the consumed pair it
+    // came from span the same four vertices. The consumed rows' depths are
+    // known by then -- old, split, or written by an earlier round's flips.
+    let quad = |a: [usize; 3], b: [usize; 3]| {
+        let mut all = [a[0], a[1], a[2], b[0], b[1], b[2]];
+        all.sort_unstable();
+        let mut quad = [0usize; 4];
+        let mut count = 0;
+        for (index, &v) in all.iter().enumerate() {
+            if index == 0 || v != all[index - 1] {
+                if count == 4 {
+                    return None;
+                }
+                quad[count] = v;
+                count += 1;
+            }
+        }
+        (count == 4).then_some(quad)
+    };
+    let shares_edge =
+        |a: [usize; 3], b: [usize; 3]| a.iter().filter(|v| b.contains(v)).count() == 2;
+    for round in &lineage.flips {
+        // Consumed triangles meet their flip partner on an edge; index each
+        // such pair by its quadrilateral.
+        let mut by_edge =
+            std::collections::HashMap::<(usize, usize), Vec<(usize, [usize; 3])>>::new();
+        for &(row, corners) in &round.consumed {
+            let [a, b, c] = corners;
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                by_edge
+                    .entry((x.min(y), x.max(y)))
+                    .or_default()
+                    .push((row, corners));
+            }
+        }
+        let mut consumed_depth = std::collections::HashMap::<[usize; 4], usize>::new();
+        for pair in by_edge.values().filter(|pair| pair.len() == 2) {
+            if let Some(key) = quad(pair[0].1, pair[1].1) {
+                let deeper = row_levels[pair[0].0].max(row_levels[pair[1].0]);
+                let entry = consumed_depth.entry(key).or_insert(deeper);
+                *entry = (*entry).max(deeper);
+            }
+        }
+        for (index, &(row, corners)) in round.created.iter().enumerate() {
+            // A created triangle can border several others; its flip partner
+            // is the one whose quadrilateral a consumed pair spans.
+            let level = round
+                .created
+                .iter()
+                .enumerate()
+                .filter(|&(other, &(_, c))| other != index && shares_edge(corners, c))
+                .find_map(|(_, &(_, partner))| {
+                    quad(corners, partner).and_then(|key| consumed_depth.get(&key).copied())
+                });
+            if let Some(level) = level {
+                row_levels[row] = level;
+            }
+        }
+    }
+    let mut levels = vec![0usize; output_rows];
+    for (source, &output) in triangle_mapping.iter().enumerate() {
+        if output > 0 && output < output_rows && source < source_rows {
+            levels[output] = row_levels[source];
+        }
+    }
+    levels
 }
 
 /// The green step: `max_transition_row` rounds of halving the boundary.
@@ -768,7 +892,7 @@ fn close_transition_rows(
     triangle_points: &mut [LonLatDegrees],
     cell_points: &mut [LonLatDegrees],
     cells_on_triangle_new: &mut [[usize; 3]],
-) -> io::Result<usize> {
+) -> io::Result<(usize, TransitionLineage)> {
     let sjx_points = mesh.triangle_count();
     let mut segments = refine_boundary_segments_make_one_based(
         settings.max_transition_row,
@@ -778,7 +902,7 @@ fn close_transition_rows(
         mrl_new,
     )?;
     if segments.num_bdy_refine_segment == 0 {
-        return Ok(0);
+        return Ok((0, TransitionLineage::default()));
     }
 
     // `MOD_refine.F90:355`, and only when the concavities are being carried
@@ -807,6 +931,7 @@ fn close_transition_rows(
     };
 
     let mut sjx_child = vec![[0usize; 2]; sjx_points + 1];
+    let mut lineage = TransitionLineage::default();
     let mut flipped = 0usize;
 
     for _ in 0..settings.max_transition_row {
@@ -949,6 +1074,9 @@ fn close_transition_rows(
             }
         }
 
+        // What the flips below consume and create, found by comparison: a flip
+        // deletes its two rows and writes the flipped pair to two new ones.
+        let before_flips = cells_on_triangle_new.to_vec();
         // Sharp corners the row left behind, taken back by Lawson flips.
         // `MOD_refine.F90:341,487` -- num_end, and one row per segment plus one
         // per weak concavity. Weak concavities are not carried here, so the
@@ -1040,10 +1168,46 @@ fn close_transition_rows(
             )?;
             flipped += accepted;
         }
-        sjx_child.iter_mut().for_each(|row| *row = [0, 0]);
+        let mut flips_round = FlipRound::default();
+        for (row, (now, was)) in cells_on_triangle_new.iter().zip(&before_flips).enumerate() {
+            if now == was {
+                continue;
+            }
+            if *now == [1, 1, 1] {
+                flips_round.consumed.push((row, *was));
+            } else {
+                flips_round.created.push((row, *now));
+            }
+        }
+        if !flips_round.created.is_empty() {
+            lineage.flips.push(flips_round);
+        }
+        for (parent, children) in sjx_child.iter_mut().enumerate() {
+            if *children != [0, 0] {
+                lineage.split_parents.push((parent, *children));
+            }
+            *children = [0, 0];
+        }
     }
 
-    Ok(flipped)
+    Ok((flipped, lineage))
+}
+
+/// Where the rows of a classic round's transition band came from.
+#[derive(Default)]
+struct TransitionLineage {
+    /// Each one-into-two split: the old triangle and its two child rows.
+    split_parents: Vec<(usize, [usize; 2])>,
+    /// Per transition row round, what its Lawson flips consumed and created.
+    flips: Vec<FlipRound>,
+}
+
+#[derive(Default)]
+struct FlipRound {
+    /// The rows the flips deleted, and their triangles as they were.
+    consumed: Vec<(usize, [usize; 3])>,
+    /// The rows the flips wrote, and their triangles.
+    created: Vec<(usize, [usize; 3])>,
 }
 
 /// Build the red-green tables from the shared triangular mesh.
