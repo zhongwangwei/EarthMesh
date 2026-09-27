@@ -21,10 +21,11 @@ pub fn write_cama_reach_inventory_jsonl(
             fs::create_dir_all(parent)?;
         }
     }
-    let mut handle = fs::File::create(&output)?;
+    let mut handle = io::BufWriter::new(fs::File::create(&output)?);
     for record in &inventory.records {
         writeln!(handle, "{}", cama_reach_record_json(record)?)?;
     }
+    handle.flush()?;
     Ok(CamaReachInventoryJsonlWriteReport {
         output,
         record_count: inventory.records.len(),
@@ -42,7 +43,7 @@ pub fn write_cama_reach_inventory_point_geojson(
             fs::create_dir_all(parent)?;
         }
     }
-    let mut handle = fs::File::create(&output)?;
+    let mut handle = io::BufWriter::new(fs::File::create(&output)?);
     write!(handle, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
     for (index, record) in inventory.records.iter().enumerate() {
         if index > 0 {
@@ -57,6 +58,7 @@ pub fn write_cama_reach_inventory_point_geojson(
         )?;
     }
     writeln!(handle, "]}}")?;
+    handle.flush()?;
     Ok(CamaReachInventoryGeoJsonWriteReport {
         output,
         feature_count: inventory.records.len(),

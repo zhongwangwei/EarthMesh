@@ -51,7 +51,7 @@ fn write_fvcom_2dm_from_carved(
         nodes.push((next, *p));
         next += 1;
     }
-    let mut file = fs::File::create(output)?;
+    let mut file = io::BufWriter::new(fs::File::create(output)?);
     writeln!(file, "MESH2D")?;
     writeln!(file, "MESHNAME \"FVCOM Mesh\"")?;
     let mut elements = 0usize;
@@ -92,6 +92,7 @@ fn write_fvcom_2dm_from_carved(
             })
             .collect();
         let boundary_segments = write_fvcom_ns_records(&mut file, &remapped)?;
+        file.flush()?;
         return Ok(FvcomMesh2dmWriteReport {
             output: output.to_path_buf(),
             triangles: elements,
@@ -99,6 +100,7 @@ fn write_fvcom_2dm_from_carved(
             boundary_segments,
         });
     }
+    file.flush()?;
     Ok(FvcomMesh2dmWriteReport {
         output: output.to_path_buf(),
         triangles: elements,

@@ -88,7 +88,7 @@ pub fn write_mpas_graph_info(
         .count();
     let output = output.as_ref();
     crate::ensure_parent_dir(output)?;
-    let mut file = fs::File::create(output)?;
+    let mut file = io::BufWriter::new(fs::File::create(output)?);
     writeln!(file, "{:10}{:10}", cells_on_cell.len() - 1, interior_edges)?;
 
     let mut cells_with_boundary_edges = 0;
@@ -108,6 +108,7 @@ pub fn write_mpas_graph_info(
             cells_with_boundary_edges += 1;
         }
     }
+    file.flush()?;
 
     Ok(MpasGraphInfoWriteReport {
         output: output.to_path_buf(),

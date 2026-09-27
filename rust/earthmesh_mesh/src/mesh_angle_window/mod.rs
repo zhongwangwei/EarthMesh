@@ -94,6 +94,16 @@ pub struct AngleWindowReport {
 
 type P = [f64; 3];
 
+/// Tolerance of the score comparison in `Work::better`.
+const SCORE_EPS: f64 = 1.0e-9;
+
+/// Distance of a face's angles inside `window` (negative: outside).
+fn margin_of_angles(a: [f64; 3], window: (f64, f64)) -> f64 {
+    let lo = a.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = a.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    (lo - window.0).min(window.1 - hi)
+}
+
 fn sub(a: P, b: P) -> P {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -171,10 +181,7 @@ impl Work<'_> {
     }
 
     fn margin_to(&self, f: [usize; 3], window: (f64, f64)) -> f64 {
-        let a = self.angles(f);
-        let lo = a.iter().copied().fold(f64::INFINITY, f64::min);
-        let hi = a.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        (lo - window.0).min(window.1 - hi)
+        margin_of_angles(self.angles(f), window)
     }
 
     fn margin_of(&self, f: [usize; 3]) -> f64 {
@@ -186,6 +193,20 @@ impl Work<'_> {
     /// then minus the sum of squared deviations from 60 over every angle), so
     /// a move may trade one angle against another but never leave the window.
     fn score_corners(&self, faces: impl Iterator<Item = [usize; 3]>) -> (f64, f64) {
+        self.score_corners_above(faces, None)
+            .expect("an unbounded score is never cut short")
+    }
+
+    /// `score_corners`, abandoned as soon as the first component is known to
+    /// end at or below `floor`: it only falls as faces are added, so such a
+    /// candidate can no longer be `better` than a score whose first component
+    /// is `floor + EPS`. Faces are visited in the same order, so a score that
+    /// completes is bit for bit the unbounded one.
+    fn score_corners_above(
+        &self,
+        faces: impl Iterator<Item = [usize; 3]>,
+        floor: Option<f64>,
+    ) -> Option<(f64, f64)> {
         let mut worst = f64::INFINITY;
         let mut second = 0.0;
         for f in faces {
@@ -201,19 +222,19 @@ impl Work<'_> {
                     second += m;
                 }
                 Mode::Energy { cap } => {
-                    worst = worst.min(self.margin_to(f, cap));
-                    second -= self
-                        .angles(f)
-                        .iter()
-                        .map(|a| (a - 60.0) * (a - 60.0))
-                        .sum::<f64>();
+                    let angles = self.angles(f);
+                    worst = worst.min(margin_of_angles(angles, cap));
+                    second -= angles.iter().map(|a| (a - 60.0) * (a - 60.0)).sum::<f64>();
                 }
             }
+            if floor.is_some_and(|floor| worst <= floor) {
+                return None;
+            }
         }
-        match self.mode {
+        Some(match self.mode {
             Mode::Energy { .. } => (worst.min(0.0), second),
             _ => (worst, second),
-        }
+        })
     }
 
     /// Whether the second phase leaves `v` alone: every angle around it is
@@ -242,8 +263,7 @@ impl Work<'_> {
     }
 
     fn better(new: (f64, f64), old: (f64, f64)) -> bool {
-        const EPS: f64 = 1.0e-9;
-        new.0 > old.0 + EPS || (new.0 > old.0 - EPS && new.1 > old.1 + EPS)
+        new.0 > old.0 + SCORE_EPS || (new.0 > old.0 - SCORE_EPS && new.1 > old.1 + SCORE_EPS)
     }
 
     fn outside(&self, f: usize) -> bool {
@@ -382,9 +402,16 @@ impl Work<'_> {
         true
     }
 
-    fn try_positions(&mut self, v: usize, candidates: &[P]) -> bool {
-        let faces = self.incident[v].clone();
-        let current = self.score(&faces);
+    /// Move `v` to the best candidate that beats `current`, the score of its
+    /// faces where it stands. Returns the new score, or `None` if it stayed.
+    fn try_positions(
+        &mut self,
+        v: usize,
+        candidates: &[P],
+        current: (f64, f64),
+    ) -> Option<(f64, f64)> {
+        // Borrowed out rather than cloned: nothing below reads `incident[v]`.
+        let faces = std::mem::take(&mut self.incident[v]);
         let original = self.points[v];
         let mut best: Option<((f64, f64), P)> = None;
         for &p in candidates {
@@ -392,13 +419,21 @@ impl Work<'_> {
             if !self.orientation_kept(&faces) {
                 continue;
             }
-            let s = self.score(&faces);
+            // A candidate must beat `current` and the best so far, so once its
+            // first component cannot, the rest of its faces are not scored.
+            let bar = best.map_or(current.0, |(b, _)| b.0.max(current.0));
+            let Some(s) = self
+                .score_corners_above(faces.iter().map(|&f| self.faces[f]), Some(bar - SCORE_EPS))
+            else {
+                continue;
+            };
             if Self::better(s, current) && best.is_none_or(|(b, _)| Self::better(s, b)) {
                 best = Some((s, p));
             }
         }
+        self.incident[v] = faces;
         self.points[v] = best.map_or(original, |(_, p)| p);
-        best.is_some()
+        best.map(|(s, _)| s)
     }
 
     fn centroid_move(&mut self, v: usize) -> bool {
@@ -424,7 +459,8 @@ impl Work<'_> {
                 ])
             })
             .collect();
-        self.try_positions(v, &candidates)
+        let current = self.score(&self.incident[v]);
+        self.try_positions(v, &candidates, current).is_some()
     }
 
     fn pattern_move(&mut self, v: usize) -> bool {
@@ -442,6 +478,8 @@ impl Work<'_> {
             / ring.len() as f64;
         let mut step = 0.2 * h;
         let mut moved = false;
+        // Where `v` stands; a move's score is exactly the one it was chosen by.
+        let mut current = self.score(&self.incident[v]);
         while step > 0.005 * h {
             let p = self.points[v];
             let axis = if p[0].abs() < 0.9 {
@@ -462,7 +500,8 @@ impl Work<'_> {
                     ])
                 })
                 .collect();
-            if self.try_positions(v, &candidates) {
+            if let Some(score) = self.try_positions(v, &candidates, current) {
+                current = score;
                 moved = true;
             } else {
                 step *= 0.5;

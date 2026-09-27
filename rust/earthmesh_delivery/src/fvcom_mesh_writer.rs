@@ -33,7 +33,7 @@ pub fn write_fvcom_mesh_2dm(
     let output = output.as_ref();
     crate::ensure_parent_dir(output)?;
 
-    let mut file = fs::File::create(output)?;
+    let mut file = io::BufWriter::new(fs::File::create(output)?);
     writeln!(file, "MESH2D")?;
     writeln!(file, "MESHNAME \"FVCOM Mesh\"")?;
 
@@ -57,6 +57,7 @@ pub fn write_fvcom_mesh_2dm(
     }
 
     let boundary_segments = write_fvcom_ns_records(&mut file, obc_order)?;
+    file.flush()?;
 
     Ok(FvcomMesh2dmWriteReport {
         output: output.to_path_buf(),
@@ -106,7 +107,7 @@ fn validate_fvcom_mesh_2dm_connectivity(mesh: &UnstructuredMesh) -> io::Result<(
     Ok(())
 }
 
-pub fn write_fvcom_ns_records(file: &mut fs::File, obc_order: &[usize]) -> io::Result<usize> {
+pub fn write_fvcom_ns_records(file: &mut impl Write, obc_order: &[usize]) -> io::Result<usize> {
     if obc_order.is_empty() {
         return Ok(0);
     }

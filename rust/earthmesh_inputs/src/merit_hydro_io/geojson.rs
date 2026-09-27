@@ -231,13 +231,13 @@ fn increment_mask_count(mask_counts: &mut std::collections::BTreeMap<String, usi
 }
 
 struct FeatureCollectionWriter {
-    file: fs::File,
+    file: io::BufWriter<fs::File>,
     feature_count: usize,
 }
 
 impl FeatureCollectionWriter {
     fn create(path: &Path) -> io::Result<Self> {
-        let mut file = fs::File::create(path)?;
+        let mut file = io::BufWriter::new(fs::File::create(path)?);
         write!(file, "{{\"type\":\"FeatureCollection\",\"features\":[")?;
         Ok(Self {
             file,
@@ -256,6 +256,7 @@ impl FeatureCollectionWriter {
 
     fn finish(mut self) -> io::Result<usize> {
         self.file.write_all(b"]}\n")?;
+        self.file.flush()?;
         Ok(self.feature_count)
     }
 }
