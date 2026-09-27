@@ -8,9 +8,8 @@ use crate::hfield_refine::{
     read_hfield_refine_options,
 };
 
-use super::gridfile::{
-    hex_quality_cells_from_gridfile, read_gridfile_mesh_points, tri_quality_cells_from_gridfile,
-};
+use super::gridfile::read_gridfile_mesh_points;
+use super::{target_levels_for_quality_cells, HexSample};
 use crate::{
     namelist_has_section, native_grid_refinement_depth, native_grid_refinement_requested,
     native_spawn_uses_cartesian_xy, read_method_c_calculated_refinement_regions,
@@ -153,9 +152,14 @@ pub fn attach_hfield_diagnostics_from_namelist(
         domain.as_ref(),
     )?;
     constrain_hfield_to_domain(&mut field, domain.as_ref(), base_m, hfield.g)?;
-    let target_levels = hfield_target_levels_for_quality_cells(mesh, kind, |lon, lat| {
-        field.level_at(lon, lat, base_m, field_max_level as u8) as u32
-    })?;
+    let targets = earthmesh_refine::HfieldTargets::new(&field, base_m, field_max_level as u8)?;
+    let target_levels = target_levels_for_quality_cells(
+        mesh,
+        kind,
+        HexSample::Corners,
+        &targets,
+        "h-field quality",
+    )?;
     if target_levels.len() != input.cells.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -192,39 +196,6 @@ pub fn attach_hfield_diagnostics_from_gridfile_namelist(
     attach_hfield_diagnostics_from_namelist(report, input, &mesh, kind, namelist_contents)
 }
 
-pub(super) fn hfield_target_levels_for_quality_cells(
-    mesh: &GridfileMeshPoints,
-    kind: &str,
-    mut level_at: impl FnMut(f64, f64) -> u32,
-) -> io::Result<Vec<u32>> {
-    match kind.trim() {
-        "tri" => Ok(tri_quality_cells_from_gridfile(mesh)?
-            .into_iter()
-            .map(|(mi, _)| level_at(mesh.m_lon[mi], mesh.m_lat[mi]))
-            .collect()),
-        "hex" => Ok(hex_quality_cells_from_gridfile(mesh)?
-            .into_iter()
-            .map(|(_wi, corners)| max_corner_level(mesh, &corners, &mut level_at))
-            .collect()),
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("h-field quality diagnostics support tri or hex view, got {other}"),
-        )),
-    }
-}
-
-fn max_corner_level(
-    mesh: &GridfileMeshPoints,
-    corners: &[usize],
-    level_at: &mut impl FnMut(f64, f64) -> u32,
-) -> u32 {
-    corners
-        .iter()
-        .filter_map(|&mi| Some(level_at(*mesh.m_lon.get(mi)?, *mesh.m_lat.get(mi)?)))
-        .max()
-        .unwrap_or(0)
-}
-
 fn non_negative_usize(value: i32, field: &str) -> io::Result<usize> {
     usize::try_from(value).map_err(|_| {
         io::Error::new(
@@ -258,14 +229,24 @@ mod tests {
             w_ngr: Vec::new(),
         };
 
-        let targets = hfield_target_levels_for_quality_cells(&mesh, "hex", |lon, _lat| {
-            if (lon - 2.0).abs() < f64::EPSILON {
-                2
-            } else {
-                0
+        /// Level 2 at longitude 2, a corner of every hex cell here, and
+        /// nothing at the cell centres.
+        struct OneCorner;
+        impl earthmesh_refine::TargetLevelField for OneCorner {
+            fn demands(
+                &self,
+                point: earthmesh_mesh::LonLatDegrees,
+                level: usize,
+            ) -> io::Result<bool> {
+                Ok(level == 0 || (point.lon_degrees - 2.0).abs() < f64::EPSILON && level <= 2)
             }
-        })
-        .unwrap();
+            fn demands_anywhere(&self, level: usize) -> bool {
+                level <= 2
+            }
+        }
+        let targets =
+            target_levels_for_quality_cells(&mesh, "hex", HexSample::Corners, &OneCorner, "test")
+                .unwrap();
 
         assert!(targets.contains(&2));
     }

@@ -455,3 +455,19 @@ green 下限与需求嵌套），单独决定。
 原子发布）。上文 6b 的三处根本差异依旧成立，它们现在是分派与尾部里的两个明确分支，而不是一条
 平行的流水线。`refine_from_shared_source` 的 `match` 里 CMRC 分支仍是 `unreachable!`，因为 CMRC
 不需要共享源网格准备；要去掉它需把源网格准备按后端能力拆开，收益很小，暂不做。
+
+### 2026-09-27 质量对账只经 `earthmesh_refine` 读需求
+
+- 原来的对账各有一套取目标层级的办法：h-field 路线直接调 `HField::level_at`，自适应圆路线在 CLI 里
+  自带一个圆的分桶索引。现在两者都只经 `TargetLevelField` 读取：
+  - trait 新增 `target_level(point)`（该点要求的最深层级）。默认实现逐级问 `demands`；`HfieldTargets`
+    直接返回 `try_level_at`（与原 `level_at` 同值，只是无效场由 panic 改为报错）。
+  - 圆的分桶索引移入 `earthmesh_refine`，成为 `CircleTargets` / `LeveledCircle`。它用的是自适应路线记录的
+    大圆距离判据，与 `RegionTargets` 的规范包含判据不是同一个公式，所以单独成类型而不是复用
+    `RegionTargets`；“索引与全扫描逐点一致”的对照测试随之移动。
+  - CLI 只剩一个取样函数 `target_levels_for_quality_cells(mesh, kind, HexSample, &dyn TargetLevelField)`；
+    Hex 单元取角点最大（h-field）还是取中心（圆，硬边界）由 `HexSample` 显式指定。
+- 需求从哪里来（重建 h-field、读 `adaptive_refinement.json`）仍是输入侧的事，这次不动。
+- 验证：3 个例子项目、两个 Case9 样例比较**全部产物**（质量报告 JSON 包含对账结果）一致；
+  `make test` 2,783 通过。`scripts/ab_compare.py` 现在也规范化嵌套临时目录名
+  （`earthmesh-lowered-<pid>-<时间戳>-N`），此前它让 quickstart 的 `namelist.save` 误报不同。

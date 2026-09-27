@@ -11,8 +11,8 @@ summary line is printed as JSON and appended to WORKDIR/results.jsonl:
 identical); `refine_lines_equal` compares the sorted `refine_*` stdout lines.
 With --all-artifacts every file under each run directory is compared as well
 (`artifact_diffs`): NetCDF by variable, JSON after dropping timing fields and
-normalising the run-directory path, anything else byte for byte after the same
-normalisation. Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
+normalising the run-directory path and nested scratch-directory names, anything
+else byte for byte after the same normalisation. Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
 section 6 for how it is used.
 """
 import json
@@ -76,6 +76,15 @@ def netcdf_differences(left, right):
     return differences
 
 
+# Scratch directories a run nests inside its run root carry their own pid and
+# timestamp, e.g. `project.nml.earthmesh-lowered-11069-1790495697509485000-1`.
+SCRATCH_NAME = re.compile(r"earthmesh-(run|lowered)-\d+-\d+-\d+")
+
+
+def normalised_text(text, root):
+    return SCRATCH_NAME.sub(r"earthmesh-\1-N", text.replace(root, "<RUN>"))
+
+
 VOLATILE_JSON_KEYS = {"certification_elapsed_ms", "elapsed_ms", "elapsed_seconds", "wall_seconds"}
 
 
@@ -96,7 +105,7 @@ def normalised_json(value, root):
     if isinstance(value, list):
         return [normalised_json(v, root) for v in value]
     if isinstance(value, str):
-        return value.replace(root, "<RUN>")
+        return normalised_text(value, root)
     return value
 
 
@@ -130,8 +139,8 @@ def artifact_differences(base_dir, new_dir):
         elif rel.endswith((".log", ".nml")) or os.path.basename(rel) == "run.log":
             continue
         else:
-            x = open(a, "rb").read().replace(base_root.encode(), b"<RUN>")
-            y = open(b, "rb").read().replace(new_root.encode(), b"<RUN>")
+            x = normalised_text(open(a, "rb").read().decode("latin-1"), base_root)
+            y = normalised_text(open(b, "rb").read().decode("latin-1"), new_root)
             if x != y:
                 differences.append(f"{rel}: bytes differ")
     return differences

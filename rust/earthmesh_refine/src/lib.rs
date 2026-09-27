@@ -31,7 +31,9 @@ pub use criteria::{
     CriterionSemantics, DemandEvidence, EvidenceStopReason, RequirementBound, SphericalPatch,
 };
 pub use demand::{order_demands, RefinementCause, RefinementDemand};
-pub use target_level::{HfieldTargets, RegionTargets, TargetLevelField};
+pub use target_level::{
+    CircleTargets, HfieldTargets, LeveledCircle, RegionTargets, TargetLevelField,
+};
 
 #[cfg(test)]
 mod tests;
