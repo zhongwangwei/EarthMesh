@@ -3561,6 +3561,7 @@ fn adaptive_demand_inputs<'a>(
                 mesh_type,
                 refine_coastline,
                 domain_region,
+                coastal_cache: Default::default(),
             })
         })
         .collect()

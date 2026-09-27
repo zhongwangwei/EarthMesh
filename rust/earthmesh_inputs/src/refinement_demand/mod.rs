@@ -45,6 +45,37 @@ pub struct RefinementDemand {
 }
 
 impl RefinementDemand {
+    /// The words with any cell demanded, by position: a compact copy of a
+    /// sparse demand (a coastline marks a thin line of a window).
+    pub fn nonzero_words(&self) -> Vec<(u32, u64)> {
+        self.words
+            .iter()
+            .enumerate()
+            .filter(|(_, &word)| word != 0)
+            .map(|(index, &word)| (index as u32, word))
+            .collect()
+    }
+
+    /// Rebuild a demand over `bounds` from [`Self::nonzero_words`]: the same
+    /// cells, bit for bit.
+    pub fn from_nonzero_words(
+        bounds: AreaJudgeSourceBounds,
+        gridnum_perdegree: usize,
+        words: &[(u32, u64)],
+    ) -> io::Result<Self> {
+        let mut demand = Self::new(bounds, gridnum_perdegree)?;
+        for &(index, word) in words {
+            let slot = demand.words.get_mut(index as usize).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "stored demand word lies outside the window",
+                )
+            })?;
+            *slot = word;
+        }
+        Ok(demand)
+    }
+
     /// An empty demand over `bounds`, with nothing yet marked.
     pub fn new(bounds: AreaJudgeSourceBounds, gridnum_perdegree: usize) -> io::Result<Self> {
         if gridnum_perdegree == 0 {

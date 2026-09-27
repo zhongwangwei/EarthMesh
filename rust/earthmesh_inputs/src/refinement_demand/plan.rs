@@ -33,7 +33,17 @@ pub struct DemandPlanInputs<'a> {
     /// Select statistical support centers; selected footprints may cross the edge.
     /// Geometric coastline demand retains its source-cell domain filter.
     pub domain_region: Option<&'a GridRegion>,
+    /// This window's coastline demand once computed. It depends on nothing a
+    /// level changes, yet cost a decompression of the window's raster and a
+    /// neighbour scan per level; a caller that hands the same inputs to every
+    /// level computes it once. Kept as its nonzero words -- a coastline is a
+    /// thin line, so a few percent of a 6.5 MB window bitmap.
+    pub coastal_cache: CoastalCache,
 }
+
+/// A window's coastline demand, shared by every clone of its inputs.
+#[derive(Clone, Debug, Default)]
+pub struct CoastalCache(std::sync::Arc<std::sync::Mutex<Option<Vec<(u32, u64)>>>>);
 
 /// One criterion's contribution, kept separate so a caller can say which
 /// criterion asked for what.
@@ -178,8 +188,31 @@ fn plan_demand_with_support(
     }
     if inputs.refine_coastline {
         if let Some(path) = inputs.landtype_file {
-            let mut contribution = coastal_demand(path, inputs.gridnum_perdegree, inputs.bounds)?;
-            filter_to_domain(&mut contribution, inputs.domain_region);
+            let cached = inputs
+                .coastal_cache
+                .0
+                .lock()
+                .map_err(|_| io::Error::other("coastal demand cache poisoned"))?
+                .clone();
+            let contribution = match cached {
+                Some(words) => RefinementDemand::from_nonzero_words(
+                    inputs.bounds,
+                    inputs.gridnum_perdegree,
+                    &words,
+                )?,
+                None => {
+                    let mut contribution =
+                        coastal_demand(path, inputs.gridnum_perdegree, inputs.bounds)?;
+                    filter_to_domain(&mut contribution, inputs.domain_region);
+                    *inputs
+                        .coastal_cache
+                        .0
+                        .lock()
+                        .map_err(|_| io::Error::other("coastal demand cache poisoned"))? =
+                        Some(contribution.nonzero_words());
+                    contribution
+                }
+            };
             contributions.push(DemandContribution {
                 criterion: "coastline".into(),
                 demanded_cells: contribution.demanded_count(),
@@ -222,6 +255,7 @@ mod tests {
             mesh_type: "earthmesh",
             refine_coastline: false,
             domain_region: None,
+            coastal_cache: Default::default(),
         };
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(plan_demand_at_scale(&refine, &inputs, 1, bad).is_err());
@@ -238,6 +272,7 @@ mod tests {
             mesh_type: "earthmesh",
             refine_coastline: false,
             domain_region: None,
+            coastal_cache: Default::default(),
         };
         let plan = plan_demand_at_scale(&refine, &inputs, 1, 100_000.0).expect("plan");
         assert!(plan.is_empty());

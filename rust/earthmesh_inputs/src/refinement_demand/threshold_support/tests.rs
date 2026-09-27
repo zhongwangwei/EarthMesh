@@ -606,6 +606,7 @@ fn plan_entry_and_hfield_report_share_raw_support_for_mean_std_and_landcover() {
         mesh_type: "landmesh",
         refine_coastline: false,
         domain_region: None,
+        coastal_cache: Default::default(),
     };
     let plan = plan_demand_at_scale(&refine, &inputs, 1, parent_m_for_nlat(4)).expect("plan");
     let config = EarthmeshConfig {
@@ -711,6 +712,7 @@ fn window_planning_shares_support_and_matches_per_window_plans_cell_for_cell() {
                 mesh_type: "landmesh",
                 refine_coastline,
                 domain_region: None,
+                coastal_cache: Default::default(),
             })
             .collect::<Vec<_>>();
         for (level, parent_m) in [(1, parent_m_for_nlat(4)), (2, parent_m_for_nlat(8))] {
@@ -723,7 +725,14 @@ fn window_planning_shares_support_and_matches_per_window_plans_cell_for_cell() {
             assert_eq!(shared.len(), inputs.len());
             let mut demanded = 0;
             for (input, shared) in inputs.iter().zip(&shared) {
-                let oracle = plan_demand_at_scale(&refine, input, level, parent_m).expect("oracle");
+                // The oracle recomputes the coastline; the shared plan reads
+                // it from the cache the first level filled.
+                let fresh = DemandPlanInputs {
+                    coastal_cache: Default::default(),
+                    ..input.clone()
+                };
+                let oracle =
+                    plan_demand_at_scale(&refine, &fresh, level, parent_m).expect("oracle");
                 assert_eq!(shared.level, oracle.level);
                 assert_eq!(shared.demand, oracle.demand, "{:?}", input.bounds);
                 assert_eq!(shared.contributions, oracle.contributions);

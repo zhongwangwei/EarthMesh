@@ -355,3 +355,27 @@ fn a_parallel_fill_only_adds_to_what_is_already_there() {
     assert!(demand.is_demanded(bounds.minlon_source, bounds.maxlat_source));
     assert!(demand.is_demanded(bounds.maxlon_source, bounds.maxlat_source));
 }
+
+#[test]
+fn a_demand_rebuilt_from_its_nonzero_words_is_the_same_demand() {
+    let bounds =
+        crate::refinement_demand::source_bounds_for_bbox(100.0, 130.0, 0.0, 30.0, 4).unwrap();
+    let mut demand = RefinementDemand::new(bounds, 4).unwrap();
+    // `set` takes global source indices; offset into the window.
+    for (lon, lat) in [(0, 0), (3, 7), (63, 1), (64, 1), (119, 119), (50, 60)] {
+        demand.set(bounds.minlon_source + lon, bounds.maxlat_source + lat, true);
+    }
+    assert_eq!(
+        demand.demanded_count(),
+        6,
+        "the fixture must mark its cells"
+    );
+    let words = demand.nonzero_words();
+    assert!(words.len() < 8, "sparse: {} words", words.len());
+    let rebuilt = RefinementDemand::from_nonzero_words(bounds, 4, &words).unwrap();
+    assert_eq!(rebuilt, demand);
+    assert_eq!(rebuilt.demanded_count(), 6);
+    let empty = RefinementDemand::from_nonzero_words(bounds, 4, &[]).unwrap();
+    assert!(empty.is_empty());
+    assert!(RefinementDemand::from_nonzero_words(bounds, 4, &[(u32::MAX, 1)]).is_err());
+}
