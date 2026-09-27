@@ -1,6 +1,6 @@
 //! Whole certified Voronoi cells, selected by region with an optional land mask.
 //! Regional W rings have open boundaries; their partial M view is not a triangle mesh.
-use super::global_source::CertifiedDomainPublication;
+use super::certified_pipeline::CertifiedDomainPublication;
 use crate::grid_quality_inputs::quality_input_from_gridfile_hex_native;
 #[cfg(test)]
 use crate::regional_gridfile_writers::lineage::same_cycle;

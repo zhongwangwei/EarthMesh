@@ -2,8 +2,7 @@ use std::io;
 use std::path::Path;
 
 use earthmesh_mesh::{
-    method_c_gridinit_factorization_canonical, LonLatDegrees, MethodCGridfileMetadata,
-    TriangularMesh,
+    method_c_gridinit_factorization_canonical, GridfileCellMetadata, LonLatDegrees, TriangularMesh,
 };
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
     UnstructuredMesh, UnstructuredMeshWriteReport,
 };
 
-pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
+pub(crate) fn initial_triangulation_from_gridfile(
     mesh: &UnstructuredMesh,
     metadata: GridfileMetadataSlices<'_>,
     nxp: usize,
@@ -74,7 +73,7 @@ pub(crate) fn method_c_delaunay_mesh_from_unstructured_gridfile(
             &m_point_lonlat,
             &w_face_m_points,
             &m_face_counts,
-            MethodCGridfileMetadata {
+            GridfileCellMetadata {
                 m_lineage: metadata.m_lineage,
                 m_refine_level: metadata.m_refine_level,
                 m_refine_level_orig: metadata.m_refine_level_orig,
@@ -122,7 +121,7 @@ pub(crate) fn unstructured_mesh_write_report_from_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_method_c_mesh_with_optional_domain_and_metadata(
+pub(crate) fn write_mesh_with_optional_domain_and_metadata(
     mesh: &UnstructuredMesh,
     raw_output_path: impl AsRef<Path>,
     output_path: impl AsRef<Path>,
@@ -245,7 +244,7 @@ mod tests {
 
         let output = temp_gridfile("legacy_global_hex_degree_gate");
         let raw = temp_gridfile("legacy_global_hex_degree_gate_raw");
-        let report = write_method_c_mesh_with_optional_domain_and_metadata(
+        let report = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &raw,
             &output,
@@ -265,7 +264,7 @@ mod tests {
             south: -60.0,
             north: 60.0,
         };
-        let report = write_method_c_mesh_with_optional_domain_and_metadata(
+        let report = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &regional_raw,
             &regional_output,
@@ -292,7 +291,7 @@ mod tests {
         let output = temp_gridfile("legacy_seven_edge_hex_degree_gate");
         let raw = temp_gridfile("legacy_seven_edge_hex_degree_gate_raw");
 
-        let report = write_method_c_mesh_with_optional_domain_and_metadata(
+        let report = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &raw,
             &output,
@@ -312,7 +311,7 @@ mod tests {
         let output = temp_gridfile("legacy_hex_degree_gate");
         let raw = temp_gridfile("legacy_hex_degree_gate_raw");
 
-        let err = write_method_c_mesh_with_optional_domain_and_metadata(
+        let err = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &raw,
             &output,
@@ -339,7 +338,7 @@ mod tests {
             north: 90.0,
         };
 
-        let err = write_method_c_mesh_with_optional_domain_and_metadata(
+        let err = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &raw,
             &output,
@@ -363,7 +362,7 @@ mod tests {
         let output = temp_gridfile("legacy_tri_degree_gate");
         let raw = temp_gridfile("legacy_tri_degree_gate_raw");
 
-        let report = write_method_c_mesh_with_optional_domain_and_metadata(
+        let report = write_mesh_with_optional_domain_and_metadata(
             &mesh,
             &raw,
             &output,

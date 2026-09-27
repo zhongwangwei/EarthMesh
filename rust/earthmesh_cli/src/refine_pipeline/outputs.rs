@@ -9,7 +9,7 @@ use crate::write_colm_coupling_netcdf_from_csv;
 use crate::write_colm_package_delivery_manifest_with_quality;
 use crate::write_coupling_quality_from_gridfile;
 use crate::write_landtype_masked_gridfile_with_refine_levels;
-use crate::write_method_c_mesh_with_optional_domain_and_metadata;
+use crate::write_mesh_with_optional_domain_and_metadata;
 use crate::write_regional_gridfile_with_refine_levels;
 use crate::CouplingCsvOptions;
 use crate::GridRegion;
@@ -239,7 +239,7 @@ pub(super) fn write_refined_outputs(
             max_level,
             &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
-        let (raw_output, output) = write_method_c_mesh_with_optional_domain_and_metadata(
+        let (raw_output, output) = write_mesh_with_optional_domain_and_metadata(
             output_mesh,
             &raw_path,
             &output_path,
@@ -370,7 +370,7 @@ pub(super) fn write_refined_outputs(
             max_level,
             &format!("refine_raw_{}{name_suffix}", config.mode_grid.trim()),
         );
-        let (raw_output, output) = write_method_c_mesh_with_optional_domain_and_metadata(
+        let (raw_output, output) = write_mesh_with_optional_domain_and_metadata(
             output_mesh,
             &raw_path,
             &output_path,

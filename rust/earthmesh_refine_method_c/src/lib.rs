@@ -57,9 +57,10 @@ pub use earthmesh_mesh::{
     replace_w_face_edges_at, require_method_c_id, require_method_c_len,
     scale_refinement_regions_radius, set_first_two, tri_neighbors_outer_w_pair, vector_between,
     voronoi_grid_from_triangular_mesh, weighted_point, xyz_to_lonlat_degrees, CartesianPoint,
-    IcosahedronDiamondConnectivity, IcosahedronMPointMetadata, IcosahedronMPointNeighbors,
-    IcosahedronRelaxedGrid, IcosahedronSpringTopology, IcosahedronUEdge, IcosahedronWFace,
-    LonLatDegrees, MethodCGridfileMetadata, RefinementRegion, RepairableKind, TriangularMesh,
+    GridfileCellMetadata, IcosahedronDiamondConnectivity, IcosahedronMPointMetadata,
+    IcosahedronMPointNeighbors, IcosahedronRelaxedGrid, IcosahedronSpringTopology,
+    IcosahedronUEdge, IcosahedronWFace, LonLatDegrees, RefinementRegion, RepairableKind,
+    TriangularMesh,
 };
 
 mod lepp_delaunay;

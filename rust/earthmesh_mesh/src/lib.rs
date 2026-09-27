@@ -320,7 +320,7 @@ pub use mesh_state::{EdgeId, FaceId, MeshState, MeshStateError, VertexId, MESH_S
 pub use mesh_voronoi::{VoronoiCell, VoronoiError};
 pub use primal_dual_mesh::TriangularMesh;
 mod mesh_from_gridfile;
-pub use mesh_from_gridfile::MethodCGridfileMetadata;
+pub use mesh_from_gridfile::GridfileCellMetadata;
 mod refine_regions;
 pub use refine_regions::scale_refinement_regions_radius;
 pub use refine_regions::RefinementRegion;

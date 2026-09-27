@@ -3,7 +3,7 @@ use std::io;
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MethodCGridfileMetadata<'a> {
+pub struct GridfileCellMetadata<'a> {
     pub m_lineage: Option<&'a [i64]>,
     pub m_refine_level: Option<&'a [i32]>,
     pub m_refine_level_orig: Option<&'a [i32]>,
@@ -48,7 +48,7 @@ impl TriangularMesh {
             m_point_lonlat,
             w_face_m_points,
             m_face_counts,
-            MethodCGridfileMetadata {
+            GridfileCellMetadata {
                 m_refine_level: gridfile_m_refine_level,
                 w_refine_level: gridfile_w_refine_level,
                 ..Default::default()
@@ -60,7 +60,7 @@ impl TriangularMesh {
         m_point_lonlat: &[LonLatDegrees],
         w_face_m_points: &[[usize; 3]],
         m_face_counts: &[usize],
-        metadata: MethodCGridfileMetadata<'_>,
+        metadata: GridfileCellMetadata<'_>,
     ) -> io::Result<Self> {
         let nmd = m_point_lonlat.len();
         let nwd = w_face_m_points.len();
@@ -337,7 +337,7 @@ mod tests {
             &points,
             &faces,
             &counts,
-            MethodCGridfileMetadata {
+            GridfileCellMetadata {
                 m_ngr: Some(&ngr),
                 ..Default::default()
             },
@@ -375,7 +375,7 @@ mod tests {
             &points,
             &faces,
             &counts,
-            MethodCGridfileMetadata {
+            GridfileCellMetadata {
                 m_refine_level: Some(&m_level),
                 m_refine_level_orig: Some(&m_orig),
                 m_ngr: Some(&m_ngr),
@@ -416,7 +416,7 @@ mod tests {
             &points,
             &faces,
             &counts,
-            MethodCGridfileMetadata {
+            GridfileCellMetadata {
                 m_lineage: Some(&m_lineage),
                 w_lineage: Some(&w_lineage),
                 ..Default::default()

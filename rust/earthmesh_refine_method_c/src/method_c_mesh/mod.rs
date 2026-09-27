@@ -82,7 +82,7 @@ impl MethodCMesh {
         m_point_lonlat: &[LonLatDegrees],
         w_face_m_points: &[[usize; 3]],
         m_face_counts: &[usize],
-        metadata: MethodCGridfileMetadata<'_>,
+        metadata: GridfileCellMetadata<'_>,
     ) -> io::Result<Self> {
         TriangularMesh::from_voronoi_gridfile_tables_with_metadata(
             m_point_lonlat,

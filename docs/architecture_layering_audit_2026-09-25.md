@@ -415,3 +415,21 @@ green 下限与需求嵌套），单独决定。
   水文交付工作流——它们本身就是“读输入、调算法、写输出”的串接，按第 4.4 节属于编排层 CLI；要让输出层
   只经 `earthmesh_refine` 读需求（而不是读 inputs 的具体类型），是后续的接口工作。
 
+### 2026-09-27 第 6 步（6a）：初始网格的名字归位，CMRC 流水线独立成适配模块
+
+- 初始网格：原 `method_c_delaunay_mesh_from_unstructured_gridfile` 并不依赖 Method-C——它读 gridfile 表，
+  调基础层 `TriangularMesh::from_voronoi_gridfile_tables_with_metadata`，所有后端共用。改名为
+  `initial_triangulation_from_gridfile`；基础层 `MethodCGridfileMetadata` 改为 `GridfileCellMetadata`；
+  `write_method_c_mesh_with_optional_domain_and_metadata` 改为 `write_mesh_with_optional_domain_and_metadata`。
+- CMRC：它自己的整条流水线（约 2,700 行：母网格家族、渐变包络、Voronoi 重映射、需求计划、认证构造、
+  产物组装与原子发布、区域/MPAS 发布）从 `global_source.rs` 移到 `refine_pipeline/certified_pipeline.rs`，
+  加入 `CLI_BACKEND_ADAPTERS`；它的 4 个测试随之移动。`global_source.rs` 从约 6,900 行降到 4,493 行。
+  行为不变：A/B（3 个例子项目、LEPP）逐变量一致，`make test` 2,782 通过，CMRC 由其集成测试覆盖。
+- 6b 待定（需要用户决定）：让 CMRC 经共享结果交付不是机械搬迁。与共享流程的三处根本差异：
+  1. 初始网格必须是 CMRC 已认证的母网格家族（证书建立在它上面），不能用 gridinit 读入的网格；
+  2. 需求计划带可认证的统计界，比 `TargetLevelField` 的按点层级多出证书需要的信息；
+  3. 交付除 gridfile 外还有重映射表与证书，且整体原子发布。
+  可行方向：共享结果结构为“证书、重映射表、附加产物”留出位置，原子发布做成共享能力，CMRC 只替换
+  “构造”这一段；或接受 CMRC 为独立流水线，只要求它满足同样的输出契约（角度窗口、MPAS 宽度、FVCOM
+  开边界），由门禁与测试保证。
+
