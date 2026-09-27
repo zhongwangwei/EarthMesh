@@ -53,7 +53,7 @@
 
 - 所有后端的初始网格都由 Method-C 的函数构造：`method_c_delaunay_mesh_from_unstructured_gridfile`
   （`global_source.rs:604`），并携带 Method-C 的元数据切片。
-- CMRC 在读取源网格之前就被分派到另一条完整流水线 `run_certified_pipeline`
+- （已于 6b 处理，见 §8）CMRC 在读取源网格之前就被分派到另一条完整流水线 `run_certified_pipeline`
   （`global_source.rs:274`），分派 `match` 里对应分支是 `unreachable!`（`:875`）。
 - 弹簧平滑的迭代数按后端换算（`effective_refinement_spring_iterations`，`:5467`），
   CMRC 会丢弃用户设定的弹簧参数。
@@ -433,3 +433,25 @@ green 下限与需求嵌套），单独决定。
   “构造”这一段；或接受 CMRC 为独立流水线，只要求它满足同样的输出契约（角度窗口、MPAS 宽度、FVCOM
   开边界），由门禁与测试保证。
 
+
+### 2026-09-27 第 6 步（6b，用户选择“并入共享流程”）：CMRC 走同一分派、同一尾部
+
+分三次提交，每次都与上一版二进制做 A/B：
+
+- M1+M2（`9837c916`）：`run_refine_pipeline_in_workspace` 拆成 `refine_from_shared_source`（源网格准备 +
+  后端分派 → `RefinedGrid`、`TailInputs`）与 `finish_refined`（角度契约、实测、写出、报告、运行记录）。
+  行为不变：3 个例子项目、两个 Case9 样例、3 个 CMRC 样例与 LEPP 一致（CMRC、LEPP 比较全部产物）。
+- M3a（`380ca667`）：所有后端在同一个 `match` 里分派。CMRC 分支是 `refine_with_certified_as_grid`，
+  它把发布网格与逐单元层级交给 `RefinedGrid`，构造记录放在 `BackendDiagnostics::certified`。
+  独立入口 `run_certified_pipeline` 已删除；交付直接接收解析好的 `file_dir` 与层级，不再重算。
+  行为不变，比较同上。
+- M3b：certified 的分流点下移到实测之后。共享尾部对 CMRC 跳过角度修复（证书覆盖其几何，不允许改动），
+  但照常测量实际分辨率；运行记录由共用的 `refined_runtime_state` 组装。**这是一次有意的报告变化**：
+  CMRC 原来把 `finest_cell_km`、`coarsest_cell_km`、`realized_region_halvings` 写成 0（打印时被当作“未测”
+  而省略），现在与其他后端一样是实测值；`realized_max_level` 仍与原值相同。网格与全部产物逐字节不变。
+  `certified_hidden_cli` 增加了断言，旧代码会让它失败。
+
+剩下仍属于 CMRC 自己的：构造（认证母网格家族、需求计划、反向粗化）与交付（重映射表、证书、清单、
+原子发布）。上文 6b 的三处根本差异依旧成立，它们现在是分派与尾部里的两个明确分支，而不是一条
+平行的流水线。`refine_from_shared_source` 的 `match` 里 CMRC 分支仍是 `unreachable!`，因为 CMRC
+不需要共享源网格准备；要去掉它需把源网格准备按后端能力拆开，收益很小，暂不做。

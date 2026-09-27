@@ -868,21 +868,6 @@ fn finish_refined(
     inputs: TailInputs,
     source_gridnum_perdegree: Option<usize>,
 ) -> io::Result<RefinePipelineRunReport> {
-    let mut refined = refined;
-    // A certified mesh is published exactly as certified: no angle repair, and
-    // delivery carries the certificate, the remap table and the manifest.
-    if let Some(certified) = refined.diagnostics.certified.take() {
-        let cell_levels = refined
-            .cell_levels
-            .ok_or_else(|| io::Error::other("certified refinement recorded no per-cell levels"))?;
-        return deliver_certified(
-            *certified,
-            refined.output_mesh,
-            cell_levels,
-            &config,
-            &inputs.file_dir,
-        );
-    }
     let TailInputs {
         refine,
         max_level,
@@ -913,7 +898,7 @@ fn finish_refined(
                 hfield_diagnostics,
                 lepp_adaptive_hybrid,
                 lepp_post_quality,
-                certified: _,
+                certified,
             },
     } = refined;
 
@@ -922,7 +907,10 @@ fn finish_refined(
     // Triangle output only -- hex cells are not triangles -- and spherical only.
     let (mut cell_levels, mut method_c_metadata, mut pentagon_indices, mut state) =
         (cell_levels, method_c_metadata, pentagon_indices, state);
-    let enforce_angles = config.mode_grid.trim() == "tri" && !native_cartesian_xy;
+    // A certified mesh is published exactly as certified: the certificate
+    // covers its geometry, so the repair must not touch it.
+    let enforce_angles =
+        certified.is_none() && config.mode_grid.trim() == "tri" && !native_cartesian_xy;
     let output_mesh = if enforce_angles {
         let (mesh, report) = super::angle_contract::enforce_triangle_angles(
             output_mesh,
@@ -1072,6 +1060,27 @@ fn finish_refined(
             _ => 0.0,
         }
     };
+    let realized = RealizedResolution {
+        max_level: realized_max_level,
+        finest_cell_km,
+        coarsest_cell_km,
+        region_halvings: realized_region_halvings,
+    };
+
+    // Certified delivery carries the certificate, the remap table and the
+    // manifest, and publishes them together with the gridfile.
+    if let Some(certified) = certified {
+        let cell_levels = cell_levels
+            .ok_or_else(|| io::Error::other("certified refinement recorded no per-cell levels"))?;
+        return deliver_certified(
+            *certified,
+            output_mesh,
+            cell_levels,
+            realized,
+            &config,
+            &file_dir,
+        );
+    }
 
     // Which cells the run named outright. The carve's largest-component rule
     // would otherwise delete a refinement circle sitting on a small bay, and
@@ -1386,29 +1395,14 @@ fn finish_refined(
         }
     }
 
-    let mut runtime_state =
-        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
-    match state {
-        Some(state) => {
-            runtime_state.grid = state.grid;
-            runtime_state.ijtabs = state.tabs;
-        }
-        // Red-green has no Voronoi state to hand over -- its mesh arrives in
-        // lon/lat and never passes through one. The counts the step record
-        // wants are the gridfile's own rows, which is what Method-C's
-        // `nma`/`nwa` are as well; the tables stay empty because there are none
-        // to fill, not because they were dropped.
-        None => {
-            runtime_state.grid.nma = output_mesh.m_points.len();
-            runtime_state.grid.nwa = output_mesh.w_points.len();
-        }
-    }
-    runtime_state
-        .record_pentagon_indices_from_icosahedron(pentagon_indices)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    runtime_state
-        .record_mesh_counts_for_step(max_level, runtime_state.grid.nma, runtime_state.grid.nwa)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let runtime_state = refined_runtime_state(
+        &config,
+        &refine,
+        state,
+        &output_mesh,
+        pentagon_indices,
+        max_level,
+    )?;
 
     Ok(RefinePipelineRunReport {
         gridinit,
@@ -1432,6 +1426,54 @@ fn finish_refined(
         output: outputs.output,
         runtime_state,
     })
+}
+
+/// What the delivered mesh achieved, measured from the mesh itself and the same
+/// way for every backend.
+pub(super) struct RealizedResolution {
+    /// Deepest per-cell level recorded, else the deepest criteria pass.
+    pub(super) max_level: usize,
+    /// 2nd and 98th percentile equivalent-area cell diameters, km.
+    pub(super) finest_cell_km: f64,
+    pub(super) coarsest_cell_km: f64,
+    /// log2 of the median cell size outside the demand regions over inside.
+    pub(super) region_halvings: f64,
+}
+
+/// The run's runtime record: the Voronoi tables where the backend has them,
+/// the pentagons, and the mesh counts for `step`.
+pub(super) fn refined_runtime_state(
+    config: &EarthmeshConfig,
+    refine: &RefineConfig,
+    state: Option<earthmesh_mesh::VoronoiGridState>,
+    output_mesh: &crate::UnstructuredMesh,
+    pentagon_indices: [usize; 12],
+    step: usize,
+) -> io::Result<EarthmeshRuntimeState> {
+    let mut runtime_state =
+        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
+    match state {
+        Some(state) => {
+            runtime_state.grid = state.grid;
+            runtime_state.ijtabs = state.tabs;
+        }
+        // Red-green has no Voronoi state to hand over -- its mesh arrives in
+        // lon/lat and never passes through one. The counts the step record
+        // wants are the gridfile's own rows, which is what Method-C's
+        // `nma`/`nwa` are as well; the tables stay empty because there are none
+        // to fill, not because they were dropped.
+        None => {
+            runtime_state.grid.nma = output_mesh.m_points.len();
+            runtime_state.grid.nwa = output_mesh.w_points.len();
+        }
+    }
+    runtime_state
+        .record_pentagon_indices_from_icosahedron(pentagon_indices)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    runtime_state
+        .record_mesh_counts_for_step(step, runtime_state.grid.nma, runtime_state.grid.nwa)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    Ok(runtime_state)
 }
 
 /// Measure the same cell view that is exported, respecting each array's row layout.

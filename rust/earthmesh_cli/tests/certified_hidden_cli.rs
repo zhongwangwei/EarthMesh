@@ -649,6 +649,13 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let certified = run.certified_run.as_ref().expect("CMRC record");
     assert!(run.gridinit.is_none());
+    // The realized sizes are measured by the shared tail, as for every backend.
+    assert!(
+        run.finest_cell_km > 0.0 && run.coarsest_cell_km >= run.finest_cell_km,
+        "finest={} coarsest={}",
+        run.finest_cell_km,
+        run.coarsest_cell_km
+    );
     assert_eq!(certified.mother_subdivision, 3);
     assert_eq!(certified.mother_cells, 180);
     assert_eq!(certified.physical_residuals, 0);

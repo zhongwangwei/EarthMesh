@@ -23,7 +23,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use earthmesh_core::{EarthmeshConfig, EarthmeshRuntimeState, RefineConfig};
+use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_mesh::{MeshState, RefinementRegion};
 
 use crate::write_clean_regional_ocean_gridfile;
@@ -1571,6 +1571,7 @@ pub(super) fn deliver_certified(
     refinement: CertifiedRefinement,
     output_mesh: crate::UnstructuredMesh,
     cell_levels: CellRefineLevels,
+    realized: RealizedResolution,
     config: &EarthmeshConfig,
     file_dir: &Path,
 ) -> io::Result<RefinePipelineRunReport> {
@@ -2165,30 +2166,24 @@ pub(super) fn deliver_certified(
         dimc: temporary.dimc,
     };
 
-    let mut runtime_state =
-        EarthmeshRuntimeState::new(config.clone()).with_refine_config(refine.clone());
-    runtime_state.grid = state.grid;
-    runtime_state.ijtabs = state.tabs;
-    runtime_state
-        .record_pentagon_indices_from_icosahedron(pentagons)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    runtime_state
-        .record_mesh_counts_for_step(
-            delivered_level + 1,
-            runtime_state.grid.nma,
-            runtime_state.grid.nwa,
-        )
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let runtime_state = refined_runtime_state(
+        config,
+        &refine,
+        Some(state),
+        &output_mesh,
+        pentagons,
+        delivered_level + 1,
+    )?;
 
     Ok(RefinePipelineRunReport {
         gridinit: None,
         refine,
         regions: requirements.regions,
         max_level: chosen_level,
-        realized_max_level: delivered_level,
-        finest_cell_km: 0.0,
-        coarsest_cell_km: 0.0,
-        realized_region_halvings: 0.0,
+        realized_max_level: realized.max_level,
+        finest_cell_km: realized.finest_cell_km,
+        coarsest_cell_km: realized.coarsest_cell_km,
+        realized_region_halvings: realized.region_halvings,
         hfield_diagnostics: Default::default(),
         transition_faces: 0,
         spring_nest_passes: 0,
