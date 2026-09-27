@@ -3,13 +3,16 @@
 compare the final gridfiles variable by variable, plus the `refine_*` lines.
 
 Usage:
-    scripts/ab_compare.py BASE_BIN NEW_BIN PROJECT.yaml WORKDIR [CASE_NAME]
+    scripts/ab_compare.py BASE_BIN NEW_BIN PROJECT.yaml WORKDIR [CASE_NAME] [--all-artifacts]
 
 Each binary runs `--project project.yaml` in WORKDIR/CASE/{base,new}. The
 summary line is printed as JSON and appended to WORKDIR/results.jsonl:
 `grid_diffs` lists every differing variable or global attribute (empty means
 identical); `refine_lines_equal` compares the sorted `refine_*` stdout lines.
-Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
+With --all-artifacts every file under each run directory is compared as well
+(`artifact_diffs`): NetCDF by variable, JSON after dropping timing fields and
+normalising the run-directory path, anything else byte for byte after the same
+normalisation. Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
 section 6 for how it is used.
 """
 import json
@@ -73,11 +76,74 @@ def netcdf_differences(left, right):
     return differences
 
 
+VOLATILE_JSON_KEYS = {"certification_elapsed_ms", "elapsed_ms", "elapsed_seconds", "wall_seconds"}
+
+
+def run_root(directory):
+    """The single `project.yaml.earthmesh-run-*` directory a project run leaves."""
+    roots = [name for name in os.listdir(directory) if name.startswith("project.yaml.earthmesh-run-")]
+    return os.path.join(directory, roots[0]) if len(roots) == 1 else None
+
+
+def normalised_json(value, root):
+    if isinstance(value, dict):
+        kept = {k: normalised_json(v, root) for k, v in value.items() if k not in VOLATILE_JSON_KEYS}
+        # A manifest lists absolute run paths, so its byte size tracks the
+        # run directory's name length, not the content.
+        if isinstance(kept.get("artifact_bytes"), dict):
+            kept["artifact_bytes"].pop("manifest", None)
+        return kept
+    if isinstance(value, list):
+        return [normalised_json(v, root) for v in value]
+    if isinstance(value, str):
+        return value.replace(root, "<RUN>")
+    return value
+
+
+def artifact_differences(base_dir, new_dir):
+    base_root, new_root = run_root(base_dir), run_root(new_dir)
+    if not base_root or not new_root:
+        return ["run directory not found"]
+    def files(root):
+        out = set()
+        for dirpath, _, names in os.walk(root):
+            for name in names:
+                out.add(os.path.relpath(os.path.join(dirpath, name), root))
+        return out
+    base_files, new_files = files(base_root), files(new_root)
+    differences = [f"only in base: {p}" for p in sorted(base_files - new_files)]
+    differences += [f"only in new: {p}" for p in sorted(new_files - base_files)]
+    for rel in sorted(base_files & new_files):
+        a, b = os.path.join(base_root, rel), os.path.join(new_root, rel)
+        if rel.endswith((".nc", ".nc4")):
+            diffs = netcdf_differences(a, b)
+            if diffs:
+                differences.append(f"{rel}: {diffs[:5]}")
+        elif rel.endswith(".json"):
+            try:
+                x = normalised_json(json.load(open(a)), base_root)
+                y = normalised_json(json.load(open(b)), new_root)
+            except ValueError:
+                x, y = open(a, "rb").read(), open(b, "rb").read()
+            if x != y:
+                differences.append(f"{rel}: json differs")
+        elif rel.endswith((".log", ".nml")) or os.path.basename(rel) == "run.log":
+            continue
+        else:
+            x = open(a, "rb").read().replace(base_root.encode(), b"<RUN>")
+            y = open(b, "rb").read().replace(new_root.encode(), b"<RUN>")
+            if x != y:
+                differences.append(f"{rel}: bytes differ")
+    return differences
+
+
 def main():
-    if len(sys.argv) not in (5, 6):
+    args = [a for a in sys.argv[1:] if a != "--all-artifacts"]
+    all_artifacts = len(args) != len(sys.argv) - 1
+    if len(args) not in (4, 5):
         sys.exit(__doc__)
-    base_bin, new_bin, project, workdir = map(os.path.abspath, sys.argv[1:5])
-    case = sys.argv[5] if len(sys.argv) == 6 else os.path.splitext(os.path.basename(project))[0]
+    base_bin, new_bin, project, workdir = map(os.path.abspath, args[:4])
+    case = args[4] if len(args) == 5 else os.path.splitext(os.path.basename(project))[0]
     base = run(base_bin, os.path.join(workdir, case, "base"), project)
     new = run(new_bin, os.path.join(workdir, case, "new"), project)
     summary = {
@@ -90,6 +156,10 @@ def main():
     }
     if base["grid"] and new["grid"]:
         summary["grid_diffs"] = netcdf_differences(base["grid"], new["grid"])
+    if all_artifacts:
+        summary["artifact_diffs"] = artifact_differences(
+            os.path.join(workdir, case, "base"), os.path.join(workdir, case, "new")
+        )
     if base["rc"] or new["rc"]:
         summary["base_tail"], summary["new_tail"] = base["tail"], new["tail"]
     line = json.dumps(summary)

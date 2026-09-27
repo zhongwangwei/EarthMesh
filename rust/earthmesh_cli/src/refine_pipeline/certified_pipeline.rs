@@ -1097,6 +1097,45 @@ pub(super) fn validate_local_update_mode(
     Ok(())
 }
 
+/// Everything CMRC's construction hands to its delivery: the certified mesh and
+/// its dual, the delivered levels, and the record of how they were reached.
+pub(super) struct CertifiedRefinement {
+    options: CertifiedRunOptions,
+    regional_domain: Option<GridRegion>,
+    is_surface_masked: bool,
+    is_domain_export: bool,
+    regional_whole_cells: bool,
+    refine: RefineConfig,
+    base_nxp: usize,
+    requirements: CertifiedRequirementPlan,
+    chosen_level: usize,
+    delivered_level: usize,
+    delivered_levels: earthmesh_refine_certified::TargetLevelField,
+    coarsening_strategy: &'static str,
+    initial_subdivision: usize,
+    subdivision: usize,
+    initial_cells: usize,
+    attempted_patches: usize,
+    accepted_patches: usize,
+    removed_vertices: usize,
+    removed_faces: usize,
+    search_budget_exhausted: bool,
+    elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
+    local_update: Option<serde_json::Value>,
+    final_mesh: Box<earthmesh_refine_certified::CertifiedPrimalDualMesh>,
+    fulfillment: Box<earthmesh_refine_certified::AdaptivityFulfillmentReport>,
+    product_outcome: &'static str,
+    fallback_reason: Option<String>,
+    safe_fallback: bool,
+    remap: earthmesh_refine_certified::remap::ConservativeRemap,
+    pentagons: [usize; 12],
+    state: earthmesh_mesh::VoronoiGridState,
+    output_mesh: crate::UnstructuredMesh,
+    started: Instant,
+    timing_enabled: bool,
+    phase_started: Instant,
+}
+
 pub(super) fn run_certified_pipeline(
     contents: &str,
     config: &EarthmeshConfig,
@@ -1105,6 +1144,18 @@ pub(super) fn run_certified_pipeline(
     max_tris: usize,
     output_dir: Option<&Path>,
 ) -> io::Result<RefinePipelineRunReport> {
+    let refinement = refine_with_certified(contents, config, options, max_tris)?;
+    deliver_certified(refinement, config, workdir, output_dir)
+}
+
+/// CMRC's construction: requirement plan, certified mother grid, reverse
+/// coarsening, final certification and the published dual.
+pub(super) fn refine_with_certified(
+    contents: &str,
+    config: &EarthmeshConfig,
+    options: CertifiedRunOptions,
+    max_tris: usize,
+) -> io::Result<CertifiedRefinement> {
     let started = Instant::now();
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
@@ -1443,7 +1494,92 @@ pub(super) fn run_certified_pipeline(
         "final_certification_and_dual",
         &mut phase_started,
     );
+    Ok(CertifiedRefinement {
+        options,
+        regional_domain,
+        is_surface_masked,
+        is_domain_export,
+        regional_whole_cells,
+        refine,
+        base_nxp,
+        requirements,
+        chosen_level,
+        delivered_level,
+        delivered_levels,
+        coarsening_strategy,
+        initial_subdivision,
+        subdivision,
+        initial_cells,
+        attempted_patches,
+        accepted_patches,
+        removed_vertices,
+        removed_faces,
+        search_budget_exhausted,
+        elastic_report,
+        local_update,
+        final_mesh,
+        fulfillment,
+        product_outcome,
+        fallback_reason,
+        safe_fallback,
+        remap,
+        pentagons,
+        state,
+        output_mesh,
+        started,
+        timing_enabled,
+        phase_started,
+    })
+}
 
+/// CMRC's delivery: gridfile(s), remap table, certificate, manifest and model
+/// exports, staged and published atomically.
+pub(super) fn deliver_certified(
+    refinement: CertifiedRefinement,
+    config: &EarthmeshConfig,
+    workdir: &Path,
+    output_dir: Option<&Path>,
+) -> io::Result<RefinePipelineRunReport> {
+    let CertifiedRefinement {
+        options,
+        regional_domain,
+        is_surface_masked,
+        is_domain_export,
+        regional_whole_cells,
+        refine,
+        base_nxp,
+        requirements,
+        chosen_level,
+        delivered_level,
+        delivered_levels,
+        coarsening_strategy,
+        initial_subdivision,
+        subdivision,
+        initial_cells,
+        attempted_patches,
+        accepted_patches,
+        removed_vertices,
+        removed_faces,
+        search_budget_exhausted,
+        elastic_report,
+        local_update,
+        final_mesh,
+        fulfillment,
+        product_outcome,
+        fallback_reason,
+        safe_fallback,
+        remap,
+        pentagons,
+        state,
+        output_mesh,
+        started,
+        timing_enabled,
+        mut phase_started,
+    } = refinement;
+    let requested_view = config.mode_grid.trim();
+    let required_levels = &requirements.effective_levels;
+    let requirement_nlon = requirements.nlon;
+    let requirement_nlat = requirements.nlat;
     let configured_dir = PathBuf::from(config.file_dir());
     let file_dir = if let Some(directory) = output_dir {
         directory.to_path_buf()

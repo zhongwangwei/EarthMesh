@@ -1,0 +1,30 @@
+schema_version: 3.0.0
+metadata:
+  name: cmrc_global_atmos_hex
+  authors: []
+  description: CMRC reverse coarsening around one circle, global atmosphere hex, MPAS delivery.
+domain: Global
+target:
+  kind: Atmosphere
+  cell: Hex
+  intent: AtmosphereMpas
+  resolution: !Nxp 6
+  model_format: Mpas
+data_layers: []
+refinement:
+  enabled: true
+  backend: Certified
+  max_passes: 1
+  specified_circle:
+    - lon: 115.0
+      lat: 22.0
+      radius_km: 1500.0
+  certified:
+    mode: reverse_coarsening
+    delivery: hex
+    maximum_level: 1
+    maximum_cells: 200000
+quality:
+  min_angle_deg: 25.0
+  on_violation: Warn
+expert: {}
