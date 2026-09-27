@@ -459,6 +459,7 @@ impl ProjectConfig {
             crate::RefinementBackend::MethodC => "method_c",
             crate::RefinementBackend::RedGreen => "red_green",
             crate::RefinementBackend::Certified => "certified",
+            crate::RefinementBackend::Stretch => "stretch",
         }
         .to_string();
         let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);

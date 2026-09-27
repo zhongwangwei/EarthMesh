@@ -337,6 +337,50 @@ fn project_icon_refined_tri_on_closed_sphere_is_refused_before_the_run() {
 }
 
 #[test]
+fn project_icon_stretch_refines_a_closed_sphere_and_delivers_icon() {
+    // Stretch keeps the icosahedral topology, so every vertex stays of degree
+    // 5 or 6 and ICON takes the refined grid (guide 11.79).
+    let root = root("stretch");
+    let project = refined_icon_project(RefinementBackend::Stretch);
+    let result = run_project(&root, &project, "stretch");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("stretch refinement: focus"), "{stderr}");
+    let icon = Path::new(field(&stdout, "icon_mesh_input="));
+    assert!(icon.is_file());
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    let file = netcdf::open(gridfile).unwrap();
+    let levels = file
+        .variable("earthmesh_w_refine_level")
+        .expect("stretch records measured levels")
+        .get_values::<i32, _>(..)
+        .unwrap();
+    assert!(
+        levels.iter().any(|&level| level >= 1),
+        "nothing reached level 1"
+    );
+    let degrees = file
+        .variable("n_ngrwm")
+        .unwrap()
+        .get_values::<i32, _>(..)
+        .unwrap();
+    let real = degrees
+        .iter()
+        .filter(|&&d| d >= 3)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(real.iter().all(|&d| d == 5 || d == 6), "degrees {:?}", {
+        let mut seen = real.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    });
+    assert_eq!(real.iter().filter(|&&d| d == 5).count(), 12);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_icon_regional_tri_delivers_selected_native_triangles_with_parent_geometry() {
     let root = root("regional_tri");
     let project = icon_project(

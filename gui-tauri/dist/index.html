@@ -3134,7 +3134,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const algorithm = specifiedRefine.algorithm || "method_c";
-    const hfieldServed = algorithm === "method_c" || algorithm === "red_green";
+    const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch";
     if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";
     const backend = specifiedRefine.route || "adaptive";
     const algorithmInfo = {
@@ -3147,6 +3147,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       red_green: z
         ? "Red-Green：把标记三角形四分并闭合悬挂边；适合任意判据形状，最终邻接度由质量检查约束。"
         : "Red-Green: quarters marked triangles and closes hanging edges; accepts arbitrary criterion shapes, with final vertex degree enforced by quality checks.",
+      stretch: z
+        ? "Stretch（拉伸）：不插点，保持二十面体网格的拓扑（每个顶点 5 或 6 条边），用 Schmidt 保角变换把顶点移向需求区——需求区变细、其余变粗，单元总数不变。全球 ICON 要加密只能用它；只有一个焦点，分散在全球的需求无法满足。"
+        : "Stretch: inserts nothing and keeps the icosahedral grid's topology (every vertex of degree 5 or 6), moving vertices toward the demand by a conformal Schmidt transformation -- finer there, coarser elsewhere, same cell count. The only way to refine a global ICON grid; it has one focus, so a demand spread over the globe is not served.",
       certified: z
         ? "CMRC：从认证二十面体母网格反向粗化；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交。"
         : "CMRC: builds a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; failed or unfinished compression retains the certified finer grid."
@@ -3155,7 +3158,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       <div class="grid2">
-        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸，ICON）":"Stretch (ICON)"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
@@ -3179,6 +3182,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"到源分辨率停止":"Stop at source resolution",`<select class="select" id="leppStopAtSourceResolution"><option value="on" ${specifiedRefine.leppStopAtSourceResolution?"selected":""}>${z?"是":"Yes"}</option><option value="off" ${specifiedRefine.leppStopAtSourceResolution?"":"selected"}>${z?"否":"No"}</option></select>`)}
         ${field(z?"最小三角形角 (°)":"Minimum triangle angle (°)",`<input class="input" type="number" id="leppMinimumTriangleAngleDeg" min="0" max="59.999" step="0.5" value="${specifiedRefine.leppMinimumTriangleAngleDeg}">`,z?"0 关闭质量门":"0 disables the quality gate")}
       </div>
+    </div>`;
+    const stretchOptions = `<div id="stretchOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">Stretch · ${z?"说明":"notes"}</div>
+      <div style="color:var(--muted);font-size:12px;line-height:1.6">${z
+        ? "拉伸系数取 2^最深层级：焦点处细 2^L 倍，对跖点粗 2^L 倍。焦点取需求深度加权的平均方向。每单元层级按尺寸实测。没有专属参数。"
+        : "The stretch factor is 2^deepest level: 2^L finer at the focus, 2^L coarser opposite it. The focus is the depth-weighted mean direction of the demand. Per-cell levels are measured from size. No specific parameters."}</div>
     </div>`;
     const redGreenOptions = `<div id="redGreenOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">Red-Green · ${z?"专属参数":"specific parameters"}</div>
@@ -3206,7 +3215,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       method_c: canonicalMethodCOptions,
       lepp_delaunay: leppOptions,
       red_green: redGreenOptions,
-      certified: certifiedOptions
+      certified: certifiedOptions,
+      stretch: stretchOptions
     }[algorithm];
     // Only the canonical nested algorithm serves the h-field. The others refuse a run
     // that configures one, so offering it beside them builds a project that
@@ -3351,7 +3361,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const selectAlgorithm = (next) => {
         const previousAlgorithm = specifiedRefine.algorithm || "method_c";
         specifiedRefine.algorithm = next;
-        const readsHfield = next === "method_c" || next === "red_green";
+        const readsHfield = next === "method_c" || next === "red_green" || next === "stretch";
         // Switching to an algorithm that does not read the h-field with it
         // selected would leave a project the run refuses. Disabling the option
         // is not enough on its own -- a browser keeps a disabled option

@@ -138,7 +138,10 @@ impl ProjectConfig {
     /// which checks the actual degrees. CMRC's safe-mother mode delivers the
     /// uniform certified mother grid, which grades nothing.
     fn validate_icon_refinement_on_closed_sphere(&self) -> Result<(), String> {
+        // CMRC's safe mother grades nothing, and stretch keeps the
+        // icosahedral topology by construction.
         let grades = self.refinement.enabled
+            && self.refinement.backend != RefinementBackend::Stretch
             && !(self.refinement.backend == RefinementBackend::Certified
                 && self.refinement.certified.mode == crate::CertifiedMode::SafeMotherOnly);
         if grades
@@ -147,7 +150,7 @@ impl ProjectConfig {
             && self.expected_euler_characteristic() == Some(2)
         {
             return Err(
-                "target.model_format=Icon cannot be refined on a closed global mesh: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Set refinement.enabled=false for a uniform ICON grid, or keep the refinement and choose another model_format (the refined EarthMesh gridfile is written for every format)"
+                "target.model_format=Icon cannot be refined on a closed global mesh by inserting cells: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Use refinement.backend=Stretch, which keeps the icosahedral grid and moves its vertices toward the demand (finer there, coarser elsewhere); or set refinement.enabled=false; or choose another model_format (the refined EarthMesh gridfile is written for every format)"
                     .to_string(),
             );
         }
@@ -352,8 +355,11 @@ impl ProjectConfig {
             );
         }
         match self.refinement.backend {
-            // Red-green marks the triangles whose centres the field asks deeper.
-            crate::RefinementBackend::MethodC | crate::RefinementBackend::RedGreen => Ok(()),
+            // Red-green marks the triangles whose centres the field asks deeper;
+            // stretch reads each vertex's target depth from it.
+            crate::RefinementBackend::MethodC
+            | crate::RefinementBackend::RedGreen
+            | crate::RefinementBackend::Stretch => Ok(()),
             crate::RefinementBackend::Certified => Err(
                 "refinement.backend certified does not consume the Method-C h-field route; use threshold or named requirement sources, or turn refinement.hfield off"
                     .to_string(),
@@ -433,7 +439,7 @@ impl ProjectConfig {
                     .is_some_and(|recipe| recipe.enabled)
                     || (self.refinement.threshold_region.is_none() && adaptive_enabled)
             }
-            crate::RefinementBackend::RedGreen => {
+            crate::RefinementBackend::RedGreen | crate::RefinementBackend::Stretch => {
                 adaptive_enabled
                     || self
                         .refinement

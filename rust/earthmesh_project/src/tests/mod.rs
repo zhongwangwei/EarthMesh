@@ -3026,6 +3026,9 @@ fn icon_refinement_is_refused_only_where_the_mesh_is_a_closed_sphere() {
     assert!(!refused(&project), "{:?}", project.validate());
     project.refinement.certified.mode = CertifiedMode::ReverseCoarsening;
     assert!(refused(&project), "{:?}", project.validate());
+    // Stretch keeps the icosahedral grid, so it is the way to refine ICON.
+    project.refinement.backend = RefinementBackend::Stretch;
+    assert!(!refused(&project), "{:?}", project.validate());
 }
 
 #[test]

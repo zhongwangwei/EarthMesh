@@ -166,17 +166,19 @@ pub(super) fn run_refine_pipeline_in_workspace(
             max_tris,
             output_dir,
         )?,
-        RefineBackend::MethodC | RefineBackend::RedGreen => refine_from_shared_source(
-            &contents,
-            &config,
-            backend,
-            &quality,
-            &method_c_algorithm,
-            namelist_source,
-            workdir,
-            max_tris,
-            output_dir,
-        )?,
+        RefineBackend::MethodC | RefineBackend::RedGreen | RefineBackend::Stretch => {
+            refine_from_shared_source(
+                &contents,
+                &config,
+                backend,
+                &quality,
+                &method_c_algorithm,
+                namelist_source,
+                workdir,
+                max_tris,
+                output_dir,
+            )?
+        }
     };
     finish_refined(
         contents,
@@ -482,7 +484,7 @@ fn refine_from_shared_source(
     // Said now rather than at the backend branch, because the reader below runs
     // first -- and on the unconfigured prefix it fails with a message about
     // Method-C and a `/tmp` path nobody typed.
-    if backend == RefineBackend::RedGreen
+    if matches!(backend, RefineBackend::RedGreen | RefineBackend::Stretch)
         && refine.refine_cal
         && adaptive_options.is_none()
         && !has_threshold_hfield_sources
@@ -490,9 +492,12 @@ fn refine_from_shared_source(
     {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "NL%refine_backend = red_green has no reader for calculated criteria with both the \
-             point+radius route and the h-field off. Enable &adaptive or &hfield, point \
-             RL%mask_refine_cal_fprefix at mask files, or use method_c",
+            format!(
+                "NL%refine_backend = {} has no reader for calculated criteria with both the \
+                 point+radius route and the h-field off. Enable &adaptive or &hfield, point \
+                 RL%mask_refine_cal_fprefix at mask files, or use method_c",
+                refine_backend_label(backend)
+            ),
         ));
     }
     if refine.refine_cal && (!backend_consumes_criteria || has_configured_calculated_regions) {
@@ -590,9 +595,16 @@ fn refine_from_shared_source(
             (1, _) => "RL%SpringGlobal_type = 1",
             _ => "RL%SpringRegional_type",
         };
+        let why = if backend == RefineBackend::Stretch {
+            "stretch refinement's resolution is its vertex placement, and a Laplacian spring \
+             on top of that would relax it back toward uniform"
+        } else {
+            "certified refinement owns its geometry certificate, and a Laplacian spring on top \
+             of that would invalidate it"
+        };
         eprintln!(
             "earthmesh_cli: ignoring {requested_by} and the {requested_spring_nest_iterations} \
-             refinement spring iteration(s) they ask for. certified refinement owns its geometry certificate, and a Laplacian spring on top of that would invalidate it. Use NL%refine_backend = method_c to run the spring instead.              This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
+             refinement spring iteration(s) they ask for. {why}. Use NL%refine_backend = method_c to run the spring instead.              This does not affect NL%niter, the initial quasi-uniform relaxation, which still runs."
         );
     }
     let file_dir = output_dir.map_or_else(|| PathBuf::from(config.file_dir()), Path::to_path_buf);
@@ -602,7 +614,7 @@ fn refine_from_shared_source(
     // needs is the same from either -- a gridfile mesh, and whatever each one
     // can honestly say about how it was built.
     let refined = match backend {
-        RefineBackend::RedGreen => {
+        RefineBackend::RedGreen | RefineBackend::Stretch => {
             // What this route does not read, said outright rather than served
             // quietly with less: any of these would simply be dropped, and the
             // run would still write a valid mesh that passes every quality check
@@ -623,9 +635,10 @@ fn refine_from_shared_source(
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     format!(
-                        "NL%refine_backend = red_green does not serve {unsupported}; it refines \
+                        "NL%refine_backend = {} does not serve {unsupported}; it refines \
                          named regions, the point+radius criteria and the h-field. Use method_c \
-                         for this run"
+                         for this run",
+                        refine_backend_label(backend)
                     ),
                 ));
             }
@@ -679,16 +692,20 @@ fn refine_from_shared_source(
                 }
                 _ => (None, max_level),
             };
-            refine_with_redgreen(
-                &mesh,
-                &regions,
-                &refine,
-                max_level,
-                adaptive,
-                hfield,
-                config.mode_grid.trim() == "tri",
-                spring_nest_iterations,
-            )?
+            if backend == RefineBackend::Stretch {
+                refine_with_stretch(mesh, &regions, &refine, max_level, adaptive, hfield)?
+            } else {
+                refine_with_redgreen(
+                    &mesh,
+                    &regions,
+                    &refine,
+                    max_level,
+                    adaptive,
+                    hfield,
+                    config.mode_grid.trim() == "tri",
+                    spring_nest_iterations,
+                )?
+            }
         }
         RefineBackend::MethodC => {
             if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay {
@@ -2174,6 +2191,172 @@ fn measured_cell_levels(mesh: &crate::UnstructuredMesh, h0_radians: f64) -> Cell
     CellRefineLevels { m, w }
 }
 
+/// Refine by stretching: keep the base grid's topology and move its vertices
+/// toward the demand by a Schmidt transformation (guide 11.79).
+///
+/// Each vertex reads its target depth through the demand interface -- named
+/// regions, the criteria's circles (every level's, nested as red-green marks
+/// them) or the h-field -- and the stretch focuses on their depth-weighted
+/// mean with a factor of `2^deepest`. No cell is inserted, so the grid stays
+/// icosahedral: every vertex of degree 5 or 6, which ICON requires. The depth
+/// each cell reached is measured afterwards from its size, as for LEPP.
+fn refine_with_stretch(
+    mesh: TriangularMesh,
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    refine: &RefineConfig,
+    max_level: usize,
+    adaptive: Option<RedGreenAdaptive<'_>>,
+    hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
+) -> io::Result<RefinedGrid> {
+    let pentagons = mesh.impent;
+    let mut state = MeshState::from_triangular_mesh(&mesh)?;
+    let h0_radians = median_longest_edge_radians(&state);
+
+    let mut planned_circles = Vec::new();
+    if let Some(adaptive) = &adaptive {
+        for level in 1..=max_level {
+            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
+            planned_circles.push(
+                crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
+                    refine,
+                    &adaptive.inputs,
+                    level,
+                    cell_meters,
+                    cell_meters,
+                    cell_meters,
+                )?,
+            );
+        }
+    }
+    // No halo here: nothing is marked round by round.
+    let regions = nested_criteria_regions(named_regions, &planned_circles, 1, 0.0, |_| 0);
+    let region_targets = earthmesh_refine::RegionTargets::new(&regions);
+    let hfield_targets = hfield
+        .as_ref()
+        .map(|context| {
+            earthmesh_refine::HfieldTargets::new(&context.field, context.base_m, context.max_level)
+        })
+        .transpose()?;
+    let targets: &dyn earthmesh_refine::TargetLevelField = match &hfield_targets {
+        Some(field) => field,
+        None => &region_targets,
+    };
+
+    let live = state.active_vertex_slots().collect::<Vec<_>>();
+    let radius_of = |p: earthmesh_mesh::CartesianPoint| (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+    let mut points = vec![[0.0; 3]; state.vertices().len()];
+    let mut levels = vec![0usize; state.vertices().len()];
+    for &v in &live {
+        let p = state.vertices()[v];
+        let r = radius_of(p);
+        points[v] = [p.x / r, p.y / r, p.z / r];
+        let lonlat = earthmesh_mesh::xyz_points_to_lonlat_degrees(&[p])
+            .pop()
+            .ok_or_else(|| io::Error::other("vertex has no lon/lat"))?;
+        levels[v] = targets.target_level(lonlat)?;
+    }
+    let Some((focus, factor)) = earthmesh_mesh::schmidt_focus_for_levels(
+        &points,
+        &levels,
+        2f64.powi(max_level.min(16) as i32),
+    ) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "stretch refinement was requested over {} named region(s){} up to level \
+                 {max_level} but no vertex of the base grid is demanded; check the regions' \
+                 levels and that they cover a vertex of a grid this coarse",
+                named_regions.len(),
+                if adaptive.is_some() {
+                    " and the enabled criteria"
+                } else {
+                    ""
+                }
+            ),
+        ));
+    };
+    let demanded = levels.iter().filter(|&&level| level > 0).count();
+    earthmesh_mesh::schmidt_stretch(&mut points, focus, factor);
+    for &v in &live {
+        let r = radius_of(state.vertices()[v]);
+        let p = points[v];
+        state.move_vertex(
+            v,
+            earthmesh_mesh::CartesianPoint::new(p[0] * r, p[1] * r, p[2] * r),
+        );
+    }
+    let focus_lonlat =
+        earthmesh_mesh::xyz_points_to_lonlat_degrees(&[earthmesh_mesh::CartesianPoint::new(
+            focus[0], focus[1], focus[2],
+        )])
+        .pop();
+    eprintln!(
+        "earthmesh_cli: stretch refinement: focus {:.3}E {:.3}N, factor {factor:.2} ({} of {} \
+         vertices demanded); cells finer by {factor:.2} at the focus, coarser by {factor:.2} \
+         opposite it",
+        focus_lonlat.map_or(f64::NAN, |p| p.lon_degrees),
+        focus_lonlat.map_or(f64::NAN, |p| p.lat_degrees),
+        demanded,
+        live.len(),
+    );
+    let refined = state.to_triangular_mesh(pentagons, None)?;
+    let voronoi = spherical_voronoi_state(&refined)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+    let cell_levels = h0_radians.map(|h0| measured_cell_levels(&output_mesh, h0));
+    // Recorded as red-green records its passes -- each level's own circles
+    // with the named regions, up to the first level nothing asks for -- so
+    // the MPAS width and the quality reconciliation read it the same way.
+    // There are no rounds, so the face counts are the whole grid's.
+    let faces = live.len().saturating_mul(2).saturating_sub(4);
+    let mut passes = Vec::new();
+    for (index, demand) in planned_circles.iter().enumerate() {
+        let level = index + 1;
+        let mut pass_regions = named_regions.to_vec();
+        pass_regions.extend(demand.circles.iter().cloned());
+        if !pass_regions.iter().any(|region| region.level() >= level) {
+            break;
+        }
+        passes.push(crate::refinement_demand::nest::NestPassReport {
+            level,
+            cell_meters: adaptive
+                .as_ref()
+                .map(|adaptive| adaptive.base_cell_meters / 2f64.powi(index as i32))
+                .unwrap_or(0.0),
+            circle_count: pass_regions.len(),
+            regions: pass_regions,
+            demanded_cells: demand.demanded_cells,
+            faces_before: faces,
+            faces_after: faces,
+        });
+    }
+    Ok(RefinedGrid {
+        output_mesh,
+        cell_levels,
+        pentagon_indices: pentagons,
+        demand: RefinedDemandRecord {
+            hfield_context: hfield,
+            adaptive_run: adaptive.map(|adaptive| {
+                (
+                    crate::refinement_demand::nest::AdaptiveNestReport {
+                        deepest_level: passes.len(),
+                        passes,
+                        stopped_on_empty_demand: false,
+                        spring_passes: 0,
+                    },
+                    max_level,
+                    adaptive.base_cell_meters,
+                    adaptive.coastline,
+                )
+            }),
+            ..RefinedDemandRecord::default()
+        },
+        diagnostics: BackendDiagnostics {
+            state: Some(voronoi),
+            ..BackendDiagnostics::default()
+        },
+    })
+}
+
 fn refine_with_redgreen(
     mesh: &TriangularMesh,
     named_regions: &[earthmesh_mesh::RefinementRegion],
@@ -3464,13 +3647,26 @@ enum RefineBackend {
     MethodC,
     RedGreen,
     Certified,
+    Stretch,
 }
 
 fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
-    if matches!(backend, RefineBackend::Certified) {
+    // CMRC's certificate covers its geometry; a stretched grid's resolution
+    // is its geometry, and a regional spring would relax it back.
+    if matches!(backend, RefineBackend::Certified | RefineBackend::Stretch) {
         0
     } else {
         requested
+    }
+}
+
+/// The name a backend goes by in a namelist, for messages.
+fn refine_backend_label(backend: RefineBackend) -> &'static str {
+    match backend {
+        RefineBackend::MethodC => "method_c",
+        RefineBackend::RedGreen => "red_green",
+        RefineBackend::Certified => "certified",
+        RefineBackend::Stretch => "stretch",
     }
 }
 
@@ -3481,10 +3677,11 @@ fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
         "method_c" => Ok(RefineBackend::MethodC),
         "red_green" => Ok(RefineBackend::RedGreen),
         "certified" => Ok(RefineBackend::Certified),
+        "stretch" => Ok(RefineBackend::Stretch),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green and certified"
+                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green, certified and stretch"
             ),
         )),
     }

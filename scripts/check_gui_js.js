@@ -1417,7 +1417,7 @@ log("discrete mask is existing-project-only");
   // an unsupported backend + h-field was one click away and the run refuses it.
   // Both halves are needed: an algorithm that does not read the h-field (LEPP,
   // CMRC) must not render H-field controls, and stale projects must be reset
-  // before rendering or saving. Method-C and red-green both read it.
+  // before rendering or saving. Method-C, red-green and stretch read it.
   check(
     html.includes('${hfieldServed?`<option value="hfield"') &&
       html.includes('${hfieldServed?`<div id="hfieldOptions"') &&
@@ -1425,9 +1425,9 @@ log("discrete mask is existing-project-only");
     "non-Method-C algorithms must not render or retain H-field controls",
   );
   check(
-    html.includes('const readsHfield = next === "method_c" || next === "red_green";') &&
+    html.includes('const readsHfield = next === "method_c" || next === "red_green" || next === "stretch";') &&
       html.includes('if (!readsHfield && (specifiedRefine.route || "adaptive") === "hfield") {') &&
-      html.includes('const hfieldServed = algorithm === "method_c" || algorithm === "red_green";'),
+      html.includes('const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch";'),
     "switching algorithm must reset a selected h-field route",
   );
   // Red-green's recommended demand is the h-field (guide 11.71): switching to

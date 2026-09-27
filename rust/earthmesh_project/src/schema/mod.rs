@@ -176,6 +176,12 @@ pub enum RefinementBackend {
     /// Certified Mother-grid Reverse Coarsening (CMRC). Builds a safe global
     /// mother grid and only accepts changes that retain every hard certificate.
     Certified,
+    /// Keep the icosahedral grid's topology and move its vertices toward the
+    /// demand (a Schmidt stretch). No cell is inserted, so every vertex stays
+    /// of degree 5 or 6 -- the only way to refine a closed global ICON grid.
+    /// The cell count is fixed: finer toward the demand, coarser away from
+    /// it, with one focus, so a demand spread over the globe is not served.
+    Stretch,
 }
 
 impl RefinementBackend {

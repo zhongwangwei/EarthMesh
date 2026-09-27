@@ -16,6 +16,10 @@ pub enum RefinementBackend {
     /// Starts from a certified icosahedral mother grid and only coarsens a
     /// patch when the primal, dual, physical, and balance certificates pass.
     Certified,
+    /// Keeps the icosahedral grid's topology and moves its vertices toward
+    /// the demand (a Schmidt stretch): every vertex stays of degree 5 or 6,
+    /// which is what ICON can take. Finer toward the demand, coarser away.
+    Stretch,
 }
 
 impl RefinementBackend {
@@ -25,6 +29,7 @@ impl RefinementBackend {
             Self::MethodC => "method_c",
             Self::RedGreen => "red_green",
             Self::Certified => "certified",
+            Self::Stretch => "stretch",
         }
     }
 
@@ -34,6 +39,7 @@ impl RefinementBackend {
             "method_c" => Some(Self::MethodC),
             "red_green" => Some(Self::RedGreen),
             "certified" => Some(Self::Certified),
+            "stretch" => Some(Self::Stretch),
             _ => None,
         }
     }
@@ -44,6 +50,6 @@ impl RefinementBackend {
     /// than approximated, so criteria reach it only as named regions someone
     /// else derived. Measured, and recorded in the technical guide.
     pub fn serves_criteria_directly(self) -> bool {
-        matches!(self, Self::RedGreen | Self::Certified)
+        matches!(self, Self::RedGreen | Self::Certified | Self::Stretch)
     }
 }
