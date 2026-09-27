@@ -2055,6 +2055,46 @@ fn redgreen_cell_levels(
     Some(CellRefineLevels { m, w })
 }
 
+/// The regions level `level` marks: the named regions (asked for at
+/// `>= level`, as always), this level's criteria circles, and every deeper
+/// level's circles widened by the halo the rounds between will erode.
+///
+/// Round `k + 1` keeps only the marks that sit `halo(k + 1)` rings of the
+/// round-`k` triangles (edge about `base / 2^k`) inside what round `k`
+/// refined. A deeper circle marked at the same radius here would have its rim
+/// cancelled later; widened by those rings, the level above holds it whole.
+fn nested_criteria_regions(
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    planned_circles: &[crate::refinement_demand::nest::LevelCircles],
+    level: usize,
+    base_cell_meters: f64,
+    halo: impl Fn(usize) -> usize,
+) -> Vec<earthmesh_mesh::RefinementRegion> {
+    let mut regions = named_regions.to_vec();
+    for (index, demand) in planned_circles.iter().enumerate() {
+        let planned_level = index + 1;
+        if planned_level < level {
+            continue;
+        }
+        let margin = (level..planned_level)
+            .map(|round| halo(round + 1) as f64 * base_cell_meters / 2f64.powi(round as i32))
+            .sum::<f64>();
+        regions.extend(demand.circles.iter().map(|circle| match circle {
+            earthmesh_mesh::RefinementRegion::Circle {
+                center,
+                radius_meters,
+                level,
+            } => earthmesh_mesh::RefinementRegion::Circle {
+                center: *center,
+                radius_meters: radius_meters + margin,
+                level: *level,
+            },
+            other => other.clone(),
+        }));
+    }
+    regions
+}
+
 /// Angle between two points, in radians: an edge length on the unit sphere,
 /// whatever radius the coordinates carry.
 fn arc_radians(a: earthmesh_mesh::CartesianPoint, b: earthmesh_mesh::CartesianPoint) -> f64 {
@@ -2178,24 +2218,46 @@ fn refine_with_redgreen(
             earthmesh_refine::HfieldTargets::new(&context.field, context.base_m, context.max_level)
         })
         .transpose()?;
+    // The criteria circles of every level, planned before any is marked: they
+    // read only the source raster, never the mesh. Each level's marking also
+    // takes the deeper levels' circles, so a deeper demand always has the
+    // level above it underneath. Marking each level from its own circles alone
+    // let a deep circle outside the shallower ones be cancelled by the halo,
+    // and kept the derived green floor that over-refined around it (guide
+    // 11.71, 11.78).
+    let mut planned_circles = Vec::new();
+    if let Some(adaptive) = &adaptive {
+        for level in 1..=max_level {
+            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
+            planned_circles.push(
+                crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
+                    refine,
+                    &adaptive.inputs,
+                    level,
+                    cell_meters,
+                    cell_meters,
+                    cell_meters,
+                )?,
+            );
+        }
+    }
     for level in 1..=max_level {
+        let marked_regions = nested_criteria_regions(
+            named_regions,
+            &planned_circles,
+            level,
+            adaptive
+                .as_ref()
+                .map_or(0.0, |adaptive| adaptive.base_cell_meters),
+            |round| crate::redgreen_bridge::redgreen_settings_for_level(refine, round).halo,
+        );
+        let region_targets = earthmesh_refine::RegionTargets::new(&marked_regions);
         let before = redgreen.triangle_count();
-        // Named regions carry their own target level, so a deeper one is also
-        // refined by every level above it -- that is the `>= level` the marking
-        // applies. Criteria circles are planned *for* this level and nest by
-        // radius instead, so they are added as they come.
+        // What this level itself asked for, as the run record reports it; the
+        // marking reads `region_targets`, which holds every level's.
         let mut level_regions: Vec<earthmesh_mesh::RefinementRegion> = named_regions.to_vec();
         let mut demanded_cells = 0usize;
-        if let Some(adaptive) = &adaptive {
-            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
-            let demand = crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
-                refine,
-                &adaptive.inputs,
-                level,
-                cell_meters,
-                cell_meters,
-                cell_meters,
-            )?;
+        if let (Some(adaptive), Some(demand)) = (&adaptive, planned_circles.get(level - 1)) {
             demanded_cells = demand.demanded_cells;
             eprintln!(
                 "red-green refine level {level} judging {:.0} m cells: {} circles over {} \
@@ -2205,9 +2267,8 @@ fn refine_with_redgreen(
                 demand.demanded_cells,
             );
             spring_regions.extend(demand.circles.iter().cloned());
-            level_regions.extend(demand.circles);
+            level_regions.extend(demand.circles.iter().cloned());
         }
-        let region_targets = earthmesh_refine::RegionTargets::new(&level_regions);
         let targets: &dyn earthmesh_refine::TargetLevelField = match &hfield_targets {
             Some(field) => field,
             None => &region_targets,
@@ -3962,6 +4023,58 @@ mod tests {
                 < 1.0e-12
         );
         assert_eq!(minor_cell_steradians(f64::NAN), None);
+    }
+
+    #[test]
+    fn deeper_criteria_circles_are_widened_by_the_halo_between_the_levels() {
+        use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
+        let circle = |level, radius_meters| RefinementRegion::Circle {
+            center: LonLatDegrees::new(10.0, 20.0),
+            radius_meters,
+            level,
+        };
+        let planned = (1..=3)
+            .map(|level| crate::refinement_demand::nest::LevelCircles {
+                demanded: true,
+                demanded_cells: 1,
+                radius_meters: 1_000.0,
+                circles: vec![circle(level, 1_000.0)],
+                criterion_ids: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let named = [circle(2, 5_000.0)];
+        let radius = |regions: &[RefinementRegion], level| {
+            regions
+                .iter()
+                .skip(named.len())
+                .find_map(|region| match region {
+                    RefinementRegion::Circle {
+                        radius_meters,
+                        level: l,
+                        ..
+                    } if *l == level => Some(*radius_meters),
+                    _ => None,
+                })
+        };
+        // halo 3 in every round, base cell 100 km.
+        let level_one = nested_criteria_regions(&named, &planned, 1, 100_000.0, |_| 3);
+        assert_eq!(level_one[0], named[0], "named regions pass through");
+        assert_eq!(
+            radius(&level_one, 1),
+            Some(1_000.0),
+            "this level's own circle"
+        );
+        // Round 2 erodes 3 rings of round-1 triangles (50 km): widen by 150 km.
+        assert_eq!(radius(&level_one, 2), Some(151_000.0));
+        // Round 3 erodes another 3 rings of round-2 triangles (25 km).
+        assert_eq!(radius(&level_one, 3), Some(226_000.0));
+        let level_three = nested_criteria_regions(&named, &planned, 3, 100_000.0, |_| 3);
+        assert_eq!(
+            radius(&level_three, 1),
+            None,
+            "shallower circles are not marked deeper"
+        );
+        assert_eq!(radius(&level_three, 3), Some(1_000.0));
     }
 
     #[test]

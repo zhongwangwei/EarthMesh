@@ -86,15 +86,18 @@ pub fn finalize_redgreen_mesh(mesh: &mut RedGreenMesh) -> io::Result<RedGreenPol
 const MAX_ADJACENT_RESOLUTION_RATIO: f64 = 2.0;
 // Geometry contract, independent of the configurable warn/fail quality policy.
 const TRIANGLE_SHAPE_FLOOR_DEG: f64 = 25.0;
-/// Green floor for a demand that nests by construction (the h-field). The
+/// Green floor for a demand that nests by construction (the h-field, and
+/// named regions with criteria circles once every level's circles are marked
+/// together, 2026-09-28). The
 /// derived floor -- half the red leaves' smallest angle, 26.31 degrees on the
 /// global coast case -- rejected about half the greens and each rejection
 /// cascaded outward as red splits; the final angle-window repair now owns the
 /// published angles, so closure only has to avoid needles. Measured on Case9
 /// (guide 11.71): 151,427 -> 131,752 cells, finer than target 27,641 -> 2,812,
-/// coarser 262 -> 402, still 35-85 after repair. Criteria circles keep the
-/// derived floor: they do not nest, and there the over-refinement was holding
-/// up deeper demand (coarser than target rose 32,829 -> 44,975 at 20 degrees).
+/// coarser 262 -> 402, still 35-85 after repair. Criteria circles marked one
+/// level at a time did not nest, and there the over-refinement was holding up
+/// deeper demand (coarser than target rose 32,829 -> 44,975 at 20 degrees);
+/// marked together they nest and take this floor too (guide 11.78).
 const NESTED_DEMAND_GREEN_FLOOR_DEG: f64 = 20.0;
 
 #[derive(Default)]
@@ -961,11 +964,12 @@ mod round_settings_tests {
         assert_eq!(
             floor(true, false),
             None,
-            "criteria circles keep the derived floor"
+            "a demand that does not nest keeps the derived floor"
         );
         assert_eq!(floor(false, true), None, "hex closes with transition rows");
         assert_eq!(floor(false, false), None);
-        assert!(!earthmesh_refine::RegionTargets::new(&[]).nests_by_construction());
+        // Regions are asked for at `>= level`, so they nest.
+        assert!(earthmesh_refine::RegionTargets::new(&[]).nests_by_construction());
     }
 }
 
