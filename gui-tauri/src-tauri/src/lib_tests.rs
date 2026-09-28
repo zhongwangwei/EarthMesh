@@ -2529,6 +2529,65 @@ fn hidden_lepp_post_quality_survives_compatible_open_compose_only() {
 }
 
 #[test]
+fn an_opened_domain_export_policy_survives_a_save_while_it_stays_valid() {
+    let mut base = ProjectConfig::scaffold(
+        "opened_domain_export",
+        MeshIntentPreset::HydrologyLand,
+        DomainConfig::Global,
+        ResolutionSpec::Nxp(80),
+    );
+    base.refinement.backend = earthmesh_project::RefinementBackend::Certified;
+    base.quality.quality_policy = earthmesh_project::QualityPolicy::DomainExport;
+    base.quality.spatial_quality_domain = Some(earthmesh_project::SpatialQualityDomain {
+        spec: earthmesh_project::SpatialQualityDomainSpec::Region {
+            source: earthmesh_project::DomainSource {
+                content_sha256: "ab".repeat(32),
+                variable: Some("land_fraction".into()),
+                classification: Some("fraction_ge_0_5".into()),
+                part_sha256: vec!["cd".repeat(32)],
+                has_holes: false,
+                crosses_antimeridian: false,
+                includes_north_pole: false,
+                includes_south_pole: false,
+            },
+            boundary_protection: earthmesh_project::DistanceSpec::GraphRings(2),
+            export_halo: earthmesh_project::DistanceSpec::GraphRings(3),
+        },
+        critical_features: Vec::new(),
+        working_halo: earthmesh_project::DistanceSpec::GraphRings(5),
+    });
+    base.validate().expect("the opened project is valid");
+    let base_yaml = base.to_yaml().expect("base yaml");
+
+    // Studio composes from a scaffold, so the policy comes back as the default.
+    let mut composed = base.clone();
+    composed.quality.quality_policy = earthmesh_project::QualityPolicy::default();
+    composed.quality.spatial_quality_domain = None;
+    let yaml = preserve_unexposed_quality_fields(base_yaml.clone(), composed.to_yaml().unwrap())
+        .expect("preserve");
+    assert_eq!(
+        ProjectConfig::from_yaml(&yaml)
+            .unwrap()
+            .quality
+            .quality_policy,
+        earthmesh_project::QualityPolicy::DomainExport
+    );
+
+    // Leaving the certified backend makes domain_export invalid: not restored.
+    let mut switched = composed.clone();
+    switched.refinement.backend = earthmesh_project::RefinementBackend::MethodC;
+    let yaml = preserve_unexposed_quality_fields(base_yaml, switched.to_yaml().unwrap())
+        .expect("preserve");
+    assert_eq!(
+        ProjectConfig::from_yaml(&yaml)
+            .unwrap()
+            .quality
+            .quality_policy,
+        earthmesh_project::QualityPolicy::default()
+    );
+}
+
+#[test]
 fn incompatible_visible_choices_drop_hidden_lepp_post_quality() {
     let mut base = ProjectConfig::scaffold(
         "opened_lepp_quality_drop",

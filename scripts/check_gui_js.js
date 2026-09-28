@@ -109,10 +109,12 @@ check(
 log("niter_refine default remains engine-owned");
 
 check(
-  html.includes('const springControls = algorithm === "certified"') &&
+  html.includes('const springControls = algorithm === "stretch"') &&
+    html.includes(': algorithm === "certified"') &&
     html.includes("generic spring smoothing would invalidate the certificate.") &&
+    html.includes("so the run uses no spring settings.") &&
     html.includes('${springControls}'),
-  "CMRC must explain and hide the inapplicable generic spring controls",
+  "CMRC and Stretch must explain and hide the inapplicable generic spring controls",
 );
 log("CMRC hides inapplicable generic spring controls");
 
@@ -1844,6 +1846,7 @@ async function checkTemplateAdmission() {
     let lang=0;
     ${extract('bboxDomainError')}
     ${extract('specifiedRefinementError')}
+    ${extract('refinementNumberError')}
     ${preset}
     ${extract('composeYaml')}
     ${commitYaml}
@@ -2565,7 +2568,7 @@ async function checkAdaptiveCoastlineToggle() {
     const hydroRefine={coastBufferKm:0,riverWidthThresholdM:0,riverUpstreamAreaThresholdKm2:0};
     const thresholdRefine={enabled:false},METHOD_C_MAX_REFINEMENT_LEVEL=5,maxPasses=2,qualityEdit=null;
     const currentResolution=()=>({nxp:80}),currentIntent=()=>'AtmosphereMpas',projectName=()=>'coastline-test';
-    const specifiedRefinementError=()=>null,springTypesFor=()=>({});
+    const specifiedRefinementError=()=>null,refinementNumberError=()=>'',springTypesFor=()=>({});
     const calls=[],invoke=async(command,args)=>{calls.push({command,args});return command==='project_summary'?{model_format:'MPAS'}:'yaml';};
     ${clear}
     ${wiring}

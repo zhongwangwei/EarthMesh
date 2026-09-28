@@ -778,7 +778,9 @@ function resControl(lang){
 function resInput(src){
   if(src==="unit"){ resUnitIdx=+document.getElementById("resUnit").value; resVal=RES_UNITS[resUnitIdx].def; window.invalidateRunArtifacts?.(); renderStep(1); return; }
   const u=RES_UNITS[resUnitIdx];
-  let v = src==="range" ? +document.getElementById("resRange").value : +document.getElementById("resNum").value;
+  const raw = src==="range" ? document.getElementById("resRange").value : document.getElementById("resNum").value;
+  if(String(raw).trim()==="") return;
+  let v = +raw;
   if(isNaN(v)) return;
   if(src==="range") v=Math.min(u.max,Math.max(u.min,v));
   resVal=Math.round(v/u.step)*u.step; resVal=Math.round(resVal*1000)/1000;
@@ -2227,6 +2229,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   let baseProjectYaml = null; // last accepted YAML; preserves fields the UI does not expose yet
   let projectActive = false; // a project has been created/opened this session → show the summary
   let lastSummary = null;    // cached ProjectSummary (+ _valid/_err) for the summary panel
+  let lastSummaryError = null; // why the current draft could not be composed, if it could not
   let _lastQuality = null;   // cached mesh_quality, shown again when step 6 rebuilds
   let projectEditQueue = Promise.resolve();
   let projectLoadEpoch = 0;
@@ -2334,12 +2337,48 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return "";
   }
 
+  // Numbers of the selected algorithm and demand route, checked here with a
+  // message naming the field; otherwise a blank or half-typed input reaches
+  // Rust as a string and comes back as a raw type error.
+  function refinementNumberError(r) {
+    const z = zh();
+    const maxLevel = METHOD_C_MAX_REFINEMENT_LEVEL;
+    const intIn = (v, lo, hi) => v == null || (Number.isInteger(v) && v >= lo && v <= hi);
+    const positive = (v) => v == null || (typeof v === "number" && Number.isFinite(v) && v > 0);
+    const route = r.route || "adaptive";
+    if (r.algorithm !== "certified" && route === "adaptive" && !intIn(r.adaptiveMaxLevel, 0, maxLevel)) {
+      return z ? `点 + 半径的最大级必须是 0 至 ${maxLevel} 的整数。` : `Point + radius max level must be an integer 0…${maxLevel}.`;
+    }
+    if (r.algorithm !== "certified" && route === "hfield") {
+      if (!(r.hfieldG == null || (typeof r.hfieldG === "number" && r.hfieldG > 0 && r.hfieldG <= 1))) {
+        return z ? "H 场梯度上限 g 必须在 0 与 1 之间。" : "H-field gradation g must be in (0, 1].";
+      }
+      if (!intIn(r.hfieldMaxLevel, 0, maxLevel)) {
+        return z ? `H 场最大级必须是 0 至 ${maxLevel} 的整数。` : `H-field max level must be an integer 0…${maxLevel}.`;
+      }
+      if (!positive(r.hfieldBaseM)) {
+        return z ? "H 场基准尺寸必须是正数，或留空自动。" : "H-field base size must be positive, or blank for automatic.";
+      }
+    }
+    const keys = r.algorithm === "lepp_delaunay"
+      ? ["leppMaxCycles", "leppTargetSizeTolerance", "leppMaximumNeighborSizeRatio", "leppMaximumVertices",
+         "leppMaximumInsertionsPerCycle", "leppMaximumPathLength", "leppMinimumTriangleAngleDeg"]
+      : r.algorithm === "certified"
+      ? ["certifiedMaximumLevel", "certifiedMaximumCells", "certifiedGradationRingsPerLevel", "certifiedSearchBudget"]
+      : [];
+    const bad = keys.find((key) => typeof r[key] === "string");
+    if (bad) {
+      return z ? `算法参数 ${bad} 不是有效数字；请修正或清空后重试。` : `Algorithm setting ${bad} is not a valid number; correct or clear it.`;
+    }
+    return "";
+  }
+
   async function composeYaml(template = null) {
     if (backendReady) await backendReady;
     const resolution = template && template.nxp
       ? { nxp: template.nxp, approxKm: null, approxDegree: null } : currentResolution();
     const refine = template ? templateSpecifiedRefinement(template) : specifiedRefine;
-    const refinementError = specifiedRefinementError(refine);
+    const refinementError = specifiedRefinementError(refine) || refinementNumberError(refine);
     if (refinementError) throw new Error(refinementError);
     const domain = template ? null : domainEdit;
     let yaml = await invoke("scaffold_project",
@@ -2470,25 +2509,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       yaml = await applyCloseBoundary(yaml, "specified", refine.closeBoundary);
     }
 
+    const adaptiveOn = refine.algorithm !== "certified" && (refine.route || "adaptive") === "adaptive";
+    const hfieldOn = refine.algorithm !== "certified" && (refine.route || "adaptive") === "hfield";
     yaml = await invoke("set_adaptive_refinement", {
-      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "adaptive",
-      maxLevel: refine.adaptiveMaxLevel ?? null,
+      yaml, enabled: adaptiveOn,
+      maxLevel: adaptiveOn ? (refine.adaptiveMaxLevel ?? null) : null,
       coastline: refine.adaptiveCoastline !== false
     });
     yaml = await invoke("set_hfield_refinement", {
-      yaml, enabled: refine.algorithm !== "certified" && (refine.route || "adaptive") === "hfield",
-      g: refine.hfieldG ?? null,
-      maxLevel: refine.hfieldMaxLevel ?? null,
-      baseM: refine.hfieldBaseM ?? null
+      yaml, enabled: hfieldOn,
+      g: hfieldOn ? (refine.hfieldG ?? null) : null,
+      maxLevel: hfieldOn ? (refine.hfieldMaxLevel ?? null) : null,
+      baseM: hfieldOn ? (refine.hfieldBaseM ?? null) : null
     });
     yaml = await invoke("set_refinement_backend", {
       yaml, backend: refine.algorithm || "method_c"
     });
-    // Validate active demands only after their consuming route is configured.
-    yaml = await invoke("set_refinement", {
-      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
-      maxPasses: refinementPasses
-    });
+    // Algorithm options go in before refinement is switched on: set_refinement
+    // validates the whole project, and some combinations are valid only with
+    // the options applied (CMRC safe_mother_only is how a closed global ICON
+    // mesh may be refined).
     if (refine.algorithm === "lepp_delaunay") {
       yaml = await invoke("set_method_c_algorithm_options", {
         yaml,
@@ -2514,6 +2554,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         searchBudget: refine.certifiedSearchBudget
       });
     }
+    // Validate active demands only after their consuming route is configured.
+    yaml = await invoke("set_refinement", {
+      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
+      maxPasses: refinementPasses
+    });
     if (baseProjectYaml) {
       yaml = await invoke("preserve_unexposed_quality_fields", { baseYaml: baseProjectYaml, yaml });
     }
@@ -3151,12 +3196,23 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ? "Stretch（拉伸）：不插点，保持二十面体网格的拓扑（每个顶点 5 或 6 条边），用 Schmidt 保角变换把顶点移向需求区——需求区变细、其余变粗，单元总数不变。全球 ICON 要加密只能用它；只有一个焦点，分散在全球的需求无法满足。"
         : "Stretch: inserts nothing and keeps the icosahedral grid's topology (every vertex of degree 5 or 6), moving vertices toward the demand by a conformal Schmidt transformation -- finer there, coarser elsewhere, same cell count. The only way to refine a global ICON grid; it has one focus, so a demand spread over the globe is not served.",
       certified: z
-        ? "CMRC：从认证二十面体母网格反向粗化；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交。"
-        : "CMRC: builds a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; failed or unfinished compression retains the certified finer grid."
+        ? "CMRC：从认证二十面体母网格出发，可运行完整的 2:1 层级 epoch；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交，失败或未完成的压缩保留认证的较细网格。"
+        : "CMRC: starts from a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; a change is committed only when the triangle, Voronoi, physical and balance certificates all pass, and failed or unfinished compression keeps the certified finer grid."
     }[algorithm];
     const algorithmFamily = algorithm === "method_c" || algorithm === "lepp_delaunay" ? "method_c" : algorithm;
+    const iconClosedSphere = targetEdit && String(targetEdit.modelFormat || "").toLowerCase() === "icon"
+      && cellEdit === "tri" && (targetEdit.kind === "atmosphere" || targetEdit.kind === "earth")
+      && domainMode === "global";
+    const iconServed = algorithm === "stretch"
+      || (algorithm === "certified" && specifiedRefine.certifiedMode === "safe_mother_only");
+    const iconHint = iconClosedSphere && !iconServed
+      ? `<div style="color:var(--warn,#b45309);font-size:12px;margin-top:8px">${z
+          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 Stretch（拉伸加密），或 CMRC 的“仅安全母网格”，或关闭加密。"
+          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose Stretch, CMRC safe mother only, or turn refinement off."}</div>`
+      : "";
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
+      ${iconHint}
       <div class="grid2">
         ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸，ICON）":"Stretch (ICON)"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
@@ -3224,7 +3280,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
       <div class="grid2" style="margin-top:10px">
-        ${field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${algorithm==="red_green"?(z?"点 + 半径":"Point + radius"):(z?"点 + 半径（默认）":"Point + radius (default)")}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${algorithm==="red_green"?(z?"H 场（推荐）":"H-field (recommended)"):(z?"H 场":"H-field")}</option>`:""}${backend==="discrete"?`<option value="discrete" selected>${z?"离散硬掩膜（现有工程）":"Discrete hard mask (existing project)"}</option>`:""}</select>`,z?"新工程只提供界面能完整配置的需求表达；已有离散掩膜工程会保留原配置。":"New projects expose only fully configurable demand routes; existing discrete-mask projects retain their configuration.")}
+        ${algorithm==="certified" ? field(z?"需求表达方式":"Demand representation",`<input class="input" value="${z?"离散（CMRC 读取阈值与命名区域）":"Discrete (CMRC reads thresholds and named regions)"}" disabled>`,z?"CMRC 不使用点 + 半径或 H 场":"CMRC does not use point + radius or the h-field") : field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${algorithm==="red_green"?(z?"点 + 半径":"Point + radius"):(z?"点 + 半径（默认）":"Point + radius (default)")}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${algorithm==="red_green"?(z?"H 场（推荐）":"H-field (recommended)"):(z?"H 场":"H-field")}</option>`:""}${backend==="discrete"?`<option value="discrete" selected>${z?"离散硬掩膜（现有工程）":"Discrete hard mask (existing project)"}</option>`:""}</select>`,z?"新工程只提供界面能完整配置的需求表达；已有离散掩膜工程会保留原配置。":"New projects expose only fully configurable demand routes; existing discrete-mask projects retain their configuration.")}
       </div>
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
         ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
@@ -3239,7 +3295,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
-    const springControls = algorithm === "certified"
+    const springControls = algorithm === "stretch"
+      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"Stretch 的分辨率就是顶点位置；通用弹簧会把它松弛回均匀，运行时不使用弹簧参数。":"Stretch's resolution is its vertex placement; a generic spring would relax it back toward uniform, so the run uses no spring settings."}</div>`
+      : algorithm === "certified"
       ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate."}</div>`
       : `${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
         ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
@@ -3376,15 +3434,23 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         // with the fixed 20-degree green floor (guide 11.71). Only the default
         // route is moved; a route the user chose stays. The select may not
         // offer the option yet, so the state is set directly and re-rendered.
+        // CMRC forces the discrete route; leaving it must not carry that
+        // route to an algorithm whose run refuses it.
+        if (previousAlgorithm === "certified" && next !== "certified"
+            && (specifiedRefine.route || "adaptive") === "discrete") {
+          specifiedRefine.route = "adaptive";
+          specifiedRefine.hfieldEnabled = false;
+        }
         if (next === "red_green" && previousAlgorithm !== "red_green"
             && (specifiedRefine.route || "adaptive") === "adaptive") {
           specifiedRefine.route = "hfield";
           specifiedRefine.hfieldEnabled = true;
         }
         if (specifiedRefine.algorithm === "certified") {
+          // Set in the state, not through the select: it only offers
+          // "discrete" once the route already is, and syncBackend reads it.
           specifiedRefine.route = "discrete";
-          if (backendSel) backendSel.value = "discrete";
-          syncBackend();
+          specifiedRefine.hfieldEnabled = false;
         }
         expertEdit.enabled = expertEnabled();
         clearRunArtifacts();
@@ -3399,7 +3465,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         methodCAlgorithmSel.value === "lepp_delaunay" ? "lepp_delaunay" : "method_c"
       );
       const adaptiveMax = document.getElementById("adaptiveMaxLevel");
-      if (adaptiveMax) adaptiveMax.addEventListener("input", () => { specifiedRefine.adaptiveMaxLevel = readNum(adaptiveMax); clearRunArtifacts(); });
+      if (adaptiveMax) adaptiveMax.addEventListener("input", () => { specifiedRefine.adaptiveMaxLevel = adaptiveMax.value.trim() ? readNum(adaptiveMax) : null; clearRunArtifacts(); });
       const adaptiveCoastline = document.getElementById("adaptiveCoastline");
       if (adaptiveCoastline) adaptiveCoastline.addEventListener("change", () => { specifiedRefine.adaptiveCoastline = adaptiveCoastline.value === "on"; clearRunArtifacts(); });
       const hfG = document.getElementById("hfieldG");
@@ -3943,8 +4009,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       catch (e) { sum._valid = false; sum._err = String(e); }
       if (!current()) return null;
       lastSummary = sum;
+      lastSummaryError = null;
       return sum;
-    } catch (e) { if (current()) lastSummary = null; return null; }
+    } catch (e) {
+      if (current()) { lastSummary = null; lastSummaryError = String(e && e.message ? e.message : e); }
+      return null;
+    }
 
   }
 
@@ -4068,10 +4138,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const relax = document.getElementById("expertRelax");
     if (!openmp && !niter && !beta && !relax) return;
     const paint = () => {
-      if (openmp) openmp.value = expertEdit.openmp ?? DEFAULT_OPENMP;
-      if (niter) niter.value = expertEdit.niter ?? DEFAULT_NITER;
-      if (beta) beta.value = expertEdit.beta ?? DEFAULT_BETA;
-      if (relax) relax.value = expertEdit.relax ?? DEFAULT_RELAX;
+      const put = (el, value) => { if (el && el !== document.activeElement) el.value = value; };
+      put(openmp, expertEdit.openmp ?? DEFAULT_OPENMP);
+      put(niter, expertEdit.niter ?? DEFAULT_NITER);
+      put(beta, expertEdit.beta ?? DEFAULT_BETA);
+      put(relax, expertEdit.relax ?? DEFAULT_RELAX);
     };
     const update = async () => {
       expertEdit = {
@@ -4251,6 +4322,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const sumEl = document.getElementById("projSummary");
     if (!sumEl) return;
     const z = zh();
+    if (projectActive && !lastSummary && lastSummaryError) {
+      sumEl.textContent = (z ? "当前设置无效：" : "Current settings are invalid: ") + lastSummaryError;
+      return;
+    }
     if (!(projectActive && lastSummary)) { sumEl.textContent = ""; return; }
     const s = lastSummary;
     const total = (s.layers || []).length;
@@ -4489,14 +4564,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       [zh()?"角度合同":"Angle contract", c.angle_contract],
       [zh()?"DQX 执行状态":"DQX execution", c.dqx_execution_status],
       [zh()?(publishedAngle?"掩膜前角度":"认证角度"):(publishedAngle?"Pre-mask angles":"Certified angles"), angle],
-      ...(publishedAngle ? [[zh()?"最终海洋角度":"Published-domain angles", publishedAngle]] : []),
+      ...(publishedAngle ? [[zh()?"发布域角度":"Published-domain angles", publishedAngle]] : []),
       [zh()?"交付层级":"Delivered levels", fmt(c.delivered_level_min) + " → " + fmt(c.delivered_level_max)],
       [zh()?"三角形":"Triangles", fmt(fulfillment.initial_faces) + " → " + fmt(fulfillment.final_faces)],
       [zh()?"需求 / 平衡残差":"Requirement / balance residuals", fmt(c.physical_residuals) + " / " + fmt(c.balance_residuals)],
-      [zh()?"海洋保留单元":"Masked cells kept", fmt(resources.landtype_kept_cells)],
+      [zh()?"掩膜后保留单元":"Masked cells kept", fmt(resources.landtype_kept_cells)],
       [zh()?"发布连通分量":"Published components", fmt(topology.connected_components)],
       [zh()?"重映射范围":"Remap scope", c.remap_scope || "—"],
-      [zh()?"最终海洋 remap":"Published-domain remap", c.published_grid_remap_available ? (zh()?"已认证":"certified") : (zh()?"未发布（现有文件仅对应掩膜前闭球面）":"not published (pre-export sphere only)")],
+      [zh()?"发布域 remap":"Published-domain remap", c.published_grid_remap_available ? (zh()?"已认证":"certified") : (zh()?"未发布（现有文件仅对应掩膜前闭球面）":"not published (pre-export sphere only)")],
     ];
     rows.forEach(([label, value]) => {
       const box = document.createElement("div");

@@ -157,6 +157,20 @@ pub(crate) fn preserve_unexposed_quality_fields(
 ) -> Result<String, String> {
     let base = ProjectConfig::from_yaml(&base_yaml)?;
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    // The quality policy and its spatial domain have no control in Studio, so
+    // a composed project always carries the defaults; an opened
+    // `domain_export` was dropped on every save. Keep the opened pair
+    // wherever it is still valid (it needs the certified backend).
+    if base.quality.quality_policy != cfg.quality.quality_policy
+        || base.quality.spatial_quality_domain != cfg.quality.spatial_quality_domain
+    {
+        let mut candidate = cfg.clone();
+        candidate.quality.quality_policy = base.quality.quality_policy;
+        candidate.quality.spatial_quality_domain = base.quality.spatial_quality_domain.clone();
+        if candidate.validate().is_ok() {
+            cfg = candidate;
+        }
+    }
     let Some(lepp) = base.quality.lepp_post_quality else {
         return validated_yaml(cfg);
     };
