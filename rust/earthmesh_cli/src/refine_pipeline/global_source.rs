@@ -2153,11 +2153,11 @@ fn nested_criteria_regions(
     // passes false: it marks nothing round by round.
     let mut regions = named_regions
         .iter()
-        .map(|region| {
+        .flat_map(|region| {
             if widen_named && region.level() > level {
                 widened_region(region, margin(region.level()))
             } else {
-                region.clone()
+                vec![region.clone()]
             }
         })
         .collect::<Vec<_>>();
@@ -2171,28 +2171,29 @@ fn nested_criteria_regions(
             demand
                 .circles
                 .iter()
-                .map(|circle| widened_region(circle, margin)),
+                .flat_map(|circle| widened_region(circle, margin)),
         );
     }
     regions
 }
 
-/// `region` grown by `margin_meters` on every side it can be.
+/// `region` grown by `margin_meters` on every side, as the regions whose
+/// union is the grown region.
 ///
 /// Circles and corridors widen their radii; a bbox grows by the margin in
 /// latitude and by the margin at its poleward edge in longitude (the whole
-/// circle of longitude when that edge is near a pole). A polygon is returned
-/// as it is: an exact spherical buffer is not built here, so a deeper named
-/// polygon keeps the halo cancellation at its rim (guide 11.78).
+/// circle of longitude when that edge is near a pole). A polygon is kept and
+/// joined by a corridor of that radius along its closed boundary: the two
+/// together are exactly the polygon buffered outward by the margin.
 fn widened_region(
     region: &earthmesh_mesh::RefinementRegion,
     margin_meters: f64,
-) -> earthmesh_mesh::RefinementRegion {
+) -> Vec<earthmesh_mesh::RefinementRegion> {
     use earthmesh_mesh::RefinementRegion;
     if !(margin_meters.is_finite() && margin_meters > 0.0) {
-        return region.clone();
+        return vec![region.clone()];
     }
-    match region {
+    let widened = match region {
         RefinementRegion::Circle {
             center,
             radius_meters,
@@ -2242,8 +2243,25 @@ fn widened_region(
                 level: *level,
             }
         }
-        RefinementRegion::Polygon { .. } => region.clone(),
-    }
+        RefinementRegion::Polygon { points, level } => {
+            let mut ring = points.clone();
+            if let Some(&first) = points.first() {
+                if points.last() != Some(&first) {
+                    ring.push(first);
+                }
+            }
+            if ring.len() < 2 {
+                return vec![region.clone()];
+            }
+            let band = RefinementRegion::Corridor {
+                radius_meters: vec![margin_meters; ring.len()],
+                points: ring,
+                level: *level,
+            };
+            return vec![region.clone(), band];
+        }
+    };
+    vec![widened]
 }
 
 /// Angle between two points, in radians: an edge length on the unit sphere,
@@ -4507,9 +4525,32 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
-        assert_eq!(marked[4], named[4], "a polygon is not buffered");
+        // A polygon keeps itself and gains a band along its boundary.
+        assert_eq!(marked[4], named[4]);
+        match &marked[5] {
+            RefinementRegion::Corridor {
+                points,
+                radius_meters,
+                level,
+            } => {
+                assert_eq!(points.len(), 4, "the closed ring");
+                assert_eq!(points.first(), points.last());
+                assert!(radius_meters.iter().all(|&r| r == 150_000.0));
+                assert_eq!(*level, 2);
+            }
+            other => panic!("{other:?}"),
+        }
+        {
+            use earthmesh_refine::TargetLevelField;
+            let buffered = earthmesh_refine::RegionTargets::new(&marked[4..6]);
+            // 1 degree of latitude is about 111 km: just south of the
+            // triangle's southern edge is inside the 150 km band, 3 degrees
+            // south is not.
+            assert!(buffered.demands(LonLatDegrees::new(0.3, -1.0), 2).unwrap());
+            assert!(!buffered.demands(LonLatDegrees::new(0.3, -3.0), 2).unwrap());
+        }
         assert_eq!(
-            marked[5], named[5],
+            marked[6], named[5],
             "a region not deeper than the level is as it is"
         );
         // At its own level nothing is widened.
