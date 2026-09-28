@@ -277,6 +277,25 @@ pub fn sample_landtype_values_for_points_one_based(
     gridnum_perdegree: usize,
     points: &[LonLatPoint],
 ) -> io::Result<Vec<i32>> {
+    sample_landtype_values_with_whole_read_limit(
+        landtype_file,
+        gridnum_perdegree,
+        points,
+        LANDTYPE_WHOLE_READ_LIMIT_BYTES,
+    )
+}
+
+// Small variables are cheaper to read once. Larger rasters stay on the
+// grouped tile path, which bounds retained application memory to one tile
+// plus the request/output vectors.
+const LANDTYPE_WHOLE_READ_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+
+fn sample_landtype_values_with_whole_read_limit(
+    landtype_file: impl AsRef<Path>,
+    gridnum_perdegree: usize,
+    points: &[LonLatPoint],
+    whole_read_limit_bytes: usize,
+) -> io::Result<Vec<i32>> {
     if gridnum_perdegree == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -361,16 +380,13 @@ pub fn sample_landtype_values_for_points_one_based(
     let dlat = axes.lat_i[2] - axes.lat_i[1];
 
     // Grouped block reads instead of one 1-element NetCDF read per sampled cell.
-    // Requests are grouped by 1024x1024 tile, each tile is read once and dropped
-    // before the next tile, so global point sets do not retain the full raster.
+    // Requests are grouped by tile, each tile is read once and dropped before
+    // the next, so global point sets do not retain the full raster. 1024 cells
+    // a side when the variable is not chunked.
     const LANDTYPE_TILE: usize = 1024;
-    // Small variables are cheaper to read once. Larger rasters stay on the
-    // grouped tile path, which bounds retained application memory to one tile
-    // plus the request/output vectors.
-    const LANDTYPE_WHOLE_READ_LIMIT_BYTES: usize = 256 * 1024 * 1024;
     let whole_variable = if nlons_source
         .checked_mul(nlats_source)
-        .is_some_and(|total| total <= LANDTYPE_WHOLE_READ_LIMIT_BYTES)
+        .is_some_and(|total| total <= whole_read_limit_bytes)
     {
         Some(
             variable
@@ -397,9 +413,28 @@ pub fn sample_landtype_values_for_points_one_based(
         return Ok(sampled);
     }
 
-    let tile_bounds = |tile: usize, limit: usize| {
-        let start = tile * LANDTYPE_TILE;
-        (start, LANDTYPE_TILE.min(limit - start))
+    // Tiles follow the variable's own compression chunks when it has them. A
+    // 1024x1024 tile inside a 2880x5760 chunk made the library inflate the
+    // whole chunk for every tile it holds -- its cache is smaller than one
+    // chunk -- about sixteen times over; all of a mask-writing step's 31 s
+    // on the global IGBP raster went there (guide 11.83).
+    let chunking = variable.chunking().ok().flatten().filter(|c| c.len() == 2);
+    let chunk_along = |dim: usize, limit: usize| {
+        chunking
+            .as_ref()
+            .and_then(|c| c.get(dim).copied())
+            .filter(|size| *size > 0)
+            .unwrap_or(LANDTYPE_TILE)
+            .min(limit)
+    };
+    let (lon_tile, lat_tile) = if lon_lat_order {
+        (chunk_along(0, nlons_source), chunk_along(1, nlats_source))
+    } else {
+        (chunk_along(1, nlons_source), chunk_along(0, nlats_source))
+    };
+    let tile_bounds = |tile: usize, size: usize, limit: usize| {
+        let start = tile * size;
+        (start, size.min(limit - start))
     };
     let mut requests = BTreeMap::<(usize, usize), Vec<(usize, usize, usize)>>::new();
     for (output_index, point) in points.iter().enumerate() {
@@ -407,7 +442,7 @@ pub fn sample_landtype_values_for_points_one_based(
             (((point.lon - lon0) / dlon).round() as i64).rem_euclid(nlons_source as i64) as usize;
         let lat_index =
             (((point.lat - lat0) / dlat).round() as i64).clamp(0, nlats_source as i64 - 1) as usize;
-        let tile_key = (lon_index / LANDTYPE_TILE, lat_index / LANDTYPE_TILE);
+        let tile_key = (lon_index / lon_tile, lat_index / lat_tile);
         requests
             .entry(tile_key)
             .or_default()
@@ -415,8 +450,8 @@ pub fn sample_landtype_values_for_points_one_based(
     }
     let mut sampled = vec![0; points.len()];
     for (tile_key, tile_requests) in requests {
-        let (lon_start, lon_len) = tile_bounds(tile_key.0, nlons_source);
-        let (lat_start, lat_len) = tile_bounds(tile_key.1, nlats_source);
+        let (lon_start, lon_len) = tile_bounds(tile_key.0, lon_tile, nlons_source);
+        let (lat_start, lat_len) = tile_bounds(tile_key.1, lat_tile, nlats_source);
         let tile = if lon_lat_order {
             variable
                 .get_values::<i8, _>((
@@ -465,4 +500,62 @@ pub fn sample_landtype_surface_class_codes_for_points_one_based(
                 .collect()
         },
     )
+}
+
+#[cfg(test)]
+mod tile_tests {
+    use super::*;
+
+    /// The tiled path, with tiles taken from the variable's chunking, samples
+    /// what one whole read does -- both storage orders, uneven chunks.
+    #[test]
+    fn chunk_aligned_tiles_sample_what_a_whole_read_does() {
+        for lon_lat in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "earthmesh_landtype_tiles_{}_{lon_lat}.nc",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let (nlon, nlat) = (360usize, 180usize);
+            let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+            let mut next = move || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let values = (0..nlon * nlat)
+                .map(|_| (next() % 17) as i8)
+                .collect::<Vec<_>>();
+            {
+                let mut file = crate::create_netcdf(&path).unwrap();
+                let dims: [&str; 2] = if lon_lat {
+                    ["lon", "lat"]
+                } else {
+                    ["lat", "lon"]
+                };
+                file.add_dimension("lon", nlon).unwrap();
+                file.add_dimension("lat", nlat).unwrap();
+                let mut variable = file.add_variable::<i8>("landtype", &dims).unwrap();
+                variable.set_chunking(&[37, 53]).unwrap();
+                variable.set_compression(1, false).unwrap();
+                variable.put_values(&values, (.., ..)).unwrap();
+            }
+            let points = (0..5000)
+                .map(|_| LonLatPoint {
+                    lon: (next() % 36_000) as f64 / 100.0 - 180.0,
+                    lat: (next() % 17_900) as f64 / 100.0 - 89.5,
+                })
+                .collect::<Vec<_>>();
+            let whole = sample_landtype_values_with_whole_read_limit(&path, 1, &points, usize::MAX)
+                .unwrap();
+            let tiled = sample_landtype_values_with_whole_read_limit(&path, 1, &points, 0).unwrap();
+            assert_eq!(whole, tiled, "lon_lat={lon_lat}");
+            assert!(
+                whole.iter().any(|&v| v != whole[0]),
+                "the fixture must vary"
+            );
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
