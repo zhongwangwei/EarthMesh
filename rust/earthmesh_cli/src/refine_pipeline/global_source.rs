@@ -1910,11 +1910,66 @@ fn spring_unstructured_region_interiors(
         );
         return Ok((mesh.clone(), 0));
     }
+    // The triangles can all stay in shape while a hex cell does not: its ring
+    // runs through the moved triangles' centres, and two of them can change
+    // places. Checked here rather than met at the carve's final admission,
+    // which would refuse the whole run (guide 11.82).
+    let (before, after) = (
+        invalid_dual_cells(&spring_mesh),
+        invalid_dual_cells(&report.mesh),
+    );
+    if after > before {
+        eprintln!(
+            "earthmesh_cli: warning: refinement spring folded {} hex cell ring(s) ({before} -> {after} invalid); keeping the unsmoothed mesh",
+            after - before
+        );
+        return Ok((mesh.clone(), 0));
+    }
     eprintln!(
         "earthmesh_cli: refinement spring complete in {:.1}s",
         started.elapsed().as_secs_f64()
     );
     Ok((report.mesh, 1))
+}
+
+/// How many W cells' rings of M points are not simple spherical polygons.
+///
+/// A region boundary's open fans can fail on their own, so a caller compares
+/// counts before and after a change rather than asking for zero.
+fn invalid_dual_cells(mesh: &crate::UnstructuredMesh) -> usize {
+    use crate::unstructured_mesh_support::{
+        mesh_canonical_id_for_row, mesh_m_has_two_placeholder_rows, mesh_row_for_canonical_id,
+        mesh_w_has_two_placeholder_rows,
+    };
+    let m_placeholders = mesh_m_has_two_placeholder_rows(mesh);
+    let w_placeholders = mesh_w_has_two_placeholder_rows(mesh);
+    let mut invalid = 0usize;
+    for (row, ids) in mesh.w_to_m.iter().enumerate() {
+        if mesh_canonical_id_for_row(row, w_placeholders).is_none() {
+            continue;
+        }
+        let count = usize::try_from(mesh.n_w_to_m.get(row).copied().unwrap_or(0))
+            .unwrap_or(0)
+            .min(ids.len());
+        if count < 3 {
+            continue;
+        }
+        let ring = ids[..count]
+            .iter()
+            .map(|&id| {
+                mesh_row_for_canonical_id(id, mesh.m_points.len(), m_placeholders).map(|m_row| {
+                    let p = mesh.m_points[m_row];
+                    earthmesh_geometry::Point::new(p.lon, p.lat)
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(ring) = ring {
+            if earthmesh_geometry::try_spherical_polygon_area(&ring).is_err() {
+                invalid += 1;
+            }
+        }
+    }
+    invalid
 }
 
 pub(super) fn unstructured_mesh_with_one_based_rows(
@@ -2094,10 +2149,8 @@ fn nested_criteria_regions(
             .sum::<f64>()
     };
     // Named regions are asked for at `>= level`, so a deeper one is marked
-    // here too -- widened for the same reason as a deeper circle, where the
-    // caller's route has been shown to take it (the triangle route; on the
-    // hex transition-row route the widened marking produced a self-crossing
-    // dual cell, guide 11.81).
+    // here too -- widened for the same reason as a deeper circle. Stretch
+    // passes false: it marks nothing round by round.
     let mut regions = named_regions
         .iter()
         .map(|region| {
@@ -2521,7 +2574,7 @@ fn refine_with_redgreen(
             level,
             base_cell_meters,
             |round| crate::redgreen_bridge::redgreen_settings_for_level(refine, round).halo,
-            preserve_locality,
+            true,
         );
         let region_targets = earthmesh_refine::RegionTargets::new(&marked_regions);
         let before = redgreen.triangle_count();
@@ -4464,6 +4517,28 @@ mod tests {
             nested_criteria_regions(&named, &[], 2, 100_000.0, |_| 3, true),
             named.to_vec()
         );
+    }
+
+    #[test]
+    fn a_hex_ring_whose_centres_swapped_places_counts_as_invalid() {
+        // One W cell with four M points around it, in ring order and then
+        // with two neighbours swapped -- the fold the regional spring made.
+        let point = |lon: f64, lat: f64| crate::LonLatPoint { lon, lat };
+        let mesh = |order: [i32; 4]| crate::UnstructuredMesh {
+            m_points: vec![
+                point(0.0, 0.0),
+                point(1.0, 0.0),
+                point(0.0, 1.0),
+                point(-1.0, 0.0),
+                point(0.0, -1.0),
+            ],
+            w_points: vec![point(0.0, 0.0), point(0.0, 0.0), point(0.0, 0.0)],
+            m_to_w: vec![[1, 1, 1]; 5],
+            w_to_m: vec![vec![1; 4], vec![1; 4], order.to_vec()],
+            n_w_to_m: vec![1, 1, 4],
+        };
+        assert_eq!(invalid_dual_cells(&mesh([2, 3, 4, 5])), 0);
+        assert_eq!(invalid_dual_cells(&mesh([3, 2, 4, 5])), 1);
     }
 
     #[test]
