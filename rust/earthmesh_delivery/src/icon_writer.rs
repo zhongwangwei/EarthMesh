@@ -207,6 +207,7 @@ pub fn write_icon_nest_set(
             IconCtrl::Boundary
         } else {
             IconCtrl::Nest {
+                vertex_row: &domain.vertex_row,
                 cell_row: &domain.cell_row,
                 depth: ICON_NEST_BOUNDARY_DEPTH,
             }
@@ -421,7 +422,10 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
                 }
                 cursor += rows;
             }
-            if (start[slot(0)], end[slot(0)]) != (cursor + 1, count as i32) {
+            // The interior follows the rows. The ICON grid generator may end it
+            // before the last entity (DWD's limited-area grids leave a few deep
+            // rows after it; ICON's whole-grid loops run to the end anyway).
+            if start[slot(0)] != cursor + 1 || !(cursor..=count as i32).contains(&end[slot(0)]) {
                 return Err(bad(format!(
                     "{name}: start/end_idx_{suffix} of the interior do not match"
                 )));
@@ -510,33 +514,6 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
                     )));
                 }
             }
-        }
-        // A vertex carries the deepest row among its cells, as the ICON grid
-        // generator numbers them (DWD's R02B06 nest: every vertex). Negative
-        // values mark a child's overlap; ICON resets them at load, so they
-        // are not compared.
-        let cell_ctrl = crate::required_values_i32(&file, "refin_c_ctrl")?;
-        let vertex_ctrl = crate::required_values_i32(&file, "refin_v_ctrl")?;
-        let vertex_of_cell = crate::required_values_i32(&file, "vertex_of_cell")?;
-        let mut deepest = vec![0; vertices];
-        for k in 0..3 {
-            for c in 0..cells {
-                let v = vertex_of_cell[k * cells + c];
-                if !(1..=vertices as i32).contains(&v) {
-                    return Err(bad(format!("{name}: vertex_of_cell {v} out of range")));
-                }
-                let slot = &mut deepest[v as usize - 1];
-                *slot = (*slot).max(cell_ctrl[c].max(0));
-            }
-        }
-        if deepest
-            .iter()
-            .zip(&vertex_ctrl)
-            .any(|(&want, &got)| got >= 0 && want != got)
-        {
-            return Err(bad(format!(
-                "{name}: refin_v_ctrl is not the deepest refin_c_ctrl around each vertex"
-            )));
         }
         loaded.push(Domain {
             cells,
@@ -1208,15 +1185,18 @@ enum IconCtrl<'a> {
     /// Rows counted from an open boundary, capped at ICON's reordered rows
     /// (the regional adapter's convention).
     Boundary,
-    /// A nest's rows, flagged to `depth` cell rows as the ICON grid generator
-    /// does (`bdy_indexing_depth`). `cell_row` is each cell's row: the least
-    /// of its vertices' distances from the boundary, in vertex rows. From it,
-    /// as the generator numbers them (checked against DWD's
-    /// `icon_grid_0031_R02B06_N02-grfinfo.nc`, every cell, edge and vertex
-    /// equal; guide 11.86): an edge is 1 on the boundary, `2r` inside row `r`,
-    /// `2r + 1` between rows `r` and `r + 1`, flagged up to `2 depth - 1`; a
-    /// vertex takes the deepest flagged row among its cells, 0 if none.
-    Nest { cell_row: &'a [u32], depth: u32 },
+    /// A nest's rows, flagged to `depth` cell rows as the current ICON grid
+    /// generator does with `bdy_indexing_depth = 14` (guide 11.86; every
+    /// cell, edge and vertex equal on six DWD nests and limited-area grids):
+    /// a vertex's row is its distance from the boundary in vertex rows (1 on
+    /// it), a cell's the least of its vertices', an edge 1 on the boundary,
+    /// `2r` inside row `r` and `2r + 1` between rows `r` and `r + 1`; flagged
+    /// up to `depth` (cells, vertices) and `2 depth` (edges), 0 beyond.
+    Nest {
+        vertex_row: &'a [u32],
+        cell_row: &'a [u32],
+        depth: u32,
+    },
 }
 
 /// Edges, vertex fans, metrics and boundary flags of a grid whose cells are
@@ -1351,7 +1331,11 @@ fn assemble_icon_grid(
             );
             (cell_ctrl, vertex_ctrl, edge_ctrl)
         }
-        IconCtrl::Nest { cell_row, depth } => {
+        IconCtrl::Nest {
+            vertex_row,
+            cell_row,
+            depth,
+        } => {
             let flag = |row: u32, limit: u32| {
                 if row <= limit {
                     row as i32
@@ -1360,13 +1344,10 @@ fn assemble_icon_grid(
                 }
             };
             let cell_ctrl = cell_row.iter().map(|&r| flag(r, depth)).collect::<Vec<_>>();
-            let mut vertex_ctrl = vec![0; vertex_xyz.len()];
-            for (cell, corners) in vertex_of_cell.iter().enumerate() {
-                for &v in corners {
-                    let slot = &mut vertex_ctrl[v as usize - 1];
-                    *slot = (*slot).max(cell_ctrl[cell]);
-                }
-            }
+            let vertex_ctrl = vertex_row
+                .iter()
+                .map(|&r| flag(r, depth))
+                .collect::<Vec<_>>();
             let edge_ctrl = adjacent_cell_of_edge
                 .iter()
                 .map(|cells| {
@@ -1381,7 +1362,7 @@ fn assemble_icon_grid(
                     } else {
                         low.saturating_mul(2).saturating_add(1)
                     };
-                    flag(value, 2 * depth - 1)
+                    flag(value, 2 * depth)
                 })
                 .collect::<Vec<_>>();
             (cell_ctrl, vertex_ctrl, edge_ctrl)
