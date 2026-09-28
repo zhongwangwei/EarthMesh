@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_inputs"
-version = "3.0.0-alpha7"
+version = "3.0.0-alpha8"
 edition = "2021"
 description = "EarthMesh input layer: source data readers and the criteria evaluated on them"
 license = "GPL-2.0-only"

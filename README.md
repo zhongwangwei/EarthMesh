@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha7
+# EarthMesh v3.0.0-alpha8
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -267,6 +267,17 @@ For questions or support, please contact:
   removed generic `io` writers. The diagnostic `run_manifest.json` contract is
   now explicitly versioned as schema 1; its current minimal fields replace the
   earlier experimental manifest shape.
+- 2026.09.28 - v3.0.0-alpha8 fixes Studio (the desktop GUI) after an audit
+  and a walk-through of the real interface. Leaving an invalid target (a
+  closed global ICON grid with cell-inserting refinement) is no longer blocked
+  by it; CMRC "safe mother only" can refine that ICON grid from Studio; hidden
+  or half-typed numbers no longer block every save and are reported by field;
+  the project summary shows why an invalid draft is invalid instead of a
+  stale "valid"; switching algorithms no longer carries CMRC's route to
+  another backend; an opened `threshold_region` and `quality_policy:
+  domain_export` are shown or kept instead of silently hidden or dropped.
+  Every sample project opens and saves in Studio with an unchanged engine plan.
+  The engine is unchanged from alpha7.
 - 2026.09.28 - v3.0.0-alpha7 splits the input and output layers into their own
   crates (`earthmesh_inputs`, `earthmesh_delivery`) and runs every backend,
   CMRC included, through one dispatch and one shared tail. Every final triangle
