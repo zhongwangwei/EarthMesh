@@ -207,7 +207,6 @@ pub fn write_icon_nest_set(
             IconCtrl::Boundary
         } else {
             IconCtrl::Nest {
-                vertex_row: &domain.vertex_row,
                 cell_row: &domain.cell_row,
                 depth: ICON_NEST_BOUNDARY_DEPTH,
             }
@@ -395,6 +394,12 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
             let start = crate::required_values_i32(&file, &format!("start_idx_{suffix}"))?;
             let end = crate::required_values_i32(&file, &format!("end_idx_{suffix}"))?;
             let slot = |level: i32| (level - min_rl) as usize;
+            if start.len() <= slot(max_rl) || end.len() <= slot(max_rl) {
+                return Err(bad(format!(
+                    "{name}: start/end_idx_{suffix} have fewer than {} levels",
+                    slot(max_rl) + 1
+                )));
+            }
             let reordered = |v: i32| (1..=max_rl).contains(&v);
             let head = ctrl.iter().take_while(|v| reordered(**v)).count();
             if ctrl.len() != count
@@ -405,20 +410,18 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
                     "{name}: {suffix} entities are not sorted by refin_{suffix}_ctrl"
                 )));
             }
+            // Chained ranges, an empty row being `end + 1 .. end`.
+            let mut cursor = 0i32;
             for level in 1..=max_rl {
-                let first = ctrl.iter().position(|&v| v == level);
-                let last = ctrl.iter().rposition(|&v| v == level);
-                let expect = match (first, last) {
-                    (Some(f), Some(l)) => (f as i32 + 1, l as i32 + 1),
-                    _ => (count as i32 + 1, count as i32),
-                };
-                if (start[slot(level)], end[slot(level)]) != expect {
+                let rows = ctrl.iter().filter(|&&v| v == level).count() as i32;
+                if (start[slot(level)], end[slot(level)]) != (cursor + 1, cursor + rows) {
                     return Err(bad(format!(
                         "{name}: start/end_idx_{suffix} of row {level} do not match"
                     )));
                 }
+                cursor += rows;
             }
-            if head < count && (start[slot(0)], end[slot(0)]) != (head as i32 + 1, count as i32) {
+            if (start[slot(0)], end[slot(0)]) != (cursor + 1, count as i32) {
                 return Err(bad(format!(
                     "{name}: start/end_idx_{suffix} of the interior do not match"
                 )));
@@ -465,16 +468,25 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
             let parent_edges_of =
                 |p: i32| (0..3).map(move |k| up.edge_of_cell[k * up.cells + p as usize - 1]);
             for e in 0..edges {
-                let (a, b) = (adjacent[e], adjacent[edges + e]);
+                // Either slot may be the missing one on a boundary edge (the
+                // ICON grid generator writes 0 in the first as often).
+                let sides = [adjacent[e], adjacent[edges + e]]
+                    .into_iter()
+                    .filter(|&c| (1..=cells as i32).contains(&c))
+                    .map(|c| parent_cell[c as usize - 1])
+                    .collect::<Vec<_>>();
                 let pe = parent_edge[e];
                 if !(1..=up.edges as i32).contains(&pe) {
                     return Err(bad(format!("{name}: parent_edge_index {pe} out of range")));
                 }
-                let pa = parent_cell[a as usize - 1];
-                let owned = parent_edges_of(pa).any(|x| x == pe)
-                    || (b > 0 && parent_edges_of(parent_cell[b as usize - 1]).any(|x| x == pe));
-                if b > 0 && parent_cell[b as usize - 1] == pa {
-                    *inner.entry(pa).or_default() += 1;
+                if sides.is_empty() {
+                    return Err(bad(format!("{name}: child edge {} has no cell", e + 1)));
+                }
+                let owned = sides.iter().any(|&p| parent_edges_of(p).any(|x| x == pe));
+                if let [pa, pb] = sides[..] {
+                    if pa == pb {
+                        *inner.entry(pa).or_default() += 1;
+                    }
                 }
                 if !owned {
                     return Err(bad(format!(
@@ -498,6 +510,33 @@ pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
                     )));
                 }
             }
+        }
+        // A vertex carries the deepest row among its cells, as the ICON grid
+        // generator numbers them (DWD's R02B06 nest: every vertex). Negative
+        // values mark a child's overlap; ICON resets them at load, so they
+        // are not compared.
+        let cell_ctrl = crate::required_values_i32(&file, "refin_c_ctrl")?;
+        let vertex_ctrl = crate::required_values_i32(&file, "refin_v_ctrl")?;
+        let vertex_of_cell = crate::required_values_i32(&file, "vertex_of_cell")?;
+        let mut deepest = vec![0; vertices];
+        for k in 0..3 {
+            for c in 0..cells {
+                let v = vertex_of_cell[k * cells + c];
+                if !(1..=vertices as i32).contains(&v) {
+                    return Err(bad(format!("{name}: vertex_of_cell {v} out of range")));
+                }
+                let slot = &mut deepest[v as usize - 1];
+                *slot = (*slot).max(cell_ctrl[c].max(0));
+            }
+        }
+        if deepest
+            .iter()
+            .zip(&vertex_ctrl)
+            .any(|(&want, &got)| got >= 0 && want != got)
+        {
+            return Err(bad(format!(
+                "{name}: refin_v_ctrl is not the deepest refin_c_ctrl around each vertex"
+            )));
         }
         loaded.push(Domain {
             cells,
@@ -1170,14 +1209,14 @@ enum IconCtrl<'a> {
     /// (the regional adapter's convention).
     Boundary,
     /// A nest's rows, flagged to `depth` cell rows as the ICON grid generator
-    /// does (`bdy_indexing_depth`): vertex rows from the boundary, a cell's
-    /// row the least of its vertices', an edge `2r` inside row `r` and
-    /// `2r + 1` between rows `r` and `r + 1`.
-    Nest {
-        vertex_row: &'a [u32],
-        cell_row: &'a [u32],
-        depth: u32,
-    },
+    /// does (`bdy_indexing_depth`). `cell_row` is each cell's row: the least
+    /// of its vertices' distances from the boundary, in vertex rows. From it,
+    /// as the generator numbers them (checked against DWD's
+    /// `icon_grid_0031_R02B06_N02-grfinfo.nc`, every cell, edge and vertex
+    /// equal; guide 11.86): an edge is 1 on the boundary, `2r` inside row `r`,
+    /// `2r + 1` between rows `r` and `r + 1`, flagged up to `2 depth - 1`; a
+    /// vertex takes the deepest flagged row among its cells, 0 if none.
+    Nest { cell_row: &'a [u32], depth: u32 },
 }
 
 /// Edges, vertex fans, metrics and boundary flags of a grid whose cells are
@@ -1312,11 +1351,7 @@ fn assemble_icon_grid(
             );
             (cell_ctrl, vertex_ctrl, edge_ctrl)
         }
-        IconCtrl::Nest {
-            vertex_row,
-            cell_row,
-            depth,
-        } => {
+        IconCtrl::Nest { cell_row, depth } => {
             let flag = |row: u32, limit: u32| {
                 if row <= limit {
                     row as i32
@@ -1325,10 +1360,13 @@ fn assemble_icon_grid(
                 }
             };
             let cell_ctrl = cell_row.iter().map(|&r| flag(r, depth)).collect::<Vec<_>>();
-            let vertex_ctrl = vertex_row
-                .iter()
-                .map(|&r| flag(r, depth))
-                .collect::<Vec<_>>();
+            let mut vertex_ctrl = vec![0; vertex_xyz.len()];
+            for (cell, corners) in vertex_of_cell.iter().enumerate() {
+                for &v in corners {
+                    let slot = &mut vertex_ctrl[v as usize - 1];
+                    *slot = (*slot).max(cell_ctrl[cell]);
+                }
+            }
             let edge_ctrl = adjacent_cell_of_edge
                 .iter()
                 .map(|cells| {
@@ -1343,7 +1381,7 @@ fn assemble_icon_grid(
                     } else {
                         low.saturating_mul(2).saturating_add(1)
                     };
-                    flag(value, 2 * depth)
+                    flag(value, 2 * depth - 1)
                 })
                 .collect::<Vec<_>>();
             (cell_ctrl, vertex_ctrl, edge_ctrl)
@@ -1918,27 +1956,28 @@ fn write_grf_indices(
     interior_slot: usize,
     boundary_slots: usize,
 ) -> io::Result<()> {
+    // The ranges chain as the ICON grid generator writes them: rows
+    // 1..=max_rl in order, then the interior (level 0, which also holds rows
+    // beyond max_rl), each starting one past the previous end -- an empty row
+    // is `start = end + 1` at that point, so a grid without a boundary has
+    // row 1 as 1..0 and its interior from 1 (DWD's global R02B05 grid). The
+    // levels past the interior (child overlap, halos) are empty after it.
     let count_i32 = i32::try_from(count).map_err(index_error)?;
     let mut start = vec![count_i32 + 1; grf_count];
     let mut end = vec![count_i32; grf_count];
-    // Rows beyond the reordered ones sit with the interior (level 0).
-    let boundary_count = controls
-        .iter()
-        .filter(|value| (1..=boundary_slots as i32).contains(*value))
-        .count();
-    if boundary_count < count {
-        start[interior_slot] = i32::try_from(boundary_count + 1).map_err(index_error)?;
-        end[interior_slot] = count_i32;
-    }
+    let mut cursor = 0i32;
     for group in 1..=boundary_slots {
-        let first = controls.iter().position(|value| *value == group as i32);
-        let last = controls.iter().rposition(|value| *value == group as i32);
+        let rows = controls
+            .iter()
+            .filter(|value| **value == group as i32)
+            .count();
         let slot = interior_slot + group;
-        if let (Some(first), Some(last)) = (first, last) {
-            start[slot] = i32::try_from(first + 1).map_err(index_error)?;
-            end[slot] = i32::try_from(last + 1).map_err(index_error)?;
-        }
+        start[slot] = cursor + 1;
+        cursor += i32::try_from(rows).map_err(index_error)?;
+        end[slot] = cursor;
     }
+    start[interior_slot] = cursor + 1;
+    end[interior_slot] = count_i32;
     let dim = match suffix {
         "c" => "cell_grf",
         "e" => "edge_grf",
