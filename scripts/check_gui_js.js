@@ -109,7 +109,8 @@ check(
 log("niter_refine default remains engine-owned");
 
 check(
-  html.includes('const springControls = algorithm === "stretch"') &&
+  html.includes('const springControls = algorithm === "icon_nest"') &&
+    html.includes(': algorithm === "stretch"') &&
     html.includes(': algorithm === "certified"') &&
     html.includes("generic spring smoothing would invalidate the certificate.") &&
     html.includes("so the run uses no spring settings.") &&
@@ -1444,9 +1445,9 @@ log("discrete mask is existing-project-only");
     "non-Method-C algorithms must not render or retain H-field controls",
   );
   check(
-    html.includes('const readsHfield = next === "method_c" || next === "red_green" || next === "stretch";') &&
+    html.includes('const readsHfield = next === "method_c" || next === "red_green" || next === "stretch" || next === "icon_nest";') &&
       html.includes('if (!readsHfield && (specifiedRefine.route || "adaptive") === "hfield") {') &&
-      html.includes('const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch";'),
+      html.includes('const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch" || algorithm === "icon_nest";'),
     "switching algorithm must reset a selected h-field route",
   );
   // Red-green's recommended demand is the h-field (guide 11.71): switching to

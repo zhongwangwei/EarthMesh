@@ -85,6 +85,47 @@ pub struct CertifiedRunRecord {
     pub ready_marker: PathBuf,
 }
 
+/// What a nested ICON run (`refine_backend = 'icon_nest'`) published beside
+/// the global gridfile (guide 11.86).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconNestRunRecord {
+    /// One ICON grid file per domain, the global grid first.
+    pub domains: Vec<PathBuf>,
+    /// A `&grid_nml` naming the files and their parents, ready for ICON.
+    pub namelist: PathBuf,
+    /// Per-domain sizes, the demand each serves, and its angles.
+    pub summary: PathBuf,
+}
+
+impl IconNestRunRecord {
+    /// The published files by model role. The global grid is the ICON model
+    /// input every ICON delivery has; the nests follow it. ICON takes at
+    /// most `max_dom` = 10 domains.
+    pub fn model_artifacts(&self) -> Vec<(&'static str, PathBuf)> {
+        const DOMAINS: [&str; 10] = [
+            "icon_mesh_input",
+            "icon_nest_dom02",
+            "icon_nest_dom03",
+            "icon_nest_dom04",
+            "icon_nest_dom05",
+            "icon_nest_dom06",
+            "icon_nest_dom07",
+            "icon_nest_dom08",
+            "icon_nest_dom09",
+            "icon_nest_dom10",
+        ];
+        DOMAINS
+            .iter()
+            .zip(&self.domains)
+            .map(|(role, path)| (*role, path.clone()))
+            .chain([
+                ("icon_grid_nml", self.namelist.clone()),
+                ("icon_nest_summary", self.summary.clone()),
+            ])
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RefinePipelineRunReport {
     /// Source grid used by backends that refine an existing mesh.
@@ -121,6 +162,8 @@ pub struct RefinePipelineRunReport {
     pub spring_nest_passes: usize,
     /// CMRC's strict delivery evidence, or `None` for the other peer backends.
     pub certified_run: Option<CertifiedRunRecord>,
+    /// The ICON nest set, or `None` for every backend but `icon_nest`.
+    pub icon_nest_run: Option<IconNestRunRecord>,
     /// Method-C AdaptiveHybrid evidence, or `None` for canonical Method-C and
     /// the other refinement backends.
     pub lepp_adaptive_hybrid: Option<LeppAdaptiveHybridRunRecord>,

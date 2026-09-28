@@ -600,7 +600,16 @@ fn run_prepared_mkgrd(
                 );
                 let mut model_artifacts = std::collections::BTreeMap::new();
                 let mut adapter_skip_reason = None;
-                if spec.config.target.model_format == earthmesh_project::ModelFormat::Icon {
+                let icon_nests = icon_nest_run(&report);
+                if let Some(nests) = icon_nests {
+                    // A nested run published its ICON grid set with the
+                    // global grid it was cut from; the lone-grid writer would
+                    // only repeat the global grid without the nests' links.
+                    for (role, path) in nests.model_artifacts() {
+                        println!("{role}={}", path.display());
+                        model_artifacts.insert(role, path);
+                    }
+                } else if spec.config.target.model_format == earthmesh_project::ModelFormat::Icon {
                     if spec.config.target.cell == earthmesh_project::MeshCellKind::Tri {
                         let stem = gridfile.file_stem().unwrap_or_default().to_string_lossy();
                         let output = gridfile
@@ -995,6 +1004,22 @@ fn final_gridfile(
         }
         DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
             Some(run.output.output.as_path())
+        }
+        _ => None,
+    }
+}
+
+fn icon_nest_run(
+    report: &earthmesh_cli::mkgrd_run_types::MkgrdTopLevelDefaultRestartRefineRunReport,
+) -> Option<&earthmesh_cli::mkgrd_run_types::IconNestRunRecord> {
+    use earthmesh_cli::mkgrd_run_types::{
+        MkgrdTopLevelDefaultRestartRefineRunReport as DefaultReport,
+        MkgrdTopLevelDispatchRunReport as DispatchReport,
+    };
+    match report {
+        DefaultReport::RefinePipeline(run)
+        | DefaultReport::Dispatch(DispatchReport::RefinePipeline(run)) => {
+            run.icon_nest_run.as_ref()
         }
         _ => None,
     }

@@ -166,19 +166,20 @@ pub(super) fn run_refine_pipeline_in_workspace(
             max_tris,
             output_dir,
         )?,
-        RefineBackend::MethodC | RefineBackend::RedGreen | RefineBackend::Stretch => {
-            refine_from_shared_source(
-                &contents,
-                &config,
-                backend,
-                &quality,
-                &method_c_algorithm,
-                namelist_source,
-                workdir,
-                max_tris,
-                output_dir,
-            )?
-        }
+        RefineBackend::MethodC
+        | RefineBackend::RedGreen
+        | RefineBackend::Stretch
+        | RefineBackend::IconNest => refine_from_shared_source(
+            &contents,
+            &config,
+            backend,
+            &quality,
+            &method_c_algorithm,
+            namelist_source,
+            workdir,
+            max_tris,
+            output_dir,
+        )?,
     };
     finish_refined(
         contents,
@@ -484,8 +485,10 @@ fn refine_from_shared_source(
     // Said now rather than at the backend branch, because the reader below runs
     // first -- and on the unconfigured prefix it fails with a message about
     // Method-C and a `/tmp` path nobody typed.
-    if matches!(backend, RefineBackend::RedGreen | RefineBackend::Stretch)
-        && refine.refine_cal
+    if matches!(
+        backend,
+        RefineBackend::RedGreen | RefineBackend::Stretch | RefineBackend::IconNest
+    ) && refine.refine_cal
         && adaptive_options.is_none()
         && !has_threshold_hfield_sources
         && !has_configured_calculated_regions
@@ -598,6 +601,9 @@ fn refine_from_shared_source(
         let why = if backend == RefineBackend::Stretch {
             "stretch refinement's resolution is its vertex placement, and a Laplacian spring \
              on top of that would relax it back toward uniform"
+        } else if backend == RefineBackend::IconNest {
+            "icon_nest refinement keeps the global grid as it is and refines in separate nest \
+             grids, so there is no refined region to smooth"
         } else {
             "certified refinement owns its geometry certificate, and a Laplacian spring on top \
              of that would invalidate it"
@@ -614,7 +620,7 @@ fn refine_from_shared_source(
     // needs is the same from either -- a gridfile mesh, and whatever each one
     // can honestly say about how it was built.
     let refined = match backend {
-        RefineBackend::RedGreen | RefineBackend::Stretch => {
+        RefineBackend::RedGreen | RefineBackend::Stretch | RefineBackend::IconNest => {
             // What this route does not read, said outright rather than served
             // quietly with less: any of these would simply be dropped, and the
             // run would still write a valid mesh that passes every quality check
@@ -694,6 +700,8 @@ fn refine_from_shared_source(
             };
             if backend == RefineBackend::Stretch {
                 refine_with_stretch(mesh, &regions, &refine, max_level, adaptive, hfield)?
+            } else if backend == RefineBackend::IconNest {
+                refine_with_icon_nest(mesh, &regions, &refine, max_level, adaptive, hfield)?
             } else {
                 refine_with_redgreen(
                     &mesh,
@@ -828,6 +836,7 @@ fn refine_from_shared_source(
                         hfield_context,
                         adaptive_run,
                         lepp_hard_regions: Vec::new(),
+                        icon_nest: None,
                     },
                     diagnostics: BackendDiagnostics {
                         state: Some(state),
@@ -905,6 +914,7 @@ fn finish_refined(
                 hfield_context,
                 adaptive_run,
                 lepp_hard_regions,
+                icon_nest,
             },
         diagnostics:
             BackendDiagnostics {
@@ -967,6 +977,20 @@ fn finish_refined(
         }
         other => other,
     };
+
+    // ICON nests are cut from the grid as published: after the angle
+    // contract, so each nest corner is the parent vertex ICON looks for.
+    let icon_nest_run = icon_nest
+        .map(|demand| {
+            super::icon_nest::write_icon_nests(
+                &output_mesh,
+                &demand,
+                hfield_context.as_ref(),
+                nxp,
+                &file_dir.join("result"),
+            )
+        })
+        .transpose()?;
 
     // Measured from backend output, not from the request: the deepest per-cell
     // level any backend recorded. A backend that records none (LEPP) falls back
@@ -1434,6 +1458,7 @@ fn finish_refined(
         transition_faces,
         spring_nest_passes,
         certified_run: None,
+        icon_nest_run,
         lepp_adaptive_hybrid,
         lepp_post_quality,
         spring_nest_iterations,
@@ -1651,6 +1676,8 @@ pub(super) struct RefinedDemandRecord {
     /// Hard regions the LEPP driver consumed, used by output carving and
     /// backend-neutral achieved-resolution measurements.
     pub(super) lepp_hard_regions: Vec<earthmesh_mesh::RefinementRegion>,
+    /// The demand an `icon_nest` run serves with nests cut in the tail.
+    pub(super) icon_nest: Option<super::icon_nest::IconNestDemand>,
 }
 
 /// A backend's own account of the run. Reported and archived, not interpreted.
@@ -2343,6 +2370,107 @@ fn measured_cell_levels(mesh: &crate::UnstructuredMesh, h0_radians: f64) -> Cell
     CellRefineLevels { m, w }
 }
 
+/// The demand of a backend that keeps the base grid's topology, planned up
+/// front: every level's criteria circles, nested with the named regions (no
+/// halo -- nothing is marked round by round).
+struct FixedTopologyDemand {
+    planned_circles: Vec<crate::refinement_demand::nest::LevelCircles>,
+    regions: Vec<earthmesh_mesh::RefinementRegion>,
+}
+
+fn plan_fixed_topology_demand(
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    refine: &RefineConfig,
+    max_level: usize,
+    adaptive: Option<&RedGreenAdaptive<'_>>,
+) -> io::Result<FixedTopologyDemand> {
+    let mut planned_circles = Vec::new();
+    if let Some(adaptive) = adaptive {
+        for level in 1..=max_level {
+            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
+            planned_circles.push(
+                crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
+                    refine,
+                    &adaptive.inputs,
+                    level,
+                    cell_meters,
+                    cell_meters,
+                    cell_meters,
+                )?,
+            );
+        }
+    }
+    let regions = nested_criteria_regions(named_regions, &planned_circles, 1, 0.0, |_| 0, false);
+    Ok(FixedTopologyDemand {
+        planned_circles,
+        regions,
+    })
+}
+
+/// The demand's target level at a lon/lat, through the one interface every
+/// consumer reads: the h-field when there is one, the regions otherwise.
+pub(super) fn fixed_topology_targets<'a>(
+    regions: &'a [earthmesh_mesh::RefinementRegion],
+    hfield: Option<&'a crate::hfield_gridfile_context::HfieldGridfileContext>,
+) -> io::Result<Box<dyn earthmesh_refine::TargetLevelField + 'a>> {
+    Ok(match hfield {
+        Some(context) => Box::new(earthmesh_refine::HfieldTargets::new(
+            &context.field,
+            context.base_m,
+            context.max_level,
+        )?),
+        None => Box::new(earthmesh_refine::RegionTargets::new(regions)),
+    })
+}
+
+/// The run record of a fixed-topology backend, written as red-green writes
+/// its passes -- each level's own circles with the named regions, up to the
+/// first level nothing asks for -- so the MPAS width and the quality
+/// reconciliation read it the same way. There are no rounds, so the face
+/// counts are the whole grid's.
+fn fixed_topology_adaptive_run(
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    planned_circles: &[crate::refinement_demand::nest::LevelCircles],
+    adaptive: Option<RedGreenAdaptive<'_>>,
+    max_level: usize,
+    faces: usize,
+) -> Option<AdaptiveRunRecord> {
+    let mut passes = Vec::new();
+    for (index, demand) in planned_circles.iter().enumerate() {
+        let level = index + 1;
+        let mut pass_regions = named_regions.to_vec();
+        pass_regions.extend(demand.circles.iter().cloned());
+        if !pass_regions.iter().any(|region| region.level() >= level) {
+            break;
+        }
+        passes.push(crate::refinement_demand::nest::NestPassReport {
+            level,
+            cell_meters: adaptive
+                .as_ref()
+                .map(|adaptive| adaptive.base_cell_meters / 2f64.powi(index as i32))
+                .unwrap_or(0.0),
+            circle_count: pass_regions.len(),
+            regions: pass_regions,
+            demanded_cells: demand.demanded_cells,
+            faces_before: faces,
+            faces_after: faces,
+        });
+    }
+    adaptive.map(|adaptive| {
+        (
+            crate::refinement_demand::nest::AdaptiveNestReport {
+                deepest_level: passes.len(),
+                passes,
+                stopped_on_empty_demand: false,
+                spring_passes: 0,
+            },
+            max_level,
+            adaptive.base_cell_meters,
+            adaptive.coastline,
+        )
+    })
+}
+
 /// Refine by stretching: keep the base grid's topology and move its vertices
 /// toward the demand by a Schmidt transformation (guide 11.79).
 ///
@@ -2364,35 +2492,11 @@ fn refine_with_stretch(
     let mut state = MeshState::from_triangular_mesh(&mesh)?;
     let h0_radians = median_longest_edge_radians(&state);
 
-    let mut planned_circles = Vec::new();
-    if let Some(adaptive) = &adaptive {
-        for level in 1..=max_level {
-            let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
-            planned_circles.push(
-                crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
-                    refine,
-                    &adaptive.inputs,
-                    level,
-                    cell_meters,
-                    cell_meters,
-                    cell_meters,
-                )?,
-            );
-        }
-    }
-    // No halo here: nothing is marked round by round.
-    let regions = nested_criteria_regions(named_regions, &planned_circles, 1, 0.0, |_| 0, false);
-    let region_targets = earthmesh_refine::RegionTargets::new(&regions);
-    let hfield_targets = hfield
-        .as_ref()
-        .map(|context| {
-            earthmesh_refine::HfieldTargets::new(&context.field, context.base_m, context.max_level)
-        })
-        .transpose()?;
-    let targets: &dyn earthmesh_refine::TargetLevelField = match &hfield_targets {
-        Some(field) => field,
-        None => &region_targets,
-    };
+    let FixedTopologyDemand {
+        planned_circles,
+        regions,
+    } = plan_fixed_topology_demand(named_regions, refine, max_level, adaptive.as_ref())?;
+    let targets = fixed_topology_targets(&regions, hfield.as_ref())?;
 
     let live = state.active_vertex_slots().collect::<Vec<_>>();
     let radius_of = |p: earthmesh_mesh::CartesianPoint| (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
@@ -2427,6 +2531,7 @@ fn refine_with_stretch(
             ),
         ));
     };
+    drop(targets);
     let demanded = levels.iter().filter(|&&level| level > 0).count();
     earthmesh_mesh::schmidt_stretch(&mut points, focus, factor);
     for &v in &live {
@@ -2455,51 +2560,66 @@ fn refine_with_stretch(
     let voronoi = spherical_voronoi_state(&refined)?;
     let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
     let cell_levels = h0_radians.map(|h0| measured_cell_levels(&output_mesh, h0));
-    // Recorded as red-green records its passes -- each level's own circles
-    // with the named regions, up to the first level nothing asks for -- so
-    // the MPAS width and the quality reconciliation read it the same way.
-    // There are no rounds, so the face counts are the whole grid's.
     let faces = live.len().saturating_mul(2).saturating_sub(4);
-    let mut passes = Vec::new();
-    for (index, demand) in planned_circles.iter().enumerate() {
-        let level = index + 1;
-        let mut pass_regions = named_regions.to_vec();
-        pass_regions.extend(demand.circles.iter().cloned());
-        if !pass_regions.iter().any(|region| region.level() >= level) {
-            break;
-        }
-        passes.push(crate::refinement_demand::nest::NestPassReport {
-            level,
-            cell_meters: adaptive
-                .as_ref()
-                .map(|adaptive| adaptive.base_cell_meters / 2f64.powi(index as i32))
-                .unwrap_or(0.0),
-            circle_count: pass_regions.len(),
-            regions: pass_regions,
-            demanded_cells: demand.demanded_cells,
-            faces_before: faces,
-            faces_after: faces,
-        });
-    }
+    let adaptive_run =
+        fixed_topology_adaptive_run(named_regions, &planned_circles, adaptive, max_level, faces);
     Ok(RefinedGrid {
         output_mesh,
         cell_levels,
         pentagon_indices: pentagons,
         demand: RefinedDemandRecord {
             hfield_context: hfield,
-            adaptive_run: adaptive.map(|adaptive| {
-                (
-                    crate::refinement_demand::nest::AdaptiveNestReport {
-                        deepest_level: passes.len(),
-                        passes,
-                        stopped_on_empty_demand: false,
-                        spring_passes: 0,
-                    },
-                    max_level,
-                    adaptive.base_cell_meters,
-                    adaptive.coastline,
-                )
-            }),
+            adaptive_run,
+            ..RefinedDemandRecord::default()
+        },
+        diagnostics: BackendDiagnostics {
+            state: Some(voronoi),
+            ..BackendDiagnostics::default()
+        },
+    })
+}
+
+/// Serve the demand with ICON nests (guide 11.86): the global grid is
+/// published as it is, and the nests are cut from it in the shared tail,
+/// after the angle contract has settled its vertices, so each nest's corners
+/// are exactly its parent's.
+fn refine_with_icon_nest(
+    mesh: TriangularMesh,
+    named_regions: &[earthmesh_mesh::RefinementRegion],
+    refine: &RefineConfig,
+    max_level: usize,
+    adaptive: Option<RedGreenAdaptive<'_>>,
+    hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
+) -> io::Result<RefinedGrid> {
+    let pentagons = mesh.impent;
+    let state = MeshState::from_triangular_mesh(&mesh)?;
+    let faces = state
+        .active_vertex_slots()
+        .count()
+        .saturating_mul(2)
+        .saturating_sub(4);
+    let FixedTopologyDemand {
+        planned_circles,
+        regions,
+    } = plan_fixed_topology_demand(named_regions, refine, max_level, adaptive.as_ref())?;
+    let voronoi = spherical_voronoi_state(&mesh)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+    // The global grid is the base: level 0 everywhere. What the nests reach
+    // is reported with them.
+    let cell_levels = Some(CellRefineLevels {
+        m: vec![0; output_mesh.m_points.len()],
+        w: vec![0; output_mesh.w_points.len()],
+    });
+    let adaptive_run =
+        fixed_topology_adaptive_run(named_regions, &planned_circles, adaptive, max_level, faces);
+    Ok(RefinedGrid {
+        output_mesh,
+        cell_levels,
+        pentagon_indices: pentagons,
+        demand: RefinedDemandRecord {
+            hfield_context: hfield,
+            adaptive_run,
+            icon_nest: Some(super::icon_nest::IconNestDemand { regions }),
             ..RefinedDemandRecord::default()
         },
         diagnostics: BackendDiagnostics {
@@ -3809,12 +3929,17 @@ enum RefineBackend {
     RedGreen,
     Certified,
     Stretch,
+    IconNest,
 }
 
 fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
     // CMRC's certificate covers its geometry; a stretched grid's resolution
-    // is its geometry, and a regional spring would relax it back.
-    if matches!(backend, RefineBackend::Certified | RefineBackend::Stretch) {
+    // is its geometry, and a regional spring would relax it back. A nested
+    // run refines nothing in place, so there is nothing to smooth.
+    if matches!(
+        backend,
+        RefineBackend::Certified | RefineBackend::Stretch | RefineBackend::IconNest
+    ) {
         0
     } else {
         requested
@@ -3828,6 +3953,7 @@ fn refine_backend_label(backend: RefineBackend) -> &'static str {
         RefineBackend::RedGreen => "red_green",
         RefineBackend::Certified => "certified",
         RefineBackend::Stretch => "stretch",
+        RefineBackend::IconNest => "icon_nest",
     }
 }
 
@@ -3839,10 +3965,11 @@ fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
         "red_green" => Ok(RefineBackend::RedGreen),
         "certified" => Ok(RefineBackend::Certified),
         "stretch" => Ok(RefineBackend::Stretch),
+        "icon_nest" => Ok(RefineBackend::IconNest),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green, certified and stretch"
+                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green, certified, stretch and icon_nest"
             ),
         )),
     }

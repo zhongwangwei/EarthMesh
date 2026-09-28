@@ -4,6 +4,7 @@ mod cmrc_local_updates;
 mod cmrc_region;
 mod final_delivery;
 mod global_source;
+mod icon_nest;
 mod lepp_targets;
 pub use lepp_targets::LeppResolvedTargets;
 mod model_delivery;

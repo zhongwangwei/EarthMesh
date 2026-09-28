@@ -182,6 +182,12 @@ pub enum RefinementBackend {
     /// The cell count is fixed: finer toward the demand, coarser away from
     /// it, with one focus, so a demand spread over the globe is not served.
     Stretch,
+    /// Keep the global ICON grid as it is and serve the demand with ICON
+    /// nests: separate grids of their parent's triangles split 1->4, one
+    /// level inside the other, which ICON runs two-way nested. Every grid
+    /// keeps degree 5/6. Needs a closed global Tri grid delivered as ICON;
+    /// ICON takes at most ten grids, the global one included.
+    IconNest,
 }
 
 impl RefinementBackend {

@@ -107,7 +107,25 @@ pub(crate) fn read_project_delivery(
             ModelFormat::Mpas | ModelFormat::MpasOcean => &["mpas_mesh_input", "mpas_graph_info"],
         }
     };
-    if artifacts.len() != expected.len() || expected.iter().any(|key| !artifacts.contains_key(*key))
+    // A nested ICON run adds its nests, their grid_nml and a summary to the
+    // global grid every ICON delivery has.
+    let nested = !native_only
+        && cfg.target.model_format == ModelFormat::Icon
+        && cfg.refinement.backend == earthmesh_project::RefinementBackend::IconNest;
+    let extra = |key: &str| {
+        nested
+            && (key == "icon_grid_nml"
+                || key == "icon_nest_summary"
+                || key
+                    .strip_prefix("icon_nest_dom")
+                    .is_some_and(|n| n.len() == 2 && n.bytes().all(|b| b.is_ascii_digit())))
+    };
+    let core = artifacts.keys().filter(|key| !extra(key)).count();
+    if core != expected.len()
+        || expected.iter().any(|key| !artifacts.contains_key(*key))
+        || (nested
+            && !(artifacts.contains_key("icon_grid_nml")
+                && artifacts.contains_key("icon_nest_summary")))
     {
         return Err("Project delivery artifact keys conflict with its target/status".into());
     }
@@ -203,6 +221,44 @@ mod tests {
                 true,
             )
         };
+        // A nested ICON run delivers its nests, grid_nml and summary beside
+        // the global grid; only an IconNest project may carry them.
+        fs::write(root.join("nest.nc"), "nest").unwrap();
+        fs::write(root.join("grid_nml.txt"), "nml").unwrap();
+        fs::write(root.join("summary.json"), "{}").unwrap();
+        let mut nested = report.clone();
+        nested["target"] = json!(ProjectTargetTriple::from(&icon_cfg.target));
+        nested["model_delivery_status"] = json!("model_delivered");
+        nested["skipped_reason"] = Value::Null;
+        nested["model_artifacts"] = json!({"icon_mesh_input":"other.nc4",
+            "icon_nest_dom02":"nest.nc","icon_grid_nml":"grid_nml.txt",
+            "icon_nest_summary":"summary.json"});
+        assert!(read_icon(&nested).is_err(), "extra keys without IconNest");
+        let mut nest_cfg = icon_cfg.clone();
+        nest_cfg.refinement.backend = earthmesh_project::RefinementBackend::IconNest;
+        let read_nest = |document: &Value| {
+            fs::write(root.join("delivery.json"), document.to_string()).unwrap();
+            read_project_delivery(
+                &nest_cfg,
+                &root,
+                Some("native.nc4"),
+                Some("delivery.json"),
+                true,
+            )
+        };
+        assert!(read_nest(&nested).unwrap().is_some());
+        let mut no_nml = nested.clone();
+        no_nml["model_artifacts"]
+            .as_object_mut()
+            .unwrap()
+            .remove("icon_grid_nml");
+        assert!(
+            read_nest(&no_nml).is_err(),
+            "a nest set without its grid_nml"
+        );
+        let mut junk = nested.clone();
+        junk["model_artifacts"]["icon_nest_domxx"] = json!("nest.nc");
+        assert!(read_nest(&junk).is_err(), "an unknown extra key");
         let mut adapter_limited = report.clone();
         adapter_limited["target"] = json!(ProjectTargetTriple::from(&icon_cfg.target));
         adapter_limited["skipped_reason"] =

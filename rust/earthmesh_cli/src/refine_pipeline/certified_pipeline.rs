@@ -2187,6 +2187,7 @@ pub(super) fn deliver_certified(
         hfield_diagnostics: Default::default(),
         transition_faces: 0,
         spring_nest_passes: 0,
+        icon_nest_run: None,
         certified_run: Some(CertifiedRunRecord {
             mode: mode_name.to_string(),
             product_outcome: product_outcome.to_string(),

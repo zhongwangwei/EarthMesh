@@ -306,7 +306,7 @@ use mkgrd_default_restart_handoff::{
 };
 pub mod mkgrd_run_types;
 use mkgrd_run_types::{
-    MkgrdGridinitRunReport, MkgrdTopLevelDefaultRestartRefineRunReport,
+    IconNestRunRecord, MkgrdGridinitRunReport, MkgrdTopLevelDefaultRestartRefineRunReport,
     MkgrdTopLevelDispatchRunReport, RefineCoupledOutputReport, RefinePipelineRunReport,
 };
 mod native_grid_config;

@@ -317,10 +317,10 @@ impl EarthmeshConfig {
         let refine_backend = self.refine_backend.trim().to_ascii_lowercase();
         if !matches!(
             refine_backend.as_str(),
-            "method_c" | "red_green" | "certified" | "stretch"
+            "method_c" | "red_green" | "certified" | "stretch" | "icon_nest"
         ) {
             return Err(format!(
-                "unsupported refine_backend {}; expected method_c, red_green, certified, or stretch",
+                "unsupported refine_backend {}; expected method_c, red_green, certified, stretch, or icon_nest",
                 self.refine_backend
             ));
         }

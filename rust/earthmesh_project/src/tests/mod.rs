@@ -3032,6 +3032,39 @@ fn icon_refinement_is_refused_only_where_the_mesh_is_a_closed_sphere() {
 }
 
 #[test]
+fn icon_nests_refine_a_closed_global_icon_grid_and_nothing_else() {
+    const NEST_REFUSAL: &str = "writes ICON nests over a closed global grid";
+    let mut project = sample();
+    project.domain = DomainConfig::Global;
+    project.target.kind = MeshDomainKind::Atmosphere;
+    project.target.cell = MeshCellKind::Tri;
+    project.target.model_format = ModelFormat::Icon;
+    project.refinement.enabled = true;
+    project.refinement.backend = RefinementBackend::IconNest;
+    // Nests leave the global grid alone, so the closed-sphere ICON refusal
+    // does not apply, and the target is exactly what nests are for.
+    project.validate().unwrap();
+    assert_eq!(
+        project.try_lower().unwrap().mkgrd.refine_backend,
+        "icon_nest"
+    );
+    for change in [
+        |p: &mut ProjectConfig| p.target.model_format = ModelFormat::Fvcom,
+        |p: &mut ProjectConfig| p.target.cell = MeshCellKind::Hex,
+        |p: &mut ProjectConfig| p.target.kind = MeshDomainKind::Ocean,
+    ] {
+        let mut other = project.clone();
+        change(&mut other);
+        let error = other.validate().unwrap_err();
+        assert!(error.contains(NEST_REFUSAL), "{error}");
+    }
+    // The ICON refusal now names nests as a way out.
+    project.refinement.backend = RefinementBackend::MethodC;
+    let error = project.validate().unwrap_err();
+    assert!(error.contains("refinement.backend=IconNest"), "{error}");
+}
+
+#[test]
 fn auto_refine_state_machine_covers_pass_retry_cap_and_engine_failure() {
     let mut uniform = AutoRefineState::new(0, 40);
     assert_eq!(uniform.current_pass(), 0);

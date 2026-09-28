@@ -3185,7 +3185,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
     </div>`;
     const algorithm = specifiedRefine.algorithm || "method_c";
-    const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch";
+    const hfieldServed = algorithm === "method_c" || algorithm === "red_green" || algorithm === "stretch" || algorithm === "icon_nest";
     if (!hfieldServed && specifiedRefine.route === "hfield") specifiedRefine.route = "adaptive";
     const backend = specifiedRefine.route || "adaptive";
     const algorithmInfo = {
@@ -3201,6 +3201,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       stretch: z
         ? "Stretch（拉伸）：不插点，保持二十面体网格的拓扑（每个顶点 5 或 6 条边），用 Schmidt 保角变换把顶点移向需求区——需求区变细、其余变粗，单元总数不变。全球 ICON 要加密只能用它；只有一个焦点，分散在全球的需求无法满足。"
         : "Stretch: inserts nothing and keeps the icosahedral grid's topology (every vertex of degree 5 or 6), moving vertices toward the demand by a conformal Schmidt transformation -- finer there, coarser elsewhere, same cell count. The only way to refine a global ICON grid; it has one focus, so a demand spread over the globe is not served.",
+      icon_nest: z
+        ? "ICON 嵌套：全球网格保持不变，需求区用 ICON 原生的嵌套子网格加密——每层是上一层三角形的 1→4 细分，单独成文件，由 ICON 双向嵌套运行。每个顶点仍为 5 或 6 条边；可有多个分散的需求区，全球共至多 10 个网格。"
+        : "ICON nest: the global grid stays as it is and the demand is refined in ICON's own nested grids -- each level splits its parent's triangles 1->4 into a separate file that ICON runs two-way nested. Every vertex keeps degree 5 or 6; demands may be scattered, with at most ten grids in all.",
       certified: z
         ? "CMRC：从认证二十面体母网格出发，可运行完整的 2:1 层级 epoch；只有三角、Voronoi、物理和尺度平衡证书同时通过才提交，失败或未完成的压缩保留认证的较细网格。"
         : "CMRC: starts from a certified icosahedral mother grid and can run a complete 2:1 hierarchy epoch; a change is committed only when the triangle, Voronoi, physical and balance certificates all pass, and failed or unfinished compression keeps the certified finer grid."
@@ -3209,18 +3212,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const iconClosedSphere = targetEdit && String(targetEdit.modelFormat || "").toLowerCase() === "icon"
       && cellEdit === "tri" && (targetEdit.kind === "atmosphere" || targetEdit.kind === "earth")
       && domainMode === "global";
-    const iconServed = algorithm === "stretch"
+    const iconServed = algorithm === "stretch" || algorithm === "icon_nest"
       || (algorithm === "certified" && specifiedRefine.certifiedMode === "safe_mother_only");
     const iconHint = iconClosedSphere && !iconServed
       ? `<div style="color:var(--warn,#b45309);font-size:12px;margin-top:8px">${z
-          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 Stretch（拉伸加密），或 CMRC 的“仅安全母网格”，或关闭加密。"
-          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose Stretch, CMRC safe mother only, or turn refinement off."}</div>`
+          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 ICON 嵌套、Stretch（拉伸加密），或 CMRC 的“仅安全母网格”，或关闭加密。"
+          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose ICON nest, Stretch, CMRC safe mother only, or turn refinement off."}</div>`
       : "";
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       ${iconHint}
       <div class="grid2">
-        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸，ICON）":"Stretch (ICON)"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸，ICON）":"Stretch (ICON)"}</option><option value="icon_nest" ${algorithmFamily==="icon_nest"?"selected":""}>${z?"ICON 嵌套":"ICON nest"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
@@ -3251,6 +3254,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ? "拉伸系数取 2^最深层级：焦点处细 2^L 倍，对跖点粗 2^L 倍。焦点取需求深度加权的平均方向。每单元层级按尺寸实测。没有专属参数。"
         : "The stretch factor is 2^deepest level: 2^L finer at the focus, 2^L coarser opposite it. The focus is the depth-weighted mean direction of the demand. Per-cell levels are measured from size. No specific parameters."}</div>
     </div>`;
+    const iconNestOptions = `<div id="iconNestOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
+      <div style="font-weight:700;margin-bottom:10px">${z?"ICON 嵌套 · 说明":"ICON nest · notes"}</div>
+      <div style="color:var(--muted);font-size:12px;line-height:1.6">${z
+        ? "只用于全球三角形 ICON 目标。每层嵌套在需求区外留出边界带（14 行索引、12 行插值与松弛），所以嵌套比需求区大；需求越深，外层嵌套越宽。输出为全球网格 DOM01 与各嵌套 DOMnn，另附 grid_nml 片段与摘要。原生 gridfile 是未加密的全球网格，其质量对账会报“比目标粗”，需求由嵌套满足。"
+        : "For global triangle ICON targets only. Each nest keeps a boundary zone around its demand (14 indexed rows, 12 for interpolation and nudging), so a nest is wider than the demand, and outer nests widen with every deeper level. Output is the global grid DOM01 and a DOMnn per nest, with a grid_nml snippet and a summary. The native gridfile is the unrefined global grid, so its reconciliation reports cells coarser than target; the nests serve that demand."}</div>
+    </div>`;
     const redGreenOptions = `<div id="redGreenOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">Red-Green · ${z?"专属参数":"specific parameters"}</div>
       <div class="grid2">
@@ -3278,7 +3287,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       lepp_delaunay: leppOptions,
       red_green: redGreenOptions,
       certified: certifiedOptions,
-      stretch: stretchOptions
+      stretch: stretchOptions,
+      icon_nest: iconNestOptions
     }[algorithm];
     // Only the canonical nested algorithm serves the h-field. The others refuse a run
     // that configures one, so offering it beside them builds a project that
@@ -3301,7 +3311,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
       </div>
     </div>`;
-    const springControls = algorithm === "stretch"
+    const springControls = algorithm === "icon_nest"
+      ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"ICON 嵌套不改动全球网格，加密在独立的嵌套网格里完成，运行时不使用弹簧参数。":"ICON nesting leaves the global grid as it is and refines in separate nest grids, so the run uses no spring settings."}</div>`
+      : algorithm === "stretch"
       ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"Stretch 的分辨率就是顶点位置；通用弹簧会把它松弛回均匀，运行时不使用弹簧参数。":"Stretch's resolution is its vertex placement; a generic spring would relax it back toward uniform, so the run uses no spring settings."}</div>`
       : algorithm === "certified"
       ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate."}</div>`
@@ -3434,7 +3446,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const selectAlgorithm = (next) => {
         const previousAlgorithm = specifiedRefine.algorithm || "method_c";
         specifiedRefine.algorithm = next;
-        const readsHfield = next === "method_c" || next === "red_green" || next === "stretch";
+        const readsHfield = next === "method_c" || next === "red_green" || next === "stretch" || next === "icon_nest";
         // Switching to an algorithm that does not read the h-field with it
         // selected would leave a project the run refuses. Disabling the option
         // is not enough on its own -- a browser keeps a disabled option

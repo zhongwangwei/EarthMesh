@@ -4111,3 +4111,62 @@ halo 调小：单元少至多 18%，“比目标细”降到三分之一；代�
 
 **建议：保持默认 3。** 多出的单元是需求区外围的过渡圈，是偏安全的代价；只关心单元数、能接受少量细化
 不足的项目可在 `expert.halo` 自行调小。默认值未改。
+
+### 11.86 ICON 嵌套子网格（`IconNest` 后端）（2026-09-28）
+
+11.79 的 Stretch 只有一个焦点、单元总数固定。ICON 自己的加密方式是**嵌套**：全球网格保持不变，每个加密区
+是一个独立的网格文件，由父网格三角形 1→4 细分而成，ICON 以双向嵌套运行。每个网格都是其父网格的纯
+二分，所以顶点度数恒为 5/6，满足 `ne=6`。
+
+**ICON 对嵌套文件的要求**（读自 ICON 源码 icon-model 8597da45，`mo_model_domimp_patches.f90`、
+`mo_build_decomposition.f90`、`mo_setup_subdivision.f90`、`mo_intp_coeffs.f90`）：
+- 子网格只需 `parent_cell_index`、`parent_edge_index`（1 起、指向父文件的全局编号）；父到子的关系、
+  父网格的负 `refin_ctrl`、四个子单元的次序都由 ICON 启动时自行计算，父文件不需要写任何嵌套信息。
+- 每个父三角形要么没有子单元、要么恰好 4 个，且恰好 3 条内边（否则 "Incomplete parent cell" /
+  "edge counting went wrong"）。
+- 子网格边界行 `refin_c_ctrl` 至少 `nudge_zone_width + 4` = 12 行（ICON 网格生成器取 14）。
+- 单元/边/顶点按 `refin_ctrl` 排序：1..max_rl（5/10/5）在前，其余（含大于 max_rl 的行）归内部段；
+  `start_idx`/`end_idx` 的 14/24/13 个槽对应 −8..5、−13..10、−7..5。
+- 子网格 `grid_root` 与父相同、`grid_level` = 父 + 1；`uuidOfParHGrid` = 父的 `uuidOfHGrid`
+  （UUID 为空时 ICON 退回用 `dynamics_parent_grid_id`）。兄弟嵌套不得共用父单元；域总数 ≤ `max_dom` = 10。
+
+**规划**（`earthmesh_mesh::plan_icon_nests`）：第 k 层嵌套取父域中目标层级 ≥ k 的三角形（按形心与三个
+顶点取最深，避免跨过小于单元的需求），外扩若干行、限制在父域 14 行边界带以外（全球域无此限制）、
+填洞、消除顶点处的“夹点”，每个按顶点连通的部分成为一个兄弟嵌套，逐个 1→4 细分。外扩行数自内向外
+推：最深一层要让需求离子网格边界 ≥ 14 行（7 个父行）；外层还要为内层留出其 14 行边界带与内层自己的
+外扩——按父行计为 `ceil((14 + M_{k+1}) / 2)`，即 7、11、13……。所以嵌套比需求区大得多，层数越多外层越宽，
+这是 ICON 边界带的代价。边界行按顶点图 BFS 计（边界顶点为 1），单元行取三个顶点的最小值，边为
+`2r`（行内）/ `2r+1`（行间）；**边与顶点的编号规则是由源码推断的，未与 gridgen 生成的文件逐一核对**。
+
+**写出与校验**（`earthmesh_delivery::write_icon_nest_set`、`validate_icon_nest_set`）：与原 ICON 写出器共用
+边/度量组装（抽出为 `assemble_icon_grid`，原路径输出逐字节不变：`stretch_icon_global` 与 CMRC 安全母网格
+ICON 两例 A/B 全部产物相同）；三角形路径的单元中心取球面外心，对偶面积按风筝面积累加。写完后按
+ICON 加载时的检查把整套文件读回校验，不通过就删除并报错。测试把文件改坏三种方式（子单元不成 4、
+排序错乱、边界行不足 12），均被拒。
+
+**接入：** 项目 `refinement.backend: IconNest`，namelist `NL%refine_backend='icon_nest'`；只允许全球
+（闭合球面）Tri + ICON 目标。需求读法与 Stretch 相同（命名区域、判据圆逐层规划、h-field，都经
+`TargetLevelField`）。后端本身不动全球网格；嵌套在共享尾部**角度契约之后**切出，保证嵌套角点与全球
+文件中的父顶点完全一致。产物在 `result/standard/ICON_nest/`：`earthmesh_DOM01.nc`（全球，模型输入
+`icon_mesh_input`）、`earthmesh_DOMnn.nc`（`icon_nest_domnn`）、`icon_grid_nml.txt`（`grid_nml` 片段）、
+`icon_nest_summary.json`（各域单元数、服务的需求单元、落在边界带内的需求单元、角度范围）。每个域都
+检查 35–85° 角度契约。GUI 后端家族新增“ICON 嵌套”。
+
+**实测（NXP 40，32,000 单元全球网格）：**
+
+| 需求 | 域 | 单元（全球 / 各嵌套） | 需求单元在嵌套内部 | 角度 |
+|---|---|---|---|---|
+| 三个 200 km 圆，1 层 | 2 | 32,000 / 2,072 | 63 / 63 | 48.0–72.0 |
+| 同上，2 层 | 3 | 32,000 / 4,248 / 3,120 | 63、255，边界带内 0 | 48.1–69.6 |
+| 亚/欧/南美三处 300 km，2 层 | 7 | 32,000 / 3×约 4,200 / 3×约 2,900 | 全部在内部 | 48.0–71.4 |
+
+对比 Stretch（11.79）：同样三圆，Stretch 让全球 16,002 个单元中 6,164 个到 1 层、对跖点粗 2 倍；嵌套只在
+需求周围加 2,072 个单元，全球其余不变，并能服务分散在全球的多个需求区。
+
+**已知局限：**
+- 原生 gridfile 是未加密的全球网格，它的质量对账会如实报“比目标粗”（`adaptive_target_short_by_more_than_one_level`
+  警告）；需求由嵌套满足，见 `icon_nest_summary.json`。
+- 嵌套顶点取父边的球面中点，未做 gridgen 那样的弹簧优化；ICON 若反馈系数为负会停（"negative feedback
+  coefficients"），二分网格一般不会触发，但未经 ICON 实跑验证。
+- 没有 ICON 或 `icongridgen` 可用，最终是否被 ICON 接受只能由校验器按源码规则代为判断；有条件时应以一次
+  ICON 实跑或 gridgen 参考文件确认，尤其是边/顶点的边界行编号。

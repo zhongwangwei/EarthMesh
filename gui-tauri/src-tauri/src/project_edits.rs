@@ -770,9 +770,14 @@ pub(crate) fn set_refinement_backend(yaml: String, backend: String) -> Result<St
             cfg.refinement.method_c = Default::default();
             earthmesh_project::RefinementBackend::Stretch
         }
+        "icon_nest" => {
+            cfg.quality.lepp_post_quality = None;
+            cfg.refinement.method_c = Default::default();
+            earthmesh_project::RefinementBackend::IconNest
+        }
         other => {
             return Err(format!(
-                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, certified, or stretch"
+                "unknown refinement algorithm {other}: expected method_c, lepp_delaunay, red_green, certified, stretch, or icon_nest"
             ))
         }
     };

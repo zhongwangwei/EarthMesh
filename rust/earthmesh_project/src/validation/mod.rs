@@ -63,6 +63,7 @@ impl ProjectConfig {
         self.validate_backend_serves_refinement_route()?;
         self.validate_certified_delivery_matches_target_cell()?;
         self.validate_icon_refinement_on_closed_sphere()?;
+        self.validate_icon_nest_target()?;
         self.validate_statistical_refinement_route()?;
         self.quality.validate()?;
         if self.quality.quality_policy == QualityPolicy::DomainExport
@@ -138,10 +139,11 @@ impl ProjectConfig {
     /// which checks the actual degrees. CMRC's safe-mother mode delivers the
     /// uniform certified mother grid, which grades nothing.
     fn validate_icon_refinement_on_closed_sphere(&self) -> Result<(), String> {
-        // CMRC's safe mother grades nothing, and stretch keeps the
-        // icosahedral topology by construction.
+        // CMRC's safe mother grades nothing, stretch keeps the icosahedral
+        // topology by construction, and nests leave the global grid alone.
         let grades = self.refinement.enabled
             && self.refinement.backend != RefinementBackend::Stretch
+            && self.refinement.backend != RefinementBackend::IconNest
             && !(self.refinement.backend == RefinementBackend::Certified
                 && self.refinement.certified.mode == crate::CertifiedMode::SafeMotherOnly);
         if grades
@@ -150,7 +152,25 @@ impl ProjectConfig {
             && self.expected_euler_characteristic() == Some(2)
         {
             return Err(
-                "target.model_format=Icon cannot be refined on a closed global mesh by inserting cells: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Use refinement.backend=Stretch, which keeps the icosahedral grid and moves its vertices toward the demand (finer there, coarser elsewhere); or set refinement.enabled=false; or choose another model_format (the refined EarthMesh gridfile is written for every format)"
+                "target.model_format=Icon cannot be refined on a closed global mesh by inserting cells: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Use refinement.backend=IconNest, which keeps the global grid and refines in ICON nests (separate grids of bisected parent triangles), or Stretch, which keeps the icosahedral grid and moves its vertices toward the demand (finer there, coarser elsewhere); or set refinement.enabled=false; or choose another model_format (the refined EarthMesh gridfile is written for every format)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// ICON nests are ICON's own way of refining, cut from a global grid the
+    /// ICON writer publishes; any other delivery has no use for them.
+    fn validate_icon_nest_target(&self) -> Result<(), String> {
+        if !self.refinement.enabled || self.refinement.backend != RefinementBackend::IconNest {
+            return Ok(());
+        }
+        if self.target.cell != MeshCellKind::Tri
+            || self.target.model_format != crate::ModelFormat::Icon
+            || self.expected_euler_characteristic() != Some(2)
+        {
+            return Err(
+                "refinement.backend=IconNest writes ICON nests over a closed global grid: it needs target.cell Tri, target.model_format Icon and a global atmosphere or earth domain. For any other target use Method-C, RedGreen or Certified"
                     .to_string(),
             );
         }
@@ -359,7 +379,8 @@ impl ProjectConfig {
             // stretch reads each vertex's target depth from it.
             crate::RefinementBackend::MethodC
             | crate::RefinementBackend::RedGreen
-            | crate::RefinementBackend::Stretch => Ok(()),
+            | crate::RefinementBackend::Stretch
+            | crate::RefinementBackend::IconNest => Ok(()),
             crate::RefinementBackend::Certified => Err(
                 "refinement.backend certified does not consume the Method-C h-field route; use threshold or named requirement sources, or turn refinement.hfield off"
                     .to_string(),
@@ -439,7 +460,9 @@ impl ProjectConfig {
                     .is_some_and(|recipe| recipe.enabled)
                     || (self.refinement.threshold_region.is_none() && adaptive_enabled)
             }
-            crate::RefinementBackend::RedGreen | crate::RefinementBackend::Stretch => {
+            crate::RefinementBackend::RedGreen
+            | crate::RefinementBackend::Stretch
+            | crate::RefinementBackend::IconNest => {
                 adaptive_enabled
                     || self
                         .refinement

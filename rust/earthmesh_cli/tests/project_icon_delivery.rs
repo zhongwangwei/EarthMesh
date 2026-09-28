@@ -381,6 +381,48 @@ fn project_icon_stretch_refines_a_closed_sphere_and_delivers_icon() {
 }
 
 #[test]
+fn project_icon_nest_delivers_the_global_grid_and_linked_nests() {
+    // ICON nests keep the global grid as it is and serve the demand in a
+    // separate grid of bisected parent triangles (guide 11.86).
+    let root = root("icon_nest");
+    let project = refined_icon_project(RefinementBackend::IconNest);
+    let result = run_project(&root, &project, "icon_nest");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    let global = PathBuf::from(field(&stdout, "icon_mesh_input="));
+    let nest = PathBuf::from(field(&stdout, "icon_nest_dom02="));
+    assert!(global.ends_with("earthmesh_DOM01.nc") && nest.ends_with("earthmesh_DOM02.nc"));
+    // Read back and checked the way ICON checks the domains it loads.
+    earthmesh_cli::validate_icon_nest_set(&[(global.clone(), 0), (nest.clone(), 1)]).unwrap();
+    let namelist = fs::read_to_string(field(&stdout, "icon_grid_nml=")).unwrap();
+    assert!(
+        namelist.contains("'earthmesh_DOM01.nc', 'earthmesh_DOM02.nc'"),
+        "{namelist}"
+    );
+    assert!(
+        namelist.contains("dynamics_parent_grid_id = 0, 1"),
+        "{namelist}"
+    );
+    // The global grid is the unrefined icosahedral grid: 20 NXP^2 cells.
+    let cells = netcdf::open(&global)
+        .unwrap()
+        .dimension("cell")
+        .unwrap()
+        .len();
+    assert_eq!(cells, 20 * 10 * 10);
+    let summary: serde_json::Value =
+        serde_json::from_slice(&fs::read(field(&stdout, "icon_nest_summary=")).unwrap()).unwrap();
+    let nest_row = &summary["domains"][1];
+    assert!(
+        nest_row["demanded_cells_served"].as_u64().unwrap() > 0,
+        "{summary}"
+    );
+    assert_eq!(nest_row["demanded_cells_in_boundary_zone"], 0, "{summary}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_icon_regional_tri_delivers_selected_native_triangles_with_parent_geometry() {
     let root = root("regional_tri");
     let project = icon_project(

@@ -472,6 +472,7 @@ fn refinement_backend_id(backend: earthmesh_project::RefinementBackend) -> &'sta
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
         earthmesh_project::RefinementBackend::Certified => "certified",
         earthmesh_project::RefinementBackend::Stretch => "stretch",
+        earthmesh_project::RefinementBackend::IconNest => "icon_nest",
     }
 }
 
@@ -487,6 +488,7 @@ fn refinement_algorithm_id(cfg: &ProjectConfig) -> &'static str {
         earthmesh_project::RefinementBackend::RedGreen => "red_green",
         earthmesh_project::RefinementBackend::Certified => "certified",
         earthmesh_project::RefinementBackend::Stretch => "stretch",
+        earthmesh_project::RefinementBackend::IconNest => "icon_nest",
     }
 }
 

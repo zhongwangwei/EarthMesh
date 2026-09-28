@@ -95,6 +95,9 @@ pub fn run_refine_pipeline_with_delivery(
             }
         }
     }
+    if let Some(nests) = &report.icon_nest_run {
+        models.extend(nests.model_artifacts());
+    }
     let mut files = BTreeMap::new();
     collect_report(&mut report, &scratch, &file_dir, &mut files)?;
     for name in [
@@ -448,6 +451,15 @@ fn collect_report(
         for path in [&mut certified.remap, &mut certified.pre_export_remap]
             .into_iter()
             .flatten()
+        {
+            collect_path(path, scratch, destination, files)?;
+        }
+    }
+    if let Some(nests) = &mut report.icon_nest_run {
+        for path in nests
+            .domains
+            .iter_mut()
+            .chain([&mut nests.namelist, &mut nests.summary])
         {
             collect_path(path, scratch, destination, files)?;
         }

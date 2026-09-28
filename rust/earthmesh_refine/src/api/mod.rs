@@ -20,6 +20,9 @@ pub enum RefinementBackend {
     /// the demand (a Schmidt stretch): every vertex stays of degree 5 or 6,
     /// which is what ICON can take. Finer toward the demand, coarser away.
     Stretch,
+    /// Keeps the global grid as it is and serves the demand with ICON nests:
+    /// separate grids of the parent's triangles split 1->4, level by level.
+    IconNest,
 }
 
 impl RefinementBackend {
@@ -30,6 +33,7 @@ impl RefinementBackend {
             Self::RedGreen => "red_green",
             Self::Certified => "certified",
             Self::Stretch => "stretch",
+            Self::IconNest => "icon_nest",
         }
     }
 
@@ -40,6 +44,7 @@ impl RefinementBackend {
             "red_green" => Some(Self::RedGreen),
             "certified" => Some(Self::Certified),
             "stretch" => Some(Self::Stretch),
+            "icon_nest" => Some(Self::IconNest),
             _ => None,
         }
     }
@@ -50,6 +55,9 @@ impl RefinementBackend {
     /// than approximated, so criteria reach it only as named regions someone
     /// else derived. Measured, and recorded in the technical guide.
     pub fn serves_criteria_directly(self) -> bool {
-        matches!(self, Self::RedGreen | Self::Certified | Self::Stretch)
+        matches!(
+            self,
+            Self::RedGreen | Self::Certified | Self::Stretch | Self::IconNest
+        )
     }
 }
