@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha8
+# EarthMesh v3.0.0-alpha9
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -267,6 +267,18 @@ For questions or support, please contact:
   removed generic `io` writers. The diagnostic `run_manifest.json` contract is
   now explicitly versioned as schema 1; its current minimal fields replace the
   earlier experimental manifest shape.
+- 2026.09.29 - v3.0.0-alpha9 adds ICON nesting. A new `IconNest` backend
+  (`refinement.backend: IconNest`, Studio "ICON nest") keeps a global ICON
+  triangle grid as it is and serves the demand with ICON's own nested grids:
+  each level splits its parent's triangles 1->4 into a separate file, linked
+  to its parent by `parent_cell_index`/`parent_edge_index` and UUID, with a
+  ready `grid_nml`. Unlike Stretch it serves several scattered demands, and
+  the rest of the globe keeps its resolution. The files follow the current
+  ICON grid generator: boundary rows, parent indices and index ranges match
+  DWD's reference nests entity for entity, and a validator applying ICON's
+  load checks passes every official nest set on disk. Global ICON grid files
+  now chain their index ranges as the generator does (empty rows `1..0`).
+  Not yet run in ICON itself.
 - 2026.09.28 - v3.0.0-alpha8 fixes Studio (the desktop GUI) after an audit
   and a walk-through of the real interface. Leaving an invalid target (a
   closed global ICON grid with cell-inserting refinement) is no longer blocked
