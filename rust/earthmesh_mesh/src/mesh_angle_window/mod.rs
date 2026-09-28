@@ -207,22 +207,55 @@ impl Work<'_> {
         faces: impl Iterator<Item = [usize; 3]>,
         floor: Option<f64>,
     ) -> Option<(f64, f64)> {
+        self.score_angles(faces.map(|f| self.angles(f)), floor)
+    }
+
+    /// `score_corners_above` over `faces` (ids) with vertex `over.0` placed
+    /// at `over.1` -- reading the mesh only, so candidates for vertices that
+    /// share no face can be scored side by side.
+    fn score_over(
+        &self,
+        faces: &[usize],
+        over: (usize, P),
+        floor: Option<f64>,
+    ) -> Option<(f64, f64)> {
+        self.score_angles(
+            faces
+                .iter()
+                .map(|&f| spherical_triangle_angles_deg(self.faces[f].map(|i| self.at(i, over)))),
+            floor,
+        )
+    }
+
+    fn at(&self, i: usize, over: (usize, P)) -> P {
+        if i == over.0 {
+            over.1
+        } else {
+            self.points[i]
+        }
+    }
+
+    /// The score of a set of faces from their angles, in the faces' order.
+    fn score_angles(
+        &self,
+        faces: impl Iterator<Item = [f64; 3]>,
+        floor: Option<f64>,
+    ) -> Option<(f64, f64)> {
         let mut worst = f64::INFINITY;
         let mut second = 0.0;
-        for f in faces {
+        for angles in faces {
             match self.mode {
                 Mode::Window => {
-                    let m = self.margin_of(f);
+                    let m = margin_of_angles(angles, self.options.window_deg);
                     worst = worst.min(m);
                     second += m.min(0.0);
                 }
                 Mode::Minimax => {
-                    let m = self.margin_to(f, (60.0, 60.0));
+                    let m = margin_of_angles(angles, (60.0, 60.0));
                     worst = worst.min(m);
                     second += m;
                 }
                 Mode::Energy { cap } => {
-                    let angles = self.angles(f);
                     worst = worst.min(margin_of_angles(angles, cap));
                     second -= angles.iter().map(|a| (a - 60.0) * (a - 60.0)).sum::<f64>();
                 }
@@ -268,12 +301,6 @@ impl Work<'_> {
 
     fn outside(&self, f: usize) -> bool {
         self.margin_to(self.faces[f], self.options.window_deg) < 0.0
-    }
-
-    fn orientation_kept(&self, faces: &[usize]) -> bool {
-        faces
-            .iter()
-            .all(|&f| self.orient(self.faces[f]) * self.sign[f] > 0.0)
     }
 
     fn valence(&self, v: usize) -> usize {
@@ -404,41 +431,42 @@ impl Work<'_> {
 
     /// Move `v` to the best candidate that beats `current`, the score of its
     /// faces where it stands. Returns the new score, or `None` if it stayed.
-    fn try_positions(
-        &mut self,
+    /// The best of `candidates` for `v` that beats `current`, reading the mesh
+    /// only.
+    fn best_candidate(
+        &self,
         v: usize,
         candidates: &[P],
         current: (f64, f64),
-    ) -> Option<(f64, f64)> {
-        // Borrowed out rather than cloned: nothing below reads `incident[v]`.
-        let faces = std::mem::take(&mut self.incident[v]);
-        let original = self.points[v];
+    ) -> Option<((f64, f64), P)> {
+        let faces = &self.incident[v];
         let mut best: Option<((f64, f64), P)> = None;
         for &p in candidates {
-            self.points[v] = p;
-            if !self.orientation_kept(&faces) {
+            let over = (v, p);
+            let kept = faces.iter().all(|&f| {
+                let [a, b, c] = self.faces[f].map(|i| self.at(i, over));
+                dotp(crossp(sub(b, a), sub(c, a)), a) * self.sign[f] > 0.0
+            });
+            if !kept {
                 continue;
             }
             // A candidate must beat `current` and the best so far, so once its
             // first component cannot, the rest of its faces are not scored.
             let bar = best.map_or(current.0, |(b, _)| b.0.max(current.0));
-            let Some(s) = self
-                .score_corners_above(faces.iter().map(|&f| self.faces[f]), Some(bar - SCORE_EPS))
-            else {
+            let Some(s) = self.score_over(faces, over, Some(bar - SCORE_EPS)) else {
                 continue;
             };
             if Self::better(s, current) && best.is_none_or(|(b, _)| Self::better(s, b)) {
                 best = Some((s, p));
             }
         }
-        self.incident[v] = faces;
-        self.points[v] = best.map_or(original, |(_, p)| p);
-        best.map(|(s, _)| s)
+        best
     }
 
-    fn centroid_move(&mut self, v: usize) -> bool {
+    /// Where a move toward the centroid of its ring takes `v`, if anywhere.
+    fn plan_centroid(&self, v: usize) -> Option<P> {
         if self.fixed[v] || self.needs_no_move(v) {
-            return false;
+            return None;
         }
         let ring = self.neighbours(v);
         let mut centre = [0.0; 3];
@@ -460,16 +488,18 @@ impl Work<'_> {
             })
             .collect();
         let current = self.score(&self.incident[v]);
-        self.try_positions(v, &candidates, current).is_some()
+        self.best_candidate(v, &candidates, current).map(|(_, p)| p)
     }
 
-    fn pattern_move(&mut self, v: usize) -> bool {
+    /// Where a pattern search -- eight directions, the step halved when none
+    /// improves -- takes `v`, if anywhere.
+    fn plan_pattern(&self, v: usize) -> Option<P> {
         if self.fixed[v] || self.needs_no_move(v) {
-            return false;
+            return None;
         }
         let ring = self.neighbours(v);
         if ring.is_empty() {
-            return false;
+            return None;
         }
         let h = ring
             .iter()
@@ -477,11 +507,12 @@ impl Work<'_> {
             .sum::<f64>()
             / ring.len() as f64;
         let mut step = 0.2 * h;
+        let mut at = self.points[v];
         let mut moved = false;
         // Where `v` stands; a move's score is exactly the one it was chosen by.
         let mut current = self.score(&self.incident[v]);
         while step > 0.005 * h {
-            let p = self.points[v];
+            let p = at;
             let axis = if p[0].abs() < 0.9 {
                 [1.0, 0.0, 0.0]
             } else {
@@ -500,11 +531,55 @@ impl Work<'_> {
                     ])
                 })
                 .collect();
-            if let Some(score) = self.try_positions(v, &candidates, current) {
-                current = score;
-                moved = true;
-            } else {
-                step *= 0.5;
+            match self.best_candidate(v, &candidates, current) {
+                Some((score, p)) => {
+                    current = score;
+                    at = p;
+                    moved = true;
+                }
+                None => step *= 0.5,
+            }
+        }
+        moved.then_some(at)
+    }
+
+    /// Move every vertex of `vertices` by `plan`, in parallel within each
+    /// class of a greedy colouring of the vertices' adjacency.
+    ///
+    /// Two vertices of one colour are not adjacent, so they share no face:
+    /// each move reads only its own faces, whose other corners are not moving
+    /// in that batch. Every batch is planned from the positions the batch
+    /// before it left, and written after, so the result does not depend on
+    /// the number of threads.
+    fn sweep_moves(&mut self, vertices: &[usize], plan: fn(&Self, usize) -> Option<P>) -> usize {
+        use rayon::prelude::*;
+        let mut colour = std::collections::HashMap::with_capacity(vertices.len());
+        let mut colours = 0usize;
+        for &v in vertices {
+            let used = self
+                .neighbours(v)
+                .into_iter()
+                .filter_map(|u| colour.get(&u).copied())
+                .collect::<Vec<usize>>();
+            let c = (0..).find(|c| !used.contains(c)).expect("a free colour");
+            colours = colours.max(c + 1);
+            colour.insert(v, c);
+        }
+        let mut moved = 0usize;
+        for c in 0..colours {
+            let batch = vertices
+                .iter()
+                .copied()
+                .filter(|v| colour[v] == c)
+                .collect::<Vec<_>>();
+            let this: &Self = self;
+            let moves = batch
+                .par_iter()
+                .filter_map(|&v| plan(this, v).map(|p| (v, p)))
+                .collect::<Vec<_>>();
+            moved += moves.len();
+            for (v, p) in moves {
+                self.points[v] = p;
             }
         }
         moved
@@ -780,20 +855,14 @@ pub fn repair_triangle_angle_window_traced(
             .filter(|&v| !work.removed[v])
             .collect();
         for _ in 0..3 {
-            for &v in &live {
-                if work.centroid_move(v) {
-                    report.moves += 1;
-                    changed += 1;
-                }
-            }
+            let moved = work.sweep_moves(&live, Work::plan_centroid);
+            report.moves += moved;
+            changed += moved;
         }
         for _ in 0..2 {
-            for &v in &live {
-                if work.pattern_move(v) {
-                    report.moves += 1;
-                    changed += 1;
-                }
-            }
+            let moved = work.sweep_moves(&live, Work::plan_pattern);
+            report.moves += moved;
+            changed += moved;
         }
         let mut bad_edges: Vec<(usize, usize)> = work
             .live_faces()
@@ -878,18 +947,12 @@ pub fn repair_triangle_angle_window_traced(
                 .collect();
             vertices.sort_unstable();
             vertices.dedup();
-            for &v in &vertices {
-                if work.centroid_move(v) {
-                    report.moves += 1;
-                    changed += 1;
-                }
-            }
-            for &v in &vertices {
-                if work.pattern_move(v) {
-                    report.moves += 1;
-                    changed += 1;
-                }
-            }
+            let moved = work.sweep_moves(&vertices, Work::plan_centroid);
+            report.moves += moved;
+            changed += moved;
+            let moved = work.sweep_moves(&vertices, Work::plan_pattern);
+            report.moves += moved;
+            changed += moved;
             // Diminishing returns: stop once a round changes under 1% of the
             // vertices it looked at.
             if changed * 100 < vertices.len() {
@@ -973,6 +1036,67 @@ mod tests {
         }
         let faces = (0..6).map(|k| [0, 1 + k, 1 + (k + 1) % 6]).collect();
         (points, faces)
+    }
+
+    #[test]
+    fn the_repair_is_the_same_on_one_thread_and_on_many() {
+        // Moves run in parallel within a colour class; the result must not
+        // depend on how many threads run them.
+        let mesh = crate::TriangularMesh::from_icosahedron(10, 0, 1.0, 0.25).unwrap();
+        let state = crate::MeshState::from_triangular_mesh(&mesh).unwrap();
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut jitter = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let points: Vec<P> = state
+            .vertices()
+            .iter()
+            .map(|p| {
+                let n = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+                if n == 0.0 {
+                    [0.0; 3]
+                } else {
+                    unit([
+                        p.x / n + 0.02 * jitter(),
+                        p.y / n + 0.02 * jitter(),
+                        p.z / n + 0.02 * jitter(),
+                    ])
+                }
+            })
+            .collect();
+        let faces: Vec<[usize; 3]> = state
+            .active_triangle_slots()
+            .map(|f| state.triangles()[f])
+            .collect();
+        let run = |threads: usize| {
+            let (mut p, mut f, mut l) = (points.clone(), faces.clone(), Vec::new());
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let report = pool.install(|| {
+                repair_triangle_angle_window(
+                    &mut p,
+                    &mut f,
+                    &mut l,
+                    AngleWindowOptions::new((35.0, 85.0)),
+                )
+            });
+            (p, f, report)
+        };
+        let (one_points, one_faces, one_report) = run(1);
+        let (many_points, many_faces, many_report) = run(8);
+        assert!(
+            one_report.moves > 0,
+            "the fixture must make the repair move vertices"
+        );
+        assert_eq!(one_faces, many_faces);
+        assert_eq!(one_points, many_points);
+        assert_eq!(one_report, many_report);
+        assert_eq!(one_report.outside_after, 0, "{one_report:?}");
     }
 
     #[test]
