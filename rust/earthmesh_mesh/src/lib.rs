@@ -102,6 +102,8 @@ pub use mesh_angle_window::{
     spherical_triangle_angles_deg, AngleWindowOptions, AngleWindowOrigins, AngleWindowReport,
 };
 pub use mesh_stretch::{schmidt_focus_for_levels, schmidt_local_scale, schmidt_stretch};
+mod mesh_icon_nest;
+pub use mesh_icon_nest::{plan_icon_nests, IconNestDomain, IconNestOptions, NestVertexOrigin};
 mod mesh_flip;
 pub use mesh_flip::FlipError;
 pub use spherical_circumcenter_mesh::circumcenter_is_local_enough;

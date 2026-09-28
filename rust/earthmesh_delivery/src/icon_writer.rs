@@ -55,7 +55,7 @@ pub fn write_icon_grid_netcdf(
 ) -> io::Result<IconGridWriteReport> {
     validate_mpas_mesh(mesh)?;
     let grid = build_icon_grid(mesh)?;
-    write_icon_grid(output.as_ref(), &grid, None)
+    write_icon_grid(output.as_ref(), &grid, None, &IconFileExtras::default())
 }
 
 /// Export an admitted native TRI mesh without dropping cells to satisfy the
@@ -129,7 +129,7 @@ fn write_icon_final(
     }
     let mut report = None;
     crate::atomic_output::atomic_write(output, |temporary| {
-        let mut written = write_icon_grid(temporary, &grid, parent)?;
+        let mut written = write_icon_grid(temporary, &grid, parent, &IconFileExtras::default())?;
         crate::open_netcdf(temporary)
             .map_err(netcdf_to_io_error)?
             .close()
@@ -139,6 +139,453 @@ fn write_icon_final(
         Ok(())
     })?;
     report.ok_or_else(|| io::Error::other("ICON publication returned no report"))
+}
+
+/// Lateral boundary cell rows flagged in an ICON nest, as the ICON grid
+/// generator's `bdy_indexing_depth`. ICON needs at least
+/// `nudge_zone_width + 4` (12 by default).
+pub const ICON_NEST_BOUNDARY_DEPTH: u32 = 14;
+
+/// One file of an ICON nest set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconNestFileReport {
+    pub domain: usize,
+    pub parent: usize,
+    pub grid_level: u32,
+    pub output: PathBuf,
+    pub cells: usize,
+    pub vertices: usize,
+    pub edges: usize,
+    pub uuid: String,
+}
+
+/// Write the global grid and its nests as ICON grid files
+/// `<stem>_DOM01.nc`, `<stem>_DOM02.nc`, ... in `output_dir`.
+///
+/// Each nest carries what ICON reads to attach it (guide 11.86):
+/// `parent_cell_index` and `parent_edge_index` into its parent's file, a
+/// `grid_level` one below its parent's with the same `grid_root`, and
+/// `uuidOfParHGrid` equal to the parent's `uuidOfHGrid`. The parent-to-child
+/// relations and the parent's negative `refin_ctrl` are computed by ICON at
+/// startup and are not written.
+pub fn write_icon_nest_set(
+    domains: &[earthmesh_mesh::IconNestDomain],
+    grid_root: usize,
+    output_dir: &Path,
+    stem: &str,
+) -> io::Result<Vec<IconNestFileReport>> {
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let grid_root = i32::try_from(grid_root).map_err(index_error)?;
+    std::fs::create_dir_all(output_dir)?;
+    struct Written {
+        order: IconOrder,
+        edges: BTreeMap<(i32, i32), i32>,
+        uuid: String,
+    }
+    let mut written = Vec::<Written>::with_capacity(domains.len());
+    let mut reports = Vec::with_capacity(domains.len());
+    for (index, domain) in domains.iter().enumerate() {
+        if domain.id != index + 1 || (index > 0 && !(1..domain.id).contains(&domain.parent)) {
+            return Err(invalid(format!(
+                "ICON nest set: domain {} at position {} has parent {}",
+                domain.id,
+                index + 1,
+                domain.parent
+            )));
+        }
+        let geometry = triangle_geometry(&domain.points, &domain.triangles)?;
+        let vertex_of_cell = domain
+            .triangles
+            .iter()
+            .map(|tri| {
+                tri.iter()
+                    .map(|&v| i32::try_from(v + 1).map_err(index_error))
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let ctrl = if domain.parent == 0 {
+            IconCtrl::Boundary
+        } else {
+            IconCtrl::Nest {
+                vertex_row: &domain.vertex_row,
+                cell_row: &domain.cell_row,
+                depth: ICON_NEST_BOUNDARY_DEPTH,
+            }
+        };
+        let (grid, order) = reorder_icon_grid(assemble_icon_grid(vertex_of_cell, geometry, ctrl)?)?;
+        let edges = grid
+            .edge_vertices
+            .iter()
+            .enumerate()
+            .map(|(e, v)| ((v[0].min(v[1]), v[0].max(v[1])), e as i32 + 1))
+            .collect::<BTreeMap<_, _>>();
+        let uuid = grid_uuid(&grid.vertex_xyz, domain.id);
+        let mut extras = IconFileExtras {
+            grid_root,
+            grid_level: i32::try_from(domain.depth).map_err(index_error)?,
+            uuid: uuid.clone(),
+            ..IconFileExtras::default()
+        };
+        if domain.parent > 0 {
+            let parent = &written[domain.parent - 1];
+            let parent_domain = &domains[domain.parent - 1];
+            extras.parent_uuid = parent.uuid.clone();
+            extras.parent_cell_index = Some(
+                order
+                    .cell_perm
+                    .iter()
+                    .map(|&old| parent.order.cell_map[domain.parent_triangle[old] + 1])
+                    .collect(),
+            );
+            // A child edge lies on a parent edge (a kept corner and the
+            // midpoint of an edge at it) or runs parallel to the one the two
+            // midpoints it joins do not share.
+            let parent_edge = |a: usize, b: usize| -> io::Result<i32> {
+                let (a, b) = (
+                    parent.order.vertex_map[a + 1],
+                    parent.order.vertex_map[b + 1],
+                );
+                parent
+                    .edges
+                    .get(&(a.min(b), a.max(b)))
+                    .copied()
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "ICON nest {}: parent domain {} has no edge {a}-{b}",
+                            domain.id, parent_domain.id
+                        ))
+                    })
+            };
+            use earthmesh_mesh::NestVertexOrigin as O;
+            extras.parent_edge_index = Some(
+                grid.edge_vertices
+                    .iter()
+                    .map(|v| {
+                        let origin = |id: i32| domain.vertex_origin[order.vertex_perm[id as usize - 1]];
+                        match (origin(v[0]), origin(v[1])) {
+                            (O::Parent(k), O::Midpoint(x, y)) | (O::Midpoint(x, y), O::Parent(k))
+                                if k == x || k == y =>
+                            {
+                                parent_edge(x, y)
+                            }
+                            (O::Midpoint(x, y), O::Midpoint(p, q)) => {
+                                let far = [x, y, p, q]
+                                    .into_iter()
+                                    .filter(|&k| [x, y].contains(&k) != [p, q].contains(&k))
+                                    .collect::<Vec<_>>();
+                                match far[..] {
+                                    [a, b] => parent_edge(a, b),
+                                    _ => Err(invalid(format!(
+                                        "ICON nest {}: an edge joins midpoints of unrelated parent edges",
+                                        domain.id
+                                    ))),
+                                }
+                            }
+                            _ => Err(invalid(format!(
+                                "ICON nest {}: an edge is not part of a 1->4 bisection",
+                                domain.id
+                            ))),
+                        }
+                    })
+                    .collect::<io::Result<Vec<_>>>()?,
+            );
+        }
+        let output = output_dir.join(format!("{stem}_DOM{:02}.nc", domain.id));
+        let mut report = None;
+        crate::atomic_output::atomic_write(&output, |temporary| {
+            report = Some(write_icon_grid(temporary, &grid, None, &extras)?);
+            Ok(())
+        })?;
+        let report =
+            report.ok_or_else(|| io::Error::other("ICON nest publication returned no report"))?;
+        reports.push(IconNestFileReport {
+            domain: domain.id,
+            parent: domain.parent,
+            grid_level: domain.depth,
+            output,
+            cells: report.cells,
+            vertices: report.vertices,
+            edges: report.edges,
+            uuid: uuid.clone(),
+        });
+        written.push(Written { order, edges, uuid });
+    }
+    // Refuse a set ICON would stop on, rather than publish it.
+    let files = reports
+        .iter()
+        .map(|r| (r.output.clone(), r.parent))
+        .collect::<Vec<_>>();
+    if let Err(error) = validate_icon_nest_set(&files) {
+        for (path, _) in &files {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(reports)
+}
+
+/// Read an ICON nest set back and check it as ICON does when it loads the
+/// domains (guide 11.86), so a set that would stop the model is refused here:
+/// - `grid_root` shared, each nest's `grid_level` one below its parent's, its
+///   `uuidOfParHGrid` equal to the parent's `uuidOfHGrid`;
+/// - cells, edges and vertices sorted boundary rows `1..=max_rl` first, with
+///   `start_idx_*`/`end_idx_*` naming exactly those ranges;
+/// - every nest flagged at least `nudge_zone_width + 4` (12) cell rows deep;
+/// - every parent cell with 0 or 4 children and exactly 3 inner child edges
+///   ("Incomplete parent cell", "edge counting went wrong" in ICON);
+/// - every child edge's parent edge an edge of its cells' parent cells;
+/// - no parent cell shared by two sibling nests.
+pub fn validate_icon_nest_set(files: &[(PathBuf, usize)]) -> io::Result<()> {
+    let bad = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    struct Domain {
+        cells: usize,
+        edges: usize,
+        edge_of_cell: Vec<i32>,
+        root: i32,
+        level: i32,
+        uuid: String,
+    }
+    let mut loaded = Vec::<Domain>::new();
+    let mut claimed = BTreeMap::<(usize, i32), usize>::new();
+    for (index, (path, parent)) in files.iter().enumerate() {
+        let name = path.display();
+        let file = crate::open_netcdf(path).map_err(netcdf_to_io_error)?;
+        let dim = |n: &str| {
+            file.dimension(n)
+                .map(|d| d.len())
+                .ok_or_else(|| bad(format!("{name}: no dimension {n}")))
+        };
+        let (cells, edges, vertices) = (dim("cell")?, dim("edge")?, dim("vertex")?);
+        if dim("ne")? != 6 || dim("nv")? != 3 {
+            return Err(bad(format!("{name}: ICON needs nv=3 and ne=6")));
+        }
+        let int = |n: &str| -> io::Result<i32> {
+            match file
+                .attribute(n)
+                .map(|a| a.value())
+                .transpose()
+                .map_err(netcdf_to_io_error)?
+            {
+                Some(netcdf::AttributeValue::Int(v)) => Ok(v),
+                _ => Err(bad(format!("{name}: attribute {n} must be an int"))),
+            }
+        };
+        let text = |n: &str| -> io::Result<String> {
+            match file
+                .attribute(n)
+                .map(|a| a.value())
+                .transpose()
+                .map_err(netcdf_to_io_error)?
+            {
+                Some(netcdf::AttributeValue::Str(v)) => Ok(v),
+                _ => Err(bad(format!("{name}: attribute {n} must be a string"))),
+            }
+        };
+        let (root, level, uuid) = (int("grid_root")?, int("grid_level")?, text("uuidOfHGrid")?);
+        if uuid.is_empty() {
+            return Err(bad(format!("{name}: empty uuidOfHGrid")));
+        }
+        // Sorted as ICON reads it, with index ranges naming the rows.
+        for (suffix, count, min_rl, max_rl) in [
+            ("c", cells, -8_i32, 5_i32),
+            ("e", edges, -13, 10),
+            ("v", vertices, -7, 5),
+        ] {
+            let ctrl = crate::required_values_i32(&file, &format!("refin_{suffix}_ctrl"))?;
+            let start = crate::required_values_i32(&file, &format!("start_idx_{suffix}"))?;
+            let end = crate::required_values_i32(&file, &format!("end_idx_{suffix}"))?;
+            let slot = |level: i32| (level - min_rl) as usize;
+            let reordered = |v: i32| (1..=max_rl).contains(&v);
+            let head = ctrl.iter().take_while(|v| reordered(**v)).count();
+            if ctrl.len() != count
+                || ctrl[head..].iter().any(|v| reordered(*v))
+                || ctrl[..head].windows(2).any(|w| w[0] > w[1])
+            {
+                return Err(bad(format!(
+                    "{name}: {suffix} entities are not sorted by refin_{suffix}_ctrl"
+                )));
+            }
+            for level in 1..=max_rl {
+                let first = ctrl.iter().position(|&v| v == level);
+                let last = ctrl.iter().rposition(|&v| v == level);
+                let expect = match (first, last) {
+                    (Some(f), Some(l)) => (f as i32 + 1, l as i32 + 1),
+                    _ => (count as i32 + 1, count as i32),
+                };
+                if (start[slot(level)], end[slot(level)]) != expect {
+                    return Err(bad(format!(
+                        "{name}: start/end_idx_{suffix} of row {level} do not match"
+                    )));
+                }
+            }
+            if head < count && (start[slot(0)], end[slot(0)]) != (head as i32 + 1, count as i32) {
+                return Err(bad(format!(
+                    "{name}: start/end_idx_{suffix} of the interior do not match"
+                )));
+            }
+        }
+        let edge_of_cell = crate::required_values_i32(&file, "edge_of_cell")?;
+        if *parent == 0 {
+            if index != 0 {
+                return Err(bad(format!(
+                    "{name}: only the first domain may lack a parent"
+                )));
+            }
+        } else {
+            let up = loaded
+                .get(parent - 1)
+                .ok_or_else(|| bad(format!("{name}: parent domain {parent} is not before it")))?;
+            if root != up.root || level != up.level + 1 || text("uuidOfParHGrid")? != up.uuid {
+                return Err(bad(format!(
+                    "{name}: grid_root/grid_level/uuidOfParHGrid do not match parent domain {parent}"
+                )));
+            }
+            let rows = crate::required_values_i32(&file, "refin_c_ctrl")?;
+            if rows.iter().copied().max().unwrap_or(0) < 12 {
+                return Err(bad(format!(
+                    "{name}: fewer than 12 boundary cell rows (nudge_zone_width + 4)"
+                )));
+            }
+            let parent_cell = crate::required_values_i32(&file, "parent_cell_index")?;
+            let parent_edge = crate::required_values_i32(&file, "parent_edge_index")?;
+            let adjacent = crate::required_values_i32(&file, "adjacent_cell_of_edge")?;
+            let mut children = BTreeMap::<i32, usize>::new();
+            for &p in &parent_cell {
+                if !(1..=up.cells as i32).contains(&p) {
+                    return Err(bad(format!("{name}: parent_cell_index {p} out of range")));
+                }
+                *children.entry(p).or_default() += 1;
+            }
+            if let Some((p, n)) = children.iter().find(|(_, &n)| n != 4) {
+                return Err(bad(format!(
+                    "{name}: parent cell {p} has {n} children (ICON needs 0 or 4)"
+                )));
+            }
+            let mut inner = BTreeMap::<i32, usize>::new();
+            let parent_edges_of =
+                |p: i32| (0..3).map(move |k| up.edge_of_cell[k * up.cells + p as usize - 1]);
+            for e in 0..edges {
+                let (a, b) = (adjacent[e], adjacent[edges + e]);
+                let pe = parent_edge[e];
+                if !(1..=up.edges as i32).contains(&pe) {
+                    return Err(bad(format!("{name}: parent_edge_index {pe} out of range")));
+                }
+                let pa = parent_cell[a as usize - 1];
+                let owned = parent_edges_of(pa).any(|x| x == pe)
+                    || (b > 0 && parent_edges_of(parent_cell[b as usize - 1]).any(|x| x == pe));
+                if b > 0 && parent_cell[b as usize - 1] == pa {
+                    *inner.entry(pa).or_default() += 1;
+                }
+                if !owned {
+                    return Err(bad(format!(
+                        "{name}: child edge {} maps to parent edge {pe}, not an edge of its parent cells",
+                        e + 1
+                    )));
+                }
+            }
+            if let Some(p) = children
+                .keys()
+                .find(|p| inner.get(p).copied().unwrap_or(0) != 3)
+            {
+                return Err(bad(format!(
+                    "{name}: parent cell {p} does not have exactly 3 inner edges"
+                )));
+            }
+            for &p in children.keys() {
+                if let Some(other) = claimed.insert((*parent, p), index + 1) {
+                    return Err(bad(format!(
+                        "{name}: parent cell {p} is also refined by sibling domain {other}"
+                    )));
+                }
+            }
+        }
+        loaded.push(Domain {
+            cells,
+            edges,
+            edge_of_cell,
+            root,
+            level,
+            uuid,
+        });
+    }
+    Ok(())
+}
+
+/// Positions and areas of a triangle grid given as unit vectors: cell
+/// centres at circumcentres, dual areas from the kites of each triangle.
+fn triangle_geometry(points: &[[f64; 3]], triangles: &[[usize; 3]]) -> io::Result<IconGeometry> {
+    use earthmesh_mesh::{spherical_kite_area_unit, spherical_triangle_area_unit};
+    let r2 = ICON_SPHERE_RADIUS_METERS.powi(2);
+    let point = |p: [f64; 3]| CartesianPoint::new(p[0], p[1], p[2]);
+    let lonlat = |p: CartesianPoint| (p.y.atan2(p.x), p.z.clamp(-1.0, 1.0).asin());
+    let vertex_xyz = points.iter().map(|&p| point(p)).collect::<Vec<_>>();
+    let mut cell_xyz = Vec::with_capacity(triangles.len());
+    let mut cell_area = Vec::with_capacity(triangles.len());
+    let mut dual_area = vec![0.0; points.len()];
+    for tri in triangles {
+        let [a, b, c] = tri.map(|v| vertex_xyz[v]);
+        let (u, w) = (
+            CartesianPoint::new(b.x - a.x, b.y - a.y, b.z - a.z),
+            CartesianPoint::new(c.x - a.x, c.y - a.y, c.z - a.z),
+        );
+        let centre = normalized(CartesianPoint::new(
+            u.y * w.z - u.z * w.y,
+            u.z * w.x - u.x * w.z,
+            u.x * w.y - u.y * w.x,
+        ))?;
+        cell_xyz.push(centre);
+        cell_area.push(spherical_triangle_area_unit([a, b, c]) * r2);
+        for k in 0..3 {
+            let (v, n1, n2) = (tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3]);
+            let mid = |x: usize, y: usize| {
+                let (p, q) = (vertex_xyz[x], vertex_xyz[y]);
+                normalized(CartesianPoint::new(p.x + q.x, p.y + q.y, p.z + q.z))
+            };
+            dual_area[v] +=
+                spherical_kite_area_unit(vertex_xyz[v], mid(v, n1)?, mid(v, n2)?, centre) * r2;
+        }
+    }
+    let (clon, clat) = cell_xyz.iter().map(|&p| lonlat(p)).unzip();
+    let (vlon, vlat) = vertex_xyz.iter().map(|&p| lonlat(p)).unzip();
+    Ok(IconGeometry {
+        clon,
+        clat,
+        vlon,
+        vlat,
+        vertex_xyz,
+        cell_xyz,
+        cell_area,
+        dual_area,
+    })
+}
+
+/// A UUID-formatted identity for one grid file, derived from its vertex
+/// positions and domain id so the same grid always gets the same string.
+fn grid_uuid(vertices: &[CartesianPoint], domain: usize) -> String {
+    let mut hash = [0xcbf2_9ce4_8422_2325_u64, 0x8422_2325_cbf2_9ce4_u64];
+    let mut feed = |bytes: &[u8]| {
+        for (lane, h) in hash.iter_mut().enumerate() {
+            for &byte in bytes {
+                *h ^= u64::from(byte) ^ (lane as u64);
+                *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    };
+    feed(&(domain as u64).to_le_bytes());
+    for p in vertices {
+        for x in [p.x, p.y, p.z] {
+            feed(&x.to_bits().to_le_bytes());
+        }
+    }
+    let [hi, lo] = hash;
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        hi >> 32,
+        (hi >> 16) & 0xffff,
+        hi & 0x0fff,
+        (lo >> 48) & 0x3fff | 0x8000,
+        lo & 0xffff_ffff_ffff
+    )
 }
 
 // ICON represents M triangles; a legal degree-four W fan is not a HEX cell.
@@ -284,10 +731,22 @@ fn validate_selected_triangles(
     Ok(())
 }
 
+/// What distinguishes one file of an ICON grid set from a lone grid.
+#[derive(Default)]
+struct IconFileExtras {
+    parent_cell_index: Option<Vec<i32>>,
+    parent_edge_index: Option<Vec<i32>>,
+    grid_root: i32,
+    grid_level: i32,
+    uuid: String,
+    parent_uuid: String,
+}
+
 fn write_icon_grid(
     output: &Path,
     grid: &IconGrid,
     parent: Option<&Path>,
+    extras: &IconFileExtras,
 ) -> io::Result<IconGridWriteReport> {
     crate::ensure_parent_dir(output)?;
     let global_grid = grid.adjacent_cell_of_edge.iter().all(|row| row[1] > 0);
@@ -485,7 +944,10 @@ fn write_icon_grid(
         &mut file,
         "parent_cell_index",
         "cell",
-        &vec![-1; grid.clon.len()],
+        extras
+            .parent_cell_index
+            .as_deref()
+            .unwrap_or(&vec![-1; grid.clon.len()]),
     )?;
     write_i32_columns(
         &mut file,
@@ -515,7 +977,10 @@ fn write_icon_grid(
         &mut file,
         "parent_edge_index",
         "edge",
-        &vec![-1; grid.elon.len()],
+        extras
+            .parent_edge_index
+            .as_deref()
+            .unwrap_or(&vec![-1; grid.elon.len()]),
     )?;
     write_i32_1d(
         &mut file,
@@ -550,13 +1015,13 @@ fn write_icon_grid(
         .map_err(netcdf_to_io_error)?;
     file.add_attribute("inverse_flattening", 0.0_f64)
         .map_err(netcdf_to_io_error)?;
-    file.add_attribute("grid_level", 0_i32)
+    file.add_attribute("grid_level", extras.grid_level)
         .map_err(netcdf_to_io_error)?;
-    file.add_attribute("grid_root", 0_i32)
+    file.add_attribute("grid_root", extras.grid_root)
         .map_err(netcdf_to_io_error)?;
-    file.add_attribute("uuidOfParHGrid", "")
+    file.add_attribute("uuidOfParHGrid", extras.parent_uuid.as_str())
         .map_err(netcdf_to_io_error)?;
-    file.add_attribute("uuidOfHGrid", "")
+    file.add_attribute("uuidOfHGrid", extras.uuid.as_str())
         .map_err(netcdf_to_io_error)?;
     file.add_attribute("global_grid", i32::from(global_grid))
         .map_err(netcdf_to_io_error)?;
@@ -631,61 +1096,13 @@ fn build_icon_grid_selection(mesh: &MpasMesh, selected: Option<&[usize]>) -> io:
     }
 
     let mut vertex_of_cell = Vec::with_capacity(valid_cells.len());
-    let mut edge_of_cell = vec![vec![-1; 3]; valid_cells.len()];
-    let mut edges = Vec::<([i32; 2], [i32; 2])>::new();
-    let mut edge_ids = BTreeMap::<(i32, i32), i32>::new();
-    for (cell_index, old_cell) in valid_cells.iter().copied().enumerate() {
+    for old_cell in valid_cells.iter().copied() {
         let mut row = cells_on_vertex[old_cell]
             .iter()
             .map(|value| vertex_map[*value as usize])
             .collect::<Vec<_>>();
         orient_triangle_outward(&mut row, &vertex_old, mesh, old_cell);
-        vertex_of_cell.push(row.clone());
-        let cell_id = i32::try_from(cell_index + 1).map_err(index_error)?;
-        for slot in 0..3 {
-            let a = row[slot];
-            let b = row[(slot + 1) % 3];
-            let key = if a < b { (a, b) } else { (b, a) };
-            let edge_id = if let Some(id) = edge_ids.get(&key).copied() {
-                let edge = &mut edges[id as usize - 1];
-                if edge.1[1] > 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("ICON edge {a}-{b} belongs to more than two cells"),
-                    ));
-                }
-                edge.1[1] = cell_id;
-                id
-            } else {
-                let id = i32::try_from(edges.len() + 1).map_err(index_error)?;
-                edge_ids.insert(key, id);
-                edges.push(([a, b], [cell_id, -1]));
-                id
-            };
-            edge_of_cell[cell_index][slot] = edge_id;
-        }
-    }
-
-    let (cells_of_vertex, edges_of_vertex, vertices_of_vertex, edge_orientation) =
-        build_icon_vertex_fans(vertex_old.len(), &vertex_of_cell, &edge_of_cell, &edges)?;
-
-    let adjacent_cell_of_edge = edges.iter().map(|edge| edge.1.to_vec()).collect::<Vec<_>>();
-    let edge_vertices = edges.iter().map(|edge| edge.0.to_vec()).collect::<Vec<_>>();
-    let mut neighbor_cell_index = vec![vec![-1; 3]; valid_cells.len()];
-    let mut orientation_of_normal = vec![vec![0; 3]; valid_cells.len()];
-    for cell in 0..valid_cells.len() {
-        let cell_id = (cell + 1) as i32;
-        for slot in 0..3 {
-            let edge = edge_of_cell[cell][slot] as usize - 1;
-            let adjacent = adjacent_cell_of_edge[edge].as_slice();
-            if adjacent[0] == cell_id {
-                neighbor_cell_index[cell][slot] = adjacent[1];
-                orientation_of_normal[cell][slot] = 1;
-            } else {
-                neighbor_cell_index[cell][slot] = adjacent[0];
-                orientation_of_normal[cell][slot] = -1;
-            }
-        }
+        vertex_of_cell.push(row);
     }
 
     let clon = valid_cells
@@ -720,6 +1137,116 @@ fn build_icon_grid_selection(mesh: &MpasMesh, selected: Option<&[usize]>) -> io:
         .iter()
         .map(|&id| mesh.area_cell[id] * ICON_SPHERE_RADIUS_METERS.powi(2))
         .collect::<Vec<_>>();
+    let geometry = IconGeometry {
+        clon,
+        clat,
+        vlon,
+        vlat,
+        vertex_xyz,
+        cell_xyz,
+        cell_area,
+        dual_area,
+    };
+    let grid = assemble_icon_grid(vertex_of_cell, geometry, IconCtrl::Boundary)?;
+    Ok(reorder_icon_grid(grid)?.0)
+}
+
+/// Positions and areas of a triangle grid, in the order of its cells and
+/// vertices before the ICON reordering.
+struct IconGeometry {
+    clon: Vec<f64>,
+    clat: Vec<f64>,
+    vlon: Vec<f64>,
+    vlat: Vec<f64>,
+    vertex_xyz: Vec<CartesianPoint>,
+    cell_xyz: Vec<CartesianPoint>,
+    cell_area: Vec<f64>,
+    dual_area: Vec<f64>,
+}
+
+/// How the lateral-boundary flags `refin_*_ctrl` are set.
+enum IconCtrl<'a> {
+    /// Rows counted from an open boundary, capped at ICON's reordered rows
+    /// (the regional adapter's convention).
+    Boundary,
+    /// A nest's rows, flagged to `depth` cell rows as the ICON grid generator
+    /// does (`bdy_indexing_depth`): vertex rows from the boundary, a cell's
+    /// row the least of its vertices', an edge `2r` inside row `r` and
+    /// `2r + 1` between rows `r` and `r + 1`.
+    Nest {
+        vertex_row: &'a [u32],
+        cell_row: &'a [u32],
+        depth: u32,
+    },
+}
+
+/// Edges, vertex fans, metrics and boundary flags of a grid whose cells are
+/// `vertex_of_cell` (1-based, counter-clockwise seen from outside).
+fn assemble_icon_grid(
+    vertex_of_cell: Vec<Vec<i32>>,
+    geometry: IconGeometry,
+    ctrl: IconCtrl<'_>,
+) -> io::Result<IconGrid> {
+    let IconGeometry {
+        clon,
+        clat,
+        vlon,
+        vlat,
+        vertex_xyz,
+        cell_xyz,
+        cell_area,
+        dual_area,
+    } = geometry;
+    let mut edge_of_cell = vec![vec![-1; 3]; vertex_of_cell.len()];
+    let mut edges = Vec::<([i32; 2], [i32; 2])>::new();
+    let mut edge_ids = BTreeMap::<(i32, i32), i32>::new();
+    for (cell_index, row) in vertex_of_cell.iter().enumerate() {
+        let cell_id = i32::try_from(cell_index + 1).map_err(index_error)?;
+        for slot in 0..3 {
+            let a = row[slot];
+            let b = row[(slot + 1) % 3];
+            let key = if a < b { (a, b) } else { (b, a) };
+            let edge_id = if let Some(id) = edge_ids.get(&key).copied() {
+                let edge = &mut edges[id as usize - 1];
+                if edge.1[1] > 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("ICON edge {a}-{b} belongs to more than two cells"),
+                    ));
+                }
+                edge.1[1] = cell_id;
+                id
+            } else {
+                let id = i32::try_from(edges.len() + 1).map_err(index_error)?;
+                edge_ids.insert(key, id);
+                edges.push(([a, b], [cell_id, -1]));
+                id
+            };
+            edge_of_cell[cell_index][slot] = edge_id;
+        }
+    }
+
+    let (cells_of_vertex, edges_of_vertex, vertices_of_vertex, edge_orientation) =
+        build_icon_vertex_fans(vertex_xyz.len(), &vertex_of_cell, &edge_of_cell, &edges)?;
+
+    let adjacent_cell_of_edge = edges.iter().map(|edge| edge.1.to_vec()).collect::<Vec<_>>();
+    let edge_vertices = edges.iter().map(|edge| edge.0.to_vec()).collect::<Vec<_>>();
+    let mut neighbor_cell_index = vec![vec![-1; 3]; vertex_of_cell.len()];
+    let mut orientation_of_normal = vec![vec![0; 3]; vertex_of_cell.len()];
+    for cell in 0..vertex_of_cell.len() {
+        let cell_id = (cell + 1) as i32;
+        for slot in 0..3 {
+            let edge = edge_of_cell[cell][slot] as usize - 1;
+            let adjacent = adjacent_cell_of_edge[edge].as_slice();
+            if adjacent[0] == cell_id {
+                neighbor_cell_index[cell][slot] = adjacent[1];
+                orientation_of_normal[cell][slot] = 1;
+            } else {
+                neighbor_cell_index[cell][slot] = adjacent[0];
+                orientation_of_normal[cell][slot] = -1;
+            }
+        }
+    }
 
     let mut elon = Vec::with_capacity(edges.len());
     let mut elat = Vec::with_capacity(edges.len());
@@ -766,21 +1293,62 @@ fn build_icon_grid_selection(mesh: &MpasMesh, selected: Option<&[usize]>) -> io:
         meridional_normal_dual_edge.push(north_dual);
     }
 
-    let cell_ctrl = boundary_layers(&neighbor_cell_index, 5);
-    let vertex_ctrl = boundary_layers_with_sources(
-        &vertices_of_vertex,
-        edges_of_vertex.iter().map(|row| {
-            row.iter()
-                .any(|edge| *edge > 0 && adjacent_cell_of_edge[*edge as usize - 1][1] < 1)
-        }),
-        5,
-    );
-    let edge_adjacency = edge_adjacency(&edge_of_cell, &edges_of_vertex, edges.len());
-    let edge_ctrl = boundary_layers_with_sources(
-        &edge_adjacency,
-        adjacent_cell_of_edge.iter().map(|row| row[1] < 1),
-        10,
-    );
+    let (cell_ctrl, vertex_ctrl, edge_ctrl) = match ctrl {
+        IconCtrl::Boundary => {
+            let cell_ctrl = boundary_layers(&neighbor_cell_index, 5);
+            let vertex_ctrl = boundary_layers_with_sources(
+                &vertices_of_vertex,
+                edges_of_vertex.iter().map(|row| {
+                    row.iter()
+                        .any(|edge| *edge > 0 && adjacent_cell_of_edge[*edge as usize - 1][1] < 1)
+                }),
+                5,
+            );
+            let edge_adjacency = edge_adjacency(&edge_of_cell, &edges_of_vertex, edges.len());
+            let edge_ctrl = boundary_layers_with_sources(
+                &edge_adjacency,
+                adjacent_cell_of_edge.iter().map(|row| row[1] < 1),
+                10,
+            );
+            (cell_ctrl, vertex_ctrl, edge_ctrl)
+        }
+        IconCtrl::Nest {
+            vertex_row,
+            cell_row,
+            depth,
+        } => {
+            let flag = |row: u32, limit: u32| {
+                if row <= limit {
+                    row as i32
+                } else {
+                    0
+                }
+            };
+            let cell_ctrl = cell_row.iter().map(|&r| flag(r, depth)).collect::<Vec<_>>();
+            let vertex_ctrl = vertex_row
+                .iter()
+                .map(|&r| flag(r, depth))
+                .collect::<Vec<_>>();
+            let edge_ctrl = adjacent_cell_of_edge
+                .iter()
+                .map(|cells| {
+                    let first = cell_row[cells[0] as usize - 1];
+                    if cells[1] < 1 {
+                        return 1;
+                    }
+                    let second = cell_row[cells[1] as usize - 1];
+                    let (low, high) = (first.min(second), first.max(second));
+                    let value = if low == high {
+                        low.saturating_mul(2)
+                    } else {
+                        low.saturating_mul(2).saturating_add(1)
+                    };
+                    flag(value, 2 * depth)
+                })
+                .collect::<Vec<_>>();
+            (cell_ctrl, vertex_ctrl, edge_ctrl)
+        }
+    };
 
     let grid = IconGrid {
         clon,
@@ -814,7 +1382,7 @@ fn build_icon_grid_selection(mesh: &MpasMesh, selected: Option<&[usize]>) -> io:
         edge_ctrl,
         vertex_ctrl,
     };
-    reorder_icon_grid(grid)
+    Ok(grid)
 }
 
 type IconVertexFans = (Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<Vec<i32>>, Vec<Vec<i32>>);
@@ -1040,10 +1608,21 @@ fn orient_triangle_outward(row: &mut [i32], vertex_old: &[usize], mesh: &MpasMes
     }
 }
 
-fn reorder_icon_grid(mut grid: IconGrid) -> io::Result<IconGrid> {
-    let cell_perm = permutation(&grid.cell_ctrl);
-    let edge_perm = permutation(&grid.edge_ctrl);
-    let vertex_perm = permutation(&grid.vertex_ctrl);
+/// Where the ICON reordering moved each entity: `*_perm[new] = old` and
+/// `*_map[old + 1] = new + 1` (0-based positions, 1-based ids).
+struct IconOrder {
+    cell_perm: Vec<usize>,
+    vertex_perm: Vec<usize>,
+    cell_map: Vec<i32>,
+    vertex_map: Vec<i32>,
+}
+
+/// Sort cells, edges and vertices as ICON reads them: boundary rows
+/// `1..=max_rl` first in ascending order, then everything else.
+fn reorder_icon_grid(mut grid: IconGrid) -> io::Result<(IconGrid, IconOrder)> {
+    let cell_perm = permutation(&grid.cell_ctrl, 5);
+    let edge_perm = permutation(&grid.edge_ctrl, 10);
+    let vertex_perm = permutation(&grid.vertex_ctrl, 5);
     let cell_map = inverse_map(&cell_perm)?;
     let edge_map = inverse_map(&edge_perm)?;
     let vertex_map = inverse_map(&vertex_perm)?;
@@ -1121,7 +1700,13 @@ fn reorder_icon_grid(mut grid: IconGrid) -> io::Result<IconGrid> {
                 .collect()
         })
         .collect();
-    Ok(grid)
+    let order = IconOrder {
+        cell_perm,
+        vertex_perm,
+        cell_map,
+        vertex_map,
+    };
+    Ok((grid, order))
 }
 
 fn boundary_layers(adjacency: &[Vec<i32>], max_layer: i32) -> Vec<i32> {
@@ -1182,14 +1767,14 @@ fn edge_adjacency(
         .collect()
 }
 
-fn permutation(groups: &[i32]) -> Vec<usize> {
+fn permutation(groups: &[i32], max_rl: i32) -> Vec<usize> {
     let mut ids = (0..groups.len()).collect::<Vec<_>>();
     ids.sort_by_key(|index| {
         (
-            if groups[*index] == 0 {
-                i32::MAX
-            } else {
+            if (1..=max_rl).contains(&groups[*index]) {
                 groups[*index]
+            } else {
+                i32::MAX
             },
             *index,
         )
@@ -1336,7 +1921,11 @@ fn write_grf_indices(
     let count_i32 = i32::try_from(count).map_err(index_error)?;
     let mut start = vec![count_i32 + 1; grf_count];
     let mut end = vec![count_i32; grf_count];
-    let boundary_count = controls.iter().take_while(|value| **value > 0).count();
+    // Rows beyond the reordered ones sit with the interior (level 0).
+    let boundary_count = controls
+        .iter()
+        .filter(|value| (1..=boundary_slots as i32).contains(*value))
+        .count();
     if boundary_count < count {
         start[interior_slot] = i32::try_from(boundary_count + 1).map_err(index_error)?;
         end[interior_slot] = count_i32;

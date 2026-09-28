@@ -224,8 +224,9 @@ use gridfile_output_writers::{
     write_mpas_mesh_from_netcdf_inputs, write_mpas_simple_mesh_from_netcdf_inputs,
 };
 pub use icon_writer::{
-    write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
-    write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS,
+    validate_icon_nest_set, write_icon_from_final_gridfile,
+    write_icon_from_final_gridfile_with_parent, write_icon_grid_netcdf, write_icon_nest_set,
+    IconGridWriteReport, IconNestFileReport, ICON_NEST_BOUNDARY_DEPTH, ICON_SPHERE_RADIUS_METERS,
 };
 use mask_postproc_domain::{plan_mask_postproc_domain_io, run_mask_postproc_ocean_domain};
 use mesh_metric_writers::{

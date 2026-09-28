@@ -92,8 +92,9 @@ pub use gridfile_quality_input::{
 };
 pub use hydro_workflow_types::{HydroMeshQaCheck, HydroMeshQaReport, HydroWorkflowReport};
 pub use icon_writer::{
-    write_icon_from_final_gridfile, write_icon_from_final_gridfile_with_parent,
-    write_icon_grid_netcdf, IconGridWriteReport, ICON_SPHERE_RADIUS_METERS,
+    validate_icon_nest_set, write_icon_from_final_gridfile,
+    write_icon_from_final_gridfile_with_parent, write_icon_grid_netcdf, write_icon_nest_set,
+    IconGridWriteReport, IconNestFileReport, ICON_NEST_BOUNDARY_DEPTH, ICON_SPHERE_RADIUS_METERS,
 };
 pub use json_support::{
     geojson_feature_nodes, json_escape_string, json_node_to_f64, json_node_to_usize, json_number,
