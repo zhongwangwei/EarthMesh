@@ -2086,30 +2086,111 @@ fn nested_criteria_regions(
     level: usize,
     base_cell_meters: f64,
     halo: impl Fn(usize) -> usize,
+    widen_named: bool,
 ) -> Vec<earthmesh_mesh::RefinementRegion> {
-    let mut regions = named_regions.to_vec();
+    let margin = |deeper: usize| {
+        (level..deeper)
+            .map(|round| halo(round + 1) as f64 * base_cell_meters / 2f64.powi(round as i32))
+            .sum::<f64>()
+    };
+    // Named regions are asked for at `>= level`, so a deeper one is marked
+    // here too -- widened for the same reason as a deeper circle, where the
+    // caller's route has been shown to take it (the triangle route; on the
+    // hex transition-row route the widened marking produced a self-crossing
+    // dual cell, guide 11.81).
+    let mut regions = named_regions
+        .iter()
+        .map(|region| {
+            if widen_named && region.level() > level {
+                widened_region(region, margin(region.level()))
+            } else {
+                region.clone()
+            }
+        })
+        .collect::<Vec<_>>();
     for (index, demand) in planned_circles.iter().enumerate() {
         let planned_level = index + 1;
         if planned_level < level {
             continue;
         }
-        let margin = (level..planned_level)
-            .map(|round| halo(round + 1) as f64 * base_cell_meters / 2f64.powi(round as i32))
-            .sum::<f64>();
-        regions.extend(demand.circles.iter().map(|circle| match circle {
-            earthmesh_mesh::RefinementRegion::Circle {
-                center,
-                radius_meters,
-                level,
-            } => earthmesh_mesh::RefinementRegion::Circle {
-                center: *center,
-                radius_meters: radius_meters + margin,
-                level: *level,
-            },
-            other => other.clone(),
-        }));
+        let margin = margin(planned_level);
+        regions.extend(
+            demand
+                .circles
+                .iter()
+                .map(|circle| widened_region(circle, margin)),
+        );
     }
     regions
+}
+
+/// `region` grown by `margin_meters` on every side it can be.
+///
+/// Circles and corridors widen their radii; a bbox grows by the margin in
+/// latitude and by the margin at its poleward edge in longitude (the whole
+/// circle of longitude when that edge is near a pole). A polygon is returned
+/// as it is: an exact spherical buffer is not built here, so a deeper named
+/// polygon keeps the halo cancellation at its rim (guide 11.78).
+fn widened_region(
+    region: &earthmesh_mesh::RefinementRegion,
+    margin_meters: f64,
+) -> earthmesh_mesh::RefinementRegion {
+    use earthmesh_mesh::RefinementRegion;
+    if !(margin_meters.is_finite() && margin_meters > 0.0) {
+        return region.clone();
+    }
+    match region {
+        RefinementRegion::Circle {
+            center,
+            radius_meters,
+            level,
+        } => RefinementRegion::Circle {
+            center: *center,
+            radius_meters: radius_meters + margin_meters,
+            level: *level,
+        },
+        RefinementRegion::Corridor {
+            points,
+            radius_meters,
+            level,
+        } => RefinementRegion::Corridor {
+            points: points.clone(),
+            radius_meters: radius_meters.iter().map(|r| r + margin_meters).collect(),
+            level: *level,
+        },
+        RefinementRegion::Bbox {
+            west_degrees,
+            east_degrees,
+            south_degrees,
+            north_degrees,
+            level,
+        } => {
+            let dlat = (margin_meters / earthmesh_hfield::EARTH_RADIUS_METERS).to_degrees();
+            let south = (south_degrees - dlat).max(-90.0);
+            let north = (north_degrees + dlat).min(90.0);
+            let poleward = south.abs().max(north.abs());
+            let span = east_degrees - west_degrees;
+            let (west, east) = if poleward >= 89.0 {
+                (-180.0, 180.0)
+            } else {
+                let dlon = dlat / poleward.to_radians().cos();
+                let widened = if span >= 0.0 { span } else { span + 360.0 } + 2.0 * dlon;
+                if widened >= 360.0 {
+                    (-180.0, 180.0)
+                } else {
+                    (west_degrees - dlon, east_degrees + dlon)
+                }
+            };
+            RefinementRegion::Bbox {
+                west_degrees: west,
+                east_degrees: east,
+                south_degrees: south,
+                north_degrees: north,
+                level: *level,
+            }
+        }
+        RefinementRegion::Polygon { .. } => region.clone(),
+    }
 }
 
 /// Angle between two points, in radians: an edge length on the unit sphere,
@@ -2229,7 +2310,7 @@ fn refine_with_stretch(
         }
     }
     // No halo here: nothing is marked round by round.
-    let regions = nested_criteria_regions(named_regions, &planned_circles, 1, 0.0, |_| 0);
+    let regions = nested_criteria_regions(named_regions, &planned_circles, 1, 0.0, |_| 0, false);
     let region_targets = earthmesh_refine::RegionTargets::new(&regions);
     let hfield_targets = hfield
         .as_ref()
@@ -2408,6 +2489,15 @@ fn refine_with_redgreen(
     // let a deep circle outside the shallower ones be cancelled by the halo,
     // and kept the derived green floor that over-refined around it (guide
     // 11.71, 11.78).
+    // The base cell the halo margins are counted in: the criteria's own base
+    // when they run, else the base mesh's median longest edge -- a run with
+    // named regions alone has no criteria base, and a zero margin would leave
+    // its deeper regions' rims to the halo.
+    let base_cell_meters = match &adaptive {
+        Some(adaptive) => adaptive.base_cell_meters,
+        None => median_longest_edge_radians(&MeshState::from_triangular_mesh(mesh)?)
+            .map_or(0.0, |edge| edge * earthmesh_hfield::EARTH_RADIUS_METERS),
+    };
     let mut planned_circles = Vec::new();
     if let Some(adaptive) = &adaptive {
         for level in 1..=max_level {
@@ -2429,10 +2519,9 @@ fn refine_with_redgreen(
             named_regions,
             &planned_circles,
             level,
-            adaptive
-                .as_ref()
-                .map_or(0.0, |adaptive| adaptive.base_cell_meters),
+            base_cell_meters,
             |round| crate::redgreen_bridge::redgreen_settings_for_level(refine, round).halo,
+            preserve_locality,
         );
         let region_targets = earthmesh_refine::RegionTargets::new(&marked_regions);
         let before = redgreen.triangle_count();
@@ -4240,7 +4329,7 @@ mod tests {
                 criterion_ids: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let named = [circle(2, 5_000.0)];
+        let named = [circle(1, 5_000.0)];
         let radius = |regions: &[RefinementRegion], level| {
             regions
                 .iter()
@@ -4255,7 +4344,7 @@ mod tests {
                 })
         };
         // halo 3 in every round, base cell 100 km.
-        let level_one = nested_criteria_regions(&named, &planned, 1, 100_000.0, |_| 3);
+        let level_one = nested_criteria_regions(&named, &planned, 1, 100_000.0, |_| 3, true);
         assert_eq!(level_one[0], named[0], "named regions pass through");
         assert_eq!(
             radius(&level_one, 1),
@@ -4266,13 +4355,115 @@ mod tests {
         assert_eq!(radius(&level_one, 2), Some(151_000.0));
         // Round 3 erodes another 3 rings of round-2 triangles (25 km).
         assert_eq!(radius(&level_one, 3), Some(226_000.0));
-        let level_three = nested_criteria_regions(&named, &planned, 3, 100_000.0, |_| 3);
+        let level_three = nested_criteria_regions(&named, &planned, 3, 100_000.0, |_| 3, true);
         assert_eq!(
             radius(&level_three, 1),
             None,
             "shallower circles are not marked deeper"
         );
         assert_eq!(radius(&level_three, 3), Some(1_000.0));
+    }
+
+    #[test]
+    fn deeper_named_regions_are_widened_like_criteria_circles() {
+        use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
+        let named = [
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(10.0, 20.0),
+                radius_meters: 1_000.0,
+                level: 2,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 10.0,
+                east_degrees: 20.0,
+                south_degrees: 0.0,
+                north_degrees: 60.0,
+                level: 2,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 170.0,
+                east_degrees: -170.0,
+                south_degrees: -10.0,
+                north_degrees: 10.0,
+                level: 2,
+            },
+            RefinementRegion::Bbox {
+                west_degrees: 0.0,
+                east_degrees: 10.0,
+                south_degrees: 80.0,
+                north_degrees: 88.9,
+                level: 2,
+            },
+            RefinementRegion::Polygon {
+                points: vec![
+                    LonLatDegrees::new(0.0, 0.0),
+                    LonLatDegrees::new(1.0, 0.0),
+                    LonLatDegrees::new(0.0, 1.0),
+                ],
+                level: 2,
+            },
+            RefinementRegion::Circle {
+                center: LonLatDegrees::new(0.0, 0.0),
+                radius_meters: 500.0,
+                level: 1,
+            },
+        ];
+        // halo 3, base 100 km: level 1 widens a level-2 region by 150 km.
+        let marked = nested_criteria_regions(&named, &[], 1, 100_000.0, |_| 3, true);
+        let dlat = (150_000.0 / earthmesh_hfield::EARTH_RADIUS_METERS).to_degrees();
+        match &marked[0] {
+            RefinementRegion::Circle { radius_meters, .. } => assert_eq!(*radius_meters, 151_000.0),
+            other => panic!("{other:?}"),
+        }
+        match &marked[1] {
+            RefinementRegion::Bbox {
+                west_degrees,
+                east_degrees,
+                south_degrees,
+                north_degrees,
+                ..
+            } => {
+                assert!((south_degrees + dlat).abs() < 1e-12);
+                assert!((north_degrees - 60.0 - dlat).abs() < 1e-12);
+                // Longitude grows by the margin at the poleward edge.
+                let dlon = dlat / (60.0 + dlat).to_radians().cos();
+                assert!((west_degrees - (10.0 - dlon)).abs() < 1e-9);
+                assert!((east_degrees - (20.0 + dlon)).abs() < 1e-9);
+            }
+            other => panic!("{other:?}"),
+        }
+        match &marked[2] {
+            RefinementRegion::Bbox {
+                west_degrees,
+                east_degrees,
+                ..
+            } => assert!(
+                *west_degrees < 170.0 && *east_degrees > -170.0 && west_degrees > east_degrees
+            ),
+            other => panic!("{other:?}"),
+        }
+        match &marked[3] {
+            RefinementRegion::Bbox {
+                west_degrees,
+                east_degrees,
+                ..
+            } => assert_eq!(
+                (*west_degrees, *east_degrees),
+                (-180.0, 180.0),
+                "near a pole"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(marked[4], named[4], "a polygon is not buffered");
+        assert_eq!(
+            marked[5], named[5],
+            "a region not deeper than the level is as it is"
+        );
+        // At its own level nothing is widened.
+        assert_eq!(
+            nested_criteria_regions(&named, &[], 2, 100_000.0, |_| 3, true),
+            named.to_vec()
+        );
     }
 
     #[test]
