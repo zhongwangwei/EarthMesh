@@ -2373,7 +2373,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     return "";
   }
 
-  async function composeYaml(template = null) {
+  // `pending` carries a target or cell edit being committed, so the draft is
+  // composed with it rather than with the old one: otherwise leaving a
+  // combination the old target makes invalid (ICON + inserting refinement)
+  // fails on the old target and can never be applied.
+  async function composeYaml(template = null, pending = null) {
     if (backendReady) await backendReady;
     const resolution = template && template.nxp
       ? { nxp: template.nxp, approxKm: null, approxDegree: null } : currentResolution();
@@ -2417,13 +2421,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (baseProjectYaml) {
       yaml = await invoke("preserve_unexposed_project_fields", { baseYaml: baseProjectYaml, yaml, preserveDomain: !template && !!hiddenDomainShape });
     }
-    if (!template && targetEdit) {
-      yaml = await invoke("set_project_target", { yaml, kind: targetEdit.kind, modelFormat: targetEdit.modelFormat });
+    const target = (pending && pending.target) || targetEdit;
+    const cell = (pending && pending.cell) || cellEdit;
+    if (!template && target) {
+      yaml = await invoke("set_project_target", { yaml, kind: target.kind, modelFormat: target.modelFormat });
     }
-    if (!template && cellEdit) {
-      yaml = await invoke("set_target_cell", { yaml, cell: cellEdit });
+    if (!template && cell) {
+      yaml = await invoke("set_target_cell", { yaml, cell });
     }
-    const selectedModelForDelivery = (!template && targetEdit && targetEdit.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
+    const selectedModelForDelivery = (!template && target && target.modelFormat) || (await invoke("project_summary", { yaml })).model_format;
     const colmDeliveryEnabled = selectedModelForDelivery === "CoLM" && !!colmMeshDelivery.enabled;
     if (colmDeliveryEnabled && !(Number.isInteger(colmMeshDelivery.pixelsPerDegree) && colmMeshDelivery.pixelsPerDegree > 0)) {
       throw new Error(zh() ? "CoLM mesh 栅格分辨率必须为正整数" : "CoLM mesh pixels/degree must be a positive integer");
@@ -2598,8 +2604,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
   };
 
   // Validate before committing: rejected edits must not poison the next compose.
-  function commitProjectEdit(editYaml) {
-    return commitProjectYaml(async () => editYaml(await composeYaml()));
+  function commitProjectEdit(editYaml, pending = null) {
+    return commitProjectYaml(async () => editYaml(await composeYaml(null, pending)));
   }
 
   function commitProjectYaml(candidateYaml, onCommit) {
@@ -3516,6 +3522,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (certifiedMode) certifiedMode.onchange = () => {
         specifiedRefine.certifiedMode = certifiedMode.value;
         clearRunArtifacts();
+        // The ICON guidance depends on the mode; redraw so it is not stale.
+        enhanceRefinementStep();
       };
       const certifiedDelivery = document.getElementById("certifiedDelivery");
       if (certifiedDelivery) certifiedDelivery.onchange = () => {
@@ -4191,7 +4199,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const kind = kindIn.value;
         const models = compatibleTargetModels();
         const currentModel = modelIn && models.includes(modelIn.value) ? modelIn.value : models[0];
-        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, currentModel));
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, currentModel), { target: { kind, modelFormat: currentModel } });
         paintTargetOutputs(lastSummary);
       };
     }
@@ -4200,14 +4208,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const kind = kindIn ? kindIn.value : selectedTarget(lastSummary).kind;
         const models = compatibleTargetModels();
         const nextModel = models.includes(modelIn.value) ? modelIn.value : models[0];
-        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, nextModel));
+        await commitProjectEdit(yaml => api.setProjectTarget(yaml, kind, nextModel), { target: { kind, modelFormat: nextModel } });
         paintTargetOutputs(lastSummary);
       };
     }
     if (cellIn) {
       cellIn.onchange = async () => {
         const cell = cellIn.value === "tri" ? "tri" : "hex";
-        await commitProjectEdit(yaml => api.setTargetCell(yaml, cell));
+        await commitProjectEdit(yaml => api.setTargetCell(yaml, cell), { cell });
         updateEstimate();
         paintTargetOutputs(lastSummary);
 
@@ -4323,6 +4331,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const ch = card.querySelector(".ch");
     if (ch) ch.textContent = z ? "点击重开" : "Click to reopen";
     renderProjectSummary();
+    // The cached summary is from the last accepted state; recompose so an
+    // edit made on another step (valid or not) is what this card shows.
+    if (projectActive) refreshSummary().then(renderProjectSummary);
   }
 
   // Project summary panel (data layers / quality gate / validation), shown once

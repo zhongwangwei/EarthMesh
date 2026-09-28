@@ -119,6 +119,23 @@ check(
 log("CMRC hides inapplicable generic spring controls");
 
 check(
+  html.includes("async function composeYaml(template = null, pending = null)") &&
+    html.includes("{ target: { kind, modelFormat: nextModel } }") &&
+    html.includes("{ target: { kind, modelFormat: currentModel } }") &&
+    html.includes("api.setTargetCell(yaml, cell), { cell }"),
+  "target edits must compose the draft with the new target, so leaving an invalid target is possible",
+);
+check(
+  /certifiedMode\.onchange = \(\) => \{[^}]*enhanceRefinementStep\(\);/.test(html),
+  "changing the CMRC mode must redraw the panel so the ICON guidance is current",
+);
+check(
+  html.includes("if (projectActive) refreshSummary().then(renderProjectSummary);"),
+  "the project step must recompose its summary instead of showing the last accepted one",
+);
+log("target edits, CMRC mode and project summary follow the current draft");
+
+check(
   html.includes('id="thresholdRefineOn"') &&
     html.includes("thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary))") &&
     html.includes("thresholdEnabled: !!thresholdRefine.enabled") &&
@@ -1696,10 +1713,11 @@ async function checkProjectEditAdmission() {
       if(enabled)cfg.layers.forEach(l=>{if(l.source_field===selected.source_field)l.enabled=false;});
       Object.assign(selected,{path,enabled});return validate(cfg);
     }
-    async function composeYaml(){
+    async function composeYaml(_template=null,pending=null){
       let yaml=baseProjectYaml||validate(initial);
-      if(targetEdit)yaml=await api.setProjectTarget(yaml,targetEdit.kind,targetEdit.modelFormat);
-      if(cellEdit)yaml=await api.setTargetCell(yaml,cellEdit);
+      const target=(pending&&pending.target)||targetEdit,cell=(pending&&pending.cell)||cellEdit;
+      if(target)yaml=await api.setProjectTarget(yaml,target.kind,target.modelFormat);
+      if(cell)yaml=await api.setTargetCell(yaml,cell);
       for(const id of Object.keys(layerEdits).sort((a,b)=>Number(layerEdits[b].enabled)-Number(layerEdits[a].enabled)))
         yaml=await invoke('set_layer_path',{yaml,id,...layerEdits[id]});
       const template=null;
@@ -1949,7 +1967,7 @@ async function checkProjectControls() {
     check(markup.startsWith('<button type="button"')&&markup.includes(`aria-label="${lang?'选择输出目录':'Choose output folder'}"`)&&markup.includes('aria-describedby="outPathText"'),'output picker must be a named native button describing the current path');
   }
   const harness=new Function('chinese',`
-    let outputPath='/before',projectEditQueue=Promise.resolve(),projectLoadEpoch=0,project='before',pick=null,readFails=false;
+    let outputPath='/before',projectEditQueue=Promise.resolve(),projectLoadEpoch=0,project='before',pick=null,readFails=false,projectActive=false;
     let recents=[{path:'/a/<project>.yaml',name:'<img src=x onerror=bad>'}];
     const logs=[],reads=[],saved=[],metadataEdit={},zh=()=>chinese,logLine=s=>logs.push(s);
     const element=tag=>({tag,style:{},children:[],textContent:'',appendChild(n){n.parent=this;this.children.push(n);},remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}});
