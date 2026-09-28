@@ -84,7 +84,9 @@ is not where the v3 line lives.
 1. Bump the version everywhere. It appears in fifteen `Cargo.toml` files plus
    both `Cargo.lock` files (`cargo update -w` in the root and in
    `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
-   title and changelog, and **four `--version` assertions in
+   title and changelog, **`pyproject.toml`'s `version` in PEP 440 form**
+   (`3.0.0a7` for `3.0.0-alpha7` -- it names the wheel, and alpha5 shipped as
+   `3.0.0a4` because it was missed), and **four `--version` assertions in
    `.github/workflows/python-release.yml`** that compare the string verbatim.
    `git grep -l '<old version>'` finds them; check `earthmesh_cli --version`
    afterwards.

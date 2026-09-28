@@ -1,4 +1,4 @@
-# EarthMesh v3.0.0-alpha5
+# EarthMesh v3.0.0-alpha7
 
 EarthMesh generates unstructured meshes for land, ocean, atmosphere, and coupled
 Earth-system workflows. The v3 alpha line is the current Rust engine: namelists
@@ -267,6 +267,22 @@ For questions or support, please contact:
   removed generic `io` writers. The diagnostic `run_manifest.json` contract is
   now explicitly versioned as schema 1; its current minimal fields replace the
   earlier experimental manifest shape.
+- 2026.09.28 - v3.0.0-alpha7 splits the input and output layers into their own
+  crates (`earthmesh_inputs`, `earthmesh_delivery`) and runs every backend,
+  CMRC included, through one dispatch and one shared tail. Every final triangle
+  mesh must have all interior angles in 35-85 degrees and is optimized toward
+  60; every backend records per-cell refinement levels, so quality reports
+  reconcile target against actual for all of them. Red-Green nests criteria
+  circles and deeper named regions across levels with the halo between them,
+  cutting under-refinement on the global coast case from 33,249 to 6,591 cells.
+  A new `Stretch` backend refines a global ICON grid by a conformal Schmidt
+  transformation that keeps every vertex at degree 5 or 6; refinement that
+  inserts cells into a closed global ICON mesh is now refused at validation,
+  since ICON cannot hold the degree-7 vertices it needs. A regional spring that
+  would fold a hex cell is rejected. Global red-green runs are about four times
+  faster (parallel landtype binning and angle repair, chunk-aligned raster
+  reads, cached coastline demand). Triangle meshes differ from alpha5: the
+  angle repair now moves vertices in parallel.
 - 2026.08.20 - v3.0.0-alpha5 restores CI to a working state by removing a mesh-wide
   scan that a six-step loop was using as its runaway bound, sizes the namelist
   triangle budget from the resolution asked for instead of a literal that capped

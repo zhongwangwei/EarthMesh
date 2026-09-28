@@ -1,6 +1,6 @@
 [package]
 name = "earthmesh_delivery"
-version = "3.0.0-alpha5"
+version = "3.0.0-alpha7"
 edition = "2021"
 description = "EarthMesh output layer: gridfile mesh types, NetCDF read/write and gridfile records"
 license = "GPL-2.0-only"
