@@ -3394,6 +3394,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
       const rows = document.getElementById("thresholdRows");
       if (rows) refinementCriteria.forEach((l) => rows.appendChild(criterionRow(l)));
+      // An opened project may limit threshold criteria to a region that
+      // Studio cannot edit; without this the panel reads as global.
+      if (rows && sum.threshold_region) {
+        const scope = document.createElement("p");
+        scope.id = "thresholdRegionNote";
+        scope.style.cssText = "color:var(--warn,#b45309);font-size:12px;margin:0 0 8px";
+        scope.textContent = (z ? "阈值判据只在此区域内生效（来自打开的项目，Studio 中不可修改，保存时保留）：" : "Threshold criteria apply only inside this region (from the opened project; not editable in Studio, kept on save): ") + sum.threshold_region;
+        rows.before(scope);
+      }
       const specifiedCloseText = document.getElementById("specifiedClosePathText");
       if (specifiedCloseText) specifiedCloseText.textContent = specifiedRefine.path ? "📄 " + specifiedRefine.path : (z ? "📄 点击选择 SHP/NML/NetCDF/TXT" : "📄 Choose SHP/NML/NetCDF/TXT");
       const thresholdOn = document.getElementById("thresholdRefineOn");

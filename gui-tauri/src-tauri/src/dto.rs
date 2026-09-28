@@ -136,6 +136,9 @@ pub(crate) struct ProjectSummary {
     pub(crate) refine_enabled: bool,
     pub(crate) threshold_refine_enabled: bool,
     pub(crate) threshold_criteria: Vec<ThresholdCriterionSummary>,
+    /// Where threshold criteria are evaluated, when an opened project limits
+    /// them to a region. Studio has no control for it, so it is shown only.
+    pub(crate) threshold_region: Option<String>,
     pub(crate) refinement_backend: String,
     /// User-facing algorithm id. Method-C's LEPP-Delaunay mode is a distinct
     /// choice even though it shares the Method-C backend in the project schema.

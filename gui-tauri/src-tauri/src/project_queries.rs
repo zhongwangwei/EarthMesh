@@ -344,6 +344,19 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         refine_enabled: cfg.refinement.enabled,
         threshold_refine_enabled: cfg.refinement.threshold_enabled,
         threshold_criteria,
+        threshold_region: cfg
+            .refinement
+            .threshold_region
+            .as_ref()
+            .map(|shape| match shape {
+                RegionShape::Bbox { w, e, s, n } => format!("bbox W {w} E {e} S {s} N {n}"),
+                RegionShape::Circle {
+                    lon,
+                    lat,
+                    radius_km,
+                } => format!("circle ({lon}, {lat}) r = {radius_km} km"),
+                RegionShape::Shapefile { path } | RegionShape::Close { path, .. } => path.clone(),
+            }),
         refinement_backend: refinement_backend_id(cfg.refinement.backend).to_string(),
         refinement_algorithm: refinement_algorithm_id(&cfg).to_string(),
         method_c_lepp_max_cycles: cfg.refinement.method_c.max_cycles,

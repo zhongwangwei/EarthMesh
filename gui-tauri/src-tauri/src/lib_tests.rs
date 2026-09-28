@@ -1393,6 +1393,14 @@ fn target_migration_preserves_common_layers_and_only_drops_incompatible_hidden_s
         migrated.refinement.threshold_region,
         base.refinement.threshold_region
     );
+    // Studio cannot edit the kept region, so the summary must name it.
+    assert_eq!(
+        project_summary(migrated.to_yaml().unwrap())
+            .expect("summary")
+            .threshold_region
+            .as_deref(),
+        Some("/data/hidden_threshold_region.nml")
+    );
     assert!(!migrated.refinement.threshold_enabled);
     assert!(migrated
         .data_layers
