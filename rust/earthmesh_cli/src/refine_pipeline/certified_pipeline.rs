@@ -1550,7 +1550,10 @@ pub(super) fn refine_with_certified(
         match earthmesh_refine_certified::classify_adaptivity_delivery(
             final_mesh,
             fulfillment,
-            options.mode == CertifiedMode::SafeMotherOnly,
+            // A stretched-mother run that fell back delivered the safe mother.
+            options.mode == CertifiedMode::SafeMotherOnly
+                || (options.mode == CertifiedMode::StretchedMother
+                    && coarsening_strategy != "schmidt_stretch"),
         ) {
             earthmesh_refine_certified::CertifiedMeshOutcome::CertifiedAdaptive {
                 mesh,

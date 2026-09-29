@@ -126,7 +126,8 @@ pub struct SchmidtFactor {
     pub factor: f64,
     /// Demanded points no factor can serve from this focus.
     pub unreachable: usize,
-    /// The farthest of them from the focus, in degrees (0 when none).
+    /// The farthest of them from the focus, in degrees (0 when none); the
+    /// margin is not included.
     pub farthest_unreachable_deg: f64,
     /// Whether the cap, not the demand, set the factor.
     pub capped: bool,
@@ -162,12 +163,13 @@ pub fn schmidt_factor_for_levels(
             unreachable += 1;
             continue;
         };
-        let angle = dot(*point, f).clamp(-1.0, 1.0).acos() + margin.max(0.0);
+        let distance = dot(*point, f).clamp(-1.0, 1.0).acos();
+        let angle = distance + margin.max(0.0);
         let s = 2f64.powi(-(level.min(60) as i32));
         let sin = angle.sin();
         if angle >= std::f64::consts::FRAC_PI_2 || sin > s {
             unreachable += 1;
-            farthest = farthest.max(angle.to_degrees());
+            farthest = farthest.max(distance.to_degrees());
             continue;
         }
         let one_minus_cos = 1.0 - angle.cos();

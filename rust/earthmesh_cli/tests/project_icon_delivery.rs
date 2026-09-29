@@ -427,6 +427,37 @@ fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_c
 }
 
 #[test]
+fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallow_demand() {
+    // Level 2: a level-1 mother may stretch by 2 at most, and a demand of any
+    // extent needs more, so the safe mother is delivered and labelled so.
+    let root = root("cmrc_stretched_fallback");
+    let mut project = refined_icon_project(RefinementBackend::Certified);
+    project.refinement.max_passes = 2;
+    project.refinement.certified.mode = CertifiedMode::StretchedMother;
+    project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    let result = run_project(&root, &project, "cmrc_stretched_fallback");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    let certificate: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            gridfile
+                .parent()
+                .unwrap()
+                .join("certified_safe_fallback_certificate.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
+    assert_ne!(certificate["coarsening_strategy"], "schmidt_stretch");
+    assert_eq!(certificate["product_outcome"], "certified_safe_fallback");
+    assert_eq!(certificate["mother_subdivision"], 40);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_icon_nest_delivers_the_global_grid_and_linked_nests() {
     // ICON nests keep the global grid as it is and serve the demand in a
     // separate grid of bisected parent triangles (guide 11.86).
