@@ -3045,7 +3045,9 @@ fn redgreen_backend_refines_a_named_circle_end_to_end() {
     // Measured off this mesh: the hex (transition-row) route now carries each
     // face's red depth through its rounds, and the named circle asked for two.
     assert_eq!(run.realized_max_level, 2);
-    assert_eq!(run.transition_faces, 0);
+    // Hex now takes the same Lawson and angle-window pass as TRI, which
+    // counts the faces green closure and Lawson made; it used to report none.
+    assert!(run.transition_faces > 0);
     // The run record's counts come from the gridfile when there is no Voronoi
     // state to take them from.
     assert!(run.runtime_state.grid.nwa > 0);

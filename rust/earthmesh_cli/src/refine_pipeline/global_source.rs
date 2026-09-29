@@ -2875,7 +2875,17 @@ fn refine_with_redgreen(
             ),
         ));
     }
-    if preserve_locality {
+    // Hex output took none of this and was sprung instead, and the regional
+    // spring optimises edge lengths: on a global 200 km run it folded 274 hex
+    // rings, was discarded, and left the triangles at 26-101 degrees. The
+    // polish and the angle window serve the dual as well -- its cells are the
+    // triangles' circumcentre rings -- so hex takes them too, and keeps them
+    // only while the widest cell stays within what the dual and the mask
+    // post-process address and no hex ring folds.
+    let hex_checkpoint =
+        (!preserve_locality).then(|| (redgreen.clone(), output_mesh.clone(), transition_faces));
+    let mut hex_repaired = false;
+    {
         // Count final faces derived from green closure or retriangulated by
         // Lawson; zero previously hid every Red-Green transition from the GUI.
         let before = redgreen.cells_on_triangle.clone();
@@ -2951,12 +2961,36 @@ fn refine_with_redgreen(
             );
         }
     }
-    // The triangle output has just been brought into the angle window, and the
+    if let Some((saved_redgreen, saved_mesh, saved_transitions)) = hex_checkpoint {
+        let widest_cell = (redgreen.num_center + 1..=redgreen.cell_count())
+            .map(|cell| redgreen.n_triangles_on_cell[cell])
+            .max()
+            .unwrap_or(0);
+        let (folded_before, folded_after) = (
+            invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&saved_mesh)),
+            invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&output_mesh)),
+        );
+        if widest_cell > REDGREEN_MAX_CELL_DEGREE || folded_after > folded_before {
+            eprintln!(
+                "earthmesh_cli: warning: Red-Green hex repair rolled back (widest cell \
+                 {widest_cell}, folded hex rings {folded_before} -> {folded_after}); springing \
+                 instead"
+            );
+            redgreen = saved_redgreen;
+            output_mesh = saved_mesh;
+            transition_faces = saved_transitions;
+        } else {
+            hex_repaired = true;
+        }
+    }
+    // The triangles have just been brought into the angle window, and the
     // regional spring optimises edge lengths, not angles: on the global coast
-    // case it took 26-101 degrees to 21-117. Spring only the classic path.
+    // case it took 26-101 degrees to 21-117. Spring only what the repair did
+    // not keep.
     let (output_mesh, spring_nest_passes) = if spring_iterations == 0
         || spring_regions.is_empty()
         || preserve_locality
+        || hex_repaired
     {
         (output_mesh, 0)
     } else {
@@ -4909,6 +4943,47 @@ mod tests {
             )
             .is_consistent()
         );
+    }
+
+    /// Hex output used to take no repair and be sprung instead; the spring
+    /// folded the hex rings, was discarded, and left 26-101 degrees.
+    #[test]
+    fn redgreen_hex_output_is_repaired_into_the_angle_window_too() {
+        let mesh = earthmesh_refine_method_c::MethodCMesh::from_icosahedron(12, 0, 1.0, 0.25)
+            .expect("base mesh")
+            .into_inner();
+        let region = earthmesh_mesh::RefinementRegion::Circle {
+            center: earthmesh_mesh::LonLatDegrees::new(110.0, 30.0),
+            radius_meters: 1_500_000.0,
+            level: 1,
+        };
+        // The engine default: weak-concavity elimination keeps the widest
+        // cell within what the hex dual addresses.
+        let refine = RefineConfig {
+            is_transition: true,
+            weak_concav_eliminate: true,
+            ..RefineConfig::default()
+        };
+
+        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, false, 1)
+            .expect("red-green hex with spring configured");
+
+        assert_eq!(refined.diagnostics.spring_nest_passes, 0);
+        let (lo, hi) = unstructured_triangle_angle_range(&refined.output_mesh).unwrap();
+        let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+        assert!(
+            lo >= window.0 && hi <= window.1,
+            "angles {lo:.2}..{hi:.2} outside {window:?}"
+        );
+        let spring_mesh = unstructured_mesh_with_one_based_rows(&refined.output_mesh);
+        assert_eq!(invalid_dual_cells(&spring_mesh), 0);
+        let widest = spring_mesh
+            .n_w_to_m
+            .iter()
+            .map(|&count| count.max(0) as usize)
+            .max()
+            .unwrap_or(0);
+        assert!(widest <= REDGREEN_MAX_CELL_DEGREE, "widest cell {widest}");
     }
 
     #[test]
