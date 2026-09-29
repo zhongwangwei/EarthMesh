@@ -202,26 +202,8 @@ fn push_close_polygon_region_with_parent_halos(
     let base_spacing =
         std::f64::consts::PI * 2.0 * earthmesh_core::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
     for parent_level in 1..level {
-        let mut halo_meters = 0.0;
-        for transition_level in parent_level..level {
-            let halo_rows = refine
-                .halo
-                .get(transition_level)
-                .copied()
-                .unwrap_or(0)
-                .max(
-                    refine
-                        .max_transition_row
-                        .get(transition_level)
-                        .copied()
-                        .unwrap_or(0),
-                )
-                .max(0) as usize;
-            if halo_rows > 0 {
-                halo_meters +=
-                    halo_rows as f64 * base_spacing / 2.0_f64.powi((transition_level - 1) as i32);
-            }
-        }
+        let halo_meters =
+            super::shared::method_c_parent_halo_meters(refine, parent_level, level, base_spacing);
         match grown_ring(&points, halo_meters) {
             Some(grown) => regions.push(RefinementRegion::Polygon {
                 points: grown,

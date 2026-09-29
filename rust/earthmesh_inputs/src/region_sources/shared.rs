@@ -135,3 +135,99 @@ pub fn require_specified_region_level(
     }
     Ok(())
 }
+
+/// How far a named region's parent at `parent_level` must reach beyond the
+/// region itself at `level`: the transition rows of every level in between,
+/// each as wide as that level's spacing.
+///
+/// `halo` / `max_transition_row` let a hand-written namelist declare the rows.
+/// Both default to zero, which makes every parent the size of its child and
+/// every chain fail -- a project's 1000 km circle at two levels stopped at
+/// level 1 on a 200 km grid. An unset width takes the rows measured against
+/// `spawn_nest` for the criteria ladder.
+pub(crate) fn method_c_parent_halo_meters(
+    refine: &earthmesh_core::RefineConfig,
+    parent_level: usize,
+    level: usize,
+    base_spacing_meters: f64,
+) -> f64 {
+    (parent_level..level)
+        .map(|transition_level| {
+            let configured_rows = refine.halo.get(transition_level).copied().unwrap_or(0).max(
+                refine
+                    .max_transition_row
+                    .get(transition_level)
+                    .copied()
+                    .unwrap_or(0),
+            );
+            let rows = if configured_rows > 0 {
+                f64::from(configured_rows)
+            } else {
+                crate::refinement_demand::ladder::MEASURED_PARENT_HALO_ROWS
+            };
+            rows * base_spacing_meters / 2.0_f64.powi((transition_level - 1) as i32)
+        })
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::refinement_demand::ladder::MEASURED_PARENT_HALO_ROWS;
+    use earthmesh_mesh::RefinementRegion;
+
+    #[test]
+    fn an_unset_parent_halo_takes_the_measured_rows() {
+        let refine = earthmesh_core::RefineConfig::default();
+        assert!(refine.halo.iter().all(|&rows| rows == 0));
+        let spacing = 190_000.0;
+        // One transition level between a level-2 region and its level-1 parent.
+        assert_eq!(
+            method_c_parent_halo_meters(&refine, 1, 2, spacing),
+            MEASURED_PARENT_HALO_ROWS * spacing
+        );
+        // Two, the finer at half the spacing.
+        assert_eq!(
+            method_c_parent_halo_meters(&refine, 1, 3, spacing),
+            MEASURED_PARENT_HALO_ROWS * spacing * 1.5
+        );
+        // A declared width is taken as declared.
+        let mut declared = refine.clone();
+        declared.halo[1] = 5;
+        assert_eq!(
+            method_c_parent_halo_meters(&declared, 1, 2, spacing),
+            5.0 * spacing
+        );
+    }
+
+    #[test]
+    fn a_specified_circle_gets_a_wider_parent_without_declared_rows() {
+        // With both namelist fields at their zero default the level-1 parent
+        // was the circle itself, and Method-C could not nest level 2 in it.
+        let mut regions = Vec::new();
+        super::super::circle::push_method_c_circle_or_corridor_region_with_parent_halos(
+            &mut regions,
+            vec![LonLatDegrees::new(110.0, 30.0)],
+            vec![1_000_000.0],
+            2,
+            &earthmesh_core::RefineConfig::default(),
+            40,
+        )
+        .unwrap();
+        let radius = |wanted: usize| {
+            regions
+                .iter()
+                .find_map(|region| match region {
+                    RefinementRegion::Circle {
+                        radius_meters,
+                        level,
+                        ..
+                    } if *level == wanted => Some(*radius_meters),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(radius(2), 1_000_000.0);
+        assert!(radius(1) > radius(2) + 500_000.0, "{}", radius(1));
+    }
+}

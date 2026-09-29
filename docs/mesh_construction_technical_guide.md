@@ -4358,3 +4358,12 @@ CMRC 结果卡片用名称代替键名，移动母网格回退时不再建议反
 1.87 通过全部证书（残差 0，角度 53.83°–72.21°），92,162 个单元，安全母网格为 256,002（2.78 倍）。单元测试里 3 级需求
 （n₀ = 20）由 n = 64 服务（原为 n = 80），比安全母网格少 6.25 倍。1 级需求仍会退回：n₀ 与 2n₀ 之间的已认证细分数倍率
 太小（如 n₀ = 10 时只有 n = 12，倍率 1.2）。
+
+**Method-C 点+半径：指定区域的父级不再和子级一样大。** 点+半径路线把指定圆当作最深一级，父级向外扩一圈过渡带
+（`push_method_c_circle_or_corridor_region_with_parent_halos`）；闭合多边形同理。宽度取自 `RL%halo` /
+`RL%max_transition_row`，而这两个字段默认都是 0，于是父级和子级一样大，第 2 级的周界在第 1 级里没有地方放过渡行
+（`perimeter lengths [68] cannot be grouped into transition triples without crossing the parent boundary`），
+停在 1 级。判据的半径阶梯早就因为同一原因改用实测行数（`MEASURED_PARENT_HALO_ROWS` = 3，见 ladder.rs）；
+现在指定圆和闭合多边形在未声明行数时也用它（`method_c_parent_halo_meters`），声明了的照用。实测（全球大气
+NXP 40，1000 km 圆 2 级）：第 1 级 35,280 → 37,476 面、第 2 级 → 40,524 面，圈内 1,637 个单元全为 2 级，
+三角形 42.55°–81.43°，判定 pass。
