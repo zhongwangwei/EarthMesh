@@ -151,12 +151,37 @@ pub fn schmidt_factor_for_levels(
     margin: f64,
     cap: f64,
 ) -> SchmidtFactor {
+    let scales = levels
+        .iter()
+        .map(|&level| {
+            if level == 0 {
+                f64::INFINITY
+            } else {
+                2f64.powi(-(level.min(60) as i32))
+            }
+        })
+        .collect::<Vec<_>>();
+    schmidt_factor_for_scales(points, &scales, focus, margin, cap)
+}
+
+/// [`schmidt_factor_for_levels`] for any target scale: the smallest factor
+/// with `schmidt_local_scale(angle, c) <= scale` at every point whose scale
+/// is below 1. A mother `m` times finer than the base serves a level-`L`
+/// point at scale `m / 2^L`, which is not a power of two when `m` is not;
+/// a point at scale 1 or more asks nothing of the stretch.
+pub fn schmidt_factor_for_scales(
+    points: &[P],
+    scales: &[f64],
+    focus: P,
+    margin: f64,
+    cap: f64,
+) -> SchmidtFactor {
     let mut factor = 1.0f64;
     let mut unreachable = 0usize;
     let mut farthest = 0.0f64;
     let f = unit(focus);
-    for (point, &level) in points.iter().zip(levels) {
-        if level == 0 {
+    for (point, &s) in points.iter().zip(scales) {
+        if s.is_nan() || s >= 1.0 {
             continue;
         }
         let Some(f) = f else {
@@ -165,7 +190,6 @@ pub fn schmidt_factor_for_levels(
         };
         let distance = dot(*point, f).clamp(-1.0, 1.0).acos();
         let angle = distance + margin.max(0.0);
-        let s = 2f64.powi(-(level.min(60) as i32));
         let sin = angle.sin();
         if angle >= std::f64::consts::FRAC_PI_2 || sin > s {
             unreachable += 1;

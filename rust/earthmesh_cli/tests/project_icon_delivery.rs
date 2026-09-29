@@ -427,12 +427,53 @@ fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_c
 }
 
 #[test]
-fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallow_demand() {
-    // Level 2: a level-1 mother may stretch by 2 at most, and a demand of any
-    // extent needs more, so the safe mother is delivered and labelled so.
-    let root = root("cmrc_stretched_fallback");
+fn project_icon_cmrc_stretched_mother_serves_level_two_between_the_powers_of_two() {
+    // Level 2 on n=10: n=20 may stretch by 2 at most and a demand of any
+    // extent needs a little more, which left only the safe mother (n=40)
+    // while the powers of two were the only candidates. n=24 is 2.4 times
+    // the base and serves it (guide 11.89).
+    let root = root("cmrc_stretched_level_two");
     let mut project = refined_icon_project(RefinementBackend::Certified);
     project.refinement.max_passes = 2;
+    project.refinement.certified.mode = CertifiedMode::StretchedMother;
+    project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    let result = run_project(&root, &project, "cmrc_stretched_level_two");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    let certificate: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            gridfile
+                .parent()
+                .unwrap()
+                .join("certified_certificate.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
+    assert_eq!(certificate["coarsening_strategy"], "schmidt_stretch");
+    assert_eq!(certificate["product_outcome"], "certified_adaptive");
+    assert_eq!(certificate["mother_subdivision"], 24);
+    assert_eq!(certificate["delivered_level_max"], 2);
+    assert_eq!(certificate["physical_residuals"], 0, "{certificate}");
+    assert_eq!(certificate["balance_residuals"], 0, "{certificate}");
+    assert_eq!(
+        stdout_token(&stdout, "icon_cells="),
+        (20 * 24 * 24).to_string()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallow_demand() {
+    // Level 1: the only certified mother between n=10 and the safe n=20 is
+    // n=12, which may stretch by 1.2 while a demand of any extent needs more,
+    // so the safe mother is delivered and labelled so.
+    let root = root("cmrc_stretched_fallback");
+    let mut project = refined_icon_project(RefinementBackend::Certified);
+    project.refinement.max_passes = 1;
     project.refinement.certified.mode = CertifiedMode::StretchedMother;
     project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
     let result = run_project(&root, &project, "cmrc_stretched_fallback");
@@ -453,7 +494,7 @@ fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallo
     assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
     assert_ne!(certificate["coarsening_strategy"], "schmidt_stretch");
     assert_eq!(certificate["product_outcome"], "certified_safe_fallback");
-    assert_eq!(certificate["mother_subdivision"], 40);
+    assert_eq!(certificate["mother_subdivision"], 20);
     fs::remove_dir_all(root).unwrap();
 }
 

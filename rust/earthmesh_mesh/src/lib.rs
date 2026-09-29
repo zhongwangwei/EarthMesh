@@ -102,8 +102,8 @@ pub use mesh_angle_window::{
     spherical_triangle_angles_deg, AngleWindowOptions, AngleWindowOrigins, AngleWindowReport,
 };
 pub use mesh_stretch::{
-    schmidt_factor_for_levels, schmidt_focus_for_levels, schmidt_local_scale, schmidt_stretch,
-    SchmidtFactor,
+    schmidt_factor_for_levels, schmidt_factor_for_scales, schmidt_focus_for_levels,
+    schmidt_local_scale, schmidt_stretch, SchmidtFactor,
 };
 mod mesh_icon_nest;
 pub use mesh_icon_nest::{plan_icon_nests, IconNestDomain, IconNestOptions, NestVertexOrigin};

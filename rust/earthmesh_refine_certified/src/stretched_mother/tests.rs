@@ -37,7 +37,7 @@ fn degrees(mesh: &MeshState) -> Vec<usize> {
 }
 
 #[test]
-fn a_level_three_demand_is_served_by_a_stretched_level_two_mother() {
+fn a_level_three_demand_is_served_by_a_stretched_mother_below_the_safe_one() {
     let demand = raster(&[((115.0, 23.0), 500.0, 3)]);
     let stretched = stretched_certified_mother(
         20,
@@ -47,10 +47,12 @@ fn a_level_three_demand_is_served_by_a_stretched_level_two_mother() {
         10_000_000,
     )
     .unwrap_or_else(|why| panic!("{why:?}"));
-    // One level coarser than the safe mother: a quarter of its cells.
-    assert_eq!((stretched.mother_level, stretched.subdivision), (2, 80));
+    // n=64, 3.2 times the base: 40,962 cells against the safe mother's
+    // 256,002 (n=160), and fewer than n=80, the power of two below it.
+    assert_eq!(stretched.subdivision, 64);
+    assert!((stretched.mother_ratio - 3.2).abs() < 1e-12);
     assert!(
-        stretched.factor > 2.0 && stretched.factor <= 4.0,
+        stretched.factor > 2.0 && stretched.factor <= 3.2,
         "{}",
         stretched.factor
     );
@@ -86,16 +88,37 @@ fn a_demand_one_focus_cannot_reach_is_refused_with_reasons() {
 }
 
 #[test]
-fn a_shallow_demand_has_no_stretched_mother_below_it() {
-    // Level 2: a level-1 mother may stretch by 2 at most, and a demand of any
-    // extent needs more; level 0 cannot stretch at all.
+fn a_level_two_demand_is_served_by_a_mother_between_the_powers_of_two() {
+    // Level 2 on n=20: n=40 may stretch by 2 at most and a demand of any
+    // extent needs a little more, so the powers of two left only the safe
+    // mother (n=80). n=64 is 3.2 times the base and needs about 1.3.
     let demand = raster(&[((115.0, 23.0), 500.0, 2)]);
-    assert!(stretched_certified_mother(
+    let stretched = stretched_certified_mother(
         20,
         2,
         &demand,
         AngleContractId::LegacyStrict40To80,
-        10_000_000
+        10_000_000,
     )
-    .is_err());
+    .unwrap_or_else(|why| panic!("{why:?}"));
+    assert_eq!(stretched.subdivision, 64);
+    assert!(
+        stretched.factor > 1.0 && stretched.factor <= 3.2,
+        "{}",
+        stretched.factor
+    );
+    assert!(
+        stretched
+            .rejected
+            .iter()
+            .any(|reason| reason.starts_with("n=40") && reason.contains("above 2.00")),
+        "{:?}",
+        stretched.rejected
+    );
+    assert!(stretched.delivered_levels.iter().max() >= Some(&2));
+    assert!(stretched.delivered_levels.iter().all(|&level| level <= 2));
+    let degree = degrees(stretched.geometry.primal());
+    assert!(degree.iter().all(|&d| d == 5 || d == 6));
+    assert_eq!(stretched.final_requirements.physical_residuals(), 0);
+    assert_eq!(stretched.final_requirements.balance_residuals(), 0);
 }

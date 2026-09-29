@@ -336,8 +336,12 @@ pub fn is_supported_mother_subdivision(n: usize) -> bool {
 }
 
 impl SupportedMotherAngleGate {
-    const SUPPORTED: [usize; 22] = [
-        1, 2, 3, 4, 6, 8, 12, 20, 40, 64, 80, 128, 144, 160, 192, 256, 288, 320, 384, 576, 640, 768,
+    // 24, 48 and 96 complete the 3 * 2^k family between 12 and 192: they
+    // are 2.4 times the 20/40 bases, where a stretched level-2 mother fits
+    // under its far-side cap (guide 11.89).
+    const SUPPORTED: [usize; 25] = [
+        1, 2, 3, 4, 6, 8, 12, 20, 24, 40, 48, 64, 80, 96, 128, 144, 160, 192, 256, 288, 320, 384,
+        576, 640, 768,
     ];
 
     fn verify(
@@ -1537,6 +1541,33 @@ mod tests {
             assert_eq!(report.delaunay_violations, 0);
             assert_eq!(report.voronoi_invalid_cells, 0);
             assert_eq!(report.voronoi_reciprocal_errors, 0);
+        }
+    }
+
+    #[test]
+    fn three_times_power_of_two_mothers_pass_every_contract() {
+        for n in [24, 48, 96] {
+            let grid = MotherGrid::generate(n).unwrap();
+            Certificate::internal().verify_mother_grid(&grid).unwrap();
+            for certificate in [
+                Certificate::final_delivery(),
+                Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1),
+            ] {
+                let report = certificate.verify_mother_grid(&grid).unwrap();
+                assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+                assert_eq!(
+                    analytic_counts(n).unwrap(),
+                    (report.vertices, report.edges, report.faces)
+                );
+                assert_eq!(report.euler, 2);
+                assert_eq!(report.charge, 12);
+                assert_eq!(report.open_edges, 0);
+                assert_eq!(report.topology_errors, 0);
+                assert_eq!(report.degree_outside_window, 0);
+                assert_eq!(report.delaunay_violations, 0);
+                assert_eq!(report.voronoi_invalid_cells, 0);
+                assert_eq!(report.voronoi_reciprocal_errors, 0);
+            }
         }
     }
 

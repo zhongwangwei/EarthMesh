@@ -3310,8 +3310,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       </div>
       ${specifiedRefine.certifiedMode==="stretched_mother"
         ? `<div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
-            ? "认证拉伸：只挪顶点，无七边形，全球 ICON 可用。只有一个焦点；需求 3 级及以上且集中在一处时才比安全母网格省单元，否则自动退回安全母网格并说明原因。"
-            : "Certified stretch: vertices move only, no heptagons, usable for global ICON. One focus; it saves cells over the safe mother only for a demand of level 3 or deeper gathered in one place, and otherwise falls back to the safe mother with the reason."}</div>`
+            ? "认证拉伸：只挪顶点，无七边形，全球 ICON 可用。只有一个焦点：需求集中在一处时比安全母网格省单元（实测 2 级约 2.8 倍、3 级约 6 倍）；需求分散或只有 1 级时自动退回安全母网格并说明原因。"
+            : "Certified stretch: vertices move only, no heptagons, usable for global ICON. One focus: a demand gathered in one place takes fewer cells than the safe mother (measured: about 2.8x for level 2, 6x for level 3); a scattered or level-1 demand falls back to the safe mother with the reason."}</div>`
         : specifiedRefine.certifiedMode==="equidistributed_mother"
         ? `<div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
             ? "认证等分布：只挪顶点，无七边形，可服务多处、任意形状的需求（集中的需求会自动改用拉伸）。代价是同一网格内粗细只能相差约 2 倍：单元数通常是认证反向粗化的数倍（两处 2 级需求实测约 5.6 倍），只比安全母网格省约 1.5 倍。仅建议用于需要 CMRC 证书的全球 ICON；其他格式请用认证反向粗化。"

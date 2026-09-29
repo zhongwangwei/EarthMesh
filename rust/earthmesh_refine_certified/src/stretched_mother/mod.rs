@@ -8,13 +8,16 @@
 //! closed ICON grid can take.
 //!
 //! A stretch also coarsens the far side, and every cell must stay at least
-//! as fine as the base level. So a mother at level `k` can be stretched by
-//! at most `2^k`, and it serves the demand only if the factor the demand
-//! needs fits under that. The levels are tried from the coarsest up; each
-//! candidate is stretched, its delivered levels are measured from the cells'
-//! areas, and it counts only when CMRC's own final certificates pass --
-//! geometry, physical and balance. A demand no stretch serves falls back to
-//! the safe mother at the caller.
+//! as fine as the base level. So a mother `m` times finer than the base can
+//! be stretched by at most `m`, and it serves the demand only if the factor
+//! the demand needs fits under that. Every certified mother between the base
+//! and the safe one is a candidate, fewest cells first -- not only the powers
+//! of two: a level-2 demand of any extent needs a little more than 2 from the
+//! mother twice as fine, over its cap, while one 3.2 times as fine serves it
+//! at about 1.3. Each candidate is stretched, its delivered levels are
+//! measured from the cells' areas against the base, and it counts only when
+//! CMRC's own final certificates pass -- geometry, physical and balance. A
+//! demand no stretch serves falls back to the safe mother at the caller.
 
 use earthmesh_mesh::CartesianPoint;
 
@@ -36,8 +39,8 @@ pub struct StretchedMother {
     pub geometry: GeometryCertifiedMotherGrid,
     /// Subdivision of the mother that was stretched.
     pub subdivision: usize,
-    /// Its level above the base (`subdivision = base * 2^level`).
-    pub mother_level: usize,
+    /// How much finer than the base it is (`subdivision / base`).
+    pub mother_ratio: f64,
     pub factor: f64,
     /// Focus longitude and latitude, degrees.
     pub focus_lonlat: (f64, f64),
@@ -76,74 +79,67 @@ pub fn stretched_certified_mother(
     let mut rejected = Vec::new();
     let (points, area_weights) = raster_points(raster);
     let levels = raster.levels();
-    for level in 0..chosen_level {
-        let Some(subdivision) = base_subdivision.checked_shl(level as u32) else {
-            break;
-        };
-        if !is_supported_mother_subdivision(subdivision) {
-            rejected.push(format!(
-                "level {level}: mother n={subdivision} is not certified"
-            ));
-            continue;
-        }
+    let safe = base_subdivision
+        .checked_shl(chosen_level as u32)
+        .unwrap_or(usize::MAX);
+    let candidates = (base_subdivision + 1..safe).filter(|&n| is_supported_mother_subdivision(n));
+    for subdivision in candidates {
+        let ratio = subdivision as f64 / base_subdivision as f64;
         let cells = 10usize
             .saturating_mul(subdivision)
             .saturating_mul(subdivision)
             + 2;
         if cells > max_cells {
-            rejected.push(format!("level {level}: {cells} cells exceed the budget"));
+            rejected.push(format!("n={subdivision}: {cells} cells exceed the budget"));
             break;
         }
-        // What this mother still has to gain, per raster cell.
-        let relative = levels
+        // The scale each raster cell needs from the stretch: this mother is
+        // `ratio` times finer than the base, and level L asks for 2^-L of it.
+        // A cell the unstretched mother already serves asks for nothing.
+        let scales = levels
             .iter()
-            .map(|&l| l.saturating_sub(level))
+            .map(|&l| ratio / 2f64.powi(l.min(60) as i32))
             .collect::<Vec<_>>();
-        // The focus: the demand's mean direction, weighted by the cells a
-        // level adds and by the raster cell's area.
+        // The focus: the demand's mean direction, weighted by the cells the
+        // stretch has to add there and by the raster cell's area.
         let mut sum = [0.0; 3];
-        for ((p, &l), &w) in points.iter().zip(&relative).zip(&area_weights) {
-            if l > 0 {
-                let weight = (4f64.powi(l.min(16) as i32) - 1.0) * w;
+        for ((p, &scale), &w) in points.iter().zip(&scales).zip(&area_weights) {
+            if scale < 1.0 {
+                let weight = (1.0 / (scale * scale) - 1.0) * w;
                 for k in 0..3 {
                     sum[k] += weight * p[k];
                 }
             }
         }
         let Some(focus) = unit(sum) else {
-            rejected.push(format!("level {level}: the demand has no mean direction"));
+            rejected.push(format!("n={subdivision}: the demand has no mean direction"));
             continue;
         };
-        // Coarsening the far side by more than 2^level would take it below
+        // Coarsening the far side by more than `ratio` would take it below
         // the base level.
-        let cap = 2f64.powi(level as i32);
+        let cap = ratio;
         let spacing = (4.0 * std::f64::consts::PI / cells as f64).sqrt();
-        let needed = earthmesh_mesh::schmidt_factor_for_levels(
-            &points,
-            &relative,
-            focus,
-            spacing / 2.0,
-            cap,
-        );
+        let needed =
+            earthmesh_mesh::schmidt_factor_for_scales(&points, &scales, focus, spacing / 2.0, cap);
         if needed.unreachable > 0 {
             rejected.push(format!(
-                "level {level}: one focus cannot serve the demand ({} raster cells beyond \
-                 asin(2^-level) of it, farthest {:.1} deg)",
+                "n={subdivision}: one focus cannot serve the demand ({} raster cells beyond \
+                 reach of it, farthest {:.1} deg)",
                 needed.unreachable, needed.farthest_unreachable_deg
             ));
             continue;
         }
         if needed.capped {
             rejected.push(format!(
-                "level {level}: the demand needs a factor above {cap}, which would take the \
-                 far side below the base level"
+                "n={subdivision}: the demand needs a factor above {cap:.2}, which would take \
+                 the far side below the base level"
             ));
             continue;
         }
         let mother = match MotherGrid::generate(subdivision) {
             Ok(grid) => grid.mesh,
             Err(error) => {
-                rejected.push(format!("level {level}: {error}"));
+                rejected.push(format!("n={subdivision}: {error}"));
                 continue;
             }
         };
@@ -166,13 +162,15 @@ pub fn stretched_certified_mother(
                 mesh.move_vertex(v, CartesianPoint::new(p[0] * r, p[1] * r, p[2] * r));
             }
             let area1 = dual_areas(&mesh);
+            // Against the base: the unstretched cell scaled to the base
+            // spacing is `ratio^2` times its own area.
             let measured = active
                 .iter()
-                .map(|&v| level as f64 + (0.5 * (area0[v] / area1[v]).log2() + 1e-9).floor())
+                .map(|&v| (0.5 * (area0[v] * ratio * ratio / area1[v]).log2() + 1e-9).floor())
                 .collect::<Vec<_>>();
             if measured.iter().any(|&l| !l.is_finite() || l < 0.0) {
                 rejected.push(format!(
-                    "level {level}, factor {factor:.2}: cells fall below the base level"
+                    "n={subdivision}, factor {factor:.2}: cells fall below the base level"
                 ));
                 break;
             }
@@ -181,7 +179,7 @@ pub fn stretched_certified_mother(
             {
                 Ok(target) => target,
                 Err(error) => {
-                    rejected.push(format!("level {level}: {error}"));
+                    rejected.push(format!("n={subdivision}: {error}"));
                     break;
                 }
             };
@@ -192,7 +190,7 @@ pub fn stretched_certified_mother(
                         let next = factor * 1.1;
                         if next > cap {
                             rejected.push(format!(
-                                "level {level}, factor {factor:.2}: {}",
+                                "n={subdivision}, factor {factor:.2}: {}",
                                 format!("{error:?}").chars().take(160).collect::<String>()
                             ));
                             break;
@@ -205,7 +203,7 @@ pub fn stretched_certified_mother(
                 CertifiedMeshOutcome::GeometryCertified(geometry) => *geometry,
                 other => {
                     rejected.push(format!(
-                        "level {level}, factor {factor:.2}: geometry {}",
+                        "n={subdivision}, factor {factor:.2}: geometry {}",
                         format!("{other:?}").chars().take(160).collect::<String>()
                     ));
                     break;
@@ -218,7 +216,7 @@ pub fn stretched_certified_mother(
             return Ok(StretchedMother {
                 geometry,
                 subdivision,
-                mother_level: level,
+                mother_ratio: ratio,
                 factor,
                 focus_lonlat: lonlat,
                 delivered_levels: delivered,

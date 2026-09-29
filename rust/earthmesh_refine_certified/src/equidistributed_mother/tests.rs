@@ -187,7 +187,10 @@ fn one_concentrated_region_goes_to_the_schmidt_stretch() {
         "{:?}",
         adapted.rejected
     );
-    assert_eq!(adapted.subdivision, 80);
+    // The stretch takes n=64 (3.2 times the base), below the n=80 a power of
+    // two would have needed; equidistribution only tries mothers coarser
+    // than that.
+    assert_eq!(adapted.subdivision, 64);
 }
 
 #[test]
