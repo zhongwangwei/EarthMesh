@@ -2511,7 +2511,7 @@ fn refine_with_stretch(
             .ok_or_else(|| io::Error::other("vertex has no lon/lat"))?;
         levels[v] = targets.target_level(lonlat)?;
     }
-    let Some((focus, factor)) = earthmesh_mesh::schmidt_focus_for_levels(
+    let Some((focus, focus_factor)) = earthmesh_mesh::schmidt_focus_for_levels(
         &points,
         &levels,
         2f64.powi(max_level.min(16) as i32),
@@ -2532,6 +2532,39 @@ fn refine_with_stretch(
         ));
     };
     drop(targets);
+    // `2^deepest` makes only the focus that fine; the scale grows away from
+    // it, so the factor is the one the farthest demanded point needs (half a
+    // base cell beyond it, so the cells over the demand's edge qualify too).
+    // At most four times `2^deepest`: a demand needing more is too spread
+    // for one focus, and the stretch would coarsen the rest of the globe by
+    // as much.
+    let needed = earthmesh_mesh::schmidt_factor_for_levels(
+        &points,
+        &levels,
+        focus,
+        h0_radians.unwrap_or(0.0) / 2.0,
+        4.0 * focus_factor,
+    );
+    let factor = needed.factor;
+    if needed.unreachable > 0 || needed.capped {
+        eprintln!(
+            "earthmesh_cli: warning: stretch refinement cannot serve all of its demand from one \
+             focus: {} demanded vertex(es) lie too far from it to reach their level at any \
+             factor (farthest {:.1} deg; the reach is asin(2^-level) -- 30 deg for level 1, \
+             14.5 for level 2){}. The quality reconciliation reports them as coarser than \
+             target. refinement.backend IconNest serves scattered demand with one nest per region",
+            needed.unreachable,
+            needed.farthest_unreachable_deg,
+            if needed.capped {
+                format!(
+                    ", and the rest would need more than the cap of {:.1}",
+                    4.0 * focus_factor
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
     let demanded = levels.iter().filter(|&&level| level > 0).count();
     earthmesh_mesh::schmidt_stretch(&mut points, focus, factor);
     for &v in &live {
@@ -2548,9 +2581,9 @@ fn refine_with_stretch(
         )])
         .pop();
     eprintln!(
-        "earthmesh_cli: stretch refinement: focus {:.3}E {:.3}N, factor {factor:.2} ({} of {} \
-         vertices demanded); cells finer by {factor:.2} at the focus, coarser by {factor:.2} \
-         opposite it",
+        "earthmesh_cli: stretch refinement: focus {:.3}E {:.3}N, factor {factor:.2} (2^deepest \
+         alone {focus_factor:.0}; {} of {} vertices demanded); cells finer by {factor:.2} at the \
+         focus, coarser by {factor:.2} opposite it",
         focus_lonlat.map_or(f64::NAN, |p| p.lon_degrees),
         focus_lonlat.map_or(f64::NAN, |p| p.lat_degrees),
         demanded,
