@@ -3286,7 +3286,8 @@ fn refine_with_method_c_lepp(
             "LEPP AdaptiveHybrid HEX refinement committed no insertions while demands remain unresolved; refusing unchanged 5..=7 publication",
         ));
     }
-    let (state, window) = repair_lepp_state(&state, report.initial_vertices, pentagons)?;
+    let hex = config.mode_grid.trim() == "hex";
+    let (state, window, dual) = repair_lepp_state(&state, report.initial_vertices, pentagons, hex)?;
     eprintln!(
         "earthmesh_cli: LEPP angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
          {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed)",
@@ -3300,6 +3301,19 @@ fn refine_with_method_c_lepp(
         window.moves,
         window.removed_vertices,
     );
+    if let Some(dual) = dual {
+        eprintln!(
+            "earthmesh_cli: LEPP hex cells: {} -> {} over the aspect/edge-CV limits, aspect \
+             {:.3} -> {:.3}, edge CV {:.3} -> {:.3} ({} moves)",
+            dual.over_limit_before,
+            dual.over_limit_after,
+            dual.max_aspect_before,
+            dual.max_aspect_after,
+            dual.max_edge_cv_before,
+            dual.max_edge_cv_after,
+            dual.moves,
+        );
+    }
     let refined = state.to_triangular_mesh(pentagons, None)?;
     let initial_voronoi = spherical_voronoi_state(&refined)?;
     let initial_output =
@@ -3334,12 +3348,18 @@ fn refine_with_method_c_lepp(
 
 /// Take the degrees LEPP was allowed to overshoot back into 5..=7 and the
 /// angles into the window. Base vertices may move but stay; only LEPP's own
-/// sites may be removed, so the twelve pentagons keep their ids.
+/// sites may be removed, so the twelve pentagons keep their ids. For a hex
+/// grid, then even out the cells the triangles leave lopsided.
 fn repair_lepp_state(
     state: &MeshState,
     initial_vertices: usize,
     pentagons: [usize; 12],
-) -> io::Result<(MeshState, earthmesh_mesh::AngleWindowReport)> {
+    hex: bool,
+) -> io::Result<(
+    MeshState,
+    earthmesh_mesh::AngleWindowReport,
+    Option<earthmesh_mesh::DualShapeReport>,
+)> {
     let first = earthmesh_mesh::MESH_STATE_FIRST_ID;
     let radius = state.sphere_radius();
     let mut points = state
@@ -3395,6 +3415,20 @@ fn repair_lepp_state(
             ),
         ));
     }
+    // The triangles can all be in the window while a hex cell is not near a
+    // hexagon: at a jump from fine to coarse neighbours one of its edges was
+    // a quarter of another (aspect 4.07, edge CV 0.395, the only cell over
+    // the quality check's lines in a global 1000 km circle at two levels).
+    // Moving generators evens such cells out; the faces stay as they are.
+    let dual = hex.then(|| {
+        let thresholds = earthmesh_quality::QualityThresholds::default();
+        let mut dual_options = earthmesh_mesh::DualShapeOptions::new((lo + 0.25, hi - 0.25));
+        dual_options.aspect_limit = thresholds.aspect_ratio_warn;
+        dual_options.edge_cv_limit = thresholds.cell_edge_cv_warn;
+        dual_options.first_vertex = first;
+        dual_options.first_face = first;
+        earthmesh_mesh::even_out_dual_cells(&mut points, &faces, dual_options)
+    });
     let vertices = points
         .iter()
         .map(|&[x, y, z]| earthmesh_mesh::CartesianPoint::new(x * radius, y * radius, z * radius))
@@ -3413,7 +3447,7 @@ fn repair_lepp_state(
             ),
         )
     })?;
-    Ok((repaired, report))
+    Ok((repaired, report, dual))
 }
 
 fn lepp_region_boundary_segments(

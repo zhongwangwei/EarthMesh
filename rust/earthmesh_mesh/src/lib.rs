@@ -96,12 +96,14 @@ pub use mesh_repairable_error::{
 mod mesh_triangle_seed;
 pub use mesh_triangle_seed::MethodCTriangleSeed;
 mod mesh_angle_window;
+mod mesh_dual_shape;
 mod mesh_stretch;
 pub use mesh_angle_window::{
     repair_triangle_angle_window, repair_triangle_angle_window_locked,
     repair_triangle_angle_window_traced, spherical_triangle_angles_deg, AngleWindowOptions,
     AngleWindowOrigins, AngleWindowReport,
 };
+pub use mesh_dual_shape::{even_out_dual_cells, DualShapeOptions, DualShapeReport};
 pub use mesh_stretch::{
     schmidt_factor_for_levels, schmidt_factor_for_scales, schmidt_focus_for_levels,
     schmidt_local_scale, schmidt_stretch, SchmidtFactor,

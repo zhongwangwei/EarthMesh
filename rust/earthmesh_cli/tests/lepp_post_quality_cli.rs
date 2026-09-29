@@ -242,6 +242,10 @@ fn cli_lepp_adaptive_hybrid_tri_preserves_single_insertion_and_partial_demand() 
         stderr.contains("refinement spring started"),
         "LEPP must consume the common spring controls: {stderr}"
     );
+    assert!(
+        !stderr.contains("LEPP hex cells"),
+        "a triangle grid has no hex cells to even out: {stderr}"
+    );
     assert_eq!(
         stdout_value(&stdout, "lepp_adaptive_physical_insertions"),
         "1"
@@ -593,6 +597,10 @@ fn cli_lepp_adaptive_hex_budget_of_one_publishes_repaired_partial_progress() {
     assert_ne!(
         stdout_value(&stdout, "lepp_adaptive_unresolved_demands"),
         "0"
+    );
+    assert!(
+        stderr.contains("LEPP hex cells:"),
+        "a hex grid's cells are evened out after the window repair: {stderr}"
     );
     let gridfile = root.join(format!("{case}/result/gridfile_NXP0006_hex.nc4"));
     let mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gridfile)
