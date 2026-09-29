@@ -166,6 +166,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .expert-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
   color:var(--accent);text-transform:uppercase;letter-spacing:.06em;margin-bottom:11px}
 body.normal .expert{display:none}
+/* A tuning field inside a normal panel: hidden in normal mode, marked in expert mode. */
+body.normal .expert-field{display:none}
+.expert-field>label::before{content:"⚙ ";color:var(--accent)}
 .quality-detail{border:1.5px dashed var(--accent);border-radius:var(--r-md);padding:var(--s-lg);
   background:color-mix(in srgb,var(--accent) 6%,transparent);margin-bottom:var(--s-lg)}
 .quality-tag{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;
@@ -795,6 +798,7 @@ function resInput(src){
 
 /* ---------------- step renderers ---------------- */
 function field(label,inner,hint){return `<div class="field"><label>${label} ${hint?`<span class="hint">${hint}</span>`:""}</label>${inner}</div>`;}
+function expertField(label,inner,hint){return field(label,inner,hint).replace('<div class="field">','<div class="field expert-field">');}
 function inp(v){return `<input class="input" value="${v}">`;}
 
 function renderStep(i){
@@ -837,7 +841,7 @@ function renderStep(i){
           ${field(lang?"单元形状":"Cell shape",`<select class="select" id="targetCellOutput"><option value="hex">${lang?"六边形":"Hexagonal"}</option><option value="tri">${lang?"三角形":"Triangular"}</option></select>`,lang?"可覆盖模板默认值":"overrides template default")}
           ${field(lang?"交付状态":"Delivery",`<b id="targetDeliveryOutput" style="font-size:15px"></b>`,lang?"通用 EarthMesh gridfile 始终保存":"canonical EarthMesh gridfile is always saved")}
           <div id="colmMeshDeliveryControls">${field(lang?"CoLM 网格输入":"CoLM mesh input",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="colmMeshEnabled"> <span>${lang?"导出 CoLM mesh NetCDF":"Export CoLM mesh NetCDF"}</span></label>`,lang?"显式开启；不从阈值源分辨率推断":"explicit opt-in; not inferred from threshold source resolution")}
-          ${field(lang?"栅格分辨率 (像素/度)":"Raster resolution (px/degree)",`<input class="input" id="colmMeshPixelsPerDegree" type="number" min="1" step="1" value="240">`,lang?"建议 240；开启后必须为正整数":"suggested 240; required positive integer when enabled")}</div>
+          ${expertField(lang?"栅格分辨率 (像素/度)":"Raster resolution (px/degree)",`<input class="input" id="colmMeshPixelsPerDegree" type="number" min="1" step="1" value="240">`,lang?"建议 240；开启后必须为正整数":"suggested 240; required positive integer when enabled")}</div>
           ${field(lang?"质量模式":"Quality mode",`<b id="targetQualityModeOutput" style="font-size:15px">${qualityModeLabel(null,templateDefaultCell())}</b>`,lang?"根据单元形状自动选择，不是额外参数":"selected automatically from cell shape; not a separate setting")}
         </div></div>
       <div class="expert"><span class="expert-tag">⚙ ${lang?"专家 — 基础网格构造":"EXPERT — base mesh construction"}</span>
@@ -900,7 +904,7 @@ function renderStep(i){
       <div class="grid2">
         ${field(lang?"最小角 ≥":"Min angle ≥",`<input class="input" id="qualityMinAngle" value="${DEFAULT_MIN_ANGLE_DEG}°">`)}
         ${field("AutoRefine",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="qualityAutoRefineOn"> <span>${lang?"质量不达标时自动生成并比较局部修复候选":"Generate and compare a local repair candidate after a quality violation"}</span></label>`,lang?"全球、区域、流域均可；初始细化可开可关":"Global, regional, and watershed domains; initial refinement may be on or off")}
-        <div id="qualityAutoRefineOptions">${field(lang?"每轮局部修复单元":"Local repair cells / pass",`<input class="input" id="qualityBatchCells" type="number" min="1" step="1" value="1">`,lang?"只处理同一缺陷连通分量；默认 1，便于严格比较和回滚。":"Only one connected defect component is touched; default 1 keeps comparison and rollback attributable.")}</div>
+        <div id="qualityAutoRefineOptions">${expertField(lang?"每轮局部修复单元":"Local repair cells / pass",`<input class="input" id="qualityBatchCells" type="number" min="1" step="1" value="1">`,lang?"只处理同一缺陷连通分量；默认 1，便于严格比较和回滚。":"Only one connected defect component is touched; default 1 keeps comparison and rollback attributable.")}</div>
       </div></div>`;
   }
   else{
@@ -936,7 +940,7 @@ function renderStep(i){
   const watershedText=document.getElementById("watershedPathText"); if(watershedText) watershedText.textContent=watershedPath ? "📄 "+watershedPath : (lang?"📄 点击选择 .shp 文件":"📄 Choose a .shp file");
   const closeText=document.getElementById("closePathText"); if(closeText) closeText.textContent=closePath ? "📄 "+closePath : (lang?"📄 点击选择文件":"📄 Choose file");
   const readyDomain=document.getElementById("readyDomainOutput"); if(readyDomain) readyDomain.textContent=domainLabel();
-  const runOut=document.getElementById("runOutputSummary"); if(runOut&&runInfo){ const parts=[]; if(runInfo.outdir) parts.push((lang?"输出目录：":"output: ")+runInfo.outdir); if(!runInfo.ok&&runInfo.code!=null) parts.push("code "+runInfo.code); runOut.textContent=parts.join(" · "); }
+  const runOut=document.getElementById("runOutputSummary"); if(runOut&&runInfo){ const parts=[]; if(runInfo.outdir) parts.push((lang?"输出目录：":"output: ")+runInfo.outdir); if(!runInfo.ok&&runInfo.code!=null) parts.push("code "+runInfo.code+(lang?"（原因见日志）":" (the log gives the reason)")); if(!runInfo.ok&&runInfo.error) parts.push((lang?"未能启动运行：":"Could not start: ")+runInfo.error); runOut.textContent=parts.join(" · "); }
   // wire template + layer toggles
   w.querySelectorAll("[data-tpl]").forEach(c=>c.onclick=()=>selectTemplate(+c.dataset.tpl));
   w.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(+b.dataset.go));
@@ -2252,18 +2256,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
 
   function closeBoundaryControls(prefix, value, z) {
     const b = normalizeCloseBoundary(value);
-    return `<div class="expert" style="margin-top:12px">
-      <span class="expert-tag">⚙ ${z ? "专家 — 闭合边界" : "EXPERT — close boundary"}</span>
-      <div class="grid2" style="margin-top:10px">
+    return `<div style="margin-top:12px">
+      <div class="grid2">
         ${field(z?"边界表示":"Boundary mode",`<select class="select" id="${prefix}CloseBoundaryMode"><option value="polyline" ${b.mode==="polyline"?"selected":""}>${z?"原折线（默认）":"Polyline (default)"}</option><option value="spherical_chaikin" ${b.mode==="spherical_chaikin"?"selected":""}>${z?"球面 Chaikin 平滑":"Spherical Chaikin"}</option><option value="enclosing_cap" ${b.mode==="enclosing_cap"?"selected":""}>${z?"保守外接球冠":"Conservative enclosing cap"}</option></select>`,z?"默认保持现有行为":"default preserves existing behavior")}
-        ${field(z?"最大分段角 (°)":"Max segment angle (°)",`<input class="input" type="number" id="${prefix}CloseMaxSegment" min="0.001" max="30" step="0.05" value="${b.max_segment_angle_deg}">`,z?"平滑/拟合前的边界采样上限":"boundary sampling limit")}
+        ${expertField(z?"最大分段角 (°)":"Max segment angle (°)",`<input class="input" type="number" id="${prefix}CloseMaxSegment" min="0.001" max="30" step="0.05" value="${b.max_segment_angle_deg}">`,z?"平滑/拟合前的边界采样上限":"boundary sampling limit")}
       </div>
       <div class="grid2" id="${prefix}CloseChaikinOptions" style="margin-top:10px">
-        ${field(z?"Chaikin 迭代":"Chaikin iterations",`<input class="input" type="number" id="${prefix}CloseIterations" min="1" max="6" step="1" value="${b.iterations}">`,z?"建议 1–3":"recommended 1–3")}
+        ${expertField(z?"Chaikin 迭代":"Chaikin iterations",`<input class="input" type="number" id="${prefix}CloseIterations" min="1" max="6" step="1" value="${b.iterations}">`,z?"建议 1–3":"recommended 1–3")}
       </div>
       <div class="grid2" id="${prefix}CloseCapOptions" style="margin-top:10px">
-        ${field(z?"外扩余量 (km)":"Outward margin (km)",`<input class="input" type="number" id="${prefix}CloseMarginKm" min="0" step="1" value="${b.margin_km}">`,z?"允许覆盖原区域之外":"intentional over-cover")}
-        ${field(z?"最大球冠半径 (°)":"Max cap radius (°)",`<input class="input" type="number" id="${prefix}CloseMaxRadius" min="0.1" max="89.9" step="1" value="${b.max_radius_deg}">`,z?"拒绝接近半球的退化区域":"reject near-hemisphere regions")}
+        ${expertField(z?"外扩余量 (km)":"Outward margin (km)",`<input class="input" type="number" id="${prefix}CloseMarginKm" min="0" step="1" value="${b.margin_km}">`,z?"允许覆盖原区域之外":"intentional over-cover")}
+        ${expertField(z?"最大球冠半径 (°)":"Max cap radius (°)",`<input class="input" type="number" id="${prefix}CloseMaxRadius" min="0.1" max="89.9" step="1" value="${b.max_radius_deg}">`,z?"拒绝接近半球的退化区域":"reject near-hemisphere regions")}
       </div>
       <div style="color:var(--muted);font-size:11px;line-height:1.5;margin-top:8px">${z?"平滑会削角并可能缩小范围；外接球冠会扩大范围。非默认模式会执行自交、对跖与半球限制检查。":"Smoothing cuts corners and may shrink the footprint; enclosing caps expand it. Non-default modes validate intersections, antipodal edges, and cap extent."}</div>
     </div>`;
@@ -3059,6 +3062,25 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       ? meshMeritLayer(sum)
       : null;
     const z = zh();
+    // The catalogue comes from the engine in English; Chinese names by source.
+    const CRITERION_ZH = {
+      landcover: ["土地利用种类", "土地利用异质性"],
+      lai: ["叶面积指数 LAI", "植被物候 / 冠层异质性"],
+      slope_avg: ["坡度", "地形抬升 / 径流汇流"],
+      dem: ["高程 DEM", "地形高程"],
+      slope_max: ["最大坡度", "陡峭地形"],
+      k_s: ["饱和导水率 k_s", "土壤水力"],
+      k_solids: ["土壤固体导热率 k_solids", "土壤热力"],
+      tkdry: ["干土导热率 tkdry", "土壤热力"],
+      tksatf: ["冻结饱和土导热率 tksatf", "土壤热力（冻结）"],
+      tksatu: ["未冻饱和土导热率 tksatu", "土壤热力（未冻）"],
+      sst: ["海表温度 SST", "海表温度锋面"],
+      ssh: ["海表高度 SSH", "海洋动力高度"],
+      eke: ["涡动能 EKE", "中尺度涡"],
+      sea_slope: ["海底坡度", "海底地形梯度 / 陆架坡折"],
+      typhoon: ["台风", "大气气旋 / 降水强迫"],
+    };
+    const CRITERION_UNIT_ZH = { classes: "类", fraction: "比例", deg: "°" };
     const criterionRow = (l) => {
       const c = l.criterion || (l.role_kind === "landcover"
         ? { label: zh() ? "土地利用种类" : "Landcover classes", unit: zh() ? "类" : "classes", physical_process: zh() ? "土地利用异质性" : "landcover heterogeneity", help: "", default_value: 12, range_min: 1, range_max: 32 }
@@ -3101,12 +3123,17 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       text.style.cssText = "flex:1;min-width:0";
       const label = document.createElement("div");
       label.style.cssText = "font-weight:650;font-size:14px";
-      label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : isCriterion && z
+      const zhName = z && c.source_stem ? CRITERION_ZH[c.source_stem] : null;
+      const zhStatistic = c.statistic === "mean" ? " · 平均" : c.statistic === "std" ? " · 标准差" : "";
+      label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : zhName
+        ? zhName[0] + zhStatistic
+        : isCriterion && z
         ? c.label.replace(/ mean$/, " · 平均").replace(/ std$/, " · 标准差")
         : c.label;
       const help = document.createElement("div");
       help.style.cssText = "color:var(--muted);font-size:11.5px;margin-top:1px";
-      help.textContent = (c.physical_process || c.help || "") + (c.unit ? " · " + c.unit : "");
+      help.textContent = ((zhName && zhName[1]) || c.physical_process || c.help || "")
+        + (c.unit ? " · " + ((z && CRITERION_UNIT_ZH[c.unit]) || c.unit) : "");
       if (l.id === "sea_ratio") help.textContent = z
         ? "海洋占比在 t 与 1−t 之间时细化；0 ≤ t < 0.5（0.05 表示 5%～95%）"
         : c.help;
@@ -3223,20 +3250,20 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
       ${iconHint}
       <div class="grid2">
-        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸）":"Stretch"}</option><option value="icon_nest" ${algorithmFamily==="icon_nest"?"selected":""}>${z?"ICON 嵌套":"ICON nest"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；CMRC 和 Red-Green 都是并列后端。":"LEPP-Delaunay belongs to Method-C; CMRC and Red-Green are peer backends.")}
+        ${field(z?"后端家族":"Backend family",`<select class="select" id="refineBackendFamily"><option value="method_c" ${algorithmFamily==="method_c"?"selected":""}>Method-C</option><option value="red_green" ${algorithmFamily==="red_green"?"selected":""}>Red-Green</option><option value="certified" ${algorithmFamily==="certified"?"selected":""}>CMRC</option><option value="stretch" ${algorithmFamily==="stretch"?"selected":""}>${z?"Stretch（拉伸）":"Stretch"}</option><option value="icon_nest" ${algorithmFamily==="icon_nest"?"selected":""}>${z?"ICON 嵌套":"ICON nest"}</option></select>`,z?"LEPP-Delaunay 属于 Method-C 家族；Red-Green、CMRC、Stretch 和 ICON 嵌套是并列后端。":"LEPP-Delaunay belongs to Method-C; Red-Green, CMRC, Stretch and ICON nest are peer backends.")}
         ${algorithmFamily==="method_c"?`<div id="methodCAlgorithmChoice">${field(z?"Method-C 内部算法":"Method-C algorithm",`<select class="select" id="methodCAlgorithm"><option value="canonical" ${algorithm==="method_c"?"selected":""}>Canonical${z?"（嵌套 + 过渡行）":" (nested + transition rows)"}</option><option value="lepp_delaunay" ${algorithm==="lepp_delaunay"?"selected":""}>LEPP-Delaunay / AdaptiveHybrid</option></select>`)}</div>`:""}
       </div>
       <div id="refineAlgorithmInfo" style="color:var(--muted);font-size:12px;line-height:1.55;margin-top:8px">${algorithmInfo}</div>
     </div>`;
-    const canonicalMethodCOptions = `<div id="canonicalMethodCOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
-      <div style="font-weight:700;margin-bottom:10px">Method-C Canonical · ${z?"专属参数":"specific parameters"}</div>
+    const canonicalMethodCOptions = `<div id="canonicalMethodCOptions" class="expert" style="margin-top:12px">
+      <span class="expert-tag">⚙ ${z?"专家 — ":"EXPERT — "}Method-C Canonical · ${z?"专属参数":"specific parameters"}</span>
       <div class="grid2">
         ${field("RL%HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"各细化级的判据外扩圈数":"criterion halo per refinement level")}
         ${field("RL%max_transition_row",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`,z?"各级过渡行上限":"transition-row limit per level")}
       </div>
     </div>`;
-    const leppOptions = `<div id="leppDelaunayOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
-      <div style="font-weight:700;margin-bottom:10px">Method-C → LEPP-Delaunay / AdaptiveHybrid · ${z?"专属参数":"specific parameters"}</div>
+    const leppOptions = `<div id="leppDelaunayOptions" class="expert" style="margin-top:12px">
+      <span class="expert-tag">⚙ ${z?"专家 — ":"EXPERT — "}Method-C → LEPP-Delaunay / AdaptiveHybrid · ${z?"专属参数":"specific parameters"}</span>
       <div class="grid2">
         ${field(z?"最大循环数":"Max cycles",`<input class="input" type="number" id="leppMaxCycles" min="1" step="1" value="${specifiedRefine.leppMaxCycles}">`)}
         ${field(z?"目标尺寸容差":"Target-size tolerance",`<input class="input" type="number" id="leppTargetSizeTolerance" min="1" step="0.01" value="${specifiedRefine.leppTargetSizeTolerance}">`,z?"当前/目标尺寸允许比例，≥1":"allowed current/target scale ratio, ≥1")}
@@ -3251,8 +3278,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const stretchOptions = `<div id="stretchOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">Stretch · ${z?"说明":"notes"}</div>
       <div style="color:var(--muted);font-size:12px;line-height:1.6">${z
-        ? "拉伸系数取 2^最深层级：焦点处细 2^L 倍，对跖点粗 2^L 倍。焦点取需求深度加权的平均方向。每单元层级按尺寸实测。没有专属参数。"
-        : "The stretch factor is 2^deepest level: 2^L finer at the focus, 2^L coarser opposite it. The focus is the depth-weighted mean direction of the demand. Per-cell levels are measured from size. No specific parameters."}</div>
+        ? "拉伸系数取能让全部需求达到各自层级的最小值（至多 2^最深层级 的 4 倍）：焦点处最细，离焦点越远越粗，对跖点最粗。焦点取需求深度加权的平均方向。每单元层级按尺寸实测。离焦点超过 asin(2^-层级) 的需求任何系数都达不到，运行时会警告。没有专属参数。"
+        : "The stretch factor is the least that brings all of the demand to its level (at most four times 2^deepest level): finest at the focus, coarser with distance, coarsest opposite it. The focus is the depth-weighted mean direction of the demand. Per-cell levels are measured from size. Demand farther than asin(2^-level) from the focus is out of reach at any factor, and the run warns. No specific parameters."}</div>
     </div>`;
     const iconNestOptions = `<div id="iconNestOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">${z?"ICON 嵌套 · 说明":"ICON nest · notes"}</div>
@@ -3260,8 +3287,8 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ? "只用于全球三角形 ICON 目标。每层嵌套在需求区外留出边界带（14 行索引、12 行插值与松弛），所以嵌套比需求区大；需求越深，外层嵌套越宽。输出为全球网格 DOM01 与各嵌套 DOMnn，另附 grid_nml 片段与摘要。原生 gridfile 是未加密的全球网格，其质量对账会报“比目标粗”，需求由嵌套满足。"
         : "For global triangle ICON targets only. Each nest keeps a boundary zone around its demand (14 indexed rows, 12 for interpolation and nudging), so a nest is wider than the demand, and outer nests widen with every deeper level. Output is the global grid DOM01 and a DOMnn per nest, with a grid_nml snippet and a summary. The native gridfile is the unrefined global grid, so its reconciliation reports cells coarser than target; the nests serve that demand."}</div>
     </div>`;
-    const redGreenOptions = `<div id="redGreenOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
-      <div style="font-weight:700;margin-bottom:10px">Red-Green · ${z?"专属参数":"specific parameters"}</div>
+    const redGreenOptions = `<div id="redGreenOptions" class="expert" style="margin-top:12px">
+      <span class="expert-tag">⚙ ${z?"专家 — ":"EXPERT — "}Red-Green · ${z?"专属参数":"specific parameters"}</span>
       <div class="grid2">
         ${field("HALO",`<input class="input" id="expertHalo" placeholder="4,4,3">`,z?"每级标记外扩圈数":"marking halo per level")}
         ${field(z?"最大过渡行":"Max transition rows",`<input class="input" id="expertMaxTransitionRow" placeholder="4,4,3">`)}
@@ -3275,10 +3302,10 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option><option value="equidistributed_mother" ${specifiedRefine.certifiedMode==="equidistributed_mother"?"selected":""}>${z?"认证等分布（只挪顶点、无七边形，可多区域）":"Certified equidistribution (vertices moved only, no heptagons; several regions)"}</option></select>`)}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
         ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
-        ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
-        ${field(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="certifiedMaximumCells" min="1" step="1" value="${specifiedRefine.certifiedMaximumCells}">`)}
-        ${field(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
-        ${field(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
+        ${expertField(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
+        ${expertField(z?"最大单元数":"Maximum cells",`<input class="input" type="number" id="certifiedMaximumCells" min="1" step="1" value="${specifiedRefine.certifiedMaximumCells}">`)}
+        ${expertField(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
+        ${expertField(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
         ${field(z?"认证内容":"Certificate",`<input class="input" value="Euler 2 · charge 12 · primal/dual/requirement/balance/remap" disabled>`,z?"角度硬门以上方所选合同为准；任一认证失败都不写正式 gridfile":"The selected contract defines the angle gate; no formal gridfile is written if certification fails")}
       </div>
       ${specifiedRefine.certifiedMode==="stretched_mother"
@@ -3299,22 +3326,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       stretch: stretchOptions,
       icon_nest: iconNestOptions
     }[algorithm];
-    // Only the canonical nested algorithm serves the h-field. The others refuse a run
-    // that configures one, so offering it beside them builds a project that
-    // cannot run.
-    const hfieldBlock = `<div class="expert" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
-      <span class="expert-tag">⚙ ${z ? "专家 — 需求表达" : "EXPERT — demand representation"}</span>
-      <div class="grid2" style="margin-top:10px">
+    // Canonical nesting, Red-Green, Stretch and ICON nest read the h-field;
+    // LEPP-Delaunay and CMRC refuse a run that configures one, so offering it
+    // beside them builds a project that cannot run. The route is a major
+    // choice and shows in normal mode; its numbers are expert fields.
+    const hfieldBlock = `<div id="demandRepresentationPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
+      <div style="font-weight:700;margin-bottom:10px">${z ? "需求表达" : "Demand representation"}</div>
+      <div class="grid2">
         ${algorithm==="certified" ? field(z?"需求表达方式":"Demand representation",`<input class="input" value="${z?"离散（CMRC 读取阈值与命名区域）":"Discrete (CMRC reads thresholds and named regions)"}" disabled>`,z?"CMRC 不使用点 + 半径或 H 场":"CMRC does not use point + radius or the h-field") : field(z?"需求表达方式":"Demand representation",`<select class="select" id="refineBackend"><option value="adaptive" ${backend==="adaptive"?"selected":""}>${algorithm==="red_green"?(z?"点 + 半径":"Point + radius"):(z?"点 + 半径（默认）":"Point + radius (default)")}</option>${hfieldServed?`<option value="hfield" ${backend==="hfield"?"selected":""}>${algorithm==="red_green"?(z?"H 场（推荐）":"H-field (recommended)"):(z?"H 场":"H-field")}</option>`:""}${backend==="discrete"?`<option value="discrete" selected>${z?"离散硬掩膜（现有工程）":"Discrete hard mask (existing project)"}</option>`:""}</select>`,z?"新工程只提供界面能完整配置的需求表达；已有离散掩膜工程会保留原配置。":"New projects expose only fully configurable demand routes; existing discrete-mask projects retain their configuration.")}
       </div>
+      ${algorithm==="method_c" && thresholdRefine.enabled ? `<div id="methodCAdaptiveRefusal" role="alert" style="color:var(--warn,#b45309);font-size:12px;margin-top:8px;${backend==="adaptive"?"":"display:none"}">${z
+        ? "Canonical（嵌套 + 过渡行）不能用“点 + 半径”服务阈值判据：数据给出的区域形状放不进它三格一步的格点，运行会被拒绝。请改选“H 场”。"
+        : "Canonical (nested + transition rows) cannot serve threshold criteria on the point + radius route: a data-shaped region does not fit its three-cell lattice, and the run refuses it. Choose H-field."}</div>` : ""}
       <div id="adaptiveOptions" class="grid2" style="margin-top:10px;${backend==="adaptive"?"":"display:none"}">
-        ${field(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
-        ${field(z?"细化海岸线":"Refine coastline",`<select class="select" id="adaptiveCoastline"><option value="on" ${specifiedRefine.adaptiveCoastline!==false?"selected":""}>${z?"是":"Yes"}</option><option value="off" ${specifiedRefine.adaptiveCoastline===false?"selected":""}>${z?"否":"No"}</option></select>`,z?"把陆海边界本身作为一个判据":"treat the land/sea boundary as its own criterion")}
+        ${expertField(z?"最大级":"Max level",`<input class="input" type="number" id="adaptiveMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.adaptiveMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
+        ${thresholdRefine.enabled ? field(z?"细化海岸线":"Refine coastline",`<select class="select" id="adaptiveCoastline"><option value="on" ${specifiedRefine.adaptiveCoastline!==false?"selected":""}>${z?"是":"Yes"}</option><option value="off" ${specifiedRefine.adaptiveCoastline===false?"selected":""}>${z?"否":"No"}</option></select>`,z?"阈值判据之一：把陆海边界本身作为一个判据":"a threshold criterion: treat the land/sea boundary as its own criterion") : ""}
       </div>
       ${hfieldServed?`<div id="hfieldOptions" class="grid2" style="margin-top:10px;${backend==="hfield"?"":"display:none"}">
-        ${field(z?"梯度上限 g":"Gradation g",`<input class="input" type="number" id="hfieldG" min="0.01" max="1" step="0.01" value="${specifiedRefine.hfieldG ?? DEFAULT_HFIELD_G}">`,z?`默认 ${DEFAULT_HFIELD_G}；限制目标尺寸梯度，实际邻接比由质量检查确认`:`default ${DEFAULT_HFIELD_G}; limits target-size gradation; quality checks confirm actual neighbor ratios`)}
-        ${field(z?"最大级":"Max level",`<input class="input" type="number" id="hfieldMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.hfieldMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
-        ${field(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
+        ${expertField(z?"梯度上限 g":"Gradation g",`<input class="input" type="number" id="hfieldG" min="0.01" max="1" step="0.01" value="${specifiedRefine.hfieldG ?? DEFAULT_HFIELD_G}">`,z?`默认 ${DEFAULT_HFIELD_G}；限制目标尺寸梯度，实际邻接比由质量检查确认`:`default ${DEFAULT_HFIELD_G}; limits target-size gradation; quality checks confirm actual neighbor ratios`)}
+        ${expertField(z?"最大级":"Max level",`<input class="input" type="number" id="hfieldMaxLevel" min="0" max="${METHOD_C_MAX_REFINEMENT_LEVEL}" step="1" value="${specifiedRefine.hfieldMaxLevel ?? 0}">`,z?`0 = 自动；上限 ${METHOD_C_MAX_REFINEMENT_LEVEL}`:`0 = auto; max ${METHOD_C_MAX_REFINEMENT_LEVEL}`)}
+        ${expertField(z?"基准尺寸 m":"Base size m",`<input class="input" type="number" id="hfieldBaseM" min="0" step="1000" placeholder="${Math.round(nxpToKm(currentNxp())*1000)}" value="${specifiedRefine.hfieldBaseM ?? ""}">`,z?"空=自动，按 2πR/(5·NXP)":"blank=auto from 2πR/(5·NXP)")}
       </div>`:""}
       <div id="discreteOptions" class="grid2" style="margin-top:10px;${backend==="discrete"?"":"display:none"}">
         <div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"离散硬掩膜只决定需求表达；算法专属参数在上方随算法切换。":"The discrete hard mask controls demand representation only; algorithm-specific parameters stay in the selected panel above."}</div>
@@ -3327,7 +3358,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       : algorithm === "certified"
       ? `<div style="grid-column:1/-1;color:var(--muted);font-size:12px">${z?"CMRC 当前交付认证母网格或完整 2:1 层级 epoch；通用弹簧会使证书失效。":"CMRC currently delivers a certified mother grid or a complete 2:1 hierarchy epoch; generic spring smoothing would invalidate the certificate."}</div>`
       : `${field(z?"弹性平滑策略":"Spring smoothing",`<select class="select" id="expertRefineSpringStrategy">${springStrategyOptions(expertEdit.springStrategy,z)}</select>`,autoSpringStrategyLabel(cellEdit, regionalRefine, z))}
-        ${field(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
+        ${expertField(z?"弹性迭代次数":"Spring iterations",`<input class="input" type="number" id="expertNiterRefine" min="1" placeholder="${z?"自动":"auto"}">`,z?`留空自动：表面 ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS}，大气 ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS}`:`blank defaults to ${DEFAULT_SURFACE_REFINE_SPRING_ITERATIONS} for surface and ${DEFAULT_ATMOSPHERE_REFINE_SPRING_ITERATIONS} for atmosphere`)}`;
     const expertRefine = `<div style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <span class="expert-tag">⚙ ${algorithm === "certified" ? "CMRC" : (z ? "弹性平滑（当前算法）" : "Spring smoothing (selected algorithm)")}</span>
       <div class="grid2" style="margin-top:10px">
@@ -3398,7 +3429,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const ch = critCard.querySelector(".ch");
     while (ch && ch.nextSibling) ch.nextSibling.remove();
     if (ch) {
-      ch.textContent = draftError || (z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.");
+      ch.textContent = draftError && iconHint
+        ? (z ? "当前算法不能加密全球 ICON 网格，见下方“网格细化算法”中的说明；引擎原文见日志。" : "The selected algorithm cannot refine a global ICON grid; see Mesh refinement algorithm below, and the log for the engine's message.")
+        : draftError || (z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.");
       const anchor = ch;
       const switches = `<div class="grid2" id="refinementStrategySwitches" style="margin-top:12px">
         ${field(z?"指定细化":"Specified refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用后显示指定区域设置":"Show specified-region settings"}</label>`)}
@@ -3435,6 +3468,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       const thresholdOn = document.getElementById("thresholdRefineOn");
       if (thresholdOn) thresholdOn.onchange = () => {
         thresholdRefine.enabled = thresholdOn.checked;
+        // Canonical nesting refuses threshold criteria on the point + radius
+        // route (METHOD_C_ADAPTIVE_SUSPENDED) and serves them on the h-field.
+        // As for red-green, only the default route moves.
+        if (thresholdRefine.enabled && (specifiedRefine.algorithm || "method_c") === "method_c"
+            && (specifiedRefine.route || "adaptive") === "adaptive") {
+          specifiedRefine.route = "hfield";
+          specifiedRefine.hfieldEnabled = true;
+        }
         clearRunArtifacts();
         enhanceRefinementStep();
       };
@@ -3446,6 +3487,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         const ad = document.getElementById("adaptiveOptions"); if (ad) ad.style.display = route === "adaptive" ? "" : "none";
         const hf = document.getElementById("hfieldOptions"); if (hf) hf.style.display = route === "hfield" ? "" : "none";
         const lg = document.getElementById("discreteOptions"); if (lg) lg.style.display = route === "discrete" ? "" : "none";
+        const refusal = document.getElementById("methodCAdaptiveRefusal"); if (refusal) refusal.style.display = route === "adaptive" ? "" : "none";
         expertEdit.enabled = expertEnabled();
         clearRunArtifacts();
       };
@@ -3478,6 +3520,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
           specifiedRefine.hfieldEnabled = false;
         }
         if (next === "red_green" && previousAlgorithm !== "red_green"
+            && (specifiedRefine.route || "adaptive") === "adaptive") {
+          specifiedRefine.route = "hfield";
+          specifiedRefine.hfieldEnabled = true;
+        }
+        if (next === "method_c" && previousAlgorithm !== "method_c" && thresholdRefine.enabled
             && (specifiedRefine.route || "adaptive") === "adaptive") {
           specifiedRefine.route = "hfield";
           specifiedRefine.hfieldEnabled = true;
@@ -4484,7 +4531,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (!runIsCurrent()) return;
       logLine("✗ " + (zh() ? "运行失败: " : "run failed: ") + e);
       setStatus(zh() ? "运行失败" : "failed", true);
-      hasRun = true; runInfo = { ok: false, outdir: "", code: null, autoRefineDecisions: [] };
+      hasRun = true; runInfo = { ok: false, outdir: "", code: null, error: String((e && e.message) || e), autoRefineDecisions: [] };
     } finally {
       setRunControls(false);
       try {
@@ -4552,15 +4599,39 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       reason.className = "ch"; reason.textContent = report.skipped_reason;
       card.appendChild(reason);
     }
+    const nestDomains = Object.keys(report.model_artifacts || {}).filter((key) => /^icon_nest_dom\d+$/.test(key));
+    if (nestDomains.length) {
+      const nests = document.createElement("p");
+      nests.className = "ch";
+      nests.textContent = zh()
+        ? `ICON 嵌套：全球网格 DOM01 保持不加密，需求由 ${nestDomains.length} 个嵌套网格（DOM02–DOM${String(nestDomains.length + 1).padStart(2, "0")}）满足。质量报告只检查 DOM01，其中“比目标粗”的告警属预期。`
+        : `ICON nest: the global grid DOM01 stays unrefined and ${nestDomains.length} nest grid(s) (DOM02–DOM${String(nestDomains.length + 1).padStart(2, "0")}) serve the demand. The quality report checks DOM01 only, so its coarser-than-target warning is expected.`;
+      card.appendChild(nests);
+    }
     const files = document.createElement("details");
     const label = document.createElement("summary");
     label.textContent = zh() ? "文件与检查报告" : "Files and check reports";
     files.appendChild(label);
+    const artifactLabel = (key) => {
+      const nest = /^icon_nest_dom(\d+)$/.exec(key);
+      if (nest) return (zh() ? "ICON 嵌套网格 DOM" : "ICON nest grid DOM") + nest[1];
+      const names = {
+        icon_mesh_input: ["ICON 全球网格 DOM01", "ICON global grid DOM01"],
+        icon_grid_nml: ["ICON grid_nml 片段", "ICON grid_nml snippet"],
+        icon_nest_summary: ["ICON 嵌套摘要", "ICON nest summary"],
+        mpas_mesh_input: ["MPAS 网格", "MPAS mesh"],
+        mpas_graph_info: ["MPAS graph.info", "MPAS graph.info"],
+        colm_mesh_input: ["CoLM 网格输入", "CoLM mesh input"],
+        fvcom_mesh_input: ["FVCOM 网格", "FVCOM mesh"],
+        fvcom_2dm: ["FVCOM .2dm", "FVCOM .2dm"],
+      };
+      return names[key] ? names[key][zh() ? 0 : 1] : key;
+    };
     const paths = [
       [zh()?"最终选定网格":"Selected final mesh", report.gridfile],
       [zh()?"最终质量报告":"Final quality report", report.final_quality.report],
       [zh()?"交付清单":"Delivery record", bundle.report_path],
-      ...Object.entries(report.model_artifacts),
+      ...Object.entries(report.model_artifacts).map(([key, path]) => [artifactLabel(key), path]),
     ];
     paths.forEach(([name, path]) => {
       const row = document.createElement("div");
@@ -4599,10 +4670,26 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     card.appendChild(title);
     const summary = document.createElement("div");
     summary.className = "grid2";
+    const named = (table, key) => key == null ? null : (table[key] ? table[key][zh() ? 0 : 1] : key);
     const rows = [
-      [zh()?"结果":"Outcome", c.product_outcome],
-      [zh()?"运行模式":"Mode", c.mode],
-      [zh()?"角度合同":"Angle contract", c.angle_contract],
+      [zh()?"结果":"Outcome", named({
+        certified_adaptive: ["认证自适应网格", "Certified adaptive mesh"],
+        certified_safe_fallback: ["认证安全母网格（回退）", "Certified safe mother (fallback)"],
+      }, c.product_outcome)],
+      [zh()?"运行模式":"Mode", named({
+        safe_mother_only: ["仅安全母网格", "Safe mother only"],
+        reverse_coarsening: ["认证反向粗化", "Certified reverse coarsening"],
+        stretched_mother: ["认证拉伸", "Certified stretch"],
+        equidistributed_mother: ["认证等分布", "Certified equidistribution"],
+      }, c.mode)],
+      ...(c.coarsening_strategy && c.coarsening_strategy !== "none" ? [[zh()?"母网格策略":"Mother strategy", named({
+        schmidt_stretch: ["Schmidt 拉伸", "Schmidt stretch"],
+        equidistribution: ["等分布", "Equidistribution"],
+      }, c.coarsening_strategy)]] : []),
+      [zh()?"角度合同":"Angle contract", named({
+        legacy_strict_40_to_80: ["Legacy 严格 40°–80°", "Legacy strict 40°–80°"],
+        domain_quality_38_to_82_v1: ["DQX 几何 38°–82°（偏好 40°–80°）", "DQX geometry 38°–82° (prefers 40°–80°)"],
+      }, c.angle_contract)],
       [zh()?"DQX 执行状态":"DQX execution", c.dqx_execution_status],
       [zh()?(publishedAngle?"掩膜前角度":"认证角度"):(publishedAngle?"Pre-mask angles":"Certified angles"), angle],
       ...(publishedAngle ? [[zh()?"发布域角度":"Published-domain angles", publishedAngle]] : []),
@@ -4625,9 +4712,14 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (c.product_outcome === "certified_safe_fallback" && fulfillment.mixed_levels_requested && !fulfillment.mixed_levels_delivered) {
       const warning = document.createElement("div");
       warning.style.cssText = "margin-top:10px;padding:9px;border-radius:7px;background:rgba(220,150,60,.14);color:var(--warn);font-size:12px;font-weight:650";
-      warning.textContent = zh()
-        ? "未交付自适应粗细网格：当前为统一最细层安全母网格。要执行 3→2→1→0 粗化，请选择“认证反向粗化”。"
-        : "No adaptive mixed-level mesh was delivered: this is a uniform finest-level safety grid. Select Certified reverse coarsening for 3→2→1→0.";
+      const moved = c.mode === "stretched_mother" || c.mode === "equidistributed_mother";
+      warning.textContent = moved
+        ? (zh()
+          ? "没有找到比安全母网格更省、又通过全部证书的移动母网格，因此交付了统一最细层的安全母网格；每个方案被放弃的原因见日志。"
+          : "No moved mother both saved cells over the safe mother and passed every certificate, so the uniform finest-level safe mother was delivered; the log gives each candidate's reason.")
+        : (zh()
+          ? "未交付自适应粗细网格：当前为统一最细层安全母网格。要执行 3→2→1→0 粗化，请选择“认证反向粗化”。"
+          : "No adaptive mixed-level mesh was delivered: this is a uniform finest-level safety grid. Select Certified reverse coarsening for 3→2→1→0.");
       card.appendChild(warning);
     }
     const levels = c.elastic_component_epochs && c.elastic_component_epochs.per_level_histograms;

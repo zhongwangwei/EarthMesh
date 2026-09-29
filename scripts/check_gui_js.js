@@ -1359,8 +1359,9 @@ log("blank MERIT thresholds restore defaults; invalid values block save/run");
 {
   const body = section(html, /async function enhanceRefinementStep\(\) \{([\s\S]*?)\n  \}/, "enhanceRefinementStep body");
   check(
-    body.includes('label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : isCriterion && z') &&
-      body.includes('help.textContent = (c.physical_process || c.help || "") + (c.unit ? " \u00b7 " + c.unit : "");') &&
+    body.includes('label.textContent = l.id === "sea_ratio" && z ? "海陆分布" : zhName') &&
+      body.includes('help.textContent = ((zhName && zhName[1]) || c.physical_process || c.help || "")') &&
+      body.includes('const CRITERION_ZH = {') &&
       !body.includes("const rows = crits.map") &&
       !body.includes("${c.label}") &&
       !body.includes("${c.physical_process || c.help") &&
@@ -1393,10 +1394,35 @@ check(
     html.includes('const expertRefine = `<div style="border:1px solid var(--border)') &&
     html.includes('+ algorithmOptionsBlock\n        + expertRefine') &&
     !html.includes('id="expertSpringStrategy"') &&
-    !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")'),
-  "spring strategy and iterations must have one visible home for every applicable algorithm",
+    !html.includes('(strategyEnabled ? hfieldBlock + expertRefine : "")') &&
+    html.includes('${expertField(z?"弹性迭代次数"'),
+  "spring strategy must stay visible for every applicable algorithm, with its iteration count an expert field",
 );
-log("common spring controls stay visible for every applicable algorithm");
+log("spring strategy stays visible; its iteration count is an expert field");
+
+check(
+  html.includes("body.normal .expert-field{display:none}") &&
+    html.includes('id="demandRepresentationPanel"') &&
+    !html.includes("专家 — 需求表达") &&
+    !html.includes("专家 — 闭合边界") &&
+    html.includes('${field(z?"边界表示"') &&
+    html.includes('<div id="canonicalMethodCOptions" class="expert"') &&
+    html.includes('<div id="leppDelaunayOptions" class="expert"') &&
+    html.includes('<div id="redGreenOptions" class="expert"') &&
+    html.includes('${expertField(z?"梯度上限 g"') &&
+    html.includes('${expertField(z?"最高母网格级"') &&
+    html.includes('${expertField(lang?"栅格分辨率 (像素/度)"'),
+  "normal mode must show every major choice (algorithm, demand route, boundary mode); expert mode adds only tuning parameters",
+);
+log("expert mode hides tuning parameters only");
+
+check(
+  html.includes('id="methodCAdaptiveRefusal"') &&
+    /thresholdRefine\.enabled = thresholdOn\.checked;[\s\S]{0,500}specifiedRefine\.route = "hfield";/.test(html) &&
+    /next === "method_c" && previousAlgorithm !== "method_c" && thresholdRefine\.enabled/.test(html),
+  "threshold criteria on Canonical nesting must default to the h-field and warn on point + radius",
+);
+log("threshold criteria on Canonical nesting take the h-field");
 
 {
   // These are preserved from an opened project for namelist fidelity, but no
@@ -1498,6 +1524,12 @@ log("discrete mask is existing-project-only");
     render(result, document, () => chinese, open);
     check(card.textContent.includes(chinese ? "模型文件已交付" : "Model files delivered"), "actual delivered renderer");
     check(links.join() === "/run/final.nc4,/run/quality.json,/run/delivery.json,/run/colm.nc", "renderer must bind current record paths");
+    check(card.textContent.includes(chinese ? "CoLM 网格输入" : "CoLM mesh input"), "delivered files carry readable names, not artifact keys");
+    report.model_artifacts = {icon_mesh_input:"/run/DOM01.nc", icon_nest_dom02:"/run/DOM02.nc", icon_nest_dom03:"/run/DOM03.nc"};
+    links.length=0; render(result, document, () => chinese, open);
+    check(card.textContent.includes(chinese ? "2 个嵌套网格（DOM02–DOM03）" : "2 nest grid(s) (DOM02–DOM03)") && card.textContent.includes(chinese ? "ICON 嵌套网格 DOM03" : "ICON nest grid DOM03"),
+      "an ICON nest run says which grids carry the demand and why DOM01 warns");
+    report.model_artifacts = {colm_mesh_input:"/run/colm.nc"};
     report.model_delivery_status="native_only"; report.model_artifacts={}; report.skipped_reason="<img src=x>";
     links.length=0; render(result, document, () => chinese, open);
     check(card.textContent.includes(chinese ? "仅生成通用网格" : "Native mesh only") && card.textContent.includes("<img src=x>"), "native-only reason renders as text");
