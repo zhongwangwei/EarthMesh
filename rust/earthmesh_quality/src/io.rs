@@ -131,7 +131,8 @@ fn hfield_json(h: &HfieldDiagnostics) -> String {
 fn adaptive_json(a: &AdaptiveDiagnostics) -> String {
     format!(
         "{{\"enabled\":{},\"max_level\":{},\"base_m\":{},\"coastline\":{},\
-         \"pass_count\":{},\"circle_count\":{},\"cell_count\":{},\
+         \"pass_count\":{},\"deepest_level\":{},\"stopped_on_empty_demand\":{},\
+         \"circle_count\":{},\"cell_count\":{},\
          \"target_level_distribution\":{},\"actual_refine_level_distribution\":{},\
          \"missing_target_level_count\":{},\"extra_target_level_count\":{},\
          \"missing_actual_refine_level_count\":{},\"target_actual_mismatch_count\":{},\
@@ -144,6 +145,8 @@ fn adaptive_json(a: &AdaptiveDiagnostics) -> String {
         opt_f64_json(a.base_m),
         if a.coastline { "true" } else { "false" },
         a.pass_count,
+        opt_u32_json(a.deepest_level),
+        a.stopped_on_empty_demand,
         a.circle_count,
         a.cell_count,
         level_counts_json(&a.target_level_distribution),

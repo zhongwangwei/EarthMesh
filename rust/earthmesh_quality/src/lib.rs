@@ -312,9 +312,14 @@ pub struct AdaptiveDiagnostics {
     pub max_level: Option<u32>,
     pub base_m: Option<f64>,
     pub coastline: bool,
-    /// Levels actually refined. Fewer than `max_level` means the loop stopped
-    /// because nothing asked for more, which is a normal outcome.
+    /// Levels actually refined.
     pub pass_count: usize,
+    /// The deepest level the run reached. Short of `max_level` is the normal
+    /// outcome when `stopped_on_empty_demand` -- nothing asked for more;
+    /// otherwise the backend stopped at the depth it could build, and the
+    /// `adaptive_requested_level_not_reached` gate says so.
+    pub deepest_level: Option<u32>,
+    pub stopped_on_empty_demand: bool,
     pub circle_count: usize,
     pub cell_count: usize,
     pub target_level_distribution: Vec<LevelCount>,
@@ -345,6 +350,8 @@ pub struct AdaptiveConfigDiagnostics {
     pub base_m: Option<f64>,
     pub coastline: bool,
     pub pass_count: usize,
+    pub deepest_level: Option<u32>,
+    pub stopped_on_empty_demand: bool,
     pub circle_count: usize,
 }
 
@@ -1593,6 +1600,8 @@ pub fn compute_adaptive_diagnostics(
         base_m: config.base_m,
         coastline: config.coastline,
         pass_count: config.pass_count,
+        deepest_level: config.deepest_level,
+        stopped_on_empty_demand: config.stopped_on_empty_demand,
         circle_count: config.circle_count,
         cell_count: shared.cell_count,
         target_level_distribution: shared.target_level_distribution,
@@ -1632,6 +1641,19 @@ pub fn attach_adaptive_diagnostics(
     target_levels: &[u32],
     config: AdaptiveConfigDiagnostics,
 ) {
+    // The per-cell targets come from the passes that ran, so a run that asked
+    // for a deeper level and stopped short of it reconciles clean against
+    // itself: Method-C keeps the levels it could nest and ends at the first it
+    // cannot. A 1000 km circle at two levels on a 200 km global grid stopped at
+    // level 1 and passed every gate. Compare the depth asked with the depth
+    // reached instead; a loop that ended because nothing asked for more is the
+    // normal short run and does not count.
+    let unreached_levels = match (config.max_level, config.deepest_level) {
+        (Some(asked), Some(reached)) if !config.stopped_on_empty_demand => {
+            asked.saturating_sub(reached) as usize
+        }
+        _ => 0,
+    };
     let diagnostics = compute_adaptive_diagnostics(input, target_levels, config);
     let short_by_more_than_one = input
         .cells
@@ -1660,6 +1682,12 @@ pub fn attach_adaptive_diagnostics(
         usize::from(short_by_more_than_one),
         "a circle asked for a level the mesh missed by more than one, which a \
          hard circle edge cannot explain",
+    );
+    add_gate(
+        "adaptive_requested_level_not_reached",
+        unreached_levels,
+        "levels short of the depth the run asked for, while the demand still asked \
+         for more: the backend stopped at the depth it could build",
     );
     // A mesh with no actual level anywhere was not built by a backend that
     // records one, so the reconciliation is unmeasured rather than failed:
@@ -2297,6 +2325,49 @@ mod tests {
         // 3D chord corner angle of a 1°×1° equatorial square is ~90° (not exactly,
         // since the chord vectors live on the sphere) — sane, not a planar artifact.
         assert!((r.geometry.min_angle_deg - 90.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn adaptive_requested_level_gate_compares_depth_asked_with_depth_reached() {
+        let mesh = two_square_mesh();
+        for (max_level, deepest_level, stopped, expected) in [
+            // Stopped at level 1 of 2 with demand left: Method-C could not
+            // nest the second level.
+            (Some(2), Some(1), false, (1.0, QualityLevel::Warn)),
+            // Stopped because nothing asked for more: a normal short run.
+            (Some(2), Some(1), true, (0.0, QualityLevel::Pass)),
+            (Some(2), Some(2), false, (0.0, QualityLevel::Pass)),
+            // A record without either depth cannot be judged, and is not.
+            (Some(2), None, false, (0.0, QualityLevel::Pass)),
+            (None, Some(1), false, (0.0, QualityLevel::Pass)),
+        ] {
+            let mut report = compute(&mesh, &QualityThresholds::default());
+            attach_adaptive_diagnostics(
+                &mut report,
+                &mesh,
+                &[0, 0],
+                AdaptiveConfigDiagnostics {
+                    enabled: true,
+                    max_level,
+                    deepest_level,
+                    stopped_on_empty_demand: stopped,
+                    ..Default::default()
+                },
+            );
+            let gate = report
+                .gates
+                .iter()
+                .find(|gate| gate.metric == "adaptive_requested_level_not_reached")
+                .unwrap();
+            assert_eq!(
+                (gate.value, gate.level),
+                expected,
+                "max={max_level:?} deepest={deepest_level:?} stopped={stopped}"
+            );
+            let adaptive = report.adaptive.unwrap();
+            assert_eq!(adaptive.deepest_level, deepest_level);
+            assert_eq!(adaptive.stopped_on_empty_demand, stopped);
+        }
     }
 
     #[test]

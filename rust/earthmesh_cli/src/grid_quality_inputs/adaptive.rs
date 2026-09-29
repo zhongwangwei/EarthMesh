@@ -27,6 +27,8 @@ struct EmittedRefinement {
     base_m: Option<f64>,
     coastline: bool,
     pass_count: usize,
+    deepest_level: Option<u32>,
+    stopped_on_empty_demand: bool,
     circles: Vec<LeveledCircle>,
 }
 
@@ -71,6 +73,8 @@ fn parse_emitted_refinement(contents: &str) -> io::Result<EmittedRefinement> {
         base_m: json_number(contents, "base_m"),
         coastline: json_bool(contents, "coastline").unwrap_or(false),
         pass_count: 0,
+        deepest_level: json_number(contents, "deepest_level").map(|value| value as u32),
+        stopped_on_empty_demand: json_bool(contents, "stopped_on_empty_demand").unwrap_or(false),
         circles: Vec::new(),
     };
     // Each pass is `{"level":N,...,"circles":[...]}`; walk them in order so a
@@ -172,6 +176,8 @@ pub fn attach_adaptive_diagnostics_from_gridfile_path(
             base_m: emitted.base_m,
             coastline: emitted.coastline,
             pass_count: emitted.pass_count,
+            deepest_level: emitted.deepest_level,
+            stopped_on_empty_demand: emitted.stopped_on_empty_demand,
             circle_count: emitted.circles.len(),
         },
     );
@@ -196,6 +202,8 @@ mod tests {
         assert_eq!(emitted.base_m, Some(381_000.0));
         assert!(emitted.coastline);
         assert_eq!(emitted.pass_count, 2);
+        assert_eq!(emitted.deepest_level, Some(2));
+        assert!(!emitted.stopped_on_empty_demand);
         assert_eq!(emitted.circles.len(), 3);
         assert_eq!(
             emitted.circles.iter().filter(|c| c.level == 1).count(),
@@ -224,6 +232,23 @@ mod tests {
         assert_eq!(target_level_at(116.0, 22.0), 1);
         // Outside everything.
         assert_eq!(target_level_at(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_run_that_stopped_short_reads_back_the_depth_it_reached() {
+        // The shape Method-C leaves when it cannot nest the second level: the
+        // record asks for two, carries one pass, and the demand had not run out.
+        let emitted = parse_emitted_refinement(
+            r#"{"enabled":true,"max_level":2,"base_m":190626,"coastline":true,
+            "deepest_level":1,"stopped_on_empty_demand":false,"passes":[
+            {"level":1,"cell_meters":190626,"demanded_cells":0,"circles":[
+                {"lon":110,"lat":30,"radius_m":1000000}]}]}"#,
+        )
+        .expect("parse");
+        assert_eq!(emitted.max_level, Some(2));
+        assert_eq!(emitted.deepest_level, Some(1));
+        assert!(!emitted.stopped_on_empty_demand);
+        assert_eq!(emitted.pass_count, 1);
     }
 
     #[test]
