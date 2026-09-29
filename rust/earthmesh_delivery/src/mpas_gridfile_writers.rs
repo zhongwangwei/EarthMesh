@@ -115,6 +115,7 @@ pub fn write_regional_mpas_from_gridfile(
     let n_cells = global.lat_cell.len();
     let mut keep_cell = vec![false; n_cells];
     let mut kept = 0usize;
+    let region = region.prepared();
     for c in 1..n_cells {
         let lon_deg = global.lon_cell[c].to_degrees();
         let lat_deg = global.lat_cell[c].to_degrees();

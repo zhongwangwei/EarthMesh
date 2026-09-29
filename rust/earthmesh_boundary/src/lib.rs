@@ -299,6 +299,187 @@ pub fn spherical_ring_contains_minor<T>(
     }
 }
 
+/// A ring prepared for many [`spherical_ring_contains_minor`] queries, with
+/// the same answers.
+///
+/// That function reads the whole ring per query -- its area, then a winding
+/// sum with trigonometry at every vertex -- and a refinement index asked it
+/// for every cell of a mesh: a 130,000-vertex basin outline against 36,000
+/// cells. Prepared, a cap under 90 degrees holding every vertex turns away
+/// points outside it with one dot product; inside it, the ring projected
+/// gnomonically about the cap's centre (where great circles are straight
+/// lines) gives the winding number by counting crossings in one band of
+/// edges. Next to an edge, where the two could round apart, the query goes to
+/// the original function.
+#[derive(Clone, Debug)]
+pub struct PreparedMinorRing {
+    ring: Vec<(f64, f64)>,
+    side: Option<f64>,
+    cap: Option<([f64; 3], f64)>,
+    plane: Option<GnomonicRing>,
+}
+
+impl PreparedMinorRing {
+    pub fn new<T>(ring: &[T], coordinates: impl Copy + Fn(&T) -> (f64, f64)) -> Self {
+        let ring: Vec<(f64, f64)> = ring.iter().map(coordinates).collect();
+        let side = signed_minor_area_for_coordinates(&ring, |&p| p).map(f64::signum);
+        let units: Vec<[f64; 3]> = ring
+            .iter()
+            .map(|&(lon, lat)| unit_from_lonlat(lon, lat))
+            .collect();
+        let cap = side.and_then(|_| minor_ring_cap(&units));
+        let plane = cap.map(|(centre, _)| GnomonicRing::new(&units, centre));
+        Self {
+            ring,
+            side,
+            cap,
+            plane,
+        }
+    }
+
+    pub fn contains(&self, lon_degrees: f64, lat_degrees: f64) -> bool {
+        if !valid_lon_lat(lon_degrees, lat_degrees) {
+            return false;
+        }
+        let Some(side) = self.side else {
+            return false;
+        };
+        let here = unit_from_lonlat(lon_degrees, lat_degrees);
+        if self
+            .cap
+            .is_some_and(|(centre, cos_radius)| dot(here, centre) < cos_radius)
+        {
+            return false;
+        }
+        match self.plane.as_ref().and_then(|plane| plane.winding(here)) {
+            Some(winding) if side > 0.0 => winding >= 1,
+            Some(winding) => winding <= -1,
+            None => spherical_ring_contains_minor(&self.ring, lon_degrees, lat_degrees, |&p| p),
+        }
+    }
+}
+
+fn unit_from_lonlat(lon: f64, lat: f64) -> [f64; 3] {
+    let (lon, lat) = (lon.to_radians(), lat.to_radians());
+    [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+}
+
+/// A cap under 90 degrees about the vertices' mean direction holding them
+/// all -- convex, so it holds the edges and the smaller side of the ring --
+/// grown by 1e-5 radians, well past the 1.4e-6 within which a vertex counts
+/// its neighbourhood as inside.
+fn minor_ring_cap(units: &[[f64; 3]]) -> Option<([f64; 3], f64)> {
+    let sum = units.iter().fold([0.0; 3], |acc, u| {
+        [acc[0] + u[0], acc[1] + u[1], acc[2] + u[2]]
+    });
+    let length = norm(sum);
+    if length <= 1.0e-12 {
+        return None;
+    }
+    let centre = [sum[0] / length, sum[1] / length, sum[2] / length];
+    let radius = units
+        .iter()
+        .map(|&u| angle(centre, u))
+        .fold(0.0_f64, f64::max)
+        + 1.0e-5;
+    (radius < 89.0_f64.to_radians()).then(|| (centre, radius.cos()))
+}
+
+/// A ring in the gnomonic projection about `centre`, its edges bucketed into
+/// bands of `y`.
+#[derive(Clone, Debug)]
+struct GnomonicRing {
+    centre: [f64; 3],
+    east: [f64; 3],
+    north: [f64; 3],
+    xy: Vec<(f64, f64)>,
+    y_min: f64,
+    band_height: f64,
+    edges_in: Vec<Vec<u32>>,
+}
+
+impl GnomonicRing {
+    fn new(units: &[[f64; 3]], centre: [f64; 3]) -> Self {
+        let axis = if centre[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let east = cross(centre, axis);
+        let length = norm(east);
+        let east = [east[0] / length, east[1] / length, east[2] / length];
+        let north = cross(centre, east);
+        let mut ring = Self {
+            centre,
+            east,
+            north,
+            xy: Vec::new(),
+            y_min: 0.0,
+            band_height: 1.0,
+            edges_in: Vec::new(),
+        };
+        ring.xy = units.iter().map(|&u| ring.project(u)).collect();
+        let (y_min, y_max) = ring
+            .xy
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, y)| {
+                (lo.min(y), hi.max(y))
+            });
+        let bands = ((units.len() as f64).sqrt().ceil() as usize).max(1);
+        ring.y_min = y_min;
+        ring.band_height = ((y_max - y_min) / bands as f64).max(f64::MIN_POSITIVE);
+        ring.edges_in = vec![Vec::new(); bands];
+        for k in 0..ring.xy.len() {
+            let (a, b) = (ring.xy[k], ring.xy[(k + 1) % ring.xy.len()]);
+            for band in ring.band_of(a.1.min(b.1))..=ring.band_of(a.1.max(b.1)) {
+                ring.edges_in[band].push(k as u32);
+            }
+        }
+        ring
+    }
+
+    fn project(&self, u: [f64; 3]) -> (f64, f64) {
+        let z = dot(u, self.centre);
+        (dot(u, self.east) / z, dot(u, self.north) / z)
+    }
+
+    fn band_of(&self, y: f64) -> usize {
+        (((y - self.y_min) / self.band_height).floor().max(0.0) as usize)
+            .min(self.edges_in.len() - 1)
+    }
+
+    /// The winding number about `here`, or `None` next to an edge.
+    fn winding(&self, here: [f64; 3]) -> Option<i64> {
+        let (x, y) = self.project(here);
+        let near = 1.0e-5 * (1.0 + x * x + y * y);
+        let band = self.band_of(y);
+        let mut winding = 0i64;
+        for b in band.saturating_sub(1)..=(band + 1).min(self.edges_in.len() - 1) {
+            for &k in &self.edges_in[b] {
+                let k = k as usize;
+                let (p, q) = (self.xy[k], self.xy[(k + 1) % self.xy.len()]);
+                let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+                let length = dx * dx + dy * dy;
+                let t = if length > 0.0 {
+                    (((x - p.0) * dx + (y - p.1) * dy) / length).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if (x - p.0 - t * dx).hypot(y - p.1 - t * dy) <= near {
+                    return None;
+                }
+                if b == band && (p.1 > y) != (q.1 > y) {
+                    let s = (y - p.1) / (q.1 - p.1);
+                    if p.0 + s * (q.0 - p.0) > x {
+                        winding += if q.1 > p.1 { 1 } else { -1 };
+                    }
+                }
+            }
+        }
+        Some(winding)
+    }
+}
+
 fn signed_minor_area_for_coordinates<T>(
     ring: &[T],
     coordinates: impl Copy + Fn(&T) -> (f64, f64),
@@ -648,6 +829,54 @@ fn spherical_segments_intersect(a0: [f64; 3], a1: [f64; 3], b0: [f64; 3], b1: [f
             && point_on_minor_arc(b0, b1, scale(p, -1.0)))
 }
 
+/// Visit every pair of arcs whose boxes overlap -- the only pairs any arc
+/// test here can report touching -- until `visit` returns true.
+///
+/// Rings and pairs of rings were compared edge against every edge, which a
+/// 130,000-vertex basin outline made hours of trigonometry. A box is the
+/// chord's, grown by the arc's sagitta (how far a minor arc leaves its
+/// chord) and by 1e-4, far above the 1e-10 tolerances of the arc tests; the
+/// boxes are swept along x.
+fn sweep_overlapping_arcs(
+    arcs: &[([f64; 3], [f64; 3])],
+    mut visit: impl FnMut(usize, usize) -> bool,
+) {
+    let boxes: Vec<([f64; 3], [f64; 3])> = arcs
+        .iter()
+        .map(|&(a, b)| {
+            let pad = (1.0 - (0.5 * angle(a, b)).cos()) + 1.0e-4;
+            let mut low = [0.0; 3];
+            let mut high = [0.0; 3];
+            for k in 0..3 {
+                low[k] = a[k].min(b[k]) - pad;
+                high[k] = a[k].max(b[k]) + pad;
+            }
+            (low, high)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..arcs.len()).collect();
+    order.sort_by(|&i, &j| boxes[i].0[0].total_cmp(&boxes[j].0[0]).then(i.cmp(&j)));
+    let mut active: Vec<usize> = Vec::new();
+    for &arc in &order {
+        let (low, high) = boxes[arc];
+        active.retain(|&other| boxes[other].1[0] >= low[0]);
+        for &other in &active {
+            let (other_low, other_high) = boxes[other];
+            if other_low[1] > high[1]
+                || other_high[1] < low[1]
+                || other_low[2] > high[2]
+                || other_high[2] < low[2]
+            {
+                continue;
+            }
+            if visit(other, arc) {
+                return;
+            }
+        }
+        active.push(arc);
+    }
+}
+
 fn spherical_segments_cross_strictly(
     a0: [f64; 3],
     a1: [f64; 3],
@@ -868,41 +1097,59 @@ impl SphericalBoundaryModel {
         false
     }
 
+    fn ring_units(&self, ring: &BoundaryLoop) -> Vec<[f64; 3]> {
+        ring.vertices()
+            .iter()
+            .map(|&vertex| unit_from_vertex(&self.vertices[vertex]))
+            .collect()
+    }
+
+    /// The first pair of non-adjacent edges of `ring` that touch, as the full
+    /// scan over every pair would find it (lowest first edge, then second).
     fn ring_self_intersection(&self, ring: &BoundaryLoop) -> Option<(usize, usize)> {
-        let count = ring.vertices().len();
-        for first_edge in 0..count {
-            let a0 = unit_from_vertex(&self.vertices[ring.vertices()[first_edge]]);
-            let a1 = unit_from_vertex(&self.vertices[ring.vertices()[(first_edge + 1) % count]]);
-            for second_edge in first_edge + 1..count {
-                if first_edge + 1 == second_edge || (first_edge == 0 && second_edge + 1 == count) {
-                    continue;
-                }
-                let b0 = unit_from_vertex(&self.vertices[ring.vertices()[second_edge]]);
-                let b1 =
-                    unit_from_vertex(&self.vertices[ring.vertices()[(second_edge + 1) % count]]);
-                if spherical_segments_intersect(a0, a1, b0, b1) {
-                    return Some((first_edge, second_edge));
-                }
+        let units = self.ring_units(ring);
+        let count = units.len();
+        let arcs: Vec<_> = (0..count)
+            .map(|edge| (units[edge], units[(edge + 1) % count]))
+            .collect();
+        let mut first: Option<(usize, usize)> = None;
+        sweep_overlapping_arcs(&arcs, |i, j| {
+            let (first_edge, second_edge) = (i.min(j), i.max(j));
+            if first_edge + 1 == second_edge || (first_edge == 0 && second_edge + 1 == count) {
+                return false;
             }
-        }
-        None
+            if first.is_some_and(|pair| pair <= (first_edge, second_edge)) {
+                return false;
+            }
+            let (a0, a1) = arcs[first_edge];
+            let (b0, b1) = arcs[second_edge];
+            if spherical_segments_intersect(a0, a1, b0, b1) {
+                first = Some((first_edge, second_edge));
+            }
+            false
+        });
+        first
     }
 
     fn rings_intersect(&self, a: &BoundaryLoop, b: &BoundaryLoop) -> bool {
-        let a_count = a.vertices().len();
-        let b_count = b.vertices().len();
-        for a_step in 0..a_count {
-            let a0 = unit_from_vertex(&self.vertices[a.vertices()[a_step]]);
-            let a1 = unit_from_vertex(&self.vertices[a.vertices()[(a_step + 1) % a_count]]);
-            for b_step in 0..b_count {
-                let b0 = unit_from_vertex(&self.vertices[b.vertices()[b_step]]);
-                let b1 = unit_from_vertex(&self.vertices[b.vertices()[(b_step + 1) % b_count]]);
-                if spherical_segments_intersect(a0, a1, b0, b1) {
-                    return true;
-                }
+        let (a_units, b_units) = (self.ring_units(a), self.ring_units(b));
+        let a_count = a_units.len();
+        let mut arcs: Vec<_> = (0..a_count)
+            .map(|step| (a_units[step], a_units[(step + 1) % a_count]))
+            .collect();
+        arcs.extend(
+            (0..b_units.len()).map(|step| (b_units[step], b_units[(step + 1) % b_units.len()])),
+        );
+        let mut found = false;
+        sweep_overlapping_arcs(&arcs, |i, j| {
+            let (i, j) = (i.min(j), i.max(j));
+            if i < a_count && j >= a_count {
+                let ((a0, a1), (b0, b1)) = (arcs[i], arcs[j]);
+                found = spherical_segments_intersect(a0, a1, b0, b1);
             }
-        }
-        false
+            found
+        });
+        found
     }
 
     fn ring_contains_ring(&self, outer: &BoundaryLoop, inner: &BoundaryLoop) -> bool {

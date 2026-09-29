@@ -457,9 +457,33 @@ pub(crate) fn insert_lepp_terminal_midpoint_constrained_with_postcondition(
         config,
         gates,
         false,
+        SegmentCheck::Every,
         postcondition,
     )
     .map(|(report, _)| report)
+}
+
+/// Whether an insertion first checks that every protected segment is still a
+/// mesh edge.
+///
+/// The check collects every edge of the mesh, and a batch ran it before each
+/// insertion: a regional LEPP run refines inside a global mesh of three
+/// million triangles, and spent nearly all its time here. A batch's caller
+/// checks once per cycle instead; between checks the invariant holds by
+/// construction, since each insertion's postcondition checks the segments its
+/// cavity touched, and no other segment can change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SegmentCheck {
+    Every,
+    CheckedByCaller,
+}
+
+/// The whole-mesh check, for a caller that took it over (`CheckedByCaller`).
+pub(crate) fn check_protected_segments(
+    mesh: &MeshState,
+    segments: &SegmentList,
+) -> Result<(), LeppInsertionError> {
+    validate_segments_are_mesh_edges(mesh, segments)
 }
 
 fn insert_terminal_midpoint_constrained_staged(
@@ -469,6 +493,7 @@ fn insert_terminal_midpoint_constrained_staged(
     config: &LeppSearchConfig,
     gates: &LeppInsertionGates,
     retain_undo: bool,
+    segment_check: SegmentCheck,
     postcondition: impl FnOnce(&MeshState, &InsertionReport) -> bool,
 ) -> Result<(LeppInsertionReport, Option<MeshPatch>), LeppInsertionError> {
     if gates.maximum_vertex_degree < 3 || gates.minimum_vertex_degree > gates.maximum_vertex_degree
@@ -487,7 +512,9 @@ fn insert_terminal_midpoint_constrained_staged(
         });
     }
 
-    validate_segments_are_mesh_edges(mesh, segments)?;
+    if segment_check == SegmentCheck::Every {
+        validate_segments_are_mesh_edges(mesh, segments)?;
+    }
 
     let path = find_lepp(mesh, start, config)?;
     let (terminal_edge, boundary_face) = match path.terminal {

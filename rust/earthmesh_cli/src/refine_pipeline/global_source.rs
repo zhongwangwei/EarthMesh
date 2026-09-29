@@ -956,7 +956,12 @@ fn finish_refined(
     // covers its geometry, so the repair must not touch it.
     let enforce_angles =
         certified.is_none() && config.mode_grid.trim() == "tri" && !native_cartesian_xy;
-    let output_mesh = if enforce_angles {
+    // A hex grid's triangles are held to the window too, but only by moving
+    // vertices: Method-C's hex output carried no repair, and a global DEM run
+    // came out with four triangles at 85-86 degrees in its transition rows.
+    let enforce_hex_window =
+        certified.is_none() && config.mode_grid.trim() == "hex" && !native_cartesian_xy;
+    let output_mesh = if enforce_angles || enforce_hex_window {
         let (mesh, report) = super::angle_contract::enforce_triangle_angles(
             output_mesh,
             super::angle_contract::PublishedRows {
@@ -964,6 +969,7 @@ fn finish_refined(
                 metadata: &mut method_c_metadata,
                 pentagons: &mut pentagon_indices,
             },
+            enforce_hex_window,
         )?;
         if let Some(report) = report {
             log_angle_contract("", &report);
@@ -986,6 +992,7 @@ fn finish_refined(
                     metadata: &mut None,
                     pentagons: &mut pentagon_indices.clone(),
                 },
+                false,
             )?;
             if let Some(report) = report {
                 log_angle_contract(" (_lepp)", &report);
@@ -3248,17 +3255,20 @@ fn refine_with_method_c_lepp(
         boundary_segments.len(),
         adaptive_config.max_cycles
     );
-    let mut report = if boundary_segments.is_empty() {
-        refine_adaptive_hybrid(&mut state, &demands, &adaptive_config)
-    } else {
-        refine_adaptive_hybrid_constrained(
-            &mut state,
-            &mut boundary_segments,
-            &demands,
-            &adaptive_config,
-        )
-    }
-    .map_err(|error| io::Error::other(error.to_string()))?;
+    // Kept for a second pass under the strict gates, should the relaxed one
+    // leave a degree the repair cannot take back.
+    let unrefined = (state.clone(), boundary_segments.clone());
+    let refine = |state: &mut MeshState,
+                  segments: &mut earthmesh_boundary::SegmentList,
+                  config: &AdaptiveHybridConfig| {
+        if segments.is_empty() {
+            refine_adaptive_hybrid(state, &demands, config)
+        } else {
+            refine_adaptive_hybrid_constrained(state, segments, &demands, config)
+        }
+        .map_err(|error| io::Error::other(error.to_string()))
+    };
+    let mut report = refine(&mut state, &mut boundary_segments, &adaptive_config)?;
     eprintln!(
         "earthmesh_cli: LEPP AdaptiveHybrid mesh refinement complete: {} cycles, {} committed insertions, {} -> {} faces, stop={:?}, {:.1}s",
         report.cycles,
@@ -3290,7 +3300,39 @@ fn refine_with_method_c_lepp(
         ));
     }
     let hex = config.mode_grid.trim() == "hex";
-    let (state, window, dual) = repair_lepp_state(&state, report.initial_vertices, pentagons, hex)?;
+    let (state, window, dual) = match repair_lepp_state(
+        &state,
+        report.initial_vertices,
+        pentagons,
+        hex,
+    ) {
+        Err(error) if error.to_string().contains(LEPP_OVER_DEGREE) => {
+            // A base vertex boxed in by neighbours at the limit (a regional
+            // basin run left one at degree 8 among five at 7): no flip lowers
+            // it. Refine again under Method-C's own gates, which never let a
+            // degree past 7 -- a little less refinement where that binds.
+            eprintln!(
+                "earthmesh_cli: warning: {error}; refining again under the strict 5..=7 gates"
+            );
+            let (mut strict_state, mut strict_segments) = unrefined;
+            let strict_config = AdaptiveHybridConfig {
+                gates: method_c_lepp_insertion_gates(pentagons, config.mode_grid.trim()),
+                ..adaptive_config.clone()
+            };
+            let strict_report = refine(&mut strict_state, &mut strict_segments, &strict_config)?;
+            eprintln!(
+                "earthmesh_cli: LEPP AdaptiveHybrid strict refinement complete: {} cycles, {} committed insertions, {} -> {} faces, stop={:?}",
+                strict_report.cycles,
+                strict_report.path_stats.committed,
+                strict_report.initial_faces,
+                strict_report.final_faces,
+                strict_report.stop_reason,
+            );
+            report = strict_report;
+            repair_lepp_state(&strict_state, report.initial_vertices, pentagons, hex)?
+        }
+        other => other?,
+    };
     eprintln!(
         "earthmesh_cli: LEPP angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
          {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed)",
@@ -3348,6 +3390,9 @@ fn refine_with_method_c_lepp(
         },
     })
 }
+
+/// What `repair_lepp_state` says when a degree above 7 is left.
+const LEPP_OVER_DEGREE: &str = "vertices above degree 7 that the window repair could not flip back";
 
 /// Take the degrees LEPP was allowed to overshoot back into 5..=7 and the
 /// angles into the window. Base vertices may move but stay; only LEPP's own
@@ -3408,13 +3453,39 @@ fn repair_lepp_state(
             degree[vertex] += 1;
         }
     }
-    let over = degree.iter().filter(|&&count| count > 7).count();
-    if over > 0 {
+    let over: Vec<usize> = (0..degree.len()).filter(|&v| degree[v] > 7).collect();
+    if !over.is_empty() {
+        // Where, and what surrounds them: a flip needs a neighbour below 7.
+        let detail = over
+            .iter()
+            .take(3)
+            .map(|&v| {
+                let p = earthmesh_mesh::xyz_to_lonlat_degrees(earthmesh_mesh::CartesianPoint::new(
+                    points[v][0],
+                    points[v][1],
+                    points[v][2],
+                ));
+                let mut ring: Vec<usize> = faces[first..]
+                    .iter()
+                    .filter(|face| face.contains(&v))
+                    .flat_map(|face| face.iter().copied().filter(|&u| u != v))
+                    .collect();
+                ring.sort_unstable();
+                ring.dedup();
+                let ring_degrees: Vec<usize> = ring.iter().map(|&u| degree[u]).collect();
+                format!(
+                    "vertex {v} at ({:.3}, {:.3}) degree {}, neighbours {ring_degrees:?}",
+                    p.lon_degrees, p.lat_degrees, degree[v]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "LEPP left {over} vertices above degree 7 that the window repair could not flip \
-                 back; Method-C tables address at most 7"
+                "LEPP left {} vertices above degree 7 that the window repair could not flip \
+                 back; Method-C tables address at most 7 ({detail})",
+                over.len()
             ),
         ));
     }
@@ -3482,7 +3553,7 @@ fn lepp_region_boundary_segments(
             .iter(),
         );
     }
-    if let Some(domain) = domain_region {
+    if let Some(domain) = domain_region.map(GridRegion::prepared) {
         protected.extend(
             earthmesh_boundary::SegmentList::from_straddling_edges(
                 edges.iter().copied(),

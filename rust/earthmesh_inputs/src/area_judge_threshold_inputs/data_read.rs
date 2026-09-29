@@ -378,11 +378,11 @@ fn numeric_attribute_values(variable: &netcdf::Variable<'_>, name: &str) -> io::
 }
 
 fn is_lon_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lon", "longitude"], "x")
+    is_axis_dim(name, &["lon", "longitude", "nlon"], "x")
 }
 
 fn is_lat_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lat", "latitude"], "y")
+    is_axis_dim(name, &["lat", "latitude", "nlat"], "y")
 }
 
 fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
@@ -409,6 +409,10 @@ mod tests {
         assert!(is_lat_dim("latitude"));
         assert!(is_lat_dim("nav_lat"));
         assert!(is_lat_dim("y"));
+        // The shipped 30-arcsecond rasters (dem.nc, slope_avg.nc) name their
+        // axes by count and carry no coordinate variables.
+        assert!(is_lon_dim("nlon"));
+        assert!(is_lat_dim("nlat"));
 
         assert!(!is_lon_dim("pixel"));
         assert!(!is_lon_dim("x_index"));

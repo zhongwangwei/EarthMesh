@@ -158,6 +158,18 @@ struct Work<'a> {
     mode: Mode,
 }
 
+/// When a flip is taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlipRule {
+    /// The four valences move toward six.
+    Valence,
+    /// The pair's worst margin to the window improves.
+    Margin,
+    /// Any flip that keeps the four valences in 4..=max_valence: a step that
+    /// unblocks a later valence-lowering flip, taken only for that.
+    Unblock,
+}
+
 /// What a move is scored against. Larger scores are better in every mode.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mode {
@@ -345,6 +357,19 @@ impl Work<'_> {
     /// worst margin to the window improves -- the endgame, where single-vertex
     /// moves have stalled a fraction of a degree outside.
     fn flip_edge(&mut self, a: usize, b: usize, by_margin: bool) -> bool {
+        self.flip_edge_by(
+            a,
+            b,
+            if by_margin {
+                FlipRule::Margin
+            } else {
+                FlipRule::Valence
+            },
+        )
+    }
+
+    fn flip_edge_by(&mut self, a: usize, b: usize, rule: FlipRule) -> bool {
+        let by_margin = rule == FlipRule::Margin;
         if self.fixed[a] && self.fixed[b] {
             return false;
         }
@@ -386,7 +411,7 @@ impl Work<'_> {
         let lowers_valence = after < before
             || (after == before
                 && spread([va - 1, vb - 1, vc + 1, vd + 1]) < spread([va, vb, vc, vd]));
-        if (!by_margin && !lowers_valence)
+        if (rule == FlipRule::Valence && !lowers_valence)
             || self.valence(a) <= 4
             || self.valence(b) <= 4
             || self.valence(c) + 1 > self.options.max_valence
@@ -853,7 +878,16 @@ fn repair_with_locked_valence(
     // inserted (LEPP-Delaunay) leaves octagons the dual cannot address, with
     // every angle near 45 degrees and nothing for the window phase to see.
     // The same valence-lowering flips as below, offered on its own edges.
+    //
+    // Two things blocked it on a regional LEPP run (three vertices left at
+    // degree 8): a flip may not leave an angle under the flip floor, and one
+    // needs both vertices across the edge below the limit. The window phase
+    // after this takes angles back, so here the floor is 5 degrees; and a
+    // vertex whose every edge is blocked first has a neighbour at the limit
+    // lowered by a flip away from it, then tries again.
     if topology {
+        let floor = work.options.flip_floor_deg;
+        work.options.flip_floor_deg = floor.min(5.0);
         for _ in 0..options.max_rounds {
             let over: Vec<usize> = (options.first_vertex..work.points.len())
                 .filter(|&v| !work.removed[v] && work.valence(v) > options.max_valence)
@@ -872,11 +906,43 @@ fn repair_with_locked_valence(
                         changed += 1;
                     }
                 }
+                if work.valence(v) <= options.max_valence {
+                    continue;
+                }
+                for w in work.neighbours(v) {
+                    if work.valence(w) < options.max_valence {
+                        continue;
+                    }
+                    for x in work.neighbours(w) {
+                        if x == v || work.valence(w) < options.max_valence {
+                            continue;
+                        }
+                        // Only an edge of w's with v on neither side.
+                        let opposite_v = work
+                            .edge_faces(w, x)
+                            .iter()
+                            .any(|&f| work.faces[f].contains(&v));
+                        if !opposite_v && work.flip_edge_by(w.min(x), w.max(x), FlipRule::Unblock) {
+                            report.flips += 1;
+                            changed += 1;
+                        }
+                    }
+                }
+                for w in work.neighbours(v) {
+                    if work.valence(v) <= options.max_valence {
+                        break;
+                    }
+                    if work.flip_edge(v.min(w), v.max(w), false) {
+                        report.flips += 1;
+                        changed += 1;
+                    }
+                }
             }
             if changed == 0 {
                 break;
             }
         }
+        work.options.flip_floor_deg = floor;
     }
 
     let mut bad: Vec<usize> = work.live_faces().filter(|&f| work.outside(f)).collect();
@@ -1264,6 +1330,23 @@ mod tests {
         let report =
             repair_triangle_angle_window(&mut points, &mut faces, &mut Vec::new(), options);
         assert_eq!(report.moves, 0, "{report:?}");
+    }
+
+    #[test]
+    fn a_window_only_pass_leaves_a_mesh_inside_the_window_untouched() {
+        // The hex grids' pass: no flips, no toward-60 phase. The lopsided fan
+        // is inside 35..85, so not one coordinate may change.
+        let (mut points, mut faces) = lopsided_fan();
+        let (before_points, before_faces) = (points.clone(), faces.clone());
+        let mut options = AngleWindowOptions::new((35.25, 84.75));
+        options.allow_topology_changes = false;
+        options.equilateral_rounds = 0;
+        let report =
+            repair_triangle_angle_window(&mut points, &mut faces, &mut Vec::new(), options);
+        assert_eq!(report.outside_before, 0);
+        assert_eq!(report.moves + report.flips + report.removed_vertices, 0);
+        assert_eq!(points, before_points);
+        assert_eq!(faces, before_faces);
     }
 
     #[test]

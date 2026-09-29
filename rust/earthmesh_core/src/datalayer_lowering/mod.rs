@@ -93,7 +93,7 @@ impl DataLayersNamelist {
                     if let Some(found) = path_stem {
                         if found != stem {
                             report.warnings.push(format!(
-                                "layer '{}': path stem '{found}' != engine stem '{stem}' (reads threshold_dir/{stem}.nc)",
+                                "layer '{}': '{found}' is staged as threshold_dir/{stem}.nc, the name the engine reads",
                                 l.id
                             ));
                         }

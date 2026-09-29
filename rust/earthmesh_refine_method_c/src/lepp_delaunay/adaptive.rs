@@ -666,6 +666,17 @@ fn refine_adaptive_hybrid_impl(
         }
 
         report.cycles += 1;
+        // Once per cycle, the whole-mesh segment check the batches skip.
+        if let Some(segments) = segments.as_deref() {
+            super::insertion::check_protected_segments(mesh, segments).map_err(|error| {
+                AdaptiveHybridError::InvalidMesh {
+                    message: format!(
+                        "protected segment check before cycle {}: {error:?}",
+                        report.cycles
+                    ),
+                }
+            })?;
+        }
         let mut committed_this_cycle = 0usize;
         let lookup = evaluation.lookup;
         for candidate in evaluation.candidates {

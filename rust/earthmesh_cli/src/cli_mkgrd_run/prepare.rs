@@ -135,6 +135,27 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
             lowered.mkgrd.nxp
         );
     }
+    // CMRC builds only on certified mothers. An approximate resolution names
+    // no exact NXP, so take the nearest one that has a certified family rather
+    // than refusing the run over a rounding of km to NXP.
+    let approximate =
+        config.expert.nxp.is_none() && !matches!(config.target.resolution, ResolutionSpec::Nxp(_));
+    if approximate
+        && config.refinement.enabled
+        && config.refinement.backend == earthmesh_project::RefinementBackend::Certified
+    {
+        let maximum_level = usize::from(config.refinement.certified.maximum_level);
+        let nxp = usize::try_from(lowered.mkgrd.nxp).unwrap_or(0);
+        if let Some(certified) = earthmesh_cli::nearest_certified_base_nxp(nxp, maximum_level)
+            .filter(|&certified| certified != nxp)
+            .and_then(|certified| i32::try_from(certified).ok())
+        {
+            eprintln!(
+                "earthmesh_cli: CMRC adjusted NXP {nxp} -> {certified}: the nearest with a certified mother family"
+            );
+            lowered.mkgrd.nxp = certified;
+        }
+    }
     let run_dir = create_project_run_dir(&spec.path)?;
     let result = (|| {
         lowered.mkgrd.base_dir = format!("{}{}", run_dir.display(), std::path::MAIN_SEPARATOR);
@@ -438,6 +459,24 @@ fn prepare_project_threshold_region(
     Ok(())
 }
 
+/// Put a read-only input where the engine looks for it, under the name it
+/// expects. A link, not a copy: the 30-arcsecond global rasters are 1.5 to
+/// 3.7 GB each, and every run copied each one into its own directory (two runs
+/// on one DEM left 7.5 GB behind). A copy only where no link can be made.
+fn stage_read_only_input(source: &Path, staged: &Path) -> std::io::Result<()> {
+    if staged.symlink_metadata().is_ok() {
+        fs::remove_file(staged)?;
+    }
+    #[cfg(unix)]
+    {
+        let absolute = fs::canonicalize(source)?;
+        if std::os::unix::fs::symlink(&absolute, staged).is_ok() {
+            return Ok(());
+        }
+    }
+    fs::copy(source, staged).map(|_| ())
+}
+
 fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<LoweredNamelist>, String> {
     let Ok(text) = fs::read_to_string(namelist) else {
         return Ok(None);
@@ -457,7 +496,7 @@ fn lower_datalayers_namelist_if_present(namelist: &str) -> Result<Option<Lowered
                 .map_err(|e| format!("create threshold dir {}: {e}", th_dir.display()))?;
             for (stem, src) in &lowered.threshold_files {
                 let dst = th_dir.join(format!("{stem}.nc"));
-                fs::copy(src, &dst)
+                stage_read_only_input(Path::new(src), &dst)
                     .map_err(|e| format!("stage threshold {src} -> {}: {e}", dst.display()))?;
             }
         }

@@ -14,12 +14,12 @@ fn transpose<T: Copy + Default>(values: &[T], outer_len: usize, inner_len: usize
 
 #[cfg(test)]
 fn is_lon_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lon", "longitude"], "x")
+    is_axis_dim(name, &["lon", "longitude", "nlon"], "x")
 }
 
 #[cfg(test)]
 fn is_lat_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lat", "latitude"], "y")
+    is_axis_dim(name, &["lat", "latitude", "nlat"], "y")
 }
 
 #[cfg(test)]

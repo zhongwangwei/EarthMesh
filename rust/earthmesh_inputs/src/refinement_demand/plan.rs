@@ -230,7 +230,7 @@ fn plan_demand_with_support(
 }
 
 fn filter_to_domain(demand: &mut RefinementDemand, domain: Option<&GridRegion>) {
-    let Some(domain) = domain else {
+    let Some(domain) = domain.map(GridRegion::prepared) else {
         return;
     };
     let per_degree = demand.gridnum_perdegree() as f64;

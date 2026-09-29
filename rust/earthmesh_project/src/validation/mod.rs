@@ -282,7 +282,7 @@ impl ProjectConfig {
                 continue;
             }
             let spec = threshold_criterion_by_id(&criterion.id)
-                .ok_or_else(|| format!("unknown threshold criterion '{}'", criterion.id))?;
+                .ok_or_else(|| unknown_threshold_criterion(&criterion.id))?;
             if !self
                 .data_layers
                 .iter()
@@ -1161,5 +1161,34 @@ impl CoupledMeshConfig {
             );
         }
         Ok(())
+    }
+}
+
+/// The ids are the source file's stem plus `_mean` or `_std`, and the stem is
+/// not always the catalog name: slope's file is `slope_avg.nc`, so `slope_mean`
+/// is refused. Name the id that was meant, and every id there is.
+fn unknown_threshold_criterion(id: &str) -> String {
+    let catalog = crate::threshold_criterion_catalog();
+    let meant = catalog.iter().find(|spec| {
+        crate::criterion_by_id(id.rsplit_once('_').map_or(id, |(stem, _)| stem))
+            .is_some_and(|named| named.field == spec.source_field)
+            && id.ends_with(spec.statistic.suffix())
+    });
+    let ids = catalog
+        .iter()
+        .map(|spec| spec.id.as_str())
+        .chain([LANDCOVER_CRITERION_ID, SEA_RATIO_CRITERION_ID])
+        .collect::<Vec<_>>()
+        .join(", ");
+    match meant {
+        Some(spec) => format!(
+            "unknown threshold criterion '{id}'; did you mean '{}'? Criterion ids are the source \
+             file stem plus _mean or _std: {ids}",
+            spec.id
+        ),
+        None => format!(
+            "unknown threshold criterion '{id}'; criterion ids are the source file stem plus \
+             _mean or _std: {ids}"
+        ),
     }
 }

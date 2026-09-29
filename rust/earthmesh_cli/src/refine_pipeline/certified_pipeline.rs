@@ -176,6 +176,22 @@ pub(super) fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result
     })
 }
 
+/// The base NXP nearest `requested` (by ratio) with a certified mother at some
+/// level up to `maximum_level`, preferring the finer on a tie. A project's
+/// resolution in km is approximate, and 40 km comes out as NXP 200, which no
+/// certified mother is a power-of-two multiple of; 192 is.
+pub fn nearest_certified_base_nxp(requested: usize, maximum_level: usize) -> Option<usize> {
+    if requested == 0 {
+        return None;
+    }
+    (requested.div_ceil(2)..=requested.saturating_mul(2))
+        .filter(|&base| validate_certified_mother_family(base, maximum_level).is_ok())
+        .min_by(|&a, &b| {
+            let distance = |n: usize| (n as f64 / requested as f64).ln().abs();
+            distance(a).total_cmp(&distance(b)).then(b.cmp(&a))
+        })
+}
+
 // Before scanning threshold rasters, reject only families with no possible
 // supported mother. The actual chosen level still passes full certification.
 pub(super) fn validate_certified_mother_family(
@@ -2831,6 +2847,24 @@ pub(super) fn certified_icosahedron_vertices(
 mod tests {
     use super::*;
     use crate::certified_options::{CertifiedDelivery, CertifiedMode, CertifiedRunOptions};
+
+    #[test]
+    fn an_approximate_resolution_takes_the_nearest_certified_family() {
+        // 40 km is NXP 200, a multiple of no certified mother; 192 is one.
+        assert_eq!(nearest_certified_base_nxp(200, 8), Some(192));
+        // Already certified (or a power-of-two divisor of one): unchanged.
+        assert_eq!(nearest_certified_base_nxp(20, 8), Some(20));
+        assert_eq!(nearest_certified_base_nxp(96, 0), Some(96));
+        assert_eq!(nearest_certified_base_nxp(0, 8), None);
+        for requested in [7, 50, 100, 150, 200, 300, 500] {
+            let base = nearest_certified_base_nxp(requested, 8).expect("a family nearby");
+            assert!(validate_certified_mother_family(base, 8).is_ok());
+            assert!(
+                base * 2 >= requested && base <= requested * 2,
+                "{requested} -> {base}"
+            );
+        }
+    }
 
     #[test]
     fn mother_family_preflight_checks_possible_levels_not_only_the_maximum() {

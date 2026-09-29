@@ -289,18 +289,145 @@ fn grown_ring(points: &[LonLatDegrees], halo_meters: f64) -> Option<Vec<LonLatDe
     if parent.loops.is_empty() {
         return None;
     }
-    if !points
+    // Asked vertex by vertex of the boundary model, this is quadratic: a
+    // 130,000-vertex basin outline spent hours here. Every vertex of both
+    // rings is within a quarter-sphere of `centroid` (checked above), and in
+    // the gnomonic projection about it great circles are straight lines, so
+    // the planar ring is the spherical one and a banded ray cast answers the
+    // same question in near-linear time.
+    let grown_unit: Vec<[f64; 3]> = grown
         .iter()
-        .all(|point| parent.contains(point.lon_degrees, point.lat_degrees))
-    {
+        .map(|point| {
+            let p = earthmesh_mesh::lonlat_degrees_to_unit_xyz(*point);
+            [p.x, p.y, p.z]
+        })
+        .collect();
+    if !gnomonic_ring_holds_all(&grown_unit, &unit, centroid) {
         return None;
     }
     Some(grown)
 }
 
+/// Whether the ring `parent` holds every point of `inside`, all of them
+/// within a quarter-sphere of `centre`: even-odd ray casting in the gnomonic
+/// projection about `centre`, with the edges bucketed into bands of `y`.
+fn gnomonic_ring_holds_all(parent: &[[f64; 3]], inside: &[[f64; 3]], centre: [f64; 3]) -> bool {
+    let axis = if centre[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let e1 = cross(centre, axis);
+    let length = dot(e1, e1).sqrt();
+    let e1 = [e1[0] / length, e1[1] / length, e1[2] / length];
+    let e2 = cross(centre, e1);
+    let project = |p: [f64; 3]| -> Option<(f64, f64)> {
+        let z = dot(p, centre);
+        (z > 1.0e-9).then(|| (dot(p, e1) / z, dot(p, e2) / z))
+    };
+    let Some(ring) = parent
+        .iter()
+        .map(|&p| project(p))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let Some(queries) = inside
+        .iter()
+        .map(|&p| project(p))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    if ring.len() < 3 {
+        return false;
+    }
+    let (y_min, y_max) = ring
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, y)| {
+            (lo.min(y), hi.max(y))
+        });
+    let bands = ((ring.len() as f64).sqrt().ceil() as usize).max(1);
+    let height = ((y_max - y_min) / bands as f64).max(f64::MIN_POSITIVE);
+    let band_of = |y: f64| (((y - y_min) / height).floor().max(0.0) as usize).min(bands - 1);
+    let mut edges_in: Vec<Vec<usize>> = vec![Vec::new(); bands];
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        for band in band_of(a.1.min(b.1))..=band_of(a.1.max(b.1)) {
+            edges_in[band].push(k);
+        }
+    }
+    queries.iter().all(|&(x, y)| {
+        if y < y_min || y > y_max {
+            return false;
+        }
+        let mut crossings = 0usize;
+        for &k in &edges_in[band_of(y)] {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            if (a.1 > y) != (b.1 > y) {
+                let t = (y - a.1) / (b.1 - a.1);
+                if a.0 + t * (b.0 - a.0) > x {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings % 2 == 1
+    })
+}
+
 #[cfg(test)]
 mod grown_ring_tests {
     use super::*;
+
+    #[test]
+    fn the_gnomonic_check_answers_as_the_boundary_model_does() {
+        // The boundary model is the oracle: a concave ring, then every query
+        // on a grid around it, one at a time.
+        let mut points: Vec<LonLatDegrees> = (0..240)
+            .map(|k| {
+                let t = k as f64 / 240.0 * std::f64::consts::TAU;
+                let r = 3.0 * (0.5 + 0.5 * (4.0 * t).sin().abs());
+                LonLatDegrees::new(
+                    100.0 + r * t.cos() / 40f64.to_radians().cos(),
+                    40.0 + r * t.sin(),
+                )
+            })
+            .collect();
+        points.push(points[0]);
+        let unit = |p: LonLatDegrees| {
+            let p = earthmesh_mesh::lonlat_degrees_to_unit_xyz(p);
+            [p.x, p.y, p.z]
+        };
+        let ring: Vec<[f64; 3]> = points.iter().map(|&p| unit(p)).collect();
+        let centre = unit(LonLatDegrees::new(100.0, 40.0));
+        let model =
+            crate::boundary_model::boundary_model_from_regions(&[RefinementRegion::Polygon {
+                points: points.clone(),
+                level: 1,
+            }]);
+        let mut inside = 0;
+        for i in 0..80 {
+            for j in 0..80 {
+                let q = LonLatDegrees::new(94.013 + i as f64 * 0.15, 36.007 + j as f64 * 0.1);
+                let expected = model.contains(q.lon_degrees, q.lat_degrees);
+                assert_eq!(
+                    gnomonic_ring_holds_all(&ring, &[unit(q)], centre),
+                    expected,
+                    "{q:?}"
+                );
+                inside += usize::from(expected);
+            }
+        }
+        assert!(inside > 100 && inside < 6400 - 100, "{inside}");
+    }
 
     /// The ring in the form production hands to `grown_ring`: closed, with the
     /// first point repeated at the end.

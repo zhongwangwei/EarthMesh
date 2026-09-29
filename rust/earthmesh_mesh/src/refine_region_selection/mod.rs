@@ -23,6 +23,9 @@ pub struct RefinementRegionIndex<'a> {
     regions: Cow<'a, [RefinementRegion]>,
     circles_by_latitude: Vec<IndexedCircle>,
     other_regions: Vec<usize>,
+    /// Polygons among `other_regions`, prepared once: a region read from a
+    /// basin outline has 130,000 vertices, and each query walked them all.
+    prepared_polygons: std::collections::HashMap<usize, earthmesh_boundary::PreparedMinorRing>,
     maximum_circle_radius: f64,
 }
 
@@ -68,10 +71,23 @@ impl<'a> RefinementRegionIndex<'a> {
                 .total_cmp(&right.latitude_radians)
                 .then_with(|| left.region.cmp(&right.region))
         });
+        let prepared_polygons = other_regions
+            .iter()
+            .filter_map(|&region| match &regions[region] {
+                RefinementRegion::Polygon { points, .. } => Some((
+                    region,
+                    earthmesh_boundary::PreparedMinorRing::new(points, |point| {
+                        (point.lon_degrees, point.lat_degrees)
+                    }),
+                )),
+                _ => None,
+            })
+            .collect();
         Self {
             regions,
             circles_by_latitude,
             other_regions,
+            prepared_polygons,
             maximum_circle_radius,
         }
     }
@@ -96,7 +112,17 @@ impl<'a> RefinementRegionIndex<'a> {
             })
             || self.other_regions.iter().copied().any(|region| {
                 self.regions[region].level() >= minimum_level
-                    && self.regions[region].contains_lonlat_canonical(point)
+                    && match self.prepared_polygons.get(&region) {
+                        // The same round trip `contains_lonlat_canonical`
+                        // makes through the unit sphere, then the ring test.
+                        Some(ring) => {
+                            point.lon_degrees.is_finite() && {
+                                let p = xyz_to_lonlat_degrees(lonlat_degrees_to_unit_xyz(point));
+                                ring.contains(p.lon_degrees, p.lat_degrees)
+                            }
+                        }
+                        None => self.regions[region].contains_lonlat_canonical(point),
+                    }
             })
     }
 
@@ -516,6 +542,49 @@ mod tests {
         ] {
             assert!(!lonlat_in_bbox(point, -180.0, 180.0, -90.0, 90.0));
             assert!(!global.contains_lonlat_canonical(point));
+        }
+    }
+
+    #[test]
+    fn prepared_polygons_answer_as_the_regions_do() {
+        let ring = |lon: f64, lat: f64, radius: f64| -> Vec<LonLatDegrees> {
+            (0..300)
+                .map(|k| {
+                    let t = k as f64 / 300.0 * std::f64::consts::TAU;
+                    let r = radius * (0.55 + 0.45 * (5.0 * t).sin().abs());
+                    LonLatDegrees::new(
+                        lon + r * t.cos() / lat.to_radians().cos(),
+                        lat + r * t.sin(),
+                    )
+                })
+                .collect()
+        };
+        let regions = [
+            RefinementRegion::Polygon {
+                points: ring(100.0, 40.0, 4.0),
+                level: 2,
+            },
+            RefinementRegion::Polygon {
+                points: ring(179.0, -20.0, 6.0),
+                level: 1,
+            },
+        ];
+        let index = RefinementRegionIndex::new(&regions);
+        for i in 0..720 {
+            for j in 0..300 {
+                let point =
+                    LonLatDegrees::new(-180.0 + i as f64 * 0.5 + 0.013, -75.0 + j as f64 * 0.5);
+                for level in 0..=2 {
+                    let expected = regions.iter().any(|region| {
+                        region.level() >= level && region.contains_lonlat_canonical(point)
+                    });
+                    assert_eq!(
+                        index.contains_lonlat_canonical(point, level),
+                        expected,
+                        "{point:?}"
+                    );
+                }
+            }
         }
     }
 

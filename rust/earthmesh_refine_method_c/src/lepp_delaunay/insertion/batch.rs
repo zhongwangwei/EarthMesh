@@ -9,6 +9,9 @@ pub(crate) struct LeppInsertionBatch {
 /// Commit a single insertion, or close its transient degree-four fan with one
 /// neighbouring LEPP insertion. The quality postcondition sees only the complete
 /// admissible batch. Both vertices count against the caller's remaining budget.
+/// The caller checks that every protected segment is a mesh edge before a run
+/// of batches (`check_protected_segments`); the insertions here check only the
+/// segments their cavities touch.
 pub(crate) fn insert_lepp_terminal_batch(
     mesh: &mut MeshState,
     mut segments: Option<&mut SegmentList>,
@@ -28,14 +31,17 @@ pub(crate) fn insert_lepp_terminal_batch(
         if gates.minimum_vertex_degree == 0 {
             attempted += 1;
             let report = if let Some(segments) = segments.as_deref_mut() {
-                insert_lepp_terminal_midpoint_constrained_with_postcondition(
+                insert_terminal_midpoint_constrained_staged(
                     mesh,
                     segments,
                     start,
                     config,
                     gates,
+                    false,
+                    SegmentCheck::CheckedByCaller,
                     |state, _| postcondition(state),
                 )
+                .map(|(report, _)| report)
             } else {
                 insert_lepp_terminal_midpoint_with_postcondition(
                     mesh,
@@ -66,6 +72,7 @@ pub(crate) fn insert_lepp_terminal_batch(
                 config,
                 &intermediate_gates,
                 true,
+                SegmentCheck::CheckedByCaller,
                 |_, _| true,
             )
         } else {
@@ -132,9 +139,17 @@ pub(crate) fn insert_lepp_terminal_batch(
                 };
                 attempted += 1;
                 let second = if let Some(segments) = segments.as_deref_mut() {
-                    insert_lepp_terminal_midpoint_constrained_with_postcondition(
-                        mesh, segments, start, config, gates, accepts,
+                    insert_terminal_midpoint_constrained_staged(
+                        mesh,
+                        segments,
+                        start,
+                        config,
+                        gates,
+                        false,
+                        SegmentCheck::CheckedByCaller,
+                        accepts,
                     )
+                    .map(|(report, _)| report)
                 } else {
                     insert_lepp_terminal_midpoint_with_postcondition(
                         mesh, start, config, gates, accepts,

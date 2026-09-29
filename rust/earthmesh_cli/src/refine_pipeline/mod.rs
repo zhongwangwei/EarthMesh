@@ -10,6 +10,7 @@ pub use lepp_targets::LeppResolvedTargets;
 mod model_delivery;
 mod outputs;
 
+pub use certified_pipeline::nearest_certified_base_nxp;
 pub use final_delivery::run_refine_pipeline_with_delivery;
 
 pub use global_source::run_refine_pipeline_namelist;

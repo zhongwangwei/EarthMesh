@@ -29,8 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::area_judge_threshold_inputs::{
     enabled_mean_threshold_field_specs, enabled_std_threshold_field_specs, numeric_missing_values,
-    reject_invalid_threshold_values, threshold_latitude_order, threshold_longitude_coordinates,
-    LatitudeOrder,
+    threshold_latitude_order, threshold_longitude_coordinates, LatitudeOrder,
 };
 use crate::namelist_reader::{namelist_assignments, namelist_has_section};
 use crate::refinement_demand::threshold_support::{
@@ -202,6 +201,7 @@ fn record_hfield_phase(phase: &str, started: &mut std::time::Instant) {
 
 impl HfieldDomainMask {
     pub fn new(nlon: usize, nlat: usize, domain: &GridRegion) -> Self {
+        let domain = domain.prepared();
         let mut active = vec![false; nlon * nlat];
         for i in 0..nlon {
             let lon = -180.0 + (i as f64 + 0.5) * 360.0 / nlon as f64;
@@ -1014,7 +1014,10 @@ fn validate_regular_global_longitudes(
         let first_delta = values[1] - values[0];
         let ascending = first_delta > 0.0;
         let signed_step = if ascending { step } else { -step };
-        let tol = step.abs().max(1.0) * 1e-8;
+        // A hundredth of a cell: coordinates stored as f32 (the 30-arcsecond
+        // soil rasters) step by 0.00833 +- 1.5e-5 degrees, and the check is
+        // there to keep index arithmetic sound, which half a cell would.
+        let tol = step.abs() * 1e-2;
         for pair in values.windows(2) {
             if ((pair[1] - pair[0]) - signed_step).abs() > tol {
                 return Err(invalid(
@@ -1053,7 +1056,9 @@ fn validate_regular_global_latitudes(
     } else {
         LatitudeOrder::SouthToNorth
     };
-    let tol = 1e-8_f64;
+    // As for longitude: f32 centres near the poles are off by up to 4e-6
+    // degrees, far below the hundredth of a cell this allows.
+    let tol = 1e-2 * 180.0 / expected_len as f64;
     for (idx, value) in values.iter().enumerate() {
         let canonical = match order {
             LatitudeOrder::NorthToSouth => idx,
@@ -1166,20 +1171,36 @@ fn is_missing_numeric(value: impl Into<f64>, missing: &[f64]) -> bool {
     missing.contains(&value.into())
 }
 
+/// Bytes one longitude stripe of a contiguous raster may hold once read.
+const CONTIGUOUS_STRIPE_BYTES: usize = 256 << 20;
+
+/// How many longitudes one read takes.
+///
+/// A chunked NetCDF-4 variable is read a chunk wide. A contiguous (classic)
+/// variable stored latitude-major is widened to `CONTIGUOUS_STRIPE_BYTES`: a
+/// stripe of 128 longitudes over `rows` latitudes is `rows` separate reads of
+/// 512 bytes, and the 30-arcsecond global DEM took 7.3 million of them --
+/// minutes from an external volume, where 1,500-wide stripes read the same
+/// bytes in a twelfth of the requests.
 fn netcdf_longitude_tile_size(
     variable: &netcdf::Variable<'_>,
     lat_lon: bool,
     src_nlon: usize,
     fallback: usize,
+    rows: usize,
 ) -> usize {
-    variable
+    let chunk = variable
         .chunking()
         .ok()
         .flatten()
         .and_then(|chunking| chunking.get(usize::from(lat_lon)).copied())
-        .filter(|size| *size > 0)
-        .unwrap_or(fallback)
-        .min(src_nlon)
+        .filter(|size| *size > 0);
+    match chunk {
+        Some(size) => size,
+        None if lat_lon => fallback.max(CONTIGUOUS_STRIPE_BYTES / (rows.max(1) * 8)),
+        None => fallback,
+    }
+    .min(src_nlon)
 }
 
 const LANDTYPE_MAXLC_CACHE_VERSION: u32 = 1;
@@ -1429,7 +1450,7 @@ fn landtype_global_maxlc(
         }
     }
 
-    let tile_lon = netcdf_longitude_tile_size(variable, lat_lon, src_nlon, 256);
+    let tile_lon = netcdf_longitude_tile_size(variable, lat_lon, src_nlon, 256, src_nlat);
     let mut maxlc = 0_i32;
     let mut has_valid = false;
     for lon_start in (0..src_nlon).step_by(tile_lon) {
@@ -1614,7 +1635,7 @@ fn read_landtype_source_for_hfield_with_options(
     // Match NetCDF-4's longitude chunk width when available. Re-reading narrow
     // stripes inside a large compressed chunk can otherwise decompress the same
     // data dozens of times.
-    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 256);
+    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 256, lat_count);
     let mut bins = LandtypeBinStats::new(field, domain);
     let maxlc = landtype_global_maxlc(
         path,
@@ -2407,6 +2428,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
             format!("missing {name} variable"),
         )
     })?;
+    let missing = numeric_missing_values(&variable)?;
     let dims = variable.dimensions();
     if dims.len() != 2 {
         return Err(io::Error::new(
@@ -2492,9 +2514,10 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
     });
 
     let mut count = vec![0usize; len];
+    let mut skipped = 0usize;
     let mut sum = vec![0.0; len];
     let mut sumsq = vec![0.0; len];
-    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 128);
+    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 128, lat_count);
     for lon_start in (0..src_nlon).step_by(tile_lon) {
         let lon_count = tile_lon.min(src_nlon - lon_start);
         let active_local_lon = (0..lon_count)
@@ -2595,6 +2618,10 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                 };
                 let out = field_i * field.nlat() + field_j;
                 let value = raw[raw_index];
+                if is_fill_threshold_value(name, value, &missing)? {
+                    skipped += 1;
+                    continue;
+                }
                 count[out] += 1;
                 sum[out] += value;
                 sumsq[out] += value * value;
@@ -2622,6 +2649,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
         }
     }
 
+    report_skipped_threshold_values(name, skipped, count.iter().sum())?;
     record_hfield_phase("threshold_stats_scan", &mut stats_started);
     // Empty-bin nearest values contribute only to mean, never population std.
     // Do not reopen full global columns for a statistic the caller does not use.
@@ -2680,7 +2708,9 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                 LatitudeOrder::NorthToSouth => src_j,
                 LatitudeOrder::SouthToNorth => src_nlat - 1 - src_j,
             };
-            mean[out] = row[file_j];
+            if !is_fill_threshold_value(name, row[file_j], &missing)? {
+                mean[out] = row[file_j];
+            }
         }
     }
 
@@ -2722,8 +2752,50 @@ fn threshold_tile(
             format!("{name} variable must be readable as f64 or f32"),
         ));
     };
-    reject_invalid_threshold_values(variable, name, &values)?;
     Ok(values)
+}
+
+/// Whether a source value is the source's fill (or declared missing) value:
+/// the source saying "no data here", which a statistic leaves out. A value
+/// that is not a number at all is corruption, and an error.
+fn is_fill_threshold_value(name: &str, value: f64, missing: &[f64]) -> io::Result<bool> {
+    if !value.is_finite() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{name} has a missing/non-finite value {value} where a statistic reads it"),
+        ));
+    }
+    Ok(missing.contains(&value))
+}
+
+/// Fill values among the cells a statistic would use are left out of it and
+/// said out loud; a domain with no data at all refuses the source.
+///
+/// Soil rasters fill the ocean with -1e36, and a whole-tile check refused
+/// every such source outright. The mask keeps ocean cells here (it excludes
+/// only the land type's largest class), so over a global or coastal domain
+/// the fill is most of what is read; only a source with nothing in the
+/// domain is the wrong source.
+fn report_skipped_threshold_values(name: &str, skipped: usize, used: usize) -> io::Result<()> {
+    if skipped == 0 {
+        return Ok(());
+    }
+    if used == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{name}: {skipped} of {} cells the domain and land mask keep carry the source's \
+                 fill (missing/non-finite) value; the source does not cover this domain",
+                skipped + used
+            ),
+        ));
+    }
+    eprintln!(
+        "earthmesh_cli: warning: {name}: {skipped} of {} cells the domain and land mask keep \
+         carry the source's fill value and were left out of the statistics",
+        skipped + used
+    );
+    Ok(())
 }
 
 fn scaled_source_index(index: usize, source_len: usize, target_len: usize) -> usize {
@@ -2853,11 +2925,11 @@ fn threshold_landtype_is_maxlc(
 }
 
 fn is_lon_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lon", "longitude"], "x")
+    is_axis_dim(name, &["lon", "longitude", "nlon"], "x")
 }
 
 fn is_lat_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lat", "latitude"], "y")
+    is_axis_dim(name, &["lat", "latitude", "nlat"], "y")
 }
 
 fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {
@@ -2994,6 +3066,121 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn f32_cell_centre_coordinates_are_regular_and_a_misplaced_one_is_not() {
+        // Soil rasters store 30-arcsecond centres as f32, a few 1e-6 degrees
+        // off; the old 1e-8 tolerance refused them. A centre moved by a tenth
+        // of a cell is still refused.
+        let (nlon, nlat) = (4320usize, 2160usize);
+        let write = |name: &str, shift: f32| {
+            let path = std::env::temp_dir().join(format!(
+                "earthmesh_f32_coords_{name}_{}.nc",
+                std::process::id()
+            ));
+            let mut file = crate::create_netcdf(&path).unwrap();
+            file.add_dimension("longitude", nlon).unwrap();
+            file.add_dimension("latitude", nlat).unwrap();
+            let lon: Vec<f32> = (0..nlon)
+                .map(|i| (-180.0 + (i as f64 + 0.5) * 360.0 / nlon as f64) as f32)
+                .collect();
+            let mut lat: Vec<f32> = (0..nlat)
+                .map(|j| (90.0 - (j as f64 + 0.5) * 180.0 / nlat as f64) as f32)
+                .collect();
+            lat[7] += shift;
+            file.add_variable::<f32>("longitude", &["longitude"])
+                .unwrap()
+                .put_values(&lon, ..)
+                .unwrap();
+            file.add_variable::<f32>("latitude", &["latitude"])
+                .unwrap()
+                .put_values(&lat, ..)
+                .unwrap();
+            drop(file);
+            path
+        };
+        let regular = write("regular", 0.0);
+        let file = crate::open_netcdf(&regular).unwrap();
+        assert_eq!(
+            validate_regular_global_latitudes(&file, "latitude", nlat).unwrap(),
+            LatitudeOrder::NorthToSouth
+        );
+        assert!(validate_regular_global_longitudes(&file, "longitude", nlon)
+            .unwrap()
+            .is_some());
+        drop(file);
+        let misplaced = write("misplaced", 0.1 * 180.0 / nlat as f32);
+        let file = crate::open_netcdf(&misplaced).unwrap();
+        assert!(validate_regular_global_latitudes(&file, "latitude", nlat).is_err());
+        drop(file);
+        let _ = std::fs::remove_file(regular);
+        let _ = std::fs::remove_file(misplaced);
+    }
+
+    #[test]
+    fn a_fill_value_is_left_out_and_all_fill_is_refused() {
+        // Soil rasters fill the ocean with -1e36. A fill the domain excludes
+        // is never read; one inside it is left out of its cell's statistic.
+        let write = |tag: &str, values: &[f64]| {
+            let path = std::env::temp_dir().join(format!(
+                "earthmesh_threshold_fill_{tag}_{}.nc",
+                std::process::id()
+            ));
+            let mut file = crate::create_netcdf(&path).unwrap();
+            file.add_dimension("longitude", 16).unwrap();
+            file.add_dimension("latitude", 2).unwrap();
+            let mut variable = file
+                .add_variable::<f64>("k_s_l1", &["longitude", "latitude"])
+                .unwrap();
+            variable.put_attribute("_FillValue", -1.0e36_f64).unwrap();
+            variable.put_values(values, (.., ..)).unwrap();
+            path
+        };
+        let coarse = HField::uniform(4, 2, 100.0).unwrap();
+        let mut values = vec![3.0_f64; 32];
+        values[0] = -1.0e36; // longitude 0, latitude 0: the first coarse cell
+        let path = write("one", &values);
+        let file = crate::open_netcdf(&path).unwrap();
+        let stats = read_threshold_stats_on_hfield_for_criteria(
+            &file, "k_s_l1", &coarse, None, None, false,
+        )
+        .expect("one fill among 32 cells is left out");
+        assert_eq!(stats.samples.iter().sum::<usize>(), 31);
+        assert!(stats.mean.iter().all(|&mean| (mean - 3.0).abs() < 1e-12));
+        // The first coarse column, both latitudes, outside the domain.
+        let mut active = vec![true; 4 * 2];
+        active[0] = false;
+        active[1] = false;
+        let domain = HfieldDomainMask {
+            nlon: 4,
+            nlat: 2,
+            active,
+        };
+        let stats = read_threshold_stats_on_hfield_for_criteria(
+            &file,
+            "k_s_l1",
+            &coarse,
+            None,
+            Some(&domain),
+            false,
+        )
+        .expect("the fill is outside the domain");
+        assert_eq!(stats.samples.iter().sum::<usize>(), 24);
+        drop(file);
+        let _ = std::fs::remove_file(path);
+
+        // All fill: the source does not cover the domain.
+        let path = write("all", &[-1.0e36; 32]);
+        let file = crate::open_netcdf(&path).unwrap();
+        let error = read_threshold_stats_on_hfield_for_criteria(
+            &file, "k_s_l1", &coarse, None, None, false,
+        )
+        .expect_err("every cell is fill")
+        .to_string();
+        assert!(error.contains("does not cover this domain"), "{error}");
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -3943,7 +4130,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_threshold_rows_reject_fill_missing_and_non_finite_values() {
+    fn streamed_threshold_rows_leave_out_fill_and_reject_non_finite_values() {
         let root = std::env::temp_dir().join(format!(
             "earthmesh_hfield_threshold_invalid_{}",
             std::process::id()
@@ -3976,6 +4163,29 @@ mod tests {
             drop(file);
             let file = crate::open_netcdf(&path).unwrap();
             let field = HField::uniform(4, 4, 100.0).unwrap();
+            if attribute.is_some() {
+                // A declared fill or missing value is the source saying "no
+                // data here": left out of the statistic, never averaged in.
+                for stats in [
+                    read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None)
+                        .expect(case),
+                    read_threshold_stats_on_hfield_for_criteria(
+                        &file, "lai", &field, None, None, false,
+                    )
+                    .expect(case),
+                ] {
+                    assert_eq!(stats.samples.iter().sum::<usize>(), 7, "{case}");
+                    assert!(
+                        stats
+                            .mean
+                            .iter()
+                            .zip(&stats.samples)
+                            .all(|(&mean, &n)| n == 0 || (mean - 1.0).abs() < 1e-12),
+                        "{case}"
+                    );
+                }
+                continue;
+            }
             let error = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None)
                 .expect_err(case);
             assert!(
@@ -3995,7 +4205,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_threshold_rows_reject_default_netcdf_fill() {
+    fn streamed_threshold_rows_leave_out_default_netcdf_fill() {
         let path = std::env::temp_dir().join(format!(
             "earthmesh_hfield_threshold_default_fill_{}.nc",
             std::process::id()
@@ -4011,14 +4221,16 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
-        assert!(error.to_string().contains("missing/non-finite"), "{error}");
+        // Seven cells were never written and hold the default fill: they are
+        // left out, and only the one written value is a sample.
+        let stats = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None)
+            .expect("unwritten cells are left out");
+        assert_eq!(stats.samples.iter().sum::<usize>(), 1);
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn streamed_threshold_rows_reject_integer_default_netcdf_fill() {
+    fn streamed_threshold_rows_leave_out_integer_default_netcdf_fill() {
         let path = std::env::temp_dir().join(format!(
             "earthmesh_hfield_threshold_integer_fill_{}.nc",
             std::process::id()
@@ -4034,9 +4246,11 @@ mod tests {
         drop(file);
         let file = crate::open_netcdf(&path).unwrap();
         let field = HField::uniform(4, 2, 100.0).unwrap();
-        let error =
-            read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None).unwrap_err();
-        assert!(error.to_string().contains("missing/non-finite"), "{error}");
+        // Seven cells were never written and hold the default fill: they are
+        // left out, and only the one written value is a sample.
+        let stats = read_threshold_stats_on_hfield_masked(&file, "lai", &field, None, None)
+            .expect("unwritten cells are left out");
+        assert_eq!(stats.samples.iter().sum::<usize>(), 1);
         let _ = std::fs::remove_file(path);
     }
 

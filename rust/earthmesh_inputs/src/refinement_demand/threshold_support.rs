@@ -106,12 +106,15 @@ fn support_mask(
         *level = 1; // Geographic validation only; degree-zero masks are not demands.
         mask.validate()?;
     }
+    let domain = domain.map(GridRegion::prepared);
     let mut active = vec![false; nlon * nlat];
     for i in 0..nlon {
         let lon = -180.0 + i as f64 * 360.0 / nlon as f64;
         for j in 0..nlat {
             let lat = -90.0 + (j as f64 + 0.5) * 180.0 / nlat as f64;
-            active[i * nlat + j] = domain.is_none_or(|region| region.contains(lon, lat))
+            active[i * nlat + j] = domain
+                .as_ref()
+                .is_none_or(|region| region.contains(lon, lat))
                 && (masks.is_empty()
                     || masks.iter().any(|region| {
                         region.contains_lonlat_canonical(LonLatDegrees::new(lon, lat))

@@ -8,7 +8,7 @@ use earthmesh_mesh::RefinementRegion;
 pub use earthmesh_inputs::mask_source_discovery;
 use mask_source_discovery::discover_mask_sources;
 
-use coordinate_types::{GridRegion, LonLatPoint};
+use coordinate_types::{GridRegion, LonLatPoint, PreparedGridRegion};
 pub use earthmesh_delivery::coordinate_types;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
 mod certified_options;
@@ -329,6 +329,7 @@ pub use hfield_refine::{
 };
 mod refine_pipeline;
 pub use refine_pipeline::{
-    run_refine_pipeline_namelist, run_refine_pipeline_with_delivery, LeppResolvedTargets,
+    nearest_certified_base_nxp, run_refine_pipeline_namelist, run_refine_pipeline_with_delivery,
+    LeppResolvedTargets,
 };
 pub mod mkgrd_top_level_dispatch;

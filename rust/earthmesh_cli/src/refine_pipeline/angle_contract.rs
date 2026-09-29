@@ -108,9 +108,16 @@ pub(super) struct PublishedRows<'a> {
 
 /// Meet the angle contract on a refined triangle mesh; returns the mesh to
 /// publish and the repair's report, or the mesh untouched when nothing moved.
+///
+/// `move_only` is for a hex grid, whose triangles are the dual of the cells
+/// the model reads: vertices move and only where an angle is outside the
+/// window, so every row keeps its meaning and a grid already inside it is
+/// published untouched. All angles under 85 degrees keep every circumcentre
+/// inside its triangle, so no cell ring can fold.
 pub(super) fn enforce_triangle_angles(
     mesh: UnstructuredMesh,
     rows: PublishedRows<'_>,
+    move_only: bool,
 ) -> io::Result<(UnstructuredMesh, Option<earthmesh_mesh::AngleWindowReport>)> {
     let norm = unstructured_mesh_with_one_based_rows(&mesh);
     let offset_m = norm.m_points.len() - mesh.m_points.len();
@@ -167,6 +174,10 @@ pub(super) fn enforce_triangle_angles(
         .map(|&count| count.max(0) as usize)
         .max()
         .unwrap_or(0);
+    if move_only {
+        options.allow_topology_changes = false;
+        options.equilateral_rounds = 0;
+    }
     let (report, origins) = earthmesh_mesh::repair_triangle_angle_window_traced(
         &mut points,
         &mut faces,

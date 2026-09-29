@@ -280,11 +280,11 @@ fn matrix_order(
 }
 
 fn is_lon_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lon", "longitude"], "x")
+    is_axis_dim(name, &["lon", "longitude", "nlon"], "x")
 }
 
 fn is_lat_dim(name: &str) -> bool {
-    is_axis_dim(name, &["lat", "latitude"], "y")
+    is_axis_dim(name, &["lat", "latitude", "nlat"], "y")
 }
 
 fn is_axis_dim(name: &str, aliases: &[&str], short_axis: &str) -> bool {

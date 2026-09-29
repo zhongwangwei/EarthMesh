@@ -6,6 +6,7 @@ use crate::read_unstructured_mesh_netcdf;
 use crate::write_unstructured_mesh_netcdf_with_metadata;
 use crate::GridRegion;
 use crate::MaskPostprocLayout;
+use crate::PreparedGridRegion;
 use std::io;
 use std::path::Path;
 
@@ -54,8 +55,9 @@ pub fn write_regional_gridfile_with_refine_levels(
     if is_in_domain.len() > 1 {
         is_in_domain[1] = 0;
     }
+    let region = region.prepared();
     for i in 2..layout.ustr_points {
-        if regional_cell_inside(&layout, i, region, mode_grid) {
+        if regional_cell_inside(&layout, i, &region, mode_grid) {
             is_in_domain[i] = 1;
             kept += 1;
         }
@@ -87,10 +89,10 @@ pub fn write_regional_gridfile_with_refine_levels(
 fn regional_cell_inside(
     layout: &MaskPostprocLayout,
     cell: usize,
-    region: &GridRegion,
+    region: &PreparedGridRegion<'_>,
     mode_grid: &str,
 ) -> bool {
-    if let GridRegion::Any(regions) = region {
+    if let PreparedGridRegion::Any(regions) = region {
         // A TRI's centre and corners must share one member to avoid gap bridges.
         // ponytail: member seams stay conservative; exact union needs geometry merging.
         return regions
@@ -176,13 +178,23 @@ mod tests {
     #[test]
     fn tri_regional_clip_rejects_far_vertices_even_when_center_is_inside() {
         let layout = layout_with_vertices([(110.0, 20.0), (120.0, 20.0), (-70.0, 20.0)]);
-        assert!(!regional_cell_inside(&layout, 2, &close_region(), "tri"));
+        assert!(!regional_cell_inside(
+            &layout,
+            2,
+            &close_region().prepared(),
+            "tri"
+        ));
     }
 
     #[test]
     fn tri_regional_clip_keeps_cells_with_center_and_vertices_inside() {
         let layout = layout_with_vertices([(110.0, 20.0), (120.0, 20.0), (115.0, 30.0)]);
-        assert!(regional_cell_inside(&layout, 2, &close_region(), "tri"));
+        assert!(regional_cell_inside(
+            &layout,
+            2,
+            &close_region().prepared(),
+            "tri"
+        ));
     }
 
     #[test]
@@ -208,20 +220,30 @@ mod tests {
         for point in &layout.vertex_points[2..] {
             assert!(separated.contains(point.lon, point.lat));
         }
-        assert!(!regional_cell_inside(&layout, 2, &separated, "tri"));
-        assert!(regional_cell_inside(&layout, 2, &separated, "hex"));
-        let nested = GridRegion::Any(vec![separated, close_region(), close_region()]);
-        assert!(regional_cell_inside(&layout, 2, &nested, "tri"));
         assert!(!regional_cell_inside(
             &layout,
             2,
-            &GridRegion::Any(vec![]),
+            &separated.prepared(),
+            "tri"
+        ));
+        assert!(regional_cell_inside(
+            &layout,
+            2,
+            &separated.prepared(),
+            "hex"
+        ));
+        let nested = GridRegion::Any(vec![separated, close_region(), close_region()]);
+        assert!(regional_cell_inside(&layout, 2, &nested.prepared(), "tri"));
+        assert!(!regional_cell_inside(
+            &layout,
+            2,
+            &GridRegion::Any(vec![]).prepared(),
             "tri"
         ));
         assert!(!regional_cell_inside(
             &layout,
             2,
-            &GridRegion::Any(vec![]),
+            &GridRegion::Any(vec![]).prepared(),
             "hex"
         ));
     }

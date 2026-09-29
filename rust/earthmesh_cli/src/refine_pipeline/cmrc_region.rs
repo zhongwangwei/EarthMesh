@@ -43,8 +43,9 @@ pub(super) fn publish_regional_hex(
     };
     let grid = crate::read_gridfile_mesh_points(output)?;
     let input = quality_input_from_gridfile_hex_native(&grid)?;
+    let prepared = region.prepared();
     for row in gridfile_w_row_layout(&grid).first_physical_row..grid.w_lon.len() {
-        if !region.contains(grid.w_lon[row], grid.w_lat[row]) {
+        if !prepared.contains(grid.w_lon[row], grid.w_lat[row]) {
             return Err(invalid(
                 "CMRC published regional cell centre lies outside the region",
             ));

@@ -179,10 +179,13 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
         json_usize(&pass_2_quality, "cell_count") > json_usize(&initial_quality, "cell_count"),
         "local repair must refine the measured mesh"
     );
+    // The baseline failed on a hex sliver (aspect 27.7) behind a 97-degree
+    // triangle; the angle contract now holds hex grids' triangles in the
+    // window too, so it starts at warn and the repair still has to beat it.
     assert!(
-        initial_quality.contains("\"verdict\": \"fail\"")
+        initial_quality.contains("\"verdict\": \"warn\"")
             && pass_2_quality.contains("\"verdict\": \"warn\""),
-        "the compatible effective NXP case must improve the baseline verdict from fail to warn"
+        "the baseline is warn once its triangles are in the window, and the candidate stays warn"
     );
     assert!(
         json_stat_max(&pass_2_quality, "aspect_ratio")
@@ -222,7 +225,7 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
     let decision = fs::read_to_string(decision).unwrap();
     assert!(decision.contains("\"schema_version\": 1"));
     assert!(decision.contains("\"decision\": \"accepted\""));
-    assert!(decision.contains("\"baseline_verdict\": \"fail\""));
+    assert!(decision.contains("\"baseline_verdict\": \"warn\""));
     assert!(decision.contains("\"candidate_verdict\": \"warn\""));
     assert!(decision.contains("\"selected_verdict\": \"warn\""));
     assert!(decision.contains("\"regressions\": []"));

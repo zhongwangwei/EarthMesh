@@ -262,51 +262,95 @@ fn raw_spherical_polygon_excess_from_units(
     raw_spherical_polygon_excess_by_index(vertices.len(), |index| Ok(vertices[index]))
 }
 
-fn ring_has_self_intersection(vertices: &[[f64; 3]]) -> Option<(usize, usize)> {
+/// Whether ring edges `first` and `second` (not adjacent) share a point.
+fn ring_edges_touch(vertices: &[[f64; 3]], first: usize, second: usize) -> bool {
     let on_minor_arc = |point: [f64; 3], start: [f64; 3], end: [f64; 3]| {
         let total = angle3(start, end);
         (angle3(start, point) + angle3(point, end) - total).abs() <= 1.0e-10
     };
-    for first in 0..vertices.len() {
-        let first_next = (first + 1) % vertices.len();
-        for second in (first + 1)..vertices.len() {
-            let second_next = (second + 1) % vertices.len();
-            if first_next == second || second_next == first {
+    let first_next = (first + 1) % vertices.len();
+    let second_next = (second + 1) % vertices.len();
+    let normal1 = cross3(vertices[first], vertices[first_next]);
+    let normal2 = cross3(vertices[second], vertices[second_next]);
+    let intersections = cross3(normal1, normal2);
+    let intersection_norm = norm3(intersections);
+    if intersection_norm > 64.0 * f64::EPSILON {
+        let candidate = [
+            intersections[0] / intersection_norm,
+            intersections[1] / intersection_norm,
+            intersections[2] / intersection_norm,
+        ];
+        [candidate, [-candidate[0], -candidate[1], -candidate[2]]]
+            .into_iter()
+            .any(|point| {
+                on_minor_arc(point, vertices[first], vertices[first_next])
+                    && on_minor_arc(point, vertices[second], vertices[second_next])
+            })
+    } else {
+        [vertices[first], vertices[first_next]]
+            .into_iter()
+            .any(|point| on_minor_arc(point, vertices[second], vertices[second_next]))
+            || [vertices[second], vertices[second_next]]
+                .into_iter()
+                .any(|point| on_minor_arc(point, vertices[first], vertices[first_next]))
+    }
+}
+
+/// The first pair of non-adjacent ring edges that share a point, in the
+/// order `(first, second)` with `first < second`.
+///
+/// Every pair was tested, which a basin outline of 130,000 vertices turned
+/// into 8.5e9 tests and hours of `acos`. A pair can only touch within about
+/// 1e-5 radians -- the tolerance on the arc test allows no more -- so each
+/// edge is boxed (chord, plus the arc's sagitta, plus a 1e-4 margin), boxes
+/// are swept along x, and only pairs whose boxes overlap are tested exactly.
+/// The first touching pair is the same one the full scan finds.
+fn ring_has_self_intersection(vertices: &[[f64; 3]]) -> Option<(usize, usize)> {
+    let n = vertices.len();
+    let boxes: Vec<([f64; 3], [f64; 3])> = (0..n)
+        .map(|edge| {
+            let (a, b) = (vertices[edge], vertices[(edge + 1) % n]);
+            let half = 0.5 * angle3(a, b);
+            let pad = (1.0 - half.cos()) + 1.0e-4;
+            let mut low = [0.0; 3];
+            let mut high = [0.0; 3];
+            for k in 0..3 {
+                low[k] = a[k].min(b[k]) - pad;
+                high[k] = a[k].max(b[k]) + pad;
+            }
+            (low, high)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| boxes[i].0[0].total_cmp(&boxes[j].0[0]).then(i.cmp(&j)));
+    let mut active: Vec<usize> = Vec::new();
+    let mut first_pair: Option<(usize, usize)> = None;
+    for &edge in &order {
+        let (low, high) = boxes[edge];
+        active.retain(|&other| boxes[other].1[0] >= low[0]);
+        for &other in &active {
+            let (other_low, other_high) = boxes[other];
+            if other_low[1] > high[1]
+                || other_high[1] < low[1]
+                || other_low[2] > high[2]
+                || other_high[2] < low[2]
+            {
                 continue;
             }
-            let normal1 = cross3(vertices[first], vertices[first_next]);
-            let normal2 = cross3(vertices[second], vertices[second_next]);
-            let intersections = cross3(normal1, normal2);
-            let intersection_norm = norm3(intersections);
-            let mut intersects = false;
-            if intersection_norm > 64.0 * f64::EPSILON {
-                let candidate = [
-                    intersections[0] / intersection_norm,
-                    intersections[1] / intersection_norm,
-                    intersections[2] / intersection_norm,
-                ];
-                for point in [candidate, [-candidate[0], -candidate[1], -candidate[2]]] {
-                    if on_minor_arc(point, vertices[first], vertices[first_next])
-                        && on_minor_arc(point, vertices[second], vertices[second_next])
-                    {
-                        intersects = true;
-                        break;
-                    }
-                }
-            } else {
-                intersects = [vertices[first], vertices[first_next]]
-                    .into_iter()
-                    .any(|point| on_minor_arc(point, vertices[second], vertices[second_next]))
-                    || [vertices[second], vertices[second_next]]
-                        .into_iter()
-                        .any(|point| on_minor_arc(point, vertices[first], vertices[first_next]));
+            let (first, second) = (edge.min(other), edge.max(other));
+            if (first + 1) % n == second || (second + 1) % n == first {
+                continue;
             }
-            if intersects {
-                return Some((first, second));
+            if first_pair.is_some_and(|pair| pair <= (first, second)) {
+                continue;
+            }
+            if ring_edges_touch(vertices, first, second) {
+                first_pair = Some((first, second));
             }
         }
+        active.push(edge);
     }
-    None
+    first_pair
 }
 
 fn raw_spherical_polygon_excess(ring: &[Point]) -> Result<f64, SphericalPolygonError> {
@@ -1340,6 +1384,58 @@ mod tests {
         SphericalAreaBranch, SphericalPointLocation, SphericalPolygonError, SphericalWinding,
         EARTH_RADIUS_KM,
     };
+    use super::{ring_edges_touch, ring_has_self_intersection};
+
+    /// The full scan the sweep replaced, kept as its oracle.
+    fn self_intersection_by_every_pair(vertices: &[[f64; 3]]) -> Option<(usize, usize)> {
+        let n = vertices.len();
+        for first in 0..n {
+            for second in (first + 1)..n {
+                if (first + 1) % n == second || (second + 1) % n == first {
+                    continue;
+                }
+                if ring_edges_touch(vertices, first, second) {
+                    return Some((first, second));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_swept_self_intersection_test_finds_the_pair_every_pair_finds() {
+        let unit = |lon: f64, lat: f64| {
+            let (lon, lat) = (lon.to_radians(), lat.to_radians());
+            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+        };
+        let mut seed = 12345u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut crossing = 0;
+        for case in 0..60 {
+            let n = 20 + case * 7;
+            // Jittered stars: simple for small jitter, crossing for large.
+            let jitter = if case % 2 == 0 { 0.2 } else { 2.5 };
+            let ring: Vec<[f64; 3]> = (0..n)
+                .map(|k| {
+                    // Angular jitter over a few steps makes the ring double
+                    // back on itself; small jitter keeps it simple.
+                    let t = (k as f64 + jitter * (next() - 0.5) * 2.0) / n as f64
+                        * std::f64::consts::TAU;
+                    let r = 3.0 + 0.3 * (next() - 0.5);
+                    unit(30.0 + r * t.cos(), -10.0 + r * t.sin())
+                })
+                .collect();
+            let expected = self_intersection_by_every_pair(&ring);
+            crossing += usize::from(expected.is_some());
+            assert_eq!(ring_has_self_intersection(&ring), expected, "case {case}");
+        }
+        assert!(crossing > 5 && crossing < 55, "{crossing}");
+    }
     use std::time::Instant;
 
     #[test]

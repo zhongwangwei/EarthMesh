@@ -1143,3 +1143,141 @@ fn sibling_hole_validation_is_dateline_safe_and_keeps_finite_longitudes() {
         inner_loop: 2,
     }));
 }
+
+/// The every-pair scans the sweep replaced, kept as its oracle.
+fn every_pair_self_intersection(units: &[[f64; 3]]) -> Option<(usize, usize)> {
+    let count = units.len();
+    for first in 0..count {
+        for second in first + 1..count {
+            if first + 1 == second || (first == 0 && second + 1 == count) {
+                continue;
+            }
+            if spherical_segments_intersect(
+                units[first],
+                units[(first + 1) % count],
+                units[second],
+                units[(second + 1) % count],
+            ) {
+                return Some((first, second));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn swept_ring_checks_answer_as_every_pair_does() {
+    let mut seed = 99u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut crossing = 0;
+    let mut touching = 0;
+    for case in 0..50 {
+        let n = 12 + case * 5;
+        let jitter = if case % 2 == 0 { 0.2 } else { 2.5 };
+        let star = |centre: f64, next: &mut dyn FnMut() -> f64| -> Vec<BoundaryVertex> {
+            (0..n)
+                .map(|k| {
+                    let t = (k as f64 + jitter * (next() - 0.5) * 2.0) / n as f64
+                        * std::f64::consts::TAU;
+                    let r = 2.0 + 0.2 * (next() - 0.5);
+                    vertex(centre + r * t.cos(), 20.0 + r * t.sin())
+                })
+                .collect()
+        };
+        let mut vertices = star(100.0, &mut next);
+        // A second ring whose centre wanders from well apart to overlapping.
+        vertices.extend(star(100.0 + 5.0 - case as f64 * 0.1, &mut next));
+        let model = SphericalBoundaryModel {
+            vertices,
+            loops: vec![
+                ring(LoopType::Outer, (0..n).collect(), None),
+                ring(LoopType::Outer, (n..2 * n).collect(), None),
+            ],
+        };
+        let units = model.ring_units(&model.loops[0]);
+        let expected = every_pair_self_intersection(&units);
+        crossing += usize::from(expected.is_some());
+        assert_eq!(
+            model.ring_self_intersection(&model.loops[0]),
+            expected,
+            "case {case}"
+        );
+        let other = model.ring_units(&model.loops[1]);
+        let expected = (0..n).any(|a| {
+            (0..n).any(|b| {
+                spherical_segments_intersect(
+                    units[a],
+                    units[(a + 1) % n],
+                    other[b],
+                    other[(b + 1) % n],
+                )
+            })
+        });
+        touching += usize::from(expected);
+        assert_eq!(
+            model.rings_intersect(&model.loops[0], &model.loops[1]),
+            expected,
+            "case {case}"
+        );
+    }
+    assert!(crossing > 5 && crossing < 45, "{crossing}");
+    assert!(touching > 5 && touching < 45, "{touching}");
+}
+
+#[test]
+fn a_prepared_minor_ring_answers_as_the_ring_does() {
+    let star = |lon: f64, lat: f64, radius: f64, n: usize| -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|k| {
+                let t = k as f64 / n as f64 * std::f64::consts::TAU;
+                let r = radius * (0.55 + 0.45 * (5.0 * t).sin().abs());
+                (
+                    lon + r * t.cos() / lat.to_radians().cos(),
+                    lat + r * t.sin(),
+                )
+            })
+            .collect()
+    };
+    let mut wide = star(30.0, 0.0, 80.0, 50);
+    wide.reverse();
+    let rings = [
+        star(100.0, 40.0, 4.0, 400),
+        star(179.0, -20.0, 6.0, 90),
+        star(0.0, 80.0, 7.0, 60),
+        wide,
+    ];
+    for (index, ring) in rings.iter().enumerate() {
+        let prepared = PreparedMinorRing::new(ring, |&p| p);
+        let exact = |lon: f64, lat: f64| spherical_ring_contains_minor(ring, lon, lat, |&p| p);
+        let mut inside = 0;
+        for i in 0..360 {
+            for j in 0..181 {
+                let (lon, lat) = (-180.0 + i as f64 + 0.37, -90.0 + j as f64);
+                let expected = exact(lon, lat);
+                assert_eq!(
+                    prepared.contains(lon, lat),
+                    expected,
+                    "ring {index} {lon} {lat}"
+                );
+                inside += usize::from(expected);
+            }
+        }
+        assert!(inside > 0, "ring {index}");
+        if index == 0 {
+            for i in 0..240 {
+                for j in 0..180 {
+                    let (lon, lat) = (91.003 + i as f64 * 0.075, 35.501 + j as f64 * 0.05);
+                    assert_eq!(prepared.contains(lon, lat), exact(lon, lat), "{lon} {lat}");
+                }
+            }
+        }
+        for &(lon, lat) in ring {
+            assert_eq!(prepared.contains(lon, lat), exact(lon, lat));
+        }
+    }
+}

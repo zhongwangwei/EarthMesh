@@ -1280,6 +1280,38 @@ fn sea_ratio_criterion_validation_rejects_missing_source_ranges_and_nonfinite() 
 }
 
 #[test]
+fn an_unknown_criterion_names_the_id_that_was_meant() {
+    // Slope's file is slope_avg.nc, so its criteria are slope_avg_mean and
+    // slope_avg_std; the catalog calls the source "slope".
+    let mut p = sample();
+    p.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "slope_mean".into(),
+            enabled: true,
+            value: Some(8.0),
+        });
+    let err = yaml_err(&p);
+    assert!(err.contains("did you mean 'slope_avg_mean'"), "{err}");
+    assert!(
+        err.contains("lai_std") && err.contains("sea_ratio"),
+        "{err}"
+    );
+
+    let mut q = sample();
+    q.refinement
+        .threshold_criteria
+        .push(ThresholdCriterionConfig {
+            id: "rainfall_mean".into(),
+            enabled: true,
+            value: None,
+        });
+    let err = yaml_err(&q);
+    assert!(!err.contains("did you mean"), "{err}");
+    assert!(err.contains("slope_avg_mean"), "{err}");
+}
+
+#[test]
 fn sea_ratio_criterion_keeps_landtype_active_for_atmosphere() {
     let mut p = sample();
     p.target.kind = MeshDomainKind::Atmosphere;
