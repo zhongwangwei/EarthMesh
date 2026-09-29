@@ -147,7 +147,9 @@ impl ProjectConfig {
             && !(self.refinement.backend == RefinementBackend::Certified
                 && matches!(
                     self.refinement.certified.mode,
-                    crate::CertifiedMode::SafeMotherOnly | crate::CertifiedMode::StretchedMother
+                    crate::CertifiedMode::SafeMotherOnly
+                        | crate::CertifiedMode::StretchedMother
+                        | crate::CertifiedMode::EquidistributedMother
                 ));
         if grades
             && self.target.cell == MeshCellKind::Tri
@@ -155,7 +157,7 @@ impl ProjectConfig {
             && self.expected_euler_characteristic() == Some(2)
         {
             return Err(
-                "target.model_format=Icon cannot be refined on a closed global mesh by inserting cells: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Use refinement.backend=IconNest, which keeps the global grid and refines in ICON nests (separate grids of bisected parent triangles), or Stretch, which keeps the icosahedral grid and moves its vertices toward the demand (finer there, coarser elsewhere), or Certified with certified.mode=stretched_mother, the certified version of that; or set refinement.enabled=false; or choose another model_format (the refined EarthMesh gridfile is written for every format)"
+                "target.model_format=Icon cannot be refined on a closed global mesh by inserting cells: ICON allows at most 6 edges per vertex, which on a closed sphere leaves room for only the 12 icosahedral pentagons, while every local refinement adds paired degree-5/degree-7 vertices. Use refinement.backend=IconNest, which keeps the global grid and refines in ICON nests (separate grids of bisected parent triangles), or Stretch, which keeps the icosahedral grid and moves its vertices toward the demand (finer there, coarser elsewhere), or Certified with certified.mode=stretched_mother or equidistributed_mother, which move the vertices of a certified mother; or set refinement.enabled=false; or choose another model_format (the refined EarthMesh gridfile is written for every format)"
                     .to_string(),
             );
         }

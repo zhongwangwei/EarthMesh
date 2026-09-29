@@ -401,6 +401,12 @@ pub enum CertifiedMode {
     /// otherwise the safe mother. It grades by moving vertices, so every
     /// vertex keeps degree 5 or 6 and a closed global ICON grid takes it.
     StretchedMother,
+    /// The coarsest certified mother whose moved vertices serve the demand:
+    /// the Schmidt stretch for one concentrated region, an equidistribution
+    /// of the vertices for any number and shape of regions, whichever needs
+    /// fewer cells; otherwise the safe mother. Only vertices move, so there
+    /// are twelve pentagons and no heptagon.
+    EquidistributedMother,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

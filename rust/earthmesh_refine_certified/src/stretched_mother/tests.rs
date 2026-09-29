@@ -1,4 +1,5 @@
 use super::*;
+use earthmesh_mesh::MeshState;
 
 /// A lon/lat raster with `level` within `radius_km` of each centre.
 fn raster(spots: &[((f64, f64), f64, usize)]) -> RasterLevelField {

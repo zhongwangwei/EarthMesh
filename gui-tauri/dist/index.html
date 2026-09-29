@@ -3213,11 +3213,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       && cellEdit === "tri" && (targetEdit.kind === "atmosphere" || targetEdit.kind === "earth")
       && domainMode === "global";
     const iconServed = algorithm === "stretch" || algorithm === "icon_nest"
-      || (algorithm === "certified" && (specifiedRefine.certifiedMode === "safe_mother_only" || specifiedRefine.certifiedMode === "stretched_mother"));
+      || (algorithm === "certified" && (specifiedRefine.certifiedMode === "safe_mother_only" || specifiedRefine.certifiedMode === "stretched_mother" || specifiedRefine.certifiedMode === "equidistributed_mother"));
     const iconHint = iconClosedSphere && !iconServed
       ? `<div style="color:var(--warn,#b45309);font-size:12px;margin-top:8px">${z
-          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 ICON 嵌套、Stretch（拉伸加密），或 CMRC 的“仅安全母网格”“认证拉伸”，或关闭加密。"
-          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose ICON nest, Stretch, CMRC safe mother only or certified stretch, or turn refinement off."}</div>`
+          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 ICON 嵌套、Stretch（拉伸加密），或 CMRC 的“仅安全母网格”“认证拉伸”“认证等分布”，或关闭加密。"
+          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose ICON nest, Stretch, CMRC safe mother only, certified stretch or certified equidistribution, or turn refinement off."}</div>`
       : "";
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
@@ -3272,7 +3272,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
       <div class="grid2">
-        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option></select>`)}
+        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option><option value="equidistributed_mother" ${specifiedRefine.certifiedMode==="equidistributed_mother"?"selected":""}>${z?"认证等分布（只挪顶点、无七边形，可多区域）":"Certified equidistribution (vertices moved only, no heptagons; several regions)"}</option></select>`)}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
         ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
         ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
@@ -3281,6 +3281,15 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${field(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
         ${field(z?"认证内容":"Certificate",`<input class="input" value="Euler 2 · charge 12 · primal/dual/requirement/balance/remap" disabled>`,z?"角度硬门以上方所选合同为准；任一认证失败都不写正式 gridfile":"The selected contract defines the angle gate; no formal gridfile is written if certification fails")}
       </div>
+      ${specifiedRefine.certifiedMode==="stretched_mother"
+        ? `<div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
+            ? "认证拉伸：只挪顶点，无七边形，全球 ICON 可用。只有一个焦点；需求 3 级及以上且集中在一处时才比安全母网格省单元，否则自动退回安全母网格并说明原因。"
+            : "Certified stretch: vertices move only, no heptagons, usable for global ICON. One focus; it saves cells over the safe mother only for a demand of level 3 or deeper gathered in one place, and otherwise falls back to the safe mother with the reason."}</div>`
+        : specifiedRefine.certifiedMode==="equidistributed_mother"
+        ? `<div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
+            ? "认证等分布：只挪顶点，无七边形，可服务多处、任意形状的需求（集中的需求会自动改用拉伸）。代价是同一网格内粗细只能相差约 2 倍：单元数通常是认证反向粗化的数倍（两处 2 级需求实测约 5.6 倍），只比安全母网格省约 1.5 倍。仅建议用于需要 CMRC 证书的全球 ICON；其他格式请用认证反向粗化。"
+            : "Certified equidistribution: vertices move only, no heptagons, and any number and shape of demand regions (a concentrated one goes to the stretch). The price is a contrast of about 2x within one mesh: usually several times the cells of certified reverse coarsening (about 5.6x for two level-2 regions), only about 1.5x fewer than the safe mother. Meant for global ICON that needs CMRC certificates; for other formats use reverse coarsening."}</div>`
+        : ""}
     </div>`;
     const algorithmOptionsBlock = {
       method_c: canonicalMethodCOptions,

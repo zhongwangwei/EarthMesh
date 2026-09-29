@@ -458,6 +458,82 @@ fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallo
 }
 
 #[test]
+fn project_icon_cmrc_equidistribution_serves_two_far_regions_without_a_heptagon() {
+    // Level 2 on opposite sides of the globe: one focus cannot serve both,
+    // moving the vertices of an n=64 mother can (the safe mother is n=80).
+    let root = root("cmrc_equidistributed");
+    let mut project = icon_project(MeshCellKind::Tri, DomainConfig::Global, 20);
+    project.refinement.enabled = true;
+    project.refinement.max_passes = 2;
+    project.refinement.backend = RefinementBackend::Certified;
+    project.refinement.certified.mode = CertifiedMode::EquidistributedMother;
+    project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    project.refinement.specified_circle = Some(SpecifiedCircleRefinements::Many(vec![
+        SpecifiedCircleRefinement {
+            lon: 115.0,
+            lat: 23.0,
+            radius_km: 500.0,
+        },
+        SpecifiedCircleRefinement {
+            lon: -60.0,
+            lat: -15.0,
+            radius_km: 500.0,
+        },
+    ]));
+    project.expert.niter_refine = Some(1);
+    let result = run_project(&root, &project, "cmrc_equidistributed");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    let certificate: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            gridfile
+                .parent()
+                .unwrap()
+                .join("certified_certificate.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        certificate["mode"], "equidistributed_mother",
+        "{certificate}"
+    );
+    assert_eq!(certificate["coarsening_strategy"], "equidistribution");
+    assert_eq!(certificate["product_outcome"], "certified_adaptive");
+    assert_eq!(certificate["mother_subdivision"], 64);
+    for residual in [
+        &certificate["physical_residuals"],
+        &certificate["balance_residuals"],
+        &certificate["remap_closure_errors"],
+        &certificate["geometry"]["topology_errors"],
+        &certificate["geometry"]["primal_dual_errors"],
+    ] {
+        assert_eq!(*residual, 0, "{certificate}");
+    }
+    // Only vertices moved: twelve pentagons, every other vertex of degree 6.
+    let file = netcdf::open(gridfile).unwrap();
+    let degrees = file
+        .variable("n_ngrwm")
+        .unwrap()
+        .get_values::<i32, _>(..)
+        .unwrap();
+    let real = degrees
+        .iter()
+        .filter(|&&d| d >= 3)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(real.iter().all(|&d| d == 5 || d == 6));
+    assert_eq!(real.iter().filter(|&&d| d == 5).count(), 12);
+    assert_eq!(
+        stdout_token(&stdout, "icon_cells="),
+        (20 * 64 * 64).to_string()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_icon_nest_delivers_the_global_grid_and_linked_nests() {
     // ICON nests keep the global grid as it is and serve the demand in a
     // separate grid of bisected parent triangles (guide 11.86).

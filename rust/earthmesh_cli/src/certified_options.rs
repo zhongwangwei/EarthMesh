@@ -13,6 +13,10 @@ pub enum CertifiedMode {
     /// A coarser certified mother stretched toward the demand, falling back
     /// to the safe mother when no stretch passes (guide 11.87).
     StretchedMother,
+    /// The coarsest certified mother whose moved vertices serve the demand
+    /// -- the Schmidt stretch or the equidistribution, whichever needs fewer
+    /// cells -- falling back to the safe mother (guide 11.88).
+    EquidistributedMother,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,9 +76,10 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
                     "safe_mother_only" => CertifiedMode::SafeMotherOnly,
                     "reverse_coarsening" => CertifiedMode::ReverseCoarsening,
                     "stretched_mother" => CertifiedMode::StretchedMother,
+                    "equidistributed_mother" => CertifiedMode::EquidistributedMother,
                     other => {
                         return Err(invalid(format!(
-                    "certified mode must be safe_mother_only, reverse_coarsening or stretched_mother, got {other}"
+                    "certified mode must be safe_mother_only, reverse_coarsening, stretched_mother or equidistributed_mother, got {other}"
                 )))
                     }
                 }

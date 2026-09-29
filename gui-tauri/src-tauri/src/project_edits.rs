@@ -802,9 +802,10 @@ pub(crate) fn set_certified_options(
             "safe_mother_only" => earthmesh_project::CertifiedMode::SafeMotherOnly,
             "reverse_coarsening" => earthmesh_project::CertifiedMode::ReverseCoarsening,
             "stretched_mother" => earthmesh_project::CertifiedMode::StretchedMother,
+            "equidistributed_mother" => earthmesh_project::CertifiedMode::EquidistributedMother,
             other => {
                 return Err(format!(
-                "unknown certified mode {other}: expected safe_mother_only, reverse_coarsening or stretched_mother"
+                "unknown certified mode {other}: expected safe_mother_only, reverse_coarsening, stretched_mother or equidistributed_mother"
             ))
             }
         },

@@ -202,83 +202,106 @@ pub(super) fn build_certified_construction(
     local_update_path: Option<&Path>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
-    if options.mode == CertifiedMode::StretchedMother {
-        match earthmesh_refine_certified::stretched_certified_mother(
-            base_nxp,
-            chosen_level,
-            raster_requirements,
-            options.angle_contract,
-            budget,
-        ) {
-            Ok(stretched) => {
-                for reason in &stretched.rejected {
-                    eprintln!("earthmesh_cli: CMRC stretched mother: skipped {reason}");
-                }
-                let safe_subdivision = certified_subdivision(base_nxp, chosen_level)?;
-                eprintln!(
-                    "earthmesh_cli: CMRC stretched mother: level-{} mother n={} stretched by {:.2} \
-                     toward {:.3}E {:.3}N serves level {chosen_level}; the safe mother would be \
-                     n={safe_subdivision} ({:.0}x the cells)",
-                    stretched.mother_level,
+    // Moved mothers: the vertices of a certified mother move toward the
+    // demand, the connectivity stays, so no heptagon appears.
+    let moved = match options.mode {
+        CertifiedMode::StretchedMother => Some(
+            earthmesh_refine_certified::stretched_certified_mother(
+                base_nxp,
+                chosen_level,
+                raster_requirements,
+                options.angle_contract,
+                budget,
+            )
+            .map(|stretched| earthmesh_refine_certified::AdaptedMother {
+                summary: format!(
+                    "stretched mother n={} (factor {:.2} toward {:.3}E {:.3}N)",
                     stretched.subdivision,
                     stretched.factor,
                     stretched.focus_lonlat.0,
-                    stretched.focus_lonlat.1,
-                    (safe_subdivision as f64 / stretched.subdivision as f64).powi(2),
-                );
-                let geometry = Box::new(stretched.geometry);
-                let cell_count = geometry.primal().vertex_count();
-                let face_count = geometry.primal().triangle_count();
-                let pentagons = certified_mother_pentagons(geometry.primal())?;
-                // The stretch moves vertices only: every cell is its mother
-                // cell, so the lineage is the identity.
-                let remap = earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(
-                    geometry.primal(),
-                );
-                let remap_certificate = remap.certify_identity(cell_count);
-                return Ok(CertifiedConstruction {
-                    initial_cells: face_count,
-                    geometry,
-                    pentagons,
-                    remap,
-                    remap_certificate,
-                    final_cell_requirements: Some(stretched.final_requirements),
-                    delivered_level: stretched
-                        .delivered_levels
-                        .iter()
-                        .copied()
-                        .max()
-                        .unwrap_or(0),
-                    delivered_levels: stretched.delivered_levels,
-                    coarsening_strategy: "schmidt_stretch",
-                    initial_subdivision: stretched.subdivision,
-                    final_subdivision: stretched.subdivision,
-                    attempted_patches: 0,
-                    accepted_patches: 0,
-                    removed_vertices: 0,
-                    removed_faces: 0,
-                    search_budget_exhausted: false,
-                    components_total: 0,
-                    components_committed: 0,
-                    components_promoted: 0,
-                    components_exhausted: 0,
-                    search_complete: true,
-                    elastic_report: None,
-                    local_update: None,
-                });
-            }
-            Err(reasons) => {
-                eprintln!(
-                    "earthmesh_cli: CMRC stretched mother: no stretch passes the final \
-                     certificates; delivering the safe mother. {}",
-                    reasons.join("; ")
-                );
-            }
+                    stretched.focus_lonlat.1
+                ),
+                geometry: stretched.geometry,
+                subdivision: stretched.subdivision,
+                strategy: "schmidt_stretch",
+                delivered_levels: stretched.delivered_levels,
+                final_requirements: stretched.final_requirements,
+                rejected: stretched.rejected,
+            }),
+        ),
+        CertifiedMode::EquidistributedMother => {
+            Some(earthmesh_refine_certified::adapted_certified_mother(
+                base_nxp,
+                chosen_level,
+                raster_requirements,
+                options.angle_contract,
+                budget,
+            ))
         }
+        _ => None,
+    };
+    match moved {
+        Some(Ok(adapted)) => {
+            for reason in &adapted.rejected {
+                eprintln!("earthmesh_cli: CMRC moved mother: set aside {reason}");
+            }
+            let safe_subdivision = certified_subdivision(base_nxp, chosen_level)?;
+            eprintln!(
+                "earthmesh_cli: CMRC moved mother: {} serves level {chosen_level}; the safe \
+                 mother would be n={safe_subdivision} ({:.2}x the cells)",
+                adapted.summary,
+                (safe_subdivision as f64 / adapted.subdivision as f64).powi(2),
+            );
+            let geometry = Box::new(adapted.geometry);
+            let cell_count = geometry.primal().vertex_count();
+            let face_count = geometry.primal().triangle_count();
+            let pentagons = certified_mother_pentagons(geometry.primal())?;
+            // Only vertices moved: every cell is its mother cell, so the
+            // lineage is the identity.
+            let remap = earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(
+                geometry.primal(),
+            );
+            let remap_certificate = remap.certify_identity(cell_count);
+            return Ok(CertifiedConstruction {
+                initial_cells: face_count,
+                geometry,
+                pentagons,
+                remap,
+                remap_certificate,
+                final_cell_requirements: Some(adapted.final_requirements),
+                delivered_level: adapted.delivered_levels.iter().copied().max().unwrap_or(0),
+                delivered_levels: adapted.delivered_levels,
+                coarsening_strategy: adapted.strategy,
+                initial_subdivision: adapted.subdivision,
+                final_subdivision: adapted.subdivision,
+                attempted_patches: 0,
+                accepted_patches: 0,
+                removed_vertices: 0,
+                removed_faces: 0,
+                search_budget_exhausted: false,
+                components_total: 0,
+                components_committed: 0,
+                components_promoted: 0,
+                components_exhausted: 0,
+                search_complete: true,
+                elastic_report: None,
+                local_update: None,
+            });
+        }
+        Some(Err(reasons)) => {
+            eprintln!(
+                "earthmesh_cli: CMRC moved mother: none passes the final certificates; \
+                 delivering the safe mother. {}",
+                reasons.join("; ")
+            );
+        }
+        None => {}
     }
     if matches!(
         options.mode,
-        CertifiedMode::SafeMotherOnly | CertifiedMode::StretchedMother
+        CertifiedMode::SafeMotherOnly
+            | CertifiedMode::StretchedMother
+            | CertifiedMode::EquidistributedMother
     ) {
         let subdivision = certified_subdivision(base_nxp, chosen_level)?;
         let mut config = earthmesh_refine_certified::CertifiedConfig::mother_only(subdivision);
@@ -1550,10 +1573,12 @@ pub(super) fn refine_with_certified(
         match earthmesh_refine_certified::classify_adaptivity_delivery(
             final_mesh,
             fulfillment,
-            // A stretched-mother run that fell back delivered the safe mother.
+            // A moved-mother run that fell back delivered the safe mother.
             options.mode == CertifiedMode::SafeMotherOnly
-                || (options.mode == CertifiedMode::StretchedMother
-                    && coarsening_strategy != "schmidt_stretch"),
+                || (matches!(
+                    options.mode,
+                    CertifiedMode::StretchedMother | CertifiedMode::EquidistributedMother
+                ) && !matches!(coarsening_strategy, "schmidt_stretch" | "equidistribution")),
         ) {
             earthmesh_refine_certified::CertifiedMeshOutcome::CertifiedAdaptive {
                 mesh,
@@ -1775,6 +1800,7 @@ pub(super) fn deliver_certified(
         CertifiedMode::SafeMotherOnly => "safe_mother_only",
         CertifiedMode::ReverseCoarsening => "reverse_coarsening",
         CertifiedMode::StretchedMother => "stretched_mother",
+        CertifiedMode::EquidistributedMother => "equidistributed_mother",
     };
     let physical_balance_scope = if coarsening_strategy == "elastic_component_epochs" {
         "final_voronoi_cells_exact_raster_overlap"

@@ -1,8 +1,11 @@
+mod adapted_mother;
 mod api;
 pub mod certificate;
 pub mod coarsen;
 mod config;
+mod equidistributed_mother;
 mod fingerprint;
+mod mother_geometry;
 pub mod mother_grid;
 mod outcome;
 pub mod remap;
@@ -29,6 +32,8 @@ pub use outcome::{
     FinalCertificationEvidence, GeometryCertifiedMotherGrid, SafeFallbackReason,
 };
 
+pub use adapted_mother::{adapted_certified_mother, AdaptedMother};
+pub use equidistributed_mother::{equidistributed_certified_mother, EquidistributedMother};
 pub use requirement::{
     certify_final_cell_requirements, certify_final_cell_requirements_from_raster,
     certify_final_cell_requirements_from_raster_global_bound,

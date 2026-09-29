@@ -3026,13 +3026,19 @@ fn icon_refinement_is_refused_only_where_the_mesh_is_a_closed_sphere() {
     assert!(!refused(&project), "{:?}", project.validate());
     project.refinement.certified.mode = CertifiedMode::ReverseCoarsening;
     assert!(refused(&project), "{:?}", project.validate());
-    // The certified stretch moves vertices only: degree 5/6 everywhere.
-    project.refinement.certified.mode = CertifiedMode::StretchedMother;
-    assert!(!refused(&project), "{:?}", project.validate());
-    assert!(project
-        .try_lower()
-        .map(|lowered| lowered.certified.mode == CertifiedMode::StretchedMother)
-        .unwrap_or(true));
+    // The certified stretch and equidistribution move vertices only:
+    // degree 5/6 everywhere.
+    for mode in [
+        CertifiedMode::StretchedMother,
+        CertifiedMode::EquidistributedMother,
+    ] {
+        project.refinement.certified.mode = mode;
+        assert!(!refused(&project), "{:?}", project.validate());
+        assert!(project
+            .try_lower()
+            .map(|lowered| lowered.certified.mode == mode)
+            .unwrap_or(true));
+    }
     project.refinement.certified.mode = CertifiedMode::ReverseCoarsening;
     // Stretch keeps the icosahedral grid, so it is the way to refine ICON.
     project.refinement.backend = RefinementBackend::Stretch;
