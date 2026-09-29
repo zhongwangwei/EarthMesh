@@ -379,6 +379,7 @@ pub(crate) fn project_summary(yaml: String) -> Result<ProjectSummary, String> {
         certified_mode: match cfg.refinement.certified.mode {
             earthmesh_project::CertifiedMode::SafeMotherOnly => "safe_mother_only",
             earthmesh_project::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
+            earthmesh_project::CertifiedMode::StretchedMother => "stretched_mother",
         }
         .to_string(),
         certified_delivery: match cfg.refinement.certified.delivery {

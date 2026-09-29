@@ -396,6 +396,11 @@ pub enum CertifiedMode {
     SafeMotherOnly,
     #[default]
     ReverseCoarsening,
+    /// A coarser certified mother stretched toward the demand by a Schmidt
+    /// transformation, kept only when every final certificate passes;
+    /// otherwise the safe mother. It grades by moving vertices, so every
+    /// vertex keeps degree 5 or 6 and a closed global ICON grid takes it.
+    StretchedMother,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

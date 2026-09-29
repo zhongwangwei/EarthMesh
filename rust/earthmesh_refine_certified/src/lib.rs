@@ -7,6 +7,7 @@ pub mod mother_grid;
 mod outcome;
 pub mod remap;
 pub mod requirement;
+mod stretched_mother;
 
 pub use api::{
     certify_geometry, certify_geometry_with_contract, certify_mother_grid,
@@ -35,3 +36,4 @@ pub use requirement::{
     FinalCellRequirementError, FinalCellRequirementReport, FinalCellRequirementResiduals,
     RasterLevelField, RequirementWitness, SourceLevelField, TargetLevelField,
 };
+pub use stretched_mother::{stretched_certified_mother, StretchedMother};

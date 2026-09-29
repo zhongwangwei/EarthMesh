@@ -381,6 +381,52 @@ fn project_icon_stretch_refines_a_closed_sphere_and_delivers_icon() {
 }
 
 #[test]
+fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_cells() {
+    // A level-3 demand: the safe mother would be n=80; a level-2 mother
+    // (n=40) stretched toward the circle passes every certificate (guide 11.87).
+    let root = root("cmrc_stretched");
+    let mut project = refined_icon_project(RefinementBackend::Certified);
+    project.refinement.max_passes = 3;
+    project.refinement.certified.mode = CertifiedMode::StretchedMother;
+    project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    let result = run_project(&root, &project, "cmrc_stretched");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stdout}\n{stderr}");
+    // `--quiet` keeps the certified_* lines off stdout; read the certificate.
+    let gridfile = Path::new(field(&stdout, "project_final_gridfile="));
+    let certificate: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            gridfile
+                .parent()
+                .unwrap()
+                .join("certified_certificate.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
+    assert_eq!(certificate["coarsening_strategy"], "schmidt_stretch");
+    assert_eq!(certificate["product_outcome"], "certified_adaptive");
+    assert_eq!(certificate["mother_subdivision"], 40);
+    assert_eq!(certificate["delivered_level_max"], 3);
+    for residual in [
+        &certificate["physical_residuals"],
+        &certificate["balance_residuals"],
+        &certificate["remap_closure_errors"],
+        &certificate["geometry"]["topology_errors"],
+        &certificate["geometry"]["primal_dual_errors"],
+    ] {
+        assert_eq!(*residual, 0, "{certificate}");
+    }
+    assert_eq!(
+        stdout_token(&stdout, "icon_cells="),
+        (20 * 40 * 40).to_string()
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_icon_nest_delivers_the_global_grid_and_linked_nests() {
     // ICON nests keep the global grid as it is and serve the demand in a
     // separate grid of bisected parent triangles (guide 11.86).

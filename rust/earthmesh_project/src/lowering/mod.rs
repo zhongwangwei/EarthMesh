@@ -106,6 +106,7 @@ impl LoweredProject {
                     match self.certified.mode {
                         crate::CertifiedMode::SafeMotherOnly => "safe_mother_only",
                         crate::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
+                        crate::CertifiedMode::StretchedMother => "stretched_mother",
                     },
                     match self.certified.delivery {
                         crate::CertifiedDeliveryMode::Tri => "tri",

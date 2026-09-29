@@ -10,6 +10,9 @@ pub enum CertifiedMode {
     #[default]
     SafeMotherOnly,
     ReverseCoarsening,
+    /// A coarser certified mother stretched toward the demand, falling back
+    /// to the safe mother when no stretch passes (guide 11.87).
+    StretchedMother,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,9 +71,10 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
                 options.mode = match assignment.value.to_ascii_lowercase().as_str() {
                     "safe_mother_only" => CertifiedMode::SafeMotherOnly,
                     "reverse_coarsening" => CertifiedMode::ReverseCoarsening,
+                    "stretched_mother" => CertifiedMode::StretchedMother,
                     other => {
                         return Err(invalid(format!(
-                    "certified mode must be safe_mother_only or reverse_coarsening, got {other}"
+                    "certified mode must be safe_mother_only, reverse_coarsening or stretched_mother, got {other}"
                 )))
                     }
                 }

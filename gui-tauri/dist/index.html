@@ -3213,11 +3213,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       && cellEdit === "tri" && (targetEdit.kind === "atmosphere" || targetEdit.kind === "earth")
       && domainMode === "global";
     const iconServed = algorithm === "stretch" || algorithm === "icon_nest"
-      || (algorithm === "certified" && specifiedRefine.certifiedMode === "safe_mother_only");
+      || (algorithm === "certified" && (specifiedRefine.certifiedMode === "safe_mother_only" || specifiedRefine.certifiedMode === "stretched_mother"));
     const iconHint = iconClosedSphere && !iconServed
       ? `<div style="color:var(--warn,#b45309);font-size:12px;margin-top:8px">${z
-          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 ICON 嵌套、Stretch（拉伸加密），或 CMRC 的“仅安全母网格”，或关闭加密。"
-          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose ICON nest, Stretch, CMRC safe mother only, or turn refinement off."}</div>`
+          ? "全球 ICON 三角网每个顶点至多 6 条边，插点式加密做不到；请选 ICON 嵌套、Stretch（拉伸加密），或 CMRC 的“仅安全母网格”“认证拉伸”，或关闭加密。"
+          : "A global ICON triangle grid allows at most six edges per vertex, which no cell-inserting refinement can keep; choose ICON nest, Stretch, CMRC safe mother only or certified stretch, or turn refinement off."}</div>`
       : "";
     const algorithmBlock = `<div id="refinementAlgorithmPanel" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px;background:var(--bg)">
       <div style="font-weight:700;margin-bottom:10px">${z ? "网格细化算法" : "Mesh refinement algorithm"}</div>
@@ -3272,7 +3272,7 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     const certifiedOptions = `<div id="certifiedOptions" style="border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px">
       <div style="font-weight:700;margin-bottom:10px">CMRC · ${z?"严格参数":"strict parameters"}</div>
       <div class="grid2">
-        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option></select>`)}
+        ${field(z?"运行模式":"Mode",`<select class="select" id="certifiedMode"><option value="safe_mother_only" ${specifiedRefine.certifiedMode==="safe_mother_only"?"selected":""}>${z?"仅安全母网格（统一最细层，不做自适应粗化）":"Safe mother only (uniform finest level; no adaptive coarsening)"}</option><option value="reverse_coarsening" ${specifiedRefine.certifiedMode==="reverse_coarsening"?"selected":""}>${z?"认证反向粗化":"Certified reverse coarsening"}</option><option value="stretched_mother" ${specifiedRefine.certifiedMode==="stretched_mother"?"selected":""}>${z?"认证拉伸（较粗母网格向需求拉伸，全球 ICON 可用）":"Certified stretch (coarser mother stretched toward the demand; global ICON)"}</option></select>`)}
         ${field(z?"交付":"Delivery",`<select class="select" id="certifiedDelivery"><option value="tri" ${specifiedRefine.certifiedDelivery==="tri"?"selected":""}>Tri</option><option value="hex" ${specifiedRefine.certifiedDelivery==="hex"?"selected":""}>Hex / Voronoi</option><option value="coupled" ${specifiedRefine.certifiedDelivery==="coupled"?"selected":""}>Coupled</option></select>`)}
         ${field(z?"角度合同":"Angle contract",`<select class="select" id="certifiedAngleContract"><option value="legacy_strict_40_to_80" ${specifiedRefine.certifiedAngleContract==="legacy_strict_40_to_80"?"selected":""}>${z?"Legacy 严格 40°–80°":"Legacy strict 40°–80°"}</option><option value="domain_quality_38_to_82_v1" ${specifiedRefine.certifiedAngleContract==="domain_quality_38_to_82_v1"?"selected":""}>${z?"DQX 几何 38°–82°（偏好 40°–80°）":"DQX geometry 38°–82° (prefers 40°–80°)"}</option></select>`,z?"这里启用 DQX 几何硬门；空间质量调度仍需 domain-export 执行路径。":"This enables the DQX geometry gate; spatial-quality scheduling still requires the domain-export execution path.")}
         ${field(z?"最高母网格级":"Maximum mother level",`<input class="input" type="number" id="certifiedMaximumLevel" min="0" max="20" step="1" value="${specifiedRefine.certifiedMaximumLevel}">`)}
