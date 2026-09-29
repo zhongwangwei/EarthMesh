@@ -99,6 +99,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         1,
         None,
         false,
+        false,
     )
     .expect("red-green must build what the criterion asked for");
 
@@ -183,6 +184,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             1,
             None,
             false,
+            false,
         )
         .unwrap_or_else(|error| panic!("{place} level 1: {error}"));
         assert_eq!(open_edges(&first.mesh), 0, "{place} level 1 left a hole");
@@ -197,6 +199,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             &refine,
             2,
             Some(&previous),
+            false,
             false,
         )
         .unwrap_or_else(|error| panic!("{place} level 2: {error}"));
@@ -262,6 +265,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         1,
         None,
         false,
+        false,
     )
     .expect("level one");
     assert!(
@@ -282,6 +286,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         &refine,
         2,
         Some(&previous),
+        false,
         false,
     )
     .expect("level two");

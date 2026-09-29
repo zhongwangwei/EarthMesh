@@ -2800,6 +2800,9 @@ fn refine_with_redgreen(
             level,
             previous_marks.as_deref(),
             preserve_locality,
+            // The h-field's check reads every face centre; the halves of a
+            // green closure are faces too.
+            hfield_targets.is_some(),
         )?;
         eprintln!(
             "red-green refine level {level}: {} triangles split, {} grown by the judges, \

@@ -815,17 +815,31 @@ pub fn redgreen_marking_from_regions(
     regions: &[earthmesh_mesh::RefinementRegion],
     level: usize,
 ) -> Vec<i32> {
-    redgreen_marking(mesh, &earthmesh_refine::RegionTargets::new(regions), level)
-        .expect("region containment cannot fail")
+    redgreen_marking(
+        mesh,
+        &earthmesh_refine::RegionTargets::new(regions),
+        level,
+        false,
+    )
+    .expect("region containment cannot fail")
 }
 
 /// Mark every triangle whose centre the demand asks to be at least `level`
 /// deep. The demand is read only as a point query, so named regions, criteria
 /// circles and the h-field all mark the same way.
+///
+/// With `split_children`, a triangle is also marked when the demand holds at
+/// the centre of any half a green closure could cut it into. An unmarked
+/// triangle beside the refinement is bisected, and its halves are faces of the
+/// final mesh at its own depth: the h-field's quality check reads the target
+/// at every face centre (a hex cell's corners), so a half whose centre falls
+/// inside the demand is a cell below its target even though the parent's
+/// centre was outside -- the one warn left on a global 1000 km circle.
 pub fn redgreen_marking(
     mesh: &earthmesh_refine_redgreen::RedGreenMesh,
     targets: &dyn earthmesh_refine::TargetLevelField,
     level: usize,
+    split_children: bool,
 ) -> io::Result<Vec<i32>> {
     let mut marking = vec![0i32; mesh.triangle_count() + 1];
     if !targets.demands_anywhere(level) {
@@ -837,7 +851,27 @@ pub fn redgreen_marking(
         .skip(mesh.num_vertex + 1)
         .try_for_each(|(triangle, mark)| -> io::Result<()> {
             let centre = mesh.triangle_points[triangle];
-            *mark = i32::from(targets.demands(centre, level)?);
+            if targets.demands(centre, level)? {
+                *mark = 1;
+                return Ok(());
+            }
+            if split_children {
+                let corners = mesh.cells_on_triangle[triangle].map(|cell| mesh.cell_points[cell]);
+                for k in 0..3 {
+                    let (a, b, c) = (corners[k], corners[(k + 1) % 3], corners[(k + 2) % 3]);
+                    let Some(middle) = earthmesh_mesh::spherical_centroid_degrees(&[a, b]) else {
+                        continue;
+                    };
+                    for half in [[a, middle, c], [middle, b, c]] {
+                        if let Some(point) = earthmesh_mesh::spherical_centroid_degrees(&half) {
+                            if targets.demands(point, level)? {
+                                *mark = 1;
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
             Ok(())
         })?;
     Ok(marking)
@@ -853,6 +887,31 @@ mod marking_tests {
             earthmesh_mesh::TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
         let neighbors = mesh.m_neighbors.clone();
         earthmesh_refine_redgreen::redgreen_mesh_from_triangular(&mesh, &neighbors).expect("bridge")
+    }
+
+    #[test]
+    fn split_children_add_the_rim_triangles_a_green_half_would_reach() {
+        let mesh = base();
+        let regions = [RefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 2_000_000.0,
+            level: 1,
+        }];
+        let targets = earthmesh_refine::RegionTargets::new(&regions);
+        let centres = redgreen_marking(&mesh, &targets, 1, false).unwrap();
+        let halves = redgreen_marking(&mesh, &targets, 1, true).unwrap();
+        // Every triangle the centre rule marks stays marked, and the rim gains
+        // the triangles whose centre is outside but one of whose halves is in.
+        assert!(centres
+            .iter()
+            .zip(&halves)
+            .all(|(&centre, &half)| centre <= half));
+        let (a, b) = (
+            centres.iter().filter(|&&m| m == 1).count(),
+            halves.iter().filter(|&&m| m == 1).count(),
+        );
+        assert!(b > a, "{a} centre marks, {b} with halves");
+        assert_eq!(&halves[..=mesh.num_vertex], &centres[..=mesh.num_vertex]);
     }
 
     #[test]
@@ -980,8 +1039,9 @@ pub fn refine_redgreen_level(
     level: usize,
     previous_level_marks: Option<&[i32]>,
     preserve_locality: bool,
+    split_children: bool,
 ) -> io::Result<(UnstructuredMesh, earthmesh_refine_redgreen::RedGreenOutcome)> {
-    let marking = redgreen_marking(mesh, targets, level)?;
+    let marking = redgreen_marking(mesh, targets, level, split_children)?;
     let settings = redgreen_round_settings(
         refine,
         level,
@@ -1024,6 +1084,7 @@ mod level_tests {
             &earthmesh_core::RefineConfig::default(),
             1,
             None,
+            false,
             false,
         )
         .expect("one red-green level");
@@ -1078,6 +1139,7 @@ mod level_tests {
             1,
             None,
             false,
+            false,
         )
         .expect("one red-green level");
 
@@ -1131,6 +1193,7 @@ mod level_tests {
             1,
             None,
             false,
+            false,
         )
         .expect("level one");
         let previous = first.interior_marks.clone();
@@ -1152,6 +1215,7 @@ mod level_tests {
             2,
             Some(&previous),
             false,
+            false,
         )
         .expect("level two, held inside level one");
         let (_, free) = refine_redgreen_level(
@@ -1160,6 +1224,7 @@ mod level_tests {
             &refine,
             2,
             None,
+            false,
             false,
         )
         .expect("level two, free");
