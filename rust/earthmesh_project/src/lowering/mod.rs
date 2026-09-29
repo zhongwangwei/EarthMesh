@@ -480,6 +480,15 @@ impl ProjectConfig {
                 Some(_) => None,
                 None => Some(AdaptiveRefinementRecipe::default()),
             }
+            .map(|mut recipe| {
+                // Chasing the coast reads the land-type raster like any
+                // threshold row, so it follows the threshold switch. A project
+                // that names only a region asked for that region: on Method-C,
+                // which refuses data-shaped demand, a default-on coastline
+                // failed every land and ocean run with a specified circle.
+                recipe.coastline &= self.refinement.threshold_enabled;
+                recipe
+            })
         } else {
             None
         };

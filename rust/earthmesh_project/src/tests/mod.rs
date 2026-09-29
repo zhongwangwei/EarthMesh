@@ -1928,6 +1928,31 @@ fn the_point_radius_route_is_lowered_for_both_backends() {
 }
 
 #[test]
+fn the_coastline_criterion_follows_threshold_refinement() {
+    // Chasing the coast reads the land-type raster like any threshold row. A
+    // project that names only a region asked for that region; on Method-C,
+    // which refuses data-shaped demand, a default-on coastline failed every
+    // land and ocean run with a specified circle.
+    let mut p = sample();
+    p.refinement.hfield = None;
+    p.refinement.adaptive = None;
+    assert!(p.refinement.threshold_enabled);
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("NL%adaptive_coastline = .true."), "{nml}");
+
+    p.refinement.threshold_enabled = false;
+    p.refinement.specified_bbox = Some(SpecifiedBboxRefinement {
+        w: 112.0,
+        e: 115.0,
+        s: 21.0,
+        n: 24.0,
+    });
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("&adaptive"), "{nml}");
+    assert!(nml.contains("NL%adaptive_coastline = .false."), "{nml}");
+}
+
+#[test]
 fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
     // A run refines one way or the other, and point+radius is the one that can
     // re-ask a criterion after the cells it judges exist.
