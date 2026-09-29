@@ -91,7 +91,7 @@ fn a_demand_one_focus_cannot_reach_is_refused_with_reasons() {
 fn a_level_two_demand_is_served_by_a_mother_between_the_powers_of_two() {
     // Level 2 on n=20: n=40 may stretch by 2 at most and a demand of any
     // extent needs a little more, so the powers of two left only the safe
-    // mother (n=80). n=64 is 3.2 times the base and needs about 1.3.
+    // mother (n=80). n=48 is 2.4 times the base and needs about 1.7.
     let demand = raster(&[((115.0, 23.0), 500.0, 2)]);
     let stretched = stretched_certified_mother(
         20,
@@ -101,9 +101,9 @@ fn a_level_two_demand_is_served_by_a_mother_between_the_powers_of_two() {
         10_000_000,
     )
     .unwrap_or_else(|why| panic!("{why:?}"));
-    assert_eq!(stretched.subdivision, 64);
+    assert_eq!(stretched.subdivision, 48);
     assert!(
-        stretched.factor > 1.0 && stretched.factor <= 3.2,
+        stretched.factor > 1.0 && stretched.factor <= 2.4,
         "{}",
         stretched.factor
     );
