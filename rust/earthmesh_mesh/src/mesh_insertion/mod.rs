@@ -239,12 +239,30 @@ impl MeshState {
         point: CartesianPoint,
         seed: usize,
     ) -> Result<BTreeSet<usize>, InsertionError> {
+        self.delaunay_cavity_constrained(point, seed, |_, _| false)
+    }
+
+    /// [`Self::delaunay_cavity`] that never crosses an edge `constrained`
+    /// names: the cavity of a constrained Delaunay insertion. A protected edge
+    /// the plain cavity swallows is deleted by the insertion, so a caller that
+    /// must keep it can only refuse -- which near a protected boundary was
+    /// most insertions, and LEPP stopped with the demand a third unmet.
+    pub fn delaunay_cavity_constrained(
+        &self,
+        point: CartesianPoint,
+        seed: usize,
+        constrained: impl Fn(usize, usize) -> bool,
+    ) -> Result<BTreeSet<usize>, InsertionError> {
         let mut cavity = BTreeSet::new();
         let mut queue = vec![seed];
         cavity.insert(seed);
         while let Some(triangle) = queue.pop() {
             for corner in 0..3 {
                 let neighbour = self.neighbours()[triangle][corner];
+                let edge = self.triangles()[triangle];
+                if constrained(edge[(corner + 1) % 3], edge[(corner + 2) % 3]) {
+                    continue;
+                }
                 if neighbour == 0
                     || !self.is_triangle_live(neighbour)
                     || cavity.contains(&neighbour)
@@ -432,11 +450,22 @@ impl MeshState {
         point: CartesianPoint,
         postcondition: impl FnOnce(&Self, &InsertionReport) -> bool,
     ) -> Result<InsertionReport, InsertionTransactionError> {
+        self.insert_site_constrained_transactionally(point, |_, _| false, postcondition)
+    }
+
+    /// [`Self::insert_site_transactionally`] whose cavity stops at the edges
+    /// `constrained` names, so they survive the insertion.
+    pub fn insert_site_constrained_transactionally(
+        &mut self,
+        point: CartesianPoint,
+        constrained: impl Fn(usize, usize) -> bool,
+        postcondition: impl FnOnce(&Self, &InsertionReport) -> bool,
+    ) -> Result<InsertionReport, InsertionTransactionError> {
         let containing = self
             .locate_triangle(point, None)
             .map_err(InsertionTransactionError::Insert)?;
         let cavity = self
-            .delaunay_cavity(point, containing)
+            .delaunay_cavity_constrained(point, containing, constrained)
             .map_err(InsertionTransactionError::Insert)?;
         let patch = self.snapshot_around(&cavity);
         let report = match self.insert_site_with_cavity(point, containing, &cavity) {

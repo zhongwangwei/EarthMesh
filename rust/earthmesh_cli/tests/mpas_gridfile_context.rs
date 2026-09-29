@@ -811,15 +811,19 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
         lepp_site_circle(mesh.w_points[first], 1),
         200_000.0,
     )]);
-    assert_eq!(
-        earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
-            &mesh,
-            &earthmesh_cli::LeppResolvedTargets(&partial),
-            6
-        )
-        .unwrap(),
-        None
-    );
+    // A partial demand keeps its targets where it has them and the base
+    // width -- 2^deepest times its finest target -- everywhere else.
+    let context = earthmesh_cli::refinement_demand::width::mpas_context_from_resolved_targets(
+        &mesh,
+        &earthmesh_cli::LeppResolvedTargets(&partial),
+        6,
+    )
+    .unwrap()
+    .expect("uncovered sites take the base width");
+    assert_eq!(context.cellwidth_km[first], 200.0);
+    assert!(context.cellwidth_km[first + 1..]
+        .iter()
+        .all(|&width| width == 400.0));
 
     for case in [
         "bad_radius",

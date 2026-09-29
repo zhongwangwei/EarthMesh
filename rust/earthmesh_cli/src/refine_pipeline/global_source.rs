@@ -64,6 +64,24 @@ fn method_c_lepp_insertion_gates(
     gates
 }
 
+/// The gates the AdaptiveHybrid refinement inserts under.
+///
+/// Held to Method-C's 5..=7 at every insertion, LEPP refused most of them
+/// near the demand's edge -- 892 of the rejections on a global 1000 km circle
+/// at two levels, which it left a third unmet. It inserts under 4..=8 and the
+/// window repair takes the degrees back afterwards (`repair_lepp_state`),
+/// before any table that addresses at most 7. The post-quality pass has no
+/// such repair after it and keeps the strict gates.
+fn method_c_lepp_adaptive_insertion_gates(
+    protected_pentagons: [usize; 12],
+    mode_grid: &str,
+) -> LeppInsertionGates {
+    let mut gates = method_c_lepp_insertion_gates(protected_pentagons, mode_grid);
+    gates.maximum_vertex_degree = 8;
+    gates.minimum_vertex_degree = gates.minimum_vertex_degree.min(4);
+    gates
+}
+
 fn format_remap_csv_row(row: &earthmesh_refine_certified::remap::RemapRow) -> String {
     let mut output = String::with_capacity(row.sources.len().saturating_mul(32));
     for &(source, weight) in &row.sources {
@@ -3217,7 +3235,7 @@ fn refine_with_method_c_lepp(
             maximum_path_length: options.maximum_path_length,
             ..LeppSearchConfig::default()
         },
-        gates: method_c_lepp_insertion_gates(pentagons, config.mode_grid.trim()),
+        gates: method_c_lepp_adaptive_insertion_gates(pentagons, config.mode_grid.trim()),
     };
     let mut boundary_segments = lepp_region_boundary_segments(&state, named_regions, domain_region);
     let refinement_started = std::time::Instant::now();
@@ -3268,6 +3286,20 @@ fn refine_with_method_c_lepp(
             "LEPP AdaptiveHybrid HEX refinement committed no insertions while demands remain unresolved; refusing unchanged 5..=7 publication",
         ));
     }
+    let (state, window) = repair_lepp_state(&state, report.initial_vertices, pentagons)?;
+    eprintln!(
+        "earthmesh_cli: LEPP angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
+         {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed)",
+        window.outside_before,
+        window.outside_after,
+        window.min_angle_before,
+        window.max_angle_before,
+        window.min_angle_after,
+        window.max_angle_after,
+        window.flips,
+        window.moves,
+        window.removed_vertices,
+    );
     let refined = state.to_triangular_mesh(pentagons, None)?;
     let initial_voronoi = spherical_voronoi_state(&refined)?;
     let initial_output =
@@ -3298,6 +3330,90 @@ fn refine_with_method_c_lepp(
             ..BackendDiagnostics::default()
         },
     })
+}
+
+/// Take the degrees LEPP was allowed to overshoot back into 5..=7 and the
+/// angles into the window. Base vertices may move but stay; only LEPP's own
+/// sites may be removed, so the twelve pentagons keep their ids.
+fn repair_lepp_state(
+    state: &MeshState,
+    initial_vertices: usize,
+    pentagons: [usize; 12],
+) -> io::Result<(MeshState, earthmesh_mesh::AngleWindowReport)> {
+    let first = earthmesh_mesh::MESH_STATE_FIRST_ID;
+    let radius = state.sphere_radius();
+    let mut points = state
+        .vertices()
+        .iter()
+        .map(|p| {
+            let r = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+            if r > 0.0 {
+                [p.x / r, p.y / r, p.z / r]
+            } else {
+                [0.0; 3]
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut faces = state.triangles()[..first].to_vec();
+    faces.extend(
+        (first..state.triangles().len())
+            .filter(|&triangle| state.is_triangle_live(triangle))
+            .map(|triangle| state.triangles()[triangle]),
+    );
+    let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
+    let mut options = earthmesh_mesh::AngleWindowOptions::new((lo + 0.25, hi - 0.25));
+    options.first_vertex = first;
+    options.first_face = first;
+    options.removable_from = initial_vertices;
+    // Toward 60 only where LEPP left more than the base grid's own spread:
+    // the icosahedral far field (54-72 degrees) is left where it is.
+    options.equilateral_rounds = 4;
+    options.equilateral_tolerance_deg = 12.5;
+    options.max_valence = 7;
+    // The twelve pentagons stay at degree 5: Method-C refuses the mesh
+    // otherwise, and LEPP's own gates never changed them either.
+    let report = earthmesh_mesh::repair_triangle_angle_window_locked(
+        &mut points,
+        &mut faces,
+        &mut Vec::new(),
+        options,
+        &pentagons,
+    );
+    let mut degree = vec![0usize; points.len()];
+    for face in &faces[first..] {
+        for &vertex in face {
+            degree[vertex] += 1;
+        }
+    }
+    let over = degree.iter().filter(|&&count| count > 7).count();
+    if over > 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "LEPP left {over} vertices above degree 7 that the window repair could not flip \
+                 back; Method-C tables address at most 7"
+            ),
+        ));
+    }
+    let vertices = points
+        .iter()
+        .map(|&[x, y, z]| earthmesh_mesh::CartesianPoint::new(x * radius, y * radius, z * radius))
+        .collect();
+    let repaired = MeshState::from_parts(vertices, faces).map_err(|errors| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "LEPP window repair left an invalid mesh: {}",
+                errors
+                    .iter()
+                    .take(3)
+                    .map(|error| format!("{error:?}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        )
+    })?;
+    Ok((repaired, report))
 }
 
 fn lepp_region_boundary_segments(

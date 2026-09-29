@@ -63,8 +63,9 @@ impl<'a> NominalDemandWidth<'a> {
         }
     }
 
-    /// The width field sampled at the mesh's final W sites. `None` when the
-    /// demand does not cover every site and nothing may be guessed for the rest.
+    /// The width field sampled at the mesh's final W sites. `None` only when
+    /// the resolved targets are empty; a site none of them covers was asked
+    /// for the base width.
     pub fn mpas_context(
         &self,
         mesh: &crate::UnstructuredMesh,
@@ -78,7 +79,7 @@ impl<'a> NominalDemandWidth<'a> {
             Self::ResolvedTargets(report) => {
                 let context = mpas_context_from_resolved_targets(mesh, report, base_nxp)?;
                 if context.is_none() {
-                    eprintln!("earthmesh_cli: MPAS nominal context unavailable: resolved regions do not cover every parent W site; no background width was supplied");
+                    eprintln!("earthmesh_cli: MPAS nominal context unavailable: no resolved region carries a target");
                 }
                 Ok(context)
             }
@@ -236,13 +237,20 @@ pub fn mpas_context_from_resolved_targets(
             "resolved-target MPAS scale cannot be represented in km",
         ));
     }
-    let Some(widths) = targets.into_iter().collect::<Option<Vec<_>>>() else {
+    let Some(reference) = reference else {
         return Ok(None);
     };
-    let reference =
-        reference.ok_or_else(|| invalid("resolved-target covered demand has no targets"))?;
+    // A site no resolved target covers was asked for the base width, as the
+    // region passes take it: the demand's own scale, `2^deepest` times its
+    // finest target. Refusing the context there refused every global LEPP
+    // run whose regions do not cover the whole sphere -- all of them.
+    let background_km = reference * 2f64.powi(report.deepest_target_level() as i32);
     let mut cellwidth_km = vec![reference; first];
-    cellwidth_km.extend(widths.into_iter().map(|width| width / 1000.0));
+    cellwidth_km.extend(
+        targets
+            .into_iter()
+            .map(|width| width.map_or(background_km, |width| width / 1000.0)),
+    );
     let context = MpasGridfileContext {
         cellwidth_km,
         base_nxp,

@@ -271,23 +271,18 @@ fn cli_lepp_adaptive_hybrid_tri_preserves_single_insertion_and_partial_demand() 
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0]["region"]["type"], "circle");
     assert!(targets[0]["resolved_target_edge_m"].as_f64().unwrap() > 0.0);
-    assert!(
-        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&gridfile)
-            .unwrap()
-            .is_none(),
-        "partial coverage must not invent a background width"
-    );
-    assert!(stderr.contains("no background width was supplied"));
-    let error = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
-        &gridfile,
-        root.join("unavailable"),
-        earthmesh_project::ModelFormat::Mpas,
-    )
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("missing persisted MPAS width context"));
-    assert!(!root.join("unavailable/mesh.nc4").exists());
+    // Partial coverage carries the base width outside its target, as the
+    // region passes do: the demand's own scale, not an invented one.
+    let widths = earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&gridfile)
+        .unwrap()
+        .expect("partial coverage takes the base width outside the target");
+    assert_eq!(widths.source, "lepp_resolved_region_w_demand_v1");
+    let target_km = targets[0]["resolved_target_edge_m"].as_f64().unwrap() / 1000.0;
+    assert!(widths
+        .cellwidth_km
+        .iter()
+        .any(|&width| (width - target_km).abs() < 1e-9));
+    assert!(widths.cellwidth_km.iter().any(|&width| width > target_km));
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -334,9 +329,16 @@ fn cli_lepp_resolved_demand_delivers_global_and_regional_mpas() {
     let report: serde_json::Value =
         serde_json::from_slice(&fs::read(stdout_value(&stdout, "lepp_adaptive_report")).unwrap())
             .unwrap();
+    // Two committed, at least one of them for the demand itself. Under the
+    // strict per-insertion degree gate the second came as a balance split;
+    // under 4..=8 both can land as physical ones.
     assert_eq!(report["lepp_paths"]["committed"], 2);
-    assert_eq!(report["insertions"]["physical"], 1);
-    assert_eq!(report["insertions"]["balance"], 1);
+    let physical = report["insertions"]["physical"].as_u64().unwrap();
+    let balance = report["insertions"]["balance"].as_u64().unwrap();
+    assert!(
+        physical >= 1 && physical + balance == 2,
+        "{physical} + {balance}"
+    );
     assert_eq!(
         report["resolved_target_semantics"],
         "lepp_resolved_region_targets_v1"
@@ -562,7 +564,11 @@ fn cli_lepp_post_quality_hex_zero_progress_rejects_unchanged_optimized_success()
 }
 
 #[test]
-fn cli_lepp_adaptive_hex_insufficient_budget_rejects_unchanged_publication() {
+fn cli_lepp_adaptive_hex_budget_of_one_publishes_repaired_partial_progress() {
+    // Held to 5..=7 at every insertion, a hex run with a budget of one
+    // committed nothing and refused to publish. It now inserts under 4..=8
+    // and the window repair takes the degrees back before any Method-C table:
+    // the one insertion lands, the rest of the demand is reported unresolved.
     let _guard = NETCDF_TEST_LOCK.lock().expect("lock netcdf test guard");
     let root = temp_root("lepp_hex_insufficient_budget");
     let case = "lepp_hex_insufficient_budget";
@@ -577,14 +583,27 @@ fn cli_lepp_adaptive_hex_insufficient_budget_rejects_unchanged_publication() {
             .current_dir(&root),
     )
     .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("committed no insertions while demands remain unresolved"),
-        "{stderr}"
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(
+        stdout_value(&stdout, "lepp_adaptive_physical_insertions"),
+        "1"
     );
-    assert!(!root
-        .join(format!("{case}/result/gridfile_NXP0006_hex.nc4"))
-        .exists());
+    assert_ne!(
+        stdout_value(&stdout, "lepp_adaptive_unresolved_demands"),
+        "0"
+    );
+    let gridfile = root.join(format!("{case}/result/gridfile_NXP0006_hex.nc4"));
+    let mesh = earthmesh_cli::unstructured_mesh_io::read_unstructured_mesh_netcdf(&gridfile)
+        .expect("read the published LEPP hex mesh");
+    let first = earthmesh_cli::unstructured_mesh_support::unstructured_w_row_layout(&mesh)
+        .first_physical_row;
+    assert!(
+        mesh.n_w_to_m[first..]
+            .iter()
+            .all(|&sides| (5..=7).contains(&sides)),
+        "every hex cell has 5..=7 sides after the repair"
+    );
     fs::remove_dir_all(root).unwrap();
 }

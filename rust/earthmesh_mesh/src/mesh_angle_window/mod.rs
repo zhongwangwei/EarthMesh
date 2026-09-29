@@ -151,6 +151,8 @@ struct Work<'a> {
     sign: Vec<f64>,
     incident: Vec<Vec<usize>>,
     fixed: Vec<bool>,
+    /// Vertices whose valence no flip or removal may change.
+    locked: Vec<bool>,
     removed: Vec<bool>,
     options: AngleWindowOptions,
     mode: Mode,
@@ -357,6 +359,9 @@ impl Work<'_> {
             return false;
         };
         if c == d || !self.edge_faces(c, d).is_empty() {
+            return false;
+        }
+        if [a, b, c, d].iter().any(|&v| self.locked[v]) {
             return false;
         }
         let dev = |valence: usize| (valence as f64 - 6.0).powi(2);
@@ -619,6 +624,9 @@ impl Work<'_> {
         let Some(ring) = self.ring(v) else {
             return false;
         };
+        if ring.iter().any(|&u| self.locked[u]) {
+            return false;
+        }
         let sign = self.sign[faces[0]];
         if faces.iter().any(|&f| self.sign[f] != sign) {
             return false;
@@ -756,6 +764,29 @@ pub fn repair_triangle_angle_window_traced(
     face_levels: &mut Vec<usize>,
     options: AngleWindowOptions,
 ) -> (AngleWindowReport, AngleWindowOrigins) {
+    repair_with_locked_valence(points, faces, face_levels, options, &[])
+}
+
+/// `repair_triangle_angle_window`, keeping the valence of `degree_locked`:
+/// no flip or removal may change it. Method-C's twelve pentagons stay at
+/// degree 5, and a mesh a Method-C table will read cannot let them move.
+pub fn repair_triangle_angle_window_locked(
+    points: &mut Vec<[f64; 3]>,
+    faces: &mut Vec<[usize; 3]>,
+    face_levels: &mut Vec<usize>,
+    options: AngleWindowOptions,
+    degree_locked: &[usize],
+) -> AngleWindowReport {
+    repair_with_locked_valence(points, faces, face_levels, options, degree_locked).0
+}
+
+fn repair_with_locked_valence(
+    points: &mut Vec<[f64; 3]>,
+    faces: &mut Vec<[usize; 3]>,
+    face_levels: &mut Vec<usize>,
+    options: AngleWindowOptions,
+    degree_locked: &[usize],
+) -> (AngleWindowReport, AngleWindowOrigins) {
     assert!(face_levels.is_empty() || face_levels.len() == faces.len());
     let face_count = faces.len();
     let vertex_count = points.len();
@@ -767,6 +798,15 @@ pub fn repair_triangle_angle_window_traced(
         sign: vec![0.0; face_count],
         incident: vec![Vec::new(); vertex_count],
         fixed: vec![false; vertex_count],
+        locked: {
+            let mut locked = vec![false; vertex_count];
+            for &v in degree_locked {
+                if v < vertex_count {
+                    locked[v] = true;
+                }
+            }
+            locked
+        },
         removed: vec![false; vertex_count],
         options,
         mode: Mode::Window,
@@ -807,6 +847,37 @@ pub fn repair_triangle_angle_window_traced(
         mean_deviation_before,
         ..AngleWindowReport::default()
     };
+
+    // A vertex above the valence limit is repaired even where no angle is
+    // outside the window: a refinement that let degree 8 through while it
+    // inserted (LEPP-Delaunay) leaves octagons the dual cannot address, with
+    // every angle near 45 degrees and nothing for the window phase to see.
+    // The same valence-lowering flips as below, offered on its own edges.
+    if topology {
+        for _ in 0..options.max_rounds {
+            let over: Vec<usize> = (options.first_vertex..work.points.len())
+                .filter(|&v| !work.removed[v] && work.valence(v) > options.max_valence)
+                .collect();
+            if over.is_empty() {
+                break;
+            }
+            let mut changed = 0;
+            for v in over {
+                for w in work.neighbours(v) {
+                    if work.valence(v) <= options.max_valence {
+                        break;
+                    }
+                    if work.flip_edge(v.min(w), v.max(w), false) {
+                        report.flips += 1;
+                        changed += 1;
+                    }
+                }
+            }
+            if changed == 0 {
+                break;
+            }
+        }
+    }
 
     let mut bad: Vec<usize> = work.live_faces().filter(|&f| work.outside(f)).collect();
     while !bad.is_empty() && report.rounds < options.max_rounds {

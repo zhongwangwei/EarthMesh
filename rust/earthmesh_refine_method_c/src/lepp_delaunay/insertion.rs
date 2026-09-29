@@ -341,7 +341,7 @@ fn insert_terminal_midpoint_staged(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let undo = if retain_undo {
-        Some(mesh.snapshot_around(&insertion_cavity(mesh, point, None)?))
+        Some(mesh.snapshot_around(&insertion_cavity(mesh, point, None, |_, _| false)?))
     } else {
         None
     };
@@ -499,10 +499,12 @@ fn insert_terminal_midpoint_constrained_staged(
     let (edge, point, split_segment, split_reason) = if let Some(encroachment) = encroached {
         let edge = LeppEdgeId::new(encroachment.tail, encroachment.head);
         if edge == terminal_edge {
+            // The terminal edge is itself protected -- its midpoint always
+            // encroaches it -- so it is split, open or interior alike.
             (
                 terminal_edge,
                 terminal_point,
-                boundary_face.is_some(),
+                true,
                 LeppInsertionSplitReason::TerminalEdge,
             )
         } else {
@@ -522,10 +524,18 @@ fn insert_terminal_midpoint_constrained_staged(
                 });
             }
         }
+        // A protected terminal edge is split at its midpoint whether it is
+        // an open boundary or an interior one (a region's straddling edge):
+        // left in the list, the constrained cavity would stop at it and fan
+        // the new site to both its ends -- a triangle with a 180 degree
+        // corner -- and before that, the plain cavity deleted it and the
+        // insertion was refused as a stale segment.
+        let protected_terminal = boundary_face.is_some()
+            || segments.contains(terminal_edge.vertices[0], terminal_edge.vertices[1]);
         (
             terminal_edge,
             terminal_point,
-            boundary_face.is_some(),
+            protected_terminal,
             LeppInsertionSplitReason::TerminalEdge,
         )
     };
@@ -535,7 +545,12 @@ fn insert_terminal_midpoint_constrained_staged(
         .then(|| find_open_edge_face(mesh, tail, head))
         .flatten();
     let splits_open_edge = open_edge_face.is_some();
-    let cavity = insertion_cavity(mesh, point, open_edge_face)?;
+    // The cavity stops at protected segments, as a constrained insertion's
+    // does, except at the one being split: the new site sits on it.
+    let splitting = split_segment.then_some((tail.min(head), tail.max(head)));
+    let cavity = insertion_cavity(mesh, point, open_edge_face, |a, b| {
+        splitting != Some((a.min(b), a.max(b))) && segments.contains(a, b)
+    })?;
     let undo = retain_undo.then(|| mesh.snapshot_around(&cavity));
     let cavity_sites = mesh.sites_touching(&cavity);
     let protected_degrees = gates
@@ -590,21 +605,28 @@ fn insert_terminal_midpoint_constrained_staged(
             },
         )
     } else {
-        mesh.insert_site_transactionally(point, |state, report| {
-            if state.open_edge_count() != before_open_edges {
-                failure.set(Some(GateFailure::OpenEdges(state.open_edge_count())));
-                return false;
-            }
-            constrained_gates_pass(
-                state,
-                report,
-                gates,
-                &protected_degrees,
-                &segments_at_risk,
-                before_open_edges != 0,
-                &failure,
-            ) && postcondition(state, report)
-        })
+        // `segments` already holds the split halves; the segment the site
+        // sits on is gone from it, so the cavity may cross that one.
+        let protected: &SegmentList = segments;
+        mesh.insert_site_constrained_transactionally(
+            point,
+            |a, b| protected.contains(a, b),
+            |state, report| {
+                if state.open_edge_count() != before_open_edges {
+                    failure.set(Some(GateFailure::OpenEdges(state.open_edge_count())));
+                    return false;
+                }
+                constrained_gates_pass(
+                    state,
+                    report,
+                    gates,
+                    &protected_degrees,
+                    &segments_at_risk,
+                    before_open_edges != 0,
+                    &failure,
+                ) && postcondition(state, report)
+            },
+        )
     };
     let insertion = match transaction {
         Ok(report) => report,
@@ -700,6 +722,7 @@ fn insertion_cavity(
     state: &MeshState,
     point: CartesianPoint,
     containing: Option<usize>,
+    constrained: impl Fn(usize, usize) -> bool,
 ) -> Result<BTreeSet<usize>, LeppInsertionError> {
     let containing = containing
         .map(Ok)
@@ -708,7 +731,7 @@ fn insertion_cavity(
             LeppInsertionError::Transaction(InsertionTransactionError::Insert(error))
         })?;
     state
-        .delaunay_cavity(point, containing)
+        .delaunay_cavity_constrained(point, containing, constrained)
         .map_err(|error| LeppInsertionError::Transaction(InsertionTransactionError::Insert(error)))
 }
 

@@ -590,31 +590,14 @@ fn project_cli_backends_admit_the_selected_mesh_before_configured_model_delivery
         let gridfile = Path::new(report["mesh_name"].as_str().unwrap());
         let widths =
             earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(gridfile).unwrap();
-        assert_eq!(
-            widths.is_some(),
-            name != "lepp",
-            "{name}: only producers with retained nominal demand supply widths"
-        );
+        // LEPP's resolved regions now carry the base width outside them, so
+        // every producer here delivers a nominal width context.
+        let widths = widths.unwrap_or_else(|| panic!("{name}: no nominal MPAS widths"));
         if matches!(name, "method_c" | "redgreen") {
-            assert_eq!(
-                widths.as_ref().unwrap().source,
-                "adaptive_region_pass_w_demand_v1"
-            );
+            assert_eq!(widths.source, "adaptive_region_pass_w_demand_v1");
         }
-        if widths.is_none() {
-            let output = root.join("unavailable_mpas");
-            let err = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
-                gridfile,
-                &output,
-                ModelFormat::Mpas,
-            )
-            .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("missing persisted MPAS width context"),
-                "{name}: {err}"
-            );
-            assert!(!output.exists());
+        if name == "lepp" {
+            assert_eq!(widths.source, "lepp_resolved_region_w_demand_v1");
         }
         let delivered = field("colm_mesh_input=");
         assert!(Path::new(&delivered).is_file());

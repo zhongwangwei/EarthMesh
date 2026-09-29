@@ -98,8 +98,9 @@ pub use mesh_triangle_seed::MethodCTriangleSeed;
 mod mesh_angle_window;
 mod mesh_stretch;
 pub use mesh_angle_window::{
-    repair_triangle_angle_window, repair_triangle_angle_window_traced,
-    spherical_triangle_angles_deg, AngleWindowOptions, AngleWindowOrigins, AngleWindowReport,
+    repair_triangle_angle_window, repair_triangle_angle_window_locked,
+    repair_triangle_angle_window_traced, spherical_triangle_angles_deg, AngleWindowOptions,
+    AngleWindowOrigins, AngleWindowReport,
 };
 pub use mesh_stretch::{
     schmidt_factor_for_levels, schmidt_factor_for_scales, schmidt_focus_for_levels,
