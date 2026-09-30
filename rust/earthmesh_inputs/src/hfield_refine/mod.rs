@@ -182,9 +182,15 @@ pub struct HfieldDomainMask {
     pub window: LatticeWindow,
 }
 
+fn level_byte(level: usize) -> u8 {
+    u8::try_from(level).unwrap_or(u8::MAX)
+}
+
 // Reporting only: these counters never feed the composed field or its limiter.
 struct ThresholdAudit {
-    raw_levels: Vec<usize>,
+    /// One byte per raster cell: levels stop at 5, and a regional raster has
+    /// 134 million cells.
+    raw_levels: Vec<u8>,
     criteria: Vec<serde_json::Value>,
 }
 
@@ -226,7 +232,7 @@ impl ThresholdAudit {
                 }
                 if active[index] {
                     hit_bins += 1;
-                    self.raw_levels[index] = self.raw_levels[index].max(level);
+                    self.raw_levels[index] = self.raw_levels[index].max(level_byte(level));
                 }
             }
         }
@@ -277,7 +283,7 @@ impl ThresholdAudit {
                 let index = i * field.nlat() + j;
                 if active[index] {
                     hit_bins += 1;
-                    self.raw_levels[index] = self.raw_levels[index].max(level);
+                    self.raw_levels[index] = self.raw_levels[index].max(level_byte(level));
                 }
             }
         }
@@ -2405,9 +2411,49 @@ fn compose_spherical_hfield_over_mother(
     crate::hydro_refinement_adapter::apply_hydro_target_to_field(
         &mut field, options, mother_m, domain,
     )?;
-    constrain_hfield_to_domain(&mut field, domain, mother_m, options.g)?;
+    let Some(domain) = domain else {
+        return Ok(field);
+    };
+    let inside = HfieldDomainMask::new(field.nlon(), field.nlat(), domain);
+    for j in 0..field.nlat() {
+        for i in 0..field.nlon() {
+            if !inside.is_active(i, j) {
+                field.set(i, j, mother_m)?;
+            }
+        }
+    }
+    field.limit_gradient(options.g)?;
+    if mother_m > base_m {
+        // The domain's own skirt, graded more gently than the demands inside
+        // it. Each level's band around the next finer one is `1 / g` of that
+        // level's cells wide, and Method-C's transition rows must fit in it:
+        // at g = 0.2 a 1 km Heihe run from a 5-level mother failed with a
+        // level-5 transition crossing its parent; at 0.1 it built in 116 s.
+        // A separate field, so the demands inside keep their own gradation.
+        let rows = if matches!(mesh_type.trim(), "atmos" | "atmosmesh") {
+            METHOD_C_TRANSITION_ROWS_ATMOS
+        } else {
+            METHOD_C_TRANSITION_ROWS_SURFACE
+        };
+        let skirt_g = options.g.min(1.0 / (rows + 3.0));
+        let mut skirt = HField::uniform(field.nlon(), field.nlat(), mother_m)?;
+        for j in 0..field.nlat() {
+            for i in 0..field.nlon() {
+                if inside.is_active(i, j) {
+                    skirt.set(i, j, base_m)?;
+                }
+            }
+        }
+        skirt.limit_gradient(skirt_g)?;
+        field.min_with_field(&skirt)?;
+    }
     Ok(field)
 }
+
+/// Method-C's widest transition, in rows of the finer level
+/// (`MethodCMesh::MAX_MROWS_SURFACE` and `MAX_MROWS_ATMOS`).
+const METHOD_C_TRANSITION_ROWS_SURFACE: f64 = 7.0;
+const METHOD_C_TRANSITION_ROWS_ATMOS: f64 = 13.0;
 
 /// A composed h-field and the scale its levels count from.
 pub struct LevelledHfield {

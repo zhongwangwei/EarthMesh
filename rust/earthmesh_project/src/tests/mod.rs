@@ -3536,16 +3536,16 @@ fn regional_at(nxp: i32) -> ProjectConfig {
 
 #[test]
 fn a_fine_regional_run_builds_a_coarse_mother_and_refines_its_domain() {
-    // Unrefined: the whole budget of three automatic levels is free.
+    // Unrefined: the whole budget of five levels is free.
     let lowered = regional_at(2002).try_lower().unwrap();
-    assert_eq!(lowered.mkgrd.regional_mother_levels, 3);
-    assert_eq!(lowered.mkgrd.nxp, 252, "2002 rounds up to 2016 = 252 * 8");
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 5);
+    assert_eq!(lowered.mkgrd.nxp, 63, "2002 rounds up to 2016 = 63 * 32");
     assert_eq!(lowered.mkgrd.requested_nxp(), 2016);
     assert!(lowered.mkgrd.refine, "the domain is a refinement demand");
     assert!(lowered.hfield.is_some() && lowered.adaptive.is_none());
     let namelist = lowered.to_namelist();
     assert!(
-        namelist.contains("NL%regional_mother_levels = 3"),
+        namelist.contains("NL%regional_mother_levels = 5"),
         "{namelist}"
     );
     assert!(namelist.contains("&hfield"), "{namelist}");
@@ -3607,7 +3607,7 @@ fn the_regional_mother_is_left_alone_where_it_cannot_be_refined_back() {
     red_green.refinement.backend = crate::RefinementBackend::RedGreen;
     assert_eq!(
         red_green.try_lower().unwrap().mkgrd.regional_mother_levels,
-        3
+        5
     );
     // Criteria on red-green take the point+radius route, which a mother
     // would move to the h-field: left alone unless the h-field is asked for.
@@ -3618,7 +3618,10 @@ fn the_regional_mother_is_left_alone_where_it_cannot_be_refined_back() {
     assert!(lowered.adaptive.is_some());
     red_green.refinement.hfield = Some(HfieldRefinementRecipe::default());
     let lowered = red_green.try_lower().unwrap();
-    assert_eq!(lowered.mkgrd.regional_mother_levels, 3);
+    assert_eq!(
+        lowered.mkgrd.regional_mother_levels, 3,
+        "2 levels of its own"
+    );
     assert!(lowered.adaptive.is_none());
 
     // So does a named region on Method-C.

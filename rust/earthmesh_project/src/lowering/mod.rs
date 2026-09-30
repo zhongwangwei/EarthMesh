@@ -731,9 +731,10 @@ fn circle_geometry(lon: f64, lat: f64, radius_km: f64) -> Result<String, String>
 /// bottleneck.
 /// The coarsest a regional run's automatic mother gets: about 170 km cells.
 const REGIONAL_MOTHER_MIN_NXP: i32 = 48;
-/// Automatic mothers stop at 3 halvings (1/64 of the triangles), leaving
-/// levels for the run's own refinement under the Method-C cap of 5.
-const REGIONAL_MOTHER_AUTO_LEVELS: u8 = 3;
+/// Automatic mothers may use every level the run's own refinement leaves
+/// under the Method-C cap of 5: at 3, a 1 km Heihe run still built a 20
+/// million-triangle mother (over 15 minutes and 19 GB); at 5 it took 116 s.
+const REGIONAL_MOTHER_AUTO_LEVELS: u8 = 5;
 
 impl ProjectConfig {
     /// How many halvings coarser than the requested resolution a regional

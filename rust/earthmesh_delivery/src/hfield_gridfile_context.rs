@@ -51,6 +51,16 @@ impl HfieldGridfileContext {
         let mut var = file
             .add_variable::<f64>(TARGET, &[NLAT, NLON])
             .map_err(netcdf_to_io_error)?;
+        // The raster is global and mostly one value -- the base size away from
+        // any demand, and all of it outside a regional domain -- so it is
+        // stored compressed: raw, a 2 km regional run's 14,000-cell gridfile
+        // was 1.08 GB of it. A classic-format file cannot compress; it stays raw.
+        if var
+            .set_chunking(&[self.field.nlat().min(256), self.field.nlon().min(512)])
+            .is_ok()
+        {
+            let _ = var.set_compression(4, true);
+        }
         var.put_attribute("units", "m")
             .map_err(netcdf_to_io_error)?;
         var.put_values(self.field.values(), (.., ..))
