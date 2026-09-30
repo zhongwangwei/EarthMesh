@@ -2841,14 +2841,13 @@ fn refine_with_redgreen(
             .max()
             .unwrap_or(0);
         if !preserve_locality && widest_cell > REDGREEN_MAX_CELL_DEGREE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "red-green level {level} produced a cell with {widest_cell} incident \
-                     triangles; the gridfile's dual and the mask post-process address at most \
-                     {REDGREEN_MAX_CELL_DEGREE}"
-                ),
-            ));
+            // Refused here, a Tibetan land-type run lost everything to one
+            // degree-8 cell. The next level splits around it, and the final
+            // repair lowers every cell under the cap and is checked itself.
+            eprintln!(
+                "earthmesh_cli: warning: red-green level {level} left a cell with {widest_cell} \
+                 incident triangles; the final repair takes it down to {REDGREEN_MAX_CELL_DEGREE}"
+            );
         }
         // Checked here rather than trusted, because the next level is the only
         // thing that would otherwise notice -- and a run that stops at this
@@ -2951,7 +2950,10 @@ fn refine_with_redgreen(
             .skip(redgreen.num_vertex + 1)
             .filter(|(i, (old, new))| transitions[*i] || old != new)
             .count();
-        let repair = crate::redgreen_bridge::repair_redgreen_angle_window(&mut redgreen)?;
+        let repair = crate::redgreen_bridge::repair_redgreen_angle_window(
+            &mut redgreen,
+            (!preserve_locality).then_some(REDGREEN_MAX_CELL_DEGREE),
+        )?;
         eprintln!(
             "earthmesh_cli: Red-Green angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
              {:.2}..{:.2} degrees, |angle-60| max {:.2} -> {:.2} mean {:.2} -> {:.2} (window \
@@ -2998,6 +3000,21 @@ fn refine_with_redgreen(
             invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&saved_mesh)),
             invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&output_mesh)),
         );
+        let saved_widest = (saved_redgreen.num_center + 1..=saved_redgreen.cell_count())
+            .map(|cell| saved_redgreen.n_triangles_on_cell[cell])
+            .max()
+            .unwrap_or(0);
+        if widest_cell > REDGREEN_MAX_CELL_DEGREE && saved_widest > REDGREEN_MAX_CELL_DEGREE {
+            // The refinement itself left the cell, so the checkpoint has it too.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "red-green left a cell with {saved_widest} incident triangles that the \
+                     repair could not bring down ({widest_cell} after it); the gridfile's dual \
+                     and the mask post-process address at most {REDGREEN_MAX_CELL_DEGREE}"
+                ),
+            ));
+        }
         if widest_cell > REDGREEN_MAX_CELL_DEGREE || folded_after > folded_before {
             eprintln!(
                 "earthmesh_cli: warning: Red-Green hex repair rolled back (widest cell \

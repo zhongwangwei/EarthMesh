@@ -489,6 +489,7 @@ const ANGLE_WINDOW_MARGIN_DEG: f64 = 0.25;
 /// keep their ids; refined ones above a removed vertex shift down by one.
 pub fn repair_redgreen_angle_window(
     mesh: &mut RedGreenMesh,
+    degree_cap: Option<usize>,
 ) -> io::Result<earthmesh_mesh::AngleWindowReport> {
     let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
     let mut options = earthmesh_mesh::AngleWindowOptions::new((
@@ -502,12 +503,16 @@ pub fn repair_redgreen_angle_window(
     // backend-neutral angle contract, which runs on every backend's mesh.
     options.equilateral_rounds = 0;
     // Never widen the widest cell: the dual and the mask post-process are
-    // built for the degrees the mesh already has.
-    options.max_valence = (2..mesh.n_triangles_on_cell.len())
-        .map(|cell| mesh.n_triangles_on_cell[cell])
-        .max()
-        .unwrap_or(0)
-        .max(7);
+    // built for the degrees the mesh already has. A hex grid is held to its
+    // cap instead, and a cell above it is brought down: capped at the widest
+    // cell, a degree-8 cell left by a refinement level set its own limit.
+    options.max_valence = degree_cap.unwrap_or_else(|| {
+        (2..mesh.n_triangles_on_cell.len())
+            .map(|cell| mesh.n_triangles_on_cell[cell])
+            .max()
+            .unwrap_or(0)
+            .max(7)
+    });
     let mut points: Vec<[f64; 3]> = mesh
         .cell_points
         .iter()
