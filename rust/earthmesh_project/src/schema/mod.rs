@@ -860,6 +860,12 @@ pub struct ExpertOverrides {
     /// contract -- to compare with a mesh built without it. `None` keeps it on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hex_cell_evening: Option<bool>,
+    /// Halvings between a regional run's global mother and the requested
+    /// resolution, which the domain is refined back down to. `None` chooses
+    /// (up to 3, where the route and the level budget allow); 0 builds the
+    /// mother at the requested resolution, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regional_mother_levels: Option<u8>,
 }
 
 /// MERIT-Hydro inputs used by the post-mesh hydro workflow. Project execution

@@ -12,7 +12,6 @@ use std::{
 };
 
 use earthmesh_core::{RefineConfig, EARTH_RADIUS_METERS};
-use earthmesh_hfield::HField;
 use earthmesh_mesh::{AreaJudgeSourceBounds, LonLatDegrees, RefinementRegion};
 
 use super::RefinementDemand;
@@ -22,12 +21,15 @@ use crate::{
     },
     hfield_refine::{
         has_threshold_hfield_sources, read_landtype_support, read_numeric_support,
-        support_landtype_mask, HfieldDomainMask,
+        support_landtype_mask, HfieldDomainMask, LatticeShape, LatticeWindow,
     },
     GridRegion,
 };
 
+/// Supports held at once: the window over the domain, not the globe.
 const MAX_SUPPORTS: usize = 16_777_216;
+/// Latitude rows of the global support lattice, about 0.6 km apart.
+const MAX_SUPPORT_ROWS: usize = 1 << 15;
 
 pub struct CriterionSupportDemand {
     pub id: String,
@@ -43,6 +45,8 @@ pub struct ThresholdSupportDemand {
     pub parent_m: f64,
     pub longitude_shift: f64,
     pub eligible_supports: usize,
+    /// The supports judged; every `hits` is indexed by this window.
+    pub window: LatticeWindow,
     pub criteria: Vec<CriterionSupportDemand>,
 }
 
@@ -79,19 +83,62 @@ fn support_dimensions(parent_m: f64) -> io::Result<(usize, usize)> {
     } else {
         count.ceil()
     };
-    if !count.is_finite() || count > ((MAX_SUPPORTS / 2) as f64).sqrt().floor() {
-        return Err(invalid("threshold support exceeds 16,777,216 cells; increase the parent scale or reduce threshold levels"));
+    if !count.is_finite() || count > MAX_SUPPORT_ROWS as f64 {
+        return Err(invalid("threshold support is finer than the support lattice allows (about 0.6 km); increase the parent scale or reduce threshold levels"));
     }
     let nlat = (count as usize).max(2);
     Ok((2 * nlat, nlat))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests judge the whole lattice through this, as the oracle for windows.
+    static FULL_WINDOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The supports whose centres can fall in the domain, with a column and row
+/// to spare: the window a regional domain judges instead of the globe.
+fn support_window(nlon: usize, nlat: usize, domain: Option<&GridRegion>) -> LatticeWindow {
+    let full = LatticeWindow::full(nlon, nlat);
+    #[cfg(test)]
+    if FULL_WINDOW.with(std::cell::Cell::get) {
+        return full;
+    }
+    let Some(bounds) = domain.and_then(GridRegion::lonlat_bounds) else {
+        return full;
+    };
+    let (dlon, dlat) = (360.0 / nlon as f64, 180.0 / nlat as f64);
+    // Row centres sit at -90 + (j + 0.5) dlat; column centres at -180 + i dlon.
+    let row = |lat: f64| (lat + 90.0) / dlat - 0.5;
+    let j_lo = (row(bounds.south).floor() - 1.0).max(0.0) as usize;
+    let j_hi = ((row(bounds.north).ceil() + 1.0) as usize).min(nlat - 1);
+    if j_lo > j_hi {
+        return full;
+    }
+    let (i0, ni) = if bounds.width >= 360.0 - 2.0 * dlon {
+        (0, nlon)
+    } else {
+        let i_lo = ((bounds.west + 180.0) / dlon).floor() as i64 - 1;
+        let i_hi = ((bounds.west + bounds.width + 180.0) / dlon).ceil() as i64 + 1;
+        let ni = ((i_hi - i_lo + 1) as usize).min(nlon);
+        (i_lo.rem_euclid(nlon as i64) as usize, ni)
+    };
+    LatticeWindow {
+        nlon,
+        nlat,
+        i0,
+        ni,
+        j0: j_lo,
+        nj: j_hi - j_lo + 1,
+    }
+}
+
 fn support_mask(
     refine: &RefineConfig,
-    nlon: usize,
-    nlat: usize,
+    window: LatticeWindow,
     domain: Option<&GridRegion>,
 ) -> io::Result<HfieldDomainMask> {
+    let (nlon, nlat) = (window.nlon, window.nlat);
     let prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
     let mut masks = if matches!(prefix, "" | "/tmp" | "none") {
         Vec::new()
@@ -107,21 +154,26 @@ fn support_mask(
         mask.validate()?;
     }
     let domain = domain.map(GridRegion::prepared);
-    let mut active = vec![false; nlon * nlat];
-    for i in 0..nlon {
-        let lon = -180.0 + i as f64 * 360.0 / nlon as f64;
-        for j in 0..nlat {
+    let active = (0..window.len())
+        .map(|k| {
+            let (i, j) = window.global(k);
+            let lon = -180.0 + i as f64 * 360.0 / nlon as f64;
             let lat = -90.0 + (j as f64 + 0.5) * 180.0 / nlat as f64;
-            active[i * nlat + j] = domain
+            domain
                 .as_ref()
                 .is_none_or(|region| region.contains(lon, lat))
                 && (masks.is_empty()
                     || masks.iter().any(|region| {
                         region.contains_lonlat_canonical(LonLatDegrees::new(lon, lat))
-                    }));
-        }
-    }
-    Ok(HfieldDomainMask { nlon, nlat, active })
+                    }))
+        })
+        .collect();
+    Ok(HfieldDomainMask {
+        nlon,
+        nlat,
+        active,
+        window,
+    })
 }
 
 fn criterion(
@@ -167,16 +219,26 @@ pub fn evaluate_threshold_support(
         parent_m,
         longitude_shift: 0.0,
         eligible_supports: 0,
+        window: LatticeWindow::full(0, 0),
         criteria: Vec::new(),
     };
     if threshold_level_cap(refine, mesh_type, 5)? == 0 {
         return Ok(out);
     }
     let (nlon, nlat) = support_dimensions(parent_m)?;
+    let window = support_window(nlon, nlat, domain);
+    if window.len() > MAX_SUPPORTS {
+        return Err(invalid(if window.len() == nlon * nlat {
+            "threshold support exceeds 16,777,216 cells over the globe; increase the parent scale or reduce threshold levels"
+        } else {
+            "threshold support exceeds 16,777,216 cells over the domain window; increase the parent scale or reduce threshold levels"
+        }));
+    }
     out.nlon = nlon;
     out.nlat = nlat;
+    out.window = window;
     out.longitude_shift = 180.0 / nlon as f64;
-    let mask = support_mask(refine, nlon, nlat, domain)?;
+    let mask = support_mask(refine, window, domain)?;
     out.eligible_supports = mask.active.iter().filter(|&&active| active).count();
     if out.eligible_supports == 0 {
         eprintln!("earthmesh_cli: no threshold support centers inside the domain/mask at parent scale {parent_m:.3} m ({nlon}x{nlat}); thin regions may need a finer support scale");
@@ -224,11 +286,13 @@ pub fn evaluate_threshold_support(
             "sea-ratio thresholds must satisfy 0 <= min < max <= 1",
         ));
     }
-    let grid = HField::uniform(nlon, nlat, parent_m)?;
+    let grid = LatticeShape { nlon, nlat };
     let land_mask = if groups.is_empty() {
         None
     } else {
-        landtype_file.map(support_landtype_mask).transpose()?
+        landtype_file
+            .map(|path| support_landtype_mask(path, mesh_type.trim() == "landmesh"))
+            .transpose()?
     };
     for ((stem, name), comparisons) in groups {
         let path = Path::new(refine.threshold_dir.trim()).join(format!("{stem}.nc"));
@@ -319,6 +383,7 @@ impl ThresholdSupportDemand {
             "kind": "independent_parent_angular_support",
             "target_parent_scale_m": self.parent_m,
             "nlon": self.nlon, "nlat": self.nlat,
+            "window": {"i0": self.window.i0, "ni": self.window.ni, "j0": self.window.j0, "nj": self.window.nj},
             "longitude_shift_degrees": self.longitude_shift,
             "span_degrees": 180.0 / self.nlat as f64,
             "eligible_supports": self.eligible_supports,
@@ -338,7 +403,7 @@ impl ThresholdSupportDemand {
     fn validate_projection(&self, hits: &[bool], nlon: usize, nlat: usize) -> io::Result<()> {
         if self.nlon == 0
             || self.nlat == 0
-            || Some(hits.len()) != self.nlon.checked_mul(self.nlat)
+            || hits.len() != self.window.len()
             || nlon == 0
             || nlat == 0
             || nlon.checked_mul(nlat).is_none()
@@ -357,9 +422,10 @@ impl ThresholdSupportDemand {
             if !hit {
                 continue;
             }
-            for i in overlaps(index / self.nlat, self.nlon, nlon, true) {
+            let (support_i, support_j) = self.window.global(index);
+            for i in overlaps(support_i, self.nlon, nlon, true) {
                 let i = i.rem_euclid(nlon as i128) as usize;
-                for j in overlaps(index % self.nlat, self.nlat, nlat, false) {
+                for j in overlaps(support_j, self.nlat, nlat, false) {
                     active[i * nlat + j as usize] = true;
                 }
             }
@@ -394,8 +460,9 @@ impl ThresholdSupportDemand {
             if !hit {
                 continue;
             }
-            let longitude = overlaps(index / self.nlat, self.nlon, nlon, true);
-            let latitude = overlaps(index % self.nlat, self.nlat, nlat, false);
+            let (support_i, support_j) = self.window.global(index);
+            let longitude = overlaps(support_i, self.nlon, nlon, true);
+            let latitude = overlaps(support_j, self.nlat, nlat, false);
             let north = (nlat - latitude.end as usize + 1).max(bounds.maxlat_source);
             let south = (nlat - latitude.start as usize).min(bounds.minlat_source);
             // Split the periodic interval at zero, then clip before visiting source rows.

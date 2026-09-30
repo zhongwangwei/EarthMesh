@@ -143,7 +143,7 @@ pub struct FinalAdmissionSpec {
 }
 
 fn project_final_admission_spec(project: &ProjectConfig) -> Result<FinalAdmissionSpec, String> {
-    let target_nxp = project.try_lower()?.mkgrd.nxp;
+    let target_nxp = project.try_lower()?.mkgrd.requested_nxp();
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     Ok(FinalAdmissionSpec {
         cell_kind: project.target.cell,

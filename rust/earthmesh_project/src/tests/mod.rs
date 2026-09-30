@@ -83,6 +83,7 @@ fn sample() -> ProjectConfig {
             weak_concav_eliminate: Some(true),
             isolated_ocean: None,
             hex_cell_evening: None,
+            regional_mother_levels: None,
         },
         hydro_coast: None,
         coupling: None,
@@ -3523,4 +3524,142 @@ fn statistical_thresholds_require_a_consumer_across_targets_and_backends() {
             }
         }
     }
+}
+
+fn regional_at(nxp: i32) -> ProjectConfig {
+    let mut p = sample();
+    p.target.resolution = ResolutionSpec::Nxp(nxp);
+    p.target.kind = MeshDomainKind::Land;
+    p.refinement.enabled = false;
+    p
+}
+
+#[test]
+fn a_fine_regional_run_builds_a_coarse_mother_and_refines_its_domain() {
+    // Unrefined: the whole budget of three automatic levels is free.
+    let lowered = regional_at(2002).try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 3);
+    assert_eq!(lowered.mkgrd.nxp, 252, "2002 rounds up to 2016 = 252 * 8");
+    assert_eq!(lowered.mkgrd.requested_nxp(), 2016);
+    assert!(lowered.mkgrd.refine, "the domain is a refinement demand");
+    assert!(lowered.hfield.is_some() && lowered.adaptive.is_none());
+    let namelist = lowered.to_namelist();
+    assert!(
+        namelist.contains("NL%regional_mother_levels = 3"),
+        "{namelist}"
+    );
+    assert!(namelist.contains("&hfield"), "{namelist}");
+
+    // Refinement levels come first: 3 threshold passes leave 2.
+    let mut refined = regional_at(2002);
+    refined.refinement.enabled = true;
+    refined.refinement.max_passes = 3;
+    let lowered = refined.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 2);
+    assert_eq!(lowered.mkgrd.nxp * 4, lowered.mkgrd.requested_nxp());
+
+    // The mother stops at about 170 km cells.
+    assert_eq!(
+        regional_at(100)
+            .try_lower()
+            .unwrap()
+            .mkgrd
+            .regional_mother_levels,
+        1
+    );
+    assert_eq!(
+        regional_at(90)
+            .try_lower()
+            .unwrap()
+            .mkgrd
+            .regional_mother_levels,
+        0
+    );
+}
+
+#[test]
+fn the_regional_mother_is_left_alone_where_it_cannot_be_refined_back() {
+    let mut global = regional_at(2002);
+    global.domain = DomainConfig::Global;
+    assert_eq!(global.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
+
+    let mut explicit = regional_at(2002);
+    explicit.expert.nxp = Some(2002);
+    let lowered = explicit.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 0);
+    assert_eq!(lowered.mkgrd.nxp, 2002);
+
+    let mut cmrc = regional_at(2002);
+    cmrc.refinement.backend = crate::RefinementBackend::Certified;
+    assert_eq!(cmrc.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
+
+    let mut lepp = regional_at(2002);
+    lepp.refinement.method_c.algorithm = MethodCAlgorithm::LeppDelaunay;
+    assert_eq!(lepp.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
+
+    let mut off = regional_at(2002);
+    off.expert.regional_mother_levels = Some(0);
+    let lowered = off.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 0);
+    assert!(!lowered.to_namelist().contains("regional_mother_levels"));
+
+    let mut red_green = regional_at(2002);
+    red_green.refinement.backend = crate::RefinementBackend::RedGreen;
+    assert_eq!(
+        red_green.try_lower().unwrap().mkgrd.regional_mother_levels,
+        3
+    );
+    // Criteria on red-green take the point+radius route, which a mother
+    // would move to the h-field: left alone unless the h-field is asked for.
+    red_green.refinement.enabled = true;
+    red_green.refinement.max_passes = 2;
+    let lowered = red_green.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 0);
+    assert!(lowered.adaptive.is_some());
+    red_green.refinement.hfield = Some(HfieldRefinementRecipe::default());
+    let lowered = red_green.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 3);
+    assert!(lowered.adaptive.is_none());
+
+    // So does a named region on Method-C.
+    let mut circle = regional_at(2002);
+    circle.refinement.enabled = true;
+    circle.refinement.threshold_enabled = false;
+    circle.refinement.max_passes = 1;
+    circle.refinement.specified_circle = Some(crate::SpecifiedCircleRefinements::One(
+        crate::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.5,
+            radius_km: 50.0,
+        },
+    ));
+    assert_eq!(circle.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
+    circle.expert.regional_mother_levels = Some(2);
+    let lowered = circle.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 2);
+    assert!(lowered.hfield.is_some() && lowered.adaptive.is_none());
+}
+
+#[test]
+fn an_explicit_regional_mother_is_checked_against_the_route_and_level_budget() {
+    let mut four = regional_at(2002);
+    four.expert.regional_mother_levels = Some(4);
+    let lowered = four.try_lower().unwrap();
+    assert_eq!(lowered.mkgrd.regional_mother_levels, 4);
+    assert_eq!(lowered.mkgrd.nxp, 126, "2002 rounds up to 2016 = 126 * 16");
+
+    let mut over = regional_at(2002);
+    over.refinement.enabled = true;
+    over.refinement.max_passes = 3;
+    over.expert.regional_mother_levels = Some(3);
+    assert!(over.try_lower().unwrap_err().contains("exceeds"));
+
+    let mut global = regional_at(2002);
+    global.domain = DomainConfig::Global;
+    global.expert.regional_mother_levels = Some(2);
+    assert!(global.try_lower().unwrap_err().contains("global"));
+
+    let mut six = regional_at(2002);
+    six.expert.regional_mother_levels = Some(6);
+    assert!(six.validate().is_err());
 }

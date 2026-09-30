@@ -260,6 +260,30 @@ fn refine_from_shared_source(
     }
     let hfield_options = crate::hfield_refine::read_hfield_refine_options(contents)?;
     let adaptive_options = crate::adaptive_refine::read_adaptive_refine_options(contents)?;
+    if config.regional_mother_levels > 0 {
+        let lepp =
+            read_method_c_algorithm_options(contents)?.algorithm == MethodCAlgorithm::LeppDelaunay;
+        let unsupported = if config.mask_domain_global {
+            Some("a global domain")
+        } else if hfield_options.is_none() {
+            Some("a run without the h-field")
+        } else if adaptive_options.is_some() {
+            Some("the point+radius route")
+        } else if !matches!(backend, RefineBackend::MethodC | RefineBackend::RedGreen) || lepp {
+            Some("this backend")
+        } else {
+            None
+        };
+        if let Some(unsupported) = unsupported {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "NL%regional_mother_levels refines a regional domain on the h-field of canonical \
+                     Method-C or red-green, not {unsupported}"
+                ),
+            ));
+        }
+    }
     if hfield_options.is_some() && config.nxp % 3 != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -321,11 +345,14 @@ fn refine_from_shared_source(
     if !native_regions.is_empty() {
         validate_native_spawn_mdomain(native_mdomain)?;
     }
+    // A regional mother's domain is a demand of its own, as a hydro target
+    // field is: the run may name no region and no criterion besides it.
+    let regional_mother = config.regional_mother_levels > 0;
     let refine = match RefineConfig::from_mkrefine_namelist_with_external_field(
         contents,
         config.mesh_type.trim(),
         config.mode_grid.trim(),
-        has_hydro_hfield_source,
+        has_hydro_hfield_source || regional_mother,
     ) {
         Ok(refine) => refine,
         Err(_err) if !native_regions.is_empty() || native_surface_global_expansion => {
@@ -338,6 +365,7 @@ fn refine_from_shared_source(
         && native_regions.is_empty()
         && !native_surface_global_expansion
         && !has_hydro_hfield_source
+        && !regional_mother
     {
         return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -534,6 +562,7 @@ fn refine_from_shared_source(
         && !backend_consumes_criteria
         && !native_surface_global_expansion
         && !has_hydro_hfield_source
+        && !regional_mother
     {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -690,28 +719,27 @@ fn refine_from_shared_source(
             // deeper. `&adaptive` takes precedence, as it does on Method-C.
             let (hfield, max_level) = match active_hfield_options {
                 Some(options) if adaptive.is_none() => {
-                    let base_m = options.base_m.unwrap_or_else(|| {
+                    let mother_m =
                         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
-                            / (5.0 * method_c_nxp as f64)
-                    });
-                    let field_max_level = options.max_level.unwrap_or(max_level).clamp(1, 5);
-                    let field = crate::hfield_refine::compose_spherical_hfield(
+                            / (5.0 * method_c_nxp as f64);
+                    let levelled = crate::hfield_refine::compose_levelled_hfield(
                         &regions,
                         &refine,
                         mesh_type,
                         config,
-                        base_m,
+                        mother_m,
                         options,
-                        max_cal_level.clamp(1, field_max_level),
+                        max_level,
+                        max_cal_level,
                         domain_region.as_ref(),
                     )?;
                     (
                         Some(crate::hfield_gridfile_context::HfieldGridfileContext {
-                            field,
-                            base_m,
-                            max_level: field_max_level as u8,
+                            field: levelled.field,
+                            base_m: levelled.level_base_m,
+                            max_level: levelled.max_level as u8,
                         }),
-                        field_max_level,
+                        levelled.max_level,
                     )
                 }
                 _ => (None, max_level),
@@ -875,7 +903,8 @@ fn refine_from_shared_source(
         refined,
         TailInputs {
             refine,
-            max_level,
+            // A regional mother refines its domain even when nothing else does.
+            max_level: max_level.max(usize::from(config.regional_mother_levels)),
             native_cartesian_xy,
             domain_region,
             gridinit: Some(gridinit),
@@ -3927,19 +3956,26 @@ fn refine_with_method_c(
             hfield_diagnostics = diagnostics;
             (refined, passes)
         } else {
-            let field = crate::hfield_refine::compose_spherical_hfield(
+            let mother_m = 2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                / (5.0 * nxp as f64);
+            let crate::hfield_refine::LevelledHfield {
+                field,
+                level_base_m,
+                max_level: field_max_level,
+            } = crate::hfield_refine::compose_levelled_hfield(
                 regions,
                 refine,
                 mesh_type,
                 config,
-                base_m,
+                mother_m,
                 hfield,
-                max_cal_level.clamp(1, field_max_level),
+                max_level,
+                max_cal_level,
                 domain_region,
             )?;
             let (refined, passes, diagnostics) = mesh
                 .spawn_nest_from_target_levels_with_spring(
-                    |lon, lat| field.level_at(lon, lat, base_m, field_max_level as u8),
+                    |lon, lat| field.level_at(lon, lat, level_base_m, field_max_level as u8),
                     field_max_level,
                     max_mrows,
                     nxp,
@@ -3949,7 +3985,7 @@ fn refine_with_method_c(
             hfield_diagnostics = diagnostics;
             hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
                 field,
-                base_m,
+                base_m: level_base_m,
                 max_level: field_max_level as u8,
             });
             (refined, passes)

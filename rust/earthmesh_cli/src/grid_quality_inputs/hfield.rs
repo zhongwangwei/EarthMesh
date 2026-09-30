@@ -3,10 +3,7 @@ use std::io;
 use earthmesh_core::{EarthmeshConfig, RefineConfig};
 use earthmesh_quality::{HfieldConfigDiagnostics, MeshQualityReport, QualityMeshInput};
 
-use crate::hfield_refine::{
-    build_composed_hfield, constrain_hfield_to_domain, has_threshold_hfield_sources,
-    read_hfield_refine_options,
-};
+use crate::hfield_refine::{has_threshold_hfield_sources, read_hfield_refine_options};
 
 use super::gridfile::read_gridfile_mesh_points;
 use super::{target_levels_for_quality_cells, HexSample};
@@ -59,11 +56,12 @@ pub fn attach_hfield_diagnostics_from_namelist(
     )?;
     let native_regions_requested =
         native_grid_refinement_requested(namelist_contents, config.mesh_type.trim())?;
+    let regional_mother = config.regional_mother_levels > 0;
     let refine = match RefineConfig::from_mkrefine_namelist_with_external_field(
         namelist_contents,
         config.mesh_type.trim(),
         config.mode_grid.trim(),
-        has_hydro_target,
+        has_hydro_target || regional_mother,
     ) {
         Ok(refine) => refine,
         Err(_err) if !native_regions.is_empty() || native_surface_global_expansion => {
@@ -116,7 +114,8 @@ pub fn attach_hfield_diagnostics_from_namelist(
             has_threshold_hfield_sources,
         )?);
     }
-    if regions.is_empty() && !has_threshold_hfield_sources && !has_hydro_target {
+    if regions.is_empty() && !has_threshold_hfield_sources && !has_hydro_target && !regional_mother
+    {
         let requested = if native_regions_requested {
             "native Method-C or mask-refine"
         } else {
@@ -130,28 +129,25 @@ pub fn attach_hfield_diagnostics_from_namelist(
         ));
     }
 
-    let base_m = hfield.base_m.unwrap_or_else(|| {
-        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64)
-    });
-    let field_max_level = hfield.max_level.unwrap_or(max_level).clamp(1, 5);
+    let mother_m =
+        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
     let domain = crate::read_method_c_domain_region(&config)?;
-    let mut field = build_composed_hfield(
+    // The field the run refined to, composed the same way.
+    let crate::hfield_refine::LevelledHfield {
+        field,
+        level_base_m: base_m,
+        max_level: field_max_level,
+    } = crate::hfield_refine::compose_levelled_hfield(
         &regions,
         &refine,
         mesh_type,
-        Some(&config),
-        base_m,
+        &config,
+        mother_m,
         &hfield,
-        max_cal_level.clamp(1, field_max_level),
+        max_level,
+        max_cal_level,
         domain.as_ref(),
     )?;
-    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field,
-        &hfield,
-        base_m,
-        domain.as_ref(),
-    )?;
-    constrain_hfield_to_domain(&mut field, domain.as_ref(), base_m, hfield.g)?;
     let targets = earthmesh_refine::HfieldTargets::new(&field, base_m, field_max_level as u8)?;
     let target_levels = target_levels_for_quality_cells(
         mesh,

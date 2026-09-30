@@ -32,6 +32,11 @@ pub struct EarthmeshConfig {
     /// Even out a hex grid's cells after the angle contract (on by default;
     /// written to the namelist only when turned off).
     pub hex_cell_evening: bool,
+    /// A regional run's global mother is this many halvings coarser than
+    /// the requested resolution, and the domain is refined back down to it
+    /// (0: the mother is built at the requested resolution). `nxp` is the
+    /// mother's. Written to the namelist only when non-zero.
+    pub regional_mother_levels: u8,
     pub mask_restart: bool,
     pub mask_domain_type: String,
     /// Optional close-boundary preprocessing carried as a compact engine spec.
@@ -74,6 +79,7 @@ impl Default for EarthmeshConfig {
             relax: 0.04,
             isolated_ocean: false,
             hex_cell_evening: true,
+            regional_mother_levels: 0,
             mask_restart: false,
             mask_domain_type: "/tmp".to_string(),
             mask_domain_close_boundary: "polyline".to_string(),
@@ -94,6 +100,14 @@ impl Default for EarthmeshConfig {
 }
 
 impl EarthmeshConfig {
+    /// The NXP the run was asked for: the mother's, or with a regional
+    /// mother, the resolution its domain is refined back down to.
+    pub fn requested_nxp(&self) -> i32 {
+        self.nxp
+            .checked_shl(u32::from(self.regional_mother_levels))
+            .unwrap_or(self.nxp)
+    }
+
     /// Derive `file_dir = trim(base_dir) // trim(expnme) // '/'` as in
     /// `mkgrd.F90:read_nl`.
     pub fn file_dir(&self) -> String {
@@ -137,6 +151,15 @@ impl EarthmeshConfig {
                 "relax" => config.relax = parse_f64(field, value)?,
                 "isolated_ocean" => config.isolated_ocean = parse_canonical_bool(field, value)?,
                 "hex_cell_evening" => config.hex_cell_evening = parse_canonical_bool(field, value)?,
+                "regional_mother_levels" => {
+                    config.regional_mother_levels = parse_i32(field, value)?
+                        .try_into()
+                        .ok()
+                        .filter(|levels| *levels <= 5)
+                        .ok_or_else(|| {
+                            format!("NL%regional_mother_levels must be in 0..=5, got {value}")
+                        })?
+                }
                 "mask_restart" => config.mask_restart = parse_canonical_bool(field, value)?,
                 "mask_domain_type" => config.mask_domain_type = parse_canonical_string(value),
                 "mask_domain_close_boundary" => {
@@ -259,6 +282,12 @@ impl EarthmeshConfig {
         ));
         if !self.hex_cell_evening {
             out.push_str("  NL%hex_cell_evening = .false.\n");
+        }
+        if self.regional_mother_levels > 0 {
+            out.push_str(&format!(
+                "  NL%regional_mother_levels = {}\n",
+                self.regional_mother_levels
+            ));
         }
         out.push_str(&format!(
             "  NL%output_format = {}\n",

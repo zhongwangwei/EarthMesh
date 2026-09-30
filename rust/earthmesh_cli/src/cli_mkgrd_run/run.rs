@@ -213,7 +213,7 @@ fn run_prepared_mkgrd(
                     && !spec.config.refinement.backend.owns_quality_repair()
             })
             .map(|spec| {
-                let target_nxp = spec.config.try_lower()?.mkgrd.nxp;
+                let target_nxp = spec.config.try_lower()?.mkgrd.requested_nxp();
                 Ok::<_, String>(earthmesh_project::AutoRefineState::new(
                     spec.config.refinement.max_passes,
                     target_nxp,
@@ -969,7 +969,7 @@ fn namelist_triangle_budget(namelist_source: &str) -> usize {
 }
 
 fn project_triangle_budget(config: &earthmesh_project::ProjectConfig) -> Result<usize, String> {
-    let target_nxp = config.try_lower()?.mkgrd.nxp;
+    let target_nxp = config.try_lower()?.mkgrd.requested_nxp();
     let nxp =
         usize::try_from(target_nxp).map_err(|_| "project NXP must be positive".to_string())?;
     let base = 20usize

@@ -231,7 +231,7 @@ pub fn run_project_hydro_closed_loop(
             .try_lower()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
             .mkgrd
-            .nxp;
+            .requested_nxp();
         let mut state =
             earthmesh_project::AutoRefineState::new(project.refinement.max_passes, target_nxp);
         loop {

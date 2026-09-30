@@ -1006,6 +1006,11 @@ impl ExpertOverrides {
                 "expert max_iter_cal override must be between 0 and {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
             ));
         }
+        if matches!(self.regional_mother_levels, Some(n) if n > METHOD_C_MAX_AUTO_REFINE_LEVEL) {
+            return Err(format!(
+                "expert regional_mother_levels must be between 0 and {METHOD_C_MAX_AUTO_REFINE_LEVEL}"
+            ));
+        }
         validate_expert_i32_list(&self.halo, "expert HALO override")?;
         validate_expert_i32_list(
             &self.max_transition_row,

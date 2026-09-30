@@ -825,3 +825,29 @@ fn hex_cell_evening_is_written_only_when_turned_off() {
             .hex_cell_evening
     );
 }
+
+#[test]
+fn regional_mother_levels_round_trip_and_are_bounded() {
+    let config = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).unwrap();
+    assert_eq!(config.regional_mother_levels, 0);
+    assert!(!config
+        .to_mkgrd_namelist()
+        .contains("regional_mother_levels"));
+    let uplifted = EarthmeshConfig {
+        regional_mother_levels: 3,
+        ..config
+    };
+    let text = uplifted.to_mkgrd_namelist();
+    assert!(text.contains("NL%regional_mother_levels = 3"), "{text}");
+    assert_eq!(
+        EarthmeshConfig::from_mkgrd_namelist(&text)
+            .unwrap()
+            .regional_mother_levels,
+        3
+    );
+    let bad = text.replace(
+        "NL%regional_mother_levels = 3",
+        "NL%regional_mother_levels = 6",
+    );
+    assert!(EarthmeshConfig::from_mkgrd_namelist(&bad).is_err());
+}

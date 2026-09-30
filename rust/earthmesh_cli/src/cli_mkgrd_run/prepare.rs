@@ -79,7 +79,7 @@ fn compile_project_arg(
         && project.refinement.enabled
         && !project.refinement.backend.owns_quality_repair()
     {
-        let target_nxp = project.try_lower()?.mkgrd.nxp;
+        let target_nxp = project.try_lower()?.mkgrd.requested_nxp();
         project.refinement.max_passes = earthmesh_project::effective_auto_refine_pass(
             project.refinement.max_passes,
             target_nxp,
@@ -129,7 +129,14 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
     // Project owns model delivery after selecting and admitting the final mesh.
     // Preserve the requested format and all native producer metadata.
     lowered.mkgrd.defer_model_exports = true;
-    if lowered.mkgrd.nxp != requested_nxp {
+    let levels = lowered.mkgrd.regional_mother_levels;
+    if levels > 0 {
+        eprintln!(
+            "earthmesh_cli: regional mother NXP {} ({levels} halvings coarser); the domain is refined to NXP {} (requested {requested_nxp})",
+            lowered.mkgrd.nxp,
+            lowered.mkgrd.requested_nxp()
+        );
+    } else if lowered.mkgrd.nxp != requested_nxp {
         eprintln!(
             "earthmesh_cli: Method-C local refinement adjusted NXP {requested_nxp} -> {} to preserve the stride-3 lattice",
             lowered.mkgrd.nxp

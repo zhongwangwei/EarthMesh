@@ -74,7 +74,9 @@ pub use contain_io::{
     read_contain_netcdf, write_flat_contain_netcdf, ContainMesh, ContainWriteReport,
     FlatContainMesh,
 };
-pub use coordinate_types::{lat_values, lon_values, GridRegion, LonLatPoint, PreparedGridRegion};
+pub use coordinate_types::{
+    lat_values, lon_values, GridRegion, LonLatBounds, LonLatPoint, PreparedGridRegion,
+};
 pub use earthmesh_mesh::LonLatDegrees;
 pub use fs_support::ensure_parent_dir;
 pub use fvcom_mesh_writer::write_fvcom_ns_records;

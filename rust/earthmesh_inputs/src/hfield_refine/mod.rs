@@ -75,11 +75,111 @@ fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
+/// A global lon-lat lattice of `nlon` x `nlat` equal-angle cells, the first
+/// starting at -180 and -90. An [`HField`] is one with a value per cell; the
+/// threshold support grid is one with nothing stored, which it needs at fine
+/// support scales, where the global lattice has billions of cells and only
+/// the window over the domain is read.
+pub trait Lattice {
+    fn nlon(&self) -> usize;
+    fn nlat(&self) -> usize;
+    fn lon_center(&self, ilon: usize) -> f64 {
+        -180.0 + (ilon as f64 + 0.5) * 360.0 / self.nlon() as f64
+    }
+    fn lat_center(&self, jlat: usize) -> f64 {
+        -90.0 + (jlat as f64 + 0.5) * 180.0 / self.nlat() as f64
+    }
+}
+
+impl Lattice for HField {
+    fn nlon(&self) -> usize {
+        HField::nlon(self)
+    }
+    fn nlat(&self) -> usize {
+        HField::nlat(self)
+    }
+}
+
+/// The dimensions of a lattice and nothing else.
+#[derive(Clone, Copy, Debug)]
+pub struct LatticeShape {
+    pub nlon: usize,
+    pub nlat: usize,
+}
+
+impl Lattice for LatticeShape {
+    fn nlon(&self) -> usize {
+        self.nlon
+    }
+    fn nlat(&self) -> usize {
+        self.nlat
+    }
+}
+
+/// A rectangle of a global lattice: longitude columns `i0..i0 + ni`, wrapping
+/// past the last, and latitude rows `j0..j0 + nj`. Cells inside are numbered
+/// column-major, `di * nj + dj`, so the whole lattice's window numbers every
+/// cell `i * nlat + j`, the numbering the h-field readers always used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LatticeWindow {
+    pub nlon: usize,
+    pub nlat: usize,
+    pub i0: usize,
+    pub ni: usize,
+    pub j0: usize,
+    pub nj: usize,
+}
+
+impl LatticeWindow {
+    pub fn full(nlon: usize, nlat: usize) -> Self {
+        Self {
+            nlon,
+            nlat,
+            i0: 0,
+            ni: nlon,
+            j0: 0,
+            nj: nlat,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ni * self.nj
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The window's number for global cell `(i, j)`, if the window holds it.
+    pub fn local(&self, i: usize, j: usize) -> Option<usize> {
+        let di = (i + self.nlon - self.i0 % self.nlon) % self.nlon;
+        (di < self.ni && j >= self.j0 && j < self.j0 + self.nj)
+            .then(|| di * self.nj + (j - self.j0))
+    }
+
+    /// The global cell of the window's number `k`.
+    pub fn global(&self, k: usize) -> (usize, usize) {
+        ((self.i0 + k / self.nj) % self.nlon, self.j0 + k % self.nj)
+    }
+
+    /// Global columns the window holds, in window order.
+    pub fn columns(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.ni).map(|di| (self.i0 + di) % self.nlon)
+    }
+
+    pub fn rows(&self) -> std::ops::Range<usize> {
+        self.j0..self.j0 + self.nj
+    }
+}
+
+/// Which cells of a lattice a reader visits, over the window that holds them.
 #[derive(Clone, Debug)]
 pub struct HfieldDomainMask {
     pub nlon: usize,
     pub nlat: usize,
+    /// One flag per window cell, in the window's numbering.
     pub active: Vec<bool>,
+    pub window: LatticeWindow,
 }
 
 // Reporting only: these counters never feed the composed field or its limiter.
@@ -210,7 +310,22 @@ impl HfieldDomainMask {
                 active[i * nlat + j] = domain.contains(lon, lat);
             }
         }
-        Self { nlon, nlat, active }
+        Self::dense(nlon, nlat, active)
+    }
+
+    /// A mask over the whole lattice, `active[i * nlat + j]`.
+    pub fn dense(nlon: usize, nlat: usize, active: Vec<bool>) -> Self {
+        Self {
+            nlon,
+            nlat,
+            active,
+            window: LatticeWindow::full(nlon, nlat),
+        }
+    }
+
+    /// The window cell of `(i, j)`, if it is active.
+    pub fn active_slot(&self, i: usize, j: usize) -> Option<usize> {
+        self.window.local(i, j).filter(|&k| self.active[k])
     }
 
     pub fn contains(&self, lon: f64, lat: f64) -> bool {
@@ -220,11 +335,11 @@ impl HfieldDomainMask {
         let j = (((lat + 90.0) / 180.0) * self.nlat as f64)
             .floor()
             .clamp(0.0, (self.nlat - 1) as f64) as usize;
-        self.active[i * self.nlat + j]
+        self.is_active(i, j)
     }
 
     fn is_active(&self, i: usize, j: usize) -> bool {
-        self.active[i * self.nlat + j]
+        self.active_slot(i, j).is_some()
     }
 }
 
@@ -722,16 +837,15 @@ pub struct LandtypeBinStats {
 }
 
 impl LandtypeBinStats {
-    fn new(field: &HField, domain: Option<&HfieldDomainMask>) -> Self {
-        let len = field.nlon() * field.nlat();
+    /// Bins for the domain's window cells, indexed by [`cell_index`].
+    fn new(field: &impl Lattice, domain: Option<&HfieldDomainMask>) -> Self {
+        let len = domain.map_or(field.nlon() * field.nlat(), |domain| domain.window.len());
         let mut slot_by_hfield = vec![usize::MAX; len];
         let mut slot_count = 0usize;
-        for i in 0..field.nlon() {
-            for j in 0..field.nlat() {
-                if domain.is_none_or(|domain| domain.is_active(i, j)) {
-                    slot_by_hfield[i * field.nlat() + j] = slot_count;
-                    slot_count += 1;
-                }
+        for (out, slot) in slot_by_hfield.iter_mut().enumerate() {
+            if domain.is_none_or(|domain| domain.active[out]) {
+                *slot = slot_count;
+                slot_count += 1;
             }
         }
         Self {
@@ -862,11 +976,22 @@ fn landtype_hfield_bin(lon: f64, src_j: usize, src_nlat: usize, field: &HField) 
     i * field.nlat() + j
 }
 
+/// Where a reader stores lattice cell `(i, j)`: its number in the domain's
+/// window, or `i * nlat + j` without a domain. Only for cells the domain holds.
+fn cell_index(domain: Option<&HfieldDomainMask>, nlat: usize, i: usize, j: usize) -> usize {
+    domain.map_or(i * nlat + j, |domain| {
+        domain
+            .window
+            .local(i, j)
+            .expect("reader visits only cells inside the domain window")
+    })
+}
+
 fn landtype_hfield_indices(
     lon: f64,
     src_j: usize,
     src_nlat: usize,
-    field: &HField,
+    field: &impl Lattice,
 ) -> (usize, usize) {
     // Canonical global source rows run north-to-south: row 0 is nearest +90°.
     let lat = 90.0 - (src_j as f64 + 0.5) * 180.0 / src_nlat as f64;
@@ -1131,7 +1256,7 @@ fn support_hfield_indices(
     lon: f64,
     src_j: usize,
     src_nlat: usize,
-    field: &HField,
+    field: &impl Lattice,
     longitude_shift: f64,
 ) -> (usize, usize) {
     let (_, j) = landtype_hfield_indices(lon, src_j, src_nlat, field);
@@ -1438,6 +1563,8 @@ fn landtype_maxlc_scan_counts() -> &'static Mutex<HashMap<LandtypeMaxlcIdentity,
 /// above 17, so a largest class of 18..=24 is USGS. Anything else (IGBP, or a
 /// source of its own) keeps the convention. In both schemes the ocean is 0,
 /// which the land-type bins count as ocean on their own.
+const LANDTYPE_OCEAN: i8 = 0;
+
 fn landtype_water_class(largest_class: i32) -> i32 {
     const USGS_WATER_BODIES: i32 = 16;
     if (18..=24).contains(&largest_class) {
@@ -1520,18 +1647,20 @@ fn landtype_global_maxlc(
     Ok(maxlc)
 }
 
-fn active_hfield_axes(field: &HField, domain: Option<&HfieldDomainMask>) -> (Vec<bool>, Vec<bool>) {
+fn active_hfield_axes(
+    field: &impl Lattice,
+    domain: Option<&HfieldDomainMask>,
+) -> (Vec<bool>, Vec<bool>) {
     domain.map_or_else(
         || (vec![true; field.nlon()], vec![true; field.nlat()]),
         |domain| {
             let mut active_lon = vec![false; field.nlon()];
             let mut active_lat = vec![false; field.nlat()];
-            for (i, lon_active) in active_lon.iter_mut().enumerate() {
-                for (j, lat_active) in active_lat.iter_mut().enumerate() {
-                    if domain.is_active(i, j) {
-                        *lon_active = true;
-                        *lat_active = true;
-                    }
+            for (k, &active) in domain.active.iter().enumerate() {
+                if active {
+                    let (i, j) = domain.window.global(k);
+                    active_lon[i] = true;
+                    active_lat[j] = true;
                 }
             }
             (active_lon, active_lat)
@@ -1540,7 +1669,7 @@ fn active_hfield_axes(field: &HField, domain: Option<&HfieldDomainMask>) -> (Vec
 }
 
 fn active_source_latitude_window(
-    field: &HField,
+    field: &impl Lattice,
     active_lat: &[bool],
     src_nlat: usize,
     latitude_order: LatitudeOrder,
@@ -1595,7 +1724,7 @@ fn read_landtype_source_for_hfield(
 
 pub fn read_landtype_support(
     path: &Path,
-    grid: &HField,
+    grid: &impl Lattice,
     domain: Option<&HfieldDomainMask>,
     longitude_shift: f64,
 ) -> io::Result<LandtypeBinStats> {
@@ -1610,13 +1739,19 @@ pub fn read_landtype_support(
     )
 }
 
-pub fn support_landtype_mask(path: &Path) -> io::Result<LandtypeMaskSource> {
-    read_landtype_mask_source_for_hfield_with_options(path, true)
+/// The land mask a threshold statistic reads through. `land_surface` also
+/// leaves out the ocean (class 0): a land mesh asks about its land, and a
+/// coastal cell's slope or soil mean diluted by the sea it overlaps describes
+/// neither. Other meshes keep the ocean, whose own statistics they may want.
+pub fn support_landtype_mask(path: &Path, land_surface: bool) -> io::Result<LandtypeMaskSource> {
+    let mut mask = read_landtype_mask_source_for_hfield_with_options(path, true)?;
+    mask.ocean_excluded = land_surface;
+    Ok(mask)
 }
 
 fn read_landtype_source_for_hfield_with_options(
     path: &Path,
-    field: &HField,
+    field: &impl Lattice,
     domain: Option<&HfieldDomainMask>,
     longitude_shift: f64,
     strict_layout: bool,
@@ -1720,7 +1855,7 @@ fn read_landtype_source_for_hfield_with_options(
             if domain.is_some_and(|domain| !domain.is_active(i, j)) {
                 continue;
             }
-            let out = i * field.nlat() + j;
+            let out = cell_index(domain, field.nlat(), i, j);
             if bins.total_at(out) == 0 {
                 let src_j = scaled_hfield_center_index(field.lat_center(j), src_nlat, false);
                 nearest_by_i.entry(src_i).or_default().push((src_j, out));
@@ -1803,7 +1938,10 @@ fn bin_tile_serial(
                 continue;
             }
             has_valid = true;
-            bins.record(field_i * tile.nlat + field_j, i32::from(value))?;
+            bins.record(
+                cell_index(tile.domain, tile.nlat, field_i, field_j),
+                i32::from(value),
+            )?;
         }
     }
     Ok(has_valid)
@@ -1896,7 +2034,7 @@ fn bin_tile(
             }
             has_valid = true;
             bins.merge(
-                column.field_i * tile.nlat + field_j,
+                cell_index(tile.domain, tile.nlat, column.field_i, field_j),
                 column.total[field_j],
                 column.ocean[field_j],
                 column.land[field_j],
@@ -1917,11 +2055,14 @@ pub struct LandtypeMaskSource {
     longitudes: Option<Vec<f64>>,
     missing: Vec<f64>,
     maxlc: i32,
+    ocean_excluded: bool,
 }
 
 impl LandtypeMaskSource {
     fn excludes(&self, value: i8) -> bool {
-        i32::from(value) == self.maxlc || is_missing_numeric(value, &self.missing)
+        i32::from(value) == self.maxlc
+            || (self.ocean_excluded && value == LANDTYPE_OCEAN)
+            || is_missing_numeric(value, &self.missing)
     }
 }
 
@@ -1979,6 +2120,7 @@ fn read_landtype_mask_source_for_hfield_with_options(
         longitudes,
         missing,
         maxlc,
+        ocean_excluded: false,
     })
 }
 
@@ -2235,6 +2377,96 @@ pub fn compose_spherical_hfield(
     Ok(field)
 }
 
+/// [`compose_spherical_hfield`] over a mother of cell size `mother_m`: the
+/// field outside the domain is the mother's, and hydro target levels count
+/// from it. With `mother_m == base_m` the two are the same.
+#[allow(clippy::too_many_arguments)]
+fn compose_spherical_hfield_over_mother(
+    regions: &[RefinementRegion],
+    refine: &RefineConfig,
+    mesh_type: &str,
+    config: &EarthmeshConfig,
+    base_m: f64,
+    options: &HfieldRefineOptions,
+    threshold_level: usize,
+    domain: Option<&GridRegion>,
+    mother_m: f64,
+) -> io::Result<HField> {
+    let mut field = build_composed_hfield(
+        regions,
+        refine,
+        mesh_type,
+        Some(config),
+        base_m,
+        options,
+        threshold_level,
+        domain,
+    )?;
+    crate::hydro_refinement_adapter::apply_hydro_target_to_field(
+        &mut field, options, mother_m, domain,
+    )?;
+    constrain_hfield_to_domain(&mut field, domain, mother_m, options.g)?;
+    Ok(field)
+}
+
+/// A composed h-field and the scale its levels count from.
+pub struct LevelledHfield {
+    pub field: HField,
+    /// The mother's cell size: level `l` is a cell of `level_base_m / 2^l`.
+    pub level_base_m: f64,
+    pub max_level: usize,
+}
+
+/// Compose the h-field a spherical run refines to, with its levels.
+///
+/// `mother_m` is the cell size of the mesh being refined. Regions and
+/// thresholds count their levels from the requested resolution, which is
+/// `mother_levels` halvings below the mother (or `options.base_m`, when set).
+/// With `mother_levels` > 0 the domain itself is a demand: inside it at least
+/// the requested size, outside it the mother's, graded by `options.g` outward
+/// so the transition falls outside the domain. Levels then count from the
+/// mother, `mother_levels` deeper, capped at 5. Hydro target levels count from
+/// the mother too: the only such targets a regional mother meets are
+/// AutoRefine's repairs, read off the refined mesh's own cell levels.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_levelled_hfield(
+    regions: &[RefinementRegion],
+    refine: &RefineConfig,
+    mesh_type: &str,
+    config: &EarthmeshConfig,
+    mother_m: f64,
+    options: &HfieldRefineOptions,
+    run_max_level: usize,
+    max_cal_level: usize,
+    domain: Option<&GridRegion>,
+) -> io::Result<LevelledHfield> {
+    let mother_levels = usize::from(config.regional_mother_levels);
+    if mother_levels > 0 && domain.is_none() {
+        return Err(invalid(
+            "NL%regional_mother_levels refines a domain; this run has none".to_string(),
+        ));
+    }
+    let scale = f64::from(1u32 << mother_levels);
+    let base_m = options.base_m.unwrap_or(mother_m / scale);
+    let field_max_level = options.max_level.unwrap_or(run_max_level).clamp(1, 5);
+    let field = compose_spherical_hfield_over_mother(
+        regions,
+        refine,
+        mesh_type,
+        config,
+        base_m,
+        options,
+        max_cal_level.clamp(1, field_max_level),
+        domain,
+        base_m * scale,
+    )?;
+    Ok(LevelledHfield {
+        field,
+        level_base_m: base_m * scale,
+        max_level: (field_max_level + mother_levels).min(5),
+    })
+}
+
 pub fn build_composed_hfield(
     regions: &[RefinementRegion],
     refine: &RefineConfig,
@@ -2426,7 +2658,7 @@ fn read_threshold_stats_on_hfield_for_criteria(
 pub fn read_numeric_support(
     file: &netcdf::File,
     name: &str,
-    grid: &HField,
+    grid: &impl Lattice,
     mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
     longitude_shift: f64,
@@ -2446,7 +2678,7 @@ pub fn read_numeric_support(
 fn read_threshold_stats_on_hfield_for_criteria_with_options(
     file: &netcdf::File,
     name: &str,
-    field: &HField,
+    field: &impl Lattice,
     landtype_mask: Option<&LandtypeMaskSource>,
     domain: Option<&HfieldDomainMask>,
     nearest_mean: bool,
@@ -2505,7 +2737,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
         (src_nlon, src_nlat, latitude_order, longitudes)
     };
     let (active_lon, active_lat) = active_hfield_axes(field, domain);
-    let len = field.nlon() * field.nlat();
+    let len = domain.map_or(field.nlon() * field.nlat(), |domain| domain.window.len());
     if !active_lon.iter().any(|active| *active) || !active_lat.iter().any(|active| *active) {
         return Ok(ThresholdStats {
             samples: vec![0; len],
@@ -2697,7 +2929,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                     } else {
                         local_i * band_count + local_file_j
                     };
-                    let out = field_i * field.nlat() + field_j;
+                    let out = cell_index(domain, field.nlat(), field_i, field_j);
                     let value = raw[raw_index];
                     if is_fill_threshold_value(name, value, &missing)? {
                         skipped += 1;
@@ -2754,7 +2986,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
             if domain.is_some_and(|domain| !domain.is_active(i, j)) {
                 continue;
             }
-            let out = i * field.nlat() + j;
+            let out = cell_index(domain, field.nlat(), i, j);
             if count[out] == 0 {
                 let src_j = scaled_hfield_center_index(field.lat_center(j), src_nlat, false);
                 nearest_by_i.entry(src_i).or_default().push((src_j, out));
@@ -2854,10 +3086,10 @@ fn is_fill_threshold_value(name: &str, value: f64, missing: &[f64]) -> io::Resul
 /// said out loud; a domain with no data at all refuses the source.
 ///
 /// Soil rasters fill the ocean with -1e36, and a whole-tile check refused
-/// every such source outright. The mask keeps ocean cells here (it excludes
-/// only the land type's largest class), so over a global or coastal domain
-/// the fill is most of what is read; only a source with nothing in the
-/// domain is the wrong source.
+/// every such source outright. Only a land mesh's mask leaves the ocean out;
+/// for other meshes, or without a land type source, the fill can be most of
+/// what is read over a global or coastal domain. Only a source with nothing
+/// in the domain is the wrong source.
 fn report_skipped_threshold_values(name: &str, skipped: usize, used: usize) -> io::Result<()> {
     if skipped == 0 {
         return Ok(());
@@ -3234,11 +3466,7 @@ mod tests {
         let mut active = vec![true; 4 * 2];
         active[0] = false;
         active[1] = false;
-        let domain = HfieldDomainMask {
-            nlon: 4,
-            nlat: 2,
-            active,
-        };
+        let domain = HfieldDomainMask::dense(4, 2, active);
         let stats = read_threshold_stats_on_hfield_for_criteria(
             &file,
             "k_s_l1",
@@ -3413,11 +3641,8 @@ mod tests {
     fn threshold_audit_counts_raw_union_without_changing_demands() {
         let mut actual = HField::uniform(4, 2, 100.0).unwrap();
         let mut expected = actual.clone();
-        let domain = HfieldDomainMask {
-            nlon: 4,
-            nlat: 2,
-            active: vec![true, false, true, true, true, true, true, true],
-        };
+        let domain =
+            HfieldDomainMask::dense(4, 2, vec![true, false, true, true, true, true, true, true]);
         let mut bins = LandtypeBinStats::new(&actual, Some(&domain));
         bins.record(0, 1).unwrap();
         bins.record(0, 2).unwrap();
@@ -3969,11 +4194,7 @@ mod tests {
         for i in 0..field.nlon() {
             active[i * field.nlat()] = true;
         }
-        let domain = HfieldDomainMask {
-            nlon: field.nlon(),
-            nlat: field.nlat(),
-            active,
-        };
+        let domain = HfieldDomainMask::dense(field.nlon(), field.nlat(), active);
         let (_, active_lat) = active_hfield_axes(&field, Some(&domain));
         assert_eq!(
             active_source_latitude_window(&field, &active_lat, 2, LatitudeOrder::NorthToSouth,)
@@ -4678,11 +4899,7 @@ mod tests {
         // excluded class, and one HField column met at both ends of a tile
         // (the seam wrap) -- counts and class order must be the serial loop's.
         let field = HField::uniform(12, 6, four_by_two_parent_m()).unwrap();
-        let mask = HfieldDomainMask {
-            nlon: 12,
-            nlat: 6,
-            active: (0..72).map(|index| index % 7 != 3).collect(),
-        };
+        let mask = HfieldDomainMask::dense(12, 6, (0..72).map(|index| index % 7 != 3).collect());
         let mut state = 0x1234_5678_9abc_def1_u64;
         let mut next = move || {
             state ^= state << 13;
@@ -4898,13 +5115,68 @@ mod tests {
             "shared support projects the neighboring valid threshold hit over the maxlc pixel"
         );
         let grid = HField::uniform(4, 2, four_by_two_parent_m()).unwrap();
-        let mask = support_landtype_mask(&landtype_path).unwrap();
+        let mask = support_landtype_mask(&landtype_path, true).unwrap();
         let file = crate::open_netcdf(&threshold_path).unwrap();
         let stats = read_numeric_support(&file, "lai", &grid, Some(&mask), None, 0.0).unwrap();
         assert_eq!(
             stats.samples.iter().sum::<usize>(),
             7,
             "maxlc source sample is excluded before stats"
+        );
+        let identity = landtype_maxlc_cache_identity(&landtype_path)
+            .unwrap()
+            .unwrap();
+        let _ = std::fs::remove_file(test_landtype_maxlc_cache_path(&identity));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn land_mesh_threshold_statistics_leave_the_ocean_out() {
+        let root = std::env::temp_dir().join(format!(
+            "earthmesh_hfield_land_mask_ocean_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let threshold_path = root.join("slope.nc");
+        let mut threshold_file = crate::create_netcdf(&threshold_path).unwrap();
+        threshold_file.add_dimension("longitude", 4).unwrap();
+        threshold_file.add_dimension("latitude", 2).unwrap();
+        threshold_file
+            .add_variable::<f64>("slope", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[10.0; 8], (.., ..))
+            .unwrap();
+        drop(threshold_file);
+        let landtype_path = root.join("landtype.nc");
+        let mut landtype_file = crate::create_netcdf(&landtype_path).unwrap();
+        landtype_file.add_dimension("longitude", 4).unwrap();
+        landtype_file.add_dimension("latitude", 2).unwrap();
+        landtype_file
+            .add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[0, 0, 17, 1, 1, 1, 1, 1], (.., ..))
+            .unwrap();
+        drop(landtype_file);
+        let grid = HField::uniform(4, 2, four_by_two_parent_m()).unwrap();
+        let file = crate::open_netcdf(&threshold_path).unwrap();
+        let samples = |land_surface| {
+            let mask = support_landtype_mask(&landtype_path, land_surface).unwrap();
+            read_numeric_support(&file, "slope", &grid, Some(&mask), None, 0.0)
+                .unwrap()
+                .samples
+                .iter()
+                .sum::<usize>()
+        };
+        assert_eq!(
+            samples(true),
+            5,
+            "land mesh: ocean and inland water left out"
+        );
+        assert_eq!(
+            samples(false),
+            7,
+            "other meshes: only inland water left out"
         );
         let identity = landtype_maxlc_cache_identity(&landtype_path)
             .unwrap()
@@ -5264,6 +5536,10 @@ mod tests {
         assert!(mask.excludes(16), "USGS water bodies are not land");
         assert!(!mask.excludes(24), "USGS snow and ice is land");
         assert!(!mask.excludes(2));
+        assert!(!mask.excludes(0), "other meshes keep the ocean");
+        let land = support_landtype_mask(&path, true).unwrap();
+        assert!(land.excludes(0), "a land mesh leaves the ocean out");
+        assert!(land.excludes(16) && !land.excludes(24) && !land.excludes(2));
         let _ = std::fs::remove_dir_all(root);
     }
 

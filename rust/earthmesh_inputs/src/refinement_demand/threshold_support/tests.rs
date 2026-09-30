@@ -141,7 +141,10 @@ fn enabled_thresholds_reject_impossible_support_counts_before_source_io() {
         Ok(_) => panic!("tiny parent scale must trip the support cap before opening sources"),
         Err(err) => err,
     };
-    assert!(err.to_string().contains("16,777,216"), "{err}");
+    assert!(
+        err.to_string().contains("finer than the support lattice"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -467,6 +470,132 @@ fn dominant_share_uses_valid_land_denominator_not_ocean_or_maxlc() {
 }
 
 #[test]
+fn a_domain_window_judges_exactly_what_the_whole_lattice_does() {
+    let root = temp_root("window_oracle");
+    let land = root.join("landtype.nc");
+    let lai = root.join("lai.nc");
+    let hash = |i: usize, j: usize, salt: usize| {
+        (i.wrapping_mul(2_654_435_761) ^ j.wrapping_mul(40_503) ^ salt).wrapping_mul(97) % 1000
+    };
+    write_landtype(&land, 288, 144, |i, j| match hash(i, j, 1) % 10 {
+        0..=2 => 0,
+        3 => 17,
+        k => k as i8,
+    });
+    write_numeric(&lai, "lai", 144, 72, |i, j| hash(i, j, 7) as f64 / 400.0);
+    let mut refine = RefineConfig {
+        max_iter_cal: 2,
+        threshold_dir: root.display().to_string(),
+        refine_num_landtypes: true,
+        th_num_landtypes: 3,
+        refine_sea_ratio: true,
+        th_sea_ratio: [0.2, 0.6],
+        ..RefineConfig::default()
+    };
+    configure_lai_thresholds(&mut refine);
+    let star = |lon: f64, lat: f64, radius: f64, vertices: usize| GridRegion::Close {
+        points: (0..vertices)
+            .map(|k| {
+                let t = k as f64 / vertices as f64 * std::f64::consts::TAU;
+                let r = radius * (0.55 + 0.45 * (5.0 * t).sin().abs());
+                crate::LonLatPoint {
+                    lon: lon + r * t.cos() / lat.to_radians().cos(),
+                    lat: lat + r * t.sin(),
+                }
+            })
+            .collect(),
+    };
+    let dateline = GridRegion::Bbox {
+        west: 170.0,
+        east: -160.0,
+        south: -20.0,
+        north: 15.0,
+    };
+    let polar = GridRegion::Circle {
+        lon: 30.0,
+        lat: 75.0,
+        radius_km: 1500.0,
+    };
+    let domains = [
+        dateline.clone(),
+        polar.clone(),
+        star(100.0, 40.0, 12.0, 80),
+        GridRegion::Any(vec![dateline, polar]),
+    ];
+    for domain in &domains {
+        for (mesh, nlat) in [("landmesh", 36), ("oceanmesh", 72)] {
+            let judge = |full: bool| {
+                FULL_WINDOW.with(|cell| cell.set(full));
+                let raw = evaluate_threshold_support(
+                    &refine,
+                    mesh,
+                    Some(&land),
+                    parent_m_for_nlat(nlat),
+                    Some(domain),
+                );
+                FULL_WINDOW.with(|cell| cell.set(false));
+                raw.expect("support demand")
+            };
+            let (windowed, whole) = (judge(false), judge(true));
+            assert!(windowed.window.len() < whole.window.len() / 2, "{domain:?}");
+            assert!(windowed.eligible_supports > 0);
+            assert_eq!(windowed.eligible_supports, whole.eligible_supports);
+            assert_eq!(windowed.criteria.len(), whole.criteria.len());
+            let mut hits = 0;
+            for (w, f) in windowed.criteria.iter().zip(&whole.criteria) {
+                assert_eq!(w.id, f.id);
+                assert_eq!(w.source_samples, f.source_samples, "{} {domain:?}", w.id);
+                assert_eq!(w.empty_supports, f.empty_supports, "{}", w.id);
+                assert_eq!(w.singleton_supports, f.singleton_supports, "{}", w.id);
+                let project = |raw: &ThresholdSupportDemand, hits: &[bool]| {
+                    raw.project_hfield(hits, 2 * nlat, nlat).unwrap()
+                };
+                let projected = project(&windowed, &w.hits);
+                assert_eq!(projected, project(&whole, &f.hits), "{} {domain:?}", w.id);
+                hits += projected.iter().filter(|&&hit| hit).count();
+                let bounds = source_bounds_for_bbox(-180.0, 180.0, -90.0, 90.0, 1).unwrap();
+                let a = windowed.project_source(&w.hits, bounds, 1).unwrap();
+                let b = whole.project_source(&f.hits, bounds, 1).unwrap();
+                assert_eq!(a.words, b.words, "{} source {domain:?}", w.id);
+            }
+            assert!(hits > 0, "the oracle compares something: {domain:?}");
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_regional_domain_is_judged_finer_than_the_global_support_cap() {
+    let refine = RefineConfig {
+        max_iter_cal: 1,
+        refine_sea_ratio: true,
+        th_sea_ratio: [0.2, 0.6],
+        ..RefineConfig::default()
+    };
+    let root = temp_root("fine_window");
+    let land = root.join("landtype.nc");
+    write_landtype(&land, 360, 180, |i, _| if i % 2 == 0 { 0 } else { 3 });
+    let domain = GridRegion::Bbox {
+        west: 99.0,
+        east: 101.0,
+        south: 38.0,
+        north: 40.0,
+    };
+    // 2 km supports: the globe would be 10,000 x 20,000.
+    let raw = evaluate_threshold_support(&refine, "landmesh", Some(&land), 2_000.0, Some(&domain))
+        .expect("a regional window fits");
+    assert!(raw.nlon * raw.nlat > MAX_SUPPORTS);
+    assert!(raw.window.len() < 100_000, "{:?}", raw.window);
+    assert!(raw.eligible_supports > 10_000);
+    let err = match evaluate_threshold_support(&refine, "landmesh", Some(&land), 2_000.0, None) {
+        Ok(_) => panic!("the globe at 2 km exceeds the cap"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("over the globe"), "{err}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn source_support_keeps_shrinking_below_the_composition_hfield_bin() {
     assert_eq!(
         support_dimensions(parent_m_for_nlat(360)).unwrap(),
@@ -506,6 +635,7 @@ fn dateline_support_projects_to_both_ends_of_a_source_window() {
         parent_m: parent_m_for_nlat(4),
         longitude_shift: 22.5,
         eligible_supports: 32,
+        window: LatticeWindow::full(8, 4),
         criteria: Vec::new(),
     };
     let mut hits = vec![false; raw.nlon * raw.nlat];
@@ -528,6 +658,7 @@ fn hfield_and_source_projection_match_positive_area_intersection_oracles() {
         parent_m: parent_m_for_nlat(4),
         longitude_shift: 22.5,
         eligible_supports: 32,
+        window: LatticeWindow::full(8, 4),
         criteria: Vec::new(),
     };
 

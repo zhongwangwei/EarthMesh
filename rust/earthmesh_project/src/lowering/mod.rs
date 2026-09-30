@@ -485,7 +485,26 @@ impl ProjectConfig {
                 .data_layers
                 .iter()
                 .any(|layer| self.layer_has_threshold_criterion(layer));
-        let hfield_requested = explicit_hfield || criteria_on_canonical_method_c;
+        // With a demand and no h-field asked for, the run takes the
+        // point+radius route below, which re-judges its criteria on the cells
+        // it makes; a mother would have to move it to the h-field instead.
+        let hfield_route = explicit_hfield || criteria_on_canonical_method_c || !mkgrd.refine;
+        let regional_mother_levels = self.regional_mother_levels(&mkgrd, &refine, hfield_route)?;
+        if regional_mother_levels > 0 {
+            // The mother is built this many halvings coarser and only the
+            // domain is refined back down; `nxp` names the mother, and the
+            // requested resolution rounds up to one it can be halved to.
+            let stride = 3_i32 << regional_mother_levels;
+            let requested = mkgrd
+                .nxp
+                .checked_add((stride - mkgrd.nxp.rem_euclid(stride)) % stride)
+                .ok_or_else(|| "regional mother NXP overflows i32".to_string())?;
+            mkgrd.refine = true;
+            mkgrd.regional_mother_levels = regional_mother_levels;
+            mkgrd.nxp = requested >> regional_mother_levels;
+        }
+        let hfield_requested =
+            explicit_hfield || criteria_on_canonical_method_c || regional_mother_levels > 0;
         // Not gated on the backend: the criteria half of the point+radius route
         // is raster work that produces an ordinary circle list, and both
         // backends consume it. Only turning those circles into mesh is
@@ -710,6 +729,117 @@ fn circle_geometry(lon: f64, lat: f64, radius_km: f64) -> Result<String, String>
 /// Raster size is measured to be free: the same project at 842x421 and
 /// 3240x1620 both finish in 42 s, the gradient limiter being nowhere near the
 /// bottleneck.
+/// The coarsest a regional run's automatic mother gets: about 170 km cells.
+const REGIONAL_MOTHER_MIN_NXP: i32 = 48;
+/// Automatic mothers stop at 3 halvings (1/64 of the triangles), leaving
+/// levels for the run's own refinement under the Method-C cap of 5.
+const REGIONAL_MOTHER_AUTO_LEVELS: u8 = 3;
+
+impl ProjectConfig {
+    /// How many halvings coarser than the requested resolution a regional
+    /// run's global mother is built, the domain then refined back down.
+    ///
+    /// Building the mother at the requested resolution and carving the domain
+    /// out afterwards costs the whole globe at that resolution: a 4 km Heihe
+    /// run spent 12 minutes and 39 GB on 80 million global triangles for a
+    /// basin of a few thousand cells. Only the h-field route can refine a
+    /// domain to a level (canonical Method-C and red-green); the other routes,
+    /// an explicit NXP, and hydro refinement keep the mother at the requested
+    /// resolution. Chosen automatically only for a run already on the h-field
+    /// or with no demand besides the domain: regions or criteria that would
+    /// take the point+radius route (which re-judges criteria on the cells it
+    /// makes) keep it, unless `expert.regional_mother_levels` asks -- moving
+    /// the Heihe red-green run to the h-field changed its mesh by 42%. The
+    /// run's own levels come first: mother plus refinement levels stay within 5.
+    fn regional_mother_levels(
+        &self,
+        mkgrd: &EarthmeshConfig,
+        refine: &RefineConfig,
+        hfield_route: bool,
+    ) -> Result<u8, String> {
+        let max_levels = crate::METHOD_C_MAX_AUTO_REFINE_LEVEL;
+        let route = if mkgrd.mask_domain_global {
+            Err("a global domain has nothing to refine a mother down to")
+        } else if !match self.refinement.backend {
+            crate::RefinementBackend::MethodC => {
+                self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
+            }
+            crate::RefinementBackend::RedGreen => true,
+            _ => false,
+        } {
+            Err("only canonical Method-C and red-green refine a domain on the h-field")
+        } else if matches!(&self.refinement.adaptive, Some(recipe) if recipe.enabled) {
+            Err("the point+radius route does not refine a domain to a level")
+        } else if !hfield_route && self.expert.regional_mother_levels.is_none() {
+            // Chosen automatically only where it changes nothing but the cost.
+            Err("this run's demand takes the point+radius route")
+        } else if matches!(&self.refinement.hfield, Some(recipe) if !recipe.enabled || recipe.base_m.is_some())
+        {
+            Err("the h-field is turned off or has its own base size")
+        } else if self.quality.lepp_post_quality.is_some() {
+            Err("LEPP post-quality refines the mother as built")
+        } else if self
+            .hydro_execution_plan()?
+            .is_some_and(|plan| plan.max_level > 0)
+        {
+            Err("hydro refinement counts levels from the requested resolution")
+        } else {
+            Ok(())
+        };
+        let own_levels = if mkgrd.refine {
+            let spc = if refine.refine_spc {
+                refine.max_iter_spc
+            } else {
+                0
+            };
+            let cal = if refine.refine_cal {
+                refine.max_iter_cal
+            } else {
+                0
+            };
+            let field = self
+                .refinement
+                .hfield
+                .as_ref()
+                .map_or(0, |recipe| i32::from(recipe.max_level));
+            u8::try_from(spc.max(cal).max(field).max(1)).unwrap_or(max_levels)
+        } else {
+            0
+        };
+        match self.expert.regional_mother_levels {
+            Some(0) => Ok(0),
+            Some(levels) => {
+                route.map_err(|why| format!("expert regional_mother_levels: {why}"))?;
+                if self.expert.nxp.is_some() {
+                    return Err(
+                        "expert regional_mother_levels and expert nxp both set the mother; set one"
+                            .to_string(),
+                    );
+                }
+                if levels + own_levels > max_levels {
+                    return Err(format!(
+                        "expert regional_mother_levels {levels} plus {own_levels} refinement level(s) exceeds {max_levels}"
+                    ));
+                }
+                Ok(levels)
+            }
+            None => {
+                if route.is_err() || self.expert.nxp.is_some() {
+                    return Ok(0);
+                }
+                let mut levels = 0;
+                while levels < REGIONAL_MOTHER_AUTO_LEVELS
+                    && levels + own_levels < max_levels
+                    && mkgrd.nxp >= REGIONAL_MOTHER_MIN_NXP << (levels + 1)
+                {
+                    levels += 1;
+                }
+                Ok(levels)
+            }
+        }
+    }
+}
+
 fn hfield_raster_size(
     recipe: &HfieldRefinementRecipe,
     mkgrd: &EarthmeshConfig,
@@ -721,6 +851,9 @@ fn hfield_raster_size(
     const BASE_CELLS_PER_RASTER_CELL: usize = 8;
     const MAX_DERIVED_NLAT: usize = 8192;
 
+    // The mother's NXP, regional mother or not: sized to the requested
+    // resolution instead, the Heihe and Sichuan runs made the same meshes
+    // (within 2% of cells) at five times the memory.
     let nxp = usize::try_from(mkgrd.nxp.max(1)).unwrap_or(1);
     let derived_nlat = nxp
         .saturating_mul(BASE_CELLS_PER_RASTER_CELL)

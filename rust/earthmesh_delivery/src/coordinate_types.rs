@@ -69,6 +69,71 @@ impl GridRegion {
         }
     }
 
+    /// A longitude arc and latitude band holding every point `contains`
+    /// accepts, or `None` when none smaller than the globe is known.
+    pub fn lonlat_bounds(&self) -> Option<LonLatBounds> {
+        match self {
+            GridRegion::Bbox {
+                west,
+                east,
+                north,
+                south,
+            } => {
+                if !(west.is_finite() && east.is_finite() && north.is_finite() && south.is_finite())
+                {
+                    return None;
+                }
+                let (south, north) = (south.min(*north).max(-90.0), south.max(*north).min(90.0));
+                if (*east - *west).abs() >= 360.0 - 1.0e-12 {
+                    return Some(LonLatBounds::full_longitude(south, north));
+                }
+                let (w, e) = (normalize_lon_degrees(*west), normalize_lon_degrees(*east));
+                let width = if w <= e { e - w } else { e - w + 360.0 };
+                Some(LonLatBounds {
+                    west: w,
+                    width,
+                    south,
+                    north,
+                })
+            }
+            GridRegion::Circle {
+                lon,
+                lat,
+                radius_km,
+            } => {
+                if !(lon.is_finite() && lat.is_finite() && radius_km.is_finite()) {
+                    return None;
+                }
+                Some(LonLatBounds::cap(
+                    *lon,
+                    *lat,
+                    (radius_km.max(0.0) / EARTH_RADIUS_KM).to_degrees(),
+                ))
+            }
+            GridRegion::Close { points } => {
+                (points.len() >= 3).then_some(())?;
+                close_region_side(points)?;
+                let units: Vec<[f64; 3]> = points
+                    .iter()
+                    .map(|point| lonlat_to_unit(point.lon, point.lat))
+                    .collect();
+                let (centre, cos_radius) = bounding_cap(&units)?;
+                Some(LonLatBounds::cap(
+                    centre[1].atan2(centre[0]).to_degrees(),
+                    centre[2].clamp(-1.0, 1.0).asin().to_degrees(),
+                    cos_radius.clamp(-1.0, 1.0).acos().to_degrees(),
+                ))
+            }
+            GridRegion::Any(regions) => {
+                let bounds = regions
+                    .iter()
+                    .map(GridRegion::lonlat_bounds)
+                    .collect::<Option<Vec<_>>>()?;
+                LonLatBounds::union(&bounds)
+            }
+        }
+    }
+
     /// The region ready for many `contains` queries.
     ///
     /// A close ring is re-read on every query -- its area, then a winding
@@ -101,6 +166,91 @@ impl GridRegion {
             }
             region => PreparedGridRegion::Plain(region),
         }
+    }
+}
+
+/// A longitude arc from `west` eastward over `width` degrees (360 is every
+/// longitude) and the latitudes `south..=north`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LonLatBounds {
+    pub west: f64,
+    pub width: f64,
+    pub south: f64,
+    pub north: f64,
+}
+
+impl LonLatBounds {
+    fn full_longitude(south: f64, north: f64) -> Self {
+        Self {
+            west: -180.0,
+            width: 360.0,
+            south,
+            north,
+        }
+    }
+
+    /// The bounds of the cap of angular radius `radius` degrees about
+    /// (`lon`, `lat`), a hair wider than exact.
+    fn cap(lon: f64, lat: f64, radius: f64) -> Self {
+        const MARGIN: f64 = 1.0e-6;
+        let radius = radius + MARGIN;
+        let (south, north) = (lat - radius, lat + radius);
+        if south <= -90.0 || north >= 90.0 || radius >= 90.0 {
+            return Self::full_longitude(south.max(-90.0), north.min(90.0));
+        }
+        // Tangent meridians: the widest longitude of a cap clear of the poles.
+        let half = (radius.to_radians().sin() / lat.to_radians().cos())
+            .min(1.0)
+            .asin()
+            .to_degrees()
+            + MARGIN;
+        Self {
+            west: normalize_lon_degrees(lon - half),
+            width: 2.0 * half,
+            south,
+            north,
+        }
+    }
+
+    /// The smallest bounds holding all of `parts`: their latitudes, and the
+    /// circle of longitude less its widest gap.
+    fn union(parts: &[Self]) -> Option<Self> {
+        let south = parts.iter().map(|b| b.south).reduce(f64::min)?;
+        let north = parts.iter().map(|b| b.north).reduce(f64::max)?;
+        if parts.iter().any(|b| b.width >= 360.0) {
+            return Some(Self::full_longitude(south, north));
+        }
+        let mut arcs: Vec<(f64, f64)> = parts
+            .iter()
+            .map(|b| {
+                let west = normalize_lon_degrees(b.west);
+                (west, west + b.width)
+            })
+            .collect();
+        arcs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // (gap length, longitude where the covering arc starts)
+        let mut widest = (0.0_f64, arcs[0].0);
+        let mut reach = arcs[0].1;
+        for &(start, end) in &arcs[1..] {
+            if start - reach > widest.0 {
+                widest = (start - reach, start);
+            }
+            reach = reach.max(end);
+        }
+        let wrap = arcs[0].0 + 360.0 - reach;
+        if wrap > widest.0 {
+            widest = (wrap, arcs[0].0);
+        }
+        Some(if widest.0 <= 0.0 {
+            Self::full_longitude(south, north)
+        } else {
+            Self {
+                west: widest.1,
+                width: 360.0 - widest.0,
+                south,
+                north,
+            }
+        })
     }
 }
 
@@ -448,6 +598,70 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn lonlat_bounds_hold_every_point_the_region_contains() {
+        let inside_bounds = |b: &LonLatBounds, lon: f64, lat: f64| {
+            lat >= b.south
+                && lat <= b.north
+                && (b.width >= 360.0 || (lon - b.west).rem_euclid(360.0) <= b.width)
+        };
+        let mut regions = vec![
+            GridRegion::Close {
+                points: star(100.0, 40.0, 4.0, 400),
+            },
+            GridRegion::Close {
+                points: star(179.0, -20.0, 6.0, 90),
+            },
+            GridRegion::Close {
+                points: star(0.0, 80.0, 7.0, 60),
+            },
+            GridRegion::Circle {
+                lon: 179.5,
+                lat: 60.0,
+                radius_km: 900.0,
+            },
+            GridRegion::Circle {
+                lon: 10.0,
+                lat: -85.0,
+                radius_km: 700.0,
+            },
+            GridRegion::Bbox {
+                west: 170.0,
+                east: -170.0,
+                north: 10.0,
+                south: -5.0,
+            },
+        ];
+        regions.push(GridRegion::Any(vec![
+            regions[0].clone(),
+            regions[3].clone(),
+            regions[5].clone(),
+        ]));
+        for region in &regions {
+            let bounds = region.lonlat_bounds().expect("bounded region");
+            assert!(bounds.width < 360.0 || bounds.south <= -80.0 || bounds.north >= 80.0);
+            let prepared = region.prepared();
+            let mut inside = 0;
+            for i in 0..1440 {
+                for j in 0..721 {
+                    let (lon, lat) = (-180.0 + i as f64 * 0.25 + 0.01, -90.0 + j as f64 * 0.25);
+                    if prepared.contains(lon, lat) {
+                        inside += 1;
+                        assert!(inside_bounds(&bounds, lon, lat), "{region:?} {lon} {lat}");
+                    }
+                }
+            }
+            assert!(inside > 0);
+        }
+        // The union keeps the dateline arc, not the long way round.
+        let any = regions.last().unwrap().lonlat_bounds().unwrap();
+        assert!(any.width < 120.0, "{any:?}");
+        let degenerate = GridRegion::Close {
+            points: star(30.0, 0.0, 1.0, 2),
+        };
+        assert_eq!(degenerate.lonlat_bounds(), None);
     }
 
     #[test]

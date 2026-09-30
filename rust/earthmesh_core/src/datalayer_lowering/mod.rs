@@ -150,7 +150,13 @@ pub fn lower_datalayers_namelist(
     let threshold_dir_was_explicit = namelist_group_has_field(text, "mkrefine", "threshold_dir")?;
     let mut mkgrd = EarthmeshConfig::from_mkgrd_namelist(text)?;
     let mut refine = if text.to_ascii_lowercase().contains("&mkrefine") {
-        RefineConfig::from_mkrefine_namelist(text, &mkgrd.mesh_type, &mkgrd.mode_grid)?
+        // A regional mother's domain is a demand without a region or criterion.
+        RefineConfig::from_mkrefine_namelist_with_external_field(
+            text,
+            &mkgrd.mesh_type,
+            &mkgrd.mode_grid,
+            mkgrd.regional_mother_levels > 0,
+        )?
     } else {
         RefineConfig::default()
     };
