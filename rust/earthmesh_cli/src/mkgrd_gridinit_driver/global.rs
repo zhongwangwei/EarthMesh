@@ -137,6 +137,7 @@ pub(crate) fn run_mkgrd_gridinit_global(
         let quality = crate::project_quality::admit_staged_final_gridfile(
             &crate::project_quality::FinalAdmissionSpec {
                 cell_kind,
+                land_surface: false,
                 expected_euler_characteristic: Some(2),
                 thresholds: earthmesh_quality::QualityThresholds::default(),
                 repair_level_cap: None,

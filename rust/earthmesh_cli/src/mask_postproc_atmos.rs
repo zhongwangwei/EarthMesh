@@ -175,6 +175,7 @@ fn admit_atmos_final_gridfile(
     // M triangles here, and do not broaden Project's TRI+MPAS capabilities.
     let spec = crate::project_quality::FinalAdmissionSpec {
         cell_kind: MeshCellKind::Hex,
+        land_surface: false,
         expected_euler_characteristic: Some(2),
         thresholds: earthmesh_quality::QualityThresholds::default(),
         repair_level_cap: None, // This delivery adapter does not run AutoRefine.

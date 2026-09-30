@@ -111,13 +111,14 @@ pub(super) struct PublishedRows<'a> {
 ///
 /// `move_only` is for a hex grid, whose triangles are the dual of the cells
 /// the model reads: vertices move and only where an angle is outside the
-/// window, so every row keeps its meaning and a grid already inside it is
-/// published untouched. All angles under 85 degrees keep every circumcentre
+/// window or a cell is over the quality check's aspect or edge-CV lines, so
+/// every row keeps its meaning. All angles under 85 degrees keep every circumcentre
 /// inside its triangle, so no cell ring can fold.
 pub(super) fn enforce_triangle_angles(
     mesh: UnstructuredMesh,
     rows: PublishedRows<'_>,
     move_only: bool,
+    even_cells: bool,
 ) -> io::Result<(UnstructuredMesh, Option<earthmesh_mesh::AngleWindowReport>)> {
     let norm = unstructured_mesh_with_one_based_rows(&mesh);
     let offset_m = norm.m_points.len() - mesh.m_points.len();
@@ -184,7 +185,34 @@ pub(super) fn enforce_triangle_angles(
         &mut face_levels,
         options,
     );
-    if report.flips + report.moves + report.removed_vertices == 0 {
+    // A hex grid's cells are what the model reads, and triangles inside the
+    // window still leave some far from hexagons (a Method-C h-field run kept
+    // one at edge CV 0.445): even them out, moving generators only.
+    let mut dual_moves = 0;
+    if move_only && even_cells {
+        let thresholds = earthmesh_quality::QualityThresholds::default();
+        let mut dual_options = earthmesh_mesh::DualShapeOptions::new(options.window_deg);
+        dual_options.aspect_limit = thresholds.aspect_ratio_warn;
+        dual_options.edge_cv_limit = thresholds.cell_edge_cv_warn;
+        dual_options.first_vertex = 2;
+        dual_options.first_face = 2;
+        let dual = earthmesh_mesh::even_out_dual_cells(&mut points, &faces, dual_options);
+        if dual.moves > 0 {
+            eprintln!(
+                "earthmesh_cli: hex cells: {} -> {} over the aspect/edge-CV limits, aspect \
+                 {:.3} -> {:.3}, edge CV {:.3} -> {:.3} ({} moves)",
+                dual.over_limit_before,
+                dual.over_limit_after,
+                dual.max_aspect_before,
+                dual.max_aspect_after,
+                dual.max_edge_cv_before,
+                dual.max_edge_cv_after,
+                dual.moves,
+            );
+        }
+        dual_moves = dual.moves;
+    }
+    if report.flips + report.moves + report.removed_vertices + dual_moves == 0 {
         return Ok((mesh, Some(report)));
     }
 

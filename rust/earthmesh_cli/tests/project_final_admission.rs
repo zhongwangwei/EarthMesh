@@ -206,6 +206,7 @@ fn final_spec(
 ) -> FinalAdmissionSpec {
     FinalAdmissionSpec {
         cell_kind: kind,
+        land_surface: false,
         expected_euler_characteristic,
         thresholds: earthmesh_quality::QualityThresholds::default(),
         repair_level_cap: None,
@@ -453,6 +454,22 @@ fn final_admission_uses_native_cells_scope_and_policy_not_backend_or_intent() {
     let island = admit(&p, &file, &out, None).unwrap();
     assert_eq!(island.topology.orphan_cell_count, 1);
     assert_ne!(island.verdict, earthmesh_quality::QualityLevel::Fail);
+    // An island is a cell like any other to a land model: a land mesh passes
+    // with it, and keeps the count; any other target is still warned.
+    let target_kind = p.target.kind;
+    p.target.kind = MeshDomainKind::Land;
+    let land = admit(&p, &file, &out, None).unwrap();
+    assert_eq!(land.topology.orphan_cell_count, 1);
+    let gate = land
+        .gates
+        .iter()
+        .find(|gate| gate.metric == "orphan_cell_count")
+        .unwrap();
+    assert_eq!(gate.level, earthmesh_quality::QualityLevel::Pass);
+    p.target.kind = MeshDomainKind::Atmosphere;
+    let atmosphere = admit(&p, &file, &out, None).unwrap();
+    assert_eq!(atmosphere.verdict, earthmesh_quality::QualityLevel::Warn);
+    p.target.kind = target_kind;
     p.quality.on_violation = ViolationPolicy::Warn;
     // Two connected M triangles are valid; their auxiliary W degrees are irrelevant.
     p.target.cell = MeshCellKind::Tri;

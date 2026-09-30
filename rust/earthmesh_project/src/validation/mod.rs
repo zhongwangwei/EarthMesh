@@ -414,7 +414,7 @@ impl ProjectConfig {
             })
     }
 
-    fn layer_has_threshold_criterion(&self, layer: &ProjectDataLayer) -> bool {
+    pub(crate) fn layer_has_threshold_criterion(&self, layer: &ProjectDataLayer) -> bool {
         if !layer.enabled {
             return false;
         }

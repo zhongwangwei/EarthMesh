@@ -856,6 +856,10 @@ pub struct ExpertOverrides {
     /// `None` keeps the derived default: on for `oceanmesh`, off otherwise.
     #[serde(default)]
     pub isolated_ocean: Option<bool>,
+    /// Turn off the evening-out of a hex grid's cells after the angle
+    /// contract -- to compare with a mesh built without it. `None` keeps it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hex_cell_evening: Option<bool>,
 }
 
 /// MERIT-Hydro inputs used by the post-mesh hydro workflow. Project execution

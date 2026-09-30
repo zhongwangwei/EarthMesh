@@ -134,6 +134,9 @@ pub fn write_project_quality_report(
 #[derive(Clone, Copy, Debug)]
 pub struct FinalAdmissionSpec {
     pub cell_kind: MeshCellKind,
+    /// A land-surface mesh: its isolated cells are islands, which a land
+    /// model runs as it runs any other cell, so they pass.
+    pub land_surface: bool,
     pub expected_euler_characteristic: Option<isize>,
     pub thresholds: earthmesh_quality::QualityThresholds,
     pub repair_level_cap: Option<u8>,
@@ -144,6 +147,7 @@ fn project_final_admission_spec(project: &ProjectConfig) -> Result<FinalAdmissio
     let repair_level_cap = earthmesh_project::auto_refine_level_cap(target_nxp);
     Ok(FinalAdmissionSpec {
         cell_kind: project.target.cell,
+        land_surface: project.target.kind == earthmesh_project::MeshDomainKind::Land,
         expected_euler_characteristic: project.expected_euler_characteristic(),
         thresholds: earthmesh_quality::QualityThresholds {
             min_angle_warn_deg: project.quality.min_angle_deg,
@@ -399,11 +403,21 @@ fn write_quality_report_impl(
             topology::{Severity, TopologyIssueType},
             QualityLevel,
         };
-        for issue in &mut report.topology_issues {
-            if matches!(
+        let island = |issue: &earthmesh_quality::topology::TopologyIssue| {
+            matches!(
                 issue.issue_type,
                 TopologyIssueType::DisconnectedMesh | TopologyIssueType::OrphanCell
-            ) {
+            )
+        };
+        if spec.land_surface {
+            // A land mesh carved from a land mask has islands, one cell each at
+            // coarse resolution; a land model runs them like any other cell,
+            // so every island-bearing land mesh read "warn" for being right.
+            // The count stays on the gate.
+            report.topology_issues.retain(|issue| !island(issue));
+        }
+        for issue in &mut report.topology_issues {
+            if island(issue) {
                 issue.severity = Severity::Warn;
                 issue
                     .message
@@ -412,10 +426,15 @@ fn write_quality_report_impl(
         }
         for gate in &mut report.gates {
             if gate.metric == "orphan_cell_count" && gate.value > 0.0 {
-                gate.level = QualityLevel::Warn;
-                gate.detail =
-                    "complete isolated cells are allowed in regional/masked Project domains"
-                        .to_string();
+                if spec.land_surface {
+                    gate.level = QualityLevel::Pass;
+                    gate.detail = "isolated cells of a land mesh are islands".to_string();
+                } else {
+                    gate.level = QualityLevel::Warn;
+                    gate.detail =
+                        "complete isolated cells are allowed in regional/masked Project domains"
+                            .to_string();
+                }
             }
         }
         report.verdict = report
@@ -587,6 +606,7 @@ mod tests {
             let n = ring.len();
             let spec = FinalAdmissionSpec {
                 cell_kind: kind,
+                land_surface: false,
                 expected_euler_characteristic: None,
                 thresholds: QualityThresholds::default(),
                 repair_level_cap: None,
@@ -696,6 +716,7 @@ mod tests {
         let report = admit_staged_final_gridfile(
             &FinalAdmissionSpec {
                 cell_kind: MeshCellKind::Tri,
+                land_surface: false,
                 expected_euler_characteristic: None,
                 thresholds: earthmesh_quality::QualityThresholds::default(),
                 repair_level_cap: None,
@@ -741,6 +762,7 @@ mod tests {
 
         let spec = FinalAdmissionSpec {
             cell_kind: MeshCellKind::Tri,
+            land_surface: false,
             expected_euler_characteristic: None,
             thresholds: earthmesh_quality::QualityThresholds::default(),
             repair_level_cap: None,

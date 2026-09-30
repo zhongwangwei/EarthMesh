@@ -106,6 +106,9 @@ fn project_cli_accepts_candidate_when_guarded_quality_strictly_improves() {
         );
     // Isolate quality selection from the pending regional/refined MPAS context.
     let project = project.replace("model_format: Mpas", "model_format: CoLM");
+    // Evened out, the example's hex cells pass outright and AutoRefine has
+    // nothing to do; this exercises the repair and its selection.
+    let project = project.replace("expert:\n", "expert:\n  hex_cell_evening: false\n");
     fs::write(&project_path, project).unwrap();
     let output = support::output(
         Command::new(env!("CARGO_BIN_EXE_earthmesh_cli"))
@@ -349,6 +352,9 @@ fn project_cli_rejects_a_real_refined_candidate_when_guarded_quality_regresses()
         .replace("  niter_refine: 1", "  niter_refine: 20");
     // Isolate quality selection from the pending regional/refined MPAS context.
     let project = project.replace("model_format: Mpas", "model_format: CoLM");
+    // As in the acceptance test: without it the baseline passes and no
+    // candidate is ever made.
+    let project = project.replace("expert:\n", "expert:\n  hex_cell_evening: false\n");
     fs::write(&project_path, project).unwrap();
 
     let output = support::output(

@@ -800,3 +800,28 @@ fn lower_datalayers_inline_removes_data_group_and_preserves_other_inline_groups_
         out.namelist
     );
 }
+
+#[test]
+fn hex_cell_evening_is_written_only_when_turned_off() {
+    let config = EarthmeshConfig::from_mkgrd_namelist(SAMPLE_MKGRD).unwrap();
+    assert!(config.hex_cell_evening);
+    let text = config.to_mkgrd_namelist();
+    assert!(!text.contains("hex_cell_evening"), "{text}");
+    assert!(
+        EarthmeshConfig::from_mkgrd_namelist(&text)
+            .unwrap()
+            .hex_cell_evening
+    );
+
+    let off = EarthmeshConfig {
+        hex_cell_evening: false,
+        ..config
+    };
+    let text = off.to_mkgrd_namelist();
+    assert!(text.contains("NL%hex_cell_evening = .false."), "{text}");
+    assert!(
+        !EarthmeshConfig::from_mkgrd_namelist(&text)
+            .unwrap()
+            .hex_cell_evening
+    );
+}

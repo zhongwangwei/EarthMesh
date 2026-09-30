@@ -191,6 +191,7 @@ fn admit(
 ) -> io::Result<earthmesh_quality::MeshQualityReport> {
     let spec = crate::project_quality::FinalAdmissionSpec {
         cell_kind: cell_kind(plan)?,
+        land_surface: plan.mesh_type == "landmesh",
         expected_euler_characteristic,
         thresholds: earthmesh_quality::QualityThresholds::default(),
         repair_level_cap: None,

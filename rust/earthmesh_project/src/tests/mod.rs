@@ -82,6 +82,7 @@ fn sample() -> ProjectConfig {
             relax: Some(0.03),
             weak_concav_eliminate: Some(true),
             isolated_ocean: None,
+            hex_cell_evening: None,
         },
         hydro_coast: None,
         coupling: None,
@@ -991,11 +992,13 @@ fn lower_maps_to_engine_config() {
     assert_eq!(lowered.quality.min_angle_warn_deg, 28.0);
     assert_eq!(lowered.quality.on_violation, "block");
 
-    // runnable namelist with all four blocks
+    // runnable namelist with all four blocks; threshold criteria on canonical
+    // Method-C take its h-field route, the one that can build them
     let nml = lowered.to_namelist();
     assert!(nml.contains("&mkgrd"));
     assert!(nml.contains("&mkrefine"));
-    assert!(nml.contains("&adaptive"));
+    assert!(nml.contains("&hfield"));
+    assert!(!nml.contains("&adaptive"));
     assert!(nml.contains("&quality"));
     assert!(nml.contains("&datalayers"));
 
@@ -1949,9 +1952,17 @@ fn the_point_radius_route_is_lowered_for_both_backends() {
     p.refinement.hfield = None;
     p.refinement.adaptive = None;
 
+    // Canonical Method-C refuses data-shaped demand on this route, so with
+    // threshold criteria and no route named it takes the h-field; naming the
+    // point+radius route still gets it.
     p.refinement.backend = crate::RefinementBackend::MethodC;
     let nml = p.lower().to_namelist();
+    assert!(nml.contains("&hfield"), "{nml}");
+    assert!(!nml.contains("&adaptive"), "{nml}");
+    p.refinement.adaptive = Some(AdaptiveRefinementRecipe::default());
+    let nml = p.lower().to_namelist();
     assert!(nml.contains("&adaptive"), "{nml}");
+    p.refinement.adaptive = None;
 
     p.refinement.backend = crate::RefinementBackend::RedGreen;
     let nml = p.lower().to_namelist();
@@ -1968,6 +1979,9 @@ fn the_coastline_criterion_follows_threshold_refinement() {
     let mut p = sample();
     p.refinement.hfield = None;
     p.refinement.adaptive = None;
+    // The point+radius route: canonical Method-C takes threshold criteria
+    // through its h-field instead.
+    p.refinement.backend = crate::RefinementBackend::RedGreen;
     assert!(p.refinement.threshold_enabled);
     let nml = p.lower().to_namelist();
     assert!(nml.contains("NL%adaptive_coastline = .true."), "{nml}");
@@ -1990,6 +2004,9 @@ fn point_radius_is_the_default_and_the_h_field_is_opt_in() {
     // re-ask a criterion after the cells it judges exist.
     let mut p = sample();
     p.refinement.hfield = None;
+    // On red-green; canonical Method-C takes threshold criteria through its
+    // h-field (`the_point_radius_route_is_lowered_for_both_backends`).
+    p.refinement.backend = crate::RefinementBackend::RedGreen;
     let nml = p.lower().to_namelist();
     assert!(nml.contains("&adaptive"), "{nml}");
     assert!(!nml.contains("&hfield"), "{nml}");

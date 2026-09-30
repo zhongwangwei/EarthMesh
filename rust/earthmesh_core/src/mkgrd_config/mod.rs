@@ -29,6 +29,9 @@ pub struct EarthmeshConfig {
     pub beta: f64,
     pub relax: f64,
     pub isolated_ocean: bool,
+    /// Even out a hex grid's cells after the angle contract (on by default;
+    /// written to the namelist only when turned off).
+    pub hex_cell_evening: bool,
     pub mask_restart: bool,
     pub mask_domain_type: String,
     /// Optional close-boundary preprocessing carried as a compact engine spec.
@@ -70,6 +73,7 @@ impl Default for EarthmeshConfig {
             beta: 1.2,
             relax: 0.04,
             isolated_ocean: false,
+            hex_cell_evening: true,
             mask_restart: false,
             mask_domain_type: "/tmp".to_string(),
             mask_domain_close_boundary: "polyline".to_string(),
@@ -132,6 +136,7 @@ impl EarthmeshConfig {
                 "beta" => config.beta = parse_f64(field, value)?,
                 "relax" => config.relax = parse_f64(field, value)?,
                 "isolated_ocean" => config.isolated_ocean = parse_canonical_bool(field, value)?,
+                "hex_cell_evening" => config.hex_cell_evening = parse_canonical_bool(field, value)?,
                 "mask_restart" => config.mask_restart = parse_canonical_bool(field, value)?,
                 "mask_domain_type" => config.mask_domain_type = parse_canonical_string(value),
                 "mask_domain_close_boundary" => {
@@ -252,6 +257,9 @@ impl EarthmeshConfig {
             "  NL%isolated_ocean = {}\n",
             flag(self.isolated_ocean)
         ));
+        if !self.hex_cell_evening {
+            out.push_str("  NL%hex_cell_evening = .false.\n");
+        }
         out.push_str(&format!(
             "  NL%output_format = {}\n",
             q(&self.output_format)

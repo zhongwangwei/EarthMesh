@@ -192,6 +192,7 @@ pub(super) fn run_final_base(
     let quality = crate::project_quality::admit_staged_final_gridfile(
         &crate::project_quality::FinalAdmissionSpec {
             cell_kind,
+            land_surface: config.mesh_type.trim() == "landmesh",
             expected_euler_characteristic: None,
             thresholds: earthmesh_quality::QualityThresholds::default(),
             repair_level_cap: None,

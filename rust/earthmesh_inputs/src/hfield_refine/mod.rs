@@ -1171,6 +1171,19 @@ fn is_missing_numeric(value: impl Into<f64>, missing: &[f64]) -> bool {
     missing.contains(&value.into())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Rows per band in place of the byte budget, so a small file is read in
+    /// several bands.
+    static TEST_BAND_ROWS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether a variable is stored contiguously (classic NetCDF, or NetCDF-4
+/// without chunking): its rows then follow one another on disk.
+fn netcdf_is_contiguous(variable: &netcdf::Variable<'_>) -> bool {
+    matches!(variable.chunking(), Ok(None))
+}
+
 /// Bytes one longitude stripe of a contiguous raster may hold once read.
 const CONTIGUOUS_STRIPE_BYTES: usize = 256 << 20;
 
@@ -2500,7 +2513,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
             stddev: vec![0.0; len],
         });
     }
-    let (canonical_lat_start, canonical_lat_end, lat_start, lat_count) =
+    let (_, _, lat_start, lat_count) =
         active_source_latitude_window(field, &active_lat, src_nlat, latitude_order)?;
     let active_local_lat = (0..lat_count)
         .filter_map(|local_file_j| {
@@ -2521,41 +2534,87 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                 .ok_or_else(|| invalid("missing landtype variable".to_string()))
         })
         .transpose()?;
-    let mask_lat_window = landtype_mask.map(|mask| {
-        let mask_canonical_start = scaled_source_index(canonical_lat_start, src_nlat, mask.nlat);
-        let mask_canonical_end = scaled_source_index(canonical_lat_end, src_nlat, mask.nlat);
-        let mask_lat_count = mask_canonical_end - mask_canonical_start + 1;
-        let mask_lat_start = match mask.latitude_order {
-            LatitudeOrder::NorthToSouth => mask_canonical_start,
-            LatitudeOrder::SouthToNorth => mask.nlat - 1 - mask_canonical_end,
-        };
-        (mask_lat_start, mask_lat_count)
-    });
+    // The mask's latitude rows under file rows first..=last of the source.
+    let mask_lat_window = |first: usize, last: usize| {
+        landtype_mask.map(|mask| {
+            let canonical =
+                |file_j: usize| canonical_latitude_index(latitude_order, file_j, src_nlat);
+            let (lo, hi) = (
+                canonical(first).min(canonical(last)),
+                canonical(first).max(canonical(last)),
+            );
+            let mask_canonical_start = scaled_source_index(lo, src_nlat, mask.nlat);
+            let mask_canonical_end = scaled_source_index(hi, src_nlat, mask.nlat);
+            let mask_lat_count = mask_canonical_end - mask_canonical_start + 1;
+            let mask_lat_start = match mask.latitude_order {
+                LatitudeOrder::NorthToSouth => mask_canonical_start,
+                LatitudeOrder::SouthToNorth => mask.nlat - 1 - mask_canonical_end,
+            };
+            (mask_lat_start, mask_lat_count)
+        })
+    };
 
     let mut count = vec![0usize; len];
     let mut skipped = 0usize;
     let mut sum = vec![0.0; len];
     let mut sumsq = vec![0.0; len];
-    let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 128, lat_count);
-    for lon_start in (0..src_nlon).step_by(tile_lon) {
-        let lon_count = tile_lon.min(src_nlon - lon_start);
-        let active_local_lon = (0..lon_count)
-            .filter_map(|local_i| {
-                let src_i = lon_start + local_i;
-                let lon = source_longitude(src_i, src_nlon, longitudes.as_deref());
-                let (field_i, _) = support_hfield_indices(lon, 0, src_nlat, field, longitude_shift);
-                active_lon[field_i].then_some((local_i, src_i, field_i))
+    // A contiguous latitude-major variable is read in bands of whole rows,
+    // which on disk is one sequential read per band: stripes of longitude
+    // over every row cost a seek per row, and the global DEM read at 9 MB/s
+    // from a disk that streams 41. Anything else keeps one band, the window.
+    let whole_rows = lat_lon && netcdf_is_contiguous(&variable);
+    let (tile_lon, band_rows) = if whole_rows {
+        let rows = (CONTIGUOUS_STRIPE_BYTES / (src_nlon * 8)).max(1);
+        #[cfg(test)]
+        let rows = TEST_BAND_ROWS.with(|cell| cell.get()).unwrap_or(rows);
+        (src_nlon, rows)
+    } else {
+        (
+            netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 128, lat_count),
+            lat_count,
+        )
+    };
+    for band_start in (0..lat_count).step_by(band_rows) {
+        let band_count = band_rows.min(lat_count - band_start);
+        let band_lat = active_local_lat
+            .iter()
+            .filter(|(local_file_j, _, _)| {
+                (band_start..band_start + band_count).contains(local_file_j)
             })
+            .map(|&(local_file_j, src_j, field_j)| (local_file_j - band_start, src_j, field_j))
             .collect::<Vec<_>>();
-        if active_local_lon.is_empty() {
+        if band_lat.is_empty() {
             continue;
         }
-        let raw = threshold_tile(
-            &variable, lat_lon, lon_start, lon_count, lat_start, lat_count, name,
-        )?;
-        crate::require_len(name, raw.len(), lon_count * lat_count)?;
-        let mask_window =
-            if let (Some(mask), Some(mask_variable)) = (landtype_mask, mask_variable.as_ref()) {
+        let band_file_start = lat_start + band_start;
+        let band_mask_window = mask_lat_window(band_file_start, band_file_start + band_count - 1);
+        for lon_start in (0..src_nlon).step_by(tile_lon) {
+            let lon_count = tile_lon.min(src_nlon - lon_start);
+            let active_local_lon = (0..lon_count)
+                .filter_map(|local_i| {
+                    let src_i = lon_start + local_i;
+                    let lon = source_longitude(src_i, src_nlon, longitudes.as_deref());
+                    let (field_i, _) =
+                        support_hfield_indices(lon, 0, src_nlat, field, longitude_shift);
+                    active_lon[field_i].then_some((local_i, src_i, field_i))
+                })
+                .collect::<Vec<_>>();
+            if active_local_lon.is_empty() {
+                continue;
+            }
+            let raw = threshold_tile(
+                &variable,
+                lat_lon,
+                lon_start,
+                lon_count,
+                band_file_start,
+                band_count,
+                name,
+            )?;
+            crate::require_len(name, raw.len(), lon_count * band_count)?;
+            let mask_window = if let (Some(mask), Some(mask_variable)) =
+                (landtype_mask, mask_variable.as_ref())
+            {
                 let indices = (0..lon_count)
                     .map(|local_i| {
                         let lon =
@@ -2582,7 +2641,7 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                 };
                 let mut windows = Vec::with_capacity(ranges.len());
                 let (mask_lat_start, mask_lat_count) =
-                    mask_lat_window.expect("mask latitude window exists");
+                    band_mask_window.expect("mask latitude window exists");
                 for (start, count) in ranges {
                     windows.push((
                         start,
@@ -2602,48 +2661,52 @@ fn read_threshold_stats_on_hfield_for_criteria_with_options(
                 None
             };
 
-        for &(local_i, _src_i, field_i) in &active_local_lon {
-            for &(local_file_j, src_j, field_j) in &active_local_lat {
-                if domain.is_some_and(|domain| !domain.is_active(field_i, field_j)) {
-                    continue;
-                }
-                if let (Some(mask), Some((mask_indices, windows, mask_lat_start, mask_lat_count))) =
-                    (landtype_mask, mask_window.as_ref())
-                {
-                    let mask_i = mask_indices[local_i];
-                    let mask_j = scaled_source_index(src_j, src_nlat, mask.nlat);
-                    let file_mask_j = file_latitude_index(mask.latitude_order, mask_j, mask.nlat);
-                    let (first_i, mask_nlon, values) = windows
-                        .iter()
-                        .find(|(first_i, mask_nlon, _)| {
-                            (*first_i..*first_i + *mask_nlon).contains(&mask_i)
-                        })
-                        .expect("mask longitude index belongs to a loaded window");
-                    let local_mask_i = mask_i - *first_i;
-                    let local_file_mask_j = file_mask_j - *mask_lat_start;
-                    let mask_index = if mask.lat_lon {
-                        local_file_mask_j * *mask_nlon + local_mask_i
-                    } else {
-                        local_mask_i * *mask_lat_count + local_file_mask_j
-                    };
-                    if mask.excludes(values[mask_index]) {
+            for &(local_i, _src_i, field_i) in &active_local_lon {
+                for &(local_file_j, src_j, field_j) in &band_lat {
+                    if domain.is_some_and(|domain| !domain.is_active(field_i, field_j)) {
                         continue;
                     }
+                    if let (
+                        Some(mask),
+                        Some((mask_indices, windows, mask_lat_start, mask_lat_count)),
+                    ) = (landtype_mask, mask_window.as_ref())
+                    {
+                        let mask_i = mask_indices[local_i];
+                        let mask_j = scaled_source_index(src_j, src_nlat, mask.nlat);
+                        let file_mask_j =
+                            file_latitude_index(mask.latitude_order, mask_j, mask.nlat);
+                        let (first_i, mask_nlon, values) = windows
+                            .iter()
+                            .find(|(first_i, mask_nlon, _)| {
+                                (*first_i..*first_i + *mask_nlon).contains(&mask_i)
+                            })
+                            .expect("mask longitude index belongs to a loaded window");
+                        let local_mask_i = mask_i - *first_i;
+                        let local_file_mask_j = file_mask_j - *mask_lat_start;
+                        let mask_index = if mask.lat_lon {
+                            local_file_mask_j * *mask_nlon + local_mask_i
+                        } else {
+                            local_mask_i * *mask_lat_count + local_file_mask_j
+                        };
+                        if mask.excludes(values[mask_index]) {
+                            continue;
+                        }
+                    }
+                    let raw_index = if lat_lon {
+                        local_file_j * lon_count + local_i
+                    } else {
+                        local_i * band_count + local_file_j
+                    };
+                    let out = field_i * field.nlat() + field_j;
+                    let value = raw[raw_index];
+                    if is_fill_threshold_value(name, value, &missing)? {
+                        skipped += 1;
+                        continue;
+                    }
+                    count[out] += 1;
+                    sum[out] += value;
+                    sumsq[out] += value * value;
                 }
-                let raw_index = if lat_lon {
-                    local_file_j * lon_count + local_i
-                } else {
-                    local_i * lat_count + local_file_j
-                };
-                let out = field_i * field.nlat() + field_j;
-                let value = raw[raw_index];
-                if is_fill_threshold_value(name, value, &missing)? {
-                    skipped += 1;
-                    continue;
-                }
-                count[out] += 1;
-                sum[out] += value;
-                sumsq[out] += value * value;
             }
         }
     }
@@ -5123,6 +5186,52 @@ mod tests {
                 );
             }
         }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn whole_row_bands_give_the_statistics_one_band_gives() {
+        let path = std::env::temp_dir().join(format!(
+            "earthmesh_threshold_bands_{}.nc",
+            std::process::id()
+        ));
+        let (nlon, nlat) = (48usize, 24usize);
+        let values: Vec<f64> = (0..nlon * nlat)
+            .map(|k| ((k * 37 % 101) as f64).sin() * 50.0 + 100.0)
+            .collect();
+        let mut file = crate::create_netcdf(&path).unwrap();
+        file.add_dimension("lat", nlat).unwrap();
+        file.add_dimension("lon", nlon).unwrap();
+        file.add_variable::<f64>("dem", &["lat", "lon"])
+            .unwrap()
+            .put_values(&values, (.., ..))
+            .unwrap();
+        drop(file);
+        let file = crate::open_netcdf(&path).unwrap();
+        // Otherwise the bands are never taken and this compares one read twice.
+        assert!(netcdf_is_contiguous(&file.variable("dem").unwrap()));
+        let field = HField::uniform(8, 4, 100.0).unwrap();
+        let read = |rows: Option<usize>| {
+            TEST_BAND_ROWS.with(|cell| cell.set(rows));
+            let stats = read_threshold_stats_on_hfield_for_criteria(
+                &file, "dem", &field, None, None, false,
+            )
+            .unwrap();
+            TEST_BAND_ROWS.with(|cell| cell.set(None));
+            stats
+        };
+        let one = read(None);
+        for rows in [1, 5, 7] {
+            let banded = read(Some(rows));
+            assert_eq!(banded.samples, one.samples, "{rows} rows per band");
+            for (a, b) in banded.mean.iter().zip(&one.mean) {
+                assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{rows}: {a} {b}");
+            }
+            for (a, b) in banded.stddev.iter().zip(&one.stddev) {
+                assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{rows}: {a} {b}");
+            }
+        }
+        drop(file);
         let _ = std::fs::remove_file(path);
     }
 

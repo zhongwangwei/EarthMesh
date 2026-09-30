@@ -435,6 +435,9 @@ impl ProjectConfig {
         if let Some(enabled) = self.expert.isolated_ocean {
             mkgrd.isolated_ocean = enabled;
         }
+        if let Some(enabled) = self.expert.hex_cell_evening {
+            mkgrd.hex_cell_evening = enabled;
+        }
         if let Some(enabled) = self.expert.weak_concav_eliminate {
             refine.weak_concav_eliminate = enabled;
         }
@@ -465,7 +468,24 @@ impl ProjectConfig {
             crate::RefinementBackend::IconNest => "icon_nest",
         }
         .to_string();
-        let hfield_requested = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
+        let explicit_hfield = matches!(&self.refinement.hfield, Some(recipe) if recipe.enabled);
+        // Canonical Method-C cannot build a region whose shape came from the
+        // data -- its seeds step three cells at a time and its perimeters come
+        // in multiples of three -- so the point+radius route refuses such
+        // demand, once the data has been read. Its h-field route takes the same
+        // data as a cell-width field and nests from quantized target levels,
+        // which it can build. A project that asks for threshold refinement on
+        // canonical Method-C and names neither route gets that one.
+        let criteria_on_canonical_method_c = backend == crate::RefinementBackend::MethodC
+            && self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
+            && self.refinement.threshold_enabled
+            && self.refinement.adaptive.is_none()
+            && self.refinement.hfield.is_none()
+            && self
+                .data_layers
+                .iter()
+                .any(|layer| self.layer_has_threshold_criterion(layer));
+        let hfield_requested = explicit_hfield || criteria_on_canonical_method_c;
         // Not gated on the backend: the criteria half of the point+radius route
         // is raster work that produces an ordinary circle list, and both
         // backends consume it. Only turning those circles into mesh is
@@ -495,7 +515,10 @@ impl ProjectConfig {
         // Only ever chosen by asking for it. Turning the adaptive route off
         // disables that route; it does not silently swap in another backend.
         let hfield = if mkgrd.refine && hfield_requested {
-            self.refinement.hfield.clone()
+            self.refinement
+                .hfield
+                .clone()
+                .or_else(|| Some(HfieldRefinementRecipe::default()))
         } else {
             None
         };

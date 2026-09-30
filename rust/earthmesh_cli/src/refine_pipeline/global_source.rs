@@ -970,6 +970,7 @@ fn finish_refined(
                 pentagons: &mut pentagon_indices,
             },
             enforce_hex_window,
+            config.hex_cell_evening,
         )?;
         if let Some(report) = report {
             log_angle_contract("", &report);
@@ -992,6 +993,7 @@ fn finish_refined(
                     metadata: &mut None,
                     pentagons: &mut pentagon_indices.clone(),
                 },
+                false,
                 false,
             )?;
             if let Some(report) = report {
