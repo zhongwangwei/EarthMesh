@@ -1415,6 +1415,25 @@ fn landtype_maxlc_scan_counts() -> &'static Mutex<HashMap<LandtypeMaxlcIdentity,
     COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The inland-water class a land type source marks, from the largest class in
+/// it -- the class the land statistics leave out.
+///
+/// The convention was "the largest class is water", which holds for IGBP
+/// (17 classes, 17 = water bodies) and not for the USGS 24-category scheme,
+/// where 16 is water bodies and 24 is snow and ice: a USGS source left its
+/// ice out of every land statistic and kept its lakes in. No IGBP class is
+/// above 17, so a largest class of 18..=24 is USGS. Anything else (IGBP, or a
+/// source of its own) keeps the convention. In both schemes the ocean is 0,
+/// which the land-type bins count as ocean on their own.
+fn landtype_water_class(largest_class: i32) -> i32 {
+    const USGS_WATER_BODIES: i32 = 16;
+    if (18..=24).contains(&largest_class) {
+        USGS_WATER_BODIES
+    } else {
+        largest_class
+    }
+}
+
 fn landtype_global_maxlc(
     path: &Path,
     source_identity: Option<&LandtypeMaxlcIdentity>,
@@ -1637,7 +1656,7 @@ fn read_landtype_source_for_hfield_with_options(
     // data dozens of times.
     let tile_lon = netcdf_longitude_tile_size(&variable, lat_lon, src_nlon, 256, lat_count);
     let mut bins = LandtypeBinStats::new(field, domain);
-    let maxlc = landtype_global_maxlc(
+    let maxlc = landtype_water_class(landtype_global_maxlc(
         path,
         source_identity.as_ref(),
         &variable,
@@ -1645,7 +1664,7 @@ fn read_landtype_source_for_hfield_with_options(
         src_nlon,
         src_nlat,
         &missing,
-    )?;
+    )?);
     let mut has_valid = false;
     for lon_start in (0..src_nlon).step_by(tile_lon) {
         let lon_count = tile_lon.min(src_nlon - lon_start);
@@ -1929,7 +1948,7 @@ fn read_landtype_mask_source_for_hfield_with_options(
         landtype_source_layout(&file, &variable)?
     };
     let missing = numeric_missing_values(&variable)?;
-    let maxlc = landtype_global_maxlc(
+    let maxlc = landtype_water_class(landtype_global_maxlc(
         path,
         source_identity.as_ref(),
         &variable,
@@ -1937,7 +1956,7 @@ fn read_landtype_mask_source_for_hfield_with_options(
         src_nlon,
         src_nlat,
         &missing,
-    )?;
+    )?);
     Ok(LandtypeMaskSource {
         path: path.to_path_buf(),
         nlon: src_nlon,
@@ -5105,6 +5124,38 @@ mod tests {
             }
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_water_class_follows_the_land_type_scheme() {
+        // IGBP: 17 classes, 17 water. USGS 24-category: 16 water, 24 ice.
+        assert_eq!(landtype_water_class(17), 17);
+        assert_eq!(landtype_water_class(24), 16);
+        assert_eq!(landtype_water_class(20), 16);
+        // A source of its own keeps "the largest class is water".
+        assert_eq!(landtype_water_class(9), 9);
+    }
+
+    #[test]
+    fn a_usgs_mask_leaves_out_its_lakes_and_keeps_its_ice() {
+        let root =
+            std::env::temp_dir().join(format!("earthmesh_hfield_usgs_mask_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("landtype_usgs.nc");
+        let mut file = crate::create_netcdf(&path).unwrap();
+        file.add_dimension("longitude", 4).unwrap();
+        file.add_dimension("latitude", 2).unwrap();
+        file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+            .unwrap()
+            .put_values(&[0, 2, 16, 24, 7, 7, 7, 7], (.., ..))
+            .unwrap();
+        drop(file);
+        let mask = read_landtype_mask_source_for_hfield(&path).unwrap();
+        assert!(mask.excludes(16), "USGS water bodies are not land");
+        assert!(!mask.excludes(24), "USGS snow and ice is land");
+        assert!(!mask.excludes(2));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
