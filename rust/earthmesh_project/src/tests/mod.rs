@@ -1972,11 +1972,10 @@ fn the_point_radius_route_is_lowered_for_both_backends() {
 }
 
 #[test]
-fn the_coastline_criterion_follows_threshold_refinement() {
-    // Chasing the coast reads the land-type raster like any threshold row. A
-    // project that names only a region asked for that region; on Method-C,
-    // which refuses data-shaped demand, a default-on coastline failed every
-    // land and ocean run with a specified circle.
+fn the_coastline_criterion_is_asked_for_and_follows_threshold_refinement() {
+    // A run refines by the criteria it selected: a default-on coast was 99%
+    // of a global slope run's demand. Asked for, chasing the coast reads the
+    // land-type raster like any threshold row, so it follows that switch.
     let mut p = sample();
     p.refinement.hfield = None;
     p.refinement.adaptive = None;
@@ -1984,6 +1983,12 @@ fn the_coastline_criterion_follows_threshold_refinement() {
     // through its h-field instead.
     p.refinement.backend = crate::RefinementBackend::RedGreen;
     assert!(p.refinement.threshold_enabled);
+    let nml = p.lower().to_namelist();
+    assert!(nml.contains("NL%adaptive_coastline = .false."), "{nml}");
+    p.refinement.adaptive = Some(AdaptiveRefinementRecipe {
+        coastline: true,
+        ..AdaptiveRefinementRecipe::default()
+    });
     let nml = p.lower().to_namelist();
     assert!(nml.contains("NL%adaptive_coastline = .true."), "{nml}");
 

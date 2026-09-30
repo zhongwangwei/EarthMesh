@@ -576,8 +576,10 @@ pub struct AdaptiveRefinementRecipe {
     /// Base cell size in meters. `None` = 2piR/(5*NXP).
     #[serde(default)]
     pub base_m: Option<f64>,
-    /// Chase the land/sea boundary as its own criterion.
-    #[serde(default = "default_true")]
+    /// Chase the land/sea boundary as its own criterion. Off unless asked
+    /// for: a run refines by the criteria it selected, and on by default it
+    /// was 99% of a global slope run's demand, every coast on the planet.
+    #[serde(default)]
     pub coastline: bool,
 }
 
@@ -587,7 +589,7 @@ impl Default for AdaptiveRefinementRecipe {
             enabled: true,
             max_level: 0,
             base_m: None,
-            coastline: true,
+            coastline: false,
         }
     }
 }

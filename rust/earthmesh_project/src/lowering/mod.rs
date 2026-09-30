@@ -521,10 +521,10 @@ impl ProjectConfig {
             }
             .map(|mut recipe| {
                 // Chasing the coast reads the land-type raster like any
-                // threshold row, so it follows the threshold switch. A project
-                // that names only a region asked for that region: on Method-C,
-                // which refuses data-shaped demand, a default-on coastline
-                // failed every land and ocean run with a specified circle.
+                // threshold row, so it follows the threshold switch; and it is
+                // off unless the recipe asks, since a run refines by the
+                // criteria it selected (a default-on coast was 99% of a global
+                // slope run's demand).
                 recipe.coastline &= self.refinement.threshold_enabled;
                 recipe
             })

@@ -2402,7 +2402,10 @@ fn point_radius_is_the_default_route_and_the_h_field_is_opt_in() {
     let summary = project_summary(yaml.clone()).expect("summary");
     assert!(!summary.hfield_enabled);
     assert!(summary.adaptive_enabled);
-    assert!(summary.adaptive_coastline);
+    assert!(
+        !summary.adaptive_coastline,
+        "the coast is chased only when asked"
+    );
     let lowered = ProjectConfig::from_yaml(&yaml).expect("yaml").lower();
     let nml = lowered.to_namelist();
     assert!(nml.contains("&adaptive"), "{nml}");

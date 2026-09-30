@@ -4,7 +4,7 @@
 //!   adaptive_on         .true./.false.  master switch (`&adaptive` is opt-in)
 //!   adaptive_max_level  depth, 1..=5; 0 = use the run's max level
 //!   adaptive_base_m     base cell size in meters; 0/absent = 2piR/(5*NXP)
-//!   adaptive_coastline  .true./.false.  chase the land/sea boundary (default true)
+//!   adaptive_coastline  .true./.false.  chase the land/sea boundary (default false)
 //! ```
 //!
 //! This is the other consumer of the same criteria the h-field takes. Where the
@@ -22,7 +22,7 @@ fn invalid(message: String) -> io::Error {
 }
 
 /// Settings for the adaptive point+radius route.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AdaptiveRefineOptions {
     /// `None` = follow the run's computed max refinement level.
     pub max_level: Option<usize>,
@@ -32,16 +32,6 @@ pub struct AdaptiveRefineOptions {
     /// through `th_sea_ratio` for the h-field; the circle route can chase the
     /// boundary itself, and this says whether it should.
     pub coastline: bool,
-}
-
-impl Default for AdaptiveRefineOptions {
-    fn default() -> Self {
-        Self {
-            max_level: None,
-            base_m: None,
-            coastline: true,
-        }
-    }
 }
 
 fn parse_bool(field: &str, value: &str) -> io::Result<bool> {
@@ -78,7 +68,7 @@ pub fn read_adaptive_refine_options(contents: &str) -> io::Result<Option<Adaptiv
     let mut enabled = true;
     let mut max_level = 0usize;
     let mut base_m = 0.0_f64;
-    let mut coastline = true;
+    let mut coastline = false;
     for assignment in namelist_assignments(contents, "adaptive")? {
         match assignment.field.as_str() {
             "adaptive_on" => enabled = parse_bool(&assignment.field, &assignment.value)?,

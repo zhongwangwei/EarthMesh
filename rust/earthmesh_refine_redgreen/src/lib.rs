@@ -61,8 +61,9 @@ pub(crate) use refine_iter_helpers::{
 };
 mod refine_loop;
 pub use refine_loop::{
-    redgreen_mesh_from_triangular, refine_redgreen_round_inside, refine_redgreen_round_one_based,
-    triangle_balance_marks, RedGreenBalanceReport, RedGreenMesh, RedGreenOutcome, RedGreenSettings,
+    close_hanging_vertices, redgreen_mesh_from_triangular, refine_redgreen_round_inside,
+    refine_redgreen_round_one_based, triangle_balance_marks, RedGreenBalanceReport, RedGreenMesh,
+    RedGreenOutcome, RedGreenSettings,
 };
 mod refine_num_ref;
 pub use refine_num_ref::refine_num_ref_cal_one_based;

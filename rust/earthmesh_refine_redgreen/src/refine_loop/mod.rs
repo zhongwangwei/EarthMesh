@@ -26,6 +26,8 @@ use std::io;
 
 mod conforming;
 pub use conforming::triangle_balance_marks;
+mod hanging;
+pub use hanging::close_hanging_vertices;
 
 use crate::{
     refine_array_length_calculation_one_based, refine_boundary_segments_make_one_based,
@@ -735,19 +737,32 @@ pub fn refine_redgreen_round_inside(
             interior_marks[output_triangle] = 1;
         }
     }
+    let mut refined = RedGreenMesh {
+        num_vertex: mesh.num_vertex,
+        num_center: mesh.num_center,
+        triangle_points: renewed.triangle_points,
+        cell_points: renewed.cell_points,
+        cells_on_triangle,
+        triangles_on_cell: renewed.triangles_on_cell,
+        n_triangles_on_cell: renewed.n_triangles_on_cell,
+        green_parents: Vec::new(),
+        refinement_levels,
+    };
+    // `OnedivideTwo` halves a transition triangle on the edge it shares with
+    // one refined neighbour, the last it finds. A triangle between two blocks
+    // close enough for their rows to meet has two split edges; halving one
+    // leaves the other's vertex hanging, and when the neighbour it picked had
+    // not split their edge, the half-edge opens on both sides. Such a
+    // triangle needed a three-way closure; its missing halving is made here,
+    // once the round's numbering is final (see `hanging`).
+    // Without transition rows the round leaves hanging vertices by design.
+    if settings.build_transition_rows {
+        close_hanging_vertices(&mut refined);
+        interior_marks.resize(refined.triangle_count() + 1, 0);
+    }
     Ok(RedGreenOutcome {
         balance_repair: None,
-        mesh: RedGreenMesh {
-            num_vertex: mesh.num_vertex,
-            num_center: mesh.num_center,
-            triangle_points: renewed.triangle_points,
-            cell_points: renewed.cell_points,
-            cells_on_triangle,
-            triangles_on_cell: renewed.triangles_on_cell,
-            n_triangles_on_cell: renewed.n_triangles_on_cell,
-            green_parents: Vec::new(),
-            refinement_levels,
-        },
+        mesh: refined,
         interior_marks,
         refined_triangle_count,
         grown_triangle_count,

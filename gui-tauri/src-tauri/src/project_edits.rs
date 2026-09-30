@@ -614,7 +614,7 @@ pub(crate) fn set_adaptive_refinement(
         enabled,
         max_level,
         base_m,
-        coastline: coastline.unwrap_or(true),
+        coastline: coastline.unwrap_or(false),
     });
     if enabled {
         cfg.refinement.hfield = None;
