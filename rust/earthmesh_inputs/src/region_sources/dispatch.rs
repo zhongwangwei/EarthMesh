@@ -34,13 +34,19 @@ pub fn read_method_c_specified_refinement_regions(
                     south,
                     north,
                 },
-            ) => regions.push(RefinementRegion::Bbox {
-                west_degrees: west,
-                east_degrees: east,
-                south_degrees: south,
-                north_degrees: north,
-                level: max_level,
-            }),
+            ) => super::bbox::push_method_c_bbox_region(
+                &mut regions,
+                &crate::bbox_mask_io::BBoxPoint {
+                    west,
+                    east,
+                    south,
+                    north,
+                },
+                max_level,
+                refine,
+                nxp,
+                apply_parent_halos,
+            ),
             (
                 "circle",
                 InlineMaskSource::Circle {
@@ -123,7 +129,14 @@ pub fn read_method_c_specified_refinement_regions(
                 &mut regions,
                 apply_parent_halos,
             )?,
-            "bbox" => read_method_c_bbox_refinement_regions(&source, max_level, &mut regions)?,
+            "bbox" => read_method_c_bbox_refinement_regions(
+                &source,
+                max_level,
+                &mut regions,
+                refine,
+                nxp,
+                apply_parent_halos,
+            )?,
             "close" => read_method_c_close_refinement_regions(
                 &source,
                 max_level,

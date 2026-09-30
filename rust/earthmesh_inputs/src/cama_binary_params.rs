@@ -49,24 +49,35 @@ fn parse_cama_params_text(text: &str) -> io::Result<CamaBinaryGridSpec> {
     }
     let nx = parse_cama_dimension(values[0], "nx")?;
     let ny = parse_cama_dimension(values[1], "ny")?;
-    let grid_size_deg = values[3];
+    let printed_grid_size = values[3];
     let west = values[4];
     let east = values[5];
     let south = values[6];
     let north = values[7];
+    validate_cama_extent("longitude", west, east, nx, printed_grid_size)?;
+    validate_cama_extent("latitude", south, north, ny, printed_grid_size)?;
+    // params.txt prints the grid size to eight digits: 0.01666667 for one arc
+    // minute, which over 21,600 cells spans 360.00007 degrees and failed the
+    // spec's exact extent check -- the stock global 1-minute map was refused.
+    // The bounds carry it exactly; take it from them when both axes agree.
+    let from_bounds = (east - west) / nx as f64;
+    let grid_size_deg =
+        if ((north - south) / ny as f64 - from_bounds).abs() <= from_bounds.abs() * 1.0e-9 {
+            from_bounds
+        } else {
+            printed_grid_size
+        };
     let spec = CamaBinaryGridSpec {
         nx,
         ny,
-        west: values[4],
-        south: values[6],
+        west,
+        south,
         grid_size_deg,
         little_endian,
         y_reversed_storage,
     };
     spec.validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    validate_cama_extent("longitude", west, east, nx, grid_size_deg)?;
-    validate_cama_extent("latitude", south, north, ny, grid_size_deg)?;
     Ok(spec)
 }
 
@@ -137,6 +148,23 @@ fn apply_storage_directives(text: &str, little_endian: &mut bool, y_reversed_sto
 #[cfg(test)]
 mod tests {
     use super::parse_cama_params_text;
+
+    #[test]
+    fn the_global_one_minute_map_takes_its_grid_size_from_its_bounds() {
+        // The stock glb_01min params.txt, grid size printed to eight digits.
+        let text = "       21600      !! grid number (east-west)
+       10800      !! grid number (north-south)
+          10     !! floodplain layer
+  0.01666667     !! grid size
+    -180.000     !! west  edge (deg)
+     180.000     !! east  edge (deg)
+     -90.000     !! south edge (deg)
+      90.000     !! north edge (deg)
+";
+        let spec = parse_cama_params_text(text).expect("the stock 1-minute map");
+        assert_eq!(spec.grid_size_deg, 360.0 / 21600.0);
+        assert!((spec.lon_center(21599) - (180.0 - 1.0 / 120.0)).abs() < 1e-12);
+    }
 
     #[test]
     fn cama_params_default_to_documented_little_endian_with_big_override() {
