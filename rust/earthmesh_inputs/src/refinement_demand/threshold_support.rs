@@ -26,7 +26,8 @@ use crate::{
     GridRegion,
 };
 
-/// Supports held at once: the window over the domain, not the globe.
+/// Supports whose statistics are held at once: one latitude band of the
+/// window over the domain (the whole globe for a global run).
 const MAX_SUPPORTS: usize = 16_777_216;
 /// Latitude rows of the global support lattice, about 0.6 km apart.
 const MAX_SUPPORT_ROWS: usize = 1 << 15;
@@ -227,22 +228,18 @@ pub fn evaluate_threshold_support(
     }
     let (nlon, nlat) = support_dimensions(parent_m)?;
     let window = support_window(nlon, nlat, domain);
-    if window.len() > MAX_SUPPORTS {
-        return Err(invalid(if window.len() == nlon * nlat {
-            "threshold support exceeds 16,777,216 cells over the globe; increase the parent scale or reduce threshold levels"
-        } else {
-            "threshold support exceeds 16,777,216 cells over the domain window; increase the parent scale or reduce threshold levels"
-        }));
+    let bands = support_bands(window);
+    if bands.len() > 1 {
+        eprintln!(
+            "earthmesh_cli: judging {} threshold supports at parent scale {parent_m:.0} m in {} latitude bands",
+            window.len(),
+            bands.len()
+        );
     }
     out.nlon = nlon;
     out.nlat = nlat;
     out.window = window;
     out.longitude_shift = 180.0 / nlon as f64;
-    let mask = support_mask(refine, window, domain)?;
-    out.eligible_supports = mask.active.iter().filter(|&&active| active).count();
-    if out.eligible_supports == 0 {
-        eprintln!("earthmesh_cli: no threshold support centers inside the domain/mask at parent scale {parent_m:.3} m ({nlon}x{nlat}); thin regions may need a finer support scale");
-    }
     // Group a variable's mean/std so both use the same original samples and one read.
     let mut groups = BTreeMap::<(String, String), Vec<(bool, f64)>>::new();
     for (stddev, specs) in [
@@ -294,20 +291,110 @@ pub fn evaluate_threshold_support(
             .map(|path| support_landtype_mask(path, mesh_type.trim() == "landmesh"))
             .transpose()?
     };
+    for band in bands {
+        let mask = support_mask(refine, band, domain)?;
+        out.eligible_supports += mask.active.iter().filter(|&&active| active).count();
+        let judged = judge_band(
+            refine,
+            &groups,
+            land_mask.as_ref(),
+            landtype_file,
+            &grid,
+            &mask,
+            out.longitude_shift,
+        )?;
+        merge_band(&mut out.criteria, judged, band, window);
+    }
+    if out.eligible_supports == 0 {
+        eprintln!("earthmesh_cli: no threshold support centers inside the domain/mask at parent scale {parent_m:.3} m ({nlon}x{nlat}); thin regions may need a finer support scale");
+    }
+    Ok(out)
+}
+
+/// The window in latitude bands of at most `band_supports()` supports: a
+/// band's statistics are dropped once its criteria are judged, so memory
+/// follows the band and only the hit flags follow the window.
+fn support_bands(window: LatticeWindow) -> Vec<LatticeWindow> {
+    let limit = band_supports();
+    if window.len() <= limit || window.ni == 0 {
+        return vec![window];
+    }
+    let rows = (limit / window.ni).max(1);
+    (window.j0..window.j0 + window.nj)
+        .step_by(rows)
+        .map(|j0| LatticeWindow {
+            j0,
+            nj: rows.min(window.j0 + window.nj - j0),
+            ..window
+        })
+        .collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests cut small windows into many bands through this.
+    static BAND_SUPPORTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+fn band_supports() -> usize {
+    #[cfg(test)]
+    if let Some(limit) = BAND_SUPPORTS.with(std::cell::Cell::get) {
+        return limit;
+    }
+    MAX_SUPPORTS
+}
+
+/// Put one band's judgements into the whole window's criteria, in order.
+fn merge_band(
+    whole: &mut Vec<CriterionSupportDemand>,
+    band: Vec<CriterionSupportDemand>,
+    band_window: LatticeWindow,
+    window: LatticeWindow,
+) {
+    if whole.is_empty() {
+        whole.extend(band.iter().map(|criterion| CriterionSupportDemand {
+            id: criterion.id.clone(),
+            hits: vec![false; window.len()],
+            source_samples: 0,
+            empty_supports: 0,
+            singleton_supports: 0,
+        }));
+    }
+    for (total, part) in whole.iter_mut().zip(band) {
+        debug_assert_eq!(total.id, part.id);
+        total.source_samples += part.source_samples;
+        total.empty_supports += part.empty_supports;
+        total.singleton_supports += part.singleton_supports;
+        for (k, hit) in part.hits.into_iter().enumerate() {
+            if hit {
+                let (i, j) = band_window.global(k);
+                let at = window.local(i, j).expect("a band lies inside its window");
+                total.hits[at] = true;
+            }
+        }
+    }
+}
+
+/// Judge every criterion over one band of supports, `mask` its eligible ones.
+#[allow(clippy::too_many_arguments)]
+fn judge_band(
+    refine: &RefineConfig,
+    groups: &BTreeMap<(String, String), Vec<(bool, f64)>>,
+    land_mask: Option<&crate::hfield_refine::LandtypeMaskSource>,
+    landtype_file: Option<&Path>,
+    grid: &LatticeShape,
+    mask: &HfieldDomainMask,
+    longitude_shift: f64,
+) -> io::Result<Vec<CriterionSupportDemand>> {
+    let mut criteria = Vec::new();
     for ((stem, name), comparisons) in groups {
         let path = Path::new(refine.threshold_dir.trim()).join(format!("{stem}.nc"));
         let file = crate::open_netcdf(&path).map_err(crate::netcdf_to_io_error)?;
-        let stats = read_numeric_support(
-            &file,
-            &name,
-            &grid,
-            land_mask.as_ref(),
-            Some(&mask),
-            out.longitude_shift,
-        )?;
-        for (stddev, threshold) in comparisons {
+        let stats =
+            read_numeric_support(&file, name, grid, land_mask, Some(mask), longitude_shift)?;
+        for &(stddev, threshold) in comparisons {
             let id = format!("{name}_{}", if stddev { "std" } else { "mean" });
-            out.criteria.push(criterion(
+            criteria.push(criterion(
                 id,
                 &mask.active,
                 |i| stats.samples[i],
@@ -324,14 +411,14 @@ pub fn evaluate_threshold_support(
     if refine.refine_num_landtypes || refine.refine_area_mainland || refine.refine_sea_ratio {
         let path = landtype_file
             .ok_or_else(|| invalid("enabled categorical thresholds require a landtype source"))?;
-        let bins = read_landtype_support(path, &grid, Some(&mask), out.longitude_shift)?;
+        let bins = read_landtype_support(path, grid, Some(mask), longitude_shift)?;
         for (enabled, id) in [
             (refine.refine_num_landtypes, "landcover"),
             (refine.refine_area_mainland, "area_mainland"),
             (refine.refine_sea_ratio, "sea_ratio"),
         ] {
             if enabled {
-                out.criteria.push(criterion(
+                criteria.push(criterion(
                     id.to_string(),
                     &mask.active,
                     |i| bins.total_at(i),
@@ -359,7 +446,7 @@ pub fn evaluate_threshold_support(
             }
         }
     }
-    Ok(out)
+    Ok(criteria)
 }
 
 // Exact positive-area intersections. Longitude supports straddle the -180 origin;

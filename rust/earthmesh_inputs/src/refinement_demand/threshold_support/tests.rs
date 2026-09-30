@@ -587,11 +587,72 @@ fn a_regional_domain_is_judged_finer_than_the_global_support_cap() {
     assert!(raw.nlon * raw.nlat > MAX_SUPPORTS);
     assert!(raw.window.len() < 100_000, "{:?}", raw.window);
     assert!(raw.eligible_supports > 10_000);
-    let err = match evaluate_threshold_support(&refine, "landmesh", Some(&land), 2_000.0, None) {
-        Ok(_) => panic!("the globe at 2 km exceeds the cap"),
-        Err(err) => err,
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn latitude_bands_judge_exactly_what_one_pass_does() {
+    let root = temp_root("band_oracle");
+    let land = root.join("landtype.nc");
+    let lai = root.join("lai.nc");
+    let hash = |i: usize, j: usize, salt: usize| {
+        (i.wrapping_mul(2_654_435_761) ^ j.wrapping_mul(40_503) ^ salt).wrapping_mul(97) % 1000
     };
-    assert!(err.to_string().contains("over the globe"), "{err}");
+    write_landtype(&land, 288, 144, |i, j| match hash(i, j, 3) % 10 {
+        0..=2 => 0,
+        3 => 17,
+        k => k as i8,
+    });
+    write_numeric(&lai, "lai", 144, 72, |i, j| hash(i, j, 11) as f64 / 400.0);
+    let mut refine = RefineConfig {
+        max_iter_cal: 2,
+        threshold_dir: root.display().to_string(),
+        refine_num_landtypes: true,
+        th_num_landtypes: 3,
+        refine_sea_ratio: true,
+        th_sea_ratio: [0.2, 0.6],
+        ..RefineConfig::default()
+    };
+    configure_lai_thresholds(&mut refine);
+    let regional = GridRegion::Circle {
+        lon: 175.0,
+        lat: -30.0,
+        radius_km: 2500.0,
+    };
+    for domain in [None, Some(&regional)] {
+        for mesh in ["landmesh", "oceanmesh"] {
+            let judge = |band: Option<usize>| {
+                BAND_SUPPORTS.with(|cell| cell.set(band));
+                let raw = evaluate_threshold_support(
+                    &refine,
+                    mesh,
+                    Some(&land),
+                    parent_m_for_nlat(36),
+                    domain,
+                );
+                BAND_SUPPORTS.with(|cell| cell.set(None));
+                raw.expect("support demand")
+            };
+            let (whole, banded) = (judge(None), judge(Some(50)));
+            assert_eq!(banded.window, whole.window);
+            assert_eq!(banded.eligible_supports, whole.eligible_supports);
+            assert_eq!(banded.criteria.len(), whole.criteria.len());
+            let mut hits = 0;
+            for (b, w) in banded.criteria.iter().zip(&whole.criteria) {
+                assert_eq!(b.id, w.id);
+                assert_eq!(b.hits, w.hits, "{} {mesh} {domain:?}", b.id);
+                assert_eq!(b.source_samples, w.source_samples, "{}", b.id);
+                assert_eq!(b.empty_supports, w.empty_supports, "{}", b.id);
+                assert_eq!(b.singleton_supports, w.singleton_supports, "{}", b.id);
+                hits += b.hits.iter().filter(|&&hit| hit).count();
+            }
+            assert!(hits > 0, "the oracle compares something");
+        }
+    }
+    BAND_SUPPORTS.with(|cell| cell.set(Some(100)));
+    let bands = support_bands(LatticeWindow::full(72, 36));
+    BAND_SUPPORTS.with(|cell| cell.set(None));
+    assert_eq!(bands.len(), 36, "one row of 72 supports per band");
     let _ = fs::remove_dir_all(root);
 }
 

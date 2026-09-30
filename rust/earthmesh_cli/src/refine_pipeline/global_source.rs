@@ -4149,8 +4149,13 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 /// on data-shaped regions (docs/experiments/2026-08_lattice_invariants.md), not
 /// a broken input, and the red-green backend exists for exactly these runs. A
 /// global coastal ocean project that failed here builds and delivers on it.
+/// Every Method-C failure out of an h-field spawn is a shape it cannot build,
+/// not only the gates it knows how to repair: a global slope field at 12 km
+/// failed with "perimeter loop revisited M point" and no hint at all.
 fn with_data_shaped_hfield_hint(error: io::Error) -> io::Error {
-    if earthmesh_mesh::method_c_repairable_payload(&error).is_none() {
+    if earthmesh_mesh::method_c_repairable_payload(&error).is_none()
+        && !error.to_string().contains("Method-C")
+    {
         return error;
     }
     io::Error::new(

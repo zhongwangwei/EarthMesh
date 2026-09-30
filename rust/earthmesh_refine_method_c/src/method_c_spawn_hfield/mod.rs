@@ -130,6 +130,11 @@ impl MethodCHfieldDemandCoverage {
 /// returns the mesh unchanged (a field that demands nothing is a no-op, not
 /// an error), an empty deeper pass simply stops descending, and the
 /// region-specific parent-erosion retry is not applicable.
+/// Blocks built alone, nearest the failing gate first, before one is dropped.
+const BLOCK_TRIALS_PER_DROP: usize = 4;
+/// Whole-pass attempts one level may spend dropping blocks.
+const MAX_BLOCK_DROP_ATTEMPTS: usize = 24;
+
 impl MethodCMesh {
     fn sample_target_level<F: Fn(f64, f64) -> u8>(
         &self,
@@ -1059,6 +1064,10 @@ impl MethodCMesh {
     /// pass, its demand with it, and the pass is retried; the drop is counted
     /// in `diagnostics` so the run can say where it refined less than asked.
     /// A pass that builds is never touched.
+    ///
+    /// Every attempt is a whole pass over the mesh, so the attempts are
+    /// budgeted: a 1 km regional run spent 18 minutes on them before failing
+    /// with the error it started with. Past the budget the pass fails at once.
     pub(crate) fn spawn_nest_pass_dropping_unbuildable_blocks(
         &self,
         mut selected: Vec<bool>,
@@ -1068,7 +1077,18 @@ impl MethodCMesh {
         diagnostics: &mut MethodCHfieldSpawnDiagnostics,
     ) -> io::Result<Self> {
         let m_neighbors = self.method_c_m_neighbors()?;
+        let mut attempts = 0usize;
+        let over_budget = |attempts: usize, error: io::Error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "{error} (gave up after {attempts} Method-C pass attempts dropping \
+                     unbuildable blocks)"
+                ),
+            )
+        };
         loop {
+            attempts += 1;
             let error = match self.spawn_nest_pass_method_c_preserving_demands(
                 &selected,
                 child_level,
@@ -1098,7 +1118,14 @@ impl MethodCMesh {
                 }
             }
             let mut unbuildable = None;
-            for block in blocks {
+            // The nearest blocks only: trying every one cost a pass each, tens
+            // of them per drop on a global coast, where they all built alone
+            // and the one near the gate was dropped anyway.
+            for block in blocks.into_iter().take(BLOCK_TRIALS_PER_DROP) {
+                if attempts >= MAX_BLOCK_DROP_ATTEMPTS {
+                    return Err(over_budget(attempts, error));
+                }
+                attempts += 1;
                 let mut alone = coverage.clone();
                 alone.retain_covered(&block);
                 if self
