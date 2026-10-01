@@ -25,6 +25,28 @@ pub fn attach_hfield_diagnostics_from_namelist(
     kind: &str,
     namelist_contents: &str,
 ) -> io::Result<bool> {
+    attach_hfield_diagnostics_from_namelist_with_g(
+        report,
+        input,
+        mesh,
+        kind,
+        namelist_contents,
+        None,
+    )
+}
+
+/// As [`attach_hfield_diagnostics_from_namelist`], with the gradation the
+/// gridfile records its field was composed with: a Method-C run that could
+/// not nest the namelist's field composes it again more gently, and the
+/// targets are judged against the field the mesh was built from.
+pub fn attach_hfield_diagnostics_from_namelist_with_g(
+    report: &mut MeshQualityReport,
+    input: &QualityMeshInput,
+    mesh: &GridfileMeshPoints,
+    kind: &str,
+    namelist_contents: &str,
+    recorded_g: Option<f64>,
+) -> io::Result<bool> {
     if !namelist_has_section(namelist_contents, "mkgrd") {
         return Ok(false);
     }
@@ -39,9 +61,12 @@ pub fn attach_hfield_diagnostics_from_namelist(
             "NL%NXP must be positive for h-field diagnostics",
         ));
     }
-    let Some(hfield) = read_hfield_refine_options(namelist_contents)? else {
+    let Some(mut hfield) = read_hfield_refine_options(namelist_contents)? else {
         return Ok(false);
     };
+    if let Some(g) = recorded_g {
+        hfield.g = g;
+    }
     let has_hydro_target = hfield.hydro_target_paths().is_some();
     let is_atmosmesh = matches!(config.mesh_type.trim(), "atmos" | "atmosmesh");
     let native_mdomain = read_native_grid_mdomain(namelist_contents)?;

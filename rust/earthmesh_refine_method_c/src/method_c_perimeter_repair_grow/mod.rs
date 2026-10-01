@@ -53,6 +53,51 @@ impl MethodCMesh {
             }
         }
 
+        // Scored from what each candidate changes, where the base allows it
+        // (`method_c_perimeter_incremental`); a candidate it cannot score is
+        // evaluated on the whole mesh below, as every candidate used to be.
+        let incremental = if crate::method_c_perimeter_incremental::whole_mesh_only() {
+            None
+        } else {
+            crate::method_c_perimeter_incremental::IncrementalSelection::new(
+                self,
+                selected,
+                m_neighbors,
+            )?
+        };
+        if let Some(mut incremental) = incremental {
+            use crate::method_c_perimeter_incremental::Trial;
+            let mut best: Option<(usize, usize, usize, Vec<usize>)> = None;
+            for candidate in candidates {
+                let score = match incremental.trial(None, &[candidate])? {
+                    Trial::Rejected => continue,
+                    Trial::Scored(score) => score,
+                };
+                if score.triplets {
+                    let trial = incremental.with(&score.added);
+                    let perimeters =
+                        self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)?;
+                    return Ok(Some((trial, perimeters.concat())));
+                }
+                let key = (score.added.len(), score.remainder, score.length);
+                if best
+                    .as_ref()
+                    .is_none_or(|current| key < (current.0, current.1, current.2))
+                {
+                    best = Some((key.0, key.1, key.2, score.added));
+                }
+            }
+            return match best {
+                None => Ok(None),
+                Some((_, _, _, added)) => {
+                    let trial = incremental.with(&added);
+                    let perimeters =
+                        self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)?;
+                    Ok(Some((trial, perimeters.concat())))
+                }
+            };
+        }
+
         let mut best: Option<(usize, usize, usize, Vec<bool>, Vec<MethodCPerimeterPoint>)> = None;
         for candidate in candidates {
             let mut trial = selected.to_vec();

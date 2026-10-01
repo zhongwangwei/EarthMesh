@@ -10,6 +10,9 @@ impl MethodCMesh {
         child_level: usize,
         perimeter: Option<&[MethodCPerimeterPoint]>,
     ) -> io::Result<Option<(Vec<bool>, Vec<MethodCPerimeterPoint>)>> {
+        // Every candidate along the perimeter: searched near the failing point
+        // only, a global 30 km slope run chose a shrink that left a
+        // one-face-thick mask and failed. The scoring is incremental instead.
         let selected_count = selected.iter().filter(|&&item| item).count();
         let mut candidates = BTreeSet::new();
         if let Some(perimeter) = perimeter {
@@ -38,6 +41,48 @@ impl MethodCMesh {
                     }
                 }
             }
+        }
+
+        // Scored from what each removal changes (`method_c_perimeter_incremental`).
+        let incremental = if crate::method_c_perimeter_incremental::whole_mesh_only() {
+            None
+        } else {
+            crate::method_c_perimeter_incremental::IncrementalSelection::new(
+                self,
+                selected,
+                m_neighbors,
+            )?
+        };
+        if let Some(mut incremental) = incremental {
+            use crate::method_c_perimeter_incremental::Trial;
+            let mut best: Option<(usize, usize, usize, Option<usize>, Vec<usize>)> = None;
+            for candidate in candidates {
+                let Trial::Scored(score) = incremental.trial_without(candidate)? else {
+                    continue;
+                };
+                // The removed face is off, and back among `added` if the
+                // closure put it back.
+                let trial_count = selected_count - 1 + score.added.len();
+                if trial_count == 0 || trial_count >= selected_count {
+                    continue;
+                }
+                let key = (selected_count - trial_count, score.remainder, score.length);
+                if best
+                    .as_ref()
+                    .is_none_or(|current| key < (current.0, current.1, current.2))
+                {
+                    best = Some((key.0, key.1, key.2, score.removed, score.added));
+                }
+            }
+            return match best {
+                None => Ok(None),
+                Some((_, _, _, removed, added)) => {
+                    let trial = incremental.with_changes(removed, &added);
+                    let perimeters =
+                        self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)?;
+                    Ok(Some((trial, perimeters.concat())))
+                }
+            };
         }
 
         let mut best: Option<(usize, usize, usize, Vec<bool>, Vec<MethodCPerimeterPoint>)> = None;

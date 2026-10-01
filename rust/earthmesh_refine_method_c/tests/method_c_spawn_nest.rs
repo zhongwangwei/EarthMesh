@@ -492,7 +492,12 @@ fn spawn_nest_continues_grid_numbers_on_already_nested_mesh() {
 }
 
 #[test]
-fn spawn_nest_rejects_mixed_regions_when_child_crosses_parent_mrow_like_canonical() {
+fn spawn_nest_builds_mixed_regions_by_filling_the_pinches_canonical_refused() {
+    // Canonical Method-C refused this: the level-1 selection pinched at
+    // points where it met itself corner to corner, the perimeter walk failed,
+    // and the level-2 child then crossed its parent's rows. The repair now
+    // fills a selection's pinches when there are several (one is left to the
+    // grower), so the parent grows round the child and both levels build.
     let mesh = MethodCMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base Method-C mesh");
     let low = RefinementRegion::Circle {
         center: LonLatDegrees::new(-70.0, -20.0),
@@ -510,25 +515,19 @@ fn spawn_nest_rejects_mixed_regions_when_child_crosses_parent_mrow_like_canonica
         level: 1,
     };
 
-    let error = mesh
+    let refined = mesh
         .spawn_nest(&[low, high_parent, high], 5)
-        .expect_err("Canonical Method-C rejects child grids that cross parent mrow boundaries");
-    // `next coarser grid boundary` is the third way this codebase words the same
-    // constraint, and it is the wording the valence check uses.
-    //
-    // This list used to be `mrow` or `parent boundary`, and it matched on the
-    // trailing clause of a triple-grouping message -- the refusal arrived there
-    // because the ladder's fixed-point valence rung was disabled by a type
-    // confusion and could not run. With that repaired, the refusal arrives at the
-    // valence check instead, which is the constraint this test is named for, so
-    // the assertion now accepts the wording that check uses. The corridor test in
-    // `method_c_boundary_repair` has always accepted all three. Guide 11.5.
-    let message = error.to_string();
+        .expect("both levels build once the pinches are filled");
+    refined
+        .validate_topology()
+        .expect("filled-pinch Method-C topology");
+    let mut levels = std::collections::BTreeMap::new();
+    for face in refined.w_faces.iter().skip(2) {
+        *levels.entry(face.mrlw).or_insert(0usize) += 1;
+    }
     assert!(
-        message.contains("mrow")
-            || message.contains("parent boundary")
-            || message.contains("next coarser grid boundary"),
-        "unexpected error: {error}"
+        (1..=3).all(|level| levels.get(&level).is_some_and(|&n| n > 0)),
+        "base, level 1 and level 2 faces: {levels:?}"
     );
 }
 

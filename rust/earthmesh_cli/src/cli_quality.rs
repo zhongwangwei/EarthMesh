@@ -85,12 +85,14 @@ pub(crate) fn run_mesh_quality(args: impl Iterator<Item = String>) -> Result<(),
     report.cell_view = kind.to_string();
     if let Some(text) = &quality_cfg_text {
         let attached =
-            earthmesh_cli::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
+            earthmesh_cli::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist_with_g(
                 &mut report,
                 &input,
                 &mesh,
                 kind,
                 text,
+                earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_g(&gridfile)
+                    .map_err(|e| format!("read h-field gradation: {e}"))?,
             )
             .map_err(|e| format!("attach h-field diagnostics: {e}"))?;
         if attached {

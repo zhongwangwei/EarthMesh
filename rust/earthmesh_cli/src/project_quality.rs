@@ -465,12 +465,15 @@ fn write_quality_report_impl(
     };
     report.cell_view = cell_view.to_string();
     if let Some(namelist) = target_namelist_text {
-        crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist(
+        let recorded_g = crate::hfield_gridfile_context::read_hfield_gridfile_g(gridfile)
+            .map_err(|err| format!("project quality read h-field gradation: {err}"))?;
+        crate::grid_quality_pipeline::attach_hfield_diagnostics_from_namelist_with_g(
             &mut report,
             &input,
             &mesh,
             cell_view,
             &namelist,
+            recorded_g,
         )
         .map_err(|err| format!("project quality attach h-field diagnostics: {err}"))?;
     }

@@ -39,11 +39,38 @@ impl MethodCMesh {
         m_neighbors: &[IcosahedronMPointNeighbors],
         child_level: usize,
         perimeter: Option<&[MethodCPerimeterPoint]>,
+        focus: Option<usize>,
     ) -> io::Result<Option<(Vec<bool>, Vec<MethodCPerimeterPoint>)>> {
+        // Each candidate is a whole-mesh trial (a copy, a concavity sweep, the
+        // perimeters again), so trying every point of a long perimeter is
+        // quadratic: a global slope selection at 30 km spent most of its run
+        // here. A long perimeter with a known failing point is searched near
+        // that point only; a short one, or one without, as before.
+        const LONG_PERIMETER: usize = 96;
+        const FOCUS_REACH: usize = 24;
         let mut boundary_m = BTreeSet::new();
         if let Some(perimeter) = perimeter {
-            for point in perimeter {
-                boundary_m.insert(point.im);
+            let near = focus
+                .filter(|_| perimeter.len() > LONG_PERIMETER)
+                .map(|im| {
+                    perimeter
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, point)| point.im == im)
+                        .map(|(k, _)| k)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|at| !at.is_empty());
+            for (k, point) in perimeter.iter().enumerate() {
+                let reached = near.as_ref().is_none_or(|at| {
+                    at.iter().any(|&a| {
+                        let d = a.abs_diff(k);
+                        d.min(perimeter.len() - d) <= FOCUS_REACH
+                    })
+                });
+                if reached {
+                    boundary_m.insert(point.im);
+                }
             }
         } else {
             for im in 2..=self.nmd {
@@ -60,6 +87,43 @@ impl MethodCMesh {
         }
         if boundary_m.is_empty() {
             return Ok(None);
+        }
+
+        // Scored from what each fill changes (`method_c_perimeter_incremental`);
+        // the whole-mesh trial below stays for a base it cannot take.
+        let incremental = if crate::method_c_perimeter_incremental::whole_mesh_only() {
+            None
+        } else {
+            crate::method_c_perimeter_incremental::IncrementalSelection::new(
+                self,
+                selected,
+                m_neighbors,
+            )?
+        };
+        if let Some(mut incremental) = incremental {
+            use crate::method_c_perimeter_incremental::Trial;
+            let mut best: Option<(usize, usize, usize, Vec<usize>)> = None;
+            for im in boundary_m {
+                let Trial::Scored(score) = incremental.trial(Some(im), &[])? else {
+                    continue;
+                };
+                let key = (score.added.len(), score.remainder, score.length);
+                if best
+                    .as_ref()
+                    .is_none_or(|current| key < (current.0, current.1, current.2))
+                {
+                    best = Some((key.0, key.1, key.2, score.added));
+                }
+            }
+            return match best {
+                None => Ok(None),
+                Some((_, _, _, added)) => {
+                    let trial = incremental.with(&added);
+                    let perimeters =
+                        self.method_c_perimeters_from_selected_faces(&trial, m_neighbors)?;
+                    Ok(Some((trial, perimeters.concat())))
+                }
+            };
         }
 
         let selected_count = selected.iter().filter(|&&item| item).count();

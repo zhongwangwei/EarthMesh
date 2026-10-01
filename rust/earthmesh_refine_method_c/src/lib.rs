@@ -92,6 +92,7 @@ mod method_c_mask_annealing;
 mod method_c_parent_mrlw_validation;
 mod method_c_patch;
 mod method_c_perimeter;
+mod method_c_perimeter_incremental;
 mod method_c_perimeter_mrows;
 mod method_c_perimeter_repair;
 mod method_c_perimeter_repair_candidates;

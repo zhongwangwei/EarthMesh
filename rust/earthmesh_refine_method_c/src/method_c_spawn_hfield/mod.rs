@@ -2,6 +2,8 @@ use std::{collections::HashMap, io};
 
 use super::*;
 
+mod replay;
+
 #[derive(Clone, Debug)]
 pub(crate) struct MethodCHfieldDemandCoverage {
     anchors: Vec<(usize, Vec<usize>)>,
@@ -1076,6 +1078,7 @@ impl MethodCMesh {
         mut coverage: MethodCHfieldDemandCoverage,
         diagnostics: &mut MethodCHfieldSpawnDiagnostics,
     ) -> io::Result<Self> {
+        replay::dump_pass_if_asked(self, &selected, child_level, max_mrows, &coverage, false)?;
         let m_neighbors = self.method_c_m_neighbors()?;
         let mut attempts = 0usize;
         let over_budget = |attempts: usize, error: io::Error| {
@@ -1087,35 +1090,64 @@ impl MethodCMesh {
                 ),
             )
         };
+        let mut ladder = crate::method_c_spawn_pass::MethodCLadderTrace::default();
         loop {
             attempts += 1;
-            let error = match self.spawn_nest_pass_method_c_preserving_demands(
+            let error = match self.spawn_nest_pass_method_c_preserving_demands_into(
                 &selected,
                 child_level,
                 max_mrows,
                 true,
                 &coverage,
+                &mut ladder,
             ) {
-                Ok(mesh) => return Ok(mesh),
+                Ok(mesh) => {
+                    replay::dump_pass_if_asked(
+                        self,
+                        &selected,
+                        child_level,
+                        max_mrows,
+                        &coverage,
+                        true,
+                    )?;
+                    return Ok(mesh);
+                }
                 Err(error) => error,
             };
             if method_c_repairable_payload(&error).is_none() {
                 return Err(error);
             }
             // Which block to drop is decided by building each on its own. The
-            // gate's point is only a hint: the repair ladder rewrites the mask
-            // before it gives up, so the point it names can sit on another
-            // block entirely. The block nearest it is tried first.
+            // gate names a point on the mask the ladder ended with, which it
+            // grew -- a row per round, for 32 rounds, can carry the failure a
+            // dozen rings past every face the pass was asked for (global 12 km
+            // slope, level 3). So the block is found on that mask, and what is
+            // dropped is the part of the selection inside it; blocks the
+            // ladder merged fail together and go together. It is tried first.
             let hint = method_c_repairable_payload(&error).and_then(|payload| payload.m_point);
             let mut blocks = self.method_c_selected_blocks(&selected);
             let near = hint.and_then(|point| {
-                self.method_c_selected_block_near(&selected, point, &m_neighbors)
+                let grown = if ladder.mask.len() == selected.len() {
+                    self.method_c_selected_block_near(&ladder.mask, point, &m_neighbors)
+                } else {
+                    None
+                };
+                let asked = grown.map(|grown| {
+                    grown
+                        .iter()
+                        .zip(&selected)
+                        .map(|(&grown, &asked)| grown && asked)
+                        .collect::<Vec<_>>()
+                });
+                asked
+                    .filter(|asked| asked.iter().any(|&face| face))
+                    .or_else(|| self.method_c_selected_block_near(&selected, point, &m_neighbors))
             });
             if let Some(near) = &near {
                 if let Some(position) = blocks.iter().position(|block| block == near) {
-                    let near = blocks.remove(position);
-                    blocks.insert(0, near);
+                    blocks.remove(position);
                 }
+                blocks.insert(0, near.clone());
             }
             let mut unbuildable = None;
             // The nearest blocks only: trying every one cost a pass each, tens
@@ -1146,6 +1178,14 @@ impl MethodCMesh {
             // ladder works on the whole mask, so blocks that each close on
             // their own can still defeat it together -- the global coastal case
             // does. Then the block at the gate's point is the one given up.
+            if crate::method_c_perimeter_repair::repair_trace() {
+                eprintln!(
+                    "earthmesh_cli: method-c pass {child_level}: attempt {attempts}, gate at {hint:?}, \
+                     block near it: {}, a block failing alone: {}",
+                    near.is_some(),
+                    unbuildable.is_some()
+                );
+            }
             let Some(block) = unbuildable.or(near) else {
                 return Err(error);
             };

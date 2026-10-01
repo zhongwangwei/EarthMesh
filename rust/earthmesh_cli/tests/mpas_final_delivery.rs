@@ -159,6 +159,7 @@ fn hfield_context() -> HfieldGridfileContext {
         .unwrap(),
         base_m: 500.0,
         max_level: 5,
+        g: None,
     }
 }
 

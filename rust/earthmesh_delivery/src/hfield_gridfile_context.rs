@@ -9,6 +9,7 @@ const NLAT: &str = "earthmesh_hfield_nlat";
 const BASE: &str = "earthmesh_hfield_base_m";
 const LEVEL: &str = "earthmesh_hfield_max_level";
 const SEMANTICS: &str = "earthmesh_hfield_semantics";
+const GRADATION: &str = "earthmesh_hfield_g";
 // v1 uses HField's south-to-north cell centres, longitude-fast raster,
 // periodic longitude/polar-continuous bilinear sample and level_at quantization.
 // Bump the semantic version if these sampling/quantization rules change.
@@ -19,6 +20,9 @@ pub struct HfieldGridfileContext {
     pub field: HField,
     pub base_m: f64,
     pub max_level: u8,
+    /// The gradation the field was composed with, when the producer knows it:
+    /// a run may compose again more gently than its namelist asked.
+    pub g: Option<f64>,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -71,6 +75,10 @@ impl HfieldGridfileContext {
             .map_err(netcdf_to_io_error)?;
         file.add_attribute(SEMANTICS, VERSION)
             .map_err(netcdf_to_io_error)?;
+        if let Some(g) = self.g.filter(|g| g.is_finite() && *g > 0.0) {
+            file.add_attribute(GRADATION, g)
+                .map_err(netcdf_to_io_error)?;
+        }
         Ok(())
     }
 }
@@ -143,7 +151,22 @@ pub fn read_hfield_gridfile_context(
         )?,
         base_m,
         max_level,
+        g: match file.attribute(GRADATION).map(|a| a.value()).transpose() {
+            Ok(Some(netcdf::AttributeValue::Double(g))) if g.is_finite() && g > 0.0 => Some(g),
+            _ => None,
+        },
     };
     context.validate()?;
     Ok(Some(context))
+}
+
+/// The gradation a gridfile's h-field was composed with, if it records one.
+pub fn read_hfield_gridfile_g(path: impl AsRef<Path>) -> io::Result<Option<f64>> {
+    let file = crate::open_netcdf(path.as_ref()).map_err(netcdf_to_io_error)?;
+    Ok(
+        match file.attribute(GRADATION).map(|a| a.value()).transpose() {
+            Ok(Some(netcdf::AttributeValue::Double(g))) if g.is_finite() && g > 0.0 => Some(g),
+            _ => None,
+        },
+    )
 }

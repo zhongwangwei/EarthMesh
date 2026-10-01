@@ -54,7 +54,7 @@ impl MethodCMesh {
         }
     }
 
-    fn perim_map2_method_c_from(
+    pub(crate) fn perim_map2_method_c_from(
         &self,
         start: usize,
         nest_wd: &[MethodCNestWd],
@@ -65,8 +65,12 @@ impl MethodCMesh {
         let mut visited = BTreeSet::new();
         loop {
             if !visited.insert(current) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
+                // A pinch: the selection meets itself at `current`. Repairable
+                // and named, so a pass that cannot mend it can still give up
+                // the block it is in rather than the whole level.
+                return Err(repairable_error(
+                    RepairableKind::NonTripletPerimeter,
+                    Some(current),
                     format!("Method-C perimeter loop revisited M point {current} before closing"),
                 ));
             }

@@ -64,9 +64,13 @@ impl MethodCMesh {
             max_mrows,
             project_to_radius,
             None,
+            &mut MethodCLadderTrace::default(),
         )
     }
 
+    /// `trace.mask` ends holding the mask the last attempt was made with, so a
+    /// failure can be traced to the block it happened in after the ladder
+    /// has grown it away from the selection it was given.
     fn spawn_nest_pass_method_c_repairing(
         &self,
         selected_faces: &[bool],
@@ -74,7 +78,9 @@ impl MethodCMesh {
         max_mrows: usize,
         project_to_radius: bool,
         coverage: Option<&crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage>,
+        trace: &mut MethodCLadderTrace,
     ) -> io::Result<Self> {
+        let selected = &mut trace.mask;
         self.validate_topology()?;
         require_method_c_len("selected_faces", selected_faces.len(), self.nwd + 1)?;
         if child_level <= 1 {
@@ -87,16 +93,14 @@ impl MethodCMesh {
             coverage.validate(selected_faces)?;
         }
 
-        let mut selected = selected_faces.to_vec();
+        selected.clear();
+        selected.extend_from_slice(selected_faces);
         let method_c_m_neighbors = self.method_c_m_neighbors()?;
-        self.close_method_c_concavities_for_level_with_neighbors(
-            &mut selected,
-            &method_c_m_neighbors,
-        )?;
+        self.close_method_c_concavities_for_level_with_neighbors(selected, &method_c_m_neighbors)?;
         if let Some(coverage) = coverage {
-            coverage.validate(&selected)?;
+            coverage.validate(selected)?;
         }
-        self.ensure_method_c_selected_faces_share_parent_mrlw(&selected, child_level)?;
+        self.ensure_method_c_selected_faces_share_parent_mrlw(selected, child_level)?;
 
         // Measured, not guessed: over this crate's tests, 411 spawn passes that
         // repair at all finish in one iteration, 7 in two, and the deepest ever
@@ -114,14 +118,16 @@ impl MethodCMesh {
 
         let mut last_repairable_error = None;
         let mut attempted_masks = std::collections::HashSet::new();
-        for _ in 0..MAX_REPAIR_ITERATIONS {
+        let tracing = crate::method_c_perimeter_repair::repair_trace();
+        let started = std::time::Instant::now();
+        for iteration in 0..MAX_REPAIR_ITERATIONS {
             let perimeter = self.repair_method_c_non_triplet_perimeter(
-                &mut selected,
+                selected,
                 &method_c_m_neighbors,
                 child_level,
             )?;
             if let Some(coverage) = coverage {
-                coverage.validate(&selected)?;
+                coverage.validate(selected)?;
             }
             if !attempted_masks.insert(selected.clone()) {
                 return Err(last_repairable_error.unwrap_or_else(|| {
@@ -132,7 +138,7 @@ impl MethodCMesh {
                 }));
             }
             let mut nest_wd =
-                self.method_c_nest_wd_from_selected_and_perimeter(&selected, &perimeter)?;
+                self.method_c_nest_wd_from_selected_and_perimeter(selected, &perimeter)?;
             match self.emit_method_c_tables(
                 &perimeter,
                 &method_c_m_neighbors,
@@ -146,7 +152,7 @@ impl MethodCMesh {
                     let valence_m = Self::method_c_valence_error_m_point(&error);
                     let mut repaired = if valence_m.is_some() {
                         self.try_shrink_method_c_perimeter_once(
-                            &selected,
+                            selected,
                             &method_c_m_neighbors,
                             child_level,
                             Some(&perimeter),
@@ -173,7 +179,7 @@ impl MethodCMesh {
                             // over this crate's tests. The translation lives at emit
                             // scope, where the map is exact; see the note there.
                             self.try_fill_method_c_specific_m_point(
-                                &selected,
+                                selected,
                                 &method_c_m_neighbors,
                                 child_level,
                                 im,
@@ -183,20 +189,40 @@ impl MethodCMesh {
                         };
                     }
                     if repaired.is_none() {
+                        // Searched near the point the gate named, when it named one.
+                        let focus = valence_m.or_else(|| {
+                            method_c_repairable_payload(&error).and_then(|payload| payload.m_point)
+                        });
                         repaired = self.try_fill_method_c_perimeter_boundary(
-                            &selected,
+                            selected,
+                            &method_c_m_neighbors,
+                            child_level,
+                            Some(&perimeter),
+                            focus,
+                        )?;
+                    }
+                    if repaired.is_none() {
+                        repaired = self.try_grow_method_c_non_triplet_perimeter_once(
+                            selected,
                             &method_c_m_neighbors,
                             child_level,
                             Some(&perimeter),
                         )?;
                     }
-                    if repaired.is_none() {
-                        repaired = self.try_grow_method_c_non_triplet_perimeter_once(
-                            &selected,
-                            &method_c_m_neighbors,
-                            child_level,
-                            Some(&perimeter),
-                        )?;
+                    if tracing {
+                        eprintln!(
+                            "earthmesh_cli: method-c repair: iteration {iteration} at {:.1} s, \
+                             {} faces, gate: {error}; {}",
+                            started.elapsed().as_secs_f64(),
+                            selected.iter().filter(|&&face| face).count(),
+                            match &repaired {
+                                Some((repaired, _)) => format!(
+                                    "repaired to {} faces",
+                                    repaired.iter().filter(|&&face| face).count()
+                                ),
+                                None => "no repair".to_string(),
+                            }
+                        );
                     }
                     let Some((repaired, _)) = repaired else {
                         return Err(error);
@@ -224,12 +250,33 @@ impl MethodCMesh {
         project_to_radius: bool,
         coverage: &crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage,
     ) -> io::Result<Self> {
+        self.spawn_nest_pass_method_c_preserving_demands_into(
+            selected_faces,
+            child_level,
+            max_mrows,
+            project_to_radius,
+            coverage,
+            &mut MethodCLadderTrace::default(),
+        )
+    }
+
+    /// The same, saying in `trace` where the pass failed.
+    pub(crate) fn spawn_nest_pass_method_c_preserving_demands_into(
+        &self,
+        selected_faces: &[bool],
+        child_level: usize,
+        max_mrows: usize,
+        project_to_radius: bool,
+        coverage: &crate::method_c_spawn_hfield::MethodCHfieldDemandCoverage,
+        trace: &mut MethodCLadderTrace,
+    ) -> io::Result<Self> {
         self.spawn_nest_pass_method_c_repairing(
             selected_faces,
             child_level,
             max_mrows,
             project_to_radius,
             Some(coverage),
+            trace,
         )
     }
 
@@ -264,4 +311,11 @@ impl MethodCMesh {
             project_to_radius,
         )
     }
+}
+
+/// Where a repair-ladder run ended.
+#[derive(Debug, Default)]
+pub(crate) struct MethodCLadderTrace {
+    /// The mask of the last attempt, after every repair the ladder made.
+    pub(crate) mask: Vec<bool>,
 }

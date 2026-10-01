@@ -31,8 +31,19 @@ pub struct DualShapeOptions {
     pub aspect_limit: f64,
     /// Edge-length coefficient of variation of a cell that counts as over.
     pub edge_cv_limit: f64,
+    /// Largest departure (degrees) of an interior angle from the angle of a
+    /// regular polygon of the cell's size that counts as over -- the quality
+    /// check's angle deviation. In the badness so that evening edges or sizes
+    /// cannot buy it with a bent cell.
+    pub angle_deviation_limit: f64,
     /// Cells above this fraction of either limit are worked on.
     pub work_above: f64,
+    /// Ratio of two neighbouring cells' sizes (square roots of their areas)
+    /// past which the larger counts as over: the quality check warns past
+    /// 2. Only a ratio over it counts -- a level jump is a ratio of two by
+    /// construction, and working every transition cell toward one would be
+    /// work for nothing.
+    pub resolution_ratio_limit: f64,
     /// Every triangle at a moved vertex stays inside this window (degrees).
     pub window_deg: (f64, f64),
     /// The first stage keeps the triangles this far inside the window.
@@ -45,6 +56,10 @@ pub struct DualShapeOptions {
     pub first_face: usize,
     /// Sweeps over the cells above the bar, per stage.
     pub max_sweeps: usize,
+    /// A cell's corners are its triangles' centroids rather than their
+    /// circumcentres: the convention of the mesh being written, which is the
+    /// cell a model reads and the quality check measures.
+    pub centroid_corners: bool,
 }
 
 impl DualShapeOptions {
@@ -52,13 +67,16 @@ impl DualShapeOptions {
         Self {
             aspect_limit: 4.0,
             edge_cv_limit: 0.35,
+            angle_deviation_limit: 35.0,
             work_above: 0.8,
+            resolution_ratio_limit: 2.0,
             window_deg,
             narrowing_deg: 3.0,
             delaunay_margin_deg: 1.0,
             first_vertex: 0,
             first_face: 0,
             max_sweeps: 5,
+            centroid_corners: false,
         }
     }
 }
@@ -72,6 +90,11 @@ pub struct DualShapeReport {
     pub max_aspect_after: f64,
     pub max_edge_cv_after: f64,
     pub over_limit_after: usize,
+    /// Neighbouring cell pairs whose size ratio is over its limit.
+    pub ratio_pairs_before: usize,
+    pub ratio_pairs_after: usize,
+    pub max_ratio_before: f64,
+    pub max_ratio_after: f64,
     pub moves: usize,
     pub sweeps: usize,
 }
@@ -110,6 +133,42 @@ fn circumcentre(corners: [P; 3]) -> P {
         n
     };
     unit(n)
+}
+
+/// Area of a spherical triangle of unit vectors.
+fn triangle_area(a: P, b: P, c: P) -> f64 {
+    let numerator = dotp(a, crossp(b, c)).abs();
+    let denominator = 1.0 + dotp(a, b) + dotp(b, c) + dotp(c, a);
+    2.0 * numerator.atan2(denominator)
+}
+
+/// Largest |interior angle - regular-polygon angle| of a ring of corners
+/// around generator `g`, in degrees.
+fn angle_deviation(g: P, corners: &[P]) -> f64 {
+    let n = corners.len();
+    let area = (0..n)
+        .map(|k| triangle_area(g, corners[k], corners[(k + 1) % n]))
+        .sum::<f64>();
+    let ideal = (((n as f64 - 2.0) * std::f64::consts::PI + area) / n as f64).to_degrees();
+    let tangent = |p: P, q: P| {
+        let along = dotp(q, p);
+        unit([
+            q[0] - along * p[0],
+            q[1] - along * p[1],
+            q[2] - along * p[2],
+        ])
+    };
+    (0..n)
+        .map(|k| {
+            let p = corners[k];
+            let (a, b) = (
+                tangent(p, corners[(k + n - 1) % n]),
+                tangent(p, corners[(k + 1) % n]),
+            );
+            let angle = dotp(a, b).clamp(-1.0, 1.0).acos().to_degrees();
+            (angle - ideal).abs()
+        })
+        .fold(0.0, f64::max)
 }
 
 /// (longest / shortest edge, edge-length CV) of a ring of corners.
@@ -156,17 +215,93 @@ impl Dual<'_> {
         self.faces[f].map(|i| self.at(i, over))
     }
 
-    /// max(aspect / limit, CV / limit) of `v`'s cell, 0 without one.
+    /// The cell corner face `f` contributes, in the mesh's convention.
+    fn corner(&self, f: usize, over: (usize, P)) -> P {
+        let corners = self.corners(f, over);
+        if self.options.centroid_corners {
+            let [a, b, c] = corners;
+            unit([a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]])
+        } else {
+            circumcentre(corners)
+        }
+    }
+
+    /// The square root of `v`'s cell area, `None` without a closed cell.
+    fn scale(&self, v: usize, over: (usize, P)) -> Option<f64> {
+        let ring = self.rings[v].as_ref()?;
+        let g = self.at(v, over);
+        let corners: Vec<P> = ring.iter().map(|&f| self.corner(f, over)).collect();
+        let area = (0..corners.len())
+            .map(|k| triangle_area(g, corners[k], corners[(k + 1) % corners.len()]))
+            .sum::<f64>();
+        Some(area.sqrt())
+    }
+
+    /// The worst size ratio of `v`'s cell to a neighbour's over the limit,
+    /// as a fraction of it; 0 when none is over.
+    fn ratio_badness(&self, v: usize, scale_of: impl Fn(usize) -> Option<f64>) -> f64 {
+        let Some(here) = scale_of(v) else {
+            return 0.0;
+        };
+        let limit = self.options.resolution_ratio_limit;
+        self.neighbours[v]
+            .iter()
+            .filter_map(|&w| scale_of(w))
+            .map(|there| here.max(there) / here.min(there))
+            .filter(|&ratio| ratio > limit)
+            .fold(0.0, |worst: f64, ratio| worst.max(ratio / limit))
+    }
+
+    /// max(aspect / limit, CV / limit, size ratio / limit) of `v`'s cell, 0
+    /// without one.
     fn badness(&self, v: usize, over: (usize, P)) -> f64 {
         let Some(ring) = &self.rings[v] else {
             return 0.0;
         };
-        let corners: Vec<P> = ring
-            .iter()
-            .map(|&f| circumcentre(self.corners(f, over)))
-            .collect();
+        let corners: Vec<P> = ring.iter().map(|&f| self.corner(f, over)).collect();
         let (aspect, cv) = ring_shape(&corners);
-        (aspect / self.options.aspect_limit).max(cv / self.options.edge_cv_limit)
+        let shape = (aspect / self.options.aspect_limit)
+            .max(cv / self.options.edge_cv_limit)
+            .max(angle_deviation(self.at(v, over), &corners) / self.options.angle_deviation_limit);
+        shape.max(self.ratio_badness(v, |c| self.scale(c, over)))
+    }
+
+    /// `badness` with every cell's size read from `scales`.
+    fn badness_with(&self, v: usize, scales: &[Option<f64>]) -> f64 {
+        let Some(ring) = &self.rings[v] else {
+            return 0.0;
+        };
+        let none = (usize::MAX, [0.0; 3]);
+        let corners: Vec<P> = ring.iter().map(|&f| self.corner(f, none)).collect();
+        let (aspect, cv) = ring_shape(&corners);
+        let shape = (aspect / self.options.aspect_limit)
+            .max(cv / self.options.edge_cv_limit)
+            .max(angle_deviation(self.points[v], &corners) / self.options.angle_deviation_limit);
+        shape.max(self.ratio_badness(v, |c| scales[c]))
+    }
+
+    fn scales(&self) -> Vec<Option<f64>> {
+        let none = (usize::MAX, [0.0; 3]);
+        (0..self.rings.len()).map(|v| self.scale(v, none)).collect()
+    }
+
+    /// (pairs of neighbouring cells over the ratio limit, worst ratio).
+    fn ratio_stats(&self) -> (usize, f64) {
+        let scales = self.scales();
+        let mut out = (0usize, 0.0_f64);
+        for (v, here) in scales.iter().enumerate() {
+            let Some(here) = here else { continue };
+            for &w in &self.neighbours[v] {
+                if w <= v {
+                    continue;
+                }
+                let Some(there) = scales[w] else { continue };
+                let ratio = here.max(there) / here.min(there);
+                out.1 = out.1.max(ratio);
+                out.0 += usize::from(ratio > self.options.resolution_ratio_limit);
+            }
+        }
+        out
     }
 
     /// (worst badness, sum of squares) over `u`'s cell and its neighbours'.
@@ -316,10 +451,7 @@ impl Dual<'_> {
         let none = (usize::MAX, [0.0; 3]);
         let mut out = (0.0_f64, 0.0_f64, 0usize);
         for ring in self.rings.iter().flatten() {
-            let corners: Vec<P> = ring
-                .iter()
-                .map(|&f| circumcentre(self.corners(f, none)))
-                .collect();
+            let corners: Vec<P> = ring.iter().map(|&f| self.corner(f, none)).collect();
             let (aspect, cv) = ring_shape(&corners);
             out.0 = out.0.max(aspect);
             out.1 = out.1.max(cv);
@@ -417,10 +549,13 @@ pub fn even_out_dual_cells(
     };
 
     let (max_aspect_before, max_edge_cv_before, over_limit_before) = dual.stats();
+    let (ratio_pairs_before, max_ratio_before) = dual.ratio_stats();
     let mut report = DualShapeReport {
         max_aspect_before,
         max_edge_cv_before,
         over_limit_before,
+        ratio_pairs_before,
+        max_ratio_before,
         ..DualShapeReport::default()
     };
     let (lo, hi) = options.window_deg;
@@ -433,9 +568,10 @@ pub fn even_out_dual_cells(
             continue;
         }
         for _ in 0..options.max_sweeps {
+            let scales = dual.scales();
             let mut bad: Vec<(f64, usize)> = (0..vertex_count)
                 .filter(|&v| dual.rings[v].is_some())
-                .map(|v| (dual.badness(v, none), v))
+                .map(|v| (dual.badness_with(v, &scales), v))
                 .filter(|&(b, _)| b > bar)
                 .collect();
             if bad.is_empty() {
@@ -464,6 +600,7 @@ pub fn even_out_dual_cells(
         }
     }
     let (max_aspect_after, max_edge_cv_after, over_limit_after) = dual.stats();
+    (report.ratio_pairs_after, report.max_ratio_after) = dual.ratio_stats();
     report.max_aspect_after = max_aspect_after;
     report.max_edge_cv_after = max_edge_cv_after;
     report.over_limit_after = over_limit_after;

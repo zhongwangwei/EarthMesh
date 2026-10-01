@@ -738,6 +738,7 @@ fn refine_from_shared_source(
                             field: levelled.field,
                             base_m: levelled.level_base_m,
                             max_level: levelled.max_level as u8,
+                            g: Some(options.g),
                         }),
                         levelled.max_level,
                     )
@@ -3958,35 +3959,105 @@ fn refine_with_method_c(
         } else {
             let mother_m = 2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
                 / (5.0 * nxp as f64);
-            let crate::hfield_refine::LevelledHfield {
-                field,
-                level_base_m,
-                max_level: field_max_level,
-            } = crate::hfield_refine::compose_levelled_hfield(
-                regions,
-                refine,
-                mesh_type,
-                config,
-                mother_m,
-                hfield,
-                max_level,
-                max_cal_level,
-                domain_region,
-            )?;
-            let (refined, passes, diagnostics) = mesh
-                .spawn_nest_from_target_levels_with_spring(
-                    |lon, lat| field.level_at(lon, lat, level_base_m, field_max_level as u8),
-                    field_max_level,
+            let spawn = |options: &crate::hfield_refine::HfieldRefineOptions| {
+                let levelled = crate::hfield_refine::compose_levelled_hfield(
+                    regions,
+                    refine,
+                    mesh_type,
+                    config,
+                    mother_m,
+                    options,
+                    max_level,
+                    max_cal_level,
+                    domain_region,
+                )?;
+                let spawned = mesh.spawn_nest_from_target_levels_with_spring(
+                    |lon, lat| {
+                        levelled.field.level_at(
+                            lon,
+                            lat,
+                            levelled.level_base_m,
+                            levelled.max_level as u8,
+                        )
+                    },
+                    levelled.max_level,
                     max_mrows,
                     nxp,
                     spring_nest_iterations,
-                )
-                .map_err(with_data_shaped_hfield_hint)?;
+                )?;
+                Ok::<_, io::Error>((levelled, spawned, options.g))
+            };
+            // Each level's band around the next finer one is `1 / g` of its
+            // cells, and Method-C's transition takes up to `max_mrows` rows: at
+            // g = 0.2 a global 30 km slope run's level-2 grid crossed its
+            // parent; at 0.1 it built. A run that builds keeps its field; one
+            // that crosses a parent is composed once more, graded gently enough.
+            //
+            // Dropping blocks is a failure too, a partial one: a pass that
+            // gives up a block has stopped honouring the field there. Once the
+            // drop loop could name the block behind every gate, the global
+            // 30 km run stopped failing at g = 0.2 and built with blocks
+            // missing -- 302,033 cells against 388,425 at g = 0.1 -- because
+            // nothing failed for the retry to see. So a pass that dropped
+            // blocks is composed again as well, and the result that lost
+            // fewer parent faces is kept.
+            let gentle_g = 1.0 / (max_mrows as f64 + 3.0);
+            let gentle = crate::hfield_refine::HfieldRefineOptions {
+                g: gentle_g,
+                ..hfield.clone()
+            };
+            let (levelled, (refined, passes, diagnostics), used_g) = match spawn(hfield) {
+                Err(error)
+                    if hfield.g > gentle_g
+                        && (crosses_a_parent(&error)
+                            || earthmesh_mesh::method_c_repairable_payload(&error).is_some()) =>
+                {
+                    eprintln!(
+                        "earthmesh_cli: warning: Method-C could not nest the h-field graded at \
+                         g = {} ({error}); composing it again at g = {gentle_g:.4}, gentle \
+                         enough for {max_mrows} transition rows",
+                        hfield.g
+                    );
+                    spawn(&gentle)
+                }
+                Ok(steep) if hfield.g > gentle_g && steep.1 .2.dropped_block_count > 0 => {
+                    let dropped = steep.1 .2;
+                    eprintln!(
+                        "earthmesh_cli: warning: Method-C nested the h-field graded at g = {} only \
+                         by leaving {} block(s) ({} parent faces) coarse; composing it again at \
+                         g = {gentle_g:.4}, gentle enough for {max_mrows} transition rows",
+                        hfield.g, dropped.dropped_block_count, dropped.dropped_face_count
+                    );
+                    match spawn(&gentle) {
+                        Ok(retry) if retry.1 .2.dropped_face_count < dropped.dropped_face_count => {
+                            Ok(retry)
+                        }
+                        retry => {
+                            let why = match &retry {
+                                Ok(retry) => format!(
+                                    "it left {} parent faces coarse",
+                                    retry.1 .2.dropped_face_count
+                                ),
+                                Err(error) => format!("it failed: {error}"),
+                            };
+                            eprintln!(
+                                "earthmesh_cli: warning: keeping the mesh nested at g = {}; at \
+                                 g = {gentle_g:.4} {why}",
+                                hfield.g
+                            );
+                            Ok(steep)
+                        }
+                    }
+                }
+                result => result,
+            }
+            .map_err(with_data_shaped_hfield_hint)?;
             hfield_diagnostics = diagnostics;
             hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
-                field,
-                base_m: level_base_m,
-                max_level: field_max_level as u8,
+                field: levelled.field,
+                base_m: levelled.level_base_m,
+                max_level: levelled.max_level as u8,
+                g: Some(used_g),
             });
             (refined, passes)
         }
@@ -4149,6 +4220,13 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 /// on data-shaped regions (docs/experiments/2026-08_lattice_invariants.md), not
 /// a broken input, and the red-green backend exists for exactly these runs. A
 /// global coastal ocean project that failed here builds and delivers on it.
+/// A Method-C refusal of a finer grid that reaches past its parent's rows.
+fn crosses_a_parent(error: &io::Error) -> bool {
+    let message = error.to_string();
+    message.contains("crosses the parent boundary")
+        || message.contains("next coarser grid boundary")
+}
+
 /// Every Method-C failure out of an h-field spawn is a shape it cannot build,
 /// not only the gates it knows how to repair: a global slope field at 12 km
 /// failed with "perimeter loop revisited M point" and no hint at all.

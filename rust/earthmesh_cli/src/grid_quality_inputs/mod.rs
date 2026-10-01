@@ -18,6 +18,7 @@ pub use gridfile::{
 };
 pub use hfield::{
     attach_hfield_diagnostics_from_gridfile_namelist, attach_hfield_diagnostics_from_namelist,
+    attach_hfield_diagnostics_from_namelist_with_g,
 };
 
 /// Where a hex cell reads its target. A tri cell always reads it at its

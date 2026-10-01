@@ -86,6 +86,7 @@ fn context() -> HfieldGridfileContext {
         .unwrap(),
         base_m: 500.0,
         max_level: 5,
+        g: None,
     }
 }
 
@@ -640,4 +641,34 @@ fn rejects_invalid_hfield_quantized_demand_inputs() {
             "case {case} should fail"
         );
     }
+}
+
+#[test]
+fn the_gradation_a_field_was_composed_with_round_trips_and_is_optional() {
+    let root = root("gradation");
+    let without = root.join("without.nc4");
+    write_gridfile(&without, Some(&context()));
+    assert_eq!(
+        read_hfield_gridfile_context(&without).unwrap().unwrap().g,
+        None
+    );
+    assert_eq!(
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_g(&without).unwrap(),
+        None
+    );
+
+    let with = root.join("with.nc4");
+    let gentle = HfieldGridfileContext {
+        g: Some(0.1),
+        ..context()
+    };
+    write_gridfile(&with, Some(&gentle));
+    assert_eq!(
+        read_hfield_gridfile_context(&with).unwrap().unwrap().g,
+        Some(0.1)
+    );
+    assert_eq!(
+        earthmesh_cli::hfield_gridfile_context::read_hfield_gridfile_g(&with).unwrap(),
+        Some(0.1)
+    );
 }

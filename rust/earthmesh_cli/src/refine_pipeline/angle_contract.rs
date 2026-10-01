@@ -143,6 +143,19 @@ pub(super) fn enforce_triangle_angles(
         faces.push(corners);
     }
     let original: Vec<P> = norm.w_points.iter().map(|&p| unit_xyz(p)).collect();
+    // The convention the backend wrote its triangle centres in, read off the
+    // mesh as it came: the cell evening below builds cells the same way, and
+    // the repaired triangles get centres the same way.
+    let uses_circumcentre = (2..norm.m_to_w.len())
+        .find(|&row| norm.m_to_w[row].iter().all(|&id| id >= 2))
+        .is_none_or(|row| {
+            let corners = norm.m_to_w[row].map(|id| original[id as usize]);
+            let stored = unit_xyz(norm.m_points[row]);
+            match (circumcenter(corners), centroid(corners)) {
+                (Some(circ), Some(cent)) => distance(circ, stored) <= distance(cent, stored),
+                _ => true,
+            }
+        });
     let mut points = original.clone();
 
     let levels_m = rows.levels.as_ref().and_then(|levels| {
@@ -194,19 +207,27 @@ pub(super) fn enforce_triangle_angles(
         let mut dual_options = earthmesh_mesh::DualShapeOptions::new(options.window_deg);
         dual_options.aspect_limit = thresholds.aspect_ratio_warn;
         dual_options.edge_cv_limit = thresholds.cell_edge_cv_warn;
+        dual_options.angle_deviation_limit = thresholds.angle_deviation_warn_deg;
+        dual_options.resolution_ratio_limit = thresholds.max_adjacent_resolution_ratio_warn;
         dual_options.first_vertex = 2;
         dual_options.first_face = 2;
+        dual_options.centroid_corners = !uses_circumcentre;
         let dual = earthmesh_mesh::even_out_dual_cells(&mut points, &faces, dual_options);
         if dual.moves > 0 {
             eprintln!(
                 "earthmesh_cli: hex cells: {} -> {} over the aspect/edge-CV limits, aspect \
-                 {:.3} -> {:.3}, edge CV {:.3} -> {:.3} ({} moves)",
+                 {:.3} -> {:.3}, edge CV {:.3} -> {:.3}; {} -> {} neighbour pairs over the size \
+                 ratio, worst {:.3} -> {:.3} ({} moves)",
                 dual.over_limit_before,
                 dual.over_limit_after,
                 dual.max_aspect_before,
                 dual.max_aspect_after,
                 dual.max_edge_cv_before,
                 dual.max_edge_cv_after,
+                dual.ratio_pairs_before,
+                dual.ratio_pairs_after,
+                dual.max_ratio_before,
+                dual.max_ratio_after,
                 dual.moves,
             );
         }
@@ -236,23 +257,13 @@ pub(super) fn enforce_triangle_angles(
         .collect();
 
     // M rows: an untouched triangle keeps its centre; a changed one gets a new
-    // centre in the convention the backend used (circumcentre or centroid).
+    // centre in the convention the backend used (`uses_circumcentre`).
     let unchanged = |row: usize| -> bool {
         let source = origins.face_origin[row];
         row >= 2
             && norm.m_to_w[source].map(|id| id as usize) == faces[row]
             && faces[row].iter().all(|&v| !moved[v])
     };
-    let uses_circumcentre = (2..faces.len())
-        .find(|&row| unchanged(row))
-        .is_none_or(|row| {
-            let corners = faces[row].map(|v| points[v]);
-            let stored = unit_xyz(norm.m_points[origins.face_origin[row]]);
-            match (circumcenter(corners), centroid(corners)) {
-                (Some(circ), Some(cent)) => distance(circ, stored) <= distance(cent, stored),
-                _ => true,
-            }
-        });
     let mut m_points = Vec::with_capacity(faces.len());
     for row in 0..faces.len() {
         if row < 2 || unchanged(row) {
