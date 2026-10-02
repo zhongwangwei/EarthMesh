@@ -656,6 +656,7 @@ mod tests {
             mesh,
             addresses: vec![None; 6],
             triangle_addresses: vec![None; 4],
+            region: None,
         };
         let canonical_triangles = [[2, 3, 4], [2, 4, 5]];
 

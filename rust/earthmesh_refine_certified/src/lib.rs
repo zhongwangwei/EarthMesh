@@ -7,6 +7,7 @@ mod equidistributed_mother;
 mod fingerprint;
 mod mother_geometry;
 pub mod mother_grid;
+pub mod on_demand;
 mod outcome;
 pub mod remap;
 pub mod requirement;

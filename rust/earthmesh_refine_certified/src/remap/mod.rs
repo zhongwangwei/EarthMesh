@@ -18,6 +18,19 @@ pub struct ConservativeRemap {
     coverage_error: f64,
     source_fingerprint: Option<u64>,
     target_fingerprint: Option<u64>,
+    /// Set when rows cover only some target cells -- those of a built
+    /// region certified cell by cell.
+    covered_targets: Option<PartialCoverage>,
+}
+
+/// Rows of a remap over a built region: the target cells they cover, in row
+/// order, and the cell count of the whole meshes the region is part of. The
+/// tolerances scale with that count, so a row passes or fails exactly as it
+/// would among all the rows of the whole sphere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialCoverage {
+    targets: Vec<usize>,
+    whole_cells: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +84,7 @@ impl ConservativeRemap {
             coverage_error: 0.0,
             source_fingerprint: None,
             target_fingerprint: None,
+            covered_targets: None,
         }
     }
 
@@ -85,6 +99,7 @@ impl ConservativeRemap {
             coverage_error: 0.0,
             source_fingerprint: None,
             target_fingerprint: None,
+            covered_targets: None,
         }
     }
 
@@ -148,6 +163,7 @@ impl ConservativeRemap {
             coverage_error: 0.0,
             source_fingerprint: Some(mesh_fingerprint(&fine.mesh)),
             target_fingerprint: Some(mesh_fingerprint(&coarse.mesh)),
+            covered_targets: None,
         })
     }
 
@@ -171,15 +187,29 @@ impl ConservativeRemap {
         let (source_rings, sources): (Vec<_>, Vec<_>) = sources.into_iter().unzip();
         let index = SphericalCapIndex::new(&source_rings)?;
         drop(source_rings);
-        Self::overlap_prepared(source_cells, &sources, &index, target_cells, targets)
+        Self::overlap_prepared(
+            source_cells,
+            &sources,
+            None,
+            &index,
+            target_cells,
+            targets,
+            None,
+        )
     }
 
+    /// Rows for `targets` against `sources`. Without ids, cells are numbered
+    /// by position; with them, `source_ids` / `target_ids` give each prepared
+    /// cell its number among the meshes' cells (ascending, so rows keep the
+    /// order they have among all cells).
     fn overlap_prepared(
         source_cells: &[Vec<(f64, f64)>],
         sources: &[PreparedSphericalPolygon],
+        source_ids: Option<&[usize]>,
         index: &SphericalCapIndex,
         target_cells: &[Vec<(f64, f64)>],
         targets: Vec<(Vec<Point>, PreparedSphericalPolygon)>,
+        target_ids: Option<&[usize]>,
     ) -> Result<Self, String> {
         let rows = targets
             // Consume each target after its row: its lazily prepared clipping
@@ -202,9 +232,10 @@ impl ConservativeRemap {
                             )
                         })?;
                     if fraction > 1.0e-14 {
-                        overlaps.push((source, fraction));
+                        overlaps.push((source_ids.map_or(source, |ids| ids[source]), fraction));
                     }
                 }
+                let target = target_ids.map_or(target, |ids| ids[target]);
                 let covered = compensated_sum(overlaps.iter().map(|(_, weight)| *weight));
                 if !covered.is_finite() || covered <= 0.0 {
                     return Err(format!("target cell {target} has no source overlap"));
@@ -228,6 +259,7 @@ impl ConservativeRemap {
             coverage_error,
             source_fingerprint: None,
             target_fingerprint: None,
+            covered_targets: None,
         })
     }
 
@@ -264,20 +296,45 @@ impl ConservativeRemap {
                 && !row.sources.is_empty()
                 && row.sources.iter().all(|&(source, _)| source < source_cells)
         });
-        if self.rows.len() != target_cells
-            || self
-                .rows
-                .iter()
-                .enumerate()
-                .any(|(target, row)| row.target != target)
-        {
+        let lineage_broken = match &self.covered_targets {
+            None => {
+                self.rows.len() != target_cells
+                    || self
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .any(|(target, row)| row.target != target)
+            }
+            Some(partial) => {
+                self.rows.len() != partial.targets.len()
+                    || self
+                        .rows
+                        .iter()
+                        .zip(&partial.targets)
+                        .any(|(row, &target)| row.target != target)
+                    || partial.targets.windows(2).any(|pair| pair[0] >= pair[1])
+            }
+        };
+        if lineage_broken {
             certificate.bad_lineage_rows += 1;
         }
+        let cells = source_cells.max(target_cells).max(
+            self.covered_targets
+                .as_ref()
+                .map_or(0, |partial| partial.whole_cells),
+        );
         certificate.closure_tolerance = certificate
             .closure_tolerance
-            .max(128.0 * f64::EPSILON * source_cells.max(target_cells) as f64);
+            .max(128.0 * f64::EPSILON * cells as f64);
         certificate.global_area_closure_error = self.coverage_error;
         certificate
+    }
+
+    /// The target cells the rows cover, when they cover only a region.
+    pub fn covered_targets(&self) -> Option<&[usize]> {
+        self.covered_targets
+            .as_ref()
+            .map(|partial| partial.targets.as_slice())
     }
 
     pub fn certify_hierarchy_2_to_1_average(
@@ -313,9 +370,15 @@ impl ConservativeRemap {
         &self,
         valid_lineage: impl Fn(&RemapRow) -> bool + Sync,
     ) -> RemapCertificate {
+        let rows_scale = self
+            .covered_targets
+            .as_ref()
+            .map_or(self.rows.len(), |partial| {
+                partial.whole_cells.max(self.rows.len())
+            });
         let closure_tolerance = (128.0
             * f64::EPSILON
-            * self.rows.len().max(
+            * rows_scale.max(
                 self.rows
                     .par_iter()
                     .map(|row| row.sources.len())
@@ -379,11 +442,15 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
 // transaction state. The borrow prevents stale geometry; targets are never cached.
 pub(crate) struct VoronoiRemapSource<'a> {
     mesh: &'a MeshState,
+    /// Sites of a built region's edge: open fans, no cell.
+    cellless: Option<&'a std::collections::BTreeSet<usize>>,
     prepared: OnceLock<Result<PreparedRemapSource, String>>,
 }
 
 struct PreparedRemapSource {
     cells: Vec<Vec<(f64, f64)>>,
+    /// Each cell's number among all the mesh's cells, when some have none.
+    ids: Option<Vec<usize>>,
     polygons: Vec<PreparedSphericalPolygon>,
     index: SphericalCapIndex,
 }
@@ -392,15 +459,35 @@ impl<'a> VoronoiRemapSource<'a> {
     pub(crate) fn new(mesh: &'a MeshState) -> Self {
         Self {
             mesh,
+            cellless: None,
             prepared: OnceLock::new(),
         }
     }
 
-    pub(crate) fn remap_to(&self, target: &MeshState) -> Result<ConservativeRemap, String> {
-        let source = self
-            .prepared
+    /// The source cells of a built region: every site but those on its edge,
+    /// numbered as among all the region's sites.
+    pub(crate) fn new_region(
+        mesh: &'a MeshState,
+        cellless: &'a std::collections::BTreeSet<usize>,
+    ) -> Self {
+        Self {
+            mesh,
+            cellless: Some(cellless),
+            prepared: OnceLock::new(),
+        }
+    }
+
+    fn prepared(&self) -> Result<&PreparedRemapSource, String> {
+        self.prepared
             .get_or_init(|| {
-                let cells = voronoi_rings(self.mesh)?;
+                let (cells, ids) = match self.cellless {
+                    None => (voronoi_rings(self.mesh)?, None),
+                    Some(cellless) => {
+                        let (cells, ids) =
+                            voronoi_rings_selected(self.mesh, |site| !cellless.contains(&site))?;
+                        (cells, Some(ids))
+                    }
+                };
                 if cells.is_empty() {
                     return Err("spherical remap needs non-empty source and target cells".into());
                 }
@@ -409,12 +496,17 @@ impl<'a> VoronoiRemapSource<'a> {
                 let index = SphericalCapIndex::new(&rings)?;
                 Ok(PreparedRemapSource {
                     cells,
+                    ids,
                     polygons,
                     index,
                 })
             })
             .as_ref()
-            .map_err(Clone::clone)?;
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn remap_to(&self, target: &MeshState) -> Result<ConservativeRemap, String> {
+        let source = self.prepared()?;
         let target_cells = voronoi_rings(target)?;
         if target_cells.is_empty() {
             return Err("spherical remap needs non-empty source and target cells".into());
@@ -423,12 +515,48 @@ impl<'a> VoronoiRemapSource<'a> {
         let mut remap = ConservativeRemap::overlap_prepared(
             &source.cells,
             &source.polygons,
+            source.ids.as_deref(),
             &source.index,
             &target_cells,
             targets,
+            None,
         )?;
         remap.source_fingerprint = Some(mesh_fingerprint(self.mesh));
         remap.target_fingerprint = Some(mesh_fingerprint(target));
+        Ok(remap)
+    }
+
+    /// Rows for the target sites `covered` picks -- the cells of a built
+    /// region certified cell by cell -- numbered as among all the target's
+    /// cells. `whole_cells` is the cell count of the whole meshes the region
+    /// belongs to, which the certificate's tolerances scale with.
+    pub(crate) fn remap_region_to(
+        &self,
+        target: &MeshState,
+        covered: impl Fn(usize) -> bool + Sync,
+        whole_cells: usize,
+    ) -> Result<ConservativeRemap, String> {
+        let source = self.prepared()?;
+        let (target_cells, target_ids) = voronoi_rings_selected(target, covered)?;
+        if target_cells.is_empty() {
+            return Err("spherical remap needs non-empty source and target cells".into());
+        }
+        let targets = prepare_cells(&target_cells)?;
+        let mut remap = ConservativeRemap::overlap_prepared(
+            &source.cells,
+            &source.polygons,
+            source.ids.as_deref(),
+            &source.index,
+            &target_cells,
+            targets,
+            Some(&target_ids),
+        )?;
+        remap.source_fingerprint = Some(mesh_fingerprint(self.mesh));
+        remap.target_fingerprint = Some(mesh_fingerprint(target));
+        remap.covered_targets = Some(PartialCoverage {
+            targets: target_ids,
+            whole_cells,
+        });
         Ok(remap)
     }
 }
@@ -452,6 +580,18 @@ fn prepare_cells(
 }
 
 pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, String> {
+    Ok(voronoi_rings_selected(mesh, |_| true)?.0)
+}
+
+/// Lon-lat rings, one per cell.
+type Rings = Vec<Vec<(f64, f64)>>;
+
+/// Voronoi rings of the sites `select` picks, with each one's number among
+/// all the mesh's active sites.
+pub(crate) fn voronoi_rings_selected(
+    mesh: &MeshState,
+    select: impl Fn(usize) -> bool + Sync,
+) -> Result<(Rings, Vec<usize>), String> {
     let mut seeds = vec![usize::MAX; mesh.vertices().len()];
     for triangle in mesh.active_triangle_slots() {
         for site in mesh.triangles()[triangle] {
@@ -483,8 +623,12 @@ pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, St
             Ok(())
         },
     )?;
-    mesh.active_vertex_slots()
-        .collect::<Vec<_>>()
+    let (ids, sites): (Vec<_>, Vec<_>) = mesh
+        .active_vertex_slots()
+        .enumerate()
+        .filter(|&(_, site)| select(site))
+        .unzip();
+    let rings = sites
         .into_par_iter()
         .map(|site| {
             let seed = seeds[site];
@@ -499,7 +643,8 @@ pub(crate) fn voronoi_rings(mesh: &MeshState) -> Result<Vec<Vec<(f64, f64)>>, St
                 .collect::<Vec<_>>();
             Ok(ring)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((rings, ids))
 }
 
 pub(crate) struct SphericalCapIndex {
@@ -698,6 +843,7 @@ mod tests {
             coverage_error,
             source_fingerprint: None,
             target_fingerprint: None,
+            covered_targets: None,
         })
     }
 
@@ -989,6 +1135,7 @@ mod tests {
             coverage_error: 0.0,
             source_fingerprint: Some(7),
             target_fingerprint: Some(7),
+            covered_targets: None,
         };
         let valid_lineage =
             |row: &RemapRow| row.target < 4 && row.sources.iter().all(|&(source, _)| source < 4);

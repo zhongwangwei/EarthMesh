@@ -69,24 +69,26 @@ impl RasterLevelField {
     fn spherical_cells(&self) -> Vec<Vec<(f64, f64)>> {
         let dlon = 360.0 / self.nlon as f64;
         let dlat = 180.0 / self.nlat as f64;
-        let mut cells = Vec::with_capacity(self.levels.len());
-        for j in 0..self.nlat {
-            let south = -90.0 + j as f64 * dlat;
-            let north = south + dlat;
-            for i in 0..self.nlon {
-                let west = -180.0 + i as f64 * dlon;
-                let east = west + dlon;
-                let cell = if j == 0 {
-                    vec![(0.0, -90.0), (east, north), (west, north)]
-                } else if j + 1 == self.nlat {
-                    vec![(west, south), (east, south), (0.0, 90.0)]
-                } else {
-                    vec![(west, south), (east, south), (east, north), (west, north)]
-                };
-                cells.push(cell);
-            }
+        (0..self.levels.len())
+            .map(|cell| self.spherical_cell(cell, dlon, dlat))
+            .collect()
+    }
+
+    /// Raster cell `cell` (row-major from the south-west) as a spherical
+    /// polygon; the polar rows are triangles meeting at the pole.
+    pub(crate) fn spherical_cell(&self, cell: usize, dlon: f64, dlat: f64) -> Vec<(f64, f64)> {
+        let (j, i) = (cell / self.nlon, cell % self.nlon);
+        let south = -90.0 + j as f64 * dlat;
+        let north = south + dlat;
+        let west = -180.0 + i as f64 * dlon;
+        let east = west + dlon;
+        if j == 0 {
+            vec![(0.0, -90.0), (east, north), (west, north)]
+        } else if j + 1 == self.nlat {
+            vec![(west, south), (east, south), (0.0, 90.0)]
+        } else {
+            vec![(west, south), (east, south), (east, north), (west, north)]
         }
-        cells
     }
 }
 

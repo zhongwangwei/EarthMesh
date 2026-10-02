@@ -344,10 +344,17 @@ pub(super) fn source_face_slot(
             address.n, source.subdivision
         ));
     }
-    let slot = address
-        .dense_index(source.subdivision)?
-        .checked_add(2)
-        .ok_or_else(|| format!("source face slot overflow for hierarchy address {address:?}"))?;
+    let slot = match &source.region {
+        Some(region) => region
+            .face_slot(address)
+            .ok_or_else(|| format!("source face {address:?} is outside the region"))?,
+        None => address
+            .dense_index(source.subdivision)?
+            .checked_add(2)
+            .ok_or_else(|| {
+                format!("source face slot overflow for hierarchy address {address:?}")
+            })?,
+    };
     if !source.mesh.is_triangle_live(slot) {
         return Err(format!("source face {slot} for {address:?} is not active"));
     }
@@ -398,11 +405,15 @@ pub(super) fn uniform_leaf_mesh_to_mother_grid(
         }
         addresses.push(address);
     }
+    if source.region.is_some() {
+        return Err("a uniform level of a region is not a mother grid yet".into());
+    }
     Ok(MotherGrid {
         subdivision,
         mesh: leaf_mesh.mesh,
         addresses,
         triangle_addresses: leaf_mesh.triangle_addresses,
+        region: None,
     })
 }
 

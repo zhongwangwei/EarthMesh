@@ -1230,6 +1230,25 @@ pub(super) fn solve_elastic_patch_with_contract(
     limits: ElasticBlockLimits,
     angle_contract: AngleContractId,
 ) -> ElasticBlockOutcome {
+    solve_elastic_patch_scoped(source, patch, limits, angle_contract, None)
+}
+
+/// The mesh of a built region, open along the region's edge: the vertices
+/// there and the region's Euler characteristic, for checking it as the
+/// whole sphere is checked (`Certificate::verify_geometry_within`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryScope {
+    pub edge_sites: BTreeSet<usize>,
+    pub euler: isize,
+}
+
+pub(super) fn solve_elastic_patch_scoped(
+    source: &HierarchyLeafMesh,
+    patch: ElasticPatch,
+    limits: ElasticBlockLimits,
+    angle_contract: AngleContractId,
+    scope: Option<&GeometryScope>,
+) -> ElasticBlockOutcome {
     solve_elastic_patch_impl(
         source,
         patch,
@@ -1238,7 +1257,20 @@ pub(super) fn solve_elastic_patch_with_contract(
         ElasticSolverMode::FiniteDifferenceElastic,
         1.0,
         angle_contract,
+        scope,
     )
+}
+
+/// `verify_geometry`, or its region form when the mesh is a built region's.
+fn verify_scoped(
+    certificate: &Certificate,
+    mesh: &MeshState,
+    scope: Option<&GeometryScope>,
+) -> Result<crate::certificate::GeometryCertificateReport, CertificateError> {
+    match scope {
+        None => certificate.verify_geometry(mesh),
+        Some(scope) => certificate.verify_geometry_within(mesh, &scope.edge_sites, scope.euler),
+    }
 }
 
 pub fn solve_elastic_patch_with_start(
@@ -1255,6 +1287,7 @@ pub fn solve_elastic_patch_with_start(
         ElasticSolverMode::FiniteDifferenceElastic,
         1.0,
         AngleContractId::default(),
+        None,
     )
 }
 
@@ -1272,6 +1305,7 @@ pub fn solve_elastic_patch_with_margin_start(
         ElasticSolverMode::MarginFiniteDifferenceLexicographic,
         1.0,
         AngleContractId::default(),
+        None,
     )
 }
 
@@ -1289,6 +1323,7 @@ pub fn solve_elastic_patch_with_active_trust_start(
         ElasticSolverMode::ActiveTangentTrust,
         1.0,
         AngleContractId::default(),
+        None,
     )
 }
 
@@ -1307,6 +1342,7 @@ pub fn solve_elastic_patch_with_active_trust_start_and_scale(
         ElasticSolverMode::ActiveTangentTrust,
         trust_fraction,
         AngleContractId::default(),
+        None,
     )
 }
 
@@ -1324,9 +1360,11 @@ pub fn solve_elastic_patch_with_max_min_trust_start(
         ElasticSolverMode::MaxMinTangentTrust,
         1.0,
         AngleContractId::default(),
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn solve_elastic_patch_impl(
     source: &HierarchyLeafMesh,
     patch: ElasticPatch,
@@ -1335,6 +1373,7 @@ fn solve_elastic_patch_impl(
     solver_mode: ElasticSolverMode,
     trust_fraction: f64,
     angle_contract: AngleContractId,
+    scope: Option<&GeometryScope>,
 ) -> ElasticBlockOutcome {
     if !trust_fraction.is_finite()
         || !(0.0..=1.0).contains(&trust_fraction)
@@ -1353,7 +1392,7 @@ fn solve_elastic_patch_impl(
         return ElasticBlockOutcome::InvalidPatch { reason };
     }
     let input_positions = source.mesh.vertices().to_vec();
-    if let Ok(geometry) = certificate.verify_geometry(&current.mesh) {
+    if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
         return certified(current, patch, geometry, 0, 0.0, 0.0, &input_positions);
     }
 
@@ -1382,7 +1421,7 @@ fn solve_elastic_patch_impl(
             initial_energy,
             final_energy: initial_energy,
             final_phase: phase,
-            reason: geometry_failure_reason(&certificate, &current.mesh),
+            reason: geometry_failure_reason(&certificate, &current.mesh, scope),
             failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
             global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
             guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
@@ -1394,10 +1433,10 @@ fn solve_elastic_patch_impl(
     let no_step = |current: &HierarchyLeafMesh, iteration: usize, final_energy: f64| {
         let mesh = &current.mesh;
         let final_phase = energy_phase(&certificate, mesh, &guard_faces, &context);
-        let reason = geometry_failure_reason(&certificate, mesh);
+        let reason = geometry_failure_reason(&certificate, mesh, scope);
         let failed_guard_face = failed_guard_face(&certificate, mesh, &patch);
         if matches!(final_phase, ElasticBlockPhase::DelaunayVoronoiFeasibility)
-            || geometry_failure_requires_different_topology(&certificate, mesh)
+            || geometry_failure_requires_different_topology(&certificate, mesh, scope)
         {
             ElasticBlockOutcome::RequiresDifferentTopology {
                 elastic_iterations: iteration,
@@ -1552,7 +1591,7 @@ fn solve_elastic_patch_impl(
         }
 
         if certificate.geometry_region_passes(&current.mesh, &guard_faces) {
-            if let Ok(geometry) = certificate.verify_geometry(&current.mesh) {
+            if let Ok(geometry) = verify_scoped(&certificate, &current.mesh, scope) {
                 return certified(
                     current,
                     patch,
@@ -1571,7 +1610,7 @@ fn solve_elastic_patch_impl(
         initial_energy,
         final_energy: energy,
         final_phase: energy_phase(&certificate, &current.mesh, &guard_faces, &context),
-        reason: geometry_failure_reason(&certificate, &current.mesh),
+        reason: geometry_failure_reason(&certificate, &current.mesh, scope),
         failed_guard_face: failed_guard_face(&certificate, &current.mesh, &patch),
         global_angle_degrees: angle_range(&current.mesh, current.mesh.active_triangle_slots()),
         guard_angle_degrees: angle_range(&current.mesh, guard_faces.iter().copied()),
@@ -2330,8 +2369,12 @@ fn failed_guard_face(
     })
 }
 
-fn geometry_failure_reason(certificate: &Certificate, mesh: &MeshState) -> String {
-    match certificate.verify_geometry(mesh) {
+fn geometry_failure_reason(
+    certificate: &Certificate,
+    mesh: &MeshState,
+    scope: Option<&GeometryScope>,
+) -> String {
+    match verify_scoped(certificate, mesh, scope) {
         Ok(_) => "geometry passed but the elastic objective had no descent step".into(),
         Err(error) => format!("{error:?}"),
     }
@@ -2340,9 +2383,10 @@ fn geometry_failure_reason(certificate: &Certificate, mesh: &MeshState) -> Strin
 fn geometry_failure_requires_different_topology(
     certificate: &Certificate,
     mesh: &MeshState,
+    scope: Option<&GeometryScope>,
 ) -> bool {
     matches!(
-        certificate.verify_geometry(mesh),
+        verify_scoped(certificate, mesh, scope),
         Err(CertificateError::Delaunay(_) | CertificateError::Dual(_))
     )
 }

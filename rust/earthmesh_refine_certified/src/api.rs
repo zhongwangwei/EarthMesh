@@ -135,6 +135,28 @@ pub fn finalize_geometry_certified_mother(
     Ok(CertifiedPrimalDualMesh::new(primal, report))
 }
 
+/// `finalize_geometry_certified_mother` for the mesh of a built region: its
+/// remap has rows only for the cells certified cell by cell, and they are
+/// counted against those.
+pub(crate) fn finalize_region_geometry(
+    geometry: GeometryCertifiedMotherGrid,
+    evidence: FinalCertificationEvidence,
+    certified_cells: usize,
+) -> Result<CertifiedPrimalDualMesh, CertificateError> {
+    let (primal, geometry) = geometry.into_parts();
+    if evidence.remap_rows != certified_cells {
+        return Err(CertificateError::RemapRows {
+            expected: certified_cells,
+            actual: evidence.remap_rows,
+        });
+    }
+    if evidence.target_fingerprint != crate::fingerprint::mesh_fingerprint(&primal) {
+        return Err(CertificateError::EvidenceMeshMismatch);
+    }
+    let report = geometry.into_final(evidence)?;
+    Ok(CertifiedPrimalDualMesh::new(primal, report))
+}
+
 fn ceil_log2(value: usize) -> usize {
     usize::BITS as usize - (value - 1).leading_zeros() as usize
 }

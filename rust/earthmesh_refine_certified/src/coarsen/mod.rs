@@ -39,6 +39,8 @@ mod polygon_incidence_ear;
 mod problem_identity;
 mod promotion;
 mod quality_cache;
+mod region_assembly;
+mod region_plan;
 mod research_fixture;
 mod research_runner;
 mod retained_core;
@@ -137,7 +139,7 @@ pub use combined_recovery::{
 pub use component_transaction::{
     solve_component_transaction, solve_component_transaction_with_contract, ComponentCommitReport,
     ComponentRollbackReport, ComponentTransactionLimits, ComponentTransactionOutcome,
-    ComponentTransactionStage, ComponentTransactionState,
+    ComponentTransactionStage, ComponentTransactionState, RegionScope,
 };
 pub use core_condensation::{
     condense_hierarchy_core, rebuild_from_leaf_set, CoreCondensationReport, CoreCondensationTrial,
@@ -288,6 +290,11 @@ pub use quality_cache::{
     QualityCacheInstrumentation, QualityCacheItem, QualityCacheSnapshot, QualityDirtySet,
     VertexQualityCacheEntry,
 };
+pub use region_assembly::{assemble_region_sphere, AssembledSphere};
+pub use region_plan::{
+    plan_region_components, sort_region_components, ImplicitCore, RegionComponent,
+    RegionComponentPlan, SettledRegion,
+};
 pub use research_fixture::{
     lift_component_2_to_1, n12_interior_control_fixture, n12_lifted_n6_fixture,
     n12_research_fixture_manifests_json, n12_research_fixture_report_json,
@@ -327,9 +334,9 @@ pub use rotation_width_audit::{
 };
 pub use scheduler::{
     run_elastic_component_epochs, run_elastic_component_epochs_with_quality_context,
-    sort_components_outside_in, CoarseningPriority, CoarseningScheduleStats, ComponentOutcomeKind,
-    ElasticCmrcConfig, ElasticCmrcOutcome, ElasticCmrcReport, ElasticCmrcResult,
-    ElasticComponentRecord, ElasticLevelReport,
+    run_region_component_epochs, sort_components_outside_in, CoarseningPriority,
+    CoarseningScheduleStats, ComponentOutcomeKind, ElasticCmrcConfig, ElasticCmrcOutcome,
+    ElasticCmrcReport, ElasticCmrcResult, ElasticComponentRecord, ElasticLevelReport, RegionEpochs,
 };
 pub use sdce_find_one::{
     find_one_sdce_essential_cycle, solve_sdce_plan_find_one, SdceCycleFindOneEvidence,

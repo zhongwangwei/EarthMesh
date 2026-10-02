@@ -3,7 +3,8 @@ use super::{
     component_transaction::solve_component_transaction_at_level,
     plan_hierarchy_components_from_parent_requirements, ComponentRollbackReport,
     ComponentTransactionLimits, ComponentTransactionOutcome, ComponentTransactionState,
-    DomainQualityRejectReason, ExplicitParentRequirement, HierarchyComponent, SpatialFaceContext,
+    DomainQualityRejectReason, ExplicitParentRequirement, HierarchyComponent, RegionComponent,
+    SpatialFaceContext,
 };
 use crate::{
     certificate::{AngleContractId, Certificate},
@@ -376,6 +377,41 @@ pub fn run_elastic_component_epochs(
         None,
         None,
         config,
+        None,
+    )
+}
+
+/// A run on a built region (design B1): the base faces built at the finest
+/// level (R and its frame F), the settled blocks, and the scope of the
+/// region's transactions. Settled parents coarsen with the component that
+/// reaches them and are counted, never built.
+pub struct RegionEpochs {
+    pub built_bases: BTreeSet<TriangleAddress>,
+    pub settled: super::SettledRegion,
+    pub scope: super::RegionScope,
+}
+
+/// `run_elastic_component_epochs` on a built region: `grid` is the finest
+/// mother built over `region.built_bases`; `source_mesh`, `source_levels` and
+/// `required_levels` describe its cells. Counts, histograms and component
+/// records include the settled region as the whole sphere's would.
+pub fn run_region_component_epochs(
+    grid: MotherGrid,
+    source_mesh: &MeshState,
+    source_levels: &SourceLevelField,
+    required_levels: &[usize],
+    config: &ElasticCmrcConfig,
+    region: &RegionEpochs,
+) -> ElasticCmrcOutcome {
+    run_elastic_component_epochs_impl(
+        grid,
+        source_mesh,
+        source_levels,
+        required_levels,
+        None,
+        None,
+        config,
+        Some(region),
     )
 }
 
@@ -399,9 +435,11 @@ where
         Some(face_context),
         Some(&mut quality_gate),
         config,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_elastic_component_epochs_impl(
     grid: MotherGrid,
     source_mesh: &MeshState,
@@ -410,19 +448,36 @@ fn run_elastic_component_epochs_impl(
     face_context: Option<&BTreeMap<usize, SpatialFaceContext>>,
     mut quality_gate: Option<&mut ComponentQualityGate<'_>>,
     config: &ElasticCmrcConfig,
+    region: Option<&RegionEpochs>,
 ) -> ElasticCmrcOutcome {
     if let Err(reason) = validate_inputs(&grid, source_mesh, source_levels, required_levels, config)
     {
         return ElasticCmrcOutcome::InvalidInput { reason };
     }
+    if region.is_some() && (grid.region.is_none() || face_context.is_some()) {
+        return ElasticCmrcOutcome::InvalidInput {
+            reason: "a region run needs a built region and no spatial context".into(),
+        };
+    }
     let mut state = match ComponentTransactionState::new(&grid, config.max_level) {
         Ok(state) => state,
         Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
     };
-    let source_remap = VoronoiRemapSource::new(&grid.mesh);
+    let source_remap = match &grid.region {
+        Some(built) if region.is_some() => {
+            VoronoiRemapSource::new_region(&grid.mesh, built.outer_boundary())
+        }
+        _ => VoronoiRemapSource::new(&grid.mesh),
+    };
     let mut final_remap = None;
-    let initial_faces = grid.mesh.triangle_count();
-    let initial_vertices = grid.mesh.vertex_count();
+    // The settled region: its finest interior vertices, counted, and its
+    // current level (it coarsens with the component that reaches it).
+    let settled_vertices =
+        |n: usize| region.map_or(0, |region| region.settled.interior_vertices_at_level(n));
+    let settled_faces = |n: usize| region.map_or(0, |region| region.settled.faces_at_level(n));
+    let mut settled_level = config.max_level;
+    let initial_faces = grid.mesh.triangle_count() + settled_faces(grid.subdivision);
+    let initial_vertices = grid.mesh.vertex_count() + settled_vertices(grid.subdivision);
     let mut remaining_topology_states = config.total_transition_states;
     let mut next_component_id = 0u64;
     let source_active_sites = grid.mesh.active_vertex_slots().collect::<Vec<_>>();
@@ -431,12 +486,20 @@ fn run_elastic_component_epochs_impl(
         final_faces: initial_faces,
         initial_vertices,
         final_vertices: initial_vertices,
-        requested_histogram: histogram(
-            grid.mesh
-                .active_vertex_slots()
-                .map(|site| required_levels[site]),
+        requested_histogram: with_settled(
+            histogram(
+                grid.mesh
+                    .active_vertex_slots()
+                    .map(|site| required_levels[site]),
+            ),
+            0,
+            settled_vertices(grid.subdivision),
         ),
-        delivered_histogram: histogram(state.target_levels().unwrap().levels().iter().copied()),
+        delivered_histogram: with_settled(
+            histogram(state.target_levels().unwrap().levels().iter().copied()),
+            config.max_level,
+            settled_vertices(grid.subdivision),
+        ),
         components_total: 0,
         components_committed: 0,
         components_promoted: 0,
@@ -462,48 +525,95 @@ fn run_elastic_component_epochs_impl(
         let level_grid = if fine_n == grid.subdivision {
             &grid
         } else {
-            owned_level_grid = match MotherGrid::generate(fine_n) {
+            let generated = match region {
+                None => MotherGrid::generate(fine_n),
+                Some(region) => crate::mother_grid::region::descendant_faces(
+                    region.built_bases.iter().copied(),
+                    fine_n,
+                )
+                .and_then(|faces| MotherGrid::generate_faces(fine_n, faces)),
+            };
+            owned_level_grid = match generated {
                 Ok(grid) => grid,
                 Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
             };
             &owned_level_grid
         };
+        if region.is_some() && settled_level != source_level {
+            return ElasticCmrcOutcome::NotCertifiable {
+                reason: format!(
+                    "the settled region stayed at level {settled_level}, which a built region \
+                     cannot represent; run the whole sphere"
+                ),
+            };
+        }
         let level_source_slots = match state.level_source_slots(&grid, level_grid) {
             Ok(slots) => slots,
             Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
         };
-        let requirements =
-            match explicit_parent_requirements(&grid, &state, level_grid, required_levels) {
-                Ok(requirements) => requirements,
-                Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
-            };
-        let mut plan = match plan_hierarchy_components_from_parent_requirements(
-            level_grid,
-            &requirements,
-            target_level,
-            config.initial_transition_rings,
-        ) {
-            Ok(plan) => plan,
+        let requirements = match region {
+            None => explicit_parent_requirements(&grid, &state, level_grid, required_levels),
+            Some(_) => region_parent_requirements(&grid, &state, level_grid, required_levels),
+        };
+        let requirements = match requirements {
+            Ok(requirements) => requirements,
             Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
         };
-        if let Some(face_context) = face_context {
-            if let Err(reason) =
-                sort_components_outside_in(&grid, &mut plan.components, face_context)
-            {
-                return ElasticCmrcOutcome::InvalidInput { reason };
+        let components = match region {
+            None => {
+                let mut plan = match plan_hierarchy_components_from_parent_requirements(
+                    level_grid,
+                    &requirements,
+                    target_level,
+                    config.initial_transition_rings,
+                ) {
+                    Ok(plan) => plan,
+                    Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
+                };
+                if let Some(face_context) = face_context {
+                    if let Err(reason) =
+                        sort_components_outside_in(&grid, &mut plan.components, face_context)
+                    {
+                        return ElasticCmrcOutcome::InvalidInput { reason };
+                    }
+                } else {
+                    sort_components(
+                        &mut plan.components,
+                        &plan.parent_requirements,
+                        target_level,
+                    );
+                }
+                plan.components
+                    .into_iter()
+                    .map(|component| RegionComponent {
+                        component,
+                        implicit: None,
+                    })
+                    .collect::<Vec<_>>()
             }
-        } else {
-            sort_components(
-                &mut plan.components,
-                &plan.parent_requirements,
-                target_level,
-            );
-        }
-        let components_total = plan.components.len();
-        let mut transition_components_remaining = plan
-            .components
+            Some(region) => {
+                let mut plan = match super::plan_region_components(
+                    level_grid,
+                    &requirements,
+                    &region.settled,
+                    target_level,
+                    config.initial_transition_rings,
+                ) {
+                    Ok(plan) => plan,
+                    Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
+                };
+                super::sort_region_components(
+                    &mut plan.components,
+                    &plan.parent_requirements,
+                    target_level,
+                );
+                plan.components
+            }
+        };
+        let components_total = components.len();
+        let mut transition_components_remaining = components
             .iter()
-            .filter(|component| !component.transition_parents.is_empty())
+            .filter(|component| !component.component.transition_parents.is_empty())
             .count();
         let mut committed = 0usize;
         let mut promoted = 0usize;
@@ -513,7 +623,20 @@ fn run_elastic_component_epochs_impl(
         let planning_elapsed = level_started.elapsed();
         let components_started = Instant::now();
 
-        for mut component in plan.components {
+        for RegionComponent {
+            mut component,
+            implicit,
+        } in components
+        {
+            let (parent_count, core_parent_count) = (
+                component.parents.len() + implicit.as_ref().map_or(0, |core| core.parents),
+                component.core_parents.len() + implicit.as_ref().map_or(0, |core| core.parents),
+            );
+            // Settled vertices strictly inside the region drop out when the
+            // component that reaches them condenses its core.
+            let implicit_vertices_removed = implicit.as_ref().map_or(0, |_| {
+                settled_vertices(fine_n) - settled_vertices(fine_n / 2)
+            });
             component.id = next_component_id;
             next_component_id = next_component_id.saturating_add(1);
             if quality_gate.is_some() {
@@ -549,8 +672,9 @@ fn run_elastic_component_epochs_impl(
                 config.max_adjacent_level_delta,
                 limits,
                 config.angle_contract,
+                region.map(|region| &region.scope),
             );
-            let component_record = match outcome {
+            let mut component_record = match outcome {
                 ComponentTransactionOutcome::Certified(mut commit) => {
                     let rejection = quality_gate
                         .as_mut()
@@ -580,7 +704,11 @@ fn run_elastic_component_epochs_impl(
                         }
                         committed += 1;
                         report.components_committed += 1;
-                        report.core_vertices_removed += commit.core_vertices_removed;
+                        report.core_vertices_removed +=
+                            commit.core_vertices_removed + implicit_vertices_removed;
+                        if implicit.is_some() {
+                            settled_level = target_level;
+                        }
                         report.total_topology_states += commit.topology_states;
                         report.total_elastic_iterations += commit.elastic_iterations;
                         report.total_interval_boxes += commit.interval_boxes;
@@ -595,7 +723,8 @@ fn run_elastic_component_epochs_impl(
                             parent_count: component.parents.len(),
                             core_parent_count: component.core_parents.len(),
                             transition_parent_count: component.transition_parents.len(),
-                            core_vertices_removed: commit.core_vertices_removed,
+                            core_vertices_removed: commit.core_vertices_removed
+                                + implicit_vertices_removed,
                             topology_states: commit.topology_states,
                             elastic_iterations: commit.elastic_iterations,
                             interval_boxes: commit.interval_boxes,
@@ -660,6 +789,9 @@ fn run_elastic_component_epochs_impl(
                     rollback,
                 ),
             };
+            // Settled parents belong to the component as listed ones do.
+            component_record.parent_count = parent_count;
+            component_record.core_parent_count = core_parent_count;
             if component_record.outcome != ComponentOutcomeKind::Certified {
                 promoted += 1;
                 report.components_promoted += 1;
@@ -687,6 +819,7 @@ fn run_elastic_component_epochs_impl(
                 &state,
                 config.max_adjacent_level_delta,
                 config.angle_contract,
+                region.map(|region| &region.scope),
             ) {
                 return ElasticCmrcOutcome::NotCertifiable {
                     reason: format!("stage {source_level}->{target_level}: {reason}"),
@@ -704,7 +837,11 @@ fn run_elastic_component_epochs_impl(
             );
         }
         let delivered_histogram = match state.target_levels() {
-            Ok(levels) => histogram(levels.levels().iter().copied()),
+            Ok(levels) => with_settled(
+                histogram(levels.levels().iter().copied()),
+                settled_level,
+                settled_vertices(grid.subdivision >> (config.max_level - settled_level)),
+            ),
             Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
         };
         report.levels.push(ElasticLevelReport {
@@ -722,8 +859,9 @@ fn run_elastic_component_epochs_impl(
         report.delivered_histogram = delivered_histogram;
     }
 
-    report.final_faces = state.mesh().mesh.triangle_count();
-    report.final_vertices = state.mesh().mesh.vertex_count();
+    let settled_n = grid.subdivision >> (config.max_level - settled_level);
+    report.final_faces = state.mesh().mesh.triangle_count() + settled_faces(settled_n);
+    report.final_vertices = state.mesh().mesh.vertex_count() + settled_vertices(settled_n);
     ElasticCmrcOutcome::Completed(Box::new(ElasticCmrcResult {
         state,
         report,
@@ -818,16 +956,78 @@ fn explicit_parent_requirements(
         .collect()
 }
 
+/// `explicit_parent_requirements` for a built region: the parents of the
+/// built level grid, in address order (the whole sphere's dense order).
+fn region_parent_requirements(
+    source: &MotherGrid,
+    state: &ComponentTransactionState,
+    level_grid: &MotherGrid,
+    required_levels: &[usize],
+) -> Result<Vec<ExplicitParentRequirement>, String> {
+    let mut requirements = BTreeMap::new();
+    for child in level_grid.triangle_addresses.iter().flatten().copied() {
+        let parent = child
+            .parent_2_to_1()
+            .ok_or_else(|| format!("level child {child:?} has no parent"))?;
+        if requirements.contains_key(&parent) {
+            continue;
+        }
+        let children = parent
+            .children_2_to_1()
+            .ok_or_else(|| format!("invalid hierarchy parent {parent:?}"))?;
+        let available = children
+            .iter()
+            .all(|child| state.leaf_set().leaves.contains(child));
+        let mut maximum_required_level = 0usize;
+        visit_source_descendant_faces(source, parent, &mut |face| {
+            for site in source.mesh.triangles()[face] {
+                maximum_required_level = maximum_required_level.max(
+                    *required_levels
+                        .get(site)
+                        .ok_or_else(|| format!("source site {site} has no required level"))?,
+                );
+            }
+            Ok(())
+        })?;
+        requirements.insert(
+            parent,
+            ExplicitParentRequirement {
+                parent,
+                maximum_required_level,
+                available,
+            },
+        );
+    }
+    Ok(requirements.into_values().collect())
+}
+
+/// `histogram` plus `count` settled cells at `level`.
+fn with_settled(
+    mut histogram: BTreeMap<usize, usize>,
+    level: usize,
+    count: usize,
+) -> BTreeMap<usize, usize> {
+    if count > 0 {
+        *histogram.entry(level).or_default() += count;
+    }
+    histogram
+}
+
 fn visit_source_descendant_faces(
     source: &MotherGrid,
     address: TriangleAddress,
     visit: &mut impl FnMut(usize) -> Result<(), String>,
 ) -> Result<(), String> {
     if address.n == source.subdivision {
-        let face = address
-            .dense_index(source.subdivision)?
-            .checked_add(2)
-            .ok_or_else(|| format!("source face slot overflow for {address:?}"))?;
+        let face = match &source.region {
+            Some(region) => region
+                .face_slot(address)
+                .ok_or_else(|| format!("source face {address:?} is outside the region"))?,
+            None => address
+                .dense_index(source.subdivision)?
+                .checked_add(2)
+                .ok_or_else(|| format!("source face slot overflow for {address:?}"))?,
+        };
         return visit(face);
     }
     if address.n == 0
@@ -847,6 +1047,15 @@ fn visit_source_descendant_faces(
         visit_source_descendant_faces(source, child, visit)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn sort_components_for_test(
+    components: &mut [HierarchyComponent],
+    requirements: &[super::ParentRequirement],
+    coarse_level: usize,
+) {
+    sort_components(components, requirements, coarse_level);
 }
 
 fn sort_components(
@@ -925,15 +1134,28 @@ fn certify_stage(
     state: &ComponentTransactionState,
     max_adjacent_level_delta: usize,
     angle_contract: AngleContractId,
+    scope: Option<&super::RegionScope>,
 ) -> Result<(), String> {
-    Certificate::internal_for(angle_contract)
-        .verify_geometry(&state.mesh().mesh)
+    let geometry_scope = scope.map(|scope| scope.geometry_scope(source, state.mesh()));
+    let verify = |certificate: Certificate| match &geometry_scope {
+        None => certificate.verify_geometry(&state.mesh().mesh),
+        Some(region) => {
+            certificate.verify_geometry_within(&state.mesh().mesh, &region.edge_sites, region.euler)
+        }
+    };
+    verify(Certificate::internal_for(angle_contract))
         .map_err(|error| format!("internal geometry: {error:?}"))?;
-    Certificate::final_delivery_for(angle_contract)
-        .verify_geometry(&state.mesh().mesh)
+    verify(Certificate::final_delivery_for(angle_contract))
         .map_err(|error| format!("final geometry: {error:?}"))?;
     let target_levels = state.target_levels()?;
-    let remap = source_remap.remap_to(&state.mesh().mesh)?;
+    let remap = match scope {
+        None => source_remap.remap_to(&state.mesh().mesh)?,
+        Some(scope) => source_remap.remap_region_to(
+            &state.mesh().mesh,
+            |site| scope.certifies(state.mesh(), site),
+            scope.whole_cells(),
+        )?,
+    };
     let final_cells = certify_final_cell_requirements_with_remap(
         &source.mesh,
         source_levels,

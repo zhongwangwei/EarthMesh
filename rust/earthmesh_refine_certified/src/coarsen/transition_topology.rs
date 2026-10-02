@@ -171,7 +171,7 @@ fn solve_transition_topology_from_cursor_with_promotion(
             .filter(|&parent| {
                 parent_patch(source, parent).is_ok_and(|patch| {
                     patch.neighbours.iter().any(|neighbour| {
-                        !core.contains(neighbour) && !transition.contains(neighbour)
+                        !in_core(&core, *neighbour) && !transition.contains(neighbour)
                     })
                 })
             })
@@ -363,11 +363,30 @@ fn preflight(
         }
         parent_patch(source, parent)?;
     }
+    // Parents of a built region that touch the settled region are joined
+    // through it: the planner put them in one component through it.
+    let settled_neighbours = parents
+        .iter()
+        .copied()
+        .filter(|&parent| {
+            parent_patch(source, parent)
+                .is_ok_and(|patch| patch.neighbours.iter().any(|p| p.is_outside()))
+        })
+        .collect::<Vec<_>>();
     let seed = *parents.first().expect("non-empty component");
     let mut seen = BTreeSet::from([seed]);
     let mut stack = vec![seed];
+    let mut through_settled = false;
     while let Some(parent) = stack.pop() {
         for neighbour in parent_patch(source, parent)?.neighbours {
+            if neighbour.is_outside() && !through_settled {
+                through_settled = true;
+                for &joined in &settled_neighbours {
+                    if seen.insert(joined) {
+                        stack.push(joined);
+                    }
+                }
+            }
             if parents.contains(&neighbour) && seen.insert(neighbour) {
                 stack.push(neighbour);
             }
@@ -377,6 +396,12 @@ fn preflight(
         return Err("transition component parents are disconnected".into());
     }
     Ok(())
+}
+
+/// Whether a parent's neighbour is core: listed in `core`, or a settled
+/// parent beyond a built region's edge -- settled parents are all core.
+fn in_core(core: &BTreeSet<TriangleAddress>, parent: TriangleAddress) -> bool {
+    parent.is_outside() || core.contains(&parent)
 }
 
 fn promote_to_transition(
@@ -454,7 +479,7 @@ fn core_boundary(
         .copied()
         .filter(|&parent| {
             parent_patch(source, parent)
-                .is_ok_and(|patch| patch.neighbours.iter().any(|p| !core.contains(p)))
+                .is_ok_and(|patch| patch.neighbours.iter().any(|p| !in_core(core, *p)))
         })
         .collect()
 }
@@ -611,7 +636,7 @@ fn solve_once(
             patches[parent]
                 .neighbours
                 .iter()
-                .any(|neighbour| core.contains(neighbour))
+                .any(|neighbour| in_core(&core, *neighbour))
         })
         .collect::<BTreeSet<_>>();
 
@@ -1768,6 +1793,11 @@ fn neighbour_parent(
                 }
                 let neighbour = source.mesh.neighbours()[slot][(side + 2) % 3];
                 if neighbour == 0 {
+                    // A built region's edge: the settled parent beyond it.
+                    if source.region.is_some() {
+                        found = Some(TriangleAddress::outside(parent.n));
+                        continue;
+                    }
                     return Err(format!(
                         "parent {parent:?} boundary segment {target:?} is open"
                     ));
@@ -1798,7 +1828,7 @@ fn transition_polygon(patch: &ParentPatch, core: &BTreeSet<TriangleAddress>) -> 
     let mut polygon = Vec::with_capacity(6);
     for side in 0..3 {
         polygon.push(patch.corners[side]);
-        if !core.contains(&patch.neighbours[side]) {
+        if !in_core(core, patch.neighbours[side]) {
             polygon.push(patch.midpoints[side]);
         }
     }
@@ -2033,7 +2063,7 @@ fn fine_boundary_edges(
     for &parent in transition {
         let patch = parent_patch(source, parent)?;
         for side in 0..3 {
-            if !core.contains(&patch.neighbours[side])
+            if !in_core(core, patch.neighbours[side])
                 && !transition.contains(&patch.neighbours[side])
             {
                 edges.extend([
@@ -2100,8 +2130,31 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
             .collect::<Vec<_>>()
             .join("; ")
     })?;
-    if state.open_edge_count() != 0 {
+    // A built region's mesh is open along the region's edge, and only there;
+    // vertices there have open fans and are settled by construction.
+    let outer = source.region.as_ref().map(|region| region.outer_boundary());
+    let on_edge = |vertex: usize| {
+        outer.is_some_and(|outer| {
+            mesh.source_vertex_slots
+                .get(vertex)
+                .copied()
+                .flatten()
+                .is_some_and(|slot| outer.contains(&slot))
+        })
+    };
+    if outer.is_none() && state.open_edge_count() != 0 {
         return Err(format!("mesh has {} open edges", state.open_edge_count()));
+    }
+    if outer.is_some() {
+        for face in state.active_triangle_slots() {
+            let corners = state.triangles()[face];
+            for (corner, &neighbour) in state.neighbours()[face].iter().enumerate() {
+                let (a, b) = (corners[(corner + 1) % 3], corners[(corner + 2) % 3]);
+                if neighbour == 0 && !(on_edge(a) && on_edge(b)) {
+                    return Err(format!("edge ({a}, {b}) is open inside the region"));
+                }
+            }
+        }
     }
     // Membership only; triangle-order first-error reporting stays deterministic.
     let mut degrees = vec![0usize; state.vertices().len()];
@@ -2135,16 +2188,32 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
     // and the closed-edge check above, each edge has exactly two face claims:
     // 3F = 2E. Reuse that invariant instead of hashing every edge again.
     let faces = state.triangle_count();
-    let edges = faces * 3 / 2;
-    let euler = state.vertex_count() as isize - edges as isize + faces as isize;
-    if euler != 2 {
-        return Err(format!("Euler characteristic is {euler}, expected 2"));
+    if outer.is_none() {
+        let edges = faces * 3 / 2;
+        let euler = state.vertex_count() as isize - edges as isize + faces as isize;
+        if euler != 2 {
+            return Err(format!("Euler characteristic is {euler}, expected 2"));
+        }
+    } else {
+        // A region keeps its own surface: re-triangulating it keeps the Euler
+        // characteristic of the built level grid it was condensed from.
+        let euler_of = |state: &MeshState| {
+            let faces = state.triangle_count();
+            let edges = (3 * faces + state.open_edge_count()) / 2;
+            state.vertex_count() as isize - edges as isize + faces as isize
+        };
+        let (euler, expected) = (euler_of(state), euler_of(&source.mesh));
+        if euler != expected {
+            return Err(format!(
+                "Euler characteristic is {euler}, expected the region's {expected}"
+            ));
+        }
     }
     if let Some((vertex, degree)) = degrees
         .iter()
         .copied()
         .enumerate()
-        .find(|&(_, degree)| degree != 0 && !(5..=7).contains(&degree))
+        .find(|&(vertex, degree)| degree != 0 && !on_edge(vertex) && !(5..=7).contains(&degree))
     {
         return Err(format!("vertex {vertex} degree {degree} outside 5..=7"));
     }
@@ -2154,7 +2223,8 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
                 source.addresses.get(source_slot).and_then(Option::as_ref),
                 Some(VertexAddress::IcosahedronVertex(_))
             )
-        }) && degrees[vertex] != 5
+        }) && !on_edge(vertex)
+            && degrees[vertex] != 5
         {
             return Err(format!(
                 "protected icosahedron vertex {vertex} has degree {}, expected 5",
@@ -2162,7 +2232,10 @@ fn hard_gate(source: &MotherGrid, mesh: &HierarchyLeafMesh) -> Result<(), String
             ));
         }
     }
-    for vertex in state.active_vertex_slots() {
+    for vertex in state
+        .active_vertex_slots()
+        .filter(|&vertex| !on_edge(vertex))
+    {
         let fan = state
             .triangle_fan_from(vertex, seeds[vertex])
             .map_err(|error| error.to_string())?;

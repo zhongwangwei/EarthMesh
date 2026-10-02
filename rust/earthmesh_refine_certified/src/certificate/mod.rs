@@ -204,6 +204,88 @@ impl Certificate {
         Ok(report)
     }
 
+    /// `verify_geometry` for the mesh of a built region, open along the
+    /// region's edge: `edge_sites` are the vertices there, whose fans are
+    /// open and whose cells are settled by construction. Every face is proved
+    /// as on the sphere; open edges must lie on the edge; the Euler
+    /// characteristic must be the region's own; degrees and Voronoi cells are
+    /// checked at every other vertex. Counts and the charge describe the
+    /// region; the gates read `open_edges` as edges open inside it and
+    /// `topology_errors` as a changed Euler characteristic.
+    pub fn verify_geometry_within(
+        &self,
+        mesh: &MeshState,
+        edge_sites: &BTreeSet<usize>,
+        expected_euler: isize,
+    ) -> Result<GeometryCertificateReport, CertificateError> {
+        let angle_contract_id = self.angle_contract_id()?;
+        prove_angle_window_with_outward_intervals(mesh, self)?;
+        let angles = fast_angle_filter(mesh)?;
+        if angles.min < self.min_angle_degrees || angles.max > self.max_angle_degrees {
+            return Err(CertificateError::AngleOutOfRange {
+                min_angle: angles.min,
+                max_angle: angles.max,
+            });
+        }
+        let mut topology = topology(mesh);
+        let mut inside_open_edges = 0;
+        for triangle in mesh.active_triangle_slots() {
+            let corners = mesh.triangles()[triangle];
+            for (corner, &other) in mesh.neighbours()[triangle].iter().enumerate() {
+                let edge = [corners[(corner + 1) % 3], corners[(corner + 2) % 3]];
+                if other == 0 && !edge.iter().all(|site| edge_sites.contains(site)) {
+                    inside_open_edges += 1;
+                }
+            }
+        }
+        if inside_open_edges != 0 {
+            return Err(CertificateError::OpenEdges(inside_open_edges));
+        }
+        if topology.euler != expected_euler {
+            return Err(CertificateError::Euler(topology.euler));
+        }
+        topology
+            .bad_degrees
+            .retain(|(vertex, _)| !edge_sites.contains(vertex));
+        if let Some((vertex, degree)) = topology.bad_degrees.first().copied() {
+            return Err(CertificateError::Degree { vertex, degree });
+        }
+        let delaunay_violations = delaunay_violations(mesh)?;
+        if delaunay_violations != 0 {
+            return Err(CertificateError::Delaunay(delaunay_violations));
+        }
+        let mut seeds = BTreeMap::new();
+        for triangle in mesh.active_triangle_slots() {
+            for site in mesh.triangles()[triangle] {
+                if !edge_sites.contains(&site) {
+                    seeds.entry(site).or_insert(triangle);
+                }
+            }
+        }
+        let dual = verify_dual_sites(mesh, &seeds)?;
+        let report = GeometryCertificateReport {
+            schema_version: CERTIFICATE_SCHEMA_VERSION,
+            angle_contract_id,
+            vertices: topology.vertices,
+            edges: topology.edges,
+            faces: topology.faces,
+            euler: topology.euler,
+            charge: topology.charge,
+            min_angle_degrees: angles.min,
+            max_angle_degrees: angles.max,
+            angle_gate: None,
+            open_edges: inside_open_edges,
+            topology_errors: 0,
+            degree_outside_window: topology.bad_degrees.len(),
+            delaunay_violations,
+            voronoi_cells: dual.cells,
+            voronoi_invalid_cells: dual.invalid_cells,
+            voronoi_reciprocal_errors: dual.reciprocal_errors,
+        };
+        report.require_geometry_gates()?;
+        Ok(report)
+    }
+
     pub fn verify_geometry_region(
         &self,
         mesh: &MeshState,

@@ -2,6 +2,9 @@ use earthmesh_mesh::{
     normalize_cartesian_to_radius, orientation_on_sphere, CartesianPoint, MeshState, Sign,
 };
 
+pub mod region;
+pub use region::{vertex_origin, RegionIndex, VertexOrigin};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VertexAddress {
     IcosahedronVertex(u8),
@@ -36,6 +39,24 @@ pub struct TriangleAddress {
 }
 
 impl TriangleAddress {
+    /// What a built region finds across its edge: a level-`n` parent in the
+    /// settled region, never built. Settled parents coarsen at every level,
+    /// so for the coarsening it counts as core. Not a lattice face: its base
+    /// face is out of range, and every lattice operation on it fails.
+    pub const fn outside(n: usize) -> Self {
+        Self {
+            base_face: u8::MAX,
+            i: 0,
+            j: 0,
+            n,
+            orientation: TriangleOrientation::Up,
+        }
+    }
+
+    pub fn is_outside(self) -> bool {
+        self.base_face == u8::MAX
+    }
+
     pub fn parent_2_to_1(self) -> Option<Self> {
         if self.n < 2 || !self.n.is_multiple_of(2) {
             return None;
@@ -148,6 +169,9 @@ pub struct MotherGrid {
     pub mesh: MeshState,
     pub addresses: Vec<Option<VertexAddress>>,
     pub triangle_addresses: Vec<Option<TriangleAddress>>,
+    /// Set when only some faces were built (`generate_faces`); a whole grid
+    /// finds its faces by `TriangleAddress::dense_index`.
+    pub region: Option<Box<RegionIndex>>,
 }
 
 pub fn analytic_counts(n: usize) -> Option<(usize, usize, usize)> {
@@ -258,7 +282,22 @@ impl MotherGrid {
             mesh,
             addresses,
             triangle_addresses,
+            region: None,
         })
+    }
+
+    /// Where the face at `address` sits in `mesh`, if it was built: two
+    /// reserved slots plus its dense index in a whole grid, the slot
+    /// `generate_faces` recorded in a region. Unchecked: the slot's own
+    /// address is the caller's to compare.
+    pub fn face_slot(&self, address: TriangleAddress) -> Option<usize> {
+        match &self.region {
+            Some(region) => region.face_slot(address),
+            None => address
+                .dense_index(self.subdivision)
+                .ok()
+                .and_then(|dense| dense.checked_add(2)),
+        }
     }
 }
 
@@ -723,6 +762,7 @@ mod tests {
             mesh: MeshState::from_parts(vertices, triangles).unwrap(),
             addresses,
             triangle_addresses,
+            region: None,
         }
     }
 

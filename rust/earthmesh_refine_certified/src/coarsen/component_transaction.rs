@@ -4,7 +4,7 @@
 //! only transition coordinates, then the normal geometry/final-cell/remap gates
 //! decide whether the cloned state is committed.
 
-use super::elastic_block::solve_elastic_patch_with_contract;
+use super::elastic_block::{solve_elastic_patch_scoped, GeometryScope};
 use super::transition_topology::hierarchy_parent_neighbours;
 use super::{
     core_condensation::rebuild_from_leaf_set_with_custom_triangles,
@@ -55,6 +55,99 @@ fn log_failed_candidate_tail(
             started.elapsed().as_millis()
         );
         *started = Instant::now();
+    }
+}
+
+/// What a transaction on a built region checks differently from one on the
+/// whole sphere (design B1e): the region's mesh is open along its edge, only
+/// the cells of R are certified cell by cell, and the remap's tolerances scale
+/// with the whole fine mother.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionScope {
+    /// By fine source slot: whether the site is a corner of a face in R.
+    certified_sources: Vec<bool>,
+    /// Cells of the whole fine mother.
+    whole_cells: usize,
+    /// The built region's Euler characteristic, which re-triangulation keeps.
+    euler: isize,
+}
+
+impl RegionScope {
+    /// The scope of `source`, a built region, whose cells under the base
+    /// faces `certified` (level `base_subdivision`) are certified one by one.
+    pub fn new(
+        source: &MotherGrid,
+        certified: &BTreeSet<TriangleAddress>,
+        base_subdivision: usize,
+    ) -> Result<Self, String> {
+        if source.region.is_none() {
+            return Err("a region scope needs a built region".into());
+        }
+        let mut certified_sources = vec![false; source.mesh.vertices().len()];
+        for face in source.mesh.active_triangle_slots() {
+            let mut base = source.triangle_addresses[face]
+                .ok_or_else(|| format!("region face {face} has no address"))?;
+            while base.n > base_subdivision {
+                base = base
+                    .parent_2_to_1()
+                    .ok_or_else(|| format!("region face {face} has no base face"))?;
+            }
+            if base.n == base_subdivision && certified.contains(&base) {
+                for site in source.mesh.triangles()[face] {
+                    certified_sources[site] = true;
+                }
+            }
+        }
+        let faces = source.mesh.triangle_count();
+        let edges = (3 * faces + source.mesh.open_edge_count()) / 2;
+        let n = source.subdivision;
+        Ok(Self {
+            certified_sources,
+            whole_cells: 10usize
+                .checked_mul(n)
+                .and_then(|cells| cells.checked_mul(n))
+                .and_then(|cells| cells.checked_add(2))
+                .ok_or_else(|| "whole fine mother cell count overflows".to_string())?,
+            euler: source.mesh.vertex_count() as isize - edges as isize + faces as isize,
+        })
+    }
+
+    pub(super) fn whole_cells(&self) -> usize {
+        self.whole_cells
+    }
+
+    /// The edge sites of `mesh` (those of the region's edge) and the
+    /// region's Euler characteristic.
+    pub(super) fn geometry_scope(
+        &self,
+        source: &MotherGrid,
+        mesh: &HierarchyLeafMesh,
+    ) -> GeometryScope {
+        let outer = source
+            .region
+            .as_ref()
+            .map(|region| region.outer_boundary())
+            .expect("a region scope belongs to a built region");
+        GeometryScope {
+            edge_sites: mesh
+                .source_vertex_slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.is_some_and(|slot| outer.contains(&slot)))
+                .map(|(compact, _)| compact)
+                .collect(),
+            euler: self.euler,
+        }
+    }
+
+    /// Whether the cell of compact site `site` of `mesh` is certified one
+    /// by one.
+    pub(super) fn certifies(&self, mesh: &HierarchyLeafMesh, site: usize) -> bool {
+        mesh.source_vertex_slots
+            .get(site)
+            .copied()
+            .flatten()
+            .is_some_and(|slot| self.certified_sources.get(slot).copied().unwrap_or(false))
     }
 }
 
@@ -121,6 +214,12 @@ impl ComponentTransactionState {
 
     pub fn fingerprint(&self) -> u64 {
         mesh_fingerprint(&self.mesh.mesh)
+    }
+
+    pub(super) fn custom_transition_triangles(
+        &self,
+    ) -> &BTreeMap<TriangleAddress, Vec<[usize; 3]>> {
+        &self.custom_transition_triangles
     }
 
     pub(super) fn leaf_set(&self) -> &HierarchyLeafSet {
@@ -309,6 +408,7 @@ pub fn solve_component_transaction_with_contract(
         max_adjacent_level_delta,
         limits,
         angle_contract,
+        None,
     )
 }
 
@@ -326,6 +426,7 @@ pub(super) fn solve_component_transaction_at_level(
     max_adjacent_level_delta: usize,
     limits: ComponentTransactionLimits,
     angle_contract: AngleContractId,
+    scope: Option<&RegionScope>,
 ) -> ComponentTransactionOutcome {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
     let before_fingerprint = state.fingerprint();
@@ -382,7 +483,7 @@ pub(super) fn solve_component_transaction_at_level(
     let mut topology_state_offset = 0usize;
     let mut halo_expansion_offset = 0usize;
     let mut search_component = component.clone();
-    let promotion_depths = match core_promotion_depths(level_grid, component) {
+    let promotion_depths = match core_promotion_depths(level_grid, component, scope.is_some()) {
         Ok(depths) => depths,
         Err(reason) => return fail!(InvalidInput, ComponentTransactionStage::Preflight, reason),
     };
@@ -543,6 +644,7 @@ pub(super) fn solve_component_transaction_at_level(
             pre_faces,
             &pre_sources,
             angle_contract,
+            scope,
             &mut phase_started,
         ) {
             Ok(mut report) => {
@@ -668,6 +770,7 @@ fn certify_candidate(
     pre_faces: usize,
     pre_sources: &[bool],
     angle_contract: AngleContractId,
+    scope: Option<&RegionScope>,
     phase_started: &mut Instant,
 ) -> Result<ComponentCommitReport, CandidateAttemptFailure> {
     let timing_enabled = std::env::var("EARTHMESH_CMRC_TIMING").as_deref() == Ok("1");
@@ -676,6 +779,13 @@ fn certify_candidate(
         CandidateAttemptFailure::invalid(ComponentTransactionStage::InstallDelta, reason)
     })?;
     apply_source_positions(&mut state.mesh, &state.source_positions);
+    // On a built region, the checks of the whole sphere become the region's
+    // (`verify_geometry_within`); its numbering is fixed from here on.
+    let geometry_scope = scope.map(|scope| scope.geometry_scope(source, &state.mesh));
+    let verify = |certificate: Certificate, mesh: &MeshState| match &geometry_scope {
+        None => certificate.verify_geometry(mesh),
+        Some(region) => certificate.verify_geometry_within(mesh, &region.edge_sites, region.euler),
+    };
     log_component_phase(timing_enabled, component.id, "install_delta", phase_started);
 
     let mut elastic_iterations = 0usize;
@@ -711,13 +821,14 @@ fn certify_candidate(
                 CandidateAttemptFailure::retry(ComponentTransactionStage::Elastic, reason)
             })?;
         log_component_phase(timing_enabled, component.id, "prepare_patch", phase_started);
-        let outcome = solve_elastic_patch_with_contract(
+        let outcome = solve_elastic_patch_scoped(
             &state.mesh,
             patch,
             ElasticBlockLimits {
                 elastic_iterations: remaining_elastic_iterations,
             },
             angle_contract,
+            geometry_scope.as_ref(),
         );
         // Include rejected candidates in solve timing, not in a generic failure tail.
         log_component_phase(timing_enabled, component.id, "elastic_solve", phase_started);
@@ -812,8 +923,7 @@ fn certify_candidate(
         phase_started,
     );
 
-    let global_geometry = Certificate::internal_for(angle_contract)
-        .verify_geometry(&state.mesh.mesh)
+    let global_geometry = verify(Certificate::internal_for(angle_contract), &state.mesh.mesh)
         .map_err(|error| {
             let mut failure = CandidateAttemptFailure::retry(
                 ComponentTransactionStage::GlobalGeometry,
@@ -828,16 +938,18 @@ fn certify_candidate(
         "internal_geometry",
         phase_started,
     );
-    let final_geometry = Certificate::final_delivery_for(angle_contract)
-        .verify_geometry(&state.mesh.mesh)
-        .map_err(|error| {
-            let mut failure = CandidateAttemptFailure::retry(
-                ComponentTransactionStage::FinalGeometry,
-                format!("{error:?}"),
-            );
-            failure.interval_boxes = interval_boxes;
-            failure
-        })?;
+    let final_geometry = verify(
+        Certificate::final_delivery_for(angle_contract),
+        &state.mesh.mesh,
+    )
+    .map_err(|error| {
+        let mut failure = CandidateAttemptFailure::retry(
+            ComponentTransactionStage::FinalGeometry,
+            format!("{error:?}"),
+        );
+        failure.interval_boxes = interval_boxes;
+        failure
+    })?;
     log_component_phase(
         timing_enabled,
         component.id,
@@ -851,7 +963,15 @@ fn certify_candidate(
         failure.interval_boxes = interval_boxes;
         failure
     })?;
-    let remap = source_remap.remap_to(&state.mesh.mesh).map_err(|reason| {
+    let remap = match scope {
+        None => source_remap.remap_to(&state.mesh.mesh),
+        Some(scope) => source_remap.remap_region_to(
+            &state.mesh.mesh,
+            |site| scope.certifies(&state.mesh, site),
+            scope.whole_cells,
+        ),
+    }
+    .map_err(|reason| {
         let mut failure = CandidateAttemptFailure::retry(ComponentTransactionStage::Remap, reason);
         failure.interval_boxes = interval_boxes;
         failure
@@ -897,10 +1017,13 @@ fn certify_candidate(
                 failure
             })?;
 
-    let final_mesh = crate::finalize_geometry_certified_mother(
-        GeometryCertifiedMotherGrid::new(state.mesh.mesh.clone(), final_geometry),
-        final_evidence,
-    )
+    let geometry = GeometryCertifiedMotherGrid::new(state.mesh.mesh.clone(), final_geometry);
+    let final_mesh = match remap.covered_targets() {
+        None => crate::finalize_geometry_certified_mother(geometry, final_evidence),
+        Some(covered) => {
+            crate::api::finalize_region_geometry(geometry, final_evidence, covered.len())
+        }
+    }
     .map_err(|error| {
         let mut failure = CandidateAttemptFailure::retry(
             ComponentTransactionStage::FinalGeometry,
@@ -1073,9 +1196,13 @@ fn angle_range_suffix(range: Option<(f64, f64)>) -> String {
         .unwrap_or_default()
 }
 
+/// Each parent's distance from the transition ring. On a built region,
+/// parents joined to the component only through the settled region keep no
+/// depth: they are farther than any promotion reaches.
 fn core_promotion_depths(
     source: &MotherGrid,
     component: &HierarchyComponent,
+    region: bool,
 ) -> Result<BTreeMap<TriangleAddress, usize>, String> {
     let parents = component.parents.iter().copied().collect::<BTreeSet<_>>();
     let mut depths = BTreeMap::new();
@@ -1093,7 +1220,7 @@ fn core_promotion_depths(
             }
         }
     }
-    if !component.transition_parents.is_empty() && depths.len() != parents.len() {
+    if !region && !component.transition_parents.is_empty() && depths.len() != parents.len() {
         return Err("component promotion depths are disconnected".into());
     }
     Ok(depths)

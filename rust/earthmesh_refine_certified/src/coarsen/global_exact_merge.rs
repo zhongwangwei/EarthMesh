@@ -1609,11 +1609,16 @@ fn parent_corners(source: &MotherGrid, parent: TriangleAddress) -> Result<[usize
 }
 
 fn source_face_slot(source: &MotherGrid, address: TriangleAddress) -> Result<usize, String> {
-    let dense = address.dense_index(source.subdivision)? + 2;
-    if source.triangle_addresses.get(dense).and_then(|x| *x) != Some(address) {
+    let slot = match &source.region {
+        Some(region) => region
+            .face_slot(address)
+            .ok_or_else(|| format!("source face for {address:?} is missing"))?,
+        None => address.dense_index(source.subdivision)? + 2,
+    };
+    if source.triangle_addresses.get(slot).and_then(|x| *x) != Some(address) {
         return Err(format!("source face for {address:?} is missing"));
     }
-    Ok(dense)
+    Ok(slot)
 }
 
 fn source_triangle_matches(
