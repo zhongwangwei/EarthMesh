@@ -138,7 +138,7 @@ pub fn finalize_geometry_certified_mother(
 /// `finalize_geometry_certified_mother` for the mesh of a built region: its
 /// remap has rows only for the cells certified cell by cell, and they are
 /// counted against those.
-pub(crate) fn finalize_region_geometry(
+pub fn finalize_region_geometry(
     geometry: GeometryCertifiedMotherGrid,
     evidence: FinalCertificationEvidence,
     certified_cells: usize,

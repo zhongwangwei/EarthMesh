@@ -1015,6 +1015,93 @@ fn a_moved_mother_that_cannot_serve_is_coarsened_where_a_heptagon_may_stand() {
     assert_eq!(certificate["physical_residuals"], 0, "{certificate}");
 }
 
+/// On demand (guide 11.106) the finest mother is built only where the
+/// requirement reaches and the region is delivered: the delivered grid and
+/// the certificate are the whole sphere's byte for byte, and the remap keeps
+/// the rows of the cells it certified, weight for weight.
+#[test]
+fn on_demand_materialization_delivers_the_whole_spheres_regional_grid() {
+    let root = temp_root("on_demand_materialization");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 12.0,
+                lat: 8.0,
+            }],
+            radius_km: vec![500.0],
+        },
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for materialization in ["whole", "on_demand"] {
+        let base = root.join(materialization);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("cmrc.nml");
+        fs::write(
+            &path,
+            specified_circle_namelist(&base, "regional", &prefix)
+                .replace("NL%NXP=3", "NL%NXP=16")
+                .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+                .replace("safe_mother_only", "reverse_coarsening")
+                .replace(
+                    "NL%search_budget=100\n/",
+                    &format!("NL%search_budget=100\n  NL%materialization='{materialization}'\n/"),
+                )
+                .replace(
+                    "NL%mask_domain_global=.true.",
+                    "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
+                     NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
+                ),
+        )
+        .unwrap();
+        let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &base, 100_000, None)
+            .unwrap()
+            .certified_run
+            .unwrap();
+        assert_eq!(certified.product_outcome, "certified_adaptive");
+        results.push(certified);
+    }
+    let files = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
+        snapshot_result_dir(certified.certificate.parent().unwrap())
+            .into_iter()
+            .map(|(path, bytes)| (path.file_name().unwrap().to_owned(), bytes))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (whole, on_demand) = (files(&results[0]), files(&results[1]));
+    for name in whole.keys() {
+        let name = name.to_string_lossy();
+        if name.ends_with(".nc4") || name == "certified_certificate.json" {
+            assert!(
+                whole[std::ffi::OsStr::new(name.as_ref())]
+                    == on_demand[std::ffi::OsStr::new(name.as_ref())],
+                "{name} differs"
+            );
+        }
+    }
+    let rows = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
+        let text = fs::read_to_string(certified.pre_export_remap.as_ref().unwrap()).unwrap();
+        text.lines()
+            .skip(1)
+            .map(|line| {
+                let mut fields = line.split(',');
+                let target = fields.next().unwrap().parse::<usize>().unwrap();
+                let source = fields.next().unwrap().parse::<usize>().unwrap();
+                ((target, source), fields.next().unwrap().to_owned())
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (whole_rows, on_demand_rows) = (rows(&results[0]), rows(&results[1]));
+    assert!(!on_demand_rows.is_empty() && on_demand_rows.len() < whole_rows.len());
+    for (pair, weight) in &on_demand_rows {
+        assert_eq!(whole_rows.get(pair), Some(weight), "remap entry {pair:?}");
+    }
+}
+
 #[test]
 fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback() {
     let root = temp_root("mixed_fulfillment");

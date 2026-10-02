@@ -323,6 +323,47 @@ pub fn certify_final_cell_requirements_from_raster(
     }
 }
 
+/// The raster's requirement on the cells of a built region (on-demand
+/// reverse coarsening): the highest level among the raster cells each cell
+/// overlaps, for every active site of `mesh` in slot order. Sites in
+/// `cellless` -- the region's open edge, on the frame's far side -- have no
+/// cell and require level zero by construction. The overlap is certified as
+/// on the whole sphere, its tolerances scaled by `whole_cells`, so each
+/// cell gets the level the whole sphere's projection gives it.
+pub fn region_required_levels_from_raster(
+    raster: &RasterLevelField,
+    mesh: &MeshState,
+    cellless: &std::collections::BTreeSet<usize>,
+    whole_cells: usize,
+) -> Result<Vec<usize>, String> {
+    let (rings, ids) =
+        crate::remap::voronoi_rings_selected(mesh, |site| !cellless.contains(&site))?;
+    let cells = mesh.active_vertex_slots().count();
+    let remap = ConservativeRemap::spherical_overlap_partial(
+        &raster.spherical_cells(),
+        &rings,
+        ids,
+        whole_cells,
+    )?;
+    let certificate = remap.certify_spherical_overlap(raster.levels().len(), cells);
+    if certificate.negative_weights() + certificate.bad_row_sums() + certificate.bad_lineage_rows()
+        != 0
+        || certificate.constant_closure_error() > certificate.closure_tolerance()
+        || certificate.global_area_closure_error() > certificate.closure_tolerance()
+    {
+        return Err(format!(
+            "raster-to-Voronoi overlap remap failed certification: negative={}, bad_rows={}, bad_lineage={}, constant_error={}, area_error={}, tolerance={}",
+            certificate.negative_weights(),
+            certificate.bad_row_sums(),
+            certificate.bad_lineage_rows(),
+            certificate.constant_closure_error(),
+            certificate.global_area_closure_error(),
+            certificate.closure_tolerance(),
+        ));
+    }
+    Ok(maximum_overlapping_levels(&remap, raster.levels(), cells)?.0)
+}
+
 pub fn certify_final_cell_requirements_from_raster_global_bound(
     source_levels: &RasterLevelField,
     target_mesh: &MeshState,

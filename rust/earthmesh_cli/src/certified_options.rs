@@ -27,6 +27,16 @@ pub enum CertifiedDelivery {
     Coupled,
 }
 
+/// Where reverse coarsening builds the finest mother (design B1, guide
+/// 11.106): over the whole sphere, or only where the requirement reaches and
+/// a regional run delivers cells, the rest settled by construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CertifiedMaterialization {
+    #[default]
+    Whole,
+    OnDemand,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CertifiedRunOptions {
     pub mode: CertifiedMode,
@@ -36,6 +46,7 @@ pub struct CertifiedRunOptions {
     pub maximum_cells: usize,
     pub gradation_rings_per_level: usize,
     pub search_budget: usize,
+    pub materialization: CertifiedMaterialization,
 }
 
 impl Default for CertifiedRunOptions {
@@ -52,6 +63,7 @@ impl Default for CertifiedRunOptions {
             maximum_cells: 10_000_000,
             gradation_rings_per_level: 3,
             search_budget: 100_000,
+            materialization: CertifiedMaterialization::Whole,
         }
     }
 }
@@ -123,6 +135,17 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
             }
             "search_budget" => {
                 options.search_budget = parse_usize(&assignment.field, &assignment.value)?
+            }
+            "materialization" => {
+                options.materialization = match assignment.value.to_ascii_lowercase().as_str() {
+                    "whole" => CertifiedMaterialization::Whole,
+                    "on_demand" => CertifiedMaterialization::OnDemand,
+                    other => {
+                        return Err(invalid(format!(
+                            "certified materialization must be whole or on_demand, got {other}"
+                        )))
+                    }
+                }
             }
             other => return Err(invalid(format!("unknown &certified field '{other}'"))),
         }

@@ -97,7 +97,7 @@ pub fn vertex_origin(n: usize, face: u8, i: usize, j: usize) -> Result<VertexOri
 }
 
 /// The address `generate` records for the vertex at `origin`.
-fn origin_address(n: usize, origin: VertexOrigin) -> VertexAddress {
+pub fn origin_address(n: usize, origin: VertexOrigin) -> VertexAddress {
     let corners = icosahedron_faces()[origin.face as usize];
     let weights = [n - origin.i - origin.j, origin.i, origin.j];
     if let Some(position) = weights.iter().position(|&weight| weight == n) {
@@ -145,6 +145,81 @@ fn origin_position_on(
         1.0,
     )
     .map_err(|error| format!("lattice point {origin:?} at level {n}: {error:?}"))
+}
+
+/// Where `generate(n)` numbers vertices: for each base face, how many new
+/// vertices the faces before it brought, and which of its corners and edges
+/// it is the first to reach.
+#[derive(Debug, Clone)]
+pub struct GlobalNumbering {
+    n: usize,
+    before_face: [usize; 20],
+    /// Per base face: corners a, b, c (weights k, i, j at n) and edges ab
+    /// (j = 0), ac (i = 0), bc (k = 0) that are new there.
+    new: [[bool; 6]; 20],
+}
+
+impl GlobalNumbering {
+    pub fn new(n: usize) -> Self {
+        let faces = icosahedron_faces();
+        let first_with = |corners: &[u8]| {
+            (0..20)
+                .find(|&face| corners.iter().all(|corner| faces[face].contains(corner)))
+                .expect("every icosahedron vertex and edge lies on a base face")
+        };
+        let mut new = [[false; 6]; 20];
+        let mut before_face = [0usize; 20];
+        let mut total = 0usize;
+        let interior = if n >= 2 { (n - 1) * (n - 2) / 2 } else { 0 };
+        for face in 0..20 {
+            let [a, b, c] = faces[face];
+            new[face] = [
+                first_with(&[a]) == face,
+                first_with(&[b]) == face,
+                first_with(&[c]) == face,
+                first_with(&[a, b]) == face,
+                first_with(&[a, c]) == face,
+                first_with(&[b, c]) == face,
+            ];
+            before_face[face] = total;
+            let flags = new[face];
+            total += interior
+                + flags[..3].iter().filter(|&&new| new).count()
+                + flags[3..].iter().filter(|&&new| new).count() * n.saturating_sub(1);
+        }
+        Self {
+            n,
+            before_face,
+            new,
+        }
+    }
+
+    /// The vertex's place among all of `generate(n)`'s vertices (its slot
+    /// less the two reserved ones).
+    pub fn rank(&self, origin: VertexOrigin) -> usize {
+        let n = self.n;
+        let [new_a, _, new_c, new_ab, new_ac, new_bc] = self.new[origin.face as usize];
+        let (i, j) = (origin.i, origin.j);
+        let flag = |value: bool| usize::from(value);
+        // Rows before row i: row 0 holds a, the ac edge and c; rows 1..n-1
+        // hold an ab-edge point, interior points and a bc-edge point.
+        let mut rank = self.before_face[origin.face as usize];
+        if i >= 1 {
+            rank += flag(new_a) + flag(new_ac) * n.saturating_sub(1) + flag(new_c);
+            let rows = (i - 1).min(n.saturating_sub(1));
+            rank += rows * (flag(new_ab) + flag(new_bc)) + rows * n.saturating_sub(1)
+                - rows * (rows + 1) / 2;
+        }
+        // Points before (i, j) in row i.
+        if j >= 1 {
+            if i == 0 {
+                rank += flag(new_a) + flag(new_ac) * (j - 1).min(n.saturating_sub(1));
+            } else if i < n {
+                rank += flag(new_ab) + (j - 1).min(n - i - 1);
+            }
+        }
+        rank
+    }
 }
 
 /// The coordinates `generate(n)` gives the vertex at `origin`.
@@ -467,6 +542,29 @@ mod tests {
                 .cloned()
                 .collect()
         );
+    }
+
+    /// Ranks are slots: every vertex of `generate(n)` at its slot less two.
+    #[test]
+    fn global_ranks_are_generate_slots() {
+        for n in [1, 2, 3, 5, 8] {
+            let whole = MotherGrid::generate(n).unwrap();
+            let numbering = GlobalNumbering::new(n);
+            for face in 0..20u8 {
+                for i in 0..=n {
+                    for j in 0..=n - i {
+                        let origin = vertex_origin(n, face, i, j).unwrap();
+                        let address = origin_address(n, origin);
+                        let slot = whole
+                            .addresses
+                            .iter()
+                            .position(|candidate| candidate.as_ref() == Some(&address))
+                            .unwrap();
+                        assert_eq!(numbering.rank(origin), slot - 2, "n {n} {origin:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Every lattice point of every base face names the origin `generate`

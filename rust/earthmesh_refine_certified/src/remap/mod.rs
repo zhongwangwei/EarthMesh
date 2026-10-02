@@ -263,6 +263,39 @@ impl ConservativeRemap {
         })
     }
 
+    /// `spherical_overlap` with rows for some target cells only: `target_ids`
+    /// gives each ring's number among all target cells, and `whole_cells` the
+    /// cell count the tolerances scale with (see `PartialCoverage`).
+    pub(crate) fn spherical_overlap_partial(
+        source_cells: &[Vec<(f64, f64)>],
+        target_cells: &[Vec<(f64, f64)>],
+        target_ids: Vec<usize>,
+        whole_cells: usize,
+    ) -> Result<Self, String> {
+        if source_cells.is_empty() || target_cells.is_empty() {
+            return Err("spherical remap needs non-empty source and target cells".into());
+        }
+        let sources = prepare_cells(source_cells)?;
+        let targets = prepare_cells(target_cells)?;
+        let (source_rings, sources): (Vec<_>, Vec<_>) = sources.into_iter().unzip();
+        let index = SphericalCapIndex::new(&source_rings)?;
+        drop(source_rings);
+        let mut remap = Self::overlap_prepared(
+            source_cells,
+            &sources,
+            None,
+            &index,
+            target_cells,
+            targets,
+            Some(&target_ids),
+        )?;
+        remap.covered_targets = Some(PartialCoverage {
+            targets: target_ids,
+            whole_cells,
+        });
+        Ok(remap)
+    }
+
     pub fn between_voronoi_meshes(source: &MeshState, target: &MeshState) -> Result<Self, String> {
         let mut remap = Self::spherical_overlap(&voronoi_rings(source)?, &voronoi_rings(target)?)?;
         remap.source_fingerprint = Some(mesh_fingerprint(source));
@@ -328,6 +361,43 @@ impl ConservativeRemap {
             .max(128.0 * f64::EPSILON * cells as f64);
         certificate.global_area_closure_error = self.coverage_error;
         certificate
+    }
+
+    /// This remap with its cells renumbered -- a built region's remap in the
+    /// whole sphere's numbering: `source_id` and `target_id` map the region's
+    /// cell numbers to the whole meshes', `whole_cells` scales the
+    /// tolerances, and `target_fingerprint` binds the whole target mesh. Rows
+    /// keep their order, so the target numbering must preserve it.
+    pub fn renumbered(
+        &self,
+        source_id: impl Fn(usize) -> usize,
+        target_id: impl Fn(usize) -> usize,
+        whole_cells: usize,
+        target_fingerprint: u64,
+    ) -> Self {
+        let rows = self
+            .rows
+            .iter()
+            .map(|row| RemapRow {
+                target: target_id(row.target),
+                sources: row
+                    .sources
+                    .iter()
+                    .map(|&(source, weight)| (source_id(source), weight))
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let targets = rows.iter().map(|row| row.target).collect();
+        Self {
+            rows,
+            coverage_error: self.coverage_error,
+            source_fingerprint: None,
+            target_fingerprint: Some(target_fingerprint),
+            covered_targets: Some(PartialCoverage {
+                targets,
+                whole_cells,
+            }),
+        }
     }
 
     /// The target cells the rows cover, when they cover only a region.

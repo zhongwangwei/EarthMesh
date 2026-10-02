@@ -73,11 +73,15 @@ fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// base rings, rounded up. R is every base face within the sum of those over
 /// the levels, plus two for rounding, of a base face whose fine cells may
 /// overlap a raster cell above level zero.
+///
+/// `delivered` are base faces whose cells a regional run delivers: they are
+/// certified cell by cell too, so they join R with a ring around them.
 pub fn materialization_extent(
     raster: &RasterLevelField,
     base: &MotherGrid,
     levels: usize,
     margins: ExtentMargins,
+    delivered: &BTreeSet<TriangleAddress>,
 ) -> Result<MaterializationExtent, String> {
     if base.region.is_some() {
         return Err("the extent is drawn on a whole base mother".into());
@@ -216,6 +220,25 @@ pub fn materialization_extent(
             }
         }
     }
+    // Delivered faces and a ring around them, at distance zero.
+    let delivered_indices = faces
+        .iter()
+        .enumerate()
+        .filter(|(_, &face)| {
+            base.triangle_addresses[face].is_some_and(|address| delivered.contains(&address))
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut delivered_ring = BTreeSet::new();
+    for &index in &delivered_indices {
+        delivered_ring.insert(index);
+        delivered_ring.extend(around(index));
+    }
+    for index in delivered_ring {
+        if distance[index] == usize::MAX {
+            distance[index] = 0;
+        }
+    }
     let address = |index: usize| {
         base.triangle_addresses[faces[index]]
             .ok_or_else(|| format!("base face {} has no address", faces[index]))
@@ -266,7 +289,14 @@ mod tests {
     #[test]
     fn no_requirement_builds_nothing() {
         let base = MotherGrid::generate(4).unwrap();
-        let extent = materialization_extent(&raster_with(36, 18, &[]), &base, 2, MARGINS).unwrap();
+        let extent = materialization_extent(
+            &raster_with(36, 18, &[]),
+            &base,
+            2,
+            MARGINS,
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert!(extent.region.is_empty() && extent.frame.is_empty());
         assert_eq!(extent.settled_faces, 320);
     }
@@ -276,7 +306,7 @@ mod tests {
         let base = MotherGrid::generate(6).unwrap();
         // One raster cell near (95 E, 25 N).
         let raster = raster_with(72, 36, &[(25 * 72 + 55, 2)]);
-        let narrow = materialization_extent(&raster, &base, 2, MARGINS).unwrap();
+        let narrow = materialization_extent(&raster, &base, 2, MARGINS, &BTreeSet::new()).unwrap();
         let wide = materialization_extent(
             &raster,
             &base,
@@ -285,6 +315,7 @@ mod tests {
                 parent_rings_per_level: 3,
                 ..MARGINS
             },
+            &BTreeSet::new(),
         )
         .unwrap();
         assert!(!narrow.region.is_empty());
@@ -343,7 +374,9 @@ mod tests {
                     .map(|(cell, level)| (cell, level.min(levels)))
                     .collect::<Vec<_>>();
                 let raster = raster_with(nlon, nlat, &cells);
-                let extent = materialization_extent(&raster, &base, levels, MARGINS).unwrap();
+                let extent =
+                    materialization_extent(&raster, &base, levels, MARGINS, &BTreeSet::new())
+                        .unwrap();
                 let projected = crate::requirement::certify_final_cell_requirements_from_raster(
                     &raster, &fine.mesh, &target, 1,
                 )
@@ -374,5 +407,73 @@ mod tests {
             }
         }
         assert!(checked > 100, "{checked}");
+    }
+    /// Projected on the built region, every cell gets the level the whole
+    /// sphere's projection gives it; the open edge's sites need none.
+    #[test]
+    fn the_region_projects_the_raster_as_the_whole_sphere() {
+        let (base_n, levels) = (4, 2);
+        let fine_n = base_n << levels;
+        let base = MotherGrid::generate(base_n).unwrap();
+        let fine = MotherGrid::generate(fine_n).unwrap();
+        let raster = raster_with(72, 36, &[(25 * 72 + 55, 2), (24 * 72 + 56, 1)]);
+        let extent =
+            materialization_extent(&raster, &base, levels, MARGINS, &BTreeSet::new()).unwrap();
+        let region = MotherGrid::generate_faces(
+            fine_n,
+            descendant_faces(extent.built_faces(), fine_n).unwrap(),
+        )
+        .unwrap();
+        let target = crate::requirement::TargetLevelField::from_active_voronoi_cells(
+            &fine.mesh,
+            vec![levels; fine.mesh.active_vertex_slots().count()],
+        )
+        .unwrap();
+        let whole = crate::requirement::certify_final_cell_requirements_from_raster(
+            &raster, &fine.mesh, &target, 1,
+        )
+        .unwrap();
+        let whole_at = fine
+            .mesh
+            .active_vertex_slots()
+            .zip(whole.required_levels())
+            .map(|(site, &level)| (fine.addresses[site].clone().unwrap(), level))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let outer = region.region.as_ref().unwrap().outer_boundary();
+        let projected = crate::requirement::region_required_levels_from_raster(
+            &raster,
+            &region.mesh,
+            outer,
+            fine.mesh.vertex_count(),
+        )
+        .unwrap();
+        assert!(projected.iter().any(|&level| level > 0));
+        for (site, level) in region.mesh.active_vertex_slots().zip(projected) {
+            let expected = whole_at[region.addresses[site].as_ref().unwrap()];
+            if outer.contains(&site) {
+                assert_eq!((level, expected), (0, 0), "open edge site {site}");
+            } else {
+                assert_eq!(level, expected, "site {site}");
+            }
+        }
+    }
+
+    /// Delivered faces join R with a ring, even with no requirement at all.
+    #[test]
+    fn delivered_faces_are_built_and_certified() {
+        let base = MotherGrid::generate(4).unwrap();
+        let delivered = base
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .take(3)
+            .collect::<BTreeSet<_>>();
+        let extent =
+            materialization_extent(&raster_with(36, 18, &[]), &base, 2, MARGINS, &delivered)
+                .unwrap();
+        assert!(delivered.is_subset(&extent.region));
+        assert!(extent.region.len() > delivered.len());
+        assert!(!extent.frame.is_empty() && extent.settled_faces > 0);
     }
 }

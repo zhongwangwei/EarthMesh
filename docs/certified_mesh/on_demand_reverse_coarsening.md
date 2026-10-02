@@ -196,7 +196,8 @@ R₀ ⊇ R₁ ⊇ … ⊇ Rₗ 层层嵌套，物化的单元总数约为交付�
 | B1d | `plan_region_components` / `sort_region_components`、S 分块与隐式核心 | 完成（与整球规划逐分量相同） |
 | B1e | 外部哨兵、区域硬门、`verify_geometry_within`、带作用域的弹性与阶段证书、区域 remap | 完成 |
 | B1f-1 | `run_region_component_epochs`、`assemble_region_sphere` | 完成（报告、M 内的面、R 内 remap 行、装配后的整球网格均与整球运行相同，1–2 级） |
-| B1c / B1f-2 | CLI 接入：区域上的初始需求投影、remap 的整球编号、发布物（B2）、t10_both 对照与计时 | 进行中 |
+| B1c / B1f-2 | CLI 接入：区域上的初始需求投影、交付域并入 R、remap 的整球编号、`&certified materialization` | 完成（指南 11.107：三个区域算例与整球逐字节一致，快 2.6–14 倍） |
+| B1h | 默认开启（区域运行）、证书范围字段与发布物（B2） | 未开始 |
 | B1g | 按层物化 Rₖ | 未开始 |
 
 ## 7. 风险与开放问题

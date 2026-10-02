@@ -6,7 +6,9 @@
 //! and delivering through the shared result is step 6b.
 
 use crate::atomic_output::publish_artifacts;
-use crate::certified_options::{CertifiedDelivery, CertifiedMode, CertifiedRunOptions};
+use crate::certified_options::{
+    CertifiedDelivery, CertifiedMaterialization, CertifiedMode, CertifiedRunOptions,
+};
 use crate::fvcom_mesh_2dm_output_path;
 use crate::gridfile_mesh_from_one_based_state;
 use crate::mkgrd_run_types::CertifiedRunRecord;
@@ -17,7 +19,7 @@ use crate::read_method_c_specified_refinement_regions;
 use crate::GridRegion;
 use crate::GridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -176,6 +178,7 @@ pub(super) fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
@@ -184,6 +187,7 @@ pub(super) fn build_certified_construction(
     max_tris: usize,
     local_update_path: Option<&Path>,
     fixed_topology: bool,
+    delivery_domain: Option<&GridRegion>,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
     let mixed_requirement = chosen_level > 0
@@ -298,6 +302,7 @@ pub(super) fn build_certified_construction(
                 raster_requirements,
                 budget,
                 local_update_path,
+                delivery_domain,
             );
         }
         Some(Err(reasons)) => {
@@ -371,6 +376,7 @@ pub(super) fn build_certified_construction(
             raster_requirements,
             budget,
             local_update_path,
+            delivery_domain,
         );
     }
 
@@ -533,6 +539,406 @@ pub(super) fn build_certified_construction(
     }
 }
 
+/// Base faces that a regional run delivers cells of: a corner, the centroid
+/// or an edge midpoint inside the domain, or a point of the domain itself
+/// (bbox corners and centre, circle centre, polygon vertices) within the
+/// face's cap -- so a domain smaller than a face is found too.
+fn delivery_base_faces(
+    domain: &GridRegion,
+    base: &earthmesh_refine_certified::MotherGrid,
+) -> BTreeSet<earthmesh_refine_certified::TriangleAddress> {
+    fn points(domain: &GridRegion, out: &mut Vec<(f64, f64)>) {
+        match domain {
+            GridRegion::Bbox {
+                west,
+                east,
+                north,
+                south,
+            } => {
+                let span = (east - west).rem_euclid(360.0);
+                out.extend([
+                    (*west, *south),
+                    (*west, *north),
+                    (*east, *south),
+                    (*east, *north),
+                    (west + span / 2.0, (south + north) / 2.0),
+                ]);
+            }
+            GridRegion::Circle { lon, lat, .. } => out.push((*lon, *lat)),
+            GridRegion::Close { points } => {
+                out.extend(points.iter().map(|point| (point.lon, point.lat)))
+            }
+            GridRegion::Any(regions) => {
+                for region in regions {
+                    points(region, out);
+                }
+            }
+        }
+    }
+    let unit = |lon: f64, lat: f64| {
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    };
+    let lon_lat = |point: [f64; 3]| {
+        let length = (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt();
+        (
+            point[1].atan2(point[0]).to_degrees(),
+            (point[2] / length).clamp(-1.0, 1.0).asin().to_degrees(),
+        )
+    };
+    let angle = |a: [f64; 3], b: [f64; 3]| {
+        let length = |p: [f64; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        ((a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (length(a) * length(b)))
+            .clamp(-1.0, 1.0)
+            .acos()
+    };
+    let mut own = Vec::new();
+    points(domain, &mut own);
+    let own = own
+        .into_iter()
+        .map(|(lon, lat)| unit(lon, lat))
+        .collect::<Vec<_>>();
+    let prepared = domain.prepared();
+    let mut faces = BTreeSet::new();
+    for face in base.mesh.active_triangle_slots() {
+        let corners = base.mesh.triangles()[face].map(|site| {
+            let point = base.mesh.vertices()[site];
+            [point.x, point.y, point.z]
+        });
+        let sum = |points: &[[f64; 3]]| {
+            points.iter().fold([0.0; 3], |sum, point| {
+                [sum[0] + point[0], sum[1] + point[1], sum[2] + point[2]]
+            })
+        };
+        let centroid = sum(&corners);
+        let mut samples = corners.to_vec();
+        samples.push(centroid);
+        for side in 0..3 {
+            samples.push(sum(&[corners[side], corners[(side + 1) % 3]]));
+        }
+        let radius = corners
+            .iter()
+            .map(|&corner| angle(centroid, corner))
+            .fold(0.0, f64::max);
+        let inside = samples.iter().any(|&sample| {
+            let (lon, lat) = lon_lat(sample);
+            prepared.contains(lon, lat)
+        }) || own.iter().any(|&point| angle(point, centroid) <= radius);
+        if inside {
+            if let Some(address) = base.triangle_addresses[face] {
+                faces.insert(address);
+            }
+        }
+    }
+    faces
+}
+
+/// Parent rings at every level that a transaction may touch beyond a parent
+/// that cannot coarsen: the widest transition ring (`maximum_transition_rings`,
+/// 4), the elastic domain around it (two ordinary rings) and the certificates'
+/// neighbourhood of what moved (one).
+const REGION_PARENT_RINGS: usize = 7;
+
+/// Reverse coarsening with the finest mother built only where the requirement
+/// reaches (design B1, guide 11.106): R and its frame F are built, the
+/// settled base faces S are counted and put back at the end. `None` when
+/// nothing would be left unbuilt, or when the settled region could not
+/// coarsen -- the whole sphere then runs instead.
+fn build_region_certified_construction(
+    base_nxp: usize,
+    chosen_level: usize,
+    options: &CertifiedRunOptions,
+    raster_requirements: &earthmesh_refine_certified::RasterLevelField,
+    budget: usize,
+    delivery_domain: &GridRegion,
+) -> io::Result<Option<CertifiedConstruction>> {
+    use earthmesh_refine_certified::{coarsen, mother_grid, on_demand, MotherGrid};
+    let timing_enabled = cmrc_timing_enabled();
+    let mut phase_started = Instant::now();
+    let invalid_data = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
+    let initial_subdivision = certified_subdivision(base_nxp, chosen_level)?;
+    let whole_faces = mother_grid::mother_cell_count(initial_subdivision).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "CMRC mixed mother cell count overflows usize",
+        )
+    })?;
+    let whole_vertices = whole_faces / 2 + 2;
+    let base = MotherGrid::generate(base_nxp).map_err(io::Error::other)?;
+    let delivered = delivery_base_faces(delivery_domain, &base);
+    let extent = on_demand::materialization_extent(
+        raster_requirements,
+        &base,
+        chosen_level,
+        on_demand::ExtentMargins {
+            gradation_rings_per_level: options.gradation_rings_per_level,
+            parent_rings_per_level: REGION_PARENT_RINGS,
+        },
+        &delivered,
+    )
+    .map_err(invalid_data)?;
+    if extent.region.is_empty() || extent.settled_faces == 0 {
+        return Ok(None);
+    }
+    let built = extent.built_faces().collect::<BTreeSet<_>>();
+    let fine = MotherGrid::generate_faces(
+        initial_subdivision,
+        mother_grid::region::descendant_faces(built.iter().copied(), initial_subdivision)
+            .map_err(invalid_data)?,
+    )
+    .map_err(invalid_data)?;
+    let required_cells = fine.mesh.triangle_count();
+    if required_cells > budget {
+        return Err(certified_outcome_error(
+            earthmesh_refine_certified::CertifiedMeshOutcome::CellBudgetInsufficient {
+                required_cells,
+                budget,
+            },
+        ));
+    }
+    eprintln!(
+        "earthmesh_cli: cmrc_materialization on_demand delivered_base_faces={} region_base_faces={} frame_base_faces={} settled_base_faces={} built_cells={required_cells} whole_cells={whole_faces}",
+        delivered.len(),
+        extent.region.len(),
+        extent.frame.len(),
+        extent.settled_faces
+    );
+    log_cmrc_phase(timing_enabled, "region_mother_grid", &mut phase_started);
+    let outer = fine
+        .region
+        .as_ref()
+        .map(|region| region.outer_boundary().clone())
+        .unwrap_or_default();
+    let euler = {
+        let faces = fine.mesh.triangle_count();
+        let edges = (3 * faces + fine.mesh.open_edge_count()) / 2;
+        fine.mesh.vertex_count() as isize - edges as isize + faces as isize
+    };
+    earthmesh_refine_certified::Certificate::internal_for(options.angle_contract)
+        .verify_geometry_within(&fine.mesh, &outer, euler)
+        .map_err(|error| {
+            invalid_data(format!(
+                "CMRC initial region mother certification failed: {error}"
+            ))
+        })?;
+    log_cmrc_phase(
+        timing_enabled,
+        "initial_geometry_certificate",
+        &mut phase_started,
+    );
+    let initial_mesh = fine.mesh.clone();
+    let projected = earthmesh_refine_certified::region_required_levels_from_raster(
+        raster_requirements,
+        &initial_mesh,
+        &outer,
+        whole_vertices,
+    )
+    .map_err(|error| invalid_data(format!("CMRC initial raster projection failed: {error}")))?;
+    log_cmrc_phase(
+        timing_enabled,
+        "initial_requirement_projection",
+        &mut phase_started,
+    );
+    let source_levels = earthmesh_refine_certified::SourceLevelField::from_active_voronoi_cells(
+        &initial_mesh,
+        projected.clone(),
+    )
+    .map_err(invalid_data)?;
+    let active_sites = initial_mesh.active_vertex_slots().collect::<Vec<_>>();
+    let mut cell_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
+    for (cell, &site) in active_sites.iter().enumerate() {
+        cell_by_site[site] = cell;
+    }
+    let mut adjacency = vec![Vec::new(); active_sites.len()];
+    for (left, right) in earthmesh_refine_certified::requirement::target_site_edges(&initial_mesh) {
+        let left = cell_by_site[left];
+        let right = cell_by_site[right];
+        adjacency[left].push(right);
+        adjacency[right].push(left);
+    }
+    let graded = earthmesh_refine_certified::requirement::graded_envelope(
+        &adjacency,
+        &projected,
+        options.gradation_rings_per_level,
+    );
+    let mut graded_by_site = vec![usize::MAX; initial_mesh.vertices().len()];
+    for (&site, level) in active_sites.iter().zip(graded) {
+        graded_by_site[site] = level;
+    }
+    log_cmrc_phase(timing_enabled, "graded_envelope", &mut phase_started);
+    let settled = coarsen::SettledRegion::new(&base, &built).map_err(invalid_data)?;
+    let scope = coarsen::RegionScope::new(&fine, &extent.region, base_nxp).map_err(invalid_data)?;
+    let epoch = coarsen::run_region_component_epochs(
+        fine.clone(),
+        &initial_mesh,
+        &source_levels,
+        &graded_by_site,
+        &coarsen::ElasticCmrcConfig {
+            angle_contract: options.angle_contract,
+            max_level: chosen_level,
+            max_adjacent_level_delta: 1,
+            initial_transition_rings: 1,
+            maximum_transition_rings: 4,
+            topology_states_per_component: options.search_budget.clamp(1, 10_000),
+            elastic_iterations_per_topology: 256,
+            interval_boxes_per_component: whole_faces.saturating_mul(3),
+            total_transition_states: options.search_budget,
+            allow_safe_fallback: false,
+        },
+        &coarsen::RegionEpochs {
+            built_bases: built,
+            settled: settled.clone(),
+            scope,
+        },
+    );
+    log_cmrc_phase(
+        timing_enabled,
+        "elastic_component_epochs",
+        &mut phase_started,
+    );
+    let mut result = match epoch {
+        coarsen::ElasticCmrcOutcome::Completed(result) => result,
+        coarsen::ElasticCmrcOutcome::NotCertifiable { reason }
+            if reason.contains("the settled region stayed") =>
+        {
+            eprintln!("warning: CMRC on demand: {reason}");
+            return Ok(None);
+        }
+        coarsen::ElasticCmrcOutcome::NotCertifiable { reason } => {
+            return Err(invalid_data(format!(
+                "CMRC mixed coarsening lost final-cell certification: {reason}"
+            )));
+        }
+        coarsen::ElasticCmrcOutcome::InvalidInput { reason } => {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
+        }
+    };
+    let sphere = coarsen::assemble_region_sphere(&fine, &result.state, &settled, base_nxp, 0)
+        .map_err(invalid_data)?;
+    log_cmrc_phase(timing_enabled, "region_assembly", &mut phase_started);
+    let mut pentagons = sphere
+        .origins
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, origin)| {
+            match mother_grid::region::origin_address(initial_subdivision, (*origin)?) {
+                earthmesh_refine_certified::VertexAddress::IcosahedronVertex(vertex) => {
+                    Some((vertex, slot))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    pentagons.sort_unstable();
+    let pentagons: [usize; 12] = pentagons
+        .into_iter()
+        .map(|(_, slot)| slot)
+        .collect::<Vec<_>>()
+        .try_into()
+        .map_err(|_| invalid_data("CMRC assembled sphere lost an icosahedron vertex".into()))?;
+    let mesh = sphere.mesh;
+    let delivered_levels = sphere.delivered_levels;
+    let final_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
+        &mesh,
+        delivered_levels.clone(),
+    )
+    .map_err(invalid_data)?;
+    let final_cell_requirements =
+        earthmesh_refine_certified::certify_final_cell_requirements_from_raster(
+            raster_requirements,
+            &mesh,
+            &final_levels,
+            1,
+        )
+        .map_err(|error| invalid_data(format!("CMRC final-cell certification failed: {error}")))?;
+    log_cmrc_phase(
+        timing_enabled,
+        "final_requirement_projection",
+        &mut phase_started,
+    );
+    // The last commit's remap, in the whole sphere's numbering: sources by
+    // their place in the whole fine mother, targets by the assembled cells.
+    let region_remap = result.final_remap.take().ok_or_else(|| {
+        invalid_data(
+            "CMRC on demand committed nothing; the settled region cannot be put back".into(),
+        )
+    })?;
+    let numbering = mother_grid::region::GlobalNumbering::new(initial_subdivision);
+    let region_index = fine
+        .region
+        .as_ref()
+        .ok_or_else(|| invalid_data("CMRC region lost its index".into()))?;
+    let source_ids = active_sites
+        .iter()
+        .map(|&site| {
+            region_index
+                .origin(site)
+                .map(|origin| numbering.rank(origin))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| invalid_data("CMRC region site without an origin".into()))?;
+    let state_mesh = result.state.mesh();
+    let mut assembled_cell = BTreeMap::new();
+    for (cell, origin) in sphere.origins.iter().flatten().enumerate() {
+        assembled_cell.insert(*origin, cell);
+    }
+    let target_ids = state_mesh
+        .mesh
+        .active_vertex_slots()
+        .map(|compact| {
+            state_mesh.source_vertex_slots[compact]
+                .and_then(|slot| region_index.origin(slot))
+                .and_then(|origin| assembled_cell.get(&origin).copied())
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| invalid_data("CMRC region cell missing from the assembled sphere".into()))?;
+    let remap = region_remap.renumbered(
+        |source| source_ids[source],
+        |target| target_ids[target],
+        whole_vertices,
+        earthmesh_refine_certified::mesh_fingerprint(&mesh),
+    );
+    log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
+    let remap_certificate = remap.certify_spherical_overlap(whole_vertices, mesh.vertex_count());
+    let geometry = match earthmesh_refine_certified::certify_geometry_with_contract(
+        mesh,
+        options.angle_contract,
+    ) {
+        earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+        other => return Err(certified_outcome_error(other)),
+    };
+    log_cmrc_phase(
+        timing_enabled,
+        "final_geometry_certificate",
+        &mut phase_started,
+    );
+    Ok(Some(CertifiedConstruction {
+        delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
+        delivered_levels,
+        coarsening_strategy: "elastic_component_epochs",
+        pentagons,
+        initial_subdivision,
+        final_subdivision: initial_subdivision,
+        initial_cells: whole_faces,
+        attempted_patches: result.report.components_total,
+        accepted_patches: result.report.components_committed,
+        removed_vertices: whole_vertices - geometry.primal().vertex_count(),
+        removed_faces: whole_faces - geometry.primal().triangle_count(),
+        search_budget_exhausted: !result.report.search_complete,
+        components_total: result.report.components_total,
+        components_committed: result.report.components_committed,
+        components_promoted: result.report.components_promoted,
+        components_exhausted: result.report.components_exhausted,
+        search_complete: result.report.search_complete,
+        geometry,
+        remap,
+        remap_certificate,
+        final_cell_requirements: Some(final_cell_requirements),
+        elastic_report: Some(result.report.clone()),
+        local_update: None,
+    }))
+}
+
 pub(super) fn build_mixed_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
@@ -540,7 +946,29 @@ pub(super) fn build_mixed_certified_construction(
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
     local_update_path: Option<&Path>,
+    delivery_domain: Option<&GridRegion>,
 ) -> io::Result<CertifiedConstruction> {
+    // On-demand materialization (design B1) serves regional runs -- a global
+    // run publishes every cell's remap. It is opt-in (`&certified
+    // materialization`, or EARTHMESH_CMRC_MATERIALIZATION for experiments)
+    // while it is checked against the whole sphere on the CLI cases.
+    let on_demand = match std::env::var("EARTHMESH_CMRC_MATERIALIZATION").as_deref() {
+        Ok("on_demand") => true,
+        Ok("whole") => false,
+        _ => options.materialization == CertifiedMaterialization::OnDemand,
+    };
+    if let (true, None, Some(domain)) = (on_demand, local_update_path, delivery_domain) {
+        if let Some(construction) = build_region_certified_construction(
+            base_nxp,
+            chosen_level,
+            options,
+            raster_requirements,
+            budget,
+            domain,
+        )? {
+            return Ok(construction);
+        }
+    }
     let timing_enabled = cmrc_timing_enabled();
     let mut phase_started = Instant::now();
     let initial_subdivision = certified_subdivision(base_nxp, chosen_level)?;
@@ -1538,6 +1966,7 @@ pub(super) fn refine_with_certified(
         local_update_path.as_deref(),
         // ICON takes no 5/7 pair: a closed refined sphere needs them.
         config.output_format.trim().eq_ignore_ascii_case("ICON"),
+        regional_domain.as_ref(),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
@@ -1572,14 +2001,20 @@ pub(super) fn refine_with_certified(
             format!("CMRC remap certification failed: {error}"),
         )
     })?;
-    let final_mesh =
-        earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, evidence)
-            .map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("CMRC final certification failed: {error}"),
-                )
-            })?;
+    // A run on a built region certifies its remap for R's cells only; the
+    // settled cells are certified by construction (guide 11.106).
+    let final_mesh = match remap.covered_targets() {
+        None => earthmesh_refine_certified::finalize_geometry_certified_mother(*geometry, evidence),
+        Some(covered) => {
+            earthmesh_refine_certified::finalize_region_geometry(*geometry, evidence, covered.len())
+        }
+    }
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("CMRC final certification failed: {error}"),
+        )
+    })?;
     let fulfillment = earthmesh_refine_certified::AdaptivityFulfillmentReport::from_levels(
         required_levels.iter().copied(),
         delivered_levels.levels().iter().copied(),
