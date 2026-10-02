@@ -479,6 +479,172 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
+    /// Not a regression test but a probe (guide 11.104; design in
+    /// docs/certified_mesh/on_demand_reverse_coarsening.md): does the certified
+    /// machinery hold up on small cells? For each n in `PROBE_NS` (default
+    /// 266,868, cells of about 30 m) it checks that the n/2 lattice nests
+    /// bit for bit, certifies the geometry of a patch near the centre of base
+    /// face 0, and remaps the patch's Voronoi cells onto its n/2 parent's.
+    /// Run with `cargo test --release -- --ignored probe_ --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_thirty_metre_patch() {
+        use crate::certificate::{AngleContractId, Certificate};
+        use crate::remap::ConservativeRemap;
+        let scales: Vec<usize> = std::env::var("PROBE_NS")
+            .ok()
+            .map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect())
+            .unwrap_or_else(|| vec![266_868]);
+        for n in scales {
+            let base = icosahedron_vertices();
+            let [a, b, c] = icosahedron_faces()[0];
+            let at = |n: usize, i: usize, j: usize| {
+                normalize_cartesian_to_radius(
+                    weighted(
+                        base[a as usize],
+                        n - i - j,
+                        base[b as usize],
+                        i,
+                        base[c as usize],
+                        j,
+                    ),
+                    1.0,
+                )
+                .unwrap()
+            };
+            let (i0, j0) = (n / 3, n / 3);
+            let mut mismatches = 0;
+            for di in 0..200 {
+                for dj in 0..200 {
+                    let (ci, cj) = (i0 / 2 + di, j0 / 2 + dj);
+                    let coarse = at(n / 2, ci, cj);
+                    let fine = at(n, 2 * ci, 2 * cj);
+                    if (coarse.x.to_bits(), coarse.y.to_bits(), coarse.z.to_bits())
+                        != (fine.x.to_bits(), fine.y.to_bits(), fine.z.to_bits())
+                    {
+                        mismatches += 1;
+                    }
+                }
+            }
+            println!("PROBE n={n}: nesting: {mismatches} of 40000 coarse points differ from their fine twins");
+
+            // A patch: vertices (i0+di, j0+dj), 0 <= di, dj <= m, and its triangles.
+            let patch = |n: usize, i0: usize, j0: usize, m: usize| {
+                let id = |di: usize, dj: usize| 2 + di * (m + 1) + dj;
+                let mut vertices = vec![CartesianPoint::new(0.0, 0.0, 0.0); 2];
+                for di in 0..=m {
+                    for dj in 0..=m {
+                        vertices.push(at(n, i0 + di, j0 + dj));
+                    }
+                }
+                let mut triangles = vec![[1usize; 3]; 2];
+                for di in 0..m {
+                    for dj in 0..m {
+                        push_oriented(
+                            &mut triangles,
+                            &vertices,
+                            [id(di, dj), id(di + 1, dj), id(di, dj + 1)],
+                        )
+                        .unwrap();
+                        push_oriented(
+                            &mut triangles,
+                            &vertices,
+                            [id(di + 1, dj), id(di + 1, dj + 1), id(di, dj + 1)],
+                        )
+                        .unwrap();
+                    }
+                }
+                let inner = |v: usize, margin: usize| {
+                    let (di, dj) = ((v - 2) / (m + 1), (v - 2) % (m + 1));
+                    di >= margin && dj >= margin && di + margin <= m && dj + margin <= m
+                };
+                let interior_faces = (2..triangles.len())
+                    .filter(|&t| triangles[t].iter().all(|&v| inner(v, 3)))
+                    .collect::<BTreeSet<_>>();
+                let interior_sites = (2..vertices.len())
+                    .filter(|&v| inner(v, 4))
+                    .collect::<Vec<_>>();
+                let mesh = MeshState::from_parts(vertices, triangles).unwrap();
+                (mesh, interior_faces, interior_sites)
+            };
+            let m = 96;
+            let (fine, faces, fine_sites) = patch(n, i0, j0, m);
+            let edge_m = {
+                let p = fine.vertices()[2];
+                let q = fine.vertices()[3];
+                let d = ((p.x - q.x).powi(2) + (p.y - q.y).powi(2) + (p.z - q.z).powi(2)).sqrt();
+                d * 6_371_000.0
+            };
+            println!(
+                "PROBE n={n}: lattice edge {edge_m:.2} m, {} interior faces",
+                faces.len()
+            );
+            for (name, certificate) in [
+                ("40-80", Certificate::final_delivery()),
+                (
+                    "38-82",
+                    Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1),
+                ),
+            ] {
+                match certificate.verify_geometry_region(&fine, &faces) {
+                Ok(r) => println!(
+                    "PROBE n={n} {name}: faces {} sites {} angles {:.4}..{:.4} orientation {} degree {} delaunay {} voronoi_invalid {} reciprocal {}",
+                    r.faces, r.sites, r.min_angle_degrees, r.max_angle_degrees, r.orientation_errors,
+                    r.degree_outside_window, r.delaunay_violations, r.voronoi_invalid_cells,
+                    r.voronoi_reciprocal_errors
+                ),
+                Err(error) => println!("PROBE n={n} {name}: FAILED {error}"),
+            }
+            }
+
+            // Voronoi rings of interior sites, as `voronoi_rings` builds them.
+            let rings = |mesh: &MeshState, sites: &[usize]| {
+                let mut seeds = vec![usize::MAX; mesh.vertices().len()];
+                for t in mesh.active_triangle_slots() {
+                    for v in mesh.triangles()[t] {
+                        if seeds[v] == usize::MAX {
+                            seeds[v] = t;
+                        }
+                    }
+                }
+                sites
+                    .iter()
+                    .map(|&site| {
+                        mesh.triangle_fan_from(site, seeds[site])
+                            .unwrap()
+                            .into_iter()
+                            .map(|t| {
+                                let p = mesh.circumcentre(t).unwrap();
+                                let r = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+                                (
+                                    (p.y / r).atan2(p.x / r).to_degrees(),
+                                    (p.z / r).clamp(-1.0, 1.0).asin().to_degrees(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            // The n/2 parent patch over the middle of the fine one: its interior
+            // cells lie well inside the fine patch's interior cells.
+            let (coarse, _, coarse_sites) = patch(n / 2, i0 / 2 + 8, j0 / 2 + 8, m / 2 - 16);
+            let source = rings(&fine, &fine_sites);
+            let target = rings(&coarse, &coarse_sites);
+            match ConservativeRemap::spherical_overlap(&source, &target) {
+                Ok(remap) => {
+                    let cert = remap.certify_spherical_overlap(source.len(), target.len());
+                    println!(
+                    "PROBE n={n} remap onto n/2: {} source cells, {} target cells, negative {} bad_rows {} bad_lineage {} constant_error {:.3e} coverage_error {:.3e} tolerance {:.3e}",
+                    source.len(), target.len(), cert.negative_weights(), cert.bad_row_sums(),
+                    cert.bad_lineage_rows(), cert.constant_closure_error(),
+                    cert.global_area_closure_error(), cert.closure_tolerance()
+                );
+                }
+                Err(error) => println!("PROBE n={n} remap onto n/2 FAILED: {error}"),
+            }
+        }
+    }
+
     fn reference_generate(n: usize) -> MotherGrid {
         let base = icosahedron_vertices();
         let faces = icosahedron_faces();
