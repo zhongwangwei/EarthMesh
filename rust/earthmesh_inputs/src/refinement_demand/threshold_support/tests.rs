@@ -1014,3 +1014,40 @@ fn intervals_overlap(
         dst_lo < src_hi && dst_hi > src_lo
     }
 }
+
+#[test]
+fn a_plan_that_finds_nothing_says_what_it_read() {
+    // Every sample is below the threshold: no demand, but the criterion read
+    // data -- the difference between an answer and a source with nothing in it.
+    let root = temp_root("evidence");
+    let lai = root.join("lai.nc");
+    write_numeric(&lai, "lai", 16, 8, |_i, _j| 0.5);
+    let mut refine = RefineConfig {
+        max_iter_cal: 1,
+        threshold_dir: root.display().to_string(),
+        ..RefineConfig::default()
+    };
+    refine.refine_onelayer_lnd[0] = true;
+    refine.th_onelayer_lnd[0] = 9.9;
+    let inputs = DemandPlanInputs {
+        bounds: source_bounds_for_bbox(-180.0, 180.0, -90.0, 90.0, 1).unwrap(),
+        gridnum_perdegree: 1,
+        landtype_file: None,
+        mesh_type: "landmesh",
+        refine_coastline: false,
+        domain_region: None,
+        coastal_cache: Default::default(),
+    };
+    let plan = plan_demand_at_scale(&refine, &inputs, 1, parent_m_for_nlat(4)).expect("plan");
+    assert!(plan.is_empty(), "nothing is over the threshold");
+    assert!(plan.evidence.judged);
+    assert_eq!(plan.evidence.valid_source_samples, 16 * 8);
+    assert!(!plan.evidence.read_no_data());
+
+    // No criterion enabled: nothing judged, nothing read.
+    refine.refine_onelayer_lnd[0] = false;
+    let plan = plan_demand_at_scale(&refine, &inputs, 1, parent_m_for_nlat(4)).expect("plan");
+    assert!(!plan.evidence.judged);
+    assert!(!plan.evidence.read_no_data());
+    let _ = fs::remove_dir_all(root);
+}

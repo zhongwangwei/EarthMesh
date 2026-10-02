@@ -53,6 +53,34 @@ pub struct DemandContribution {
     pub demanded_cells: usize,
 }
 
+/// What the threshold criteria read at a level. It tells "nothing met a
+/// threshold" -- an answer -- from "nothing was read" -- a source with no
+/// data over the domain, which must not pass for one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CriteriaEvidence {
+    /// A threshold criterion was judged.
+    pub judged: bool,
+    /// Valid (non-fill) source samples the judged criteria read.
+    pub valid_source_samples: usize,
+}
+
+impl CriteriaEvidence {
+    /// Criteria were judged and read no valid sample at all.
+    pub fn read_no_data(&self) -> bool {
+        self.judged && self.valid_source_samples == 0
+    }
+
+    /// The evidence of two windows of one level: judged if either was, and
+    /// the larger count -- windows share one support evaluation, so their
+    /// counts are the same reading and must not be added.
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            judged: self.judged || other.judged,
+            valid_source_samples: self.valid_source_samples.max(other.valid_source_samples),
+        }
+    }
+}
+
 /// The demand for one level, and who asked for it.
 #[derive(Clone, Debug)]
 pub struct LevelDemand {
@@ -61,6 +89,7 @@ pub struct LevelDemand {
     pub contributions: Vec<DemandContribution>,
     /// Shared raw support evidence before source-window projection.
     pub raw_support: Vec<serde_json::Value>,
+    pub evidence: CriteriaEvidence,
 }
 
 impl LevelDemand {
@@ -174,8 +203,11 @@ fn plan_demand_with_support(
     let mut demand = RefinementDemand::new(inputs.bounds, inputs.gridnum_perdegree)?;
     let mut contributions = Vec::new();
     let mut raw_support = Vec::new();
+    let mut evidence = CriteriaEvidence::default();
     if let Some(raw) = support {
         for criterion in &raw.criteria {
+            evidence.judged = true;
+            evidence.valid_source_samples += criterion.source_samples;
             let contribution =
                 raw.project_source(&criterion.hits, inputs.bounds, inputs.gridnum_perdegree)?;
             contributions.push(DemandContribution {
@@ -226,6 +258,7 @@ fn plan_demand_with_support(
         demand,
         contributions,
         raw_support,
+        evidence,
     })
 }
 

@@ -30,7 +30,7 @@ use std::io;
 use earthmesh_mesh::RefinementRegion;
 
 use super::ladder::nested_circle_radii_meters;
-use super::plan::{plan_demand_at_scale_for_windows, DemandPlanInputs};
+use super::plan::{plan_demand_at_scale_for_windows, CriteriaEvidence, DemandPlanInputs};
 use super::reduce_demand_to_circles_on_blocks;
 use earthmesh_core::RefineConfig;
 
@@ -66,6 +66,9 @@ pub struct AdaptiveNestReport {
     /// the iteration count it was asked for, and the two disagreeing is the
     /// only way a caller can tell that a spring it configured did not run.
     pub spring_passes: usize,
+    /// What the criteria read at level 1, so a run that refined nothing can
+    /// tell "nothing met a threshold" from "no data was read".
+    pub first_level_evidence: CriteriaEvidence,
 }
 
 /// What the criteria ask for at one level, before any backend sees it.
@@ -86,6 +89,8 @@ pub struct LevelCircles {
     pub circles: Vec<RefinementRegion>,
     /// Stable criterion ids that contributed at least one source cell.
     pub criterion_ids: Vec<String>,
+    /// What the threshold criteria read, over every window.
+    pub evidence: CriteriaEvidence,
 }
 
 /// Re-ask the criteria at the cell size this level will produce, and reduce what
@@ -151,7 +156,9 @@ pub fn adaptive_demand_circles_for_level_windows_at_radius(
     let mut demanded_cells = 0usize;
     let mut circles = Vec::new();
     let mut criterion_ids = std::collections::BTreeSet::new();
+    let mut evidence = CriteriaEvidence::default();
     plan_demand_at_scale_for_windows(refine, inputs, level, cell_meters, |plan| {
+        evidence = evidence.merge(plan.evidence);
         if plan.is_empty() {
             return Ok(());
         }
@@ -176,6 +183,7 @@ pub fn adaptive_demand_circles_for_level_windows_at_radius(
         radius_meters,
         circles,
         criterion_ids: criterion_ids.into_iter().collect(),
+        evidence,
     })
 }
 

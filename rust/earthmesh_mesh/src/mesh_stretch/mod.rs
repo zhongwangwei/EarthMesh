@@ -88,31 +88,76 @@ pub fn schmidt_stretch(points: &mut [P], focus: P, factor: f64) {
 }
 
 /// Where to put the focus and how hard to stretch, from each vertex's target
-/// depth: the focus is the depth-weighted mean direction (weight `4^L - 1`,
-/// the cell-count a depth-L demand adds), the factor `2^deepest` so the focus
-/// reaches the deepest level asked, capped at `max_factor`. `None` when
-/// nothing is demanded or the demand has no mean direction.
+/// depth. The factor is `2^deepest`, so the focus reaches the deepest level
+/// asked, capped at `max_factor`; `None` when nothing is demanded.
+///
+/// The focus is the place that serves the most demand, weighted by `4^L - 1`
+/// (the cells a depth-L demand adds): no factor refines a point more than
+/// `asin(2^-L)` from the focus to its level L, so each demanded point counts
+/// only within that reach. Among the demanded points, the one whose reach
+/// takes in the most weight wins, and the focus moves to the weighted mean
+/// direction of what it serves while that serves no less. A demand gathered
+/// in one area lands where the plain weighted mean did. One split between
+/// Tibet and the Andes put the plain mean in North Africa, where it served
+/// neither, and a scattered DEM-roughness demand put it on the Kazakh steppe.
 pub fn schmidt_focus_for_levels(
     points: &[P],
     levels: &[usize],
     max_factor: f64,
 ) -> Option<(P, f64)> {
-    let mut sum = [0.0; 3];
-    let mut deepest = 0usize;
-    for (point, &level) in points.iter().zip(levels) {
-        if level == 0 {
-            continue;
-        }
-        deepest = deepest.max(level);
-        let weight = 4f64.powi(level.min(16) as i32) - 1.0;
-        for k in 0..3 {
-            sum[k] += weight * point[k];
-        }
-    }
-    if deepest == 0 {
+    // (direction, weight, cosine of the reach)
+    let demanded: Vec<(P, f64, f64)> = points
+        .iter()
+        .zip(levels)
+        .filter(|&(_, &level)| level > 0)
+        .filter_map(|(&point, &level)| {
+            let level = level.min(16);
+            let reach = (0.5f64.powi(level as i32)).asin();
+            Some((unit(point)?, 4f64.powi(level as i32) - 1.0, reach.cos()))
+        })
+        .collect();
+    let deepest = levels.iter().copied().max().unwrap_or(0);
+    if deepest == 0 || demanded.is_empty() {
         return None;
     }
-    let focus = unit(sum)?;
+    // The weight a focus serves, and its weighted direction.
+    let served = |focus: P| -> (f64, P) {
+        let mut weight = 0.0;
+        let mut sum = [0.0; 3];
+        for &(point, w, reach_cos) in &demanded {
+            if dot(focus, point) >= reach_cos {
+                weight += w;
+                for k in 0..3 {
+                    sum[k] += w * point[k];
+                }
+            }
+        }
+        (weight, sum)
+    };
+    // Every demanded point is a candidate, thinned to a few thousand: the
+    // demand is a handful of areas, and each holds many of them.
+    let stride = demanded.len().div_ceil(2048).max(1);
+    let mut best: Option<(f64, P, P)> = None;
+    for &(candidate, _, _) in demanded.iter().step_by(stride) {
+        let (weight, sum) = served(candidate);
+        if best.is_none_or(|(served_weight, _, _)| weight > served_weight) {
+            best = Some((weight, candidate, sum));
+        }
+    }
+    let (mut weight, mut focus, mut sum) = best?;
+    for _ in 0..8 {
+        let Some(mean) = unit(sum) else {
+            break;
+        };
+        let (mean_weight, mean_sum) = served(mean);
+        if mean_weight < weight || dot(mean, focus) > 1.0 - 1.0e-15 {
+            if mean_weight >= weight {
+                focus = mean;
+            }
+            break;
+        }
+        (weight, focus, sum) = (mean_weight, mean, mean_sum);
+    }
     let factor = 2f64.powi(deepest.min(16) as i32).min(max_factor.max(1.0));
     Some((focus, factor))
 }
@@ -335,10 +380,53 @@ mod tests {
         let (focus, factor) = schmidt_focus_for_levels(&points, &[2, 0, 0], 16.0).unwrap();
         assert_eq!(focus, [1.0, 0.0, 0.0]);
         assert_eq!(factor, 4.0);
+        // Two level-3 demands 90 degrees apart: each reaches 7.2 degrees, so
+        // the point between them serves neither. The focus takes one.
         let (focus, factor) = schmidt_focus_for_levels(&points, &[3, 3, 0], 4.0).unwrap();
-        assert!((focus[0] - focus[1]).abs() < 1e-12 && focus[2] == 0.0);
+        assert!(
+            focus == [1.0, 0.0, 0.0] || focus == [0.0, 1.0, 0.0],
+            "{focus:?}"
+        );
         assert_eq!(factor, 4.0, "capped");
         assert!(schmidt_focus_for_levels(&points, &[0, 0, 0], 16.0).is_none());
+    }
+
+    #[test]
+    fn the_focus_lands_on_the_larger_of_two_far_demands_not_between_them() {
+        // Tibet (90E 33N) and the Andes (70W 20S), a cap of points each; the
+        // Andes cap is the larger. The plain weighted mean of both lies
+        // between them, where neither is in reach.
+        let at = |lon: f64, lat: f64| -> P {
+            let (lon, lat) = (lon.to_radians(), lat.to_radians());
+            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+        };
+        let mut points = Vec::new();
+        let mut levels = Vec::new();
+        for (lon, lat, half_width, count) in [(90.0, 33.0, 4.0, 5), (-70.0, -20.0, 5.0, 7)] {
+            for i in 0..count {
+                for j in 0..count {
+                    let step = 2.0 * half_width / (count - 1) as f64;
+                    points.push(at(
+                        lon - half_width + i as f64 * step,
+                        lat - half_width + j as f64 * step,
+                    ));
+                    levels.push(2);
+                }
+            }
+        }
+        let (focus, _) = schmidt_focus_for_levels(&points, &levels, 16.0).unwrap();
+        let andes = at(-70.0, -20.0);
+        let angle = dot(focus, andes).clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(
+            angle < 2.0,
+            "focus {angle:.1} degrees from the Andes centre"
+        );
+        // A single area: the weighted mean, as before.
+        let one = &points[..25];
+        let (focus, _) = schmidt_focus_for_levels(one, &levels[..25], 16.0).unwrap();
+        let tibet = at(90.0, 33.0);
+        let angle = dot(focus, tibet).clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(angle < 0.5, "{angle:.2}");
     }
 
     #[test]

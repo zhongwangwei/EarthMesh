@@ -136,6 +136,7 @@ pub fn spawn_nest_adaptive_with_named_region_windows(
     let mut deepest_level = 0usize;
     let mut stopped_on_empty_demand = false;
     let mut spring_passes = 0usize;
+    let mut first_level_evidence = Default::default();
     // One place decides whether a pass springs, so the two call sites below --
     // the grouped one and the single-group one -- cannot drift apart. They did:
     // both called bare `spawn_nest`, and a run that configured
@@ -166,6 +167,9 @@ pub fn spawn_nest_adaptive_with_named_region_windows(
             base_cell_meters,
             max_level,
         )?;
+        if level == 1 {
+            first_level_evidence = demand.evidence;
+        }
         // Named regions are shapes Method-C can build and stay served; it is
         // demand whose shape came from the data that is suspended. Testing
         // whether a criterion asked at all is what separates them exactly -- a
@@ -402,6 +406,7 @@ pub fn spawn_nest_adaptive_with_named_region_windows(
             deepest_level,
             stopped_on_empty_demand,
             spring_passes,
+            first_level_evidence,
         },
     ))
 }

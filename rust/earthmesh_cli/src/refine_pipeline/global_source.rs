@@ -1037,17 +1037,22 @@ fn finish_refined(
 
     // ICON nests are cut from the grid as published: after the angle
     // contract, so each nest corner is the parent vertex ICON looks for.
-    let icon_nest_run = icon_nest
-        .map(|demand| {
-            super::icon_nest::write_icon_nests(
+    let icon_nest_run = match icon_nest {
+        Some(demand) => {
+            let (record, depth) = super::icon_nest::write_icon_nests(
                 &output_mesh,
                 &demand,
                 hfield_context.as_ref(),
                 nxp,
                 &file_dir.join("result"),
-            )
-        })
-        .transpose()?;
+            )?;
+            // The delivery's level is the deepest nest over a place, not the
+            // global grid's level 0.
+            cell_levels = Some(super::icon_nest::nest_cell_levels(&output_mesh, &depth));
+            Some(record)
+        }
+        None => None,
+    };
 
     // Measured from backend output, not from the request: the deepest per-cell
     // level any backend recorded. A backend that records none (LEPP) falls back
@@ -2430,6 +2435,66 @@ fn measured_cell_levels(mesh: &crate::UnstructuredMesh, h0_radians: f64) -> Cell
 /// The demand of a backend that keeps the base grid's topology, planned up
 /// front: every level's criteria circles, nested with the named regions (no
 /// halo -- nothing is marked round by round).
+/// Whether a run that asked to refine and refined nothing may stand.
+///
+/// That is the failure that stays quiet -- the gridfile opens, the quality
+/// checks pass, the mesh is uniform -- so it fails unless the uniform mesh is
+/// the answer: nothing was named, and the criteria (or the h-field composed
+/// from them) read data and none of it asks for this resolution. A mean slope
+/// over 240 km cells is under 15 degrees everywhere; that is an answer, not a
+/// fault. Criteria that read no valid sample at all are a fault and still
+/// fail. Says so when the run stands.
+fn uniform_mesh_is_the_answer(
+    named_regions: usize,
+    evidence: crate::refinement_demand::plan::CriteriaEvidence,
+    from_hfield: bool,
+    max_level: usize,
+) -> bool {
+    if named_regions > 0 || evidence.read_no_data() || !(evidence.judged || from_hfield) {
+        return false;
+    }
+    let why = if evidence.judged {
+        format!(
+            "the enabled criteria read {} valid source samples and none of them meets a \
+             threshold at this resolution",
+            evidence.valid_source_samples
+        )
+    } else {
+        "the h-field composed from the criteria asks for no refinement anywhere".to_string()
+    };
+    eprintln!(
+        "earthmesh_cli: warning: refinement was requested up to level {max_level}, but {why}; \
+         the mesh is delivered unrefined"
+    );
+    true
+}
+
+/// The h-field route's side of `uniform_mesh_is_the_answer`: a field that
+/// asked for no face at any level built nothing. That passed in silence
+/// while the other backends refused it; now it is the same rule -- standing,
+/// and said, when nothing was named.
+fn hfield_demanded_something(
+    diagnostics: &earthmesh_refine_method_c::MethodCHfieldSpawnDiagnostics,
+    named_regions: usize,
+    max_level: usize,
+) -> io::Result<()> {
+    if diagnostics.requested_anchor_count > 0
+        || max_level == 0
+        || uniform_mesh_is_the_answer(named_regions, Default::default(), true, max_level)
+    {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "Method-C h-field refinement was requested over {named_regions} named region(s) up \
+             to level {max_level} but the field demanded no face at any level; check that the \
+             regions carry a level in 1..={max_level} and that they cover cells of a mesh this \
+             coarse"
+        ),
+    ))
+}
+
 struct FixedTopologyDemand {
     planned_circles: Vec<crate::refinement_demand::nest::LevelCircles>,
     regions: Vec<earthmesh_mesh::RefinementRegion>,
@@ -2493,11 +2558,15 @@ fn fixed_topology_adaptive_run(
     faces: usize,
 ) -> Option<AdaptiveRunRecord> {
     let mut passes = Vec::new();
+    // Stopped because a level asked for nothing, as red-green records it: the
+    // reconciliation reads "requested level not reached" otherwise.
+    let mut stopped_on_empty_demand = planned_circles.is_empty() && named_regions.is_empty();
     for (index, demand) in planned_circles.iter().enumerate() {
         let level = index + 1;
         let mut pass_regions = named_regions.to_vec();
         pass_regions.extend(demand.circles.iter().cloned());
         if !pass_regions.iter().any(|region| region.level() >= level) {
+            stopped_on_empty_demand = true;
             break;
         }
         passes.push(crate::refinement_demand::nest::NestPassReport {
@@ -2518,8 +2587,12 @@ fn fixed_topology_adaptive_run(
             crate::refinement_demand::nest::AdaptiveNestReport {
                 deepest_level: passes.len(),
                 passes,
-                stopped_on_empty_demand: false,
+                stopped_on_empty_demand,
                 spring_passes: 0,
+                first_level_evidence: planned_circles
+                    .first()
+                    .map(|demand| demand.evidence)
+                    .unwrap_or_default(),
             },
             max_level,
             adaptive.base_cell_meters,
@@ -2568,11 +2641,40 @@ fn refine_with_stretch(
             .ok_or_else(|| io::Error::other("vertex has no lon/lat"))?;
         levels[v] = targets.target_level(lonlat)?;
     }
+    let asks_anywhere = targets.demands_anywhere(1);
     let Some((focus, focus_factor)) = earthmesh_mesh::schmidt_focus_for_levels(
         &points,
         &levels,
         2f64.powi(max_level.min(16) as i32),
     ) else {
+        // Nothing to stretch toward: the grid as it is, when that is the answer.
+        if !asks_anywhere
+            && planned_circles.iter().all(|demand| !demand.demanded)
+            && uniform_mesh_is_the_answer(
+                named_regions.len(),
+                planned_circles
+                    .first()
+                    .map(|demand| demand.evidence)
+                    .unwrap_or_default(),
+                hfield.is_some(),
+                max_level,
+            )
+        {
+            drop(targets);
+            return unstretched_grid(state, pentagons, h0_radians, |faces| {
+                fixed_topology_adaptive_run(
+                    named_regions,
+                    &planned_circles,
+                    adaptive,
+                    max_level,
+                    faces,
+                )
+            })
+            .map(|mut grid| {
+                grid.demand.hfield_context = hfield;
+                grid
+            });
+        }
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -2669,6 +2771,38 @@ fn refine_with_stretch(
     })
 }
 
+/// The stretch route's grid with nothing moved, built as its tail builds a
+/// stretched one.
+fn unstretched_grid(
+    state: MeshState,
+    pentagons: [usize; 12],
+    h0_radians: Option<f64>,
+    adaptive_run: impl FnOnce(usize) -> Option<AdaptiveRunRecord>,
+) -> io::Result<RefinedGrid> {
+    let faces = state
+        .active_vertex_slots()
+        .count()
+        .saturating_mul(2)
+        .saturating_sub(4);
+    let refined = state.to_triangular_mesh(pentagons, None)?;
+    let voronoi = spherical_voronoi_state(&refined)?;
+    let output_mesh = gridfile_mesh_from_one_based_state(&voronoi.grid, &voronoi.tabs)?;
+    let cell_levels = h0_radians.map(|h0| measured_cell_levels(&output_mesh, h0));
+    Ok(RefinedGrid {
+        output_mesh,
+        cell_levels,
+        pentagon_indices: pentagons,
+        demand: RefinedDemandRecord {
+            adaptive_run: adaptive_run(faces),
+            ..RefinedDemandRecord::default()
+        },
+        diagnostics: BackendDiagnostics {
+            state: Some(voronoi),
+            ..BackendDiagnostics::default()
+        },
+    })
+}
+
 /// Serve the demand with ICON nests (guide 11.86): the global grid is
 /// published as it is, and the nests are cut from it in the shared tail,
 /// after the angle contract has settled its vertices, so each nest's corners
@@ -2700,6 +2834,21 @@ fn refine_with_icon_nest(
         m: vec![0; output_mesh.m_points.len()],
         w: vec![0; output_mesh.w_points.len()],
     });
+    // Nothing anywhere deeper than the base: the global grid alone is the
+    // answer when that is the answer, and the nest step's own refusal stands
+    // otherwise.
+    let asks_anywhere = fixed_topology_targets(&regions, hfield.as_ref())?.demands_anywhere(1);
+    let icon_nest = (asks_anywhere
+        || !uniform_mesh_is_the_answer(
+            named_regions.len(),
+            planned_circles
+                .first()
+                .map(|demand| demand.evidence)
+                .unwrap_or_default(),
+            hfield.is_some(),
+            max_level,
+        ))
+    .then_some(super::icon_nest::IconNestDemand { regions });
     let adaptive_run =
         fixed_topology_adaptive_run(named_regions, &planned_circles, adaptive, max_level, faces);
     Ok(RefinedGrid {
@@ -2709,7 +2858,7 @@ fn refine_with_icon_nest(
         demand: RefinedDemandRecord {
             hfield_context: hfield,
             adaptive_run,
-            icon_nest: Some(super::icon_nest::IconNestDemand { regions }),
+            icon_nest,
             ..RefinedDemandRecord::default()
         },
         diagnostics: BackendDiagnostics {
@@ -2914,22 +3063,44 @@ fn refine_with_redgreen(
         redgreen = outcome.mesh;
         output_mesh = written;
     }
-    if split_triangles == 0 {
-        // A run that asked to refine and refined nothing is the failure that
-        // stays quiet: the gridfile opens, the quality checks pass, and the
-        // mesh is uniform.
+    // A run that asked to refine and refined nothing is the failure that
+    // stays quiet: the gridfile opens, the quality checks pass, and the mesh
+    // is uniform. It stands only when nothing asked at level 1 and the
+    // uniform mesh is the answer.
+    let evidence = planned_circles
+        .first()
+        .map(|demand| demand.evidence)
+        .unwrap_or_default();
+    if split_triangles == 0
+        && !(deepest_level == 0
+            && stopped_on_empty_demand
+            && uniform_mesh_is_the_answer(
+                named_regions.len(),
+                evidence,
+                hfield_targets.is_some(),
+                max_level,
+            ))
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "red-green refinement was requested over {} named region(s){} up to level \
-                 {max_level} but no triangle was split; check that the regions carry a level in \
-                 1..={max_level}, and that they or the criteria cover triangle centres of a mesh \
-                 this coarse",
+                 {max_level} but no triangle was split; {}",
                 named_regions.len(),
                 if adaptive.is_some() {
                     " and the enabled criteria"
                 } else {
                     ""
+                },
+                if evidence.read_no_data() {
+                    "the criteria read no valid source sample over the domain -- check that \
+                     their sources cover it"
+                        .to_string()
+                } else {
+                    format!(
+                        "check that the regions carry a level in 1..={max_level}, and that they \
+                         or the criteria cover triangle centres of a mesh this coarse"
+                    )
                 }
             ),
         ));
@@ -3104,6 +3275,10 @@ fn refine_with_redgreen(
                         deepest_level,
                         stopped_on_empty_demand,
                         spring_passes: spring_nest_passes,
+                        first_level_evidence: planned_circles
+                            .first()
+                            .map(|demand| demand.evidence)
+                            .unwrap_or_default(),
                     },
                     max_level,
                     adaptive.base_cell_meters,
@@ -3851,9 +4026,18 @@ fn refine_with_method_c(
             // A run that asked to refine and refined nothing is the failure that
             // stays quiet: the mesh is valid, passes its quality checks, and is
             // simply not the mesh that was requested. It is only acceptable when
-            // nothing was named and no criterion is on -- then "uniform" is the
-            // right answer.
-            if refine.refine_spc || refine.refine_cal || !regions.is_empty() {
+            // nothing was named and either no criterion is on or the criteria
+            // read data and none of it met a threshold -- then "uniform" is the
+            // right answer (`uniform_mesh_is_the_answer`).
+            if (refine.refine_spc || refine.refine_cal || !regions.is_empty())
+                && !(report.stopped_on_empty_demand
+                    && uniform_mesh_is_the_answer(
+                        regions.len(),
+                        report.first_level_evidence,
+                        false,
+                        depth,
+                    ))
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
@@ -3955,6 +4139,7 @@ fn refine_with_method_c(
                     native_deltax,
                 )?;
             hfield_diagnostics = diagnostics;
+            hfield_demanded_something(&hfield_diagnostics, regions.len(), field_max_level)?;
             (refined, passes)
         } else {
             let mother_m = 2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
@@ -4053,6 +4238,7 @@ fn refine_with_method_c(
             }
             .map_err(with_data_shaped_hfield_hint)?;
             hfield_diagnostics = diagnostics;
+            hfield_demanded_something(&hfield_diagnostics, regions.len(), levelled.max_level)?;
             hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
                 field: levelled.field,
                 base_m: levelled.level_base_m,
@@ -4940,6 +5126,42 @@ mod tests {
     }
 
     #[test]
+    fn a_uniform_mesh_stands_only_when_the_criteria_read_data_and_nothing_was_named() {
+        use crate::refinement_demand::plan::CriteriaEvidence;
+        let read = |samples| CriteriaEvidence {
+            judged: true,
+            valid_source_samples: samples,
+        };
+        // Criteria read data and none of it met a threshold: the answer.
+        assert!(uniform_mesh_is_the_answer(0, read(128), false, 1));
+        // An h-field composed from them that asks for nothing: the answer.
+        assert!(uniform_mesh_is_the_answer(
+            0,
+            CriteriaEvidence::default(),
+            true,
+            1
+        ));
+        // A named region that refined nothing is a misconfiguration.
+        assert!(!uniform_mesh_is_the_answer(1, read(128), false, 1));
+        assert!(!uniform_mesh_is_the_answer(
+            2,
+            CriteriaEvidence::default(),
+            true,
+            1
+        ));
+        // Criteria that read no valid sample: a source without data, not an answer.
+        assert!(!uniform_mesh_is_the_answer(0, read(0), false, 1));
+        assert!(!uniform_mesh_is_the_answer(0, read(0), true, 1));
+        // Nothing judged and no field: nothing to stand on.
+        assert!(!uniform_mesh_is_the_answer(
+            0,
+            CriteriaEvidence::default(),
+            false,
+            1
+        ));
+    }
+
+    #[test]
     fn deeper_criteria_circles_are_widened_by_the_halo_between_the_levels() {
         use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
         let circle = |level, radius_meters| RefinementRegion::Circle {
@@ -4954,6 +5176,7 @@ mod tests {
                 radius_meters: 1_000.0,
                 circles: vec![circle(level, 1_000.0)],
                 criterion_ids: Vec::new(),
+                evidence: Default::default(),
             })
             .collect::<Vec<_>>();
         let named = [circle(1, 5_000.0)];

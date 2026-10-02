@@ -70,15 +70,89 @@ fn global_triangles(mesh: &UnstructuredMesh) -> io::Result<(Vec<P>, Vec<[usize; 
     Ok((points, triangles))
 }
 
+/// The deepest nest over each global triangle. A nest is its parent's
+/// triangles split 1 -> 4, so it covers whole global triangles, and each of
+/// its triangles traces back, parent by parent, to exactly one.
+fn nest_depth_over_global(domains: &[earthmesh_mesh::IconNestDomain]) -> Vec<u32> {
+    let Some(global) = domains.first() else {
+        return Vec::new();
+    };
+    let mut depth = vec![0u32; global.triangles.len()];
+    // Domain ids are 1-based and a parent comes before its children.
+    let mut roots: Vec<Vec<usize>> = vec![(0..global.triangles.len()).collect()];
+    for domain in &domains[1..] {
+        let parent_roots = domain
+            .parent
+            .checked_sub(1)
+            .and_then(|index| roots.get(index))
+            .cloned()
+            .unwrap_or_default();
+        let own: Vec<usize> = domain
+            .parent_triangle
+            .iter()
+            .filter_map(|&triangle| parent_roots.get(triangle).copied())
+            .collect();
+        for &root in &own {
+            depth[root] = depth[root].max(domain.depth);
+        }
+        roots.push(own);
+    }
+    depth
+}
+
+/// The delivery's level on each published row of the global grid: the global
+/// grid alone is level 0 everywhere, and the reconciliation read that as the
+/// demand unmet -- two levels short over a two-level nest. A triangle (M row)
+/// takes the deepest nest over it; a cell (W row) the deepest of its
+/// triangles, as the other backends' rows do.
+pub(super) fn nest_cell_levels(
+    mesh: &UnstructuredMesh,
+    depth: &[u32],
+) -> super::global_source::CellRefineLevels {
+    // `global_triangles` reads the rows one-based with two placeholders, and
+    // inserts the second when the mesh carries one.
+    let m_shift =
+        usize::from(!crate::unstructured_mesh_support::mesh_m_has_two_placeholder_rows(mesh));
+    let w_shift =
+        usize::from(!crate::unstructured_mesh_support::mesh_w_has_two_placeholder_rows(mesh));
+    let mut m = vec![0i32; mesh.m_points.len()];
+    let mut w = vec![0i32; mesh.w_points.len()];
+    for (triangle, &level) in depth.iter().enumerate() {
+        let level = i32::try_from(level).unwrap_or(i32::MAX);
+        if let Some(slot) = (triangle + 2)
+            .checked_sub(m_shift)
+            .and_then(|row| m.get_mut(row))
+        {
+            *slot = level;
+        }
+        let Some(corners) = (triangle + 2)
+            .checked_sub(m_shift)
+            .and_then(|row| mesh.m_to_w.get(row))
+        else {
+            continue;
+        };
+        for &corner in corners {
+            let row = usize::try_from(corner)
+                .ok()
+                .and_then(|id| id.checked_sub(w_shift));
+            if let Some(slot) = row.and_then(|row| w.get_mut(row)) {
+                *slot = (*slot).max(level);
+            }
+        }
+    }
+    super::global_source::CellRefineLevels { m, w }
+}
+
 /// Plan the nests over the published global grid, write the set into
-/// `result_dir/standard/ICON_nest`, and describe it.
+/// `result_dir/standard/ICON_nest`, and describe it. Also returns the
+/// deepest nest over each global triangle (`nest_cell_levels`).
 pub(super) fn write_icon_nests(
     mesh: &UnstructuredMesh,
     demand: &IconNestDemand,
     hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
     nxp: usize,
     result_dir: &Path,
-) -> io::Result<IconNestRunRecord> {
+) -> io::Result<(IconNestRunRecord, Vec<u32>)> {
     let (points, triangles) = global_triangles(mesh)?;
     let targets = super::global_source::fixed_topology_targets(&demand.regions, hfield)?;
     // The planner asks by position; a failed lookup is kept and returned.
@@ -222,9 +296,62 @@ pub(super) fn write_icon_nests(
             report.output.display()
         );
     }
-    Ok(IconNestRunRecord {
-        domains: reports.into_iter().map(|r| r.output).collect(),
-        namelist,
-        summary,
-    })
+    let depth = nest_depth_over_global(&domains);
+    Ok((
+        IconNestRunRecord {
+            domains: reports.into_iter().map(|r| r.output).collect(),
+            namelist,
+            summary,
+        },
+        depth,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use earthmesh_mesh::{IconNestDomain, NestVertexOrigin};
+
+    fn domain(id: usize, parent: usize, depth: u32, parents: Vec<usize>) -> IconNestDomain {
+        IconNestDomain {
+            id,
+            parent,
+            depth,
+            points: Vec::new(),
+            triangles: vec![[0, 0, 0]; parents.len().max(3)],
+            cell_row: vec![u32::MAX; parents.len().max(3)],
+            parent_triangle: parents,
+            vertex_origin: vec![NestVertexOrigin::Base],
+            vertex_row: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn each_global_triangle_takes_the_deepest_nest_traced_back_to_it() {
+        // Global: three triangles. Domain 2 splits global 0 and 2; domain 3
+        // splits domain 2's triangle 5, which came from global 2.
+        let domains = [
+            domain(1, 0, 0, Vec::new()),
+            domain(2, 1, 1, vec![0, 0, 0, 0, 2, 2, 2, 2]),
+            domain(3, 2, 2, vec![5, 5, 5, 5]),
+        ];
+        assert_eq!(nest_depth_over_global(&domains), vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn the_published_rows_take_the_nest_levels() {
+        // Two placeholder rows each side, then two triangles over four points.
+        let point = LonLatPoint { lon: 0.0, lat: 0.0 };
+        let mesh = UnstructuredMesh {
+            m_points: vec![point; 4],
+            w_points: vec![point; 6],
+            m_to_w: vec![[0; 3], [1; 3], [2, 3, 4], [3, 5, 4]],
+            w_to_m: vec![Vec::new(); 6],
+            n_w_to_m: vec![0; 6],
+        };
+        let levels = nest_cell_levels(&mesh, &[2, 0]);
+        assert_eq!(levels.m, vec![0, 0, 2, 0]);
+        // Points of the nested triangle take its level; the other's own point does not.
+        assert_eq!(levels.w, vec![0, 0, 2, 2, 2, 0]);
+    }
 }

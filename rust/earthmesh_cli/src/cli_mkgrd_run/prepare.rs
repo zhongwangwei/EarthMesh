@@ -80,10 +80,20 @@ fn compile_project_arg(
         && !project.refinement.backend.owns_quality_repair()
     {
         let target_nxp = project.try_lower()?.mkgrd.requested_nxp();
-        project.refinement.max_passes = earthmesh_project::effective_auto_refine_pass(
-            project.refinement.max_passes,
-            target_nxp,
-        );
+        let requested = project.refinement.max_passes;
+        project.refinement.max_passes =
+            earthmesh_project::effective_auto_refine_pass(requested, target_nxp);
+        // Lowered in silence, a three-level request ran as two and nothing
+        // said so until the run ended at "the supported level cap".
+        if project.refinement.max_passes < requested {
+            eprintln!(
+                "earthmesh_cli: warning: refinement.max_passes {requested} is above what \
+                 AutoRefine supports at this resolution (NXP {target_nxp}); the run refines {} \
+                 level(s). Halving the base more than that would take it below NXP {}",
+                project.refinement.max_passes,
+                earthmesh_project::METHOD_C_MIN_BASE_NXP
+            );
+        }
     }
     let spec = ProjectRunSpec {
         path: PathBuf::from(path),
