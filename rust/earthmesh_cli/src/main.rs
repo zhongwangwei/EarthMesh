@@ -4,6 +4,7 @@ use std::process::ExitCode;
 mod cli_args;
 mod cli_colm_netcdf;
 mod cli_dispatch;
+mod cli_heap;
 mod cli_hydro_close;
 mod cli_hydro_export;
 mod cli_hydro_workflow;
@@ -18,6 +19,7 @@ use cli_dispatch::run_cli_command;
 use cli_runtime::{now_epoch_secs, write_cli_run_manifest};
 
 fn main() -> ExitCode {
+    cli_heap::turn_off_large_block_cache();
     let started = now_epoch_secs();
     let argv = env::args().collect::<Vec<_>>();
     // Informational invocations have no run to reproduce and must not mutate
