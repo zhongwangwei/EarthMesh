@@ -1430,6 +1430,7 @@ pub(super) fn refine_with_certified(
             base_nxp,
             specified_level,
             calculated_level,
+            regional_domain.as_ref(),
         )?
     } else {
         CertifiedRequirementPlan::uniform()
@@ -1447,6 +1448,18 @@ pub(super) fn refine_with_certified(
             ),
         ));
     }
+    // Without any source, a uniform requirement is reverse coarsening's own
+    // complete-hierarchy epoch (level 1 back to 0, with its lineage); with
+    // sources that asked for nothing, it is an answer.
+    let options = if config.refine && chosen_level == 0 && requirements.sourced {
+        requirements.nothing_requested(base_nxp)?;
+        CertifiedRunOptions {
+            mode: CertifiedMode::SafeMotherOnly,
+            ..options
+        }
+    } else {
+        options
+    };
     if options.mode != CertifiedMode::SafeMotherOnly {
         for (index, region) in requirements.regions.iter().enumerate() {
             let requested = region.level();
@@ -2509,6 +2522,13 @@ pub(super) struct CertifiedRequirementPlan {
     raw_region_levels: Option<Vec<usize>>,
     threshold_provenance: Option<serde_json::Value>,
     conservative_global_bound: bool,
+    /// Composed from at least one refinement source: criteria, named regions
+    /// or hydro targets.
+    sourced: bool,
+    /// Composed inside a regional domain rather than over the globe.
+    domain_scoped: bool,
+    /// Named regions dropped because they never reach the domain.
+    regions_outside_domain: usize,
 }
 
 impl CertifiedRequirementPlan {
@@ -2521,7 +2541,68 @@ impl CertifiedRequirementPlan {
             raw_region_levels: Some(vec![0; 8]),
             threshold_provenance: None,
             conservative_global_bound: false,
+            sourced: false,
+            domain_scoped: false,
+            regions_outside_domain: 0,
         }
+    }
+
+    /// Valid source samples the threshold criteria read, when they report any;
+    /// summed over criteria, as the demand plan counts them.
+    fn threshold_valid_samples(&self) -> Option<u64> {
+        let criteria = self.threshold_provenance.as_ref()?["criteria"].as_array()?;
+        let counts = criteria
+            .iter()
+            .filter_map(|criterion| criterion["raw_support"]["valid_source_samples"].as_u64())
+            .collect::<Vec<_>>();
+        (!counts.is_empty()).then(|| counts.iter().sum())
+    }
+
+    /// A requirement of level 0 everywhere: refinement was enabled and nothing
+    /// asks for it -- the criteria found nothing over their thresholds, or on
+    /// a regional run all the demand lies outside the domain. Reverse
+    /// coarsening would build the level-1 mother only to coarsen all of it
+    /// back, and gave up on Yunnan's 1.47M cells as CompressionIncomplete,
+    /// when the certified level-0 mother is the answer -- as it is on every
+    /// other backend (guide 11.98). Criteria that read no valid sample are
+    /// said so rather than refused: an ocean domain judged by a land-type
+    /// criterion reads none, and CMRC delivered there before. A family
+    /// certified only from level 1 up (NXP 32: n = 64 is in the table, n = 32
+    /// is not) has no certified unrefined mesh to give.
+    fn nothing_requested(&self, base_nxp: usize) -> io::Result<()> {
+        let place = if self.domain_scoped {
+            "in the regional domain"
+        } else {
+            "anywhere"
+        };
+        let why = match self.threshold_valid_samples() {
+            Some(0) => format!(
+                "the enabled criteria read no valid source sample {place} (check that their \
+                 sources cover it)"
+            ),
+            Some(samples) => format!(
+                "the enabled criteria read {samples} valid source samples {place} and none of \
+                 them meets a threshold at this resolution"
+            ),
+            None => format!("the requirement asks for no refinement {place}"),
+        };
+        if !earthmesh_refine_certified::certificate::is_supported_mother_subdivision(base_nxp) {
+            let nearest = nearest_certified_base_nxp(base_nxp, 0).map_or_else(String::new, |nxp| {
+                format!(" -- the nearest that is: NXP {nxp}")
+            });
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "CMRC: refinement was requested, but {why}, and the unrefined mother \
+                     n={base_nxp} is not a certified subdivision{nearest}"
+                ),
+            ));
+        }
+        eprintln!(
+            "earthmesh_cli: warning: refinement was requested, but {why}; the certified mother \
+             is delivered unrefined"
+        );
+        Ok(())
     }
 
     fn layer_report(
@@ -2538,6 +2619,8 @@ impl CertifiedRequirementPlan {
         };
         serde_json::json!({
             "policy": "effective_raster_remains_hard",
+            "requirement_scope": if self.domain_scoped { "regional_domain" } else { "global" },
+            "regions_outside_domain": self.regions_outside_domain,
             "raw_source_raster": {
                 "status": if self.raw_region_levels.is_some() { "available" } else { "unavailable_threshold_or_hydro" },
                 "scope": "canonical_region_sample_centers_quantized_not_analytic_coverage",
@@ -2563,6 +2646,62 @@ impl CertifiedRequirementPlan {
     }
 }
 
+/// The requirement raster's sample centres that lie in `domain`, as
+/// `(i, j, lon, lat)`.
+fn domain_sample_centers(
+    domain: &GridRegion,
+    nlon: usize,
+    nlat: usize,
+) -> Vec<(usize, usize, f64, f64)> {
+    let prepared = domain.prepared();
+    let mut inside = Vec::new();
+    for j in 0..nlat {
+        let lat = -90.0 + (j as f64 + 0.5) * 180.0 / nlat as f64;
+        for i in 0..nlon {
+            let lon = -180.0 + (i as f64 + 0.5) * 360.0 / nlon as f64;
+            if prepared.contains(lon, lat) {
+                inside.push((i, j, lon, lat));
+            }
+        }
+    }
+    inside
+}
+
+/// Whether `region` asks anything of a mesh that keeps only `domain`: one of
+/// its own points lies in the domain (a region smaller than a raster cell
+/// holds no sample centre), or a sample centre of the domain lies in it.
+fn region_reaches_domain(
+    region: &RefinementRegion,
+    domain: &GridRegion,
+    domain_samples: &[(usize, usize, f64, f64)],
+) -> bool {
+    let own_points = match region {
+        RefinementRegion::Circle { center, .. } => vec![*center],
+        RefinementRegion::Bbox {
+            west_degrees,
+            east_degrees,
+            south_degrees,
+            north_degrees,
+            ..
+        } => {
+            let span = (east_degrees - west_degrees).rem_euclid(360.0);
+            vec![earthmesh_mesh::LonLatDegrees::new(
+                west_degrees + span / 2.0,
+                (south_degrees + north_degrees) / 2.0,
+            )]
+        }
+        RefinementRegion::Corridor { points, .. } | RefinementRegion::Polygon { points, .. } => {
+            points.clone()
+        }
+    };
+    own_points
+        .iter()
+        .any(|point| domain.contains(point.lon_degrees, point.lat_degrees))
+        || domain_samples.iter().any(|&(_, _, lon, lat)| {
+            region.contains_lonlat_canonical(earthmesh_mesh::LonLatDegrees::new(lon, lat))
+        })
+}
+
 pub(super) fn certified_requirement_plan(
     contents: &str,
     config: &EarthmeshConfig,
@@ -2570,6 +2709,7 @@ pub(super) fn certified_requirement_plan(
     base_nxp: usize,
     specified_level: usize,
     calculated_level: usize,
+    domain: Option<&GridRegion>,
 ) -> io::Result<CertifiedRequirementPlan> {
     if crate::adaptive_refine::read_adaptive_refine_options(contents)?.is_some() {
         return Err(io::Error::new(
@@ -2625,6 +2765,50 @@ pub(super) fn certified_requirement_plan(
         ));
     }
 
+    // A regional run publishes its domain alone, yet the requirement set the
+    // mother's depth and its coarsening over the whole globe: Yunnan at 40 km
+    // (soil k_s) built a level-1 mother of 1.47M cells for demand in northern
+    // Vietnam, then published 595. Composed inside the domain, demand
+    // elsewhere no longer reaches the mother, and a named region that never
+    // touches the domain asks nothing of this mesh.
+    let domain_samples =
+        domain.map(|domain| domain_sample_centers(domain, hfield.nlon, hfield.nlat));
+    let mut regions_outside_domain = 0;
+    let (specified_regions, calculated_regions) = match (domain, &domain_samples) {
+        (Some(domain), Some(samples)) => {
+            let named = specified_regions.len() + calculated_regions.len();
+            let reaching = |regions: Vec<RefinementRegion>| {
+                regions
+                    .into_iter()
+                    .filter(|region| region_reaches_domain(region, domain, samples))
+                    .collect::<Vec<_>>()
+            };
+            let (specified, calculated) =
+                (reaching(specified_regions), reaching(calculated_regions));
+            regions_outside_domain = named - specified.len() - calculated.len();
+            if regions_outside_domain > 0 {
+                if specified.is_empty()
+                    && calculated.is_empty()
+                    && !has_threshold_sources
+                    && hydro_level == 0
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "CMRC: all {named} refinement region(s) lie outside the regional domain, \
+                             so none of them asks anything of the mesh this run publishes"
+                        ),
+                    ));
+                }
+                eprintln!(
+                    "earthmesh_cli: warning: CMRC ignores {regions_outside_domain} of {named} \
+                     refinement region(s): they lie outside the regional domain"
+                );
+            }
+            (specified, calculated)
+        }
+        _ => (specified_regions, calculated_regions),
+    };
     let specified_present = !specified_regions.is_empty();
     let calculated_present = !calculated_regions.is_empty();
     let mut regions = specified_regions;
@@ -2656,7 +2840,7 @@ pub(super) fn certified_requirement_plan(
             base_m,
             &hfield,
             calculated_level.clamp(1, field_max_level),
-            None,
+            domain,
         )?;
         (field, Some(report))
     } else {
@@ -2669,13 +2853,13 @@ pub(super) fn certified_requirement_plan(
                 base_m,
                 &hfield,
                 calculated_level.clamp(1, field_max_level),
-                None,
+                domain,
             )?,
             None,
         )
     };
     crate::hydro_refinement_adapter::apply_hydro_target_to_field(
-        &mut field, &hfield, base_m, None,
+        &mut field, &hfield, base_m, domain,
     )?;
     let mut levels = field
         .level_map(base_m, quantized_max_level)?
@@ -2684,13 +2868,16 @@ pub(super) fn certified_requirement_plan(
         .collect::<Vec<_>>();
     // Do not mistake a region-only subset for the raw demand of a mixed-source run.
     let raw_region_levels = if !has_threshold_sources && hfield.hydro_target_paths().is_none() {
+        let mask = domain.map(|domain| {
+            crate::hfield_refine::HfieldDomainMask::new(field.nlon(), field.nlat(), domain)
+        });
         Some(
             crate::hfield_refine::build_raw_region_hfield(
                 &regions,
                 base_m,
                 field.nlon(),
                 field.nlat(),
-                None,
+                mask.as_ref(),
             )?
             .level_map(base_m, quantized_max_level)?
             .into_iter()
@@ -2703,13 +2890,23 @@ pub(super) fn certified_requirement_plan(
     let mut conservative_global_bound = false;
     // A sub-raster specified region can fall between HField sample centers.
     // The safe-mother path is global, so retaining its declared level is the
-    // conservative bound and costs no additional geometric machinery.
+    // conservative bound and costs no additional geometric machinery. Over a
+    // regional domain the bound is the domain's: the rest is carved away.
+    let raise = |levels: &mut Vec<usize>, level: usize| match domain {
+        Some(domain) => {
+            for (i, j, ..) in domain_sample_centers(domain, field.nlon(), field.nlat()) {
+                let at = &mut levels[j * field.nlon() + i];
+                *at = (*at).max(level);
+            }
+        }
+        None => levels.fill(level),
+    };
     if specified_present && levels.iter().copied().max().unwrap_or(0) < specified_level {
-        levels.fill(specified_level);
+        raise(&mut levels, specified_level);
         conservative_global_bound = true;
     }
     if calculated_present && levels.iter().copied().max().unwrap_or(0) < calculated_level {
-        levels.fill(calculated_level);
+        raise(&mut levels, calculated_level);
         conservative_global_bound = true;
     }
     Ok(CertifiedRequirementPlan {
@@ -2720,6 +2917,9 @@ pub(super) fn certified_requirement_plan(
         raw_region_levels,
         threshold_provenance,
         conservative_global_bound,
+        sourced: true,
+        domain_scoped: domain.is_some(),
+        regions_outside_domain,
     })
 }
 
@@ -2967,7 +3167,7 @@ mod tests {
             ..RefineConfig::default()
         };
         let contents = "&hfield\n NL%hfield_nlon=8\n NL%hfield_nlat=4\n/\n";
-        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2, None).unwrap();
         assert!(
             plan.regions.is_empty(),
             "evaluation mask is not a hard demand"
@@ -2988,15 +3188,113 @@ mod tests {
         assert!(!layers["threshold_sources"]
             .to_string()
             .contains("composition_timing_ms"));
-        let repeat = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        let repeat =
+            certified_requirement_plan(contents, &config, &refine, 144, 0, 2, None).unwrap();
         assert_eq!(layers, repeat.layer_report(None, 3));
         // Preserve the named-region-only contract when there is no threshold.
         refine.refine_num_landtypes = false;
-        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2).unwrap();
+        let plan = certified_requirement_plan(contents, &config, &refine, 144, 0, 2, None).unwrap();
         assert_eq!(plan.regions.len(), 1);
         assert_eq!(plan.effective_levels.iter().max(), Some(&2));
         assert!(plan.threshold_provenance.is_none());
         assert!(plan.layer_report(None, 3)["threshold_sources"].is_null());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_regional_requirement_is_composed_inside_its_domain() {
+        // A 5-degree raster, a domain of 20 degrees, level-2 circles in and far
+        // outside it.
+        let contents = "&hfield\n NL%hfield_nlon=72\n NL%hfield_nlat=36\n/\n";
+        let config = EarthmeshConfig::default();
+        let circles = |chain: &str| RefineConfig {
+            refine_spc: true,
+            max_iter_spc: 2,
+            mask_refine_spc_type: "circle".into(),
+            mask_refine_spc_fprefix: format!("inline:circles:{chain}"),
+            ..RefineConfig::default()
+        };
+        let domain = GridRegion::Bbox {
+            west: 0.0,
+            east: 20.0,
+            north: 20.0,
+            south: 0.0,
+        };
+        let level_at = |plan: &CertifiedRequirementPlan, lon: f64, lat: f64| {
+            let i = ((lon + 180.0) / 360.0 * plan.nlon as f64) as usize;
+            let j = ((lat + 90.0) / 180.0 * plan.nlat as f64) as usize;
+            plan.effective_levels[j * plan.nlon + i]
+        };
+        let plan = |refine: &RefineConfig, domain: Option<&GridRegion>| {
+            certified_requirement_plan(contents, &config, refine, 144, 2, 0, domain)
+        };
+
+        let both = circles("lon=10,lat=10,radius_km=600;lon=100,lat=10,radius_km=600");
+        let global = plan(&both, None).unwrap();
+        assert!(!global.domain_scoped);
+        assert_eq!(global.regions.len(), 2);
+        assert_eq!(level_at(&global, 100.0, 10.0), 2);
+        let regional = plan(&both, Some(&domain)).unwrap();
+        assert!(regional.domain_scoped);
+        assert_eq!(
+            (regional.regions.len(), regional.regions_outside_domain),
+            (1, 1)
+        );
+        assert_eq!(level_at(&regional, 10.0, 10.0), 2);
+        assert_eq!(
+            level_at(&regional, 100.0, 10.0),
+            0,
+            "demand outside the domain no longer reaches the mother"
+        );
+        let report = regional.layer_report(None, 3);
+        assert_eq!(report["requirement_scope"], "regional_domain");
+        assert_eq!(report["regions_outside_domain"], 1);
+
+        // The far circle alone asks nothing of the mesh the run publishes.
+        let error = plan(&circles("lon=100,lat=10,radius_km=600"), Some(&domain))
+            .err()
+            .expect("a run whose regions all miss the domain is refused");
+        assert!(
+            error
+                .to_string()
+                .contains("lie outside the regional domain"),
+            "{error}"
+        );
+
+        // A circle between sample centres keeps its level: over the domain,
+        // no longer over the globe.
+        let tiny = circles("lon=10,lat=10,radius_km=20");
+        let bounded = plan(&tiny, Some(&domain)).unwrap();
+        assert!(bounded.conservative_global_bound);
+        assert_eq!(level_at(&bounded, 12.5, 12.5), 2);
+        assert_eq!(level_at(&bounded, 100.0, 10.0), 0);
+        let unbounded = plan(&tiny, None).unwrap();
+        assert!(unbounded.effective_levels.iter().all(|&level| level == 2));
+    }
+
+    #[test]
+    fn a_requirement_of_level_zero_is_an_answer_where_the_base_is_certified() {
+        let read = |samples: Option<u64>| CertifiedRequirementPlan {
+            threshold_provenance: samples.map(|samples| {
+                serde_json::json!({
+                    "criteria": [{ "raw_support": { "valid_source_samples": samples } }]
+                })
+            }),
+            sourced: true,
+            domain_scoped: true,
+            ..CertifiedRequirementPlan::uniform()
+        };
+        for samples in [Some(2_030_224), Some(0), None] {
+            assert!(read(samples).nothing_requested(192).is_ok());
+        }
+        // NXP 32 is certified from level 1 up only: no unrefined mesh to give.
+        let error = read(Some(933_120_000)).nothing_requested(32).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("n=32 is not a certified subdivision"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("NXP 40"), "{error}");
     }
 }
