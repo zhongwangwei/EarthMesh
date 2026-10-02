@@ -151,6 +151,14 @@ impl ConservativeRemap {
         })
     }
 
+    /// Whether this remap was certified from `source` to `target`, by their
+    /// fingerprints: a remap handed on is used only for the meshes it was
+    /// computed between.
+    pub fn joins(&self, source: &MeshState, target: &MeshState) -> bool {
+        self.source_fingerprint == Some(mesh_fingerprint(source))
+            && self.target_fingerprint == Some(mesh_fingerprint(target))
+    }
+
     pub fn spherical_overlap(
         source_cells: &[Vec<(f64, f64)>],
         target_cells: &[Vec<(f64, f64)>],

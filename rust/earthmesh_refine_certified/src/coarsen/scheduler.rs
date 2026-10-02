@@ -10,7 +10,7 @@ use crate::{
     fingerprint::mesh_fingerprint,
     mother_grid::{mother_cell_count, MotherGrid, TriangleAddress},
     outcome::FinalCertificationEvidence,
-    remap::VoronoiRemapSource,
+    remap::{ConservativeRemap, VoronoiRemapSource},
     requirement::{certify_final_cell_requirements_with_remap, SourceLevelField},
 };
 use earthmesh_mesh::MeshState;
@@ -173,6 +173,9 @@ pub struct ElasticCmrcReport {
 pub struct ElasticCmrcResult {
     pub state: ComponentTransactionState,
     pub report: ElasticCmrcReport,
+    /// The remap the last committed component certified, from the source
+    /// mother to `state`'s mesh; `None` when nothing was committed.
+    pub final_remap: Option<ConservativeRemap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -417,6 +420,7 @@ fn run_elastic_component_epochs_impl(
         Err(reason) => return ElasticCmrcOutcome::InvalidInput { reason },
     };
     let source_remap = VoronoiRemapSource::new(&grid.mesh);
+    let mut final_remap = None;
     let initial_faces = grid.mesh.triangle_count();
     let initial_vertices = grid.mesh.vertex_count();
     let mut remaining_topology_states = config.total_transition_states;
@@ -547,7 +551,7 @@ fn run_elastic_component_epochs_impl(
                 config.angle_contract,
             );
             let component_record = match outcome {
-                ComponentTransactionOutcome::Certified(commit) => {
+                ComponentTransactionOutcome::Certified(mut commit) => {
                     let rejection = quality_gate
                         .as_mut()
                         .and_then(|gate| gate(&component, &state));
@@ -581,6 +585,7 @@ fn run_elastic_component_epochs_impl(
                         report.total_elastic_iterations += commit.elastic_iterations;
                         report.total_interval_boxes += commit.interval_boxes;
                         certified_state_fingerprint = Some(commit.after_fingerprint);
+                        final_remap = commit.remap_matrix.take();
                         remaining_topology_states =
                             remaining_topology_states.saturating_sub(commit.topology_states);
                         ElasticComponentRecord {
@@ -719,7 +724,11 @@ fn run_elastic_component_epochs_impl(
 
     report.final_faces = state.mesh().mesh.triangle_count();
     report.final_vertices = state.mesh().mesh.vertex_count();
-    ElasticCmrcOutcome::Completed(Box::new(ElasticCmrcResult { state, report }))
+    ElasticCmrcOutcome::Completed(Box::new(ElasticCmrcResult {
+        state,
+        report,
+        final_remap,
+    }))
 }
 
 fn validate_inputs(

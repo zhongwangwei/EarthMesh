@@ -21,7 +21,7 @@ use crate::{
     fingerprint::mesh_fingerprint,
     mother_grid::{MotherGrid, TriangleAddress},
     outcome::{FinalCertificationEvidence, GeometryCertifiedMotherGrid},
-    remap::{RemapCertificate, VoronoiRemapSource},
+    remap::{ConservativeRemap, RemapCertificate, VoronoiRemapSource},
     requirement::{
         certify_final_cell_requirements_with_remap, FinalCellRequirementError,
         FinalCellRequirementReport, SourceLevelField, TargetLevelField,
@@ -236,6 +236,10 @@ pub struct ComponentCommitReport {
     pub final_certificate: FinalCertificateReport,
     pub final_cells: FinalCellRequirementReport,
     pub remap: RemapCertificate,
+    /// The certified remap itself, from the source mother to the committed
+    /// mesh: the scheduler hands the last one on rather than have it computed
+    /// again (`ElasticCmrcResult::final_remap`).
+    pub remap_matrix: Option<ConservativeRemap>,
     pub elastic: Option<ElasticBlockReport>,
 }
 
@@ -954,6 +958,7 @@ fn certify_candidate(
         final_certificate,
         final_cells,
         remap: remap_certificate,
+        remap_matrix: Some(remap),
         elastic: elastic_report,
     })
 }

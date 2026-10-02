@@ -652,7 +652,7 @@ pub(super) fn build_mixed_certified_construction(
         "elastic_component_epochs",
         &mut phase_started,
     );
-    let result = match epoch {
+    let mut result = match epoch {
         earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::Completed(result) => result,
         earthmesh_refine_certified::coarsen::ElasticCmrcOutcome::NotCertifiable { reason } => {
             return Err(io::Error::new(
@@ -664,6 +664,7 @@ pub(super) fn build_mixed_certified_construction(
             return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
         }
     };
+    let handed_on_remap = result.final_remap.take();
     let leaf_mesh = result.state.mesh();
     let pentagons = source_pentagons
         .into_iter()
@@ -745,6 +746,10 @@ pub(super) fn build_mixed_certified_construction(
     );
     let remap = if initial_mesh == mesh {
         earthmesh_refine_certified::remap::ConservativeRemap::identity_for_mesh(&mesh)
+    } else if let Some(remap) = handed_on_remap.filter(|remap| remap.joins(&initial_mesh, &mesh)) {
+        // The last committed component certified this very remap; computing it
+        // again cost as much as all the components' own (guide 11.103).
+        remap
     } else {
         earthmesh_refine_certified::remap::ConservativeRemap::between_voronoi_meshes(
             &initial_mesh,
