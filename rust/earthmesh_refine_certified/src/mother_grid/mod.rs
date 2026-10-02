@@ -513,10 +513,14 @@ mod tests {
                 .unwrap()
             };
             let (i0, j0) = (n / 3, n / 3);
-            let mut mismatches = 0;
+            let (mut checked, mut mismatches) = (0, 0);
             for di in 0..200 {
                 for dj in 0..200 {
                     let (ci, cj) = (i0 / 2 + di, j0 / 2 + dj);
+                    if ci + cj > n / 2 {
+                        continue;
+                    }
+                    checked += 1;
                     let coarse = at(n / 2, ci, cj);
                     let fine = at(n, 2 * ci, 2 * cj);
                     if (coarse.x.to_bits(), coarse.y.to_bits(), coarse.z.to_bits())
@@ -526,7 +530,7 @@ mod tests {
                     }
                 }
             }
-            println!("PROBE n={n}: nesting: {mismatches} of 40000 coarse points differ from their fine twins");
+            println!("PROBE n={n}: nesting: {mismatches} of {checked} coarse points differ from their fine twins");
 
             // A patch: vertices (i0+di, j0+dj), 0 <= di, dj <= m, and its triangles.
             let patch = |n: usize, i0: usize, j0: usize, m: usize| {

@@ -162,6 +162,26 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// The normal of the great circle through unit vectors `a` and `b`, `a x b`,
+/// computed as `a x (b - a)`. Nearby unit vectors differ exactly in floating
+/// point (Sterbenz), so the normal keeps full relative precision however short
+/// the arc; `a x b` taken directly cancels down to `eps / |a - b|`, and the
+/// clipped vertices it places drift by `eps / |a - b|^2` of the cell -- a
+/// coverage error of 1e-6 on 30 m cells (guide 11.104).
+///
+/// It is taken from the lexicographically smaller end, so `arc_normal(b, a)`
+/// is exactly `-arc_normal(a, b)`: two cells traverse their shared edge in
+/// opposite directions and must clip along one great circle, as `a x b` and
+/// `b x a` -- exact negatives in IEEE arithmetic -- always did.
+fn arc_normal(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    if a <= b {
+        cross3(a, [b[0] - a[0], b[1] - a[1], b[2] - a[2]])
+    } else {
+        let normal = cross3(b, [a[0] - b[0], a[1] - b[1], a[2] - b[2]]);
+        [-normal[0], -normal[1], -normal[2]]
+    }
+}
+
 fn norm3(a: [f64; 3]) -> f64 {
     dot3(a, a).sqrt()
 }
@@ -270,8 +290,8 @@ fn ring_edges_touch(vertices: &[[f64; 3]], first: usize, second: usize) -> bool 
     };
     let first_next = (first + 1) % vertices.len();
     let second_next = (second + 1) % vertices.len();
-    let normal1 = cross3(vertices[first], vertices[first_next]);
-    let normal2 = cross3(vertices[second], vertices[second_next]);
+    let normal1 = arc_normal(vertices[first], vertices[first_next]);
+    let normal2 = arc_normal(vertices[second], vertices[second_next]);
     let intersections = cross3(normal1, normal2);
     let intersection_norm = norm3(intersections);
     if intersection_norm > 64.0 * f64::EPSILON {
@@ -457,7 +477,7 @@ fn convex_clip_planes(vertices: &[[f64; 3]]) -> Result<ConvexClipPlanes, Spheric
     .ok_or(SphericalPolygonError::DegenerateArea)?;
     let mut planes = Vec::with_capacity(vertices.len());
     for index in 0..vertices.len() {
-        let normal = cross3(vertices[index], vertices[(index + 1) % vertices.len()]);
+        let normal = arc_normal(vertices[index], vertices[(index + 1) % vertices.len()]);
         let center_side = dot3(normal, center);
         if center_side.abs() <= 64.0 * f64::EPSILON {
             return Err(SphericalPolygonError::NonConvex { vertex: index });
@@ -469,7 +489,14 @@ fn convex_clip_planes(vertices: &[[f64; 3]]) -> Result<ConvexClipPlanes, Spheric
         {
             return Err(SphericalPolygonError::NonConvex { vertex: index });
         }
-        planes.push((normal, sign));
+        // Clip with the unit normal: `normal . point` is then the sine of the
+        // angular distance, so the clipping tolerances mean the same at every
+        // scale. (The checks above keep their old, unnormalized meaning.)
+        let length = norm3(normal);
+        planes.push((
+            [normal[0] / length, normal[1] / length, normal[2] / length],
+            sign,
+        ));
     }
     Ok(planes)
 }
@@ -490,6 +517,8 @@ pub enum SphericalPointLocation {
 pub struct PreparedSphericalPolygon {
     vertices: Vec<[f64; 3]>,
     minor_area_sr: f64,
+    /// The longest chord between consecutive vertices: the cell's scale.
+    chord_scale: f64,
     convex_planes: std::sync::OnceLock<Result<ConvexClipPlanes, SphericalPolygonError>>,
 }
 
@@ -509,9 +538,16 @@ impl PreparedSphericalPolygon {
         }
         let signed_area =
             normalized_signed_minor_excess(raw_spherical_polygon_excess_from_units(&vertices)?)?;
+        let chord_scale = (0..vertices.len())
+            .map(|index| {
+                let (a, b) = (vertices[index], vertices[(index + 1) % vertices.len()]);
+                norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]])
+            })
+            .fold(0.0, f64::max);
         Ok(Self {
             vertices,
             minor_area_sr: signed_area.abs(),
+            chord_scale,
             convex_planes: std::sync::OnceLock::new(),
         })
     }
@@ -588,7 +624,7 @@ fn great_circle_boundary_intersection(
     if start_side.signum() == end_side.signum() {
         return None;
     }
-    let mut intersection = normalize3(cross3(cross3(start, end), normal))?;
+    let mut intersection = normalize3(cross3(arc_normal(start, end), normal))?;
     if dot3(
         intersection,
         [start[0] + end[0], start[1] + end[1], start[2] + end[2]],
@@ -612,6 +648,15 @@ fn spherical_convex_intersection_prepared_units(
     subject: &PreparedSphericalPolygon,
     clip: &PreparedSphericalPolygon,
 ) -> Result<Vec<[f64; 3]>, SphericalPolygonError> {
+    // Tolerances are sines of angular distances (the planes have unit
+    // normals). Values that suit cells of kilometres are a large part of a
+    // 30 m cell -- 1e-14 is 2e-9 of it, and moved its overlaps by 2e-10 --
+    // so for small cells they shrink with the smaller cell, down to what the
+    // arithmetic can tell apart (guide 11.105): `inside` below about 60 m,
+    // `snap` below about 6 km.
+    let scale = subject.chord_scale.min(clip.chord_scale);
+    let inside = 1.0e-14_f64.min((8.0 * f64::EPSILON).max(1.0e-9 * scale));
+    let snap = 1.0e-12_f64.min((16.0 * f64::EPSILON).max(1.0e-9 * scale));
     let mut output = subject.vertices.clone();
     let subject_planes = subject.convex_planes()?;
     let planes = clip.convex_planes()?;
@@ -621,9 +666,9 @@ fn spherical_convex_intersection_prepared_units(
         let Some(mut previous) = input.last().copied() else {
             break;
         };
-        let mut previous_inside = sign * dot3(normal, previous) >= -1.0e-14;
+        let mut previous_inside = sign * dot3(normal, previous) >= -inside;
         for current in input {
-            let current_inside = sign * dot3(normal, current) >= -1.0e-14;
+            let current_inside = sign * dot3(normal, current) >= -inside;
             if current_inside != previous_inside {
                 if let Some(intersection) =
                     great_circle_boundary_intersection(previous, current, normal, sign)
@@ -642,6 +687,7 @@ fn spherical_convex_intersection_prepared_units(
             return Ok(Vec::new());
         }
     }
+    // Snap clipped points onto the clip's own vertices.
     for &clip_vertex in &clip.vertices {
         if subject_planes
             .iter()
@@ -651,7 +697,7 @@ fn spherical_convex_intersection_prepared_units(
                 if point
                     .iter()
                     .zip(clip_vertex)
-                    .all(|(point, vertex)| (*point - vertex).abs() <= 1.0e-12)
+                    .all(|(point, vertex)| (*point - vertex).abs() <= snap)
                 {
                     *point = clip_vertex;
                 }
@@ -1904,6 +1950,81 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Guide 11.105: the overlaps of 30 m cells add up to the cell. Jittered
+    /// hexagons at random places are covered by grids of sources at random
+    /// offsets; the sum stays at the `eps / size` floor of unit vectors
+    /// (1.4e-11 over 300 such cases). Tolerances fixed in absolute terms on
+    /// unnormalized normals left it 1.4e-4 off.
+    #[test]
+    fn overlaps_of_thirty_metre_cells_add_up_to_the_cell() {
+        let mut seed = 987654321u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let cell = |units: &[[f64; 3]]| {
+            let ring = units
+                .iter()
+                .map(|u| Point::new(u[1].atan2(u[0]).to_degrees(), u[2].asin().to_degrees()))
+                .collect::<Vec<_>>();
+            PreparedSphericalPolygon::new(&ring).unwrap()
+        };
+        for case in 0..300 {
+            let lon = (360.0 * next() - 180.0).to_radians();
+            let lat = (150.0 * next() - 75.0).to_radians();
+            let origin = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+            let east = [-lon.sin(), lon.cos(), 0.0];
+            let north = [-lat.sin() * lon.cos(), -lat.sin() * lon.sin(), lat.cos()];
+            // Units of 30 m east and north of the origin.
+            let at = |x: f64, y: f64| {
+                let (x, y) = (x * 30.0 / 6.371e6, y * 30.0 / 6.371e6);
+                super::normalize3([
+                    origin[0] + x * east[0] + y * north[0],
+                    origin[1] + x * east[1] + y * north[1],
+                    origin[2] + x * east[2] + y * north[2],
+                ])
+                .unwrap()
+            };
+            let turn = next() * std::f64::consts::TAU;
+            let hexagon = (0..6)
+                .map(|k| {
+                    let angle = turn + k as f64 * std::f64::consts::TAU / 6.0;
+                    let radius = 1.0 + 0.1 * (next() - 0.5);
+                    at(radius * angle.cos(), radius * angle.sin())
+                })
+                .collect::<Vec<_>>();
+            let target = cell(&hexagon);
+            let spacing = 0.5 + 0.4 * next();
+            let (x0, y0) = (-1.6 - spacing * next(), -1.6 - spacing * next());
+            let cells = ((3.2 + spacing) / spacing).ceil() as usize + 1;
+            let lattice = (0..=cells)
+                .map(|j| {
+                    (0..=cells)
+                        .map(|i| at(x0 + spacing * i as f64, y0 + spacing * j as f64))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let covered = (0..cells)
+                .flat_map(|j| (0..cells).map(move |i| (i, j)))
+                .map(|(i, j)| {
+                    let source = cell(&[
+                        lattice[j][i],
+                        lattice[j][i + 1],
+                        lattice[j + 1][i + 1],
+                        lattice[j + 1][i],
+                    ]);
+                    target.overlap_fraction(&source).unwrap()
+                })
+                .sum::<f64>();
+            assert!(
+                (covered - 1.0).abs() <= 1.0e-10,
+                "case {case}: the target is covered {covered:.15} times"
+            );
         }
     }
 
