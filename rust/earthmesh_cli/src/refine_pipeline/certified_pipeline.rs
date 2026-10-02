@@ -183,8 +183,14 @@ pub(super) fn build_certified_construction(
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     max_tris: usize,
     local_update_path: Option<&Path>,
+    fixed_topology: bool,
 ) -> io::Result<CertifiedConstruction> {
     let budget = options.maximum_cells.min(max_tris);
+    let mixed_requirement = chosen_level > 0
+        && raster_requirements
+            .levels()
+            .iter()
+            .any(|&level| level < chosen_level);
     // Moved mothers: the vertices of a certified mother move toward the
     // demand, the connectivity stays, so no heptagon appears.
     let moved = match options.mode {
@@ -271,6 +277,29 @@ pub(super) fn build_certified_construction(
                 local_update: None,
             });
         }
+        // No moved mother serves a scattered demand: c09's global DEM roughness
+        // has none below the safe mother even searched one subdivision at a
+        // time (guide 11.101). Fixed topology leaves nothing between them but
+        // a grid the demand never asked for -- 64,002 cells at level 1 where
+        // coarsening the same mother keeps 33,622. So where a 5/7 pair may
+        // stand, which is every target but ICON, the safe mother is coarsened
+        // where the demand allows, as reverse coarsening does.
+        Some(Err(reasons)) if mixed_requirement && !fixed_topology => {
+            eprintln!(
+                "earthmesh_cli: warning: CMRC moved mother: none passes the final certificates; \
+                 coarsening the safe mother where the demand allows instead, so the grid has \
+                 vertices of degree 5 and 7 (an ICON delivery keeps the safe mother). {}",
+                reasons.join("; ")
+            );
+            return build_mixed_certified_construction(
+                base_nxp,
+                chosen_level,
+                options,
+                raster_requirements,
+                budget,
+                local_update_path,
+            );
+        }
         Some(Err(reasons)) => {
             eprintln!(
                 "earthmesh_cli: CMRC moved mother: none passes the final certificates; \
@@ -334,12 +363,7 @@ pub(super) fn build_certified_construction(
         });
     }
 
-    if chosen_level > 0
-        && raster_requirements
-            .levels()
-            .iter()
-            .any(|&level| level < chosen_level)
-    {
+    if mixed_requirement {
         return build_mixed_certified_construction(
             base_nxp,
             chosen_level,
@@ -460,7 +484,10 @@ pub(super) fn build_certified_construction(
                     "CMRC exhausted hierarchy search changed its rollback snapshot",
                 ));
             }
-            let geometry = match earthmesh_refine_certified::certify_mother_grid(mesh) {
+            let geometry = match earthmesh_refine_certified::certify_mother_grid_with_contract(
+                mesh,
+                options.angle_contract,
+            ) {
                 earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
                 other => return Err(certified_outcome_error(other)),
             };
@@ -1504,6 +1531,8 @@ pub(super) fn refine_with_certified(
         &raster_requirements,
         max_tris,
         local_update_path.as_deref(),
+        // ICON takes no 5/7 pair: a closed refined sphere needs them.
+        config.output_format.trim().eq_ignore_ascii_case("ICON"),
     )?;
     log_cmrc_phase(timing_enabled, "certified_construction", &mut phase_started);
     let delivered_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(

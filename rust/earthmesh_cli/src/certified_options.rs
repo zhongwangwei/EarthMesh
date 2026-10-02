@@ -43,7 +43,11 @@ impl Default for CertifiedRunOptions {
         Self {
             mode: CertifiedMode::SafeMotherOnly,
             delivery: CertifiedDelivery::Coupled,
-            angle_contract: AngleContractId::LegacyStrict40To80,
+            // The projects' contract (`CertifiedAngleContract::default`): a
+            // namelist that names none gets what a project would. Under the
+            // strict 40-80 window reverse coarsening finds no legal state on
+            // some mixed demands at all (guide 11.102).
+            angle_contract: AngleContractId::DomainQuality38To82V1,
             maximum_level: 8,
             maximum_cells: 10_000_000,
             gradation_rings_per_level: 3,

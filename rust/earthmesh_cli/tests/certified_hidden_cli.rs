@@ -955,6 +955,67 @@ fn a_mother_off_the_old_table_delivers_and_reverse_mode_is_bounded_and_certified
 }
 
 #[test]
+fn a_moved_mother_that_cannot_serve_is_coarsened_where_a_heptagon_may_stand() {
+    // Two circles on opposite sides: one Schmidt focus serves only one. A CoLM
+    // grid may hold 5/7 pairs, so the safe mother is coarsened where the
+    // demand allows rather than delivered whole; an ICON delivery keeps it
+    // whole (project_icon_delivery).
+    let root = temp_root("moved_mother_fallback");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("far_pair");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("far_pair_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![
+                earthmesh_cli::coordinate_types::LonLatPoint { lon: 0.0, lat: 0.0 },
+                earthmesh_cli::coordinate_types::LonLatPoint {
+                    lon: 180.0,
+                    lat: 0.0,
+                },
+            ],
+            radius_km: vec![800.0, 800.0],
+        },
+    )
+    .unwrap();
+    let path = root.join("cmrc.nml");
+    // NXP 3 is too coarse for this: the circles' transition rings cover the
+    // sphere and no complete patch is left to coarsen. Under the strict 40-80
+    // contract the coarsening finds no legal state at all; 38-82 is the
+    // default now.
+    fs::write(
+        &path,
+        specified_circle_namelist(&root, "moved_fallback", &prefix)
+            .replace("NL%NXP=3", "NL%NXP=12")
+            .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+            .replace("safe_mother_only", "stretched_mother"),
+    )
+    .unwrap();
+    let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 100_000, None)
+        .unwrap()
+        .certified_run
+        .unwrap();
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    assert_eq!(certificate["mode"], "stretched_mother");
+    assert_eq!(
+        certificate["product_outcome"], "certified_adaptive",
+        "{certificate}"
+    );
+    assert!(
+        !matches!(
+            certificate["coarsening_strategy"].as_str(),
+            Some("schmidt_stretch" | "equidistribution" | "none")
+        ),
+        "{certificate}"
+    );
+    assert_eq!(certificate["delivered_level_min"], 0, "{certificate}");
+    assert_eq!(certificate["delivered_level_max"], 1, "{certificate}");
+    assert_eq!(certificate["physical_residuals"], 0, "{certificate}");
+}
+
+#[test]
 fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback() {
     let root = temp_root("mixed_fulfillment");
     let sources = root.join("sources");
