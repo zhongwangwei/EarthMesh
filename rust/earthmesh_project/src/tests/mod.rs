@@ -3598,9 +3598,29 @@ fn the_regional_mother_is_left_alone_where_it_cannot_be_refined_back() {
     cmrc.refinement.backend = crate::RefinementBackend::Certified;
     assert_eq!(cmrc.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
 
+    // LEPP takes no h-field: with no demand of its own there is nothing to
+    // carry the domain, and the mother stays at the requested resolution...
     let mut lepp = regional_at(2002);
     lepp.refinement.method_c.algorithm = MethodCAlgorithm::LeppDelaunay;
     assert_eq!(lepp.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
+    // ...but a named region puts it on the point+radius route, which takes
+    // a mother and keeps the route.
+    lepp.refinement.enabled = true;
+    lepp.refinement.threshold_enabled = false;
+    lepp.refinement.max_passes = 1;
+    lepp.refinement.specified_circle = Some(crate::SpecifiedCircleRefinements::One(
+        crate::SpecifiedCircleRefinement {
+            lon: 113.0,
+            lat: 22.5,
+            radius_km: 50.0,
+        },
+    ));
+    let lowered = lepp.try_lower().unwrap();
+    assert_eq!(
+        lowered.mkgrd.regional_mother_levels, 4,
+        "1 level of its own"
+    );
+    assert!(lowered.hfield.is_none() && lowered.adaptive.is_some());
 
     let mut off = regional_at(2002);
     off.expert.regional_mother_levels = Some(0);
@@ -3614,13 +3634,24 @@ fn the_regional_mother_is_left_alone_where_it_cannot_be_refined_back() {
         red_green.try_lower().unwrap().mkgrd.regional_mother_levels,
         5
     );
-    // Criteria on red-green take the point+radius route, which a mother
-    // would move to the h-field: left alone unless the h-field is asked for.
+    // Criteria on red-green take the point+radius route, and keep it over a
+    // mother: the domain becomes a level-k region and the criteria move k
+    // levels down, rather than the run moving to the h-field.
     red_green.refinement.enabled = true;
     red_green.refinement.max_passes = 2;
     let lowered = red_green.try_lower().unwrap();
-    assert_eq!(lowered.mkgrd.regional_mother_levels, 0);
-    assert!(lowered.adaptive.is_some());
+    assert_eq!(
+        lowered.mkgrd.regional_mother_levels, 3,
+        "2 levels of its own"
+    );
+    assert!(lowered.adaptive.is_some() && lowered.hfield.is_none());
+    // Unless its point+radius demand sizes itself.
+    let mut sized = red_green.clone();
+    sized.refinement.adaptive = Some(crate::AdaptiveRefinementRecipe {
+        base_m: Some(20_000.0),
+        ..crate::AdaptiveRefinementRecipe::default()
+    });
+    assert_eq!(sized.try_lower().unwrap().mkgrd.regional_mother_levels, 0);
     red_green.refinement.hfield = Some(HfieldRefinementRecipe::default());
     let lowered = red_green.try_lower().unwrap();
     assert_eq!(

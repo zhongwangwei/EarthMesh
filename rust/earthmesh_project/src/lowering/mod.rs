@@ -503,8 +503,9 @@ impl ProjectConfig {
             mkgrd.regional_mother_levels = regional_mother_levels;
             mkgrd.nxp = requested >> regional_mother_levels;
         }
-        let hfield_requested =
-            explicit_hfield || criteria_on_canonical_method_c || regional_mother_levels > 0;
+        let hfield_requested = explicit_hfield
+            || criteria_on_canonical_method_c
+            || (regional_mother_levels > 0 && !self.point_radius_over_mother(hfield_route));
         // Not gated on the backend: the criteria half of the point+radius route
         // is raster work that produces an ordinary circle list, and both
         // backends consume it. Only turning those circles into mesh is
@@ -737,21 +738,42 @@ const REGIONAL_MOTHER_MIN_NXP: i32 = 48;
 const REGIONAL_MOTHER_AUTO_LEVELS: u8 = 5;
 
 impl ProjectConfig {
+    /// A red-green or LEPP-Delaunay run whose own demand -- criteria or named
+    /// regions -- takes the point+radius route: it keeps that route over a
+    /// regional mother, the domain becoming a level-k region of its demand.
+    /// (LEPP takes no h-field at all.)
+    fn point_radius_over_mother(&self, hfield_route: bool) -> bool {
+        let backend_serves = match self.refinement.backend {
+            crate::RefinementBackend::RedGreen => true,
+            crate::RefinementBackend::MethodC => {
+                self.refinement.method_c.algorithm == MethodCAlgorithm::LeppDelaunay
+            }
+            _ => false,
+        };
+        backend_serves
+            && !hfield_route
+            && !matches!(&self.refinement.adaptive, Some(recipe) if !recipe.enabled)
+    }
+
     /// How many halvings coarser than the requested resolution a regional
     /// run's global mother is built, the domain then refined back down.
     ///
     /// Building the mother at the requested resolution and carving the domain
     /// out afterwards costs the whole globe at that resolution: a 4 km Heihe
     /// run spent 12 minutes and 39 GB on 80 million global triangles for a
-    /// basin of a few thousand cells. Only the h-field route can refine a
-    /// domain to a level (canonical Method-C and red-green); the other routes,
+    /// basin of a few thousand cells. The h-field route refines a domain to a
+    /// level (canonical Method-C and red-green), and so does the point+radius
+    /// route of red-green and LEPP-Delaunay, which takes the domain as a
+    /// level-k region and moves its criteria and named regions k levels down;
+    /// the other routes (CMRC only coarsens a uniform certified mother),
     /// an explicit NXP, and hydro refinement keep the mother at the requested
-    /// resolution. Chosen automatically only for a run already on the h-field
-    /// or with no demand besides the domain: regions or criteria that would
-    /// take the point+radius route (which re-judges criteria on the cells it
-    /// makes) keep it, unless `expert.regional_mother_levels` asks -- moving
-    /// the Heihe red-green run to the h-field changed its mesh by 42%. The
-    /// run's own levels come first: mother plus refinement levels stay within 5.
+    /// resolution. Chosen automatically for a run already on the h-field, with
+    /// no demand besides the domain, or on that point+radius route.
+    /// Canonical Method-C regions or criteria that would take the point+radius
+    /// route keep the requested resolution unless `expert.regional_mother_levels`
+    /// asks: a mother moves them to the h-field, and moving the Heihe red-green
+    /// run there changed its mesh by 42%. The run's own levels come first:
+    /// mother plus refinement levels stay within 5.
     fn regional_mother_levels(
         &self,
         mkgrd: &EarthmeshConfig,
@@ -759,19 +781,35 @@ impl ProjectConfig {
         hfield_route: bool,
     ) -> Result<u8, String> {
         let max_levels = crate::METHOD_C_MAX_AUTO_REFINE_LEVEL;
+        // The point+radius route of red-green and LEPP takes a mother as it
+        // is: the domain becomes a level-k region and every criterion and
+        // named region moves k levels down, so the criteria are still judged
+        // level by level on the cells they refine.
+        let point_radius = self.point_radius_over_mother(hfield_route);
         let route = if mkgrd.mask_domain_global {
             Err("a global domain has nothing to refine a mother down to")
-        } else if !match self.refinement.backend {
-            crate::RefinementBackend::MethodC => {
-                self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
+        } else if !point_radius
+            && !match self.refinement.backend {
+                crate::RefinementBackend::MethodC => {
+                    self.refinement.method_c.algorithm == MethodCAlgorithm::Canonical
+                }
+                crate::RefinementBackend::RedGreen => true,
+                _ => false,
             }
-            crate::RefinementBackend::RedGreen => true,
-            _ => false,
-        } {
-            Err("only canonical Method-C and red-green refine a domain on the h-field")
-        } else if matches!(&self.refinement.adaptive, Some(recipe) if recipe.enabled) {
+        {
+            Err(
+                "only canonical Method-C and red-green refine a domain on the h-field, and \
+                 red-green and LEPP-Delaunay on the point+radius route",
+            )
+        } else if point_radius
+            && matches!(&self.refinement.adaptive, Some(recipe) if recipe.base_m.is_some())
+        {
+            Err("the point+radius route has its own base size")
+        } else if !point_radius
+            && matches!(&self.refinement.adaptive, Some(recipe) if recipe.enabled)
+        {
             Err("the point+radius route does not refine a domain to a level")
-        } else if !hfield_route && self.expert.regional_mother_levels.is_none() {
+        } else if !hfield_route && !point_radius && self.expert.regional_mother_levels.is_none() {
             // Chosen automatically only where it changes nothing but the cost.
             Err("this run's demand takes the point+radius route")
         } else if matches!(&self.refinement.hfield, Some(recipe) if !recipe.enabled || recipe.base_m.is_some())

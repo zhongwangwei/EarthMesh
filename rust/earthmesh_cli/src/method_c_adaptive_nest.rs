@@ -407,6 +407,7 @@ pub fn spawn_nest_adaptive_with_named_region_windows(
             stopped_on_empty_demand,
             spring_passes,
             first_level_evidence,
+            domain_floor_level: 0,
         },
     ))
 }

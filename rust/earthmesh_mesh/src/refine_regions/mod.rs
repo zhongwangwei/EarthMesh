@@ -87,4 +87,16 @@ impl RefinementRegion {
             | Self::Polygon { level, .. } => *level,
         }
     }
+
+    /// The same region, asked for at `level`.
+    pub fn with_level(&self, level: usize) -> Self {
+        let mut region = self.clone();
+        match &mut region {
+            Self::Circle { level: at, .. }
+            | Self::Bbox { level: at, .. }
+            | Self::Corridor { level: at, .. }
+            | Self::Polygon { level: at, .. } => *at = level,
+        }
+        region
+    }
 }

@@ -69,6 +69,10 @@ pub struct AdaptiveNestReport {
     /// What the criteria read at level 1, so a run that refined nothing can
     /// tell "nothing met a threshold" from "no data was read".
     pub first_level_evidence: CriteriaEvidence,
+    /// The level every cell of the domain is asked for, over a regional
+    /// mother: the requested resolution, counted from the mother. Zero
+    /// without one.
+    pub domain_floor_level: usize,
 }
 
 /// What the criteria ask for at one level, before any backend sees it.
@@ -266,8 +270,8 @@ impl AdaptiveNestReport {
         format!(
             "{{\"enabled\":true,\"max_level\":{max_level},\"base_m\":{base_meters},\
              \"coastline\":{coastline},\"deepest_level\":{},\
-             \"stopped_on_empty_demand\":{},\"passes\":[{passes}]}}",
-            self.deepest_level, self.stopped_on_empty_demand
+             \"stopped_on_empty_demand\":{},\"floor_level\":{},\"passes\":[{passes}]}}",
+            self.deepest_level, self.stopped_on_empty_demand, self.domain_floor_level
         )
     }
 }

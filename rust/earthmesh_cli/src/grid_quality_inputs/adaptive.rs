@@ -29,6 +29,9 @@ struct EmittedRefinement {
     pass_count: usize,
     deepest_level: Option<u32>,
     stopped_on_empty_demand: bool,
+    /// Every cell's level over a regional mother: the domain is asked for the
+    /// requested resolution, counted from the mother. Zero without one.
+    floor_level: u32,
     circles: Vec<LeveledCircle>,
 }
 
@@ -75,6 +78,7 @@ fn parse_emitted_refinement(contents: &str) -> io::Result<EmittedRefinement> {
         pass_count: 0,
         deepest_level: json_number(contents, "deepest_level").map(|value| value as u32),
         stopped_on_empty_demand: json_bool(contents, "stopped_on_empty_demand").unwrap_or(false),
+        floor_level: json_number(contents, "floor_level").map_or(0, |value| value as u32),
         circles: Vec::new(),
     };
     // Each pass is `{"level":N,...,"circles":[...]}`; walk them in order so a
@@ -127,6 +131,8 @@ fn adaptive_target_levels_for_quality_cells(
     kind: &str,
     emitted: &EmittedRefinement,
 ) -> io::Result<Vec<u32>> {
+    // The delivered mesh is carved to the domain, so every cell it has is
+    // asked for at least the domain's level.
     target_levels_for_quality_cells(
         mesh,
         kind,
@@ -134,6 +140,12 @@ fn adaptive_target_levels_for_quality_cells(
         &CircleTargets::new(&emitted.circles),
         "point+radius",
     )
+    .map(|levels| {
+        levels
+            .into_iter()
+            .map(|level| level.max(emitted.floor_level))
+            .collect()
+    })
 }
 
 /// Attach point+radius diagnostics, if this run took that route.

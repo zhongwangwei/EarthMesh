@@ -263,8 +263,17 @@ fn refine_from_shared_source(
     if config.regional_mother_levels > 0 {
         let lepp =
             read_method_c_algorithm_options(contents)?.algorithm == MethodCAlgorithm::LeppDelaunay;
+        // The point+radius route of red-green and LEPP takes the domain as a
+        // level-k region (`RedGreenMother`, `lepp_mother_demands`); every
+        // other route needs the h-field to.
+        let point_radius = (backend == RefineBackend::RedGreen
+            || (backend == RefineBackend::MethodC && lepp))
+            && adaptive_options.is_some()
+            && hfield_options.is_none();
         let unsupported = if config.mask_domain_global {
             Some("a global domain")
+        } else if point_radius {
+            None
         } else if hfield_options.is_none() {
             Some("a run without the h-field")
         } else if adaptive_options.is_some() {
@@ -279,7 +288,8 @@ fn refine_from_shared_source(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "NL%regional_mother_levels refines a regional domain on the h-field of canonical \
-                     Method-C or red-green, not {unsupported}"
+                     Method-C or red-green, or on the point+radius route of red-green and \
+                     LEPP-Delaunay, not {unsupported}"
                 ),
             ));
         }
@@ -750,6 +760,26 @@ fn refine_from_shared_source(
             } else if backend == RefineBackend::IconNest {
                 refine_with_icon_nest(mesh, &regions, &refine, max_level, adaptive, hfield)?
             } else {
+                // Over a regional mother the point+radius route refines the
+                // domain itself first; the h-field route has it in its field.
+                let mother = match &adaptive {
+                    Some(adaptive) if config.regional_mother_levels > 0 => {
+                        let domain = domain_region.as_ref().ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "NL%regional_mother_levels refines a domain; this run has none",
+                            )
+                        })?;
+                        let levels = usize::from(config.regional_mother_levels);
+                        Some(RedGreenMother::new(
+                            domain,
+                            levels,
+                            adaptive.base_cell_meters / 2f64.powi(levels as i32),
+                        ))
+                    }
+                    _ => None,
+                };
+                let max_level = max_level + mother.as_ref().map_or(0, |mother| mother.levels);
                 refine_with_redgreen(
                     &mesh,
                     &regions,
@@ -759,6 +789,7 @@ fn refine_from_shared_source(
                     hfield,
                     config.mode_grid.trim() == "tri",
                     spring_nest_iterations,
+                    mother,
                 )?
             }
         }
@@ -776,6 +807,7 @@ fn refine_from_shared_source(
                     max_level,
                     *method_c_algorithm,
                     spring_nest_iterations,
+                    usize::from(config.regional_mother_levels),
                 )?
             } else {
                 let MethodCRefineOutcome {
@@ -2266,6 +2298,89 @@ fn nested_criteria_regions(
     regions
 }
 
+/// A regional mother on red-green's point+radius route: the domain is
+/// refined to the requested resolution first, `levels` halvings below the
+/// mother, and every criterion and named region is asked `levels` deeper.
+pub(super) struct RedGreenMother {
+    levels: usize,
+    /// The domain as regions at level `levels`, grown by its skirt.
+    domain: Vec<earthmesh_mesh::RefinementRegion>,
+}
+
+/// Target cells the domain's level reaches past its edge: cells the carve
+/// keeps along the boundary are whole at the requested resolution.
+const REDGREEN_MOTHER_SKIRT_CELLS: f64 = 3.0;
+
+impl RedGreenMother {
+    pub(super) fn new(domain: &GridRegion, levels: usize, target_cell_meters: f64) -> Self {
+        let tolerance = 0.5 * target_cell_meters;
+        let skirt = REDGREEN_MOTHER_SKIRT_CELLS * target_cell_meters + tolerance;
+        Self {
+            levels,
+            domain: domain_refinement_regions(domain, levels, tolerance)
+                .iter()
+                .flat_map(|region| widened_region(region, skirt))
+                .collect(),
+        }
+    }
+}
+
+/// `domain` as regions marked at `level`. A basin outline is simplified to
+/// within `tolerance_meters` first -- its 130,000 vertices are tested for
+/// every triangle at every level otherwise -- and the caller grows the result
+/// by at least that much, so the regions still hold the whole domain.
+fn domain_refinement_regions(
+    domain: &GridRegion,
+    level: usize,
+    tolerance_meters: f64,
+) -> Vec<earthmesh_mesh::RefinementRegion> {
+    use earthmesh_mesh::{LonLatDegrees, RefinementRegion};
+    match domain {
+        GridRegion::Bbox {
+            west,
+            east,
+            north,
+            south,
+        } => vec![RefinementRegion::Bbox {
+            west_degrees: *west,
+            east_degrees: *east,
+            south_degrees: south.min(*north),
+            north_degrees: north.max(*south),
+            level,
+        }],
+        GridRegion::Circle {
+            lon,
+            lat,
+            radius_km,
+        } => vec![RefinementRegion::Circle {
+            center: LonLatDegrees::new(*lon, *lat),
+            radius_meters: radius_km * 1000.0,
+            level,
+        }],
+        GridRegion::Close { points } => {
+            // Degrees of latitude; a degree of longitude is never longer, so
+            // the simplified ring stays within the tolerance everywhere.
+            let tolerance_degrees =
+                (tolerance_meters / earthmesh_hfield::EARTH_RADIUS_METERS).to_degrees();
+            let ring = earthmesh_inputs::hydro_close_buffer::simplify_closed_ring(
+                points.iter().map(|point| (point.lon, point.lat)).collect(),
+                tolerance_degrees,
+            );
+            vec![RefinementRegion::Polygon {
+                points: ring
+                    .into_iter()
+                    .map(|(lon, lat)| LonLatDegrees::new(lon, lat))
+                    .collect(),
+                level,
+            }]
+        }
+        GridRegion::Any(regions) => regions
+            .iter()
+            .flat_map(|region| domain_refinement_regions(region, level, tolerance_meters))
+            .collect(),
+    }
+}
+
 /// `region` grown by `margin_meters` on every side, as the regions whose
 /// union is the grown region.
 ///
@@ -2593,6 +2708,7 @@ fn fixed_topology_adaptive_run(
                     .first()
                     .map(|demand| demand.evidence)
                     .unwrap_or_default(),
+                domain_floor_level: 0,
             },
             max_level,
             adaptive.base_cell_meters,
@@ -2877,6 +2993,7 @@ fn refine_with_redgreen(
     hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     preserve_locality: bool,
     spring_iterations: usize,
+    mother: Option<RedGreenMother>,
 ) -> io::Result<RefinedGrid> {
     if !refine.is_transition {
         // Not only for a second level: the transition rows *are* red-green's
@@ -2894,6 +3011,22 @@ fn refine_with_redgreen(
              at any depth. Method-C closes without them; use it for this run",
         ));
     }
+    // Over a regional mother the domain takes the first `k` levels -- the
+    // requested resolution -- and every named region is asked `k` deeper.
+    let user_named_regions = named_regions.len();
+    let mother_levels = mother.as_ref().map_or(0, |mother| mother.levels);
+    let mother_named: Vec<earthmesh_mesh::RefinementRegion>;
+    let named_regions = match &mother {
+        Some(mother) => {
+            mother_named = named_regions
+                .iter()
+                .map(|region| region.with_level(region.level() + mother.levels))
+                .chain(mother.domain.iter().cloned())
+                .collect();
+            mother_named.as_slice()
+        }
+        None => named_regions,
+    };
     let mut redgreen =
         earthmesh_refine_redgreen::redgreen_mesh_from_triangular(mesh, &mesh.m_neighbors)?;
     let mut output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
@@ -2931,20 +3064,43 @@ fn refine_with_redgreen(
     let mut planned_circles = Vec::new();
     if let Some(adaptive) = &adaptive {
         for level in 1..=max_level {
+            // The mother's own levels ask nothing of the criteria; theirs
+            // start at the requested resolution, where the cell they judge is
+            // the same size it would be without a mother.
+            if level <= mother_levels {
+                planned_circles.push(crate::refinement_demand::nest::LevelCircles {
+                    demanded: false,
+                    demanded_cells: 0,
+                    radius_meters: 0.0,
+                    circles: Vec::new(),
+                    criterion_ids: Vec::new(),
+                    evidence: Default::default(),
+                });
+                continue;
+            }
             let cell_meters = adaptive.base_cell_meters / 2f64.powi((level - 1) as i32);
-            planned_circles.push(
+            let mut demand =
                 crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows_at_radius(
                     refine,
                     &adaptive.inputs,
-                    level,
+                    level - mother_levels,
                     cell_meters,
                     cell_meters,
                     cell_meters,
-                )?,
-            );
+                )?;
+            for circle in &mut demand.circles {
+                *circle = circle.with_level(circle.level() + mother_levels);
+            }
+            planned_circles.push(demand);
         }
     }
     for level in 1..=max_level {
+        if level <= mother_levels {
+            eprintln!(
+                "red-green refine level {level}: the domain, toward the requested resolution \
+                 ({level} of {mother_levels})"
+            );
+        }
         let marked_regions = nested_criteria_regions(
             named_regions,
             &planned_circles,
@@ -3068,9 +3224,27 @@ fn refine_with_redgreen(
     // is uniform. It stands only when nothing asked at level 1 and the
     // uniform mesh is the answer.
     let evidence = planned_circles
-        .first()
+        .get(mother_levels)
         .map(|demand| demand.evidence)
         .unwrap_or_default();
+    // Over a mother the domain always refines, so criteria that found
+    // nothing leave the domain at the requested resolution: the same answer,
+    // said the same way -- and the same fault when they read no data.
+    if mother_levels > 0
+        && user_named_regions == 0
+        && evidence.judged
+        && planned_circles
+            .iter()
+            .skip(mother_levels)
+            .all(|demand| !demand.demanded)
+        && !uniform_mesh_is_the_answer(0, evidence, false, max_level - mother_levels)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "red-green criteria read no valid source sample over the domain -- check that \
+             their sources cover it",
+        ));
+    }
     if split_triangles == 0
         && !(deepest_level == 0
             && stopped_on_empty_demand
@@ -3275,10 +3449,8 @@ fn refine_with_redgreen(
                         deepest_level,
                         stopped_on_empty_demand,
                         spring_passes: spring_nest_passes,
-                        first_level_evidence: planned_circles
-                            .first()
-                            .map(|demand| demand.evidence)
-                            .unwrap_or_default(),
+                        first_level_evidence: evidence,
+                        domain_floor_level: mother_levels,
                     },
                     max_level,
                     adaptive.base_cell_meters,
@@ -3356,12 +3528,36 @@ fn refine_with_method_c_lepp(
     max_level: usize,
     options: MethodCAlgorithmOptions,
     spring_iterations: usize,
+    mother_levels: usize,
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
     let mut state = MeshState::from_triangular_mesh(&mesh)?;
     // LEPP's base edge, before anything is inserted: what its depths are
     // measured against.
     let h0_radians = median_longest_edge_radians(&state);
+    // Over a regional mother the domain is a region at level
+    // `mother_levels`: a user region resolves to its base edge / 2^level,
+    // the requested resolution. It is refined on its own first (below), so
+    // the named regions and criteria then resolve against the mesh they
+    // would have started from without a mother and keep their own levels.
+    let base_m = adaptive
+        .and_then(|adaptive| adaptive.base_m)
+        .unwrap_or_else(|| {
+            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
+                / (5.0 * method_c_nxp as f64)
+        });
+    let mother_domain = match (mother_levels, domain_region) {
+        (0, _) => Vec::new(),
+        (levels, Some(domain)) => {
+            RedGreenMother::new(domain, levels, base_m / 2f64.powi(levels as i32)).domain
+        }
+        (_, None) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NL%regional_mother_levels refines a domain; this run has none",
+            ))
+        }
+    };
     for (index, region) in named_regions.iter().enumerate() {
         region.validate().map_err(|error| {
             io::Error::new(
@@ -3381,10 +3577,9 @@ fn refine_with_method_c_lepp(
     let mut pre_unresolved = Vec::new();
 
     if let Some(adaptive) = adaptive {
-        let base_m = adaptive.base_m.unwrap_or_else(|| {
-            2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
-                / (5.0 * method_c_nxp as f64)
-        });
+        // The criteria judge the cells of the requested resolution, whatever
+        // the mesh started from.
+        let base_m = base_m / 2f64.powi(mother_levels as i32);
         let depth = adaptive.max_level.unwrap_or(max_level).clamp(1, 5);
         let inputs = adaptive_demand_inputs(
             domain_region,
@@ -3479,6 +3674,52 @@ fn refine_with_method_c_lepp(
         boundary_segments.len(),
         adaptive_config.max_cycles
     );
+    // Over a regional mother the domain is refined to the requested
+    // resolution first, on its own, and the criteria start from there -- the
+    // mesh they start from without a mother. Refined toward 5 km demand
+    // straight from 157 km cells, LEPP's paths widened every transition: the
+    // Heihe land run delivered 28% more cells, half of its background at the
+    // transition size.
+    if !mother_domain.is_empty() {
+        // Not protected, and not among the run's own demands: every cell of
+        // the domain would be both, and resolved again against the refined
+        // mesh it would ask 2^k finer still.
+        let domain_demands = mother_domain
+            .iter()
+            .enumerate()
+            .map(|(index, region)| {
+                AdaptiveHybridDemand::user_region(
+                    format!("regional-mother-domain-{index}"),
+                    region.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let domain_config = AdaptiveHybridConfig {
+            // About two bisections of every edge per level.
+            max_cycles: 3 * mother_levels,
+            ..adaptive_config.clone()
+        };
+        let domain_report = if boundary_segments.is_empty() {
+            refine_adaptive_hybrid(&mut state, &domain_demands, &domain_config)
+        } else {
+            refine_adaptive_hybrid_constrained(
+                &mut state,
+                &mut boundary_segments,
+                &domain_demands,
+                &domain_config,
+            )
+        }
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        eprintln!(
+            "earthmesh_cli: LEPP regional mother: the domain refined to the requested resolution \
+             in {} cycles, {} committed insertions, {} -> {} faces, stop={:?}",
+            domain_report.cycles,
+            domain_report.path_stats.committed,
+            domain_report.initial_faces,
+            domain_report.final_faces,
+            domain_report.stop_reason,
+        );
+    }
     // Kept for a second pass under the strict gates, should the relaxed one
     // leave a degree the repair cannot take back.
     let unrefined = (state.clone(), boundary_segments.clone());
@@ -5126,6 +5367,62 @@ mod tests {
     }
 
     #[test]
+    fn a_regional_mother_holds_the_whole_domain_at_its_level_from_a_simplified_outline() {
+        use earthmesh_mesh::{LonLatDegrees, RefinementRegionIndex};
+        // A basin-sized outline drawn with 10,000 points.
+        let ring: Vec<crate::LonLatPoint> = (0..10_000)
+            .map(|k| {
+                let angle = k as f64 / 10_000.0 * std::f64::consts::TAU;
+                crate::LonLatPoint {
+                    lon: 100.0 + 2.0 * angle.cos() / 40f64.to_radians().cos(),
+                    lat: 40.0 + 2.0 * angle.sin(),
+                }
+            })
+            .collect();
+        let domain = GridRegion::Close {
+            points: ring.clone(),
+        };
+        let mother = RedGreenMother::new(&domain, 2, 5_000.0);
+        assert_eq!(mother.levels, 2);
+        let polygon_points = mother
+            .domain
+            .iter()
+            .find_map(|region| match region {
+                earthmesh_mesh::RefinementRegion::Polygon { points, .. } => Some(points.len()),
+                _ => None,
+            })
+            .expect("the outline");
+        assert!(polygon_points < 1_000, "{polygon_points} points kept");
+        assert!(mother.domain.iter().all(|region| region.level() == 2));
+        let index = RefinementRegionIndex::new(&mother.domain);
+        for point in ring.iter().step_by(97) {
+            assert!(
+                index.contains_lonlat_canonical(LonLatDegrees::new(point.lon, point.lat), 2),
+                "{point:?} is on the domain's edge and must be held"
+            );
+        }
+        assert!(!index.contains_lonlat_canonical(LonLatDegrees::new(100.0, 43.5), 1));
+
+        // Several shapes: each becomes regions of its own.
+        let any = GridRegion::Any(vec![
+            GridRegion::Bbox {
+                west: 10.0,
+                east: 12.0,
+                north: 46.0,
+                south: 44.0,
+            },
+            GridRegion::Circle {
+                lon: -70.0,
+                lat: -20.0,
+                radius_km: 100.0,
+            },
+        ]);
+        let regions = domain_refinement_regions(&any, 3, 1_000.0);
+        assert_eq!(regions.len(), 2);
+        assert!(regions.iter().all(|region| region.level() == 3));
+    }
+
+    #[test]
     fn a_uniform_mesh_stands_only_when_the_criteria_read_data_and_nothing_was_named() {
         use crate::refinement_demand::plan::CriteriaEvidence;
         let read = |samples| CriteriaEvidence {
@@ -5508,7 +5805,7 @@ mod tests {
             ..RefineConfig::default()
         };
 
-        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, true, 1)
+        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, true, 1, None)
             .expect("red-green with spring configured");
 
         assert_eq!(refined.diagnostics.spring_nest_passes, 0);
@@ -5550,8 +5847,9 @@ mod tests {
             ..RefineConfig::default()
         };
 
-        let refined = refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, false, 1)
-            .expect("red-green hex with spring configured");
+        let refined =
+            refine_with_redgreen(&mesh, &[region], &refine, 1, None, None, false, 1, None)
+                .expect("red-green hex with spring configured");
 
         assert_eq!(refined.diagnostics.spring_nest_passes, 0);
         let (lo, hi) = unstructured_triangle_angle_range(&refined.output_mesh).unwrap();
@@ -5586,7 +5884,7 @@ mod tests {
             ..RefineConfig::default()
         };
         let result =
-            refine_with_redgreen(&mesh, &[region], &refine, 3, None, None, true, 0).unwrap();
+            refine_with_redgreen(&mesh, &[region], &refine, 3, None, None, true, 0, None).unwrap();
         assert_eq!(result.diagnostics.spring_nest_passes, 0);
         let angles = unstructured_triangle_angle_range(&result.output_mesh).unwrap();
         let window = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;

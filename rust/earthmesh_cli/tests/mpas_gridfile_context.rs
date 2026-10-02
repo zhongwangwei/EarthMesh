@@ -325,6 +325,7 @@ fn adaptive_report(
         stopped_on_empty_demand: false,
         spring_passes: 0,
         first_level_evidence: Default::default(),
+        domain_floor_level: 0,
     }
 }
 
