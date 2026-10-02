@@ -905,15 +905,17 @@ fn budget_failure_leaves_no_formal_gridfile_or_ready_marker() {
 }
 
 #[test]
-fn unsupported_mother_fails_and_reverse_mode_is_bounded_and_certified() {
-    let root = temp_root("unsupported");
-    let path = root.join("unsupported.nml");
-    fs::write(&path, namelist(&root, "unsupported_n5", 5, 1_000)).unwrap();
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("unsupported support-table entry must fail");
-    assert!(error.to_string().contains("CriterionNotCertifiable"));
-    assert!(!root
-        .join("unsupported_n5/result/gridfile_NXP0005_hex.nc4")
+fn a_mother_off_the_old_table_delivers_and_reverse_mode_is_bounded_and_certified() {
+    // n = 5 was never in the curated table; its own proof admits it now.
+    let root = temp_root("off_table");
+    let path = root.join("off_table.nml");
+    fs::write(&path, namelist(&root, "off_table_n5", 5, 1_000)).unwrap();
+    let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .expect("a mother admitted by its proof delivers");
+    let certified = run.certified_run.unwrap();
+    assert_eq!(certified.mother_subdivision, 5);
+    assert!(root
+        .join("off_table_n5/result/gridfile_NXP0005_hex.nc4")
         .exists());
 
     let reverse = namelist(&root, "reverse_exhausted", 3, 1_000)
@@ -1375,6 +1377,73 @@ fn certified_refine_false_uses_uniform_level_zero_safe_mother() {
     assert_eq!(certified.mother_subdivision, 3);
     assert_eq!(certified.attempted_patches, 0);
     assert_eq!(certified.removed_faces, 0);
+}
+
+/// Land types 1 and 2 side by side west of the meridian, type 1 alone east of
+/// it; one cell of type 3, the largest class, which the land-type reader sets
+/// aside as ice.
+fn write_landtype_mixed_in_the_west(path: &std::path::Path) {
+    let mut file = earthmesh_cli::create_netcdf_quiet(path).unwrap();
+    file.add_dimension("longitude", 360).unwrap();
+    file.add_dimension("latitude", 180).unwrap();
+    let mut values = (0..360 * 180)
+        .map(|index| {
+            let (i, j) = (index / 180, index % 180);
+            if i < 180 && (i + j) % 2 == 0 {
+                2_i8
+            } else {
+                1_i8
+            }
+        })
+        .collect::<Vec<_>>();
+    values[0] = 3;
+    file.add_variable::<i8>("landtype", &["longitude", "latitude"])
+        .unwrap()
+        .put_values(&values, (.., ..))
+        .unwrap();
+}
+
+#[test]
+fn a_regional_requirement_ignores_demand_outside_the_domain() {
+    let root = temp_root("regional_requirement_scope");
+    let landtype = root.join("landtype.nc");
+    write_landtype_mixed_in_the_west(&landtype);
+    let path = root.join("cmrc.nml");
+
+    // Over the globe the land-type count asks for level 1 in the west.
+    fs::write(&path, landtype_namelist(&root, "scope_global", &landtype)).unwrap();
+    let global = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .unwrap()
+        .certified_run
+        .unwrap();
+    assert_eq!(global.chosen_level, 1);
+
+    // A domain in the east asks nothing: the level-0 mother, not a level-1
+    // mother chosen by the west.
+    let regional = landtype_namelist(&root, "scope_regional", &landtype)
+        .replace(
+            "NL%mask_domain_global=.true.",
+            "NL%mask_domain_global=.false.",
+        )
+        .replace(
+            "NL%landtype_file=",
+            "NL%mask_domain_type='bbox'\n  \
+             NL%mask_domain_fprefix='inline:bbox:w=30,e=150,s=-45,n=45'\n  NL%landtype_file=",
+        );
+    fs::write(&path, regional).unwrap();
+    let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
+        .unwrap()
+        .certified_run
+        .unwrap();
+    assert_eq!(certified.chosen_level, 0);
+    assert_eq!(certified.delivered_level, 0);
+    assert_eq!(certified.mode, "safe_mother_only");
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.certificate).unwrap()).unwrap();
+    assert_eq!(
+        certificate["requirement_layers"]["requirement_scope"],
+        "regional_domain"
+    );
 }
 
 #[test]
@@ -2905,29 +2974,6 @@ fn certified_hydro_requirement_does_not_publish_partial_raw_provenance() {
     assert_eq!(layers["policy"], "effective_raster_remains_hard");
     assert_eq!(certified.physical_residuals, 0);
     assert_eq!(certified.chosen_level, 1);
-}
-
-#[test]
-fn unsupported_mother_family_rejects_before_reading_threshold_data() {
-    let root = temp_root("unsupported_before_thresholds");
-    let landtype = root.join("not_a_netcdf.nc");
-    fs::write(&landtype, "invalid threshold payload must never be opened").unwrap();
-    let path = root.join("cmrc.nml");
-    fs::write(
-        &path,
-        landtype_namelist(&root, "unsupported_before_thresholds", &landtype)
-            .replace("NL%NXP=3", "NL%NXP=7"),
-    )
-    .unwrap();
-    let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-    assert!(
-        error
-            .to_string()
-            .contains("no certified mother subdivision"),
-        "{error}"
-    );
-    assert!(!root.join("unsupported_before_thresholds/result").exists());
 }
 
 #[test]

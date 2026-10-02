@@ -72,15 +72,6 @@ pub fn certify_mother_grid_with_contract(
         Ok(report) => CertifiedMeshOutcome::GeometryCertified(Box::new(
             GeometryCertifiedMotherGrid::new(grid.mesh, report),
         )),
-        Err(error)
-            if error
-                .to_string()
-                .contains("not in the certified support table") =>
-        {
-            CertifiedMeshOutcome::CriterionNotCertifiable {
-                reason: error.to_string(),
-            }
-        }
         Err(error) => CertifiedMeshOutcome::InternalCertificationFailure {
             reason: error.to_string(),
         },

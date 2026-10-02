@@ -187,22 +187,31 @@ fn one_concentrated_region_goes_to_the_schmidt_stretch() {
         "{:?}",
         adapted.rejected
     );
-    // The stretch takes n=64 (3.2 times the base), below the n=80 a power of
+    // The stretch takes n=60 (3 times the base), below the n=80 a power of
     // two would have needed; equidistribution only tries mothers coarser
     // than that.
-    assert_eq!(adapted.subdivision, 64);
+    assert_eq!(adapted.subdivision, 60);
 }
 
 #[test]
-fn a_level_one_demand_has_no_mother_between_the_base_and_the_safe_one() {
-    // Nothing is supported between n=20 and the safe n=40.
+fn a_level_one_demand_is_served_by_a_mother_between_the_base_and_the_safe_one() {
+    // The curated table offered only n=24 between n=20 and the safe n=40, and
+    // 1.2 times the base cannot stretch to a level. Every subdivision is a
+    // candidate now: n=29, 1.45 times the base, serves it.
     let demand = raster(360, 180, &[((115.0, 23.0), 500.0, 1)]);
-    assert!(adapted_certified_mother(
+    let adapted = adapted_certified_mother(
         20,
         1,
         &demand,
         AngleContractId::LegacyStrict40To80,
-        10_000_000
+        10_000_000,
     )
-    .is_err());
+    .unwrap_or_else(|why| panic!("{why:?}"));
+    assert_eq!(adapted.strategy, "schmidt_stretch");
+    assert_eq!(adapted.subdivision, 29);
+    let degree = degrees(adapted.geometry.primal());
+    assert!(degree.iter().all(|&d| d == 5 || d == 6));
+    assert_eq!(adapted.final_requirements.physical_residuals(), 0);
+    assert_eq!(adapted.final_requirements.balance_residuals(), 0);
+    assert!(adapted.delivered_levels.iter().max() >= Some(&1));
 }

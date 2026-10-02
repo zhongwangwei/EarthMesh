@@ -130,7 +130,7 @@ impl Certificate {
         grid: &MotherGrid,
     ) -> Result<GeometryCertificateReport, CertificateError> {
         let angle_contract_id = self.angle_contract_id()?;
-        let angle_gate = SupportedMotherAngleGate::verify(grid.subdivision, &grid.mesh, self)?;
+        let angle_gate = MotherAngleGate::verify(grid.subdivision, &grid.mesh, self)?;
         let topology = topology(&grid.mesh);
         check_topology(&topology)?;
         let delaunay_violations = delaunay_violations(&grid.mesh)?;
@@ -320,42 +320,30 @@ impl Certificate {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AngleGateReport {
-    pub supported_subdivision: usize,
+    pub subdivision: usize,
     /// Diagnostic only; the proof does not depend on these scanned extrema.
     pub observed_min_degrees: f64,
     pub observed_max_degrees: f64,
     pub proof_method: &'static str,
 }
 
-struct SupportedMotherAngleGate;
+/// A mother is admitted by its proof alone. Until 2026-10 a curated table of
+/// 25 subdivisions stood in front of it, grown by need from 11; the same
+/// certificates pass every n from 1 to 200 and every one sampled up to 1000,
+/// at 54.0-72.0 degrees, so the table only turned away mothers that were
+/// never tried -- NXP 32 among them (guide 11.100).
+struct MotherAngleGate;
 
-/// Returns whether `n` is in the curated mother-subdivision admission table.
-/// This is not a proof for a generated mesh; runtime certification is still required.
-pub fn is_supported_mother_subdivision(n: usize) -> bool {
-    SupportedMotherAngleGate::SUPPORTED.contains(&n)
-}
-
-impl SupportedMotherAngleGate {
-    // 24, 48 and 96 complete the 3 * 2^k family between 12 and 192: they
-    // are 2.4 times the 20/40 bases, where a stretched level-2 mother fits
-    // under its far-side cap (guide 11.89).
-    const SUPPORTED: [usize; 25] = [
-        1, 2, 3, 4, 6, 8, 12, 20, 24, 40, 48, 64, 80, 96, 128, 144, 160, 192, 256, 288, 320, 384,
-        576, 640, 768,
-    ];
-
+impl MotherAngleGate {
     fn verify(
         n: usize,
         mesh: &MeshState,
         certificate: &Certificate,
     ) -> Result<AngleGateReport, CertificateError> {
-        if !Self::SUPPORTED.contains(&n) {
-            return Err(CertificateError::UnsupportedMotherSubdivision(n));
-        }
         prove_angle_window_with_outward_intervals(mesh, certificate)?;
         let angles = fast_angle_filter(mesh)?;
         let report = AngleGateReport {
-            supported_subdivision: n,
+            subdivision: n,
             observed_min_degrees: angles.min,
             observed_max_degrees: angles.max,
             proof_method: "runtime outward interval threshold proof",
@@ -705,7 +693,6 @@ impl BalanceCertificate {
 pub enum CertificateError {
     DegenerateTriangle { triangle: usize },
     AngleOutOfRange { min_angle: f64, max_angle: f64 },
-    UnsupportedMotherSubdivision(usize),
     CriterionNotCertifiable(String),
     GeometryGateResiduals(usize),
     FinalGateResiduals(usize),
@@ -732,10 +719,6 @@ impl std::fmt::Display for CertificateError {
             } => write!(
                 f,
                 "triangle angles [{min_angle}, {max_angle}] are outside the certificate window"
-            ),
-            Self::UnsupportedMotherSubdivision(n) => write!(
-                f,
-                "mother subdivision n={n} is not in the certified support table"
             ),
             Self::CriterionNotCertifiable(reason) => f.write_str(reason),
             Self::GeometryGateResiduals(n) => write!(f, "geometry certificate has {n} residuals"),
@@ -1399,7 +1382,7 @@ mod tests {
             assert_eq!(report.delaunay_violations, 0);
             assert_eq!(report.voronoi_cells, report.vertices);
             assert_eq!(report.topology_errors + report.degree_outside_window, 0);
-            assert_eq!(report.angle_gate.as_ref().unwrap().supported_subdivision, n);
+            assert_eq!(report.angle_gate.as_ref().unwrap().subdivision, n);
         }
     }
 
@@ -1487,49 +1470,13 @@ mod tests {
     }
 
     #[test]
-    fn support_table_reaches_the_largest_master_case_subdivision() {
-        assert_eq!(SupportedMotherAngleGate::SUPPORTED.last(), Some(&768));
-    }
-
-    #[test]
-    fn support_table_includes_master_case_hierarchy_levels() {
-        for n in [192, 384, 768] {
-            assert!(
-                SupportedMotherAngleGate::SUPPORTED.contains(&n),
-                "master ocean case hierarchy level n={n} must be explicitly supported"
-            );
-        }
-    }
-
-    #[test]
-    fn support_table_includes_original_atmospheric_hierarchy_levels() {
-        for n in [64, 128, 256] {
-            assert!(
-                SupportedMotherAngleGate::SUPPORTED.contains(&n),
-                "original atmospheric case hierarchy level n={n} must be explicitly supported"
-            );
-        }
-    }
-
-    #[test]
-    fn support_table_includes_original_land_hierarchy_levels() {
-        for n in [144, 288, 576] {
-            assert!(
-                is_supported_mother_subdivision(n),
-                "original land case hierarchy level n={n} must be explicitly supported"
-            );
-        }
-        assert!(!is_supported_mother_subdivision(145));
-    }
-
-    #[test]
     fn original_atmospheric_hierarchy_satisfies_domain_quality_certificate() {
         for n in [64, 128, 256] {
             let grid = MotherGrid::generate(n).unwrap();
             let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
                 .verify_mother_grid(&grid)
                 .unwrap();
-            assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+            assert_eq!(report.angle_gate.unwrap().subdivision, n);
             assert_eq!(
                 analytic_counts(n).unwrap(),
                 (report.vertices, report.edges, report.faces)
@@ -1554,7 +1501,7 @@ mod tests {
                 Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1),
             ] {
                 let report = certificate.verify_mother_grid(&grid).unwrap();
-                assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+                assert_eq!(report.angle_gate.unwrap().subdivision, n);
                 assert_eq!(
                     analytic_counts(n).unwrap(),
                     (report.vertices, report.edges, report.faces)
@@ -1578,7 +1525,7 @@ mod tests {
         let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
             .verify_mother_grid(&grid)
             .unwrap();
-        assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+        assert_eq!(report.angle_gate.unwrap().subdivision, n);
         assert_eq!(
             analytic_counts(n).unwrap(),
             (report.vertices, report.edges, report.faces)
@@ -1593,7 +1540,7 @@ mod tests {
             let report = Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1)
                 .verify_mother_grid(&grid)
                 .unwrap();
-            assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+            assert_eq!(report.angle_gate.unwrap().subdivision, n);
             assert_eq!(
                 analytic_counts(n).unwrap(),
                 (report.vertices, report.edges, report.faces)
@@ -1621,7 +1568,7 @@ mod tests {
                 gate.proof_method,
                 started.elapsed().as_secs_f64()
             );
-            assert_eq!(gate.supported_subdivision, n);
+            assert_eq!(gate.subdivision, n);
             assert_eq!(
                 analytic_counts(n).unwrap(),
                 (report.vertices, report.edges, report.faces)
@@ -1718,11 +1665,26 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_mother_is_not_strictly_certified_by_support_table() {
-        let grid = MotherGrid::generate(5).unwrap();
-        assert!(matches!(
-            Certificate::final_delivery().verify_mother_grid(&grid),
-            Err(CertificateError::UnsupportedMotherSubdivision(5))
-        ));
+    fn mothers_the_old_table_turned_away_are_admitted_by_their_proof() {
+        // Never in the curated table; 32 is where it sent a 240 km global run
+        // (NXP 33), only to refuse that run's level 0.
+        for n in [5, 32, 145] {
+            let grid = MotherGrid::generate(n).unwrap();
+            for certificate in [
+                Certificate::final_delivery(),
+                Certificate::final_delivery_for(AngleContractId::DomainQuality38To82V1),
+            ] {
+                let report = certificate.verify_mother_grid(&grid).unwrap();
+                assert_eq!(report.angle_gate.unwrap().subdivision, n);
+                assert_eq!(
+                    analytic_counts(n).unwrap(),
+                    (report.vertices, report.edges, report.faces)
+                );
+                assert_eq!((report.euler, report.charge), (2, 12));
+                assert_eq!(report.degree_outside_window, 0);
+                assert_eq!(report.delaunay_violations, 0);
+                assert_eq!(report.voronoi_invalid_cells, 0);
+            }
+        }
     }
 }

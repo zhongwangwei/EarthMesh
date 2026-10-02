@@ -47,12 +47,13 @@ fn a_level_three_demand_is_served_by_a_stretched_mother_below_the_safe_one() {
         10_000_000,
     )
     .unwrap_or_else(|why| panic!("{why:?}"));
-    // n=64, 3.2 times the base: 40,962 cells against the safe mother's
-    // 256,002 (n=160), and fewer than n=80, the power of two below it.
-    assert_eq!(stretched.subdivision, 64);
-    assert!((stretched.mother_ratio - 3.2).abs() < 1e-12);
+    // n=60, 3 times the base: 36,002 cells against the safe mother's 256,002
+    // (n=160). The curated table's nearest was n=64 (40,962); n=57-59 pass
+    // the analytic screen but leave physical residuals.
+    assert_eq!(stretched.subdivision, 60);
+    assert!((stretched.mother_ratio - 3.0).abs() < 1e-12);
     assert!(
-        stretched.factor > 2.0 && stretched.factor <= 3.2,
+        stretched.factor > 2.0 && stretched.factor <= 3.0,
         "{}",
         stretched.factor
     );
@@ -91,7 +92,8 @@ fn a_demand_one_focus_cannot_reach_is_refused_with_reasons() {
 fn a_level_two_demand_is_served_by_a_mother_between_the_powers_of_two() {
     // Level 2 on n=20: n=40 may stretch by 2 at most and a demand of any
     // extent needs a little more, so the powers of two left only the safe
-    // mother (n=80). n=48 is 2.4 times the base and needs about 1.7.
+    // mother (n=80), and the curated table next offered n=48. Searching every
+    // subdivision, n=42 (2.1 times the base) is the first that serves it.
     let demand = raster(&[((115.0, 23.0), 500.0, 2)]);
     let stretched = stretched_certified_mother(
         20,
@@ -101,17 +103,19 @@ fn a_level_two_demand_is_served_by_a_mother_between_the_powers_of_two() {
         10_000_000,
     )
     .unwrap_or_else(|why| panic!("{why:?}"));
-    assert_eq!(stretched.subdivision, 48);
+    assert_eq!(stretched.subdivision, 42);
     assert!(
-        stretched.factor > 1.0 && stretched.factor <= 2.4,
+        stretched.factor > 1.0 && stretched.factor <= 2.1,
         "{}",
         stretched.factor
     );
+    // The screen's rejections come as one line, ending at n=40's cap.
     assert!(
         stretched
             .rejected
             .iter()
-            .any(|reason| reason.starts_with("n=40") && reason.contains("above 2.00")),
+            .any(|reason| reason.starts_with("n=21..40 (20 mothers)")
+                && reason.contains("above 2.00")),
         "{:?}",
         stretched.rejected
     );

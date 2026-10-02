@@ -248,7 +248,7 @@ fn mother_angle_gate_uses_outward_interval_threshold_proof() {
         .verify_mother_grid(&grid)
         .unwrap();
     let gate = report.angle_gate.unwrap();
-    assert_eq!(gate.supported_subdivision, 4);
+    assert_eq!(gate.subdivision, 4);
     assert_eq!(gate.observed_min_degrees, report.min_angle_degrees);
     assert_eq!(gate.observed_max_degrees, report.max_angle_degrees);
     assert_eq!(
@@ -256,10 +256,12 @@ fn mother_angle_gate_uses_outward_interval_threshold_proof() {
         "runtime outward interval threshold proof"
     );
 
-    let unsupported = MotherGrid::generate(5).unwrap();
-    assert!(Certificate::final_delivery()
-        .verify_mother_grid(&unsupported)
-        .is_err());
+    // Off the old curated table, admitted on the same proof.
+    let off_table = MotherGrid::generate(5).unwrap();
+    let report5 = Certificate::final_delivery()
+        .verify_mother_grid(&off_table)
+        .unwrap();
+    assert_eq!(report5.angle_gate.unwrap().subdivision, 5);
 }
 
 #[test]
@@ -565,12 +567,15 @@ fn final_certified_mesh_requires_audited_geometry_promotion() {
 }
 
 #[test]
-fn unsupported_mother_maps_to_noncertifiable_outcome() {
+fn a_mother_off_the_old_table_is_generated_and_certified() {
     match earthmesh_refine_certified::generate_certified_mother_grid(&CertifiedConfig::mother_only(
         5,
     )) {
-        CertifiedMeshOutcome::CriterionNotCertifiable { reason } => {
-            assert!(reason.contains("support table"));
+        CertifiedMeshOutcome::GeometryCertified(mesh) => {
+            assert_eq!(
+                mesh.certificate().angle_gate.as_ref().unwrap().subdivision,
+                5
+            );
         }
         other => panic!("unexpected outcome: {other:?}"),
     }
@@ -583,7 +588,7 @@ fn supported_large_levels_include_n80_interval_certification() {
         let report = Certificate::final_delivery()
             .verify_mother_grid(&grid)
             .unwrap();
-        assert_eq!(report.angle_gate.unwrap().supported_subdivision, n);
+        assert_eq!(report.angle_gate.unwrap().subdivision, n);
         assert_eq!(
             analytic_counts(n).unwrap(),
             (report.vertices, report.edges, report.faces)
@@ -594,7 +599,7 @@ fn supported_large_levels_include_n80_interval_certification() {
     let report80 = Certificate::final_delivery()
         .verify_mother_grid(&strict80)
         .unwrap();
-    assert_eq!(report80.angle_gate.unwrap().supported_subdivision, 80);
+    assert_eq!(report80.angle_gate.unwrap().subdivision, 80);
     assert_eq!(
         analytic_counts(80).unwrap(),
         (report80.vertices, report80.edges, report80.faces)
@@ -616,11 +621,7 @@ fn supported_large_levels_include_n80_interval_certification() {
     }) {
         CertifiedMeshOutcome::GeometryCertified(mesh) => {
             assert_eq!(
-                mesh.certificate()
-                    .angle_gate
-                    .as_ref()
-                    .unwrap()
-                    .supported_subdivision,
+                mesh.certificate().angle_gate.as_ref().unwrap().subdivision,
                 160
             );
         }

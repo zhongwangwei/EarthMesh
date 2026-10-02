@@ -23,7 +23,7 @@ use earthmesh_mesh::CartesianPoint;
 
 use crate::mother_geometry::{dual_areas, unit, xyz};
 use crate::{
-    certificate::{is_supported_mother_subdivision, AngleContractId},
+    certificate::AngleContractId,
     mother_grid::MotherGrid,
     outcome::{CertifiedMeshOutcome, GeometryCertifiedMotherGrid},
     requirement::{
@@ -82,17 +82,16 @@ pub fn stretched_certified_mother(
     let safe = base_subdivision
         .checked_shl(chosen_level as u32)
         .unwrap_or(usize::MAX);
-    let candidates = (base_subdivision + 1..safe).filter(|&n| is_supported_mother_subdivision(n));
-    for subdivision in candidates {
+    let cells_of = |n: usize| {
+        10usize
+            .saturating_mul(n)
+            .saturating_mul(n)
+            .saturating_add(2)
+    };
+    // What one subdivision would take, analytically: its focus and the factor
+    // it needs, or why it cannot serve. One pass over the raster.
+    let screen = |subdivision: usize| -> Result<Screen, String> {
         let ratio = subdivision as f64 / base_subdivision as f64;
-        let cells = 10usize
-            .saturating_mul(subdivision)
-            .saturating_mul(subdivision)
-            + 2;
-        if cells > max_cells {
-            rejected.push(format!("n={subdivision}: {cells} cells exceed the budget"));
-            break;
-        }
         // The scale each raster cell needs from the stretch: this mother is
         // `ratio` times finer than the base, and level L asks for 2^-L of it.
         // A cell the unstretched mother already serves asks for nothing.
@@ -111,31 +110,101 @@ pub fn stretched_certified_mother(
                 }
             }
         }
-        let Some(focus) = unit(sum) else {
-            rejected.push(format!("n={subdivision}: the demand has no mean direction"));
-            continue;
-        };
+        let focus = unit(sum).ok_or_else(|| "the demand has no mean direction".to_string())?;
         // Coarsening the far side by more than `ratio` would take it below
         // the base level.
         let cap = ratio;
-        let spacing = (4.0 * std::f64::consts::PI / cells as f64).sqrt();
+        let spacing = (4.0 * std::f64::consts::PI / cells_of(subdivision) as f64).sqrt();
         let needed =
             earthmesh_mesh::schmidt_factor_for_scales(&points, &scales, focus, spacing / 2.0, cap);
         if needed.unreachable > 0 {
-            rejected.push(format!(
-                "n={subdivision}: one focus cannot serve the demand ({} raster cells beyond \
-                 reach of it, farthest {:.1} deg)",
+            return Err(format!(
+                "one focus cannot serve the demand ({} raster cells beyond reach of it, \
+                 farthest {:.1} deg)",
                 needed.unreachable, needed.farthest_unreachable_deg
             ));
-            continue;
         }
         if needed.capped {
-            rejected.push(format!(
-                "n={subdivision}: the demand needs a factor above {cap:.2}, which would take \
-                 the far side below the base level"
+            return Err(format!(
+                "the demand needs a factor above {cap:.2}, which would take the far side below \
+                 the base level"
             ));
+        }
+        Ok(Screen {
+            ratio,
+            cap,
+            focus,
+            factor: needed.factor,
+        })
+    };
+    // Every subdivision certifies on its own proof (guide 11.101), so every
+    // one between the base and the safe mother is a candidate. The screen
+    // only gets easier with n -- a finer mother may stretch further and needs
+    // less of it -- so the finest the budget allows is screened first (if it
+    // fails, every coarser one does) and the coarsest that passes is found by
+    // bisection: about log2 of the range in raster passes, not one per n.
+    let in_budget = (((max_cells.saturating_sub(2)) / 10) as f64).sqrt().floor() as usize;
+    let finest = safe.saturating_sub(1).min(in_budget);
+    let over_budget = |rejected: &mut Vec<String>| {
+        if finest < safe.saturating_sub(1) {
+            rejected.push(format!(
+                "n={} and finer: {} cells or more exceed the budget",
+                finest + 1,
+                cells_of(finest + 1)
+            ));
+        }
+    };
+    if finest <= base_subdivision {
+        over_budget(&mut rejected);
+        return Err(rejected);
+    }
+    let first = match screen(finest) {
+        Err(reason) => {
+            rejected.push(format!("{}: {reason}", span(base_subdivision + 1, finest)));
+            over_budget(&mut rejected);
+            return Err(rejected);
+        }
+        Ok(_) => {
+            let (mut lo, mut hi) = (base_subdivision + 1, finest);
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if screen(mid).is_ok() {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            lo
+        }
+    };
+    if first > base_subdivision + 1 {
+        if let Err(reason) = screen(first - 1) {
+            rejected.push(format!(
+                "{}: {reason}",
+                span(base_subdivision + 1, first - 1)
+            ));
+        }
+    }
+    // Building a mother is what costs: after eight builds in a row fail,
+    // each further one skips twice as far ahead.
+    let mut failed_builds = 0u32;
+    let mut next_build = first;
+    for subdivision in first..=finest {
+        if subdivision < next_build {
             continue;
         }
+        let Screen {
+            ratio,
+            cap,
+            focus,
+            factor: needed_factor,
+        } = match screen(subdivision) {
+            Ok(pass) => pass,
+            Err(reason) => {
+                rejected.push(format!("n={subdivision}: {reason}"));
+                continue;
+            }
+        };
         let mother = match MotherGrid::generate(subdivision) {
             Ok(grid) => grid.mesh,
             Err(error) => {
@@ -145,7 +214,7 @@ pub fn stretched_certified_mother(
         };
         let active = mother.active_vertex_slots().collect::<Vec<_>>();
         let area0 = dual_areas(&mother);
-        let mut factor = needed.factor;
+        let mut factor = needed_factor;
         // The analytic factor meets the level at each demanded point; cells
         // straddling the demand's edge may still measure a level short. Step
         // it up while there is room under the cap.
@@ -224,8 +293,28 @@ pub fn stretched_certified_mother(
                 rejected,
             });
         }
+        failed_builds += 1;
+        next_build = subdivision + (1usize << failed_builds.saturating_sub(8).min(20));
     }
+    over_budget(&mut rejected);
     Err(rejected)
+}
+
+/// What the analytic screen found a subdivision would take.
+struct Screen {
+    ratio: f64,
+    cap: f64,
+    focus: [f64; 3],
+    factor: f64,
+}
+
+/// `n=a` or `n=a..b (k mothers)`.
+fn span(first: usize, last: usize) -> String {
+    if first == last {
+        format!("n={first}")
+    } else {
+        format!("n={first}..{last} ({} mothers)", last - first + 1)
+    }
 }
 
 #[cfg(test)]

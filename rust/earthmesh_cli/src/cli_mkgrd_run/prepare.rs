@@ -152,27 +152,6 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
             lowered.mkgrd.nxp
         );
     }
-    // CMRC builds only on certified mothers. An approximate resolution names
-    // no exact NXP, so take the nearest one that has a certified family rather
-    // than refusing the run over a rounding of km to NXP.
-    let approximate =
-        config.expert.nxp.is_none() && !matches!(config.target.resolution, ResolutionSpec::Nxp(_));
-    if approximate
-        && config.refinement.enabled
-        && config.refinement.backend == earthmesh_project::RefinementBackend::Certified
-    {
-        let maximum_level = usize::from(config.refinement.certified.maximum_level);
-        let nxp = usize::try_from(lowered.mkgrd.nxp).unwrap_or(0);
-        if let Some(certified) = earthmesh_cli::nearest_certified_base_nxp(nxp, maximum_level)
-            .filter(|&certified| certified != nxp)
-            .and_then(|certified| i32::try_from(certified).ok())
-        {
-            eprintln!(
-                "earthmesh_cli: CMRC adjusted NXP {nxp} -> {certified}: the nearest with a certified mother family"
-            );
-            lowered.mkgrd.nxp = certified;
-        }
-    }
     let run_dir = create_project_run_dir(&spec.path)?;
     let result = (|| {
         lowered.mkgrd.base_dir = format!("{}{}", run_dir.display(), std::path::MAIN_SEPARATOR);

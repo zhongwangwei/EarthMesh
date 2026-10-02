@@ -176,39 +176,6 @@ pub(super) fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result
     })
 }
 
-/// The base NXP nearest `requested` (by ratio) with a certified mother at some
-/// level up to `maximum_level`, preferring the finer on a tie. A project's
-/// resolution in km is approximate, and 40 km comes out as NXP 200, which no
-/// certified mother is a power-of-two multiple of; 192 is.
-pub fn nearest_certified_base_nxp(requested: usize, maximum_level: usize) -> Option<usize> {
-    if requested == 0 {
-        return None;
-    }
-    (requested.div_ceil(2)..=requested.saturating_mul(2))
-        .filter(|&base| validate_certified_mother_family(base, maximum_level).is_ok())
-        .min_by(|&a, &b| {
-            let distance = |n: usize| (n as f64 / requested as f64).ln().abs();
-            distance(a).total_cmp(&distance(b)).then(b.cmp(&a))
-        })
-}
-
-// Before scanning threshold rasters, reject only families with no possible
-// supported mother. The actual chosen level still passes full certification.
-pub(super) fn validate_certified_mother_family(
-    base_nxp: usize,
-    maximum_level: usize,
-) -> io::Result<()> {
-    let possible = (0..=maximum_level.min(usize::BITS as usize - 1))
-        .filter_map(|level| certified_subdivision(base_nxp, level).ok())
-        .any(earthmesh_refine_certified::certificate::is_supported_mother_subdivision);
-    if !possible {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, format!(
-            "CMRC NXP={base_nxp} has no certified mother subdivision at levels 0..={maximum_level}; rejected before threshold preparation"
-        )));
-    }
-    Ok(())
-}
-
 pub(super) fn build_certified_construction(
     base_nxp: usize,
     chosen_level: usize,
@@ -1414,14 +1381,6 @@ pub(super) fn refine_with_certified(
             "CMRC NXP must be positive",
         ));
     }
-    validate_certified_mother_family(
-        base_nxp,
-        if config.refine {
-            options.maximum_level
-        } else {
-            0
-        },
-    )?;
     let requirements = if config.refine {
         certified_requirement_plan(
             contents,
@@ -1452,7 +1411,7 @@ pub(super) fn refine_with_certified(
     // complete-hierarchy epoch (level 1 back to 0, with its lineage); with
     // sources that asked for nothing, it is an answer.
     let options = if config.refine && chosen_level == 0 && requirements.sourced {
-        requirements.nothing_requested(base_nxp)?;
+        requirements.nothing_requested();
         CertifiedRunOptions {
             mode: CertifiedMode::SafeMotherOnly,
             ..options
@@ -2566,10 +2525,8 @@ impl CertifiedRequirementPlan {
     /// when the certified level-0 mother is the answer -- as it is on every
     /// other backend (guide 11.98). Criteria that read no valid sample are
     /// said so rather than refused: an ocean domain judged by a land-type
-    /// criterion reads none, and CMRC delivered there before. A family
-    /// certified only from level 1 up (NXP 32: n = 64 is in the table, n = 32
-    /// is not) has no certified unrefined mesh to give.
-    fn nothing_requested(&self, base_nxp: usize) -> io::Result<()> {
+    /// criterion reads none, and CMRC delivered there before.
+    fn nothing_requested(&self) {
         let place = if self.domain_scoped {
             "in the regional domain"
         } else {
@@ -2586,23 +2543,10 @@ impl CertifiedRequirementPlan {
             ),
             None => format!("the requirement asks for no refinement {place}"),
         };
-        if !earthmesh_refine_certified::certificate::is_supported_mother_subdivision(base_nxp) {
-            let nearest = nearest_certified_base_nxp(base_nxp, 0).map_or_else(String::new, |nxp| {
-                format!(" -- the nearest that is: NXP {nxp}")
-            });
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!(
-                    "CMRC: refinement was requested, but {why}, and the unrefined mother \
-                     n={base_nxp} is not a certified subdivision{nearest}"
-                ),
-            ));
-        }
         eprintln!(
             "earthmesh_cli: warning: refinement was requested, but {why}; the certified mother \
              is delivered unrefined"
         );
-        Ok(())
     }
 
     fn layer_report(
@@ -3049,32 +2993,6 @@ mod tests {
     use crate::certified_options::{CertifiedDelivery, CertifiedMode, CertifiedRunOptions};
 
     #[test]
-    fn an_approximate_resolution_takes_the_nearest_certified_family() {
-        // 40 km is NXP 200, a multiple of no certified mother; 192 is one.
-        assert_eq!(nearest_certified_base_nxp(200, 8), Some(192));
-        // Already certified (or a power-of-two divisor of one): unchanged.
-        assert_eq!(nearest_certified_base_nxp(20, 8), Some(20));
-        assert_eq!(nearest_certified_base_nxp(96, 0), Some(96));
-        assert_eq!(nearest_certified_base_nxp(0, 8), None);
-        for requested in [7, 50, 100, 150, 200, 300, 500] {
-            let base = nearest_certified_base_nxp(requested, 8).expect("a family nearby");
-            assert!(validate_certified_mother_family(base, 8).is_ok());
-            assert!(
-                base * 2 >= requested && base <= requested * 2,
-                "{requested} -> {base}"
-            );
-        }
-    }
-
-    #[test]
-    fn mother_family_preflight_checks_possible_levels_not_only_the_maximum() {
-        assert!(super::validate_certified_mother_family(7, 1).is_err());
-        assert!(super::validate_certified_mother_family(3, 4).is_ok());
-        assert!(super::validate_certified_mother_family(5, 2).is_ok());
-        assert!(super::validate_certified_mother_family(1, usize::MAX).is_ok());
-    }
-
-    #[test]
     fn local_update_admission_is_explicit_and_mixed_coupled_only() {
         let config = EarthmeshConfig {
             refine: true,
@@ -3270,31 +3188,5 @@ mod tests {
         assert_eq!(level_at(&bounded, 100.0, 10.0), 0);
         let unbounded = plan(&tiny, None).unwrap();
         assert!(unbounded.effective_levels.iter().all(|&level| level == 2));
-    }
-
-    #[test]
-    fn a_requirement_of_level_zero_is_an_answer_where_the_base_is_certified() {
-        let read = |samples: Option<u64>| CertifiedRequirementPlan {
-            threshold_provenance: samples.map(|samples| {
-                serde_json::json!({
-                    "criteria": [{ "raw_support": { "valid_source_samples": samples } }]
-                })
-            }),
-            sourced: true,
-            domain_scoped: true,
-            ..CertifiedRequirementPlan::uniform()
-        };
-        for samples in [Some(2_030_224), Some(0), None] {
-            assert!(read(samples).nothing_requested(192).is_ok());
-        }
-        // NXP 32 is certified from level 1 up only: no unrefined mesh to give.
-        let error = read(Some(933_120_000)).nothing_requested(32).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("n=32 is not a certified subdivision"),
-            "{error}"
-        );
-        assert!(error.to_string().contains("NXP 40"), "{error}");
     }
 }

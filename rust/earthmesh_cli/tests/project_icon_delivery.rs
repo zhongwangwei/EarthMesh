@@ -381,9 +381,10 @@ fn project_icon_stretch_refines_a_closed_sphere_and_delivers_icon() {
 }
 
 #[test]
-fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_cells() {
-    // A level-3 demand: the safe mother would be n=80; a level-2 mother
-    // (n=40) stretched toward the circle passes every certificate (guide 11.87).
+fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_seventh_of_the_cells() {
+    // A level-3 demand: the safe mother would be n=80. The curated table's
+    // n=40 took a quarter of its cells (guide 11.87); with every subdivision a
+    // candidate, n=30, three times the base, passes every certificate.
     let root = root("cmrc_stretched");
     let mut project = refined_icon_project(RefinementBackend::Certified);
     project.refinement.max_passes = 3;
@@ -408,7 +409,7 @@ fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_c
     assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
     assert_eq!(certificate["coarsening_strategy"], "schmidt_stretch");
     assert_eq!(certificate["product_outcome"], "certified_adaptive");
-    assert_eq!(certificate["mother_subdivision"], 40);
+    assert_eq!(certificate["mother_subdivision"], 30);
     assert_eq!(certificate["delivered_level_max"], 3);
     for residual in [
         &certificate["physical_residuals"],
@@ -421,7 +422,7 @@ fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_c
     }
     assert_eq!(
         stdout_token(&stdout, "icon_cells="),
-        (20 * 40 * 40).to_string()
+        (20 * 30 * 30).to_string()
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -430,8 +431,9 @@ fn project_icon_cmrc_stretched_mother_serves_level_three_with_a_quarter_of_the_c
 fn project_icon_cmrc_stretched_mother_serves_level_two_between_the_powers_of_two() {
     // Level 2 on n=10: n=20 may stretch by 2 at most and a demand of any
     // extent needs a little more, which left only the safe mother (n=40)
-    // while the powers of two were the only candidates. n=24 is 2.4 times
-    // the base and serves it (guide 11.89).
+    // while the powers of two were the only candidates, and n=24 once the
+    // table held it (guide 11.89). Every subdivision a candidate, n=21 (2.1
+    // times the base) serves it.
     let root = root("cmrc_stretched_level_two");
     let mut project = refined_icon_project(RefinementBackend::Certified);
     project.refinement.max_passes = 2;
@@ -455,27 +457,41 @@ fn project_icon_cmrc_stretched_mother_serves_level_two_between_the_powers_of_two
     assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
     assert_eq!(certificate["coarsening_strategy"], "schmidt_stretch");
     assert_eq!(certificate["product_outcome"], "certified_adaptive");
-    assert_eq!(certificate["mother_subdivision"], 24);
+    assert_eq!(certificate["mother_subdivision"], 21);
     assert_eq!(certificate["delivered_level_max"], 2);
     assert_eq!(certificate["physical_residuals"], 0, "{certificate}");
     assert_eq!(certificate["balance_residuals"], 0, "{certificate}");
     assert_eq!(
         stdout_token(&stdout, "icon_cells="),
-        (20 * 24 * 24).to_string()
+        (20 * 21 * 21).to_string()
     );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallow_demand() {
-    // Level 1: the only certified mother between n=10 and the safe n=20 is
-    // n=12, which may stretch by 1.2 while a demand of any extent needs more,
-    // so the safe mother is delivered and labelled so.
+fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_when_one_focus_cannot_serve() {
+    // Level 1 on opposite sides of the globe: one Schmidt focus serves only
+    // one side, so the safe mother is delivered and labelled so.
     let root = root("cmrc_stretched_fallback");
-    let mut project = refined_icon_project(RefinementBackend::Certified);
+    let mut project = icon_project(MeshCellKind::Tri, DomainConfig::Global, 20);
+    project.refinement.enabled = true;
     project.refinement.max_passes = 1;
+    project.refinement.backend = RefinementBackend::Certified;
     project.refinement.certified.mode = CertifiedMode::StretchedMother;
     project.refinement.certified.delivery = CertifiedDeliveryMode::Tri;
+    project.refinement.specified_circle = Some(SpecifiedCircleRefinements::Many(vec![
+        SpecifiedCircleRefinement {
+            lon: 115.0,
+            lat: 23.0,
+            radius_km: 500.0,
+        },
+        SpecifiedCircleRefinement {
+            lon: -60.0,
+            lat: -15.0,
+            radius_km: 500.0,
+        },
+    ]));
+    project.expert.niter_refine = Some(1);
     let result = run_project(&root, &project, "cmrc_stretched_fallback");
     let stdout = String::from_utf8_lossy(&result.stdout);
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -494,14 +510,15 @@ fn project_icon_cmrc_stretched_mother_falls_back_to_the_safe_mother_for_a_shallo
     assert_eq!(certificate["mode"], "stretched_mother", "{certificate}");
     assert_ne!(certificate["coarsening_strategy"], "schmidt_stretch");
     assert_eq!(certificate["product_outcome"], "certified_safe_fallback");
-    assert_eq!(certificate["mother_subdivision"], 20);
+    assert_eq!(certificate["mother_subdivision"], 40);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn project_icon_cmrc_equidistribution_serves_two_far_regions_without_a_heptagon() {
     // Level 2 on opposite sides of the globe: one focus cannot serve both,
-    // moving the vertices of an n=64 mother can (the safe mother is n=80).
+    // moving the vertices of an n=60 mother can (the safe mother is n=80; the
+    // curated table's n=64 took 81,920 ICON cells to these 72,000).
     let root = root("cmrc_equidistributed");
     let mut project = icon_project(MeshCellKind::Tri, DomainConfig::Global, 20);
     project.refinement.enabled = true;
@@ -543,7 +560,7 @@ fn project_icon_cmrc_equidistribution_serves_two_far_regions_without_a_heptagon(
     );
     assert_eq!(certificate["coarsening_strategy"], "equidistribution");
     assert_eq!(certificate["product_outcome"], "certified_adaptive");
-    assert_eq!(certificate["mother_subdivision"], 64);
+    assert_eq!(certificate["mother_subdivision"], 60, "{stderr}");
     for residual in [
         &certificate["physical_residuals"],
         &certificate["balance_residuals"],
@@ -569,7 +586,7 @@ fn project_icon_cmrc_equidistribution_serves_two_far_regions_without_a_heptagon(
     assert_eq!(real.iter().filter(|&&d| d == 5).count(), 12);
     assert_eq!(
         stdout_token(&stdout, "icon_cells="),
-        (20 * 64 * 64).to_string()
+        (20 * 60 * 60).to_string()
     );
     fs::remove_dir_all(root).unwrap();
 }

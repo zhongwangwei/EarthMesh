@@ -31,7 +31,7 @@ use rayon::prelude::*;
 
 use crate::mother_geometry::{dual_areas, unit, xyz, P};
 use crate::{
-    certificate::{is_supported_mother_subdivision, AngleContractId},
+    certificate::AngleContractId,
     mother_grid::MotherGrid,
     outcome::{CertifiedMeshOutcome, GeometryCertifiedMotherGrid},
     requirement::{
@@ -52,6 +52,8 @@ const MAX_CONTRAST: f64 = 3.0;
 /// Fractions of the required size aimed at: the first that passes counts.
 const MARGINS: [f64; 3] = [0.7, 0.65, 0.6];
 const OUTER_ITERATIONS: usize = 8;
+/// Mothers relaxed before the search gives up on fixed topology.
+const MAX_RELAXATIONS: usize = 16;
 const INNER_ITERATIONS: usize = 200;
 
 /// An equidistributed mother that passed every final certificate.
@@ -135,6 +137,23 @@ impl SizeField {
             }
         }
         Self { nlon, nlat, size }
+    }
+
+    /// The area-weighted mean of `(min(size, base) / base)^2`: how much of a
+    /// base cell's area a cell of the required size covers, on average.
+    fn mean_area_ratio(&self, base: f64) -> f64 {
+        let (mut sum, mut weight) = (0.0, 0.0);
+        for j in 0..self.nlat {
+            let w = (-90.0 + (j as f64 + 0.5) * 180.0 / self.nlat as f64)
+                .to_radians()
+                .cos();
+            for i in 0..self.nlon {
+                let r = self.size[j * self.nlon + i].min(base) / base;
+                sum += w * r * r;
+                weight += w;
+            }
+        }
+        sum / weight
     }
 
     fn at(&self, p: P) -> f64 {
@@ -385,9 +404,10 @@ fn water_fill(
     Some(hi)
 }
 
-/// Try the supported mothers finer than the base and coarser than
-/// `below_subdivision`, coarsest first; the first whose equidistributed
-/// vertices pass CMRC's final certificates is returned, or why none did.
+/// Try the mothers finer than the base and coarser than `below_subdivision`,
+/// coarsest first from the fewest the demand can fit in; the first whose
+/// equidistributed vertices pass CMRC's final certificates is returned, or why
+/// none did.
 pub fn equidistributed_certified_mother(
     base_subdivision: usize,
     raster: &RasterLevelField,
@@ -401,9 +421,41 @@ pub fn equidistributed_certified_mother(
     // Area of a base triangle per squared base size: sizes to target areas.
     let kappa = (4.0 * std::f64::consts::PI / (20.0 * n0 * n0)) / (base * base);
     let field = SizeField::new(raster, base);
-    for subdivision in
-        (base_subdivision + 1..below_subdivision).filter(|&n| is_supported_mother_subdivision(n))
-    {
+    // Every subdivision is a candidate (guide 11.101). A mother of n has
+    // 20 n^2 triangles, and giving each at most `margin` of its required size
+    // takes about n0 / (margin * sqrt(mean area ratio)) of them; the search
+    // starts a little below that instead of building each mother on the way.
+    // Relaxing is what costs, so it steps an eighth of an octave (about 9%)
+    // and relaxes at most MAX_RELAXATIONS mothers. On two far level-2 regions
+    // over n=20 (an ICON project) n=48-57 leave about a thousand physical
+    // residuals and n=60 certifies: a gap of one spends the relaxations on
+    // near misses, and doubling the gap after failures jumped from 58 to 74.
+    let capacity = n0 / (MARGINS[0] * field.mean_area_ratio(base).sqrt());
+    let first = ((0.95 * capacity).floor() as usize).max(base_subdivision + 1);
+    if first >= below_subdivision {
+        rejected.push(format!(
+            "the demand needs about n={capacity:.0} at {} of the required sizes, no fewer \
+             cells than the safe mother n={below_subdivision}",
+            MARGINS[0]
+        ));
+    }
+    let ladder = (0..)
+        .map(|step| (first as f64 * 2f64.powf(f64::from(step) / 8.0)).round() as usize)
+        .take_while(|&n| n < below_subdivision);
+    let mut last = 0;
+    let mut relaxations = 0;
+    for subdivision in ladder {
+        if subdivision == last {
+            continue;
+        }
+        last = subdivision;
+        if relaxations == MAX_RELAXATIONS {
+            rejected.push(format!(
+                "n={subdivision} and finer not tried: {MAX_RELAXATIONS} mothers relaxed \
+                 without one certifying"
+            ));
+            break;
+        }
         let cells = 10usize
             .saturating_mul(subdivision)
             .saturating_mul(subdivision)
@@ -456,9 +508,16 @@ pub fn equidistributed_certified_mother(
             .collect::<Vec<_>>();
         let finest = required0.iter().copied().fold(f64::INFINITY, f64::min);
         let mut last_reason = None;
+        let mut relaxed = false;
+        // Residuals in more than 2% of the cells: finer targets on the same
+        // cells will not close that, so the next mother is tried instead.
+        let mut far_off = false;
         for margin in MARGINS {
             let Some(cap) = water_fill(&required0, base, kappa, total_area, margin) else {
-                last_reason = Some(format!("n={subdivision}: too few cells for the demand"));
+                // A relaxation that failed at a wider margin says more.
+                last_reason.get_or_insert_with(|| {
+                    format!("n={subdivision}: too few cells for the demand")
+                });
                 break;
             };
             let contrast = cap / finest;
@@ -472,6 +531,7 @@ pub fn equidistributed_certified_mother(
             // Physical residuals ask for finer targets (the next margin);
             // angles outside the window ask for a lighter size weight.
             let mut next_margin = false;
+            relaxed = true;
             for size_weight in SIZE_WEIGHTS {
                 let mut points = points0.clone();
                 for _ in 0..OUTER_ITERATIONS {
@@ -523,6 +583,7 @@ pub fn equidistributed_certified_mother(
                     match certify_final_cell_requirements_from_raster(raster, &mesh, &target, 1) {
                         Ok(report) => report,
                         Err(error) => {
+                            far_off = error.physical_residuals() * 50 > slots.len();
                             last_reason = Some(format!(
                                 "n={subdivision}, margin {margin}, size weight {size_weight}: {}",
                                 format!("{error:?}").chars().take(160).collect::<String>()
@@ -555,14 +616,16 @@ pub fn equidistributed_certified_mother(
                     }
                 }
             }
-            if !next_margin {
-                // Neither weight kept the angles in the window: more cells.
+            if far_off || !next_margin {
+                // Far off, or neither weight kept the angles in the window:
+                // more cells.
                 break;
             }
         }
         if let Some(reason) = last_reason {
             rejected.push(reason);
         }
+        relaxations += usize::from(relaxed);
     }
     Err(rejected)
 }
