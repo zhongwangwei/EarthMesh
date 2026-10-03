@@ -26,7 +26,11 @@ pub fn spherical_circumcenter_from_barycenter(
     spherical_circumcenter_from_barycenter_with_radius(barycenter, vertices, earth_radius)
 }
 
-pub(crate) fn spherical_circumcenter_from_barycenter_with_radius(
+/// `spherical_circumcenter_from_barycenter` at a given radius -- what `pcvt`
+/// uses, at the radius of the grid's first active W point, so a builder that
+/// publishes an open mesh outside the grid state places M points exactly as
+/// `pcvt` does.
+pub fn spherical_circumcenter_from_barycenter_with_radius(
     barycenter: CartesianPoint,
     vertices: [CartesianPoint; 3],
     earth_radius: f64,

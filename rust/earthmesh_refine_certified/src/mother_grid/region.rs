@@ -223,7 +223,7 @@ impl GlobalNumbering {
 }
 
 /// The coordinates `generate(n)` gives the vertex at `origin`.
-pub(crate) fn origin_position(n: usize, origin: VertexOrigin) -> Result<CartesianPoint, String> {
+pub fn origin_position(n: usize, origin: VertexOrigin) -> Result<CartesianPoint, String> {
     origin_position_on(n, origin, &icosahedron_vertices())
 }
 

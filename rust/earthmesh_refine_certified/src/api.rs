@@ -96,6 +96,31 @@ pub fn certify_geometry_with_contract(
     }
 }
 
+/// `certify_geometry_with_contract` for the open mesh of a built region,
+/// published without the rest of the sphere: the final delivery window on
+/// every face, open edges only between sites of `edge_sites` (the region's
+/// outer boundary), the region's own Euler characteristic, degrees and dual
+/// cells checked at every site off that boundary.
+pub fn certify_region_geometry_with_contract(
+    mesh: earthmesh_mesh::MeshState,
+    edge_sites: &std::collections::BTreeSet<usize>,
+    expected_euler: isize,
+    angle_contract: AngleContractId,
+) -> CertifiedMeshOutcome {
+    match Certificate::final_delivery_for(angle_contract).verify_geometry_within(
+        &mesh,
+        edge_sites,
+        expected_euler,
+    ) {
+        Ok(report) => CertifiedMeshOutcome::GeometryCertified(Box::new(
+            GeometryCertifiedMotherGrid::new(mesh, report),
+        )),
+        Err(error) => CertifiedMeshOutcome::InternalCertificationFailure {
+            reason: error.to_string(),
+        },
+    }
+}
+
 pub fn safe_mother_final_evidence(
     required_levels: &[usize],
     delivered_level: usize,

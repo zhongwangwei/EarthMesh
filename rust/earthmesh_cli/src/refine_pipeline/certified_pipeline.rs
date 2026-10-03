@@ -161,6 +161,66 @@ pub(super) struct CertifiedConstruction {
     search_complete: bool,
     elastic_report: Option<earthmesh_refine_certified::coarsen::ElasticCmrcReport>,
     local_update: Option<serde_json::Value>,
+    /// Set when the construction is a built region published as the region
+    /// (`materialization = 'regional'`): its final mesh is open.
+    region: Option<RegionPublication>,
+}
+
+/// What a regional publication (`&certified materialization = 'regional'`)
+/// covers: the final mesh is the built region's -- R, certified cell by cell,
+/// inside its frame F -- open at F's far edge; nothing outside it was built,
+/// certified or published. Counts for the certificate and the manifest.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RegionPublication {
+    /// The radius `pcvt` normalizes circumcentres to on the whole sphere --
+    /// its first site's, the lattice vertex of rank 0 -- so the region's
+    /// dual vertices do not depend on which site the region happens to
+    /// number first.
+    site_radius: f64,
+    /// For each active final site, in slot order: whether it has a cell.
+    /// Sites on the outer boundary -- settled by construction -- have none,
+    /// and the published rows (and remap targets) number the others.
+    cell_sites: Vec<bool>,
+    /// Final sites on the outer boundary.
+    outer_sites: usize,
+    /// Cells certified cell by cell, each with its remap row.
+    certified_cells: usize,
+    /// Finest mother cells built, of `whole_cells` on the sphere.
+    built_cells: usize,
+    whole_cells: usize,
+    base_subdivision: usize,
+    delivered_base_faces: usize,
+    region_base_faces: usize,
+    frame_base_faces: usize,
+    settled_base_faces: usize,
+}
+
+impl RegionPublication {
+    /// `levels`, one per active final site, kept for the sites with cells:
+    /// one per published W row.
+    fn published<T: Copy>(&self, levels: &[T]) -> Vec<T> {
+        levels
+            .iter()
+            .zip(&self.cell_sites)
+            .filter_map(|(&level, &cell)| cell.then_some(level))
+            .collect()
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scope": "built_region_open_mesh",
+            "outer_boundary_sites": self.outer_sites,
+            "certified_cells": self.certified_cells,
+            "built_finest_mother_cells": self.built_cells,
+            "whole_finest_mother_cells": self.whole_cells,
+            "base_subdivision": self.base_subdivision,
+            "delivered_base_faces": self.delivered_base_faces,
+            "region_base_faces": self.region_base_faces,
+            "frame_base_faces": self.frame_base_faces,
+            "settled_base_faces": self.settled_base_faces,
+            "settled_by_construction": "outside the outer boundary: never built, the base mother there",
+        })
+    }
 }
 
 pub(super) fn certified_subdivision(base_nxp: usize, level: usize) -> io::Result<usize> {
@@ -279,6 +339,7 @@ pub(super) fn build_certified_construction(
                 search_complete: true,
                 elastic_report: None,
                 local_update: None,
+                region: None,
             });
         }
         // No moved mother serves a scattered demand: c09's global DEM roughness
@@ -365,6 +426,7 @@ pub(super) fn build_certified_construction(
             search_complete: true,
             elastic_report: None,
             local_update: None,
+            region: None,
         });
     }
 
@@ -477,6 +539,7 @@ pub(super) fn build_certified_construction(
                 search_complete: true,
                 elastic_report: None,
                 local_update: None,
+                region: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::SearchBudgetExhausted {
@@ -527,6 +590,7 @@ pub(super) fn build_certified_construction(
                 search_complete: false,
                 elastic_report: None,
                 local_update: None,
+                region: None,
             })
         }
         earthmesh_refine_certified::coarsen::HierarchyRebuildOutcome::UnsupportedCavity {
@@ -772,6 +836,7 @@ fn build_region_certified_construction(
     raster_requirements: &earthmesh_refine_certified::RasterLevelField,
     budget: usize,
     delivery_domain: &GridRegion,
+    publish_region: bool,
 ) -> io::Result<Option<CertifiedConstruction>> {
     use earthmesh_refine_certified::{coarsen, mother_grid, on_demand, MotherGrid};
     let timing_enabled = cmrc_timing_enabled();
@@ -935,6 +1000,177 @@ fn build_region_certified_construction(
             return Err(io::Error::new(io::ErrorKind::InvalidInput, reason));
         }
     };
+    // The last commit's remap, its sources numbered by their place in the
+    // whole fine mother (computed from their origins: nothing outside the
+    // region is built).
+    let region_remap = result.final_remap.take().ok_or_else(|| {
+        invalid_data(
+            "CMRC on demand committed nothing; the settled region cannot be put back".into(),
+        )
+    })?;
+    let numbering = mother_grid::region::GlobalNumbering::new(initial_subdivision);
+    let region_index = fine
+        .region
+        .as_ref()
+        .ok_or_else(|| invalid_data("CMRC region lost its index".into()))?;
+    let source_ids = active_sites
+        .iter()
+        .map(|&site| {
+            region_index
+                .origin(site)
+                .map(|origin| numbering.rank(origin))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| invalid_data("CMRC region site without an origin".into()))?;
+    if publish_region {
+        // Published as the region (guide 11.109): the final mesh is the built
+        // region's, open at the frame's far edge, and every certificate is
+        // drawn on it -- the sphere outside is never built.
+        let state_mesh = result.state.mesh();
+        let mesh = state_mesh.mesh.clone();
+        let mut outer_sites = BTreeSet::new();
+        let mut delivered_levels = Vec::new();
+        // Pentagons the region holds keep their slots; the rest name the
+        // gridfile's placeholder row.
+        let mut pentagons = [1usize; 12];
+        for compact in mesh.active_vertex_slots() {
+            let slot = state_mesh.source_vertex_slots[compact]
+                .ok_or_else(|| invalid_data(format!("final site {compact} has no source")))?;
+            if outer.contains(&slot) {
+                outer_sites.insert(compact);
+            }
+            delivered_levels.push(result.state.source_delivered_levels()[slot].ok_or_else(
+                || invalid_data(format!("source site {slot} has no delivered level")),
+            )?);
+            let origin = region_index
+                .origin(slot)
+                .ok_or_else(|| invalid_data(format!("source site {slot} has no origin")))?;
+            if let earthmesh_refine_certified::VertexAddress::IcosahedronVertex(vertex) =
+                mother_grid::region::origin_address(initial_subdivision, origin)
+            {
+                pentagons[vertex as usize] = compact;
+            }
+        }
+        let final_levels = earthmesh_refine_certified::TargetLevelField::from_active_voronoi_cells(
+            &mesh,
+            delivered_levels.clone(),
+        )
+        .map_err(invalid_data)?;
+        let final_cell_requirements =
+            earthmesh_refine_certified::certify_region_final_cell_requirements_from_raster(
+                raster_requirements,
+                &mesh,
+                &final_levels,
+                &outer_sites,
+                whole_vertices,
+                1,
+            )
+            .map_err(|error| {
+                invalid_data(format!("CMRC final-cell certification failed: {error}"))
+            })?;
+        log_cmrc_phase(
+            timing_enabled,
+            "final_requirement_projection",
+            &mut phase_started,
+        );
+        // Targets are the final mesh's cells, numbered as the published rows
+        // number them: the sites off the outer boundary, in slot order.
+        let cell_sites = mesh
+            .active_vertex_slots()
+            .map(|compact| !outer_sites.contains(&compact))
+            .collect::<Vec<_>>();
+        let mut published_row = vec![usize::MAX; cell_sites.len()];
+        let mut rows = 0;
+        for (target, &cell) in cell_sites.iter().enumerate() {
+            if cell {
+                published_row[target] = rows;
+                rows += 1;
+            }
+        }
+        if let Some(target) = region_remap.covered_targets().and_then(|covered| {
+            covered
+                .iter()
+                .copied()
+                .find(|&t| published_row[t] == usize::MAX)
+        }) {
+            return Err(invalid_data(format!(
+                "CMRC region remap has a row for boundary site {target}, which has no cell"
+            )));
+        }
+        let remap = region_remap.renumbered(
+            |source| source_ids[source],
+            |target| published_row[target],
+            whole_vertices,
+            earthmesh_refine_certified::mesh_fingerprint(&mesh),
+        );
+        let certified_cells = remap.covered_targets().map_or(0, |covered| covered.len());
+        log_cmrc_phase(timing_enabled, "voronoi_remap", &mut phase_started);
+        let remap_certificate =
+            remap.certify_spherical_overlap(whole_vertices, mesh.vertex_count());
+        let built_vertices = fine.mesh.vertex_count();
+        let geometry = match earthmesh_refine_certified::certify_region_geometry_with_contract(
+            mesh,
+            &outer_sites,
+            euler,
+            options.angle_contract,
+        ) {
+            earthmesh_refine_certified::CertifiedMeshOutcome::GeometryCertified(mesh) => mesh,
+            other => return Err(certified_outcome_error(other)),
+        };
+        log_cmrc_phase(
+            timing_enabled,
+            "final_geometry_certificate",
+            &mut phase_started,
+        );
+        return Ok(Some(CertifiedConstruction {
+            delivered_level: delivered_levels.iter().copied().max().unwrap_or(0),
+            delivered_levels,
+            coarsening_strategy: "elastic_component_epochs",
+            pentagons,
+            initial_subdivision,
+            final_subdivision: initial_subdivision,
+            initial_cells: required_cells,
+            attempted_patches: result.report.components_total,
+            accepted_patches: result.report.components_committed,
+            removed_vertices: built_vertices - geometry.primal().vertex_count(),
+            removed_faces: required_cells - geometry.primal().triangle_count(),
+            search_budget_exhausted: !result.report.search_complete,
+            components_total: result.report.components_total,
+            components_committed: result.report.components_committed,
+            components_promoted: result.report.components_promoted,
+            components_exhausted: result.report.components_exhausted,
+            search_complete: result.report.search_complete,
+            geometry,
+            remap,
+            remap_certificate,
+            final_cell_requirements: Some(final_cell_requirements),
+            elastic_report: Some(result.report.clone()),
+            local_update: None,
+            region: Some(RegionPublication {
+                site_radius: earthmesh_mesh::magnitude(
+                    mother_grid::region::origin_position(
+                        initial_subdivision,
+                        mother_grid::region::VertexOrigin {
+                            face: 0,
+                            i: 0,
+                            j: 0,
+                        },
+                    )
+                    .map_err(invalid_data)?,
+                ),
+                cell_sites,
+                outer_sites: outer_sites.len(),
+                certified_cells,
+                built_cells: required_cells,
+                whole_cells: whole_faces,
+                base_subdivision: base_nxp,
+                delivered_base_faces: delivered.len(),
+                region_base_faces: extent.region.len(),
+                frame_base_faces: extent.frame.len(),
+                settled_base_faces: extent.settled_faces,
+            }),
+        }));
+    }
     // The sphere's assembly lists every settled face, on the whole base.
     let base = MotherGrid::generate(base_nxp).map_err(io::Error::other)?;
     let listed = coarsen::SettledRegion::new(&base, &extent.built_faces().collect())
@@ -982,27 +1218,8 @@ fn build_region_certified_construction(
         "final_requirement_projection",
         &mut phase_started,
     );
-    // The last commit's remap, in the whole sphere's numbering: sources by
-    // their place in the whole fine mother, targets by the assembled cells.
-    let region_remap = result.final_remap.take().ok_or_else(|| {
-        invalid_data(
-            "CMRC on demand committed nothing; the settled region cannot be put back".into(),
-        )
-    })?;
-    let numbering = mother_grid::region::GlobalNumbering::new(initial_subdivision);
-    let region_index = fine
-        .region
-        .as_ref()
-        .ok_or_else(|| invalid_data("CMRC region lost its index".into()))?;
-    let source_ids = active_sites
-        .iter()
-        .map(|&site| {
-            region_index
-                .origin(site)
-                .map(|origin| numbering.rank(origin))
-        })
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| invalid_data("CMRC region site without an origin".into()))?;
+    // The remap in the whole sphere's numbering: targets by the assembled
+    // cells.
     let state_mesh = result.state.mesh();
     let mut assembled_cell = BTreeMap::new();
     for (cell, origin) in sphere.origins.iter().flatten().enumerate() {
@@ -1062,6 +1279,7 @@ fn build_region_certified_construction(
         final_cell_requirements: Some(final_cell_requirements),
         elastic_report: Some(result.report.clone()),
         local_update: None,
+        region: None,
     }))
 }
 
@@ -1078,11 +1296,13 @@ pub(super) fn build_mixed_certified_construction(
     // run publishes every cell's remap. It is opt-in (`&certified
     // materialization`, or EARTHMESH_CMRC_MATERIALIZATION for experiments)
     // while it is checked against the whole sphere on the CLI cases.
-    let on_demand = match std::env::var("EARTHMESH_CMRC_MATERIALIZATION").as_deref() {
-        Ok("on_demand") => true,
-        Ok("whole") => false,
-        _ => options.materialization == CertifiedMaterialization::OnDemand,
+    let materialization = match std::env::var("EARTHMESH_CMRC_MATERIALIZATION").as_deref() {
+        Ok("on_demand") => CertifiedMaterialization::OnDemand,
+        Ok("regional") => CertifiedMaterialization::Regional,
+        Ok("whole") => CertifiedMaterialization::Whole,
+        _ => options.materialization,
     };
+    let on_demand = materialization != CertifiedMaterialization::Whole;
     if let (true, None, Some(domain)) = (on_demand, local_update_path, delivery_domain) {
         if let Some(construction) = build_region_certified_construction(
             base_nxp,
@@ -1091,6 +1311,7 @@ pub(super) fn build_mixed_certified_construction(
             raster_requirements,
             budget,
             domain,
+            materialization == CertifiedMaterialization::Regional,
         )? {
             return Ok(construction);
         }
@@ -1355,6 +1576,7 @@ pub(super) fn build_mixed_certified_construction(
         final_cell_requirements: Some(final_cell_requirements),
         elastic_report: Some(result.report.clone()),
         local_update,
+        region: None,
     })
 }
 
@@ -1798,7 +2020,9 @@ pub(super) struct CertifiedRefinement {
     safe_fallback: bool,
     remap: earthmesh_refine_certified::remap::ConservativeRemap,
     pentagons: [usize; 12],
-    state: earthmesh_mesh::VoronoiGridState,
+    /// The closed sphere's Voronoi state; a regional publication has none.
+    state: Option<earthmesh_mesh::VoronoiGridState>,
+    region: Option<RegionPublication>,
     started: Instant,
     timing_enabled: bool,
     phase_started: Instant,
@@ -1824,8 +2048,11 @@ pub(super) fn refine_with_certified_as_grid(
     } else {
         workdir.join(configured_dir)
     };
-    let (m, w) =
-        certified_gridfile_refine_levels(&output_mesh, refinement.delivered_levels.levels())?;
+    let published_levels = match &refinement.region {
+        Some(region) => region.published(refinement.delivered_levels.levels()),
+        None => refinement.delivered_levels.levels().to_vec(),
+    };
+    let (m, w) = certified_gridfile_refine_levels(&output_mesh, &published_levels)?;
     let inputs = TailInputs {
         refine: refinement.refine.clone(),
         max_level: refinement.chosen_level,
@@ -2083,6 +2310,7 @@ pub(super) fn refine_with_certified(
         search_complete,
         elastic_report,
         local_update,
+        region,
     } = build_certified_construction(
         base_nxp,
         chosen_level,
@@ -2207,9 +2435,31 @@ pub(super) fn refine_with_certified(
             }
             other => return Err(certified_outcome_error(other)),
         };
-    let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
-    let state = spherical_voronoi_state(&triangular)?;
-    let output_mesh = build_certified_cmrc_gridfile(final_mesh.primal(), &state)?;
+    // A regional publication's mesh is open: published as it is, without the
+    // closed sphere's Voronoi state.
+    let (state, output_mesh) = if let Some(region) = &region {
+        let output_mesh = build_open_cmrc_gridfile(
+            final_mesh.primal(),
+            requested_view,
+            Some(region.site_radius),
+        )?;
+        let rows = region.cell_sites.iter().filter(|&&cell| cell).count();
+        if output_mesh.w_points.len() != rows + 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CMRC regional parent has {} cells, the region {rows}",
+                    output_mesh.w_points.len() - 1
+                ),
+            ));
+        }
+        (None, output_mesh)
+    } else {
+        let triangular = final_mesh.primal().to_triangular_mesh(pentagons, None)?;
+        let state = spherical_voronoi_state(&triangular)?;
+        let output_mesh = build_certified_cmrc_gridfile(final_mesh.primal(), &state)?;
+        (Some(state), output_mesh)
+    };
     log_cmrc_phase(
         timing_enabled,
         "final_certification_and_dual",
@@ -2246,6 +2496,7 @@ pub(super) fn refine_with_certified(
         remap,
         pentagons,
         state,
+        region,
         started,
         timing_enabled,
         phase_started,
@@ -2294,6 +2545,7 @@ pub(super) fn deliver_certified(
         remap,
         pentagons,
         state,
+        region,
         started,
         timing_enabled,
         mut phase_started,
@@ -2331,12 +2583,24 @@ pub(super) fn deliver_certified(
             .unwrap_or("gridfile.nc4"),
         std::process::id()
     ));
+    // The parent the domain is cut from: the closed sphere, or for a regional
+    // publication the built region (domain, transition ring and frame).
+    let parent_kind = if region.is_some() {
+        "regional"
+    } else {
+        "global"
+    };
     let global_parent_path = is_domain_export.then(|| {
         output_path.with_file_name(format!(
-            "{}_global_parent.nc4",
+            "{}_{parent_kind}_parent.nc4",
             output_path.file_stem().unwrap().to_string_lossy()
         ))
     });
+    let pre_export_scope = if region.is_some() {
+        "pre_export_region"
+    } else {
+        "pre_export_closed_sphere"
+    };
     let temporary_source_path = result_dir.join(format!(
         ".certified_source_grid.cmrc-tmp-{}",
         std::process::id()
@@ -2401,12 +2665,12 @@ pub(super) fn deliver_certified(
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
         "coarsening_strategy": coarsening_strategy,
-        "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
+        "geometry_scope": if is_domain_export { pre_export_scope } else { "published_grid" },
         "published_grid_is_certified_face_subset": is_domain_export && requested_view == "tri",
         "requirement_balance_scope": physical_balance_scope,
         "physical_balance_scope": physical_balance_scope,
         "remap_cells": "voronoi",
-        "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+        "remap_scope": if is_domain_export { format!("{pre_export_scope}_voronoi") } else { "published_grid_voronoi".to_string() },
         "published_grid_remap_available": !is_domain_export,
         "published_grid_refinement_metadata": true,
         "chosen_level": chosen_level,
@@ -2475,16 +2739,19 @@ pub(super) fn deliver_certified(
     certificate_document["requirement_layers"] = requirement_layers.clone();
     certificate_document["physical_balance_domain_scope"] =
         serde_json::Value::from(if is_domain_export {
-            "pre_export_closed_sphere"
+            pre_export_scope
         } else {
             "published_grid"
         });
     certificate_document["published_grid_lineage_scope"] =
         serde_json::Value::from(if is_domain_export {
-            "pre_export_closed_sphere_canonical_ids"
+            format!("{pre_export_scope}_canonical_ids")
         } else {
-            "not_emitted"
+            "not_emitted".to_string()
         });
+    certificate_document["region"] = region
+        .as_ref()
+        .map_or(serde_json::Value::Null, RegionPublication::json);
     let fvcom_output_path = (!config.defer_model_exports
         && is_domain_export
         && config.mesh_type.trim() == "oceanmesh"
@@ -2526,18 +2793,20 @@ pub(super) fn deliver_certified(
         "mode": mode_name,
         "product_outcome": product_outcome,
         "safe_fallback_reason": fallback_reason,
-        "geometry_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
+        "geometry_scope": if is_domain_export { pre_export_scope } else { "published_grid" },
         "delivery": match options.delivery {
             CertifiedDelivery::Tri => "tri",
             CertifiedDelivery::Hex => "hex",
             CertifiedDelivery::Coupled => "coupled",
         },
         "gridfile": output_path.display().to_string(),
-        "global_parent_gridfile": global_parent_path.as_ref().map(|path| path.display().to_string()),
+        "global_parent_gridfile": global_parent_path.as_ref().filter(|_| region.is_none()).map(|path| path.display().to_string()),
+        "regional_parent_gridfile": global_parent_path.as_ref().filter(|_| region.is_some()).map(|path| path.display().to_string()),
+        "region": region.as_ref().map_or(serde_json::Value::Null, RegionPublication::json),
         "remap": if is_domain_export { serde_json::Value::Null } else { serde_json::Value::String(remap_path.display().to_string()) },
         "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
         "fvcom_2dm": fvcom_output_path.as_ref().map(|path| path.display().to_string()),
-        "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
+        "remap_scope": if is_domain_export { format!("{pre_export_scope}_voronoi") } else { "published_grid_voronoi".to_string() },
         "published_grid_remap_status": if is_surface_masked { "not_available_after_landtype_subset" } else if is_domain_export { "not_available_after_regional_subset" } else { "certified" },
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
@@ -2766,8 +3035,8 @@ pub(super) fn deliver_certified(
             "peak_memory_measurement": "external acceptance harness required",
             "landtype_masked_cells": landtype_masked_cells,
             "landtype_kept_cells": landtype_masked_cells,
-            "remap_scope": if is_domain_export { "pre_export_closed_sphere_voronoi" } else { "published_grid_voronoi" },
-            "physical_balance_domain_scope": if is_domain_export { "pre_export_closed_sphere" } else { "published_grid" },
+            "remap_scope": if is_domain_export { format!("{pre_export_scope}_voronoi") } else { "published_grid_voronoi".to_string() },
+            "physical_balance_domain_scope": if is_domain_export { pre_export_scope } else { "published_grid" },
             "published_grid_remap_available": !is_domain_export,
             "published_domain_topology": topology,
             "published_domain_quality_topology": domain_quality.as_ref().map(|(component_count, issues)| serde_json::json!({
@@ -2859,7 +3128,7 @@ pub(super) fn deliver_certified(
     let runtime_state = refined_runtime_state(
         config,
         &refine,
-        Some(state),
+        state,
         &output_mesh,
         pentagons,
         delivered_level + 1,
@@ -2917,6 +3186,167 @@ pub(super) fn deliver_certified(
         coupled_outputs: None,
         output,
         runtime_state,
+    })
+}
+
+/// The gridfile of an open certified mesh -- a built region's final mesh --
+/// in `build_certified_cmrc_gridfile`'s layout and arithmetic, without a
+/// closed sphere's Voronoi state: a placeholder row, then the sites whose
+/// fan closes -- the cells; a site on the open boundary has none -- and the
+/// faces, in slot order, each face at the spherical circumcentre `pcvt`
+/// puts it at. For `view` "hex" every face with a cell at a corner is kept,
+/// its cell-less corners naming the placeholder row, and every cell has its
+/// certified cyclic fan, as the closed builder publishes it. For "tri" the
+/// faces are those with cells at all three corners, and each cell lists the
+/// ones it has, in fan order. On a closed mesh both are the closed builder's.
+///
+/// `radius` is what circumcentres are normalized to; `None` takes `pcvt`'s
+/// own choice, the first active site's radius.
+pub(super) fn build_open_cmrc_gridfile(
+    primal: &MeshState,
+    view: &str,
+    radius: Option<f64>,
+) -> io::Result<crate::UnstructuredMesh> {
+    use earthmesh_mesh::{CartesianPoint, VoronoiError, MESH_STATE_FIRST_ID};
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    let id = |row: usize| {
+        i32::try_from(row + MESH_STATE_FIRST_ID)
+            .map_err(|_| invalid("CMRC gridfile id exceeds i32".into()))
+    };
+    let mut incident = vec![Vec::new(); primal.vertices().len()];
+    for face in primal.active_triangle_slots() {
+        for site in primal.triangles()[face] {
+            incident[site].push(face);
+        }
+    }
+    // Cells: the sites whose fan closes, with their certified fans.
+    let mut fans = vec![None; primal.vertices().len()];
+    for site in primal.active_vertex_slots() {
+        let seed = *incident[site]
+            .first()
+            .ok_or_else(|| invalid(format!("CMRC site {site} has no incident face")))?;
+        match primal.voronoi_cell_from(site, seed) {
+            Ok(cell) => fans[site] = Some(cell.triangles),
+            Err(VoronoiError::FanIsOpen { .. }) => {}
+            Err(error) => return Err(invalid(error.to_string())),
+        }
+    }
+    let sites = primal
+        .active_vertex_slots()
+        .filter(|&site| fans[site].is_some())
+        .collect::<Vec<_>>();
+    let tri = match view.trim() {
+        "tri" => true,
+        "hex" => false,
+        other => {
+            return Err(invalid(format!(
+                "CMRC view must be tri or hex, got {other}"
+            )))
+        }
+    };
+    let faces = primal
+        .active_triangle_slots()
+        .filter(|&face| {
+            let cells = primal.triangles()[face]
+                .iter()
+                .filter(|&&site| fans[site].is_some())
+                .count();
+            if tri {
+                cells == 3
+            } else {
+                cells > 0
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut site_id = vec![1i32; primal.vertices().len()];
+    for (row, &site) in sites.iter().enumerate() {
+        site_id[site] = id(row)?;
+    }
+    let mut face_id = vec![0i32; primal.triangles().len()];
+    for (row, &face) in faces.iter().enumerate() {
+        face_id[face] = id(row)?;
+    }
+    let lon_lat = |point: CartesianPoint| {
+        let degrees = earthmesh_mesh::xyz_to_lonlat_degrees(point);
+        crate::LonLatPoint {
+            lon: degrees.lon_degrees,
+            lat: degrees.lat_degrees,
+        }
+    };
+    let placeholder = lon_lat(CartesianPoint::new(0.0, 0.0, 0.0));
+    let first_site_radius = || {
+        primal
+            .active_vertex_slots()
+            .map(|site| earthmesh_mesh::magnitude(primal.vertices()[site]))
+            .find(|radius| radius.is_finite() && *radius > 0.0)
+            .ok_or_else(|| invalid("CMRC open mesh has no active site".into()))
+    };
+    let radius = match radius {
+        Some(radius) => radius,
+        None => first_site_radius()?,
+    };
+
+    let mut m_points = Vec::with_capacity(faces.len() + 1);
+    let mut m_to_w = Vec::with_capacity(faces.len() + 1);
+    m_points.push(placeholder);
+    m_to_w.push(earthmesh_core::ItabM::default().iw);
+    for &face in &faces {
+        let corners = primal.triangles()[face];
+        let points = corners.map(|site| primal.vertices()[site]);
+        let barycenter = earthmesh_mesh::normalize_cartesian_to_radius(
+            CartesianPoint::new(
+                (points[0].x + points[1].x + points[2].x) / 3.0,
+                (points[0].y + points[1].y + points[2].y) / 3.0,
+                (points[0].z + points[1].z + points[2].z) / 3.0,
+            ),
+            earthmesh_core::EARTH_RADIUS_METERS,
+        )?;
+        let circumcenter = earthmesh_mesh::spherical_circumcenter_from_barycenter_with_radius(
+            barycenter, points, radius,
+        )
+        .filter(|&circumcenter| {
+            earthmesh_mesh::circumcenter_is_local_enough(barycenter, circumcenter, points)
+        })
+        .ok_or_else(|| invalid(format!("CMRC face {face} has no local circumcentre")))?;
+        m_points.push(lon_lat(circumcenter));
+        m_to_w.push(corners.map(|site| site_id[site]));
+    }
+
+    let width = earthmesh_core::ItabW::default().im.len();
+    let mut w_points = Vec::with_capacity(sites.len() + 1);
+    let mut w_to_m = Vec::with_capacity(sites.len() + 1);
+    let mut n_w_to_m = Vec::with_capacity(sites.len() + 1);
+    w_points.push(placeholder);
+    w_to_m.push(earthmesh_core::ItabW::default().im.to_vec());
+    n_w_to_m.push(1);
+    for &site in &sites {
+        let fan = fans[site]
+            .as_ref()
+            .expect("cells have fans")
+            .iter()
+            .copied()
+            .filter(|&face| face_id[face] != 0)
+            .collect::<Vec<_>>();
+        if fan.len() > width {
+            return Err(invalid(format!(
+                "CMRC site {site} meets {} faces; the gridfile holds {width}",
+                fan.len()
+            )));
+        }
+        let mut row = vec![1; width];
+        for (slot, face) in fan.iter().enumerate() {
+            row[slot] = face_id[*face];
+        }
+        w_points.push(lon_lat(primal.vertices()[site]));
+        w_to_m.push(row);
+        n_w_to_m.push(fan.len() as i32);
+    }
+    Ok(crate::UnstructuredMesh {
+        m_points,
+        w_points,
+        m_to_w,
+        w_to_m,
+        n_w_to_m,
     })
 }
 
@@ -3858,6 +4288,157 @@ mod tests {
                 let by_address = delivery_base_faces_by_address(domain, n).unwrap();
                 assert!(!whole.is_empty(), "n {n} {domain:?}");
                 assert_eq!(by_address, whole, "n {n} {domain:?}");
+            }
+        }
+    }
+
+    fn pentagon_slots(grid: &earthmesh_refine_certified::MotherGrid) -> [usize; 12] {
+        let mut slots = [0; 12];
+        for (slot, address) in grid.addresses.iter().enumerate() {
+            if let Some(earthmesh_refine_certified::VertexAddress::IcosahedronVertex(vertex)) =
+                address
+            {
+                slots[*vertex as usize] = slot;
+            }
+        }
+        slots
+    }
+
+    /// On a closed mesh the open builder publishes exactly what the closed
+    /// builder does, through the sphere's Voronoi state and `pcvt`.
+    #[test]
+    fn the_open_builder_publishes_a_closed_mesh_as_the_closed_builder_does() {
+        for n in [1, 2, 4, 7] {
+            let grid = earthmesh_refine_certified::MotherGrid::generate(n).unwrap();
+            let triangular = grid
+                .mesh
+                .to_triangular_mesh(pentagon_slots(&grid), None)
+                .unwrap();
+            let state = spherical_voronoi_state(&triangular).unwrap();
+            let closed = build_certified_cmrc_gridfile(&grid.mesh, &state).unwrap();
+            for view in ["tri", "hex"] {
+                let open = build_open_cmrc_gridfile(&grid.mesh, view, None).unwrap();
+                assert_eq!(open, closed, "n {n} {view}");
+            }
+        }
+    }
+
+    /// On a built region the cells are the sites whose fan closes, each
+    /// published as the whole mesh publishes it; boundary sites have no row.
+    /// The hex view keeps every face with a cell at a corner (the others'
+    /// corners naming the placeholder), the tri view the faces with cells at
+    /// all three -- each at the whole mesh's circumcentre.
+    #[test]
+    fn an_open_meshs_cells_are_published_as_the_whole_meshs() {
+        use earthmesh_refine_certified::mother_grid::{lattice, region};
+        use earthmesh_refine_certified::TriangleAddress;
+        let n = 8;
+        let whole = earthmesh_refine_certified::MotherGrid::generate(n).unwrap();
+        let start = whole
+            .triangle_addresses
+            .iter()
+            .flatten()
+            .copied()
+            .nth(70)
+            .unwrap();
+        let mut built = BTreeSet::from([start]);
+        for _ in 0..3 {
+            for face in built.clone() {
+                built.extend(lattice::faces_around(face).unwrap());
+            }
+        }
+        let part =
+            earthmesh_refine_certified::MotherGrid::generate_faces(n, built.clone()).unwrap();
+        let index = part.region.as_ref().unwrap();
+        let numbering = region::GlobalNumbering::new(n);
+        let whole_rows = build_open_cmrc_gridfile(&whole.mesh, "hex", None).unwrap();
+        // The whole mesh's first site is the rank-0 lattice vertex.
+        let radius = earthmesh_mesh::magnitude(whole.mesh.vertices()[2]);
+        // Whole-mesh rows by address and by origin.
+        let mut whole_face_row = BTreeMap::new();
+        for (row, slot) in whole.mesh.active_triangle_slots().enumerate() {
+            whole_face_row.insert(whole.triangle_addresses[slot].unwrap(), row + 1);
+        }
+        let whole_site_row = |slot: usize| {
+            whole
+                .mesh
+                .active_vertex_slots()
+                .position(|s| s == slot)
+                .unwrap()
+                + 1
+        };
+        let boundary = index.outer_boundary();
+        for view in ["tri", "hex"] {
+            let rows = build_open_cmrc_gridfile(&part.mesh, view, Some(radius)).unwrap();
+            // Faces: which are kept, and where.
+            let mut face_of_row = BTreeMap::<usize, TriangleAddress>::new();
+            let mut kept = 0;
+            for slot in part.mesh.active_triangle_slots() {
+                let corners = part.mesh.triangles()[slot];
+                let cells = corners
+                    .iter()
+                    .filter(|site| !boundary.contains(site))
+                    .count();
+                if (view == "tri" && cells < 3) || cells == 0 {
+                    continue;
+                }
+                kept += 1;
+                let address = part.triangle_addresses[slot].unwrap();
+                face_of_row.insert(kept, address);
+                assert_eq!(
+                    rows.m_points[kept],
+                    whole_rows.m_points[whole_face_row[&address]]
+                );
+            }
+            assert_eq!(rows.m_points.len(), kept + 1, "{view}");
+            // Cells: the sites off the boundary, in slot order.
+            let cells = part
+                .mesh
+                .active_vertex_slots()
+                .filter(|site| !boundary.contains(site))
+                .collect::<Vec<_>>();
+            assert_eq!(rows.w_points.len(), cells.len() + 1, "{view}");
+            let mut trimmed = 0;
+            for (row, &slot) in cells.iter().enumerate() {
+                let whole_row = whole_site_row(numbering.rank(index.origin(slot).unwrap()) + 2);
+                assert_eq!(rows.w_points[row + 1], whole_rows.w_points[whole_row]);
+                let fan = rows.w_to_m[row + 1][..rows.n_w_to_m[row + 1] as usize]
+                    .iter()
+                    .map(|&id| face_of_row[&(id as usize - 1)])
+                    .collect::<Vec<_>>();
+                let whole_fan = whole_rows.w_to_m[whole_row]
+                    [..whole_rows.n_w_to_m[whole_row] as usize]
+                    .iter()
+                    .map(|&id| {
+                        *whole_face_row
+                            .iter()
+                            .find(|(_, &r)| r as i32 + 1 == id)
+                            .unwrap()
+                            .0
+                    })
+                    .collect::<Vec<_>>();
+                if view == "hex" {
+                    assert_eq!(fan, whole_fan);
+                } else {
+                    // The tri view drops the faces at boundary sites, in order.
+                    let kept_whole = whole_fan
+                        .iter()
+                        .copied()
+                        .filter(|face| face_of_row.values().any(|kept| kept == face))
+                        .collect::<Vec<_>>();
+                    assert_eq!(fan, kept_whole);
+                    trimmed += usize::from(fan.len() < whole_fan.len());
+                }
+            }
+            if view == "tri" {
+                assert!(trimmed > 10, "{trimmed} cells lose boundary faces");
+            }
+            // Every face corner names a cell or, in hex, the placeholder.
+            for triangle in &rows.m_to_w[1..] {
+                for &corner in triangle {
+                    assert!(corner >= 1 && (corner as usize) < rows.w_points.len() + 1);
+                    assert!(view == "hex" || corner >= 2);
+                }
             }
         }
     }

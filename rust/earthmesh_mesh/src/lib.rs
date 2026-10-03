@@ -254,7 +254,7 @@ mod spherical_centroid;
 pub use spherical_centroid::{centroid_spherical_mesh_one_based, spherical_centroid_degrees};
 mod spherical_circumcenter;
 pub use spherical_circumcenter::spherical_circumcenter_from_barycenter;
-pub(crate) use spherical_circumcenter::spherical_circumcenter_from_barycenter_with_radius;
+pub use spherical_circumcenter::spherical_circumcenter_from_barycenter_with_radius;
 mod spherical_circumcenter_mesh;
 pub use spherical_circumcenter_mesh::circumcenter_spherical_mesh_one_based;
 mod spring_edge_dynamics;

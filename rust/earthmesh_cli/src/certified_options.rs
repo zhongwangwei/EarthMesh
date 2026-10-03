@@ -34,7 +34,14 @@ pub enum CertifiedDelivery {
 pub enum CertifiedMaterialization {
     #[default]
     Whole,
+    /// Built on demand, then put back together into the whole sphere, which
+    /// is certified and published as the whole route publishes it.
     OnDemand,
+    /// Built on demand and published as the region: the delivered domain
+    /// cut from the built region's final mesh, the parent being that mesh --
+    /// no sphere is assembled, so the base may be as fine as a 30 m run needs
+    /// (guide 11.109).
+    Regional,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,9 +147,10 @@ pub fn read_certified_options(contents: &str) -> io::Result<CertifiedRunOptions>
                 options.materialization = match assignment.value.to_ascii_lowercase().as_str() {
                     "whole" => CertifiedMaterialization::Whole,
                     "on_demand" => CertifiedMaterialization::OnDemand,
+                    "regional" => CertifiedMaterialization::Regional,
                     other => {
                         return Err(invalid(format!(
-                            "certified materialization must be whole or on_demand, got {other}"
+                            "certified materialization must be whole, on_demand or regional, got {other}"
                         )))
                     }
                 }
@@ -185,6 +193,17 @@ mod tests {
         assert_eq!(options.gradation_rings_per_level, 4);
         assert_eq!(options.search_budget, 700);
 
+        for (value, expected) in [
+            ("whole", CertifiedMaterialization::Whole),
+            ("on_demand", CertifiedMaterialization::OnDemand),
+            ("regional", CertifiedMaterialization::Regional),
+        ] {
+            let options =
+                read_certified_options(&format!("&certified\n NL%materialization='{value}'\n/"))
+                    .unwrap();
+            assert_eq!(options.materialization, expected);
+        }
+        assert!(read_certified_options("&certified\n NL%materialization='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%mode='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%angle_contract='typo'\n/").is_err());
         assert!(read_certified_options("&certified\n NL%maximum_cells=0\n/").is_err());

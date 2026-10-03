@@ -1102,6 +1102,149 @@ fn on_demand_materialization_delivers_the_whole_spheres_regional_grid() {
     }
 }
 
+/// Published as the region (guide 11.109), nothing outside the built region
+/// is assembled: the delivered grid is the whole sphere's apart from its
+/// lineage, which names rows of the regional parent instead of the global
+/// one; every delivered cell's remap row is the whole sphere's; the
+/// certificate says what it covers.
+#[test]
+fn regional_publication_delivers_the_whole_spheres_cells() {
+    let root = temp_root("regional_publication");
+    let sources = root.join("sources");
+    fs::create_dir_all(&sources).unwrap();
+    let prefix = sources.join("hotspot");
+    earthmesh_cli::circle_close_mask_io::write_circle_mask_netcdf(
+        sources.join("hotspot_001.nc4"),
+        &earthmesh_cli::circle_close_mask_io::CircleMask {
+            refine_degree: 1,
+            points: vec![earthmesh_cli::coordinate_types::LonLatPoint {
+                lon: 12.0,
+                lat: 8.0,
+            }],
+            radius_km: vec![500.0],
+        },
+    )
+    .unwrap();
+    let mut results = Vec::new();
+    for materialization in ["whole", "regional"] {
+        let base = root.join(materialization);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("cmrc.nml");
+        fs::write(
+            &path,
+            specified_circle_namelist(&base, "regional", &prefix)
+                .replace("NL%NXP=3", "NL%NXP=16")
+                .replace("NL%maximum_cells=1000", "NL%maximum_cells=100000")
+                .replace("safe_mother_only", "reverse_coarsening")
+                .replace(
+                    "NL%search_budget=100\n/",
+                    &format!("NL%search_budget=100\n  NL%materialization='{materialization}'\n/"),
+                )
+                .replace(
+                    "NL%mask_domain_global=.true.",
+                    "NL%mask_domain_global=.false.\n  NL%mask_domain_type='bbox'\n  \
+                     NL%mask_domain_fprefix='inline:bbox:w=0,e=25,s=-5,n=20'",
+                ),
+        )
+        .unwrap();
+        let certified = earthmesh_cli::run_refine_pipeline_namelist(&path, &base, 100_000, None)
+            .unwrap()
+            .certified_run
+            .unwrap();
+        assert_eq!(certified.product_outcome, "certified_adaptive");
+        results.push(certified);
+    }
+    let result_dir = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
+        certified.certificate.parent().unwrap().to_path_buf()
+    };
+    let (whole_dir, regional_dir) = (result_dir(&results[0]), result_dir(&results[1]));
+    let grid = fs::read_dir(&regional_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .find(|name| name.starts_with("gridfile_") && !name.contains("parent"))
+        .unwrap();
+    let stem = grid.trim_end_matches(".nc4");
+    assert!(regional_dir
+        .join(format!("{stem}_regional_parent.nc4"))
+        .is_file());
+    assert!(!regional_dir
+        .join(format!("{stem}_global_parent.nc4"))
+        .exists());
+    assert!(whole_dir
+        .join(format!("{stem}_global_parent.nc4"))
+        .is_file());
+
+    use earthmesh_cli::grid_quality_pipeline::{
+        read_gridfile_cell_lineages, read_gridfile_mesh_points,
+    };
+    let (whole, regional) = (
+        read_gridfile_mesh_points(whole_dir.join(&grid)).unwrap(),
+        read_gridfile_mesh_points(regional_dir.join(&grid)).unwrap(),
+    );
+    assert_eq!(regional.w_lon, whole.w_lon);
+    assert_eq!(regional.w_lat, whole.w_lat);
+    assert_eq!(regional.m_lon, whole.m_lon);
+    assert_eq!(regional.m_lat, whole.m_lat);
+    assert_eq!(regional.m_to_w, whole.m_to_w);
+    assert_eq!(regional.w_to_m, whole.w_to_m);
+    assert_eq!(regional.n_w, whole.n_w);
+    assert_eq!(regional.w_refine_level, whole.w_refine_level);
+    assert_eq!(regional.m_refine_level, whole.m_refine_level);
+
+    let rows = |certified: &earthmesh_cli::mkgrd_run_types::CertifiedRunRecord| {
+        let text = fs::read_to_string(certified.pre_export_remap.as_ref().unwrap()).unwrap();
+        let mut rows = BTreeMap::<usize, BTreeMap<usize, String>>::new();
+        for line in text.lines().skip(1) {
+            let mut fields = line.split(',');
+            let target = fields.next().unwrap().parse::<usize>().unwrap();
+            let source = fields.next().unwrap().parse::<usize>().unwrap();
+            rows.entry(target)
+                .or_default()
+                .insert(source, fields.next().unwrap().to_owned());
+        }
+        rows
+    };
+    let (whole_rows, regional_rows) = (rows(&results[0]), rows(&results[1]));
+    assert!(regional_rows.len() < whole_rows.len());
+    let (whole_lineage, regional_lineage) = (
+        read_gridfile_cell_lineages(whole_dir.join(&grid))
+            .unwrap()
+            .w,
+        read_gridfile_cell_lineages(regional_dir.join(&grid))
+            .unwrap()
+            .w,
+    );
+    let mut delivered = 0;
+    for (&w, &r) in whole_lineage.iter().zip(&regional_lineage) {
+        if w <= 1 {
+            continue;
+        }
+        delivered += 1;
+        assert_eq!(
+            regional_rows.get(&(r as usize - 2)),
+            whole_rows.get(&(w as usize - 2)),
+            "delivered cell with lineage {w} / {r}"
+        );
+        assert!(regional_rows.contains_key(&(r as usize - 2)));
+    }
+    assert!(delivered > 0);
+
+    let certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&results[1].certificate).unwrap()).unwrap();
+    assert_eq!(certificate["geometry_scope"], "pre_export_region");
+    assert_eq!(certificate["remap_scope"], "pre_export_region_voronoi");
+    let region = &certificate["region"];
+    assert_eq!(region["scope"], "built_region_open_mesh");
+    assert_eq!(
+        region["certified_cells"].as_u64().unwrap() as usize,
+        regional_rows.len()
+    );
+    assert!(region["settled_base_faces"].as_u64().unwrap() > 0);
+    let whole_certificate: serde_json::Value =
+        serde_json::from_slice(&fs::read(&results[0].certificate).unwrap()).unwrap();
+    assert!(whole_certificate["region"].is_null());
+}
+
 #[test]
 fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback() {
     let root = temp_root("mixed_fulfillment");

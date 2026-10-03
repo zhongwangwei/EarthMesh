@@ -336,6 +336,50 @@ pub fn region_required_levels_from_raster(
     cellless: &std::collections::BTreeSet<usize>,
     whole_cells: usize,
 ) -> Result<Vec<usize>, String> {
+    region_required_levels_with_sources(raster, mesh, cellless, whole_cells).map(|levels| levels.0)
+}
+
+/// `certify_final_cell_requirements_from_raster` on the final mesh of a
+/// built region published without the rest of the sphere: every cell off
+/// the outer boundary (`cellless`) gets the raster's requirement as
+/// `region_required_levels_from_raster` projects it, the boundary sites --
+/// on the frame's far side, settled by construction -- require level zero,
+/// and balance is checked across every edge.
+pub fn certify_region_final_cell_requirements_from_raster(
+    raster: &RasterLevelField,
+    mesh: &MeshState,
+    levels: &TargetLevelField,
+    cellless: &std::collections::BTreeSet<usize>,
+    whole_cells: usize,
+    max_adjacent_level_delta: usize,
+) -> Result<FinalCellRequirementCertificate, FinalCellRequirementError> {
+    levels
+        .validate_for(mesh)
+        .map_err(FinalCellRequirementError::InvalidInput)?;
+    let (required_levels, source_for_target) =
+        region_required_levels_with_sources(raster, mesh, cellless, whole_cells)
+            .map_err(FinalCellRequirementError::InvalidInput)?;
+    let report = final_report_from_required_levels(
+        mesh,
+        levels,
+        required_levels,
+        source_for_target,
+        None,
+        max_adjacent_level_delta,
+    );
+    if report.physical_residuals == 0 && report.balance_residuals == 0 {
+        Ok(report)
+    } else {
+        Err(FinalCellRequirementError::Residuals(report))
+    }
+}
+
+fn region_required_levels_with_sources(
+    raster: &RasterLevelField,
+    mesh: &MeshState,
+    cellless: &std::collections::BTreeSet<usize>,
+    whole_cells: usize,
+) -> Result<(Vec<usize>, Vec<Option<usize>>), String> {
     let (rings, ids) =
         crate::remap::voronoi_rings_selected(mesh, |site| !cellless.contains(&site))?;
     let cells = mesh.active_vertex_slots().count();
@@ -361,7 +405,7 @@ pub fn region_required_levels_from_raster(
             certificate.closure_tolerance(),
         ));
     }
-    Ok(maximum_overlapping_levels(&remap, raster.levels(), cells)?.0)
+    maximum_overlapping_levels(&remap, raster.levels(), cells)
 }
 
 pub fn certify_final_cell_requirements_from_raster_global_bound(

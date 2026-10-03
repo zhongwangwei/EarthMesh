@@ -5186,3 +5186,38 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
 
 尚未完成：B1r-4 区域发布（最终证书与需求投影在 M 的最终网格上做、交付域从 M 裁出、parent 只含域加过渡环、证书写范围），
 之后才能在 1 km 基面上跑 30 m。
+
+### 11.109 区域发布：不装配整球，交付域从区域的最终网格裁出（B1r-4，2026-10-03）
+
+`&certified materialization = 'regional'`（实验时 `EARTHMESH_CMRC_MATERIALIZATION=regional`）在 `on_demand` 之上再走一步：
+粗化之后不装配整球——细基面的整球有约 10 亿个面——最终证书、需求投影、remap 与发布都在物化区 M（R 加两圈 F）的最终网格上
+做。M 在 F 的外缘是开放的；外缘之外从未生成，按构造是基面母网格。仍是同一个反向粗化，只是产出停在区域。
+
+- **几何证书（`certify_region_geometry_with_contract`）**：最终交付角窗检查每个面；开放边只许在外边界上；Euler 示性数必须等于
+  初始区域母网格的（粗化不改区域的拓扑）；度数与对偶单元在外边界以外逐点检查。
+- **需求证书（`certify_region_final_cell_requirements_from_raster`）**：外边界以外的单元取 11.107 的区域投影，外边界点按构造为
+  0 级；平衡在每条边上检查。
+- **remap**：只有 R 的单元有行，目标按父网格的 W 行编号；源仍是整个细母网格里的编号（`GlobalNumbering`）。
+- **父网格（`*_regional_parent.nc4`，`build_open_cmrc_gridfile`）**：单元是扇能闭合的格点，外边界点没有单元、不占行。hex 视图
+  保留至少一个角有单元的面，无单元的角记为占位行；tri 视图只保留三个角都有单元的面——hex 的父文件每个 W 行都必须是完整的
+  多边形，tri 允许不完整的扇（`validate_published_cell_degrees`）。闭合网格上两种视图都与闭合构建器（Voronoi 状态加 `pcvt`）
+  逐字节相同；区域上的单元与整网格的逐个相同（测试）。交付域照旧由 `publish_certified_domain_gridfile` 从父网格裁出。
+- **外心的归一化半径**：`pcvt` 把外心归一化到“第一个活动格点”的半径。区域的第一个格点与整球的不同，模长差一个 ulp，t10 的
+  Voronoi 顶点因此差到 1.4×10⁻¹⁴ 度。区域发布改用整球第一个格点（0 号格点）的半径，对偶顶点于是与所选区域无关。
+- **证书与清单**：`geometry_scope`、`remap_scope`、`physical_balance_domain_scope` 写 `pre_export_region…`，证书和清单各有
+  `region` 块（外边界格点、逐个认证的单元、物化的细母网格单元与整球单元数、基面的 R/F/S 面数），清单给出
+  `regional_parent_gridfile`，`global_parent_gridfile` 为空。
+
+| 算例 | 整球 | 区域发布 |
+|---|---|---|
+| t10_both（云南 bbox 两圆，1 级，hex） | 16.7 s | 1.0 s |
+| 同上，tri | 16.3 s | 1.0 s |
+| 青藏圆域 1200 km，DEM 粗糙度 | 10.2 s | 3.0 s |
+| 云南 bbox 一个 2 级圆 | 100.7 s | 2.9 s |
+
+四例的交付网格除谱系（指向不同的父网格）外逐个变量相同：坐标、两种连接、层级、单元宽度；每个交付单元的 remap 行与整球的
+逐条相同（按谱系对齐：目标 = 谱系 − 2）。CLI 测试 `regional_publication_delivers_the_whole_spheres_cells` 比较这些，并检查
+父网格的命名与证书的范围字段。
+
+30 m 还差需求栅格：h-field 栅格是全球的（默认 0.5°，约 55 km），比 30 m 的区域还大，R 会被放大到整个栅格格元；全球加细到
+0.01° 有 6.5 亿个格元，放不下。需要只覆盖交付域附近的窗口栅格（设计文档 A4）。

@@ -15,9 +15,10 @@ mod stretched_mother;
 
 pub use api::{
     certify_geometry, certify_geometry_with_contract, certify_mother_grid,
-    certify_mother_grid_with_contract, finalize_geometry_certified_mother,
-    finalize_region_geometry, generate_certified_mother_grid, geometry_certified_mother_grid,
-    geometry_certified_mother_grid_with_contract, safe_mother_final_evidence, safe_mother_only,
+    certify_mother_grid_with_contract, certify_region_geometry_with_contract,
+    finalize_geometry_certified_mother, finalize_region_geometry, generate_certified_mother_grid,
+    geometry_certified_mother_grid, geometry_certified_mother_grid_with_contract,
+    safe_mother_final_evidence, safe_mother_only,
 };
 pub use certificate::{
     AngleContract, AngleContractId, AngleWindow, BalanceCertificate, Certificate, CertificateError,
@@ -38,9 +39,9 @@ pub use equidistributed_mother::{equidistributed_certified_mother, Equidistribut
 pub use requirement::{
     certify_final_cell_requirements, certify_final_cell_requirements_from_raster,
     certify_final_cell_requirements_from_raster_global_bound,
-    certify_final_cell_requirements_with_remap, region_required_levels_from_raster,
-    FinalCellRequirementCertificate, FinalCellRequirementError, FinalCellRequirementReport,
-    FinalCellRequirementResiduals, RasterLevelField, RequirementWitness, SourceLevelField,
-    TargetLevelField,
+    certify_final_cell_requirements_with_remap, certify_region_final_cell_requirements_from_raster,
+    region_required_levels_from_raster, FinalCellRequirementCertificate, FinalCellRequirementError,
+    FinalCellRequirementReport, FinalCellRequirementResiduals, RasterLevelField,
+    RequirementWitness, SourceLevelField, TargetLevelField,
 };
 pub use stretched_mother::{stretched_certified_mother, StretchedMother};
