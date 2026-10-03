@@ -3,7 +3,7 @@
 compare the final gridfiles variable by variable, plus the `refine_*` lines.
 
 Usage:
-    scripts/ab_compare.py BASE_BIN NEW_BIN PROJECT.yaml WORKDIR [CASE_NAME] [--all-artifacts]
+    scripts/ab_compare.py BASE_BIN NEW_BIN PROJECT.yaml WORKDIR [CASE_NAME] [--all-artifacts] [--reuse-base]
 
 Each binary runs `--project project.yaml` in WORKDIR/CASE/{base,new}. The
 summary line is printed as JSON and appended to WORKDIR/results.jsonl:
@@ -12,12 +12,16 @@ identical); `refine_lines_equal` compares the sorted `refine_*` stdout lines.
 With --all-artifacts every file under each run directory is compared as well
 (`artifact_diffs`): NetCDF by variable, JSON after dropping timing fields and
 normalising the run-directory path and nested scratch-directory names, anything
-else byte for byte after the same normalisation. Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
+else byte for byte after the same normalisation. With --reuse-base the base
+run is kept from an earlier call with the same base binary (its record is
+WORKDIR/CASE/base/base_run.json) and only the new binary runs, from a fresh
+directory; NEW_BIN `-` only records the base run. Needs netCDF4 and numpy. See docs/architecture_layering_audit_2026-09-25.md
 section 6 for how it is used.
 """
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -31,6 +35,8 @@ IGNORED_REFINE_PREFIXES = ("refine_hfield_dropped_",)
 
 
 def run(binary, directory, project):
+    if os.path.isdir(directory):
+        shutil.rmtree(directory)
     os.makedirs(directory, exist_ok=True)
     with open(project) as source, open(os.path.join(directory, "project.yaml"), "w") as target:
         target.write(source.read())
@@ -146,15 +152,33 @@ def artifact_differences(base_dir, new_dir):
     return differences
 
 
+def base_run(base_bin, directory, project, reuse):
+    """The base binary's run, or the one recorded for it when reusing."""
+    record = os.path.join(directory, "base_run.json")
+    if reuse and os.path.exists(record):
+        recorded = json.load(open(record))
+        if recorded.get("binary") == base_bin and recorded.get("project") == open(project).read():
+            return recorded["run"]
+    result = run(base_bin, directory, project)
+    with open(record, "w") as out:
+        json.dump({"binary": base_bin, "project": open(project).read(), "run": result}, out)
+    return result
+
+
 def main():
-    args = [a for a in sys.argv[1:] if a != "--all-artifacts"]
-    all_artifacts = len(args) != len(sys.argv) - 1
+    flags = {"--all-artifacts", "--reuse-base"}
+    args = [a for a in sys.argv[1:] if a not in flags]
+    all_artifacts = "--all-artifacts" in sys.argv[1:]
+    reuse = "--reuse-base" in sys.argv[1:]
     if len(args) not in (4, 5):
         sys.exit(__doc__)
-    base_bin, new_bin, project, workdir = map(os.path.abspath, args[:4])
+    base_bin, project, workdir = (os.path.abspath(args[i]) for i in (0, 2, 3))
     case = args[4] if len(args) == 5 else os.path.splitext(os.path.basename(project))[0]
-    base = run(base_bin, os.path.join(workdir, case, "base"), project)
-    new = run(new_bin, os.path.join(workdir, case, "new"), project)
+    base = base_run(base_bin, os.path.join(workdir, case, "base"), project, reuse)
+    if args[1] == "-":
+        print(json.dumps({"case": case, "base_rc": base["rc"], "base_s": base["secs"]}))
+        return
+    new = run(os.path.abspath(args[1]), os.path.join(workdir, case, "new"), project)
     summary = {
         "case": case,
         "base_rc": base["rc"],

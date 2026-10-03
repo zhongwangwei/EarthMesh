@@ -25,10 +25,9 @@ pub(crate) fn refine_pipeline_refine_dispatch_requested(
     let compatibility_specified_refine = config.refine;
     // An explicitly selected certified backend also owns the uniform mother
     // grid. Disabled refinement must not silently select Method-C instead.
-    let certified_mother = config
-        .refine_backend
-        .trim()
-        .eq_ignore_ascii_case("certified");
+    let certified_mother = earthmesh_refine::RefinementBackend::from_engine_str(
+        &config.refine_backend.trim().to_ascii_lowercase(),
+    ) == Some(earthmesh_refine::RefinementBackend::Certified);
     Ok(native_mdomain.is_some()
         || native_surface_global_expansion
         || native_refine_regions_requested

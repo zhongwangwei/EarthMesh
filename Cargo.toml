@@ -19,9 +19,8 @@ members = [
     "rust/earthmesh_delivery",
     "rust/earthmesh_inputs",
     "rust/earthmesh_project",
-    # Compatibility ports kept for bit-for-bit verification against the Fortran
-    # reference. Built and tested by the workspace; depended on by nothing in
-    # the production engine (the dependency edge only points into rust/).
+    # The Red-Green backend (`NL%refine_backend = 'red_green'`), reached from
+    # the CLI through its adapter, `redgreen_bridge.rs`.
     "rust/earthmesh_refine_redgreen",
 ]
 

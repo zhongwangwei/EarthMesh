@@ -3,6 +3,7 @@ use std::{collections::HashMap, io};
 use super::*;
 
 mod replay;
+pub use replay::{set_pass_sink, PassRecord, PassSink, PASS_BASE_FILE};
 
 #[derive(Clone, Debug)]
 pub(crate) struct MethodCHfieldDemandCoverage {
@@ -1078,7 +1079,7 @@ impl MethodCMesh {
         mut coverage: MethodCHfieldDemandCoverage,
         diagnostics: &mut MethodCHfieldSpawnDiagnostics,
     ) -> io::Result<Self> {
-        replay::dump_pass_if_asked(self, &selected, child_level, max_mrows, &coverage, false)?;
+        replay::record_pass(self, &selected, child_level, max_mrows, &coverage, false)?;
         let m_neighbors = self.method_c_m_neighbors()?;
         let mut attempts = 0usize;
         let over_budget = |attempts: usize, error: io::Error| {
@@ -1102,7 +1103,7 @@ impl MethodCMesh {
                 &mut ladder,
             ) {
                 Ok(mesh) => {
-                    replay::dump_pass_if_asked(
+                    replay::record_pass(
                         self,
                         &selected,
                         child_level,

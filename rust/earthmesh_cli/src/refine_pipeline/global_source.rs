@@ -1,4 +1,5 @@
 use crate::certified_options::read_certified_options;
+use earthmesh_refine::RefinementBackend;
 use crate::final_quality_non_negative_usize;
 use crate::gridfile_mesh_from_one_based_state;
 use crate::initial_triangulation_from_gridfile;
@@ -142,7 +143,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let backend = refine_backend_name(&config.refine_backend)?;
     if std::env::var_os("EARTHMESH_CMRC_LOCAL_UPDATE").is_some()
-        && backend != RefineBackend::Certified
+        && backend != RefinementBackend::Certified
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -153,14 +154,14 @@ pub(super) fn run_refine_pipeline_in_workspace(
     let quality = QualityNamelist::from_quality_namelist(&contents)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let method_c_algorithm = read_method_c_algorithm_options(&contents)?;
-    if quality.lepp_post_quality && backend != RefineBackend::MethodC {
+    if quality.lepp_post_quality && backend != RefinementBackend::MethodC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "NL%lepp_post_quality requires NL%refine_backend='method_c'",
         ));
     }
     if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay
-        && backend != RefineBackend::MethodC
+        && backend != RefinementBackend::MethodC
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -176,7 +177,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
     let (refined, inputs) = match backend {
         // CMRC builds its own certified mother grid rather than refining the
         // shared source mesh, so it skips that preparation.
-        RefineBackend::Certified => refine_with_certified_as_grid(
+        RefinementBackend::Certified => refine_with_certified_as_grid(
             &contents,
             &config,
             read_certified_options(&contents)?,
@@ -184,10 +185,10 @@ pub(super) fn run_refine_pipeline_in_workspace(
             max_tris,
             output_dir,
         )?,
-        RefineBackend::MethodC
-        | RefineBackend::RedGreen
-        | RefineBackend::Stretch
-        | RefineBackend::IconNest => refine_from_shared_source(
+        RefinementBackend::MethodC
+        | RefinementBackend::RedGreen
+        | RefinementBackend::Stretch
+        | RefinementBackend::IconNest => refine_from_shared_source(
             &contents,
             &config,
             backend,
@@ -218,7 +219,7 @@ pub(super) fn run_refine_pipeline_in_workspace(
 fn refine_from_shared_source(
     contents: &str,
     config: &EarthmeshConfig,
-    backend: RefineBackend,
+    backend: RefinementBackend,
     quality: &QualityNamelist,
     method_c_algorithm: &MethodCAlgorithmOptions,
     namelist_source: &Path,
@@ -266,8 +267,8 @@ fn refine_from_shared_source(
         // The point+radius route of red-green and LEPP takes the domain as a
         // level-k region (`RedGreenMother`, `lepp_mother_demands`); every
         // other route needs the h-field to.
-        let point_radius = (backend == RefineBackend::RedGreen
-            || (backend == RefineBackend::MethodC && lepp))
+        let point_radius = (backend == RefinementBackend::RedGreen
+            || (backend == RefinementBackend::MethodC && lepp))
             && adaptive_options.is_some()
             && hfield_options.is_none();
         let unsupported = if config.mask_domain_global {
@@ -278,7 +279,7 @@ fn refine_from_shared_source(
             Some("a run without the h-field")
         } else if adaptive_options.is_some() {
             Some("the point+radius route")
-        } else if !matches!(backend, RefineBackend::MethodC | RefineBackend::RedGreen) || lepp {
+        } else if !matches!(backend, RefinementBackend::MethodC | RefinementBackend::RedGreen) || lepp {
             Some("this backend")
         } else {
             None
@@ -432,7 +433,7 @@ fn refine_from_shared_source(
             "LEPP AdaptiveHybrid requires the spherical Method-C base mesh; Cartesian-XY and native surface expansion are unsupported",
         ));
     }
-    if backend == RefineBackend::MethodC && native_cartesian_xy && adaptive_options.is_some() {
+    if backend == RefinementBackend::MethodC && native_cartesian_xy && adaptive_options.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Cartesian-XY &adaptive requires a native demand contract; spherical point+radius demand is unsupported",
@@ -543,7 +544,7 @@ fn refine_from_shared_source(
     // Method-C and a `/tmp` path nobody typed.
     if matches!(
         backend,
-        RefineBackend::RedGreen | RefineBackend::Stretch | RefineBackend::IconNest
+        RefinementBackend::RedGreen | RefinementBackend::Stretch | RefinementBackend::IconNest
     ) && refine.refine_cal
         && adaptive_options.is_none()
         && !has_threshold_hfield_sources
@@ -555,7 +556,7 @@ fn refine_from_shared_source(
                 "NL%refine_backend = {} has no reader for calculated criteria with both the \
                  point+radius route and the h-field off. Enable &adaptive or &hfield, point \
                  RL%mask_refine_cal_fprefix at mask files, or use method_c",
-                refine_backend_label(backend)
+                backend.engine_str()
             ),
         ));
     }
@@ -655,10 +656,10 @@ fn refine_from_shared_source(
             (1, _) => "RL%SpringGlobal_type = 1",
             _ => "RL%SpringRegional_type",
         };
-        let why = if backend == RefineBackend::Stretch {
+        let why = if backend == RefinementBackend::Stretch {
             "stretch refinement's resolution is its vertex placement, and a Laplacian spring \
              on top of that would relax it back toward uniform"
-        } else if backend == RefineBackend::IconNest {
+        } else if backend == RefinementBackend::IconNest {
             "icon_nest refinement keeps the global grid as it is and refines in separate nest \
              grids, so there is no refined region to smooth"
         } else {
@@ -677,7 +678,7 @@ fn refine_from_shared_source(
     // needs is the same from either -- a gridfile mesh, and whatever each one
     // can honestly say about how it was built.
     let refined = match backend {
-        RefineBackend::RedGreen | RefineBackend::Stretch | RefineBackend::IconNest => {
+        RefinementBackend::RedGreen | RefinementBackend::Stretch | RefinementBackend::IconNest => {
             // What this route does not read, said outright rather than served
             // quietly with less: any of these would simply be dropped, and the
             // run would still write a valid mesh that passes every quality check
@@ -701,14 +702,14 @@ fn refine_from_shared_source(
                         "NL%refine_backend = {} does not serve {unsupported}; it refines \
                          named regions, the point+radius criteria and the h-field. Use method_c \
                          for this run",
-                        refine_backend_label(backend)
+                        backend.engine_str()
                     ),
                 ));
             }
             let adaptive = adaptive_options
                 .as_ref()
-                .map(|adaptive| -> io::Result<RedGreenAdaptive<'_>> {
-                    Ok(RedGreenAdaptive {
+                .map(|adaptive| -> io::Result<PointRadiusCriteria<'_>> {
+                    Ok(PointRadiusCriteria {
                         inputs: adaptive_demand_inputs(
                             domain_region.as_ref(),
                             config,
@@ -755,9 +756,9 @@ fn refine_from_shared_source(
                 }
                 _ => (None, max_level),
             };
-            if backend == RefineBackend::Stretch {
+            if backend == RefinementBackend::Stretch {
                 refine_with_stretch(mesh, &regions, &refine, max_level, adaptive, hfield)?
-            } else if backend == RefineBackend::IconNest {
+            } else if backend == RefinementBackend::IconNest {
                 refine_with_icon_nest(mesh, &regions, &refine, max_level, adaptive, hfield)?
             } else {
                 // Over a regional mother the point+radius route refines the
@@ -793,7 +794,7 @@ fn refine_from_shared_source(
                 )?
             }
         }
-        RefineBackend::MethodC => {
+        RefinementBackend::MethodC => {
             if method_c_algorithm.algorithm == MethodCAlgorithm::LeppDelaunay {
                 refine_with_method_c_lepp(
                     mesh,
@@ -930,7 +931,7 @@ fn refine_from_shared_source(
                 }
             }
         }
-        RefineBackend::Certified => unreachable!("CMRC does not refine the shared source mesh"),
+        RefinementBackend::Certified => unreachable!("CMRC does not refine the shared source mesh"),
     };
     Ok((
         refined,
@@ -1069,22 +1070,25 @@ fn finish_refined(
 
     // ICON nests are cut from the grid as published: after the angle
     // contract, so each nest corner is the parent vertex ICON looks for.
-    let icon_nest_run = match icon_nest {
+    // Planned first (the algorithm, no files), then written (the output).
+    let icon_nest_plan = match icon_nest {
         Some(demand) => {
-            let (record, depth) = super::icon_nest::write_icon_nests(
+            let plan = super::icon_nest::plan_icon_nests(
                 &output_mesh,
                 &demand,
                 hfield_context.as_ref(),
-                nxp,
-                &file_dir.join("result"),
             )?;
             // The delivery's level is the deepest nest over a place, not the
             // global grid's level 0.
-            cell_levels = Some(super::icon_nest::nest_cell_levels(&output_mesh, &depth));
-            Some(record)
+            cell_levels = Some(super::icon_nest::nest_cell_levels(&output_mesh, &plan.depth));
+            Some(plan)
         }
         None => None,
     };
+    let icon_nest_run = icon_nest_plan
+        .as_ref()
+        .map(|plan| super::icon_nest::write_icon_nests(plan, nxp, &file_dir.join("result")))
+        .transpose()?;
 
     // Measured from backend output, not from the request: the deepest per-cell
     // level any backend recorded. A backend that records none (LEPP) falls back
@@ -2202,20 +2206,14 @@ fn log_angle_contract(which: &str, report: &earthmesh_mesh::AngleWindowReport) {
     );
 }
 
-/// The criteria half of the point+radius route, as red-green consumes it.
-struct RedGreenAdaptive<'a> {
+/// The criteria half of the point+radius route, as the backends that read a
+/// target-level field (red-green, stretch, ICON nests) consume it.
+struct PointRadiusCriteria<'a> {
     inputs: Vec<crate::refinement_demand::plan::DemandPlanInputs<'a>>,
     base_cell_meters: f64,
     coastline: bool,
 }
 
-/// Refine by red-green: mark the triangles the regions ask for, split each into
-/// four, close the seams by halving the neighbours left hanging, once per level.
-///
-/// Unlike Method-C this never refuses a region for its shape -- the judge chain
-/// grows a marking until the triangulation closes -- which is the whole reason
-/// the backend exists, and why the criteria route is served here and suspended
-/// there. A criterion's demand has whatever shape the data has.
 /// Red-green's per-face depth as per-row levels of the mesh it wrote: M rows
 /// are its triangles, W rows its cells, and a cell takes the deepest face
 /// around it. `None` when the depth was not tracked (the classic transition-row
@@ -2619,7 +2617,7 @@ fn plan_fixed_topology_demand(
     named_regions: &[earthmesh_mesh::RefinementRegion],
     refine: &RefineConfig,
     max_level: usize,
-    adaptive: Option<&RedGreenAdaptive<'_>>,
+    adaptive: Option<&PointRadiusCriteria<'_>>,
 ) -> io::Result<FixedTopologyDemand> {
     let mut planned_circles = Vec::new();
     if let Some(adaptive) = adaptive {
@@ -2668,7 +2666,7 @@ pub(super) fn fixed_topology_targets<'a>(
 fn fixed_topology_adaptive_run(
     named_regions: &[earthmesh_mesh::RefinementRegion],
     planned_circles: &[crate::refinement_demand::nest::LevelCircles],
-    adaptive: Option<RedGreenAdaptive<'_>>,
+    adaptive: Option<PointRadiusCriteria<'_>>,
     max_level: usize,
     faces: usize,
 ) -> Option<AdaptiveRunRecord> {
@@ -2731,7 +2729,7 @@ fn refine_with_stretch(
     named_regions: &[earthmesh_mesh::RefinementRegion],
     refine: &RefineConfig,
     max_level: usize,
-    adaptive: Option<RedGreenAdaptive<'_>>,
+    adaptive: Option<PointRadiusCriteria<'_>>,
     hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
@@ -2928,7 +2926,7 @@ fn refine_with_icon_nest(
     named_regions: &[earthmesh_mesh::RefinementRegion],
     refine: &RefineConfig,
     max_level: usize,
-    adaptive: Option<RedGreenAdaptive<'_>>,
+    adaptive: Option<PointRadiusCriteria<'_>>,
     hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
@@ -2984,12 +2982,19 @@ fn refine_with_icon_nest(
     })
 }
 
+/// Refine by red-green: mark the triangles the regions ask for, split each into
+/// four, close the seams by halving the neighbours left hanging, once per level.
+///
+/// Unlike Method-C this never refuses a region for its shape -- the judge chain
+/// grows a marking until the triangulation closes -- which is the whole reason
+/// the backend exists, and why the criteria route is served here and suspended
+/// there. A criterion's demand has whatever shape the data has.
 fn refine_with_redgreen(
     mesh: &TriangularMesh,
     named_regions: &[earthmesh_mesh::RefinementRegion],
     refine: &RefineConfig,
     max_level: usize,
-    adaptive: Option<RedGreenAdaptive<'_>>,
+    adaptive: Option<PointRadiusCriteria<'_>>,
     hfield: Option<crate::hfield_gridfile_context::HfieldGridfileContext>,
     preserve_locality: bool,
     spring_iterations: usize,
@@ -4067,10 +4072,37 @@ fn gridfile_metadata(
     })
 }
 
+/// `EARTHMESH_METHOD_C_DUMP_DIR=<dir>` keeps every h-field pass's record
+/// there for replay (the Method-C crate's `replay` test): the algorithm hands
+/// the records over, and this adapter writes them.
+fn install_method_c_pass_dump() {
+    let Some(dir) = std::env::var_os("EARTHMESH_METHOD_C_DUMP_DIR").map(PathBuf::from) else {
+        return;
+    };
+    // A second install in one process is refused and keeps the first.
+    let _ = earthmesh_refine_method_c::set_pass_sink(Box::new(move |record| {
+        fs::create_dir_all(&dir)?;
+        let base = dir.join(earthmesh_refine_method_c::PASS_BASE_FILE);
+        if !base.exists() {
+            fs::write(&base, &record.base)?;
+        }
+        let suffix = if record.built { "_built" } else { "" };
+        let path = dir.join(format!("pass_{:02}{suffix}.txt", record.child_level));
+        fs::write(&path, &record.text)?;
+        eprintln!(
+            "earthmesh_cli: method-c pass {} written to {}",
+            record.child_level,
+            path.display()
+        );
+        Ok(())
+    }));
+}
+
 fn refine_with_method_c(
     mesh: TriangularMesh,
     request: MethodCRefineRequest<'_>,
 ) -> io::Result<MethodCRefineOutcome> {
+    install_method_c_pass_dump();
     // Into the nesting here and back out at the boundary, so the transition
     // rows exist exactly where they mean something.
     let mesh = MethodCMesh::new(mesh);
@@ -4778,23 +4810,13 @@ fn adaptive_demand_windows(
         .collect()
 }
 
-/// Which retained backend a run asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RefineBackend {
-    MethodC,
-    RedGreen,
-    Certified,
-    Stretch,
-    IconNest,
-}
-
-fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usize) -> usize {
+fn effective_refinement_spring_iterations(backend: RefinementBackend, requested: usize) -> usize {
     // CMRC's certificate covers its geometry; a stretched grid's resolution
     // is its geometry, and a regional spring would relax it back. A nested
     // run refines nothing in place, so there is nothing to smooth.
     if matches!(
         backend,
-        RefineBackend::Certified | RefineBackend::Stretch | RefineBackend::IconNest
+        RefinementBackend::Certified | RefinementBackend::Stretch | RefinementBackend::IconNest
     ) {
         0
     } else {
@@ -4802,33 +4824,17 @@ fn effective_refinement_spring_iterations(backend: RefineBackend, requested: usi
     }
 }
 
-/// The name a backend goes by in a namelist, for messages.
-fn refine_backend_label(backend: RefineBackend) -> &'static str {
-    match backend {
-        RefineBackend::MethodC => "method_c",
-        RefineBackend::RedGreen => "red_green",
-        RefineBackend::Certified => "certified",
-        RefineBackend::Stretch => "stretch",
-        RefineBackend::IconNest => "icon_nest",
-    }
-}
-
-/// Resolve `NL%refine_backend`.
-fn refine_backend_name(requested: &str) -> io::Result<RefineBackend> {
-    let name = requested.trim().to_ascii_lowercase();
-    match name.as_str() {
-        "method_c" => Ok(RefineBackend::MethodC),
-        "red_green" => Ok(RefineBackend::RedGreen),
-        "certified" => Ok(RefineBackend::Certified),
-        "stretch" => Ok(RefineBackend::Stretch),
-        "icon_nest" => Ok(RefineBackend::IconNest),
-        other => Err(io::Error::new(
+/// Resolve `NL%refine_backend`, in any case.
+fn refine_backend_name(requested: &str) -> io::Result<RefinementBackend> {
+    RefinementBackend::from_engine_str(&requested.trim().to_ascii_lowercase()).ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "NL%refine_backend = '{other}' is not a refinement backend; the choices are method_c, red_green, certified, stretch and icon_nest"
+                "NL%refine_backend = '{}' is not a refinement backend; the choices are method_c, red_green, certified, stretch and icon_nest",
+                requested.trim().to_ascii_lowercase()
             ),
-        )),
-    }
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5661,15 +5667,15 @@ mod tests {
     #[test]
     fn only_certified_disables_the_generic_spring() {
         assert_eq!(
-            effective_refinement_spring_iterations(RefineBackend::RedGreen, 2_000),
+            effective_refinement_spring_iterations(RefinementBackend::RedGreen, 2_000),
             2_000
         );
         assert_eq!(
-            effective_refinement_spring_iterations(RefineBackend::MethodC, 5_000),
+            effective_refinement_spring_iterations(RefinementBackend::MethodC, 5_000),
             5_000
         );
         assert_eq!(
-            effective_refinement_spring_iterations(RefineBackend::Certified, 5_000),
+            effective_refinement_spring_iterations(RefinementBackend::Certified, 5_000),
             0
         );
     }

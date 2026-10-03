@@ -1,29 +1,64 @@
-//! Writing an h-field pass to disk, and replaying it.
+//! Recording an h-field pass, and replaying it.
 //!
 //! A global 12 km run reaches its failing pass after a quarter of an hour of
 //! earlier passes. The pass itself is topological: which faces are selected
 //! and which anchors must stay covered decide whether it builds, and the
-//! coordinates do not. `EARTHMESH_METHOD_C_DUMP_DIR=<dir>` writes the mesh the
-//! first pass starts from and each pass's selection and anchors there; the
-//! ignored test below rebuilds that mesh and replays the passes.
+//! coordinates do not. Each pass's record -- the mesh the first pass starts
+//! from, the selection and the anchors -- goes to a sink the caller installs
+//! (`set_pass_sink`); the algorithm writes nothing itself. The CLI's Method-C
+//! adapter installs one that writes the records under
+//! `EARTHMESH_METHOD_C_DUMP_DIR`, and the ignored test below rebuilds that mesh
+//! and replays the passes.
 //!
-//! The mesh is written, not rebuilt from its NXP: the CLI reads its base back
+//! The mesh is recorded, not rebuilt from its NXP: the CLI reads its base back
 //! from the gridinit gridfile, and that numbering is not `from_icosahedron`'s
 //! -- a selection replayed on the latter is a scatter of unrelated faces.
 
-use std::{fmt::Write as _, fs, io, path::Path};
+use std::{fmt::Write as _, io, sync::OnceLock};
+
+#[cfg(test)]
+use std::{fs, path::Path};
 
 use earthmesh_mesh::xyz_points_to_lonlat_degrees;
 
 use super::{MethodCHfieldDemandCoverage, MethodCMesh};
 
 const HEADER: &str = "earthmesh-method-c-pass v1";
-const BASE: &str = "base.bin";
 const BASE_MAGIC: &[u8; 8] = b"EMCBASE1";
+
+/// The file a pass record's base is kept in, beside `pass_NN.txt` and
+/// `pass_NN_built.txt`, where the replay test reads them back.
+pub const PASS_BASE_FILE: &str = "base.bin";
+
+/// One pass, recorded for replay.
+pub struct PassRecord {
+    /// The pass's child level, which names its file.
+    pub child_level: usize,
+    /// Whether this is the selection the pass finally built with, after any
+    /// dropped blocks, rather than the one it was asked for.
+    pub built: bool,
+    /// The mesh the pass starts from, as the replay reads it
+    /// (`PASS_BASE_FILE`); every record carries it, a sink keeps the first.
+    pub base: Vec<u8>,
+    /// The selection and anchors, as the replay reads them.
+    pub text: String,
+}
+
+/// Where pass records go: installed once per process by a caller that wants
+/// them, and none by default.
+pub type PassSink = Box<dyn Fn(&PassRecord) -> io::Result<()> + Send + Sync>;
+
+static PASS_SINK: OnceLock<PassSink> = OnceLock::new();
+
+/// Install the sink that receives every pass's record. Only the first
+/// install takes; a later one is handed back.
+pub fn set_pass_sink(sink: PassSink) -> Result<(), PassSink> {
+    PASS_SINK.set(sink)
+}
 
 /// The gridfile tables `TriangularMesh::from_voronoi_gridfile_tables` takes:
 /// one lon/lat per M id and one M triple per W id, placeholder rows included.
-fn dump_base(mesh: &MethodCMesh, path: &Path) -> io::Result<()> {
+fn base_bytes(mesh: &MethodCMesh) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(24 + mesh.nmd * 16 + mesh.nwd * 12);
     bytes.extend_from_slice(BASE_MAGIC);
     bytes.extend_from_slice(&(mesh.nmd as u64).to_le_bytes());
@@ -45,12 +80,13 @@ fn dump_base(mesh: &MethodCMesh, path: &Path) -> io::Result<()> {
             bytes.extend_from_slice(&(im as u32).to_le_bytes());
         }
     }
-    fs::write(path, bytes)
+    bytes
 }
 
-/// `built`: the selection a pass finally built with, after any dropped
-/// blocks, so a replay can reach the next pass in one attempt.
-pub(super) fn dump_pass_if_asked(
+/// Hand a pass to the sink, if one is installed. `built`: the selection a
+/// pass finally built with, after any dropped blocks, so a replay can reach
+/// the next pass in one attempt.
+pub(super) fn record_pass(
     mesh: &MethodCMesh,
     selected: &[bool],
     child_level: usize,
@@ -58,14 +94,9 @@ pub(super) fn dump_pass_if_asked(
     coverage: &MethodCHfieldDemandCoverage,
     built: bool,
 ) -> io::Result<()> {
-    let Some(dir) = std::env::var_os("EARTHMESH_METHOD_C_DUMP_DIR") else {
+    let Some(sink) = PASS_SINK.get() else {
         return Ok(());
     };
-    let dir = Path::new(&dir);
-    fs::create_dir_all(dir)?;
-    if !dir.join(BASE).exists() {
-        dump_base(mesh, &dir.join(BASE))?;
-    }
     let mut text = String::new();
     let faces: Vec<usize> = (0..selected.len()).filter(|&iw| selected[iw]).collect();
     let _ = writeln!(text, "{HEADER}");
@@ -86,14 +117,12 @@ pub(super) fn dump_pass_if_asked(
     for (im, faces) in &coverage.anchors {
         let _ = writeln!(text, "{im} {}", join(faces));
     }
-    let suffix = if built { "_built" } else { "" };
-    let path = dir.join(format!("pass_{child_level:02}{suffix}.txt"));
-    fs::write(&path, text)?;
-    eprintln!(
-        "earthmesh_cli: method-c pass {child_level} written to {}",
-        path.display()
-    );
-    Ok(())
+    sink(&PassRecord {
+        child_level,
+        built,
+        base: base_bytes(mesh),
+        text,
+    })
 }
 
 fn join(values: &[usize]) -> String {
@@ -217,8 +246,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("method_c_base_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let original = MethodCMesh::from_icosahedron(12, 0, 1.0, 0.25).unwrap();
-        dump_base(&original, &dir.join(BASE)).unwrap();
-        let first = read_base(&dir.join(BASE)).unwrap();
+        fs::write(dir.join(PASS_BASE_FILE), base_bytes(&original)).unwrap();
+        let first = read_base(&dir.join(PASS_BASE_FILE)).unwrap();
         // The W rows and their M triples are what the file says they are.
         assert_eq!(first.nwd, original.nwd);
         for iw in 2..=original.nwd {
@@ -226,8 +255,8 @@ mod tests {
         }
         // Read back again, nothing moves: the edges the replay derives are the
         // ones the run derived from the same tables.
-        dump_base(&first, &dir.join(BASE)).unwrap();
-        let second = read_base(&dir.join(BASE)).unwrap();
+        fs::write(dir.join(PASS_BASE_FILE), base_bytes(&first)).unwrap();
+        let second = read_base(&dir.join(PASS_BASE_FILE)).unwrap();
         assert_eq!(second.u_edges, first.u_edges);
         assert_eq!(second.w_faces, first.w_faces);
         let _ = fs::remove_dir_all(&dir);
@@ -249,7 +278,7 @@ mod tests {
             })
             .collect();
         paths.sort();
-        let mut mesh = read_base(&Path::new(&dir).join(BASE)).expect("base mesh");
+        let mut mesh = read_base(&Path::new(&dir).join(PASS_BASE_FILE)).expect("base mesh");
         let last = paths.len();
         for (k, path) in paths.into_iter().enumerate() {
             // Every pass but the last starts from what it built with, when the

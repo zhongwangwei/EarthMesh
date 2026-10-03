@@ -143,16 +143,27 @@ pub(super) fn nest_cell_levels(
     super::global_source::CellRefineLevels { m, w }
 }
 
-/// Plan the nests over the published global grid, write the set into
-/// `result_dir/standard/ICON_nest`, and describe it. Also returns the
-/// deepest nest over each global triangle (`nest_cell_levels`).
-pub(super) fn write_icon_nests(
+/// The nests planned over the published global grid and checked against
+/// the angle contract, with what each serves: the algorithm's part, no files.
+pub(super) struct IconNestPlan {
+    domains: Vec<earthmesh_mesh::IconNestDomain>,
+    /// Smallest and largest triangle angle of each domain, degrees.
+    angles: Vec<(f64, f64)>,
+    /// Each domain's cells the demand asks at least this deep: in its
+    /// interior, and in its boundary zone.
+    served: Vec<(usize, usize)>,
+    boundary_zone: u32,
+    /// The deepest nest over each global triangle (`nest_cell_levels`).
+    pub(super) depth: Vec<u32>,
+}
+
+/// Plan the nests over the published global grid (after the angle contract,
+/// so each nest corner is the parent vertex ICON looks for).
+pub(super) fn plan_icon_nests(
     mesh: &UnstructuredMesh,
     demand: &IconNestDemand,
     hfield: Option<&crate::hfield_gridfile_context::HfieldGridfileContext>,
-    nxp: usize,
-    result_dir: &Path,
-) -> io::Result<(IconNestRunRecord, Vec<u32>)> {
+) -> io::Result<IconNestPlan> {
     let (points, triangles) = global_triangles(mesh)?;
     let targets = super::global_source::fixed_topology_targets(&demand.regions, hfield)?;
     // The planner asks by position; a failed lookup is kept and returned.
@@ -207,16 +218,12 @@ pub(super) fn write_icon_nests(
         angles.push((low, high));
     }
 
-    let dir = result_dir.join("standard").join("ICON_nest");
-    let stem = "earthmesh";
-    let reports = crate::write_icon_nest_set(&domains, nxp, &dir, stem)?;
-
     // What each nest serves: its cells the demand asks at least this deep,
     // and how many of those sit in its boundary zone rather than its interior.
-    let mut rows = Vec::with_capacity(domains.len());
-    for ((domain, report), (low, high)) in domains.iter().zip(&reports).zip(&angles) {
+    let mut served = Vec::with_capacity(domains.len());
+    for domain in &domains {
         let level = domain.depth;
-        let (mut served, mut in_boundary_zone) = (0usize, 0usize);
+        let (mut interior, mut in_boundary_zone) = (0usize, 0usize);
         if domain.parent > 0 {
             for (tri, &row) in domain.triangles.iter().zip(&domain.cell_row) {
                 let centre = {
@@ -227,17 +234,51 @@ pub(super) fn write_icon_nests(
                 };
                 if target(centre) >= level {
                     if row > options.boundary_zone {
-                        served += 1;
+                        interior += 1;
                     } else {
                         in_boundary_zone += 1;
                     }
                 }
             }
         }
+        served.push((interior, in_boundary_zone));
+    }
+    if let Some(error) = failure.borrow_mut().take() {
+        return Err(error);
+    }
+    let depth = nest_depth_over_global(&domains);
+    Ok(IconNestPlan {
+        domains,
+        angles,
+        served,
+        boundary_zone: options.boundary_zone,
+        depth,
+    })
+}
+
+/// Write a planned set into `result_dir/standard/ICON_nest`: the grids, a
+/// summary of what each serves and the `&grid_nml` that names them.
+pub(super) fn write_icon_nests(
+    plan: &IconNestPlan,
+    nxp: usize,
+    result_dir: &Path,
+) -> io::Result<IconNestRunRecord> {
+    let dir = result_dir.join("standard").join("ICON_nest");
+    let stem = "earthmesh";
+    let reports = crate::write_icon_nest_set(&plan.domains, nxp, &dir, stem)?;
+
+    let mut rows = Vec::with_capacity(plan.domains.len());
+    for (((domain, report), (low, high)), (served, in_boundary_zone)) in plan
+        .domains
+        .iter()
+        .zip(&reports)
+        .zip(&plan.angles)
+        .zip(&plan.served)
+    {
         rows.push(serde_json::json!({
             "domain": domain.id,
             "parent": domain.parent,
-            "grid_level": level,
+            "grid_level": domain.depth,
             "file": report.output,
             "uuid": report.uuid,
             "cells": report.cells,
@@ -249,16 +290,13 @@ pub(super) fn write_icon_nests(
             "max_angle_deg": high,
         }));
     }
-    if let Some(error) = failure.borrow_mut().take() {
-        return Err(error);
-    }
     let summary = dir.join("icon_nest_summary.json");
     std::fs::write(
         &summary,
         serde_json::to_vec_pretty(&serde_json::json!({
             "grid_root": nxp,
             "boundary_depth": crate::ICON_NEST_BOUNDARY_DEPTH,
-            "boundary_zone_rows": options.boundary_zone,
+            "boundary_zone_rows": plan.boundary_zone,
             "domains": rows,
         }))
         .map_err(io::Error::other)?,
@@ -296,15 +334,11 @@ pub(super) fn write_icon_nests(
             report.output.display()
         );
     }
-    let depth = nest_depth_over_global(&domains);
-    Ok((
-        IconNestRunRecord {
-            domains: reports.into_iter().map(|r| r.output).collect(),
-            namelist,
-            summary,
-        },
-        depth,
-    ))
+    Ok(IconNestRunRecord {
+        domains: reports.into_iter().map(|r| r.output).collect(),
+        namelist,
+        summary,
+    })
 }
 
 #[cfg(test)]
