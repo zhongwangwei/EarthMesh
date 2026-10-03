@@ -65,14 +65,15 @@ pub fn retain_largest_edge_connected_component_one_based(
     )
 }
 
-/// As [`retain_largest_edge_connected_component_one_based`], but a component
-/// holding hard demand is kept whatever its size.
+/// As [`retain_largest_edge_connected_component_one_based`], with the cells a
+/// run named outright as `hard_demand`.
 ///
-/// Component size is a proxy for "this piece is worth simulating", and it is
-/// the wrong answer where a run has said outright which cells it wants: a
-/// refinement circle over a small bay produces exactly the disjoint piece the
-/// largest-component rule deletes, and nothing reports that the region the user
-/// named is gone. Demand is not a proxy, so it wins.
+/// Only the largest component survives, demanded or not: demand once bought a
+/// smaller water body a reprieve, and a global coastal run kept 1 + 49 of 229
+/// components and failed `disconnected_mesh` (see the selection pass). What
+/// demand does now is decide which fan survives a pinch, before size does, and
+/// count the demanded cells that were given up, so a region the user named does
+/// not disappear without a word.
 ///
 /// `hard_demand` is indexed by one-based centre id and may be shorter than the
 /// domain or empty; anything it does not cover is simply not demanded.

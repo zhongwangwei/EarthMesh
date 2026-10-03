@@ -5396,3 +5396,31 @@ Method-C 传它的 `max_mrows`（`refine_pipeline::hfield_transition_rows`），
 Stretch/ICON（`fixed_topology_adaptive_run`）每一轮都写上全部命名区域，于是第 2 轮里第 1 层的父圆被当成第 2 层要求，897 个
 单元被要求到第 2 层。去掉父层后目标与实际对上（262 对 284）。只要命名区域本身有不同层级，或有区域母网格的域区域，这个
 错仍会出现；修法是每一轮只记录层级不浅于该轮的区域。尚未修（改的是质量报告，待定）。
+
+### 11.114 CMRC 的海洋裁剪改用共用规则（2026-10-03）
+
+分层复查第 3 项的前两条（用户选"对齐共用规则"）。CMRC 交付时自己调用陆海裁剪，和其余后端有两处不同：
+
+- **需求单元。** 其余后端把"明确点名"的单元（命名区域、点+半径判据的圆、LEPP 的硬区域）作为 `hard_center_demand` 传给裁剪；
+  CMRC 不传。共用规则里这份需求做两件事：在一个顶点处只能留一个扇区时，先留含需求的那个，再比大小；以及报告被丢掉的需求
+  单元。它**不**让含需求的小水体免于"只留最大连通块"——这个豁免以前有过，一次全球海岸运行因此留下 1+49 块、过不了
+  `disconnected_mesh`，已经取消；`retain_edge_connected_components_with_hard_demand_one_based` 的文档还写着旧说法，一并改正。
+  复查时照旧文档把这一条写成了"不保护需求单元"，实际差别只有扇区取舍与报告。
+- **最大连通海域。** CMRC 对海洋网格总是只留最大连通海域（`isolated_ocean || mesh_type == "oceanmesh"`）；共用路径看
+  `isolated_ocean`——工程默认对海洋网格开，用户可以显式关；直接写 namelist 时默认关。CMRC 自己的发布检查又把海洋网格的孤立
+  块与孤立单元当硬失败，而共用路径只在最终质量里报 warn。
+
+**改动。** CMRC 交付把它需求里的区域（`requirements.regions`，经 `region_center_demand`，与原来的发布审计同一份）作为硬需求
+传给裁剪；最大连通海域按 `isolated_ocean`；`isolated_ocean` 关闭时，发布检查对海洋网格的孤立块、孤立单元降为警告，与陆地
+网格、区域网格一样。
+
+**测量**（NXP 10 / NXP 3 全球海洋三角形）：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| 黑海上一个 400 km 指定圆 | 网格同；只有 CMRC 自己的审计行"removed 6 of 6" | 网格同；另报"dropped 3 demanded cell(s) in water bodies not connected" |
+| `isolated_ocean: false`（NXP 3）| 495 单元，pass（设置被忽略）| 515 单元，8 块海域都在，warn（7 个孤立单元）|
+| 对照：Red-Green c9 加 `isolated_ocean: false` | — | warn，172 个孤立单元，照常交付 |
+
+里海在 `landtype_igbp_update.nc` 里是 17（内陆水体），裁剪只把 0 当海洋，所以它对海洋网格是陆地，与需求无关。12 个交接用例
+与 3 个示例工程逐产物不变。

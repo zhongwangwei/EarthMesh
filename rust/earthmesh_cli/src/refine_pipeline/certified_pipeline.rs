@@ -291,6 +291,7 @@ pub(super) fn publish_certified_domain_gridfile(
     domain_region: Option<&GridRegion>,
     angle_contract: earthmesh_refine_certified::AngleContractId,
     fvcom_output: Option<&Path>,
+    hard_center_demand: Option<&[bool]>,
 ) -> io::Result<CertifiedDomainPublication> {
     let mode_grid = config.mode_grid.trim();
     let mesh_type = config.mesh_type.trim();
@@ -375,6 +376,10 @@ pub(super) fn publish_certified_domain_gridfile(
             )?;
             (Some(kept), None)
         } else {
+            // The carve every backend's mesh gets: the largest water body is
+            // kept when `isolated_ocean` asks for it (on by default for an
+            // ocean mesh, as the project lowers it), and a body holding a cell
+            // the run named outright is kept whatever its size.
             let kept = crate::write_landtype_masked_gridfile_with_refine_levels(
                 source_gridfile,
                 output_gridfile,
@@ -384,8 +389,8 @@ pub(super) fn publish_certified_domain_gridfile(
                 mesh_type,
                 None,
                 None,
-                config.isolated_ocean || mesh_type == "oceanmesh",
-                None,
+                config.isolated_ocean,
+                hard_center_demand,
             )?;
             // Not an empty boundary list assumed here: the carve records
             // whether its boundary is coastline only, and a bounded mesh
@@ -463,9 +468,14 @@ pub(super) fn publish_certified_domain_gridfile(
     let component_count = earthmesh_quality::topology::connected_component_count(&quality_input);
     let mut quality_issues =
         earthmesh_quality::topology::MeshTopologyValidator::new(&quality_input).validate_all();
-    if mesh_type == "landmesh" || (domain_region.is_some() && mesh_type != "oceanmesh") {
+    if mesh_type == "landmesh"
+        || (domain_region.is_some() && mesh_type != "oceanmesh")
+        || (mesh_type == "oceanmesh" && !config.isolated_ocean)
+    {
         // As for regional dual cells, retain islands (including one-cell islands)
-        // and their diagnostics without relaxing winding or manifold checks.
+        // and their diagnostics without relaxing winding or manifold checks. An
+        // ocean mesh keeps its separate water bodies when `isolated_ocean` is
+        // off, as the shared carve does, and they are reported, not refused.
         for issue in &mut quality_issues {
             if matches!(
                 issue.issue_type,
@@ -1497,14 +1507,20 @@ pub(super) fn deliver_certified(
         ) = if is_domain_export {
             let (m_pre_export_lineage, w_pre_export_lineage) =
                 certified_gridfile_pre_export_lineages(&output_mesh);
-            let requested_center_lineages = (!requirements.regions.is_empty()).then(|| {
+            // The cells the run named outright, as the shared tail takes them
+            // (`region_center_demand`): the carve keeps the water bodies they
+            // sit in, and the audit below counts any the domain mask removed.
+            let hard_center_demand = (!requirements.regions.is_empty())
+                .then(|| region_center_demand(&requirements.regions, requested_view, &output_mesh));
+            let requested_center_lineages = hard_center_demand.as_ref().map(|demand| {
                 let center_lineages = if requested_view == "tri" {
                     &m_pre_export_lineage
                 } else {
                     &w_pre_export_lineage
                 };
-                region_center_demand(&requirements.regions, requested_view, &output_mesh)
-                    .into_iter()
+                demand
+                    .iter()
+                    .copied()
                     .zip(center_lineages.iter().copied())
                     .filter_map(|(requested, lineage)| {
                         (requested && lineage > 1).then_some(lineage)
@@ -1538,6 +1554,7 @@ pub(super) fn deliver_certified(
                 fvcom_output_path
                     .as_ref()
                     .map(|_| temporary_fvcom_path.as_path()),
+                hard_center_demand.as_deref(),
             );
             let _ = fs::remove_dir_all(&domain_workdir);
             let published = published?;
