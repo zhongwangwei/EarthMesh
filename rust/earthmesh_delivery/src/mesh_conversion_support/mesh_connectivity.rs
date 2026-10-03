@@ -79,22 +79,3 @@ pub fn n_edges_on_cell_usize_from_mesh(mesh: &UnstructuredMesh) -> io::Result<Ve
         })
         .collect()
 }
-
-pub fn parse_value_after_equals<T>(line: &str, field: &str) -> io::Result<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    let (_, value) = line.split_once('=').ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{field} line must contain '='"),
-        )
-    })?;
-    value.trim().parse::<T>().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid {field} value: {err}"),
-        )
-    })
-}

@@ -26,6 +26,10 @@ pub fn configure_global_thread_pool(thread_count: usize) -> io::Result<()> {
         })
 }
 
+/// Spherical boundary models built from closed curves or refinement regions:
+/// the input layer reads close sources into them, the output layer carves
+/// domains with them.
+pub mod boundary_model;
 mod coordinates;
 pub use coordinates::{cross, dot, magnitude, normalize_cartesian_to_radius, vector_between};
 pub use coordinates::{

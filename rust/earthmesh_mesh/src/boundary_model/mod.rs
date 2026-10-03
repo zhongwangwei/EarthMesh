@@ -24,7 +24,7 @@
 
 use std::io;
 
-use earthmesh_mesh::RefinementRegion;
+use crate::RefinementRegion;
 
 use earthmesh_boundary::{
     BoundaryLoop, BoundaryRole, BoundaryVertex, LoopType, SphericalBoundaryModel,

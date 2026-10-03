@@ -220,13 +220,13 @@ fn the_area_sign_is_the_opposite_of_the_winding_sign() {
     let counter_clockwise = cross[0] * c[0] + cross[1] * c[1] + cross[2] * c[2] > 0.0;
     assert!(counter_clockwise, "the fixture must be counter-clockwise");
 
-    let points: Vec<earthmesh_mesh::LonLatDegrees> = corners
+    let points: Vec<crate::LonLatDegrees> = corners
         .iter()
-        .map(|&(lon, lat)| earthmesh_mesh::LonLatDegrees::new(lon, lat))
+        .map(|&(lon, lat)| crate::LonLatDegrees::new(lon, lat))
         .collect();
-    let forward = earthmesh_mesh::robust_spherical_area_unit(&points).expect("area");
+    let forward = crate::robust_spherical_area_unit(&points).expect("area");
     let reversed: Vec<_> = points.iter().rev().copied().collect();
-    let backward = earthmesh_mesh::robust_spherical_area_unit(&reversed).expect("area");
+    let backward = crate::robust_spherical_area_unit(&reversed).expect("area");
 
     assert!(
         forward < 0.0,
@@ -243,7 +243,7 @@ fn polygon(points: &[(f64, f64)], level: usize) -> RefinementRegion {
     RefinementRegion::Polygon {
         points: points
             .iter()
-            .map(|&(lon, lat)| earthmesh_mesh::LonLatDegrees::new(lon, lat))
+            .map(|&(lon, lat)| crate::LonLatDegrees::new(lon, lat))
             .collect(),
         level,
     }
@@ -305,7 +305,7 @@ fn a_mask_that_repeats_its_first_point_still_validates() {
 #[test]
 fn regions_without_a_discretised_boundary_contribute_no_loops() {
     let circle = RefinementRegion::Circle {
-        center: earthmesh_mesh::LonLatDegrees::new(10.0, 10.0),
+        center: crate::LonLatDegrees::new(10.0, 10.0),
         radius_meters: 100_000.0,
         level: 1,
     };

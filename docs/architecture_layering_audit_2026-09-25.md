@@ -512,3 +512,41 @@ Schmidt 保角变换，拓扑不变。它按本设计的接口接入：需求只
 
 剩余：命名区域的 halo 外扩已在 Red-Green 三角形与 Hex 路线对全部区域形状完成（技术指南 11.81、11.82）；CLI 中的质量编排、耦合质量、掩膜后处理
 按设计属于编排层，不再拆。
+
+### 2026-10-03 复查：其余后端是否按“输入—算法—输出”编排
+
+用户在 CMRC 合并判据（技术指南 11.111）落地后要求复查各后端。两份只读审计（crate 级 IO 边界、各后端从
+namelist 到写出的调用链）的结论：**还没有都按这个形状编排**。按耦合程度：
+
+1. 没有统一的需求类型：各后端拿到的输入不同；CMRC 栅格路线用自己的配方再合成一遍 h-field。（改输出）
+2. 输入层带着 Method-C 的假设：无 h-field 时命名区域对所有后端加 Method-C 父级光环；h-field 区域裙带按
+   Method-C 的过渡行数限梯度。（改输出）
+3. CMRC 交付另有一套输出路径：陆海裁剪不保护需求单元、海洋网格强制只留最大连通海域；MPAS 宽度用交付
+   层级（交付层按生产者名字字符串分支）；MPAS/FVCOM 自己写。（改输出）
+4. 算法驱动仍在 CLI：`global_source.rs` 里约 2500 行（Red-Green 层级循环、Method-C 重试、Stretch），
+   CMRC 的构造在 `certified_pipeline.rs`；ICON 嵌套规划器在 `earthmesh_mesh`，门禁看不到。（不改输出）
+5. ICON 嵌套的规划与写文件在输出尾部混在一个函数里。（不改输出）
+6. 算法层做 IO：Method-C 在设环境变量时自己写调试文件。（不改输出）
+7. 放错层的代码：输入 crate 里有写输出产品的模块；交付 crate 里有区域类型、close 掩膜读取、namelist 行
+   解析与边界模型构造。（不改输出）
+8. 零碎：CLI 里第二个后端枚举；输入 crate 把仅测试用的 `earthmesh_quality` 当正式依赖；根 `Cargo.toml`
+   说 Red-Green “生产引擎不依赖”。（不改输出）
+
+用户选择先做不改输出的 4–8，会改输出的 1–3 逐项对比后再定。本批（第 5–8 项与第 7 项）：
+
+- 一个后端枚举（`earthmesh_refine::RefinementBackend`）；Red-Green、Stretch、ICON 嵌套共用的点+半径判据
+  结构改为中性名 `PointRadiusCriteria`；`earthmesh_quality` 改为输入 crate 的开发依赖；清单注释改正。
+- Method-C 的 h-field 遍记录交给调用方装的接收器（`set_pass_sink`），算法层不再读环境变量、不写文件；
+  CLI 的 Method-C 适配函数在 `EARTHMESH_METHOD_C_DUMP_DIR` 下写出，文件与回放测试不变。
+- 水文交付产品（单元掩膜、河网交叉表、加密评估、扫描排名）移入 `earthmesh_delivery`；扫描配方仍在输入层。
+- 区域类型（`GridRegion`、`LonLatPoint` 等）移入 `earthmesh_geometry`，输入层直接从几何层取；close 掩膜
+  读写与 namelist 行解析移入输入层；边界模型构造移入 `earthmesh_mesh`（输入、输出都用；放
+  `earthmesh_boundary` 会与 `earthmesh_mesh` 成环）。
+- ICON 嵌套拆成“规划”（无 IO，带角度与服务统计）与“写出”两步，尾部先规划后写出；规划仍须在角度契约
+  之后（嵌套角点要等于父网格最终顶点）。
+
+每步与改动前的二进制做 A/B：12 个交接用例与 3 个示例工程，逐产物比对全部一致。`scripts/ab_compare.py`
+加了 `--reuse-base`（基准只跑一次）与只记录基准的 `-` 模式。
+
+待做（第 4 项，不改输出）：ICON 嵌套规划器拆成独立后端 crate，交付层改收中性的嵌套网格类型；Stretch
+驱动移出 CLI；CMRC 构造移入 `earthmesh_refine_certified`；Red-Green、Method-C 驱动移入各自 crate。

@@ -9,7 +9,7 @@ pub use earthmesh_inputs::mask_source_discovery;
 use mask_source_discovery::discover_mask_sources;
 
 use coordinate_types::{GridRegion, LonLatPoint, PreparedGridRegion};
-pub use earthmesh_delivery::coordinate_types;
+pub use earthmesh_geometry::coordinate_types;
 pub(crate) use mask_source_discovery::{source_extension, unsupported_mask_source};
 mod certified_options;
 use earthmesh_delivery::fs_support;
@@ -48,16 +48,16 @@ use hydro_workflow_types::HydroWorkflowReport;
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
 pub mod hydro_delivery_cells;
 pub mod hydro_delivery_colm;
-use earthmesh_inputs::hydro_delivery_common;
-use earthmesh_inputs::hydro_delivery_complete_mask;
+use earthmesh_delivery::hydro_delivery_common;
+use earthmesh_delivery::hydro_delivery_complete_mask;
 pub mod hydro_delivery_coupling_quality;
 pub use earthmesh_delivery::hydro_delivery_manifest;
 pub use earthmesh_delivery::hydro_delivery_qa;
-pub use earthmesh_inputs::hydro_delivery_intersections;
+pub use earthmesh_delivery::hydro_delivery_intersections;
 pub mod hydro_delivery_refine_workflow;
 pub use earthmesh_inputs::hydro_refinement_adapter;
 pub mod hydro_refinement_runs;
-pub use earthmesh_inputs::hydro_refinement_eval;
+pub use earthmesh_delivery::hydro_refinement_eval;
 pub use earthmesh_inputs::hydro_sweep;
 pub mod project_delivery;
 pub mod project_hydro;
@@ -101,7 +101,7 @@ use circle_close_mask_io::{
 use colm_package_io::{
     write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
 };
-pub use earthmesh_delivery::close_mesh_io;
+pub use earthmesh_inputs::close_mesh_io;
 pub use earthmesh_delivery::colm_package_io;
 pub use earthmesh_inputs::bbox_mask_io;
 pub use earthmesh_inputs::cama_binary_io;
@@ -271,7 +271,7 @@ pub mod workspace_mask_apply;
 pub use earthmesh_inputs::data_preprocess_types;
 use workspace_mask_apply::{apply_workspace_and_mask_operations, WorkspaceMaskApplyReport};
 pub mod adaptive_refine;
-pub use earthmesh_delivery::boundary_model;
+pub use earthmesh_mesh::boundary_model;
 pub mod coast_refinement_regions;
 pub mod method_c_adaptive_nest;
 pub mod method_c_algorithm;

@@ -7,7 +7,7 @@
 //! -- so every backend's mesh is written the same way. See
 //! docs/architecture_layering_audit_2026-09-25.md, step 5.
 
-pub mod coordinate_types;
+pub use earthmesh_geometry::coordinate_types;
 pub mod fs_support;
 pub mod hfield_gridfile_context;
 pub mod mpas_gridfile_context;
@@ -16,8 +16,7 @@ pub mod unstructured_mesh_io;
 pub mod unstructured_mesh_support;
 
 pub mod atomic_output;
-pub mod boundary_model;
-pub mod close_mesh_io;
+pub use earthmesh_mesh::boundary_model;
 pub mod colm_coupling_csv;
 pub mod colm_coupling_netcdf;
 pub mod colm_manifest_writer;
@@ -36,6 +35,19 @@ pub mod gridfile_quality_input;
 pub mod hydro_delivery_manifest;
 pub mod hydro_delivery_qa;
 pub mod hydro_workflow_types;
+// Hydro delivery products: cell masks, river-corridor intersections and the
+// reports that evaluate a run (moved from the input layer, which only reads).
+pub mod hydro_delivery_common;
+pub mod hydro_delivery_complete_mask;
+pub mod hydro_delivery_intersections;
+pub mod hydro_refinement_eval;
+pub mod hydro_sweep_ranking;
+pub use hydro_delivery_common::{
+    format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
+};
+pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
+pub use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
+pub use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
 pub mod icon_writer;
 pub mod json_support;
 pub mod mask_postproc_layout;
@@ -61,7 +73,6 @@ pub mod mpas_topology_checker;
 pub mod mpas_unstructured_mesh_builders;
 pub mod obc_boundary_io;
 pub mod quality_global_writer;
-pub use close_mesh_io::read_close_mesh_netcdf;
 pub use colm_package_io::{
     write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
 };
@@ -135,7 +146,7 @@ pub use mesh_conversion_support::{
     cells_on_triangle_one_based_from_mesh, f64_matrix_width, flatten_i32_rows, i32_counts_as_usize,
     i32_matrix_from_flat, i32_rows_as_usize, lonlat_degrees_from_points, lonlat_pairs_from_points,
     lonlat_points_from_pairs, lookup_f64, m_to_w_as_usize_rows, matrix_width,
-    n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32, parse_value_after_equals,
+    n_edges_on_cell_usize_from_mesh, normalize_degrees, one_to_n_i32,
     patchtype_indices, rad_to_deg, rows_from_flat_i32, rows_to_triangle_connectivity,
     scale_cartesian_points_by_earth_radius, split_cartesian_components,
     triangles_on_cell_one_based_from_mesh, usize_from_i32_connectivity, usize_from_i32_nonnegative,

@@ -1,4 +1,4 @@
-use earthmesh_geometry::EARTH_RADIUS_KM;
+use crate::EARTH_RADIUS_KM;
 
 /// Shared longitude/latitude row used by circle and close masks.
 #[derive(Debug, Clone, Copy, PartialEq)]

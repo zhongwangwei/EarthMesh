@@ -1,3 +1,6 @@
+//! Sweep recipes: the close-mask recipes a refinement sweep runs. Ranking
+//! the runs is a report, in `earthmesh_delivery::hydro_sweep_ranking`.
+
 use std::fs;
 use std::io;
 use std::path::Path;

@@ -4,7 +4,7 @@ mod primitives;
 
 pub use mesh_connectivity::{
     cells_on_triangle_one_based_from_mesh, n_edges_on_cell_usize_from_mesh,
-    parse_value_after_equals, triangles_on_cell_one_based_from_mesh,
+    triangles_on_cell_one_based_from_mesh,
 };
 pub use netcdf_rows::{
     f64_matrix_width, flatten_i32_rows, i32_matrix_from_flat, matrix_width, one_to_n_i32,

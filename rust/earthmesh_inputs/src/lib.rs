@@ -46,11 +46,7 @@ pub mod hydro_close_masks;
 pub mod hydro_close_proximity;
 pub mod hydro_close_recipe;
 pub mod hydro_close_types;
-pub mod hydro_delivery_common;
-pub mod hydro_delivery_complete_mask;
-pub mod hydro_delivery_intersections;
 pub mod hydro_refinement_adapter;
-pub mod hydro_refinement_eval;
 pub mod hydro_sweep;
 pub mod lambert_mode4_io;
 pub mod mask_counts;
@@ -160,7 +156,7 @@ pub use v3_data_source_io::{
 };
 
 // Gridfile, NetCDF and JSON helpers the readers share with the output layer.
-pub use earthmesh_delivery::boundary_model;
+pub use earthmesh_mesh::boundary_model;
 pub use earthmesh_delivery::hydro_workflow_types;
 pub use earthmesh_delivery::netcdf_io::first_existing_dimension_len;
 pub use earthmesh_delivery::netcdf_io::optional_values_i32_2d;
@@ -171,12 +167,35 @@ pub use earthmesh_delivery::netcdf_io::write_i32_scalar;
 pub use earthmesh_delivery::{
     create_netcdf, ensure_parent_dir, geojson_feature_nodes, i32_matrix_from_flat,
     json_escape_string, json_number, json_string_array, matrix_width, netcdf_to_io_error,
-    open_netcdf, parse_value_after_equals, read_close_mesh_netcdf, read_unstructured_mesh_netcdf,
+    open_netcdf, read_unstructured_mesh_netcdf,
     require_len, required_dimension_len, required_values_f64, required_values_f64_any,
     required_values_i32, usize_to_i32, write_f64_1d, write_flat_contain_netcdf,
-    write_i32_matrix_rows, ContainMesh, ContainWriteReport, FlatContainMesh, GridRegion, JsonNode,
-    JsonParser, LonLatPoint,
+    write_i32_matrix_rows, ContainMesh, ContainWriteReport, FlatContainMesh, JsonNode, JsonParser,
 };
+pub use earthmesh_geometry::{GridRegion, LonLatPoint};
+/// Close-polygon mask files: read as a refinement or domain source.
+pub mod close_mesh_io;
+pub use close_mesh_io::read_close_mesh_netcdf;
+
+/// The value after `=` on a mask namelist line, parsed.
+pub fn parse_value_after_equals<T>(line: &str, field: &str) -> std::io::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let (_, value) = line.split_once('=').ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{field} line must contain '='"),
+        )
+    })?;
+    value.trim().parse::<T>().map_err(|err| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid {field} value: {err}"),
+        )
+    })
+}
 pub use earthmesh_delivery::{
     json_node_to_f64, json_node_to_usize, json_string_usize_map, json_usize_f64_map,
     json_usize_f64_map_node, json_usize_map,
@@ -192,12 +211,9 @@ pub use hydro_close_types::{
     HydroCompositeCloseMaskComponentSummary, HydroCompositeCloseMaskNmlWriteReport,
     MeritHydroRegionWorkflowReport,
 };
-pub use hydro_delivery_common::{
-    format_coupling_number, read_text_maybe_gzip, HYDRO_EARTH_RADIUS_M,
-};
-pub use hydro_delivery_complete_mask::write_complete_cell_mask_geojson;
-pub use hydro_delivery_intersections::write_earthmesh_intersection_geojson;
-pub use hydro_delivery_intersections::{geometry_outer_rings, json_node_to_string};
+// The readers' helpers that live with the hydro delivery products in the
+// output layer: gzip-aware text and GeoJSON rings.
+pub(crate) use earthmesh_delivery::{geometry_outer_rings, json_node_to_string, read_text_maybe_gzip};
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
 pub mod hydro_cell_features;
 pub use earthmesh_delivery::hfield_gridfile_context;
