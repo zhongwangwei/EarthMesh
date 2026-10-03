@@ -2609,6 +2609,8 @@ deltax 版本,两者的差别是传给 `spawn_nest_internal` 的 `Some((nxp, nit
 
 `apply_parent_halos` 这个开关照圆的做法接上:H 场路线一次性定完所有层,要的是原样的曲线。
 
+(2026-10-03 起,这些父层只给 Method-C 后端;其余后端各用自己的过渡,见 11.113。)
+
 ### 11.49 一个只在测它的那台机器上成立的断言(2026-08-09)
 
 推 alpha3 之后 CI 红了,而本地全绿。挂的是
@@ -5356,3 +5358,41 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
   的常数。
 - **对照报告**：`target/em_sweep/notes/merge_report.py`（不入库）统计每个交付单元内的像元，按层级汇总，并把单元边界画在
   DEM 上。交付单元是 Voronoi 单元，不是判据评估的格点三角形，所以这份报告是诊断，不是证书。
+
+### 11.113 Method-C 的假设只留给 Method-C：命名区域的父层与区域外缘的过渡行（2026-10-03）
+
+分层复查（`docs/architecture_layering_audit_2026-09-25.md`，2026-10-03 节第 2 项）发现输入层有两处只对 Method-C 成立的假设，
+却对每个后端都生效：
+
+1. **命名区域的父层。** 没有 h-field 时，指定的圆、框、闭合曲线在每个更浅的层级都带一个父区域，宽度是 Method-C 的过渡行
+   （`method_c_parent_halo_meters`，未设 `HALO` 时取实测的 3 行）。这是 Method-C `spawn_nest` 的嵌套语义（11.48），但
+   Red-Green、Stretch、ICON 嵌套也照收，于是在没人要求的环带里加密。Red-Green 自己会按自己的 halo 加宽更深的区域
+   （`nested_criteria_regions`），ICON 嵌套有自己的边界行。
+2. **区域外缘的过渡行。** h-field 区域运行在母网格上时，区域外缘的梯度放缓到 `1/(rows+3)`，rows 是 Method-C 最宽的
+   过渡（地表 7、大气 13），不论哪个后端在加密。
+
+**改动。** 父层只在 `NL%refine_backend = method_c` 时加（原版与 LEPP）。`compose_levelled_hfield` 改由调用方传入过渡行数：
+Method-C 传它的 `max_mrows`（`refine_pipeline::hfield_transition_rows`），其余后端传 `None`，外缘就和场的其余部分一样按 `g`
+走；质量步骤重新合成场对账时用同一个选择。输入层不再持有 Method-C 的行数常量。
+
+**LEPP 为什么留着父层。** 试过去掉：LEPP 在 8 轮上限内（`stop=MaxCycles`）只插入 279 次（原 596），最细只到 58 km（第 2 层
+目标 47.7 km），还多出 1 个孤立加密单元，质量结论 pass→warn。父层给了它每轮更多的插入点。
+
+**测量**（NXP 40、三个 200 km 圆、两层；区域例为 `examples/projects/circle_chain.yaml` 的 bbox 加 h-field 与 2 级母网格；
+用例在 `target/em_sweep/cases/item2/`，不入库）：
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| Red-Green 命名圆 | 36,078 单元；对账低于目标 597；warn | 35,782；低于目标 9；pass |
+| ICON 嵌套 | 第 1 层嵌套 1,506 单元，第 2 层 208 | 854，208 |
+| Stretch | 32,000 单元（固定）| 各层分布几乎不变 |
+| Red-Green 区域 h-field，2 级母网格 | 交付 744 单元；中间整球网格 9,861 | 交付几何逐位相同；中间整球 4,510 |
+| Method-C、LEPP、Method-C 区域 h-field | — | 逐字节相同 |
+
+12 个交接用例与 3 个示例工程逐产物不变：它们的命名圆只有一层，也没有非 Method-C 的母网格 h-field。
+
+**改前 Red-Green 的 597 个"低于目标"是对账的错，不是加密不够。** 运行记录 `adaptive_refinement.json` 按轮记圆，只写经纬度与
+半径；质量步骤把一轮里的圆都当作这一轮的层级（`every_circle_reads_back_with_the_level_that_emitted_it`）。Red-Green 与
+Stretch/ICON（`fixed_topology_adaptive_run`）每一轮都写上全部命名区域，于是第 2 轮里第 1 层的父圆被当成第 2 层要求，897 个
+单元被要求到第 2 层。去掉父层后目标与实际对上（262 对 284）。只要命名区域本身有不同层级，或有区域母网格的域区域，这个
+错仍会出现；修法是每一轮只记录层级不浅于该轮的区域。尚未修（改的是质量报告，待定）。

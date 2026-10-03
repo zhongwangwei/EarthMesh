@@ -2385,7 +2385,9 @@ pub fn compose_spherical_hfield(
 
 /// [`compose_spherical_hfield`] over a mother of cell size `mother_m`: the
 /// field outside the domain is the mother's, and hydro target levels count
-/// from it. With `mother_m == base_m` the two are the same.
+/// from it. With `mother_m == base_m` the two are the same. `transition_rows`
+/// is what the refining backend needs inside each level's band, as in
+/// [`compose_levelled_hfield`].
 #[allow(clippy::too_many_arguments)]
 fn compose_spherical_hfield_over_mother(
     regions: &[RefinementRegion],
@@ -2397,6 +2399,7 @@ fn compose_spherical_hfield_over_mother(
     threshold_level: usize,
     domain: Option<&GridRegion>,
     mother_m: f64,
+    transition_rows: Option<f64>,
 ) -> io::Result<HField> {
     let mut field = build_composed_hfield(
         regions,
@@ -2423,18 +2426,14 @@ fn compose_spherical_hfield_over_mother(
         }
     }
     field.limit_gradient(options.g)?;
-    if mother_m > base_m {
+    if let (true, Some(rows)) = (mother_m > base_m, transition_rows) {
         // The domain's own skirt, graded more gently than the demands inside
         // it. Each level's band around the next finer one is `1 / g` of that
-        // level's cells wide, and Method-C's transition rows must fit in it:
-        // at g = 0.2 a 1 km Heihe run from a 5-level mother failed with a
-        // level-5 transition crossing its parent; at 0.1 it built in 116 s.
-        // A separate field, so the demands inside keep their own gradation.
-        let rows = if matches!(mesh_type.trim(), "atmos" | "atmosmesh") {
-            METHOD_C_TRANSITION_ROWS_ATMOS
-        } else {
-            METHOD_C_TRANSITION_ROWS_SURFACE
-        };
+        // level's cells wide, and a backend whose transition takes rows of the
+        // finer level needs them to fit in it: at g = 0.2 a 1 km Heihe run on
+        // Method-C from a 5-level mother failed with a level-5 transition
+        // crossing its parent; at 0.1 it built in 116 s. A separate field, so
+        // the demands inside keep their own gradation.
         let skirt_g = options.g.min(1.0 / (rows + 3.0));
         let mut skirt = HField::uniform(field.nlon(), field.nlat(), mother_m)?;
         for j in 0..field.nlat() {
@@ -2450,11 +2449,6 @@ fn compose_spherical_hfield_over_mother(
     Ok(field)
 }
 
-/// Method-C's widest transition, in rows of the finer level
-/// (`MethodCMesh::MAX_MROWS_SURFACE` and `MAX_MROWS_ATMOS`).
-const METHOD_C_TRANSITION_ROWS_SURFACE: f64 = 7.0;
-const METHOD_C_TRANSITION_ROWS_ATMOS: f64 = 13.0;
-
 pub use earthmesh_refine::hfield::LevelledHfield;
 
 /// Compose the h-field a spherical run refines to, with its levels.
@@ -2468,6 +2462,12 @@ pub use earthmesh_refine::hfield::LevelledHfield;
 /// mother, `mother_levels` deeper, capped at 5. Hydro target levels count from
 /// the mother too: the only such targets a regional mother meets are
 /// AutoRefine's repairs, read off the refined mesh's own cell levels.
+///
+/// `transition_rows` is what the refining backend's transition takes, in rows
+/// of the finer level -- Method-C's `max_mrows`. Over a mother, the domain's
+/// skirt is graded gently enough for that many rows to fit in each level's
+/// band. `None` for a backend that closes its own transitions: its skirt is
+/// graded by `options.g` like the rest of the field.
 #[allow(clippy::too_many_arguments)]
 pub fn compose_levelled_hfield(
     regions: &[RefinementRegion],
@@ -2479,6 +2479,7 @@ pub fn compose_levelled_hfield(
     run_max_level: usize,
     max_cal_level: usize,
     domain: Option<&GridRegion>,
+    transition_rows: Option<f64>,
 ) -> io::Result<LevelledHfield> {
     let mother_levels = usize::from(config.regional_mother_levels);
     if mother_levels > 0 && domain.is_none() {
@@ -2499,6 +2500,7 @@ pub fn compose_levelled_hfield(
         max_cal_level.clamp(1, field_max_level),
         domain,
         base_m * scale,
+        transition_rows,
     )?;
     Ok(LevelledHfield {
         field,

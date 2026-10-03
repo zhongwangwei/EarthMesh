@@ -157,6 +157,7 @@ pub fn attach_hfield_diagnostics_from_namelist_with_g(
     let mother_m =
         2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * nxp as f64);
     let domain = crate::read_method_c_domain_region(&config)?;
+    let backend = crate::refine_pipeline::refine_backend_name(&config.refine_backend)?;
     // The field the run refined to, composed the same way.
     let crate::hfield_refine::LevelledHfield {
         field,
@@ -172,6 +173,7 @@ pub fn attach_hfield_diagnostics_from_namelist_with_g(
         max_level,
         max_cal_level,
         domain.as_ref(),
+        crate::refine_pipeline::hfield_transition_rows(backend, mesh_type),
     )?;
     let targets = earthmesh_refine::HfieldTargets::new(&field, base_m, field_max_level as u8)?;
     let target_levels = target_levels_for_quality_cells(

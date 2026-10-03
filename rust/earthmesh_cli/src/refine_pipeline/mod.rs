@@ -15,3 +15,4 @@ pub use final_delivery::run_refine_pipeline_with_delivery;
 
 pub use certified_merge::certified_merge_preview;
 pub use global_source::run_refine_pipeline_namelist;
+pub(crate) use global_source::{hfield_transition_rows, refine_backend_name};

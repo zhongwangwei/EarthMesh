@@ -442,12 +442,19 @@ fn refine_from_shared_source(
         None => run_mkgrd_gridinit_global_namelist(namelist_source, workdir, max_tris)?,
     };
     let mut regions = native_regions;
+    // Method-C nests each level inside a parent region as wide as its
+    // transition rows, so a named region arrives with those parents. The other
+    // backends close their own transitions -- red-green widens a deeper region
+    // by its own halo, ICON nests by their own boundary rows -- and Method-C's
+    // parents only made them refine rings nobody asked for. LEPP runs on the
+    // Method-C backend and keeps them: within its cycle budget they are what
+    // lets it reach the deeper level.
     if refine.refine_spc {
         regions.extend(read_method_c_specified_refinement_regions(
             &refine,
             max_spc_level,
             method_c_nxp,
-            !use_hfield_regions,
+            !use_hfield_regions && backend == RefinementBackend::MethodC,
         )?);
     }
     let calculated_region_prefix = refine.mask_refine_cal_fprefix.trim().trim_end_matches('/');
@@ -718,6 +725,7 @@ fn refine_from_shared_source(
                         max_level,
                         max_cal_level,
                         domain_region.as_ref(),
+                        hfield_transition_rows(backend, mesh_type),
                     )?;
                     (
                         Some(crate::hfield_gridfile_context::HfieldGridfileContext {
@@ -3699,6 +3707,7 @@ fn refine_with_method_c(
                     max_level,
                     max_cal_level,
                     domain_region,
+                    hfield_transition_rows(RefinementBackend::MethodC, mesh_type),
                 )
             };
             let spawned = earthmesh_refine_method_c::spawn_from_graded_hfield(
@@ -4016,7 +4025,21 @@ fn effective_refinement_spring_iterations(backend: RefinementBackend, requested:
 }
 
 /// Resolve `NL%refine_backend`, in any case.
-fn refine_backend_name(requested: &str) -> io::Result<RefinementBackend> {
+/// Rows of the finer level a backend's transition takes, for an h-field's
+/// domain skirt over a regional mother (`compose_levelled_hfield`): Method-C's
+/// `max_mrows`, and `None` for the backends that close their own transitions.
+pub(crate) fn hfield_transition_rows(backend: RefinementBackend, mesh_type: &str) -> Option<f64> {
+    (backend == RefinementBackend::MethodC).then(|| {
+        let rows = if matches!(mesh_type.trim(), "atmos" | "atmosmesh") {
+            MethodCMesh::MAX_MROWS_ATMOS
+        } else {
+            MethodCMesh::MAX_MROWS_SURFACE
+        };
+        rows as f64
+    })
+}
+
+pub(crate) fn refine_backend_name(requested: &str) -> io::Result<RefinementBackend> {
     RefinementBackend::from_engine_str(&requested.trim().to_ascii_lowercase()).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
