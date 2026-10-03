@@ -30,19 +30,24 @@ jobs:
         run: make check-active-taskbook check-architecture check-architecture-selftest
       - name: Install rustfmt + clippy
         run: rustup component add rustfmt clippy
+      - name: Install cargo-nextest
+        # Prebuilt release; every test runs in its own process, and all test
+        # binaries share one parallel pool instead of running one at a time.
+        run: curl -LsSf https://get.nexte.st/0.9/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       - name: Format check (fix locally with `cargo fmt`)
         run: make fmt
       - name: Lint gate — clippy -D warnings, no-netcdf crates (reproduce with `make clippy`)
         run: make clippy
-      - name: Fast tests — the twelve no-NetCDF crates, all three refine backends included
-        run: make test-fast
+      - name: Fast tests — the fourteen no-NetCDF crates, under nextest (the same tests as `make test-fast`)
+        run: make nextest-fast
       - name: How to reproduce a failure
         if: failure()
         run: |
           echo "::error::Fast gate failed. Reproduce locally:"
           echo "  make fmt        # formatting"
-          echo "  make clippy     # clippy -D warnings (the twelve no-NetCDF crates, all three refine backends included)"
-          echo "  make test-fast  # the twelve no-NetCDF crates, all three refine backends included (no NetCDF needed)"
+          echo "  make clippy     # clippy -D warnings (the fourteen no-NetCDF crates)"
+          echo "  make test-fast  # the same tests through cargo test (no NetCDF needed)"
+          echo "  make nextest-fast  # as CI runs them, if cargo-nextest is installed"
 
   gui:
     name: gui (JS + Tauri fmt/clippy/tests)
@@ -87,6 +92,8 @@ jobs:
             libnetcdf-dev libhdf5-dev pkg-config
       - name: Install clippy
         run: rustup component add clippy
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/0.9/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       - name: CLI lint gate (clippy -D warnings, dynamic system NetCDF)
         # No `static-netcdf`: lint against the apt libnetcdf, matching the test step.
         # earthmesh_delivery and earthmesh_inputs need NetCDF too, so they are linted and
@@ -95,17 +102,21 @@ jobs:
           cargo clippy --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path rust/earthmesh_inputs/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets -- -D warnings
-      - name: CLI tests (dynamic system NetCDF — reproduce with `make test`)
+      - name: CLI tests under nextest (dynamic system NetCDF — reproduce with `make test`)
         # No `static-netcdf` feature: link the apt libnetcdf instead of building netcdf-c.
+        # nextest runs the same tests as `cargo test --all-targets`, all binaries
+        # in one parallel pool, and reports every failure rather than stopping
+        # at the first failing binary.
         run: |
-          cargo test --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets
-          cargo test --manifest-path rust/earthmesh_inputs/Cargo.toml --all-targets
-          cargo test --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets
+          cargo nextest run --manifest-path rust/earthmesh_delivery/Cargo.toml --all-targets --no-fail-fast
+          cargo nextest run --manifest-path rust/earthmesh_inputs/Cargo.toml --all-targets --no-fail-fast
+          cargo nextest run --manifest-path rust/earthmesh_cli/Cargo.toml --all-targets --no-fail-fast
       - name: How to reproduce a failure
         if: failure()
         run: |
           echo "::error::Heavy gate failed. Reproduce locally (needs NetCDF):"
           echo "  cargo clippy --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets -- -D warnings"
           echo "  cargo test --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets   # system NetCDF"
+          echo "  cargo nextest run --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets --no-fail-fast   # as CI runs them"
           echo "  make clippy-full  # clippy -D warnings, all crates (bundled static-netcdf)"
           echo "  make test         # CLI with bundled static-netcdf (no system NetCDF needed)"

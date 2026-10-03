@@ -37,7 +37,8 @@ the GUI tests together; a root-level `cargo test` does not.
 
 CI (`.github/workflows/ci.yml`) has three jobs. Reproduce them locally with:
 
-- `fast` → `make fmt && make clippy && make test-fast` (no NetCDF, no GUI)
+- `fast` → `make fmt && make clippy && make test-fast` (no NetCDF, no GUI);
+  CI runs the same tests through cargo-nextest, `make nextest-fast`
 - `gui` → the four commands above
 - `heavy` → clippy and tests on the three NetCDF crates, `earthmesh_delivery`,
   `earthmesh_inputs` and `earthmesh_cli`, against **dynamic system NetCDF**:
@@ -45,12 +46,25 @@ CI (`.github/workflows/ci.yml`) has three jobs. Reproduce them locally with:
   cargo clippy --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets -- -D warnings
   cargo test   --manifest-path rust/earthmesh_{delivery,inputs,cli}/Cargo.toml --all-targets
   ```
+  CI runs the tests as `cargo nextest run ... --all-targets --no-fail-fast`.
   Locally there may be no system NetCDF library at all; add
   `--features static-netcdf` (what `make test` / `make clippy-full` do).
   `make test` is the nearest local equivalent, but it links `static-netcdf` and
   covers every crate — so it is a superset that exercises a different NetCDF
   path. When a `heavy` failure will not reproduce, that difference is the first
   thing to check.
+
+**Why CI uses nextest, and why the libraries are optimized in test builds.**
+`cargo test` runs the test binaries one at a time, and stops at the first
+binary that fails: the binaries after it never run. A red `heavy` once listed
+two failures eleven minutes in and said nothing about the other ~150 binaries;
+a local `cargo test` on a failing suite needs `--no-fail-fast` for the same
+reason. nextest runs every binary's tests in one parallel pool, each in its own
+process, and reports every failure. Separately, the root `Cargo.toml` builds
+the numeric crates and every dependency at `opt-level = 2` in dev/test builds
+(the CLI crate stays unoptimized): the slow tests are end-to-end mesh
+pipelines, and unoptimized they ran ten times longer -- one Method-C test 342 s
+against 28 s. Assertions and overflow checks stay on, and no result changes.
 
 `make fmt` and `make clippy` list crates one by one rather than using
 `--workspace`, because `earthmesh_cli`, `earthmesh_delivery` and

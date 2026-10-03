@@ -47,3 +47,40 @@ debug = 1
 # Rust has no fast-math, and the snapshots still match byte for byte.
 [profile.dev.package.earthmesh_refine_certified]
 opt-level = 2
+
+# The same for the rest of the numeric stack. CI's heavy job spent 41.5 of
+# its 46.5 minutes running the CLI tests, eight end-to-end binaries most of
+# it: one Method-C pipeline test alone ran 9 minutes, sampled in Method-C's
+# nest spring and in iterator and rayon adapters that an unoptimized build
+# does not inline. Optimizing the library crates and every dependency keeps
+# assertions and overflow checks, changes no result, and costs compile time
+# once per build; the CLI crate itself stays unoptimized, because its
+# integration tests are ~150 binaries that would each pay the optimizer.
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev.package.earthmesh_core]
+opt-level = 2
+[profile.dev.package.earthmesh_geometry]
+opt-level = 2
+[profile.dev.package.earthmesh_hfield]
+opt-level = 2
+[profile.dev.package.earthmesh_boundary]
+opt-level = 2
+[profile.dev.package.earthmesh_mesh]
+opt-level = 2
+[profile.dev.package.earthmesh_quality]
+opt-level = 2
+[profile.dev.package.earthmesh_refine]
+opt-level = 2
+[profile.dev.package.earthmesh_refine_method_c]
+opt-level = 2
+[profile.dev.package.earthmesh_refine_redgreen]
+opt-level = 2
+[profile.dev.package.earthmesh_refine_icon_nest]
+opt-level = 2
+[profile.dev.package.earthmesh_refine_stretch]
+opt-level = 2
+[profile.dev.package.earthmesh_inputs]
+opt-level = 2
+[profile.dev.package.earthmesh_delivery]
+opt-level = 2
