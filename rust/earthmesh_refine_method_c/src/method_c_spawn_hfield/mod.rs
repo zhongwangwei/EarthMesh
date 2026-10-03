@@ -1103,14 +1103,7 @@ impl MethodCMesh {
                 &mut ladder,
             ) {
                 Ok(mesh) => {
-                    replay::record_pass(
-                        self,
-                        &selected,
-                        child_level,
-                        max_mrows,
-                        &coverage,
-                        true,
-                    )?;
+                    replay::record_pass(self, &selected, child_level, max_mrows, &coverage, true)?;
                     return Ok(mesh);
                 }
                 Err(error) => error,

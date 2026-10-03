@@ -51,9 +51,9 @@ pub mod hydro_delivery_colm;
 use earthmesh_delivery::hydro_delivery_common;
 use earthmesh_delivery::hydro_delivery_complete_mask;
 pub mod hydro_delivery_coupling_quality;
+pub use earthmesh_delivery::hydro_delivery_intersections;
 pub use earthmesh_delivery::hydro_delivery_manifest;
 pub use earthmesh_delivery::hydro_delivery_qa;
-pub use earthmesh_delivery::hydro_delivery_intersections;
 pub mod hydro_delivery_refine_workflow;
 pub use earthmesh_inputs::hydro_refinement_adapter;
 pub mod hydro_refinement_runs;
@@ -101,7 +101,6 @@ use circle_close_mask_io::{
 use colm_package_io::{
     write_colm_coupling_netcdf_from_csv, write_colm_package_delivery_manifest_with_quality,
 };
-pub use earthmesh_inputs::close_mesh_io;
 pub use earthmesh_delivery::colm_package_io;
 pub use earthmesh_inputs::bbox_mask_io;
 pub use earthmesh_inputs::cama_binary_io;
@@ -109,6 +108,7 @@ pub use earthmesh_inputs::cama_binary_params;
 pub use earthmesh_inputs::cama_binary_window_readers;
 pub use earthmesh_inputs::cama_reach_inventory;
 pub use earthmesh_inputs::circle_close_mask_io;
+pub use earthmesh_inputs::close_mesh_io;
 pub use earthmesh_inputs::coastal_band_io;
 pub mod mode4mesh_make;
 pub mod mode_file_io;

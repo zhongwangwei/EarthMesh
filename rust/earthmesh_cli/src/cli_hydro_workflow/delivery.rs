@@ -168,9 +168,12 @@ pub(crate) fn run_hydro_sweep_rank(args: impl Iterator<Item = String>) -> Result
     }
     let output_json =
         output_json.ok_or_else(|| usage("--hydro-sweep-rank requires --output-json"))?;
-    let recommended =
-        earthmesh_delivery::hydro_sweep_ranking::write_sweep_ranking(&reports, &output_json, max_background)
-            .map_err(|err| format!("sweep ranking: {err}"))?;
+    let recommended = earthmesh_delivery::hydro_sweep_ranking::write_sweep_ranking(
+        &reports,
+        &output_json,
+        max_background,
+    )
+    .map_err(|err| format!("sweep ranking: {err}"))?;
     println!("hydro_sweep_recommended={recommended}");
     println!("hydro_sweep_ranking_output={}", output_json.display());
     Ok(())

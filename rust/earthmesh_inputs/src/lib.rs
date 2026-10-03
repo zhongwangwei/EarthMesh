@@ -156,7 +156,6 @@ pub use v3_data_source_io::{
 };
 
 // Gridfile, NetCDF and JSON helpers the readers share with the output layer.
-pub use earthmesh_mesh::boundary_model;
 pub use earthmesh_delivery::hydro_workflow_types;
 pub use earthmesh_delivery::netcdf_io::first_existing_dimension_len;
 pub use earthmesh_delivery::netcdf_io::optional_values_i32_2d;
@@ -167,12 +166,13 @@ pub use earthmesh_delivery::netcdf_io::write_i32_scalar;
 pub use earthmesh_delivery::{
     create_netcdf, ensure_parent_dir, geojson_feature_nodes, i32_matrix_from_flat,
     json_escape_string, json_number, json_string_array, matrix_width, netcdf_to_io_error,
-    open_netcdf, read_unstructured_mesh_netcdf,
-    require_len, required_dimension_len, required_values_f64, required_values_f64_any,
-    required_values_i32, usize_to_i32, write_f64_1d, write_flat_contain_netcdf,
-    write_i32_matrix_rows, ContainMesh, ContainWriteReport, FlatContainMesh, JsonNode, JsonParser,
+    open_netcdf, read_unstructured_mesh_netcdf, require_len, required_dimension_len,
+    required_values_f64, required_values_f64_any, required_values_i32, usize_to_i32, write_f64_1d,
+    write_flat_contain_netcdf, write_i32_matrix_rows, ContainMesh, ContainWriteReport,
+    FlatContainMesh, JsonNode, JsonParser,
 };
 pub use earthmesh_geometry::{GridRegion, LonLatPoint};
+pub use earthmesh_mesh::boundary_model;
 /// Close-polygon mask files: read as a refinement or domain source.
 pub mod close_mesh_io;
 pub use close_mesh_io::read_close_mesh_netcdf;
@@ -213,7 +213,9 @@ pub use hydro_close_types::{
 };
 // The readers' helpers that live with the hydro delivery products in the
 // output layer: gzip-aware text and GeoJSON rings.
-pub(crate) use earthmesh_delivery::{geometry_outer_rings, json_node_to_string, read_text_maybe_gzip};
+pub(crate) use earthmesh_delivery::{
+    geometry_outer_rings, json_node_to_string, read_text_maybe_gzip,
+};
 pub use merit_hydro_region_close::write_merit_hydro_region_close_masks;
 pub mod hydro_cell_features;
 pub use earthmesh_delivery::hfield_gridfile_context;

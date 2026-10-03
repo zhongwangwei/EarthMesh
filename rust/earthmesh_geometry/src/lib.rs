@@ -1,9 +1,9 @@
-/// Additive geometry safety/validation layer (flags, polygon/overlay/fraction checks).
-pub mod safety;
 /// Longitude-latitude points and the regions a run is confined to or refines
 /// in: shared by the input layer, which reads them, and the output layer,
 /// which carves meshes to them.
 pub mod coordinate_types;
+/// Additive geometry safety/validation layer (flags, polygon/overlay/fraction checks).
+pub mod safety;
 pub use coordinate_types::{
     lat_values, lon_values, GridRegion, LonLatBounds, LonLatPoint, PreparedGridRegion,
 };

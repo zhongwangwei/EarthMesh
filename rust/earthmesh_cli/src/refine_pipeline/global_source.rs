@@ -1,5 +1,4 @@
 use crate::certified_options::read_certified_options;
-use earthmesh_refine::RefinementBackend;
 use crate::final_quality_non_negative_usize;
 use crate::gridfile_mesh_from_one_based_state;
 use crate::initial_triangulation_from_gridfile;
@@ -29,6 +28,7 @@ use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
 use crate::GridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
+use earthmesh_refine::RefinementBackend;
 use earthmesh_refine_method_c::{
     improve_lepp_post_quality, refine_adaptive_hybrid, refine_adaptive_hybrid_constrained,
     AdaptiveHybridConfig, AdaptiveHybridDemand, AdaptiveHybridUnresolvedDemand,
@@ -279,7 +279,11 @@ fn refine_from_shared_source(
             Some("a run without the h-field")
         } else if adaptive_options.is_some() {
             Some("the point+radius route")
-        } else if !matches!(backend, RefinementBackend::MethodC | RefinementBackend::RedGreen) || lepp {
+        } else if !matches!(
+            backend,
+            RefinementBackend::MethodC | RefinementBackend::RedGreen
+        ) || lepp
+        {
             Some("this backend")
         } else {
             None
@@ -1073,14 +1077,14 @@ fn finish_refined(
     // Planned first (the algorithm, no files), then written (the output).
     let icon_nest_plan = match icon_nest {
         Some(demand) => {
-            let plan = super::icon_nest::plan_icon_nests(
-                &output_mesh,
-                &demand,
-                hfield_context.as_ref(),
-            )?;
+            let plan =
+                super::icon_nest::plan_icon_nests(&output_mesh, &demand, hfield_context.as_ref())?;
             // The delivery's level is the deepest nest over a place, not the
             // global grid's level 0.
-            cell_levels = Some(super::icon_nest::nest_cell_levels(&output_mesh, &plan.depth));
+            cell_levels = Some(super::icon_nest::nest_cell_levels(
+                &output_mesh,
+                &plan.depth,
+            ));
             Some(plan)
         }
         None => None,
