@@ -286,8 +286,7 @@ pub fn materialization_extent_by_address(
     margins: ExtentMargins,
     delivered: &BTreeSet<TriangleAddress>,
 ) -> Result<MaterializationExtent, String> {
-    use crate::mother_grid::lattice::{face_cap, faces_around, locate, longest_edge};
-    use std::collections::HashMap;
+    use crate::mother_grid::lattice::longest_edge;
 
     if base_n == 0 {
         return Err("base subdivision must be positive".into());
@@ -301,23 +300,31 @@ pub fn materialization_extent_by_address(
     let fine_edge = 2.0 * longest_edge / (1u64 << levels.min(62)) as f64;
     let reach =
         |level: usize| fine_edge * (margins.gradation_rings_per_level.max(1) * level + 2) as f64;
-    let mut caps = HashMap::new();
-    let mut cap_of = |address: TriangleAddress| -> Result<([f64; 3], f64), String> {
-        if let Some(&cap) = caps.get(&address) {
-            return Ok(cap);
-        }
-        let cap = face_cap(address)?;
-        caps.insert(address, cap);
-        Ok(cap)
-    };
+    let seeds = raster_seed_faces(raster, base_n, longest_edge, &reach)?;
+    materialization_extent_from_seeds(base_n, levels, margins, &seeds, delivered)
+}
 
-    // Seeds: from each raster cell above level zero, the faces whose cap
-    // meets the cell's cap widened by its reach, walked from the face that
-    // holds the cell's centre.
+/// A raster cell above level zero, as the seed test sees it: its cap's centre
+/// and how far it reaches -- the cap's radius plus its level's reach.
+struct SeedCell {
+    center: [f64; 3],
+    limit: f64,
+    lon: f64,
+    lat: f64,
+}
+
+/// The raster cells above level zero, each with the face that holds its
+/// centre.
+fn seed_cells(
+    raster: &RasterLevelField,
+    base_n: usize,
+    reach: &dyn Fn(usize) -> f64,
+) -> Result<Vec<(SeedCell, TriangleAddress)>, String> {
+    use crate::mother_grid::lattice::locate;
     let (nlon, nlat) = (raster.nlon(), raster.nlat());
     let dlon = 360.0 / nlon as f64;
     let dlat = 180.0 / nlat as f64;
-    let mut seeds = BTreeSet::new();
+    let mut cells = Vec::new();
     for (cell, &level) in raster.levels().iter().enumerate() {
         if level == 0 {
             continue;
@@ -330,20 +337,170 @@ pub fn materialization_extent_by_address(
         let cap = SphericalCap::for_rings(std::slice::from_ref(&points))
             .ok_or_else(|| format!("raster cell {cell} has no spherical cap"))?;
         let (lon, lat) = cap.center_lon_lat_degrees();
-        let (lon, lat) = (lon.to_radians(), lat.to_radians());
-        let center = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
-        let limit = cap.radius_radians() + reach(level);
+        let (lon_r, lat_r) = (lon.to_radians(), lat.to_radians());
+        let center = [
+            lat_r.cos() * lon_r.cos(),
+            lat_r.cos() * lon_r.sin(),
+            lat_r.sin(),
+        ];
         let start = locate(base_n, center)
             .ok_or_else(|| format!("raster cell {cell} lies on no base face"))?;
-        let mut queue = std::collections::VecDeque::from([start]);
+        cells.push((
+            SeedCell {
+                center,
+                limit: cap.radius_radians() + reach(level),
+                lon,
+                lat,
+            },
+            start,
+        ));
+    }
+    Ok(cells)
+}
+
+/// The base faces the raster's cells above level zero reach: each face whose
+/// cap meets a cell's cap widened by the cell's reach (the test the
+/// whole-grid `materialization_extent` makes of every face).
+///
+/// Every face is tested once, against the cells near it, and the walk that
+/// finds the faces goes out from every cell's face at once through faces
+/// within the walk's wider bound of some cell -- a superset of each cell's
+/// own walk, which reaches every face that cell accepts (see
+/// `materialization_extent_by_address`). Walking again from each cell, as
+/// before, tested a face once for every cell whose reach covered it: around
+/// a dense requirement a hundred times over. The same set, by the same
+/// arithmetic; the per-cell walk is kept as the test's oracle.
+fn raster_seed_faces(
+    raster: &RasterLevelField,
+    base_n: usize,
+    longest_edge: f64,
+    reach: &dyn Fn(usize) -> f64,
+) -> Result<BTreeSet<TriangleAddress>, String> {
+    use crate::mother_grid::lattice::{face_cap, faces_around};
+    use std::collections::{HashMap, HashSet};
+
+    let cells = seed_cells(raster, base_n, reach)?;
+    let Some(max_limit) = cells
+        .iter()
+        .map(|(cell, _)| cell.limit)
+        .max_by(f64::total_cmp)
+    else {
+        return Ok(BTreeSet::new());
+    };
+    // Cells binned by their centres on a latitude-longitude grid of tiles
+    // about half a reach wide, so a face looks at a few dozen tiles.
+    let degrees = |radians: f64| radians.to_degrees();
+    let tile = degrees(max_limit + 2.0 * longest_edge)
+        .max(180.0 / raster.nlat() as f64)
+        .clamp(1.0e-6, 90.0)
+        / 2.0;
+    let tile_rows = (180.0 / tile).ceil() as i64;
+    let tile_columns = (360.0 / tile).ceil() as i64;
+    let tile_of = |lon: f64, lat: f64| {
+        (
+            (((lat + 90.0) / tile).floor() as i64).clamp(0, tile_rows - 1),
+            (((lon + 180.0) / tile).floor() as i64).rem_euclid(tile_columns),
+        )
+    };
+    let mut tiles = HashMap::<(i64, i64), Vec<usize>>::new();
+    for (index, (cell, _)) in cells.iter().enumerate() {
+        tiles
+            .entry(tile_of(cell.lon, cell.lat))
+            .or_default()
+            .push(index);
+    }
+
+    let mut seeds = BTreeSet::new();
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    for &(_, start) in &cells {
+        if visited.insert(start) {
+            queue.push_back(start);
+        }
+    }
+    while let Some(face) = queue.pop_front() {
+        let (face_center, face_radius) = face_cap(face)?;
+        let bound = max_limit + face_radius + longest_edge;
+        let lat = degrees(face_center[2].clamp(-1.0, 1.0).asin());
+        let lon = degrees(face_center[1].atan2(face_center[0]));
+        let (row, column) = tile_of(lon, lat);
+        // Tiles whose cells may lie within `bound`, nearest first: rows of
+        // the latitude band, columns between the tangent meridians -- all of
+        // them where the band reaches a pole.
+        let (south, north) = (lat - degrees(bound), lat + degrees(bound));
+        let mut rows = (tile_of(lon, south).0 - 1..=tile_of(lon, north).0 + 1)
+            .filter(|row| (0..tile_rows).contains(row))
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|&other| (other - row).abs());
+        let half_width = (south > -90.0 && north < 90.0 && bound < std::f64::consts::FRAC_PI_2)
+            .then(|| bound.sin() / lat.to_radians().cos())
+            .filter(|&sine| sine < 1.0)
+            .map(|sine| degrees(sine.asin()));
+        let mut columns = match half_width {
+            Some(half) if 2.0 * half + 2.0 * tile < 360.0 => {
+                let span = (half / tile).ceil() as i64 + 1;
+                (-span..=span)
+                    .map(|offset| (column + offset).rem_euclid(tile_columns))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            }
+            _ => (0..tile_columns).collect::<Vec<_>>(),
+        };
+        columns.sort_by_key(|&other| {
+            let apart = (other - column).rem_euclid(tile_columns);
+            apart.min(tile_columns - apart)
+        });
+        let (mut accepted, mut walked) = (false, false);
+        'tiles: for &tile_row in &rows {
+            for &tile_column in &columns {
+                for &index in tiles.get(&(tile_row, tile_column)).into_iter().flatten() {
+                    let cell = &cells[index].0;
+                    let apart = angle(cell.center, face_center);
+                    if apart <= cell.limit + face_radius {
+                        accepted = true;
+                        walked = true;
+                        break 'tiles;
+                    }
+                    walked |= apart <= cell.limit + face_radius + longest_edge;
+                }
+            }
+        }
+        if accepted {
+            seeds.insert(face);
+        }
+        if walked {
+            for next in faces_around(face)? {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    Ok(seeds)
+}
+
+/// The seeds as first found: a walk from each cell's face, testing each face
+/// the walk reaches against that cell (the oracle of `raster_seed_faces`).
+#[cfg(test)]
+fn raster_seed_faces_by_cell(
+    raster: &RasterLevelField,
+    base_n: usize,
+    longest_edge: f64,
+    reach: &dyn Fn(usize) -> f64,
+) -> Result<BTreeSet<TriangleAddress>, String> {
+    use crate::mother_grid::lattice::{face_cap, faces_around};
+    let mut seeds = BTreeSet::new();
+    for (cell, start) in seed_cells(raster, base_n, reach)? {
+        let mut queue = VecDeque::from([start]);
         let mut visited = BTreeSet::from([start]);
         while let Some(face) = queue.pop_front() {
-            let (face_center, face_radius) = cap_of(face)?;
-            let apart = angle(center, face_center);
-            if apart > limit + face_radius + longest_edge {
+            let (face_center, face_radius) = face_cap(face)?;
+            let apart = angle(cell.center, face_center);
+            if apart > cell.limit + face_radius + longest_edge {
                 continue;
             }
-            if apart <= limit + face_radius {
+            if apart <= cell.limit + face_radius {
                 seeds.insert(face);
             }
             for next in faces_around(face)? {
@@ -353,8 +510,7 @@ pub fn materialization_extent_by_address(
             }
         }
     }
-
-    materialization_extent_from_seeds(base_n, levels, margins, &seeds, delivered)
+    Ok(seeds)
 }
 
 /// The extent around base faces `seeds` -- faces a requirement reaches,
@@ -442,6 +598,51 @@ mod tests {
     use super::*;
     use crate::mother_grid::region::descendant_faces;
     use crate::requirement::{graded_envelope, one_ring_adjacency};
+
+    /// Testing each face once against the cells near it finds the faces the
+    /// walk from every cell finds, face for face: sparse and dense demand,
+    /// mixed levels, cells at both poles and on the dateline, coarse and fine
+    /// bases.
+    #[test]
+    fn seeds_tested_once_per_face_are_the_walks_seeds() {
+        use crate::mother_grid::lattice::longest_edge;
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for (nlon, nlat, base_n, levels, percent) in [
+            (36, 18, 4, 1, 3),
+            (72, 36, 8, 2, 10),
+            (48, 24, 16, 3, 30),
+            (360, 180, 12, 2, 1),
+            (40, 20, 24, 1, 50),
+            (60, 30, 6, 4, 20),
+        ] {
+            let mut cells = Vec::new();
+            for cell in 0..nlon * nlat {
+                if next() % 100 < percent {
+                    cells.push((cell, 1 + (next() % levels as u64) as usize));
+                }
+            }
+            cells.push((0, levels));
+            cells.push((nlon * nlat - 1, 1));
+            cells.push((nlon * (nlat / 2) + nlon - 1, levels));
+            let raster = raster_with(nlon, nlat, &cells);
+            let longest = longest_edge(base_n).unwrap();
+            let fine = 2.0 * longest / (1u64 << levels) as f64;
+            let reach = |level: usize| fine * (3 * level + 2) as f64;
+            let once = raster_seed_faces(&raster, base_n, longest, &reach).unwrap();
+            let walked = raster_seed_faces_by_cell(&raster, base_n, longest, &reach).unwrap();
+            assert!(!once.is_empty());
+            assert_eq!(
+                once, walked,
+                "{nlon}x{nlat} raster, base {base_n}, {levels} levels"
+            );
+        }
+    }
 
     fn raster_with(nlon: usize, nlat: usize, cells: &[(usize, usize)]) -> RasterLevelField {
         let mut levels = vec![0; nlon * nlat];
