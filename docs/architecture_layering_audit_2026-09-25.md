@@ -560,4 +560,12 @@ namelist 到写出的调用链）的结论：**还没有都按这个形状编排
   判据圆的规划（读栅格）、转成 gridfile 表、海绵平滑与运行记录留在 CLI 适配层；六边形环是否折叠要在将要写出的
   网格上数，由调用方以闭包传入。`LevelCircles`、`NestPassReport`、`AdaptiveNestReport`、`CriteriaEvidence`
   与 `nested_criteria_regions`、`widened_region` 从输入层与 CLI 移到中性的 `earthmesh_refine::nest`。
-- 待做：Method-C（h-field 重试、点+半径逐层、LEPP）。
+- Method-C：h-field 的重试（陡的场嵌不进父网格或丢了块时，按 `max_mrows` 放缓梯度重新合成，留下丢面更少的
+  那个）、点+半径逐层分组加密、LEPP-Delaunay 的加密与修复（放宽门限插入、修不回 7 度以内时在严格门限下重做）
+  移入 `earthmesh_refine_method_c::driver`。h-field 的合成与每层判据圆的规划（读栅格）由调用方以闭包传入；
+  逐组记录 `refinement_groups.jsonl` 改由调用方的接收器写出，算法层不再写文件。`LevelledHfield` 移到
+  `earthmesh_refine::hfield`。`refine_with_method_c` 其余分支（原生大气/地表嵌套、命名区域的各个
+  `spawn_nest` 变体、Cartesian-XY 的 h-field）是按配置直接调用 `MethodCMesh` 的方法，留在适配层。
+
+至此第 4 项完成：`global_source.rs` 里不再有哪个后端自己的层级循环、重试或修复；剩下的是读配置、规划需求、
+调用后端、转成发布网格、各后端共用的发布网格后处理（区域海绵平滑及其回退检查）与写记录。

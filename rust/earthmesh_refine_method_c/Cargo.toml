@@ -14,6 +14,9 @@ path = "src/lib.rs"
 earthmesh_boundary = { path = "../earthmesh_boundary" }
 earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_mesh = { path = "../earthmesh_mesh" }
+# The angle window and dual-cell limits LEPP's repair aims for are the
+# quality contract's.
+earthmesh_quality = { path = "../earthmesh_quality" }
 earthmesh_refine = { path = "../earthmesh_refine" }
 rayon = "1"
 

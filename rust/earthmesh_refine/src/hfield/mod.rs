@@ -12,3 +12,12 @@
 // gate forbids exactly that. The module stays for the note above it, which
 // records where the h-field belongs in the layering once it is moved.
 pub use earthmesh_hfield::{HField, EARTH_RADIUS_METERS};
+
+/// A composed h-field and the scale its levels count from: what the input
+/// layer composes and a backend refines to.
+pub struct LevelledHfield {
+    pub field: HField,
+    /// The mother's cell size: level `l` is a cell of `level_base_m / 2^l`.
+    pub level_base_m: f64,
+    pub max_level: usize,
+}

@@ -2455,13 +2455,7 @@ fn compose_spherical_hfield_over_mother(
 const METHOD_C_TRANSITION_ROWS_SURFACE: f64 = 7.0;
 const METHOD_C_TRANSITION_ROWS_ATMOS: f64 = 13.0;
 
-/// A composed h-field and the scale its levels count from.
-pub struct LevelledHfield {
-    pub field: HField,
-    /// The mother's cell size: level `l` is a cell of `level_base_m / 2^l`.
-    pub level_base_m: f64,
-    pub max_level: usize,
-}
+pub use earthmesh_refine::hfield::LevelledHfield;
 
 /// Compose the h-field a spherical run refines to, with its levels.
 ///

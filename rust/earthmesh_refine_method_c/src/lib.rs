@@ -78,6 +78,12 @@ pub use lepp_delaunay::{
     LeppPostQualityStopReason, LeppQualitySnapshot, LeppSearchConfig, LeppSearchError,
     LeppSearchReport, LeppTerminal,
 };
+mod driver;
+pub use driver::{
+    crosses_a_parent, method_c_lepp_adaptive_insertion_gates, method_c_lepp_insertion_gates,
+    refine_lepp, spawn_from_graded_hfield, spawn_nest_adaptive_levels, AdaptiveNestSpring,
+    GradedHfieldSpawn, GroupAttempt, LeppRequest, LeppRun, METHOD_C_ADAPTIVE_SUSPENDED,
+};
 mod method_c_mesh;
 pub use method_c_lattice_mask::METHOD_C_LATTICE_DEFECT_CLEARANCE_RINGS;
 pub use method_c_mesh::MethodCMesh;

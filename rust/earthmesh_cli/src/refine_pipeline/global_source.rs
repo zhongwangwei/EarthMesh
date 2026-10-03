@@ -31,9 +31,8 @@ use crate::RefinePipelineRunReport;
 use earthmesh_refine::nest::{nested_criteria_regions, widened_region};
 use earthmesh_refine::RefinementBackend;
 use earthmesh_refine_method_c::{
-    improve_lepp_post_quality, refine_adaptive_hybrid, refine_adaptive_hybrid_constrained,
-    AdaptiveHybridConfig, AdaptiveHybridDemand, AdaptiveHybridUnresolvedDemand,
-    AdaptiveHybridUnresolvedReason, LeppInsertionGates, LeppPostQualityConfig,
+    improve_lepp_post_quality, AdaptiveHybridConfig, AdaptiveHybridDemand,
+    AdaptiveHybridUnresolvedDemand, AdaptiveHybridUnresolvedReason, LeppPostQualityConfig,
     LeppPostQualityReport, LeppSearchConfig, MethodCMesh,
 };
 use std::collections::BTreeSet;
@@ -54,35 +53,6 @@ use super::outputs::{write_refined_outputs, MethodCMetadataSlices};
 use super::certified_pipeline::{deliver_certified, refine_with_certified_as_grid};
 
 const REMAP_CSV_CHUNK_ROWS: usize = 4096;
-
-fn method_c_lepp_insertion_gates(
-    protected_pentagons: [usize; 12],
-    mode_grid: &str,
-) -> LeppInsertionGates {
-    let mut gates = LeppInsertionGates::for_method_c(protected_pentagons);
-    if mode_grid.trim() == "hex" {
-        gates.minimum_vertex_degree = 5;
-    }
-    gates
-}
-
-/// The gates the AdaptiveHybrid refinement inserts under.
-///
-/// Held to Method-C's 5..=7 at every insertion, LEPP refused most of them
-/// near the demand's edge -- 892 of the rejections on a global 1000 km circle
-/// at two levels, which it left a third unmet. It inserts under 4..=8 and the
-/// window repair takes the degrees back afterwards (`repair_lepp_state`),
-/// before any table that addresses at most 7. The post-quality pass has no
-/// such repair after it and keeps the strict gates.
-fn method_c_lepp_adaptive_insertion_gates(
-    protected_pentagons: [usize; 12],
-    mode_grid: &str,
-) -> LeppInsertionGates {
-    let mut gates = method_c_lepp_insertion_gates(protected_pentagons, mode_grid);
-    gates.maximum_vertex_degree = 8;
-    gates.minimum_vertex_degree = gates.minimum_vertex_degree.min(4);
-    gates
-}
 
 fn format_remap_csv_row(row: &earthmesh_refine_certified::remap::RemapRow) -> String {
     let mut output = String::with_capacity(row.sources.len().saturating_mul(32));
@@ -870,7 +840,10 @@ fn refine_from_shared_source(
                                 "NL%lepp_post_quality_max_insertions must fit usize",
                             )
                         })?,
-                        gates: method_c_lepp_insertion_gates(mesh.impent, config.mode_grid.trim()),
+                        gates: earthmesh_refine_method_c::method_c_lepp_insertion_gates(
+                            mesh.impent,
+                            config.mode_grid.trim() == "hex",
+                        ),
                         ..LeppPostQualityConfig::default()
                     };
                     let report =
@@ -3104,7 +3077,7 @@ fn refine_with_method_c_lepp(
     mother_levels: usize,
 ) -> io::Result<RefinedGrid> {
     let pentagons = mesh.impent;
-    let mut state = MeshState::from_triangular_mesh(&mesh)?;
+    let state = MeshState::from_triangular_mesh(&mesh)?;
     // LEPP's base edge, before anything is inserted: what its depths are
     // measured against.
     let h0_radians = median_longest_edge_radians(&state);
@@ -3225,6 +3198,7 @@ fn refine_with_method_c_lepp(
         }
     }
 
+    let hex = config.mode_grid.trim() == "hex";
     let adaptive_config = AdaptiveHybridConfig {
         max_cycles: options.max_cycles,
         target_size_tolerance: options.target_size_tolerance,
@@ -3237,166 +3211,23 @@ fn refine_with_method_c_lepp(
             maximum_path_length: options.maximum_path_length,
             ..LeppSearchConfig::default()
         },
-        gates: method_c_lepp_adaptive_insertion_gates(pentagons, config.mode_grid.trim()),
+        gates: earthmesh_refine_method_c::method_c_lepp_adaptive_insertion_gates(pentagons, hex),
     };
-    let mut boundary_segments = lepp_region_boundary_segments(&state, named_regions, domain_region);
-    let refinement_started = std::time::Instant::now();
-    eprintln!(
-        "earthmesh_cli: LEPP AdaptiveHybrid mesh refinement started: {} demands, {} protected boundary segments, at most {} cycles",
-        demands.len(),
-        boundary_segments.len(),
-        adaptive_config.max_cycles
-    );
-    // Over a regional mother the domain is refined to the requested
-    // resolution first, on its own, and the criteria start from there -- the
-    // mesh they start from without a mother. Refined toward 5 km demand
-    // straight from 157 km cells, LEPP's paths widened every transition: the
-    // Heihe land run delivered 28% more cells, half of its background at the
-    // transition size.
-    if !mother_domain.is_empty() {
-        // Not protected, and not among the run's own demands: every cell of
-        // the domain would be both, and resolved again against the refined
-        // mesh it would ask 2^k finer still.
-        let domain_demands = mother_domain
-            .iter()
-            .enumerate()
-            .map(|(index, region)| {
-                AdaptiveHybridDemand::user_region(
-                    format!("regional-mother-domain-{index}"),
-                    region.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let domain_config = AdaptiveHybridConfig {
-            // About two bisections of every edge per level.
-            max_cycles: 3 * mother_levels,
-            ..adaptive_config.clone()
-        };
-        let domain_report = if boundary_segments.is_empty() {
-            refine_adaptive_hybrid(&mut state, &domain_demands, &domain_config)
-        } else {
-            refine_adaptive_hybrid_constrained(
-                &mut state,
-                &mut boundary_segments,
-                &domain_demands,
-                &domain_config,
-            )
-        }
-        .map_err(|error| io::Error::other(error.to_string()))?;
-        eprintln!(
-            "earthmesh_cli: LEPP regional mother: the domain refined to the requested resolution \
-             in {} cycles, {} committed insertions, {} -> {} faces, stop={:?}",
-            domain_report.cycles,
-            domain_report.path_stats.committed,
-            domain_report.initial_faces,
-            domain_report.final_faces,
-            domain_report.stop_reason,
-        );
-    }
-    // Kept for a second pass under the strict gates, should the relaxed one
-    // leave a degree the repair cannot take back.
-    let unrefined = (state.clone(), boundary_segments.clone());
-    let refine = |state: &mut MeshState,
-                  segments: &mut earthmesh_boundary::SegmentList,
-                  config: &AdaptiveHybridConfig| {
-        if segments.is_empty() {
-            refine_adaptive_hybrid(state, &demands, config)
-        } else {
-            refine_adaptive_hybrid_constrained(state, segments, &demands, config)
-        }
-        .map_err(|error| io::Error::other(error.to_string()))
-    };
-    let mut report = refine(&mut state, &mut boundary_segments, &adaptive_config)?;
-    eprintln!(
-        "earthmesh_cli: LEPP AdaptiveHybrid mesh refinement complete: {} cycles, {} committed insertions, {} -> {} faces, stop={:?}, {:.1}s",
-        report.cycles,
-        report.path_stats.committed,
-        report.initial_faces,
-        report.final_faces,
-        report.stop_reason,
-        refinement_started.elapsed().as_secs_f64()
-    );
-    if !pre_unresolved.is_empty() {
-        for unresolved in pre_unresolved {
-            report.add_unresolved_demand(unresolved);
-        }
-        if matches!(
-            report.stop_reason,
-            earthmesh_refine_method_c::AdaptiveHybridStopReason::Satisfied
-        ) {
-            report.stop_reason =
-                earthmesh_refine_method_c::AdaptiveHybridStopReason::NoCommittableInsertion;
-        }
-    }
-    if config.mode_grid.trim() == "hex"
-        && report.path_stats.committed == 0
-        && report.unresolved_demand_count > 0
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "LEPP AdaptiveHybrid HEX refinement committed no insertions while demands remain unresolved; refusing unchanged 5..=7 publication",
-        ));
-    }
-    let hex = config.mode_grid.trim() == "hex";
-    let (state, window, dual) = match repair_lepp_state(
-        &state,
-        report.initial_vertices,
-        pentagons,
-        hex,
-    ) {
-        Err(error) if error.to_string().contains(LEPP_OVER_DEGREE) => {
-            // A base vertex boxed in by neighbours at the limit (a regional
-            // basin run left one at degree 8 among five at 7): no flip lowers
-            // it. Refine again under Method-C's own gates, which never let a
-            // degree past 7 -- a little less refinement where that binds.
-            eprintln!(
-                "earthmesh_cli: warning: {error}; refining again under the strict 5..=7 gates"
-            );
-            let (mut strict_state, mut strict_segments) = unrefined;
-            let strict_config = AdaptiveHybridConfig {
-                gates: method_c_lepp_insertion_gates(pentagons, config.mode_grid.trim()),
-                ..adaptive_config.clone()
-            };
-            let strict_report = refine(&mut strict_state, &mut strict_segments, &strict_config)?;
-            eprintln!(
-                "earthmesh_cli: LEPP AdaptiveHybrid strict refinement complete: {} cycles, {} committed insertions, {} -> {} faces, stop={:?}",
-                strict_report.cycles,
-                strict_report.path_stats.committed,
-                strict_report.initial_faces,
-                strict_report.final_faces,
-                strict_report.stop_reason,
-            );
-            report = strict_report;
-            repair_lepp_state(&strict_state, report.initial_vertices, pentagons, hex)?
-        }
-        other => other?,
-    };
-    eprintln!(
-        "earthmesh_cli: LEPP angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
-         {:.2}..{:.2} degrees ({} flips, {} moves, {} vertices removed)",
-        window.outside_before,
-        window.outside_after,
-        window.min_angle_before,
-        window.max_angle_before,
-        window.min_angle_after,
-        window.max_angle_after,
-        window.flips,
-        window.moves,
-        window.removed_vertices,
-    );
-    if let Some(dual) = dual {
-        eprintln!(
-            "earthmesh_cli: LEPP hex cells: {} -> {} over the aspect/edge-CV limits, aspect \
-             {:.3} -> {:.3}, edge CV {:.3} -> {:.3} ({} moves)",
-            dual.over_limit_before,
-            dual.over_limit_after,
-            dual.max_aspect_before,
-            dual.max_aspect_after,
-            dual.max_edge_cv_before,
-            dual.max_edge_cv_after,
-            dual.moves,
-        );
-    }
+    let boundary_segments = lepp_region_boundary_segments(&state, named_regions, domain_region);
+    let lepp = earthmesh_refine_method_c::refine_lepp(
+        state,
+        earthmesh_refine_method_c::LeppRequest {
+            demands: &demands,
+            pre_unresolved,
+            boundary_segments,
+            mother_domain: &mother_domain,
+            mother_levels,
+            config: adaptive_config,
+            pentagons,
+            hex,
+        },
+    )?;
+    let (state, report) = (lepp.state, lepp.report);
     let refined = state.to_triangular_mesh(pentagons, None)?;
     let initial_voronoi = spherical_voronoi_state(&refined)?;
     let initial_output =
@@ -3427,139 +3258,6 @@ fn refine_with_method_c_lepp(
             ..BackendDiagnostics::default()
         },
     })
-}
-
-/// What `repair_lepp_state` says when a degree above 7 is left.
-const LEPP_OVER_DEGREE: &str = "vertices above degree 7 that the window repair could not flip back";
-
-/// Take the degrees LEPP was allowed to overshoot back into 5..=7 and the
-/// angles into the window. Base vertices may move but stay; only LEPP's own
-/// sites may be removed, so the twelve pentagons keep their ids. For a hex
-/// grid, then even out the cells the triangles leave lopsided.
-fn repair_lepp_state(
-    state: &MeshState,
-    initial_vertices: usize,
-    pentagons: [usize; 12],
-    hex: bool,
-) -> io::Result<(
-    MeshState,
-    earthmesh_mesh::AngleWindowReport,
-    Option<earthmesh_mesh::DualShapeReport>,
-)> {
-    let first = earthmesh_mesh::MESH_STATE_FIRST_ID;
-    let radius = state.sphere_radius();
-    let mut points = state
-        .vertices()
-        .iter()
-        .map(|p| {
-            let r = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
-            if r > 0.0 {
-                [p.x / r, p.y / r, p.z / r]
-            } else {
-                [0.0; 3]
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut faces = state.triangles()[..first].to_vec();
-    faces.extend(
-        (first..state.triangles().len())
-            .filter(|&triangle| state.is_triangle_live(triangle))
-            .map(|triangle| state.triangles()[triangle]),
-    );
-    let (lo, hi) = earthmesh_quality::TRIANGLE_ANGLE_WINDOW_DEG;
-    let mut options = earthmesh_mesh::AngleWindowOptions::new((lo + 0.25, hi - 0.25));
-    options.first_vertex = first;
-    options.first_face = first;
-    options.removable_from = initial_vertices;
-    // Toward 60 only where LEPP left more than the base grid's own spread:
-    // the icosahedral far field (54-72 degrees) is left where it is.
-    options.equilateral_rounds = 4;
-    options.equilateral_tolerance_deg = 12.5;
-    options.max_valence = 7;
-    // The twelve pentagons stay at degree 5: Method-C refuses the mesh
-    // otherwise, and LEPP's own gates never changed them either.
-    let report = earthmesh_mesh::repair_triangle_angle_window_locked(
-        &mut points,
-        &mut faces,
-        &mut Vec::new(),
-        options,
-        &pentagons,
-    );
-    let mut degree = vec![0usize; points.len()];
-    for face in &faces[first..] {
-        for &vertex in face {
-            degree[vertex] += 1;
-        }
-    }
-    let over: Vec<usize> = (0..degree.len()).filter(|&v| degree[v] > 7).collect();
-    if !over.is_empty() {
-        // Where, and what surrounds them: a flip needs a neighbour below 7.
-        let detail = over
-            .iter()
-            .take(3)
-            .map(|&v| {
-                let p = earthmesh_mesh::xyz_to_lonlat_degrees(earthmesh_mesh::CartesianPoint::new(
-                    points[v][0],
-                    points[v][1],
-                    points[v][2],
-                ));
-                let mut ring: Vec<usize> = faces[first..]
-                    .iter()
-                    .filter(|face| face.contains(&v))
-                    .flat_map(|face| face.iter().copied().filter(|&u| u != v))
-                    .collect();
-                ring.sort_unstable();
-                ring.dedup();
-                let ring_degrees: Vec<usize> = ring.iter().map(|&u| degree[u]).collect();
-                format!(
-                    "vertex {v} at ({:.3}, {:.3}) degree {}, neighbours {ring_degrees:?}",
-                    p.lon_degrees, p.lat_degrees, degree[v]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "LEPP left {} vertices above degree 7 that the window repair could not flip \
-                 back; Method-C tables address at most 7 ({detail})",
-                over.len()
-            ),
-        ));
-    }
-    // The triangles can all be in the window while a hex cell is not near a
-    // hexagon: at a jump from fine to coarse neighbours one of its edges was
-    // a quarter of another (aspect 4.07, edge CV 0.395, the only cell over
-    // the quality check's lines in a global 1000 km circle at two levels).
-    // Moving generators evens such cells out; the faces stay as they are.
-    let dual = hex.then(|| {
-        let thresholds = earthmesh_quality::QualityThresholds::default();
-        let mut dual_options = earthmesh_mesh::DualShapeOptions::new((lo + 0.25, hi - 0.25));
-        dual_options.aspect_limit = thresholds.aspect_ratio_warn;
-        dual_options.edge_cv_limit = thresholds.cell_edge_cv_warn;
-        dual_options.first_vertex = first;
-        dual_options.first_face = first;
-        earthmesh_mesh::even_out_dual_cells(&mut points, &faces, dual_options)
-    });
-    let vertices = points
-        .iter()
-        .map(|&[x, y, z]| earthmesh_mesh::CartesianPoint::new(x * radius, y * radius, z * radius))
-        .collect();
-    let repaired = MeshState::from_parts(vertices, faces).map_err(|errors| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "LEPP window repair left an invalid mesh: {}",
-                errors
-                    .iter()
-                    .take(3)
-                    .map(|error| format!("{error:?}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
-        )
-    })?;
-    Ok((repaired, report, dual))
 }
 
 fn lepp_region_boundary_segments(
@@ -3985,108 +3683,42 @@ fn refine_with_method_c(
         } else {
             let mother_m = 2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS
                 / (5.0 * nxp as f64);
-            let spawn = |options: &crate::hfield_refine::HfieldRefineOptions| {
-                let levelled = crate::hfield_refine::compose_levelled_hfield(
+            // Composed again, graded gently enough for the transition, when the
+            // steep field cannot be nested whole: Method-C's retry decides.
+            let compose = |g: f64| {
+                crate::hfield_refine::compose_levelled_hfield(
                     regions,
                     refine,
                     mesh_type,
                     config,
                     mother_m,
-                    options,
+                    &crate::hfield_refine::HfieldRefineOptions {
+                        g,
+                        ..hfield.clone()
+                    },
                     max_level,
                     max_cal_level,
                     domain_region,
-                )?;
-                let spawned = mesh.spawn_nest_from_target_levels_with_spring(
-                    |lon, lat| {
-                        levelled.field.level_at(
-                            lon,
-                            lat,
-                            levelled.level_base_m,
-                            levelled.max_level as u8,
-                        )
-                    },
-                    levelled.max_level,
-                    max_mrows,
-                    nxp,
-                    spring_nest_iterations,
-                )?;
-                Ok::<_, io::Error>((levelled, spawned, options.g))
+                )
             };
-            // Each level's band around the next finer one is `1 / g` of its
-            // cells, and Method-C's transition takes up to `max_mrows` rows: at
-            // g = 0.2 a global 30 km slope run's level-2 grid crossed its
-            // parent; at 0.1 it built. A run that builds keeps its field; one
-            // that crosses a parent is composed once more, graded gently enough.
-            //
-            // Dropping blocks is a failure too, a partial one: a pass that
-            // gives up a block has stopped honouring the field there. Once the
-            // drop loop could name the block behind every gate, the global
-            // 30 km run stopped failing at g = 0.2 and built with blocks
-            // missing -- 302,033 cells against 388,425 at g = 0.1 -- because
-            // nothing failed for the retry to see. So a pass that dropped
-            // blocks is composed again as well, and the result that lost
-            // fewer parent faces is kept.
-            let gentle_g = 1.0 / (max_mrows as f64 + 3.0);
-            let gentle = crate::hfield_refine::HfieldRefineOptions {
-                g: gentle_g,
-                ..hfield.clone()
-            };
-            let (levelled, (refined, passes, diagnostics), used_g) = match spawn(hfield) {
-                Err(error)
-                    if hfield.g > gentle_g
-                        && (crosses_a_parent(&error)
-                            || earthmesh_mesh::method_c_repairable_payload(&error).is_some()) =>
-                {
-                    eprintln!(
-                        "earthmesh_cli: warning: Method-C could not nest the h-field graded at \
-                         g = {} ({error}); composing it again at g = {gentle_g:.4}, gentle \
-                         enough for {max_mrows} transition rows",
-                        hfield.g
-                    );
-                    spawn(&gentle)
-                }
-                Ok(steep) if hfield.g > gentle_g && steep.1 .2.dropped_block_count > 0 => {
-                    let dropped = steep.1 .2;
-                    eprintln!(
-                        "earthmesh_cli: warning: Method-C nested the h-field graded at g = {} only \
-                         by leaving {} block(s) ({} parent faces) coarse; composing it again at \
-                         g = {gentle_g:.4}, gentle enough for {max_mrows} transition rows",
-                        hfield.g, dropped.dropped_block_count, dropped.dropped_face_count
-                    );
-                    match spawn(&gentle) {
-                        Ok(retry) if retry.1 .2.dropped_face_count < dropped.dropped_face_count => {
-                            Ok(retry)
-                        }
-                        retry => {
-                            let why = match &retry {
-                                Ok(retry) => format!(
-                                    "it left {} parent faces coarse",
-                                    retry.1 .2.dropped_face_count
-                                ),
-                                Err(error) => format!("it failed: {error}"),
-                            };
-                            eprintln!(
-                                "earthmesh_cli: warning: keeping the mesh nested at g = {}; at \
-                                 g = {gentle_g:.4} {why}",
-                                hfield.g
-                            );
-                            Ok(steep)
-                        }
-                    }
-                }
-                result => result,
-            }
+            let spawned = earthmesh_refine_method_c::spawn_from_graded_hfield(
+                &mesh,
+                hfield.g,
+                &compose,
+                max_mrows,
+                nxp,
+                spring_nest_iterations,
+            )
             .map_err(with_data_shaped_hfield_hint)?;
-            hfield_diagnostics = diagnostics;
-            hfield_demanded_something(&hfield_diagnostics, regions.len(), levelled.max_level)?;
+            hfield_diagnostics = spawned.diagnostics;
+            hfield_demanded_something(&hfield_diagnostics, regions.len(), spawned.field.max_level)?;
             hfield_context = Some(crate::hfield_gridfile_context::HfieldGridfileContext {
-                field: levelled.field,
-                base_m: levelled.level_base_m,
-                max_level: levelled.max_level as u8,
-                g: Some(used_g),
+                field: spawned.field.field,
+                base_m: spawned.field.level_base_m,
+                max_level: spawned.field.max_level as u8,
+                g: Some(spawned.g),
             });
-            (refined, passes)
+            (spawned.mesh, spawned.spring_passes)
         }
     } else if spring_nest_iterations > 0 {
         if native_cartesian_xy {
@@ -4248,15 +3880,6 @@ fn method_c_level_to_zero_based(level: i32, role: &str, index: usize) -> io::Res
 /// a broken input, and the red-green backend exists for exactly these runs. A
 /// global coastal ocean project that failed here builds and delivers on it.
 /// A Method-C refusal of a finer grid that reaches past its parent's rows.
-fn crosses_a_parent(error: &io::Error) -> bool {
-    let message = error.to_string();
-    message.contains("crosses the parent boundary")
-        || message.contains("next coarser grid boundary")
-}
-
-/// Every Method-C failure out of an h-field spawn is a shape it cannot build,
-/// not only the gates it knows how to repair: a global slope field at 12 km
-/// failed with "perimeter loop revisited M point" and no hint at all.
 fn with_data_shaped_hfield_hint(error: io::Error) -> io::Error {
     if earthmesh_mesh::method_c_repairable_payload(&error).is_none()
         && !error.to_string().contains("Method-C")
