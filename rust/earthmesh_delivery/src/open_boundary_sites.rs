@@ -116,7 +116,8 @@ pub fn read_open_boundary_sites(path: impl AsRef<Path>) -> io::Result<Option<Ope
     let flat = corners
         .get_values::<i32, _>(..)
         .map_err(netcdf_to_io_error)?;
-    if flat.len() % 3 != 0 {
+    let (triples, rest) = flat.as_chunks::<3>();
+    if !rest.is_empty() {
         return Err(invalid("open boundary corners are not triples"));
     }
     let sites = OpenBoundarySites {
@@ -125,10 +126,7 @@ pub fn read_open_boundary_sites(path: impl AsRef<Path>) -> io::Result<Option<Ope
             .zip(lat)
             .map(|(lon, lat)| LonLatPoint { lon, lat })
             .collect(),
-        m_corners: flat
-            .chunks_exact(3)
-            .map(|corner| [corner[0], corner[1], corner[2]])
-            .collect(),
+        m_corners: triples.to_vec(),
     };
     let m_rows = file
         .dimension("sjx_points")
