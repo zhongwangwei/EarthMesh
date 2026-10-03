@@ -28,6 +28,7 @@ use crate::validate_native_spawn_mdomain;
 use crate::GridRegion;
 use crate::GridfileMetadataSlices;
 use crate::RefinePipelineRunReport;
+use earthmesh_refine::nest::{nested_criteria_regions, widened_region};
 use earthmesh_refine::RefinementBackend;
 use earthmesh_refine_method_c::{
     improve_lepp_post_quality, refine_adaptive_hybrid, refine_adaptive_hybrid_constrained,
@@ -1860,36 +1861,6 @@ pub(super) fn region_center_demand(
         .collect()
 }
 
-/// HEX publication needs 5..=7 polygon sides; TRI keeps variable-width W fans.
-const REDGREEN_MAX_CELL_DEGREE: usize = 7;
-
-/// Triangles left holding an edge no other triangle owns.
-///
-/// A mesh of the whole sphere has none: every edge is shared by exactly two
-/// triangles. The subdivision steps used to leave them wherever their per
-/// triangle antimeridian rotation fired for one of two triangles sharing an
-/// edge but not the other, which is fixed -- see
-/// `refine_onedivide_four_renew`.
-///
-/// Kept because of how that failed rather than because one is expected: only
-/// the level *after* the one that opened the edges would say so, as "ngrmm row
-/// N has invalid neighbor 0", and a single-level run has no next level. It
-/// writes the gridfile, and the gridfile opens.
-fn redgreen_open_edges(mesh: &earthmesh_refine_redgreen::RedGreenMesh) -> usize {
-    let Some(rows) = earthmesh_mesh::triangle_neighbors_from_cell_membership_one_based(
-        &mesh.cells_on_triangle,
-        &mesh.triangles_on_cell,
-        &mesh.n_triangles_on_cell,
-    ) else {
-        // Membership that does not resolve at all is worse than an open edge,
-        // not better; report it as every triangle being suspect.
-        return mesh.triangle_count();
-    };
-    (mesh.num_vertex + 1..=mesh.triangle_count())
-        .filter(|&triangle| rows[triangle].contains(&0))
-        .count()
-}
-
 /// Move only cells safely inside a requested refinement region.
 ///
 /// A cell touching the refined/coarse interface is pinned automatically: one
@@ -2250,56 +2221,6 @@ fn redgreen_cell_levels(
     Some(CellRefineLevels { m, w })
 }
 
-/// The regions level `level` marks: the named regions (asked for at
-/// `>= level`, as always), this level's criteria circles, and every deeper
-/// level's circles widened by the halo the rounds between will erode.
-///
-/// Round `k + 1` keeps only the marks that sit `halo(k + 1)` rings of the
-/// round-`k` triangles (edge about `base / 2^k`) inside what round `k`
-/// refined. A deeper circle marked at the same radius here would have its rim
-/// cancelled later; widened by those rings, the level above holds it whole.
-fn nested_criteria_regions(
-    named_regions: &[earthmesh_mesh::RefinementRegion],
-    planned_circles: &[crate::refinement_demand::nest::LevelCircles],
-    level: usize,
-    base_cell_meters: f64,
-    halo: impl Fn(usize) -> usize,
-    widen_named: bool,
-) -> Vec<earthmesh_mesh::RefinementRegion> {
-    let margin = |deeper: usize| {
-        (level..deeper)
-            .map(|round| halo(round + 1) as f64 * base_cell_meters / 2f64.powi(round as i32))
-            .sum::<f64>()
-    };
-    // Named regions are asked for at `>= level`, so a deeper one is marked
-    // here too -- widened for the same reason as a deeper circle. Stretch
-    // passes false: it marks nothing round by round.
-    let mut regions = named_regions
-        .iter()
-        .flat_map(|region| {
-            if widen_named && region.level() > level {
-                widened_region(region, margin(region.level()))
-            } else {
-                vec![region.clone()]
-            }
-        })
-        .collect::<Vec<_>>();
-    for (index, demand) in planned_circles.iter().enumerate() {
-        let planned_level = index + 1;
-        if planned_level < level {
-            continue;
-        }
-        let margin = margin(planned_level);
-        regions.extend(
-            demand
-                .circles
-                .iter()
-                .flat_map(|circle| widened_region(circle, margin)),
-        );
-    }
-    regions
-}
-
 /// A regional mother on red-green's point+radius route: the domain is
 /// refined to the requested resolution first, `levels` halvings below the
 /// mother, and every criterion and named region is asked `levels` deeper.
@@ -2381,93 +2302,6 @@ fn domain_refinement_regions(
             .flat_map(|region| domain_refinement_regions(region, level, tolerance_meters))
             .collect(),
     }
-}
-
-/// `region` grown by `margin_meters` on every side, as the regions whose
-/// union is the grown region.
-///
-/// Circles and corridors widen their radii; a bbox grows by the margin in
-/// latitude and by the margin at its poleward edge in longitude (the whole
-/// circle of longitude when that edge is near a pole). A polygon is kept and
-/// joined by a corridor of that radius along its closed boundary: the two
-/// together are exactly the polygon buffered outward by the margin.
-fn widened_region(
-    region: &earthmesh_mesh::RefinementRegion,
-    margin_meters: f64,
-) -> Vec<earthmesh_mesh::RefinementRegion> {
-    use earthmesh_mesh::RefinementRegion;
-    if !(margin_meters.is_finite() && margin_meters > 0.0) {
-        return vec![region.clone()];
-    }
-    let widened = match region {
-        RefinementRegion::Circle {
-            center,
-            radius_meters,
-            level,
-        } => RefinementRegion::Circle {
-            center: *center,
-            radius_meters: radius_meters + margin_meters,
-            level: *level,
-        },
-        RefinementRegion::Corridor {
-            points,
-            radius_meters,
-            level,
-        } => RefinementRegion::Corridor {
-            points: points.clone(),
-            radius_meters: radius_meters.iter().map(|r| r + margin_meters).collect(),
-            level: *level,
-        },
-        RefinementRegion::Bbox {
-            west_degrees,
-            east_degrees,
-            south_degrees,
-            north_degrees,
-            level,
-        } => {
-            let dlat = (margin_meters / earthmesh_hfield::EARTH_RADIUS_METERS).to_degrees();
-            let south = (south_degrees - dlat).max(-90.0);
-            let north = (north_degrees + dlat).min(90.0);
-            let poleward = south.abs().max(north.abs());
-            let span = east_degrees - west_degrees;
-            let (west, east) = if poleward >= 89.0 {
-                (-180.0, 180.0)
-            } else {
-                let dlon = dlat / poleward.to_radians().cos();
-                let widened = if span >= 0.0 { span } else { span + 360.0 } + 2.0 * dlon;
-                if widened >= 360.0 {
-                    (-180.0, 180.0)
-                } else {
-                    (west_degrees - dlon, east_degrees + dlon)
-                }
-            };
-            RefinementRegion::Bbox {
-                west_degrees: west,
-                east_degrees: east,
-                south_degrees: south,
-                north_degrees: north,
-                level: *level,
-            }
-        }
-        RefinementRegion::Polygon { points, level } => {
-            let mut ring = points.clone();
-            if let Some(&first) = points.first() {
-                if points.last() != Some(&first) {
-                    ring.push(first);
-                }
-            }
-            if ring.len() < 2 {
-                return vec![region.clone()];
-            }
-            let band = RefinementRegion::Corridor {
-                radius_meters: vec![margin_meters; ring.len()],
-                points: ring,
-                level: *level,
-            };
-            return vec![region.clone(), band];
-        }
-    };
-    vec![widened]
 }
 
 /// Angle between two points, in radians: an edge length on the unit sphere,
@@ -2563,7 +2397,7 @@ fn measured_cell_levels(mesh: &crate::UnstructuredMesh, h0_radians: f64) -> Cell
 /// fail. Says so when the run stands.
 fn uniform_mesh_is_the_answer(
     named_regions: usize,
-    evidence: crate::refinement_demand::plan::CriteriaEvidence,
+    evidence: earthmesh_refine::nest::CriteriaEvidence,
     from_hfield: bool,
     max_level: usize,
 ) -> bool {
@@ -2613,7 +2447,7 @@ fn hfield_demanded_something(
 }
 
 struct FixedTopologyDemand {
-    planned_circles: Vec<crate::refinement_demand::nest::LevelCircles>,
+    planned_circles: Vec<earthmesh_refine::nest::LevelCircles>,
     regions: Vec<earthmesh_mesh::RefinementRegion>,
 }
 
@@ -2669,7 +2503,7 @@ pub(super) fn fixed_topology_targets<'a>(
 /// counts are the whole grid's.
 fn fixed_topology_adaptive_run(
     named_regions: &[earthmesh_mesh::RefinementRegion],
-    planned_circles: &[crate::refinement_demand::nest::LevelCircles],
+    planned_circles: &[earthmesh_refine::nest::LevelCircles],
     adaptive: Option<PointRadiusCriteria<'_>>,
     max_level: usize,
     faces: usize,
@@ -2686,7 +2520,7 @@ fn fixed_topology_adaptive_run(
             stopped_on_empty_demand = true;
             break;
         }
-        passes.push(crate::refinement_demand::nest::NestPassReport {
+        passes.push(earthmesh_refine::nest::NestPassReport {
             level,
             cell_meters: adaptive
                 .as_ref()
@@ -2701,7 +2535,7 @@ fn fixed_topology_adaptive_run(
     }
     adaptive.map(|adaptive| {
         (
-            crate::refinement_demand::nest::AdaptiveNestReport {
+            earthmesh_refine::nest::AdaptiveNestReport {
                 deepest_level: passes.len(),
                 passes,
                 stopped_on_empty_demand,
@@ -2989,22 +2823,6 @@ fn refine_with_redgreen(
     spring_iterations: usize,
     mother: Option<RedGreenMother>,
 ) -> io::Result<RefinedGrid> {
-    if !refine.is_transition {
-        // Not only for a second level: the transition rows *are* red-green's
-        // closure step, so without them even one level comes out with hanging
-        // nodes -- 345 open edges on the shipped atmosphere example in tri mode.
-        //
-        // The engine allows the setting for `mode_grid = 'tri'` alone, and
-        // Method-C closes without it, so this is red-green's limit rather than
-        // the configuration's. Said here rather than met later as an open-edge
-        // count or, at a second level, as "ngrmm row N has invalid neighbor 0".
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "red-green refinement requires RL%Istransition = .true.: the transition rows are what \
-             close the seams a 1-into-4 split leaves, so without them the mesh has hanging nodes \
-             at any depth. Method-C closes without them; use it for this run",
-        ));
-    }
     // Over a regional mother the domain takes the first `k` levels -- the
     // requested resolution -- and every named region is asked `k` deeper.
     let user_named_regions = named_regions.len();
@@ -3021,16 +2839,6 @@ fn refine_with_redgreen(
         }
         None => named_regions,
     };
-    let mut redgreen =
-        earthmesh_refine_redgreen::redgreen_mesh_from_triangular(mesh, &mesh.m_neighbors)?;
-    let mut output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
-    let mut previous_marks: Option<Vec<i32>> = None;
-    let mut split_triangles = 0usize;
-    let mut transition_faces = 0usize;
-    let mut passes = Vec::new();
-    let mut spring_regions = named_regions.to_vec();
-    let mut deepest_level = 0usize;
-    let mut stopped_on_empty_demand = false;
     // With an h-field the named regions are already composed into it, as on
     // Method-C's h-field route, so each level marks from the field alone.
     let hfield_targets = hfield
@@ -3062,7 +2870,7 @@ fn refine_with_redgreen(
             // start at the requested resolution, where the cell they judge is
             // the same size it would be without a mother.
             if level <= mother_levels {
-                planned_circles.push(crate::refinement_demand::nest::LevelCircles {
+                planned_circles.push(earthmesh_refine::nest::LevelCircles {
                     demanded: false,
                     demanded_cells: 0,
                     radius_meters: 0.0,
@@ -3088,131 +2896,23 @@ fn refine_with_redgreen(
             planned_circles.push(demand);
         }
     }
-    for level in 1..=max_level {
-        if level <= mother_levels {
-            eprintln!(
-                "red-green refine level {level}: the domain, toward the requested resolution \
-                 ({level} of {mother_levels})"
-            );
-        }
-        let marked_regions = nested_criteria_regions(
+    let levels =
+        earthmesh_refine_redgreen::refine_levels(&earthmesh_refine_redgreen::RedGreenRequest {
+            mesh,
             named_regions,
-            &planned_circles,
-            level,
-            base_cell_meters,
-            |round| crate::redgreen_bridge::redgreen_settings_for_level(refine, round).halo,
-            true,
-        );
-        let region_targets = earthmesh_refine::RegionTargets::new(&marked_regions);
-        let before = redgreen.triangle_count();
-        // What this level itself asked for, as the run record reports it; the
-        // marking reads `region_targets`, which holds every level's.
-        let mut level_regions: Vec<earthmesh_mesh::RefinementRegion> = named_regions.to_vec();
-        let mut demanded_cells = 0usize;
-        if let (Some(adaptive), Some(demand)) = (&adaptive, planned_circles.get(level - 1)) {
-            demanded_cells = demand.demanded_cells;
-            eprintln!(
-                "red-green refine level {level} judging {:.0} m cells: {} circles over {} \
-                 demanded source cells",
-                adaptive.base_cell_meters / 2f64.powi((level - 1) as i32),
-                demand.circles.len(),
-                demand.demanded_cells,
-            );
-            spring_regions.extend(demand.circles.iter().cloned());
-            level_regions.extend(demand.circles.iter().cloned());
-        }
-        let targets: &dyn earthmesh_refine::TargetLevelField = match &hfield_targets {
-            Some(field) => field,
-            None => &region_targets,
-        };
-        // Nothing asks at this depth, and nothing deeper will either: the
-        // criteria stopped and the named regions that reach here are gone.
-        if !targets.demands_anywhere(level) {
-            stopped_on_empty_demand = true;
-            break;
-        }
-        let (written, outcome) = crate::redgreen_bridge::refine_redgreen_level(
-            &redgreen,
-            targets,
             refine,
-            level,
-            previous_marks.as_deref(),
+            max_level,
+            mother_levels,
+            criteria: adaptive.as_ref().map(|adaptive| {
+                earthmesh_refine_redgreen::RedGreenCriteria {
+                    planned: &planned_circles,
+                    base_cell_meters: adaptive.base_cell_meters,
+                }
+            }),
+            hfield: hfield_targets.as_ref(),
+            base_cell_meters,
             preserve_locality,
-            // The h-field's check reads every face centre; the halves of a
-            // green closure are faces too.
-            hfield_targets.is_some(),
-        )?;
-        eprintln!(
-            "red-green refine level {level}: {} triangles split, {} grown by the judges, \
-             {} dropped as isolated, {} cancelled outside the halo, {} flipped, {before} -> {} triangles",
-            outcome.refined_triangle_count,
-            outcome.grown_triangle_count,
-            outcome.isolated_dropped_count,
-            outcome.halo_cancelled_count,
-            outcome.flipped_triangle_count,
-            outcome.mesh.triangle_count(),
-        );
-        if let Some(balance) = &outcome.balance_repair {
-            eprintln!("earthmesh_cli: Red-Green physical 2:1 level {level}: {} -> {} violations, {} added triangles",
-                balance.initial_warning_count, balance.remaining_warning_count, balance.added_triangle_count);
-            if let Some(reason) = &balance.rejection_reason {
-                eprintln!(
-                    "earthmesh_cli: warning: physical balance candidate rolled back: {reason}"
-                );
-            }
-        }
-        // The degree the gridfile's dual and the mask post-process are built
-        // for. Method-C guarantees {5, 6, 7} by construction; red-green only
-        // reaches it by taking back, with Lawson flips, the degree each
-        // transition split adds. Checked rather than trusted because a run
-        // without a carve -- an atmosphere mesh -- would otherwise write a cell
-        // the readers cannot address and say nothing.
-        let widest_cell = (outcome.mesh.num_center + 1..=outcome.mesh.cell_count())
-            .map(|cell| outcome.mesh.n_triangles_on_cell[cell])
-            .max()
-            .unwrap_or(0);
-        if !preserve_locality && widest_cell > REDGREEN_MAX_CELL_DEGREE {
-            // Refused here, a Tibetan land-type run lost everything to one
-            // degree-8 cell. The next level splits around it, and the final
-            // repair lowers every cell under the cap and is checked itself.
-            eprintln!(
-                "earthmesh_cli: warning: red-green level {level} left a cell with {widest_cell} \
-                 incident triangles; the final repair takes it down to {REDGREEN_MAX_CELL_DEGREE}"
-            );
-        }
-        // Checked here rather than trusted, because the next level is the only
-        // thing that would otherwise notice -- and a run that stops at this
-        // level has no next level.
-        let open_edges = redgreen_open_edges(&outcome.mesh);
-        if open_edges > 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "red-green level {level} left {open_edges} triangle edge(s) with no \
-                     neighbouring triangle, so the mesh does not close. Writing it would produce \
-                     a gridfile that opens and carries a hole, and only a level after this one \
-                     would otherwise notice"
-                ),
-            ));
-        }
-        split_triangles += outcome.refined_triangle_count;
-        previous_marks = Some(outcome.interior_marks.clone());
-        passes.push(crate::refinement_demand::nest::NestPassReport {
-            level,
-            cell_meters: adaptive
-                .as_ref()
-                .map(|adaptive| adaptive.base_cell_meters / 2f64.powi((level - 1) as i32))
-                .unwrap_or(0.0),
-            circle_count: level_regions.len(),
-            regions: level_regions,
-            demanded_cells,
-            faces_before: before,
-            faces_after: outcome.mesh.triangle_count(),
-        });
-        deepest_level = level;
-        redgreen = outcome.mesh;
-        output_mesh = written;
-    }
+        })?;
     // A run that asked to refine and refined nothing is the failure that
     // stays quiet: the gridfile opens, the quality checks pass, and the mesh
     // is uniform. It stands only when nothing asked at level 1 and the
@@ -3239,9 +2939,9 @@ fn refine_with_redgreen(
              their sources cover it",
         ));
     }
-    if split_triangles == 0
-        && !(deepest_level == 0
-            && stopped_on_empty_demand
+    if levels.split_triangles == 0
+        && !(levels.deepest_level == 0
+            && levels.stopped_on_empty_demand
             && uniform_mesh_is_the_answer(
                 named_regions.len(),
                 evidence,
@@ -3273,152 +2973,36 @@ fn refine_with_redgreen(
             ),
         ));
     }
-    // Hex output took none of this and was sprung instead, and the regional
-    // spring optimises edge lengths: on a global 200 km run it folded 274 hex
-    // rings, was discarded, and left the triangles at 26-101 degrees. The
-    // polish and the angle window serve the dual as well -- its cells are the
-    // triangles' circumcentre rings -- so hex takes them too, and keeps them
-    // only while the widest cell stays within what the dual and the mask
-    // post-process address and no hex ring folds.
-    let hex_checkpoint =
-        (!preserve_locality).then(|| (redgreen.clone(), output_mesh.clone(), transition_faces));
-    let mut hex_repaired = false;
-    {
-        // Count final faces derived from green closure or retriangulated by
-        // Lawson; zero previously hid every Red-Green transition from the GUI.
-        let before = redgreen.cells_on_triangle.clone();
-        let mut transitions = vec![false; before.len()];
-        for &(_, children) in &redgreen.green_parents {
-            for face in children {
-                transitions[face] = true;
-            }
-        }
-        // TRI can retain non-Delaunay diagonals; forcing them would undo the
-        // closure's angle floor without helping the published triangle mesh.
-        let polish = crate::redgreen_bridge::polish_redgreen_mesh(&mut redgreen)?;
-        eprintln!("earthmesh_cli: Red-Green Lawson flipped {} edges ({} topology fallback); remaining Delaunay violations={}{}",
-            polish.flipped_edges, polish.forced_flips, polish.remaining_illegal_edges,
-            if polish.remaining_illegal_edges == 0 { "" } else { "; not Delaunay certified" });
-        if polish.flipped_edges > 0 {
-            let candidate = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
-            let baseline_angles = unstructured_triangle_angle_range(&output_mesh)?;
-            let candidate_angles = unstructured_triangle_angle_range(&candidate)?;
-            if polish.forced_flips == 0
-                && (candidate_angles.0 < baseline_angles.0 - 1.0e-4
-                    || candidate_angles.1 > baseline_angles.1 + 1.0e-4)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "angle-safe Lawson violated its non-degradation invariant",
-                ));
-            }
-            output_mesh = candidate;
-        }
-        transition_faces = before
-            .iter()
-            .zip(&redgreen.cells_on_triangle)
-            .enumerate()
-            .skip(redgreen.num_vertex + 1)
-            .filter(|(i, (old, new))| transitions[*i] || old != new)
-            .count();
-        let repair = crate::redgreen_bridge::repair_redgreen_angle_window(
-            &mut redgreen,
-            (!preserve_locality).then_some(REDGREEN_MAX_CELL_DEGREE),
-        )?;
-        eprintln!(
-            "earthmesh_cli: Red-Green angle window: {} -> {} triangles outside, angles {:.2}..{:.2} -> \
-             {:.2}..{:.2} degrees, |angle-60| max {:.2} -> {:.2} mean {:.2} -> {:.2} (window \
-             phase {:.2}) ({} flips, {} moves, {} vertices removed, {}+{} rounds)",
-            repair.outside_before,
-            repair.outside_after,
-            repair.min_angle_before,
-            repair.max_angle_before,
-            repair.min_angle_after,
-            repair.max_angle_after,
-            repair.max_deviation_before,
-            repair.max_deviation_after,
-            repair.mean_deviation_before,
-            repair.mean_deviation_after,
-            repair.mean_deviation_window_phase,
-            repair.flips,
-            repair.moves,
-            repair.removed_vertices,
-            repair.rounds,
-            repair.equilateral_rounds,
-        );
-        if repair.flips + repair.moves + repair.removed_vertices > 0 {
-            output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&redgreen)?;
-            let triangles = crate::cells_on_triangle_one_based_from_mesh(&output_mesh)?;
-            let points = output_mesh
-                .w_points
-                .iter()
-                .map(|p| earthmesh_mesh::LonLatDegrees::new(p.lon, p.lat))
-                .collect::<Vec<_>>();
-            let (_, count, ratio) =
-                earthmesh_refine_redgreen::triangle_balance_marks(&points, &triangles, 2)?;
-            eprintln!(
-                "earthmesh_cli: Red-Green angle window left {count} physical 2:1 violations \
-                 (max ratio {ratio:.3})"
-            );
-        }
-    }
-    if let Some((saved_redgreen, saved_mesh, saved_transitions)) = hex_checkpoint {
-        let widest_cell = (redgreen.num_center + 1..=redgreen.cell_count())
-            .map(|cell| redgreen.n_triangles_on_cell[cell])
-            .max()
-            .unwrap_or(0);
-        let (folded_before, folded_after) = (
-            invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&saved_mesh)),
-            invalid_dual_cells(&unstructured_mesh_with_one_based_rows(&output_mesh)),
-        );
-        let saved_widest = (saved_redgreen.num_center + 1..=saved_redgreen.cell_count())
-            .map(|cell| saved_redgreen.n_triangles_on_cell[cell])
-            .max()
-            .unwrap_or(0);
-        if widest_cell > REDGREEN_MAX_CELL_DEGREE && saved_widest > REDGREEN_MAX_CELL_DEGREE {
-            // The refinement itself left the cell, so the checkpoint has it too.
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "red-green left a cell with {saved_widest} incident triangles that the \
-                     repair could not bring down ({widest_cell} after it); the gridfile's dual \
-                     and the mask post-process address at most {REDGREEN_MAX_CELL_DEGREE}"
-                ),
-            ));
-        }
-        if widest_cell > REDGREEN_MAX_CELL_DEGREE || folded_after > folded_before {
-            eprintln!(
-                "earthmesh_cli: warning: Red-Green hex repair rolled back (widest cell \
-                 {widest_cell}, folded hex rings {folded_before} -> {folded_after}); springing \
-                 instead"
-            );
-            redgreen = saved_redgreen;
-            output_mesh = saved_mesh;
-            transition_faces = saved_transitions;
-        } else {
-            hex_repaired = true;
-        }
-    }
+    // Whether a hex ring folds is a question about the dual as the gridfile
+    // will carry it, so it is asked of the converted mesh.
+    let finished =
+        earthmesh_refine_redgreen::finish_levels(levels.mesh, preserve_locality, &|mesh| {
+            Ok(invalid_dual_cells(&unstructured_mesh_with_one_based_rows(
+                &crate::redgreen_bridge::unstructured_mesh_from_redgreen(mesh)?,
+            )))
+        })?;
+    let output_mesh = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&finished.mesh)?;
     // The triangles have just been brought into the angle window, and the
     // regional spring optimises edge lengths, not angles: on the global coast
     // case it took 26-101 degrees to 21-117. Spring only what the repair did
     // not keep.
+    let spring_regions = &levels.spring_regions;
     let (output_mesh, spring_nest_passes) = if spring_iterations == 0
         || spring_regions.is_empty()
         || preserve_locality
-        || hex_repaired
+        || finished.hex_repaired
     {
         (output_mesh, 0)
     } else {
         let (smoothed, passes) =
-            spring_unstructured_region_interiors(&output_mesh, &spring_regions, spring_iterations)?;
+            spring_unstructured_region_interiors(&output_mesh, spring_regions, spring_iterations)?;
         if preserve_locality {
             keep_balanced_redgreen_spring(&output_mesh, smoothed, passes)
         } else {
             (smoothed, passes)
         }
     };
-    let cell_levels = redgreen_cell_levels(&redgreen, &output_mesh);
+    let cell_levels = redgreen_cell_levels(&finished.mesh, &output_mesh);
     Ok(RefinedGrid {
         output_mesh,
         cell_levels,
@@ -3438,10 +3022,10 @@ fn refine_with_redgreen(
             // away and nothing says the region asked for is gone.
             adaptive_run: adaptive.map(|adaptive| {
                 (
-                    crate::refinement_demand::nest::AdaptiveNestReport {
-                        passes,
-                        deepest_level,
-                        stopped_on_empty_demand,
+                    earthmesh_refine::nest::AdaptiveNestReport {
+                        passes: levels.passes,
+                        deepest_level: levels.deepest_level,
+                        stopped_on_empty_demand: levels.stopped_on_empty_demand,
                         spring_passes: spring_nest_passes,
                         first_level_evidence: evidence,
                         domain_floor_level: mother_levels,
@@ -3454,7 +3038,7 @@ fn refine_with_redgreen(
             ..RefinedDemandRecord::default()
         },
         diagnostics: BackendDiagnostics {
-            transition_faces,
+            transition_faces: finished.transition_faces,
             spring_nest_passes,
             ..BackendDiagnostics::default()
         },
@@ -3503,12 +3087,7 @@ struct MethodCRefineOutcome {
 }
 
 /// The adaptive route's report, and the three settings needed to write it out.
-type AdaptiveRunRecord = (
-    crate::refinement_demand::nest::AdaptiveNestReport,
-    usize,
-    f64,
-    bool,
-);
+type AdaptiveRunRecord = (earthmesh_refine::nest::AdaptiveNestReport, usize, f64, bool);
 
 fn refine_with_method_c_lepp(
     mesh: TriangularMesh,
@@ -5419,7 +4998,7 @@ mod tests {
 
     #[test]
     fn a_uniform_mesh_stands_only_when_the_criteria_read_data_and_nothing_was_named() {
-        use crate::refinement_demand::plan::CriteriaEvidence;
+        use earthmesh_refine::nest::CriteriaEvidence;
         let read = |samples| CriteriaEvidence {
             judged: true,
             valid_source_samples: samples,
@@ -5462,7 +5041,7 @@ mod tests {
             level,
         };
         let planned = (1..=3)
-            .map(|level| crate::refinement_demand::nest::LevelCircles {
+            .map(|level| earthmesh_refine::nest::LevelCircles {
                 demanded: true,
                 demanded_cells: 1,
                 radius_meters: 1_000.0,
@@ -5861,7 +5440,10 @@ mod tests {
             .map(|&count| count.max(0) as usize)
             .max()
             .unwrap_or(0);
-        assert!(widest <= REDGREEN_MAX_CELL_DEGREE, "widest cell {widest}");
+        assert!(
+            widest <= earthmesh_refine_redgreen::REDGREEN_MAX_CELL_DEGREE,
+            "widest cell {widest}"
+        );
     }
 
     #[test]
@@ -6444,7 +6026,7 @@ mod tests {
             previous = Some(outcome.interior_marks);
             mesh = outcome.mesh;
         }
-        crate::redgreen_bridge::finalize_redgreen_mesh(&mut mesh).unwrap();
+        earthmesh_refine_redgreen::finalize_redgreen_mesh(&mut mesh).unwrap();
         let native = crate::redgreen_bridge::unstructured_mesh_from_redgreen(&mesh).unwrap();
         let widest = native.n_w_to_m.iter().max().copied().unwrap();
         assert!(

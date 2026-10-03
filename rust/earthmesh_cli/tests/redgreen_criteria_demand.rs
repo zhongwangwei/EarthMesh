@@ -92,7 +92,7 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         .expect("bridge in");
     let before = mesh.triangle_count();
 
-    let (written, outcome) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+    let outcome = earthmesh_refine_redgreen::refine_redgreen_level(
         &mesh,
         &earthmesh_refine::RegionTargets::new(&demand.circles),
         &refine,
@@ -102,6 +102,8 @@ fn a_coastline_the_criteria_found_refines_on_red_green() {
         false,
     )
     .expect("red-green must build what the criterion asked for");
+    let written = earthmesh_cli::redgreen_bridge::unstructured_mesh_from_redgreen(&outcome.mesh)
+        .expect("the refined mesh converts to the gridfile's tables");
 
     assert!(
         outcome.refined_triangle_count > 0,
@@ -177,7 +179,7 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
             })
             .collect();
 
-        let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+        let first = earthmesh_refine_redgreen::refine_redgreen_level(
             &mesh,
             &earthmesh_refine::RegionTargets::new(&regions),
             &refine,
@@ -192,8 +194,8 @@ fn a_refined_region_closes_over_a_pole_and_across_the_antimeridian() {
         // The second level is what used to report the first level's hole, as
         // "ngrmm row N has invalid neighbor 0" -- so it is half the test.
         let previous =
-            earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
-        let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+            earthmesh_refine_redgreen::redgreen_marking_from_regions(&first.mesh, &regions, 1);
+        let second = earthmesh_refine_redgreen::refine_redgreen_level(
             &first.mesh,
             &earthmesh_refine::RegionTargets::new(&regions),
             &refine,
@@ -258,7 +260,7 @@ fn the_transition_rows_take_back_the_degree_they_add() {
         })
         .collect();
 
-    let (_, first) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+    let first = earthmesh_refine_redgreen::refine_redgreen_level(
         &mesh,
         &earthmesh_refine::RegionTargets::new(&regions),
         &refine,
@@ -279,8 +281,8 @@ fn the_transition_rows_take_back_the_degree_they_add() {
     );
 
     let previous =
-        earthmesh_cli::redgreen_bridge::redgreen_marking_from_regions(&first.mesh, &regions, 1);
-    let (_, second) = earthmesh_cli::redgreen_bridge::refine_redgreen_level(
+        earthmesh_refine_redgreen::redgreen_marking_from_regions(&first.mesh, &regions, 1);
+    let second = earthmesh_refine_redgreen::refine_redgreen_level(
         &first.mesh,
         &earthmesh_refine::RegionTargets::new(&regions),
         &refine,

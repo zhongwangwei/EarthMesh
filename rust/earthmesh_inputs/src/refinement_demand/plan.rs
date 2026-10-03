@@ -7,6 +7,7 @@ use std::path::Path;
 
 use earthmesh_core::RefineConfig;
 use earthmesh_mesh::AreaJudgeSourceBounds;
+use earthmesh_refine::nest::CriteriaEvidence;
 
 use super::landtype::coastal_demand;
 use super::threshold_support::{
@@ -51,34 +52,6 @@ pub struct CoastalCache(std::sync::Arc<std::sync::Mutex<Option<Vec<(u32, u64)>>>
 pub struct DemandContribution {
     pub criterion: String,
     pub demanded_cells: usize,
-}
-
-/// What the threshold criteria read at a level. It tells "nothing met a
-/// threshold" -- an answer -- from "nothing was read" -- a source with no
-/// data over the domain, which must not pass for one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CriteriaEvidence {
-    /// A threshold criterion was judged.
-    pub judged: bool,
-    /// Valid (non-fill) source samples the judged criteria read.
-    pub valid_source_samples: usize,
-}
-
-impl CriteriaEvidence {
-    /// Criteria were judged and read no valid sample at all.
-    pub fn read_no_data(&self) -> bool {
-        self.judged && self.valid_source_samples == 0
-    }
-
-    /// The evidence of two windows of one level: judged if either was, and
-    /// the larger count -- windows share one support evaluation, so their
-    /// counts are the same reading and must not be added.
-    pub fn merge(self, other: Self) -> Self {
-        Self {
-            judged: self.judged || other.judged,
-            valid_source_samples: self.valid_source_samples.max(other.valid_source_samples),
-        }
-    }
 }
 
 /// The demand for one level, and who asked for it.

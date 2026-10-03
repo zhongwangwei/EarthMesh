@@ -23,6 +23,7 @@ pub mod api;
 pub mod criteria;
 pub mod demand;
 pub mod hfield;
+pub mod nest;
 pub mod target_level;
 
 pub use api::RefinementBackend;

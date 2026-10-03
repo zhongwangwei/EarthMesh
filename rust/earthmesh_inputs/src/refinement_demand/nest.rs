@@ -27,75 +27,12 @@
 
 use std::io;
 
-use earthmesh_mesh::RefinementRegion;
+use earthmesh_refine::nest::{CriteriaEvidence, LevelCircles};
 
 use super::ladder::nested_circle_radii_meters;
-use super::plan::{plan_demand_at_scale_for_windows, CriteriaEvidence, DemandPlanInputs};
+use super::plan::{plan_demand_at_scale_for_windows, DemandPlanInputs};
 use super::reduce_demand_to_circles_on_blocks;
 use earthmesh_core::RefineConfig;
-
-/// What one pass did, so a run can say why it stopped.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NestPassReport {
-    pub level: usize,
-    /// Circles this pass handed to `spawn_nest`. Kept so the quality report can
-    /// ask the same question afterwards -- did the mesh reach the level these
-    /// circles asked for -- without re-planning the demand.
-    pub regions: Vec<RefinementRegion>,
-    /// Cell size this pass was judging — the generation it refines away.
-    pub cell_meters: f64,
-    pub circle_count: usize,
-    pub demanded_cells: usize,
-    pub faces_before: usize,
-    pub faces_after: usize,
-}
-
-/// The whole adaptive run.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdaptiveNestReport {
-    pub passes: Vec<NestPassReport>,
-    /// Level the run stopped at, zero if nothing was ever demanded.
-    pub deepest_level: usize,
-    /// True when the run stopped because a level demanded nothing, rather than
-    /// because it hit `max_level`. A caller that cares about resolution wants
-    /// to know which.
-    pub stopped_on_empty_demand: bool,
-    /// Nest spring passes actually run, summed over the levels.
-    ///
-    /// Zero when no spring was configured. The run report prints this beside
-    /// the iteration count it was asked for, and the two disagreeing is the
-    /// only way a caller can tell that a spring it configured did not run.
-    pub spring_passes: usize,
-    /// What the criteria read at level 1, so a run that refined nothing can
-    /// tell "nothing met a threshold" from "no data was read".
-    pub first_level_evidence: CriteriaEvidence,
-    /// The level every cell of the domain is asked for, over a regional
-    /// mother: the requested resolution, counted from the mother. Zero
-    /// without one.
-    pub domain_floor_level: usize,
-}
-
-/// What the criteria ask for at one level, before any backend sees it.
-pub struct LevelCircles {
-    /// Whether any criterion asked for anything at this level at all.
-    ///
-    /// Kept apart from `circles` being empty because the reduction can drop
-    /// demand it cannot cover with a circle, and "nobody asked" and "asked but
-    /// nothing survived" are different answers to a backend deciding whether it
-    /// can serve the run.
-    pub demanded: bool,
-    /// Source cells the criteria asked for, for a caller that wants to say how
-    /// much demand a level's circles came from.
-    pub demanded_cells: usize,
-    /// Circle radius this level uses. Reported when a level cannot be built, so
-    /// the message can say what size failed.
-    pub radius_meters: f64,
-    pub circles: Vec<RefinementRegion>,
-    /// Stable criterion ids that contributed at least one source cell.
-    pub criterion_ids: Vec<String>,
-    /// What the threshold criteria read, over every window.
-    pub evidence: CriteriaEvidence,
-}
 
 /// Re-ask the criteria at the cell size this level will produce, and reduce what
 /// they demand to circles.
@@ -191,87 +128,10 @@ pub fn adaptive_demand_circles_for_level_windows_at_radius(
     })
 }
 
-impl AdaptiveNestReport {
-    /// Deepest level whose circles cover this point, zero where none do.
-    ///
-    /// This is the target-level function the quality report reconciles against
-    /// the mesh's actual levels. It reads the circles the run actually emitted
-    /// rather than re-deriving them, so a discrepancy is a refinement failure
-    /// and never a planning difference.
-    pub fn target_level_at(&self, lon_degrees: f64, lat_degrees: f64) -> u32 {
-        let mut deepest = 0u32;
-        for pass in &self.passes {
-            for region in &pass.regions {
-                let RefinementRegion::Circle {
-                    center,
-                    radius_meters,
-                    level,
-                } = region
-                else {
-                    continue;
-                };
-                let distance = earthmesh_hfield::great_circle_distance_m(
-                    center.lon_degrees,
-                    center.lat_degrees,
-                    lon_degrees,
-                    lat_degrees,
-                );
-                if distance <= *radius_meters {
-                    deepest = deepest.max(*level as u32);
-                }
-            }
-        }
-        deepest
-    }
-
-    pub fn circle_count(&self) -> usize {
-        self.passes.iter().map(|pass| pass.circle_count).sum()
-    }
-}
-
 /// Name of the file a run leaves beside its gridfile describing what the
 /// point+radius route asked for.
 ///
 /// The quality step runs separately and cannot see the run's
-/// [`AdaptiveNestReport`]. The artifact lives beside the selected gridfile;
+/// [`AdaptiveNestReport`](earthmesh_refine::nest::AdaptiveNestReport). The artifact lives beside the selected gridfile;
 /// the Project namelist can be in a different directory.
 pub const ADAPTIVE_REFINEMENT_FILE: &str = "adaptive_refinement.json";
-
-impl AdaptiveNestReport {
-    /// Serialize the circles this run emitted, for the quality step to read.
-    pub fn to_json(&self, max_level: usize, base_meters: f64, coastline: bool) -> String {
-        let passes = self
-            .passes
-            .iter()
-            .map(|pass| {
-                let circles = pass
-                    .regions
-                    .iter()
-                    .filter_map(|region| match region {
-                        RefinementRegion::Circle {
-                            center,
-                            radius_meters,
-                            ..
-                        } => Some(format!(
-                            "{{\"lon\":{},\"lat\":{},\"radius_m\":{}}}",
-                            center.lon_degrees, center.lat_degrees, radius_meters
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(
-                    "{{\"level\":{},\"cell_meters\":{},\"demanded_cells\":{},\"circles\":[{circles}]}}",
-                    pass.level, pass.cell_meters, pass.demanded_cells
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        format!(
-            "{{\"enabled\":true,\"max_level\":{max_level},\"base_m\":{base_meters},\
-             \"coastline\":{coastline},\"deepest_level\":{},\
-             \"stopped_on_empty_demand\":{},\"floor_level\":{},\"passes\":[{passes}]}}",
-            self.deepest_level, self.stopped_on_empty_demand, self.domain_floor_level
-        )
-    }
-}

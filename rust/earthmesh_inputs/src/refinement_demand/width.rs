@@ -11,7 +11,7 @@ use std::io;
 
 use crate::hfield_gridfile_context::HfieldGridfileContext;
 use crate::mpas_gridfile_context::{invalid, MpasGridfileContext};
-use crate::refinement_demand::nest::AdaptiveNestReport;
+use earthmesh_refine::nest::AdaptiveNestReport;
 
 /// Region targets a backend has resolved to edge lengths.
 ///

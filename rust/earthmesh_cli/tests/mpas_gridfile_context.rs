@@ -303,8 +303,8 @@ fn adaptive_pass(
     level: usize,
     cell_meters: f64,
     regions: Vec<earthmesh_mesh::RefinementRegion>,
-) -> earthmesh_cli::refinement_demand::nest::NestPassReport {
-    earthmesh_cli::refinement_demand::nest::NestPassReport {
+) -> earthmesh_refine::nest::NestPassReport {
+    earthmesh_refine::nest::NestPassReport {
         level,
         circle_count: regions.len(),
         regions,
@@ -316,10 +316,10 @@ fn adaptive_pass(
 }
 
 fn adaptive_report(
-    passes: Vec<earthmesh_cli::refinement_demand::nest::NestPassReport>,
-) -> earthmesh_cli::refinement_demand::nest::AdaptiveNestReport {
+    passes: Vec<earthmesh_refine::nest::NestPassReport>,
+) -> earthmesh_refine::nest::AdaptiveNestReport {
     let deepest_level = passes.iter().map(|pass| pass.level).max().unwrap_or(0);
-    earthmesh_cli::refinement_demand::nest::AdaptiveNestReport {
+    earthmesh_refine::nest::AdaptiveNestReport {
         passes,
         deepest_level,
         stopped_on_empty_demand: false,

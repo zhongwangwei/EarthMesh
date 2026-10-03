@@ -329,8 +329,12 @@ dependencies = [
 name = "earthmesh_refine_redgreen"
 version = "3.0.0-alpha9"
 dependencies = [
+ "earthmesh_core",
  "earthmesh_hfield",
  "earthmesh_mesh",
+ "earthmesh_quality",
+ "earthmesh_refine",
+ "rayon",
 ]
 
 [[package]]

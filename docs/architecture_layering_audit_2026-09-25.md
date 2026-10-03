@@ -548,5 +548,16 @@ namelist 到写出的调用链）的结论：**还没有都按这个形状编排
 每步与改动前的二进制做 A/B：12 个交接用例与 3 个示例工程，逐产物比对全部一致。`scripts/ab_compare.py`
 加了 `--reuse-base`（基准只跑一次）与只记录基准的 `-` 模式。
 
-待做（第 4 项，不改输出）：ICON 嵌套规划器拆成独立后端 crate，交付层改收中性的嵌套网格类型；Stretch
-驱动移出 CLI；CMRC 构造移入 `earthmesh_refine_certified`；Red-Green、Method-C 驱动移入各自 crate。
+第 4 项（不改输出）的进度，每步同样逐产物 A/B 一致：
+
+- ICON 嵌套规划器成为独立后端 crate `earthmesh_refine_icon_nest`，交付层改收中性的嵌套网格类型
+  （`earthmesh_mesh::nested_grid`）。
+- Stretch 的规划与施加成为后端 crate `earthmesh_refine_stretch`，CLI 只读判据、写网格。
+- CMRC 的构造（层级、区域发布、混合物化与局部更新的取舍）移入 `earthmesh_refine_certified::construction`；
+  局部更新由调用方以闭包注入（读 JSON 是 CLI 的事）。`certified_pipeline.rs` 从 4654 行减到 2937 行。
+- Red-Green：逐层驱动（`refine_levels`）、收尾（`finish_levels`：角度安全的 Lawson、角度窗口、六边形回滚），
+  以及原 CLI `redgreen_bridge` 里的标记、每层设置、打磨与角度窗口，移入 `earthmesh_refine_redgreen::driver`。
+  判据圆的规划（读栅格）、转成 gridfile 表、海绵平滑与运行记录留在 CLI 适配层；六边形环是否折叠要在将要写出的
+  网格上数，由调用方以闭包传入。`LevelCircles`、`NestPassReport`、`AdaptiveNestReport`、`CriteriaEvidence`
+  与 `nested_criteria_regions`、`widened_region` 从输入层与 CLI 移到中性的 `earthmesh_refine::nest`。
+- 待做：Method-C（h-field 重试、点+半径逐层、LEPP）。

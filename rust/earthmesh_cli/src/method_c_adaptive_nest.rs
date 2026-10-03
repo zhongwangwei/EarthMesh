@@ -12,12 +12,11 @@ use std::io;
 
 use earthmesh_core::RefineConfig;
 use earthmesh_mesh::{RefinementRegion, TriangularMesh};
+use earthmesh_refine::nest::{AdaptiveNestReport, NestPassReport};
 use earthmesh_refine_method_c::MethodCMesh;
 
 use crate::refinement_demand::ladder::MEASURED_PARENT_HALO_ROWS;
-use crate::refinement_demand::nest::{
-    adaptive_demand_circles_for_level_windows, AdaptiveNestReport, NestPassReport,
-};
+use crate::refinement_demand::nest::adaptive_demand_circles_for_level_windows;
 use crate::refinement_demand::plan::DemandPlanInputs;
 
 /// What the nest spring needs, when one is configured.

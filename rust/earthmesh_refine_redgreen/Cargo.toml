@@ -11,7 +11,13 @@ name = "earthmesh_refine_redgreen"
 path = "src/lib.rs"
 
 [dependencies]
+earthmesh_core = { path = "../earthmesh_core" }
 earthmesh_mesh = { path = "../../rust/earthmesh_mesh" }
+# The angle window the finishing repair aims for is the quality contract's.
+earthmesh_quality = { path = "../earthmesh_quality" }
+# Marking reads any target-level field: named regions, criteria circles, h-field.
+earthmesh_refine = { path = "../earthmesh_refine" }
+rayon = "1"
 
 # The h-field bridge test drives these kernels from a real gradient-limited
 # HField; the library itself does not depend on it.

@@ -114,3 +114,10 @@ pub use refine_array_length::{
 };
 mod get_sort_new;
 pub use get_sort_new::get_sort_new_one_based;
+mod driver;
+pub use driver::{
+    finalize_redgreen_mesh, finish_levels, legalize_redgreen_mesh, polish_redgreen_mesh,
+    redgreen_marking, redgreen_marking_from_regions, redgreen_settings_for_level, refine_levels,
+    refine_redgreen_level, repair_redgreen_angle_window, RedGreenCriteria, RedGreenFinish,
+    RedGreenLevels, RedGreenPolishReport, RedGreenRequest, REDGREEN_MAX_CELL_DEGREE,
+};
