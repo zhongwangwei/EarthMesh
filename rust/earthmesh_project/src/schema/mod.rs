@@ -445,6 +445,17 @@ pub struct CertifiedRefinementRecipe {
     pub gradation_rings_per_level: u8,
     #[serde(default = "default_certified_search_budget")]
     pub search_budget: usize,
+    /// Where reverse coarsening builds its finest mother: the whole sphere,
+    /// on demand (put back together into the sphere), or on demand and
+    /// published as the region (guide 11.109).
+    #[serde(default, skip_serializing_if = "CertifiedMaterialization::is_whole")]
+    pub materialization: CertifiedMaterialization,
+    /// The merge-if-homogeneous requirement (guide 11.111): reverse
+    /// coarsening from `finest_m` down to the base, a parent formed only where
+    /// every criterion passes on the data it covers. It replaces the
+    /// threshold and named-region sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge: Option<CertifiedMergeRecipe>,
 }
 
 impl Default for CertifiedRefinementRecipe {
@@ -457,8 +468,85 @@ impl Default for CertifiedRefinementRecipe {
             maximum_cells: default_certified_maximum_cells(),
             gradation_rings_per_level: default_certified_gradation_rings_per_level(),
             search_budget: default_certified_search_budget(),
+            materialization: CertifiedMaterialization::Whole,
+            merge: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertifiedMaterialization {
+    #[default]
+    Whole,
+    OnDemand,
+    Regional,
+}
+
+impl CertifiedMaterialization {
+    fn is_whole(&self) -> bool {
+        *self == Self::Whole
+    }
+
+    pub fn engine_str(self) -> &'static str {
+        match self {
+            Self::Whole => "whole",
+            Self::OnDemand => "on_demand",
+            Self::Regional => "regional",
+        }
+    }
+}
+
+/// What a merge criterion measures over the samples a lattice face holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertifiedMergeStatistic {
+    /// Standard deviation of a continuous layer: merges at or below the
+    /// threshold, in the layer's units.
+    Std,
+    /// Coefficient of variation: merges at or below the threshold.
+    Cv,
+    /// Share of the most frequent class of a categorical layer: merges at or
+    /// above the threshold.
+    Purity,
+}
+
+impl CertifiedMergeStatistic {
+    pub fn engine_str(self) -> &'static str {
+        match self {
+            Self::Std => "std",
+            Self::Cv => "cv",
+            Self::Purity => "purity",
+        }
+    }
+}
+
+/// One merge criterion: a data layer -- a NetCDF file or a directory of
+/// 5-degree tiles -- its variable, a statistic and a threshold.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedMergeCriterion {
+    pub path: String,
+    pub variable: String,
+    pub statistic: CertifiedMergeStatistic,
+    pub threshold: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedMergeRecipe {
+    /// The finest cell size wanted, metres; the run snaps it to the power of
+    /// two below the base cell (the project's resolution) nearest it.
+    pub finest_m: f64,
+    /// Fewer samples of a layer in a face than this give no evidence against
+    /// merging it.
+    #[serde(default = "default_certified_merge_minimum_samples")]
+    pub minimum_samples: u32,
+    pub criteria: Vec<CertifiedMergeCriterion>,
+}
+
+pub fn default_certified_merge_minimum_samples() -> u32 {
+    4
 }
 
 fn default_certified_maximum_level() -> u8 {

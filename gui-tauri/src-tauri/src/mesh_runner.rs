@@ -44,6 +44,43 @@ pub(crate) async fn run_project(
     run_project_cli(app, cfg, outdir, &run).await
 }
 
+/// What CMRC's merge criteria alone ask of the project's domain, before a run
+/// (`mkgrd.x --cmrc-merge-preview`): the layers read, the levels required and
+/// the criterion mesh per level, in seconds rather than a run.
+#[tauri::command]
+pub(crate) async fn preview_certified_merge(yaml: String) -> Result<serde_json::Value, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml).map_err(|e| format!("invalid project: {e}"))?;
+    absolutize_gui_project_inputs(&mut cfg)?;
+    let bin = resolve_mkgrd()?;
+    let staging = env::temp_dir().join(format!(
+        "earthmesh-merge-preview-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&staging).map_err(|e| format!("create {}: {e}", staging.display()))?;
+    let project_path = staging.join("project.yaml");
+    let result = (|| {
+        fs::write(&project_path, project_cli_yaml(&cfg)?.as_bytes())
+            .map_err(|e| format!("write {}: {e}", project_path.display()))?;
+        let output = Command::new(&bin)
+            .arg("--cmrc-merge-preview")
+            .arg(&project_path)
+            .current_dir(&staging)
+            .output()
+            .map_err(|e| format!("run --cmrc-merge-preview ({bin}): {e}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("--cmrc-merge-preview printed no JSON: {e}"))
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    result
+}
+
 pub(crate) fn project_cli_yaml(cfg: &ProjectConfig) -> Result<String, String> {
     cfg.to_yaml()
 }
@@ -217,6 +254,11 @@ fn map_project_input_paths(cfg: &mut ProjectConfig, mut visit: impl FnMut(&mut S
     }
     if let Some(close) = cfg.refinement.specified_close.as_mut() {
         visit(&mut close.path);
+    }
+    if let Some(merge) = cfg.refinement.certified.merge.as_mut() {
+        for criterion in &mut merge.criteria {
+            visit(&mut criterion.path);
+        }
     }
     if let Some(RegionShape::Shapefile { path } | RegionShape::Close { path, .. }) =
         cfg.refinement.threshold_region.as_mut()

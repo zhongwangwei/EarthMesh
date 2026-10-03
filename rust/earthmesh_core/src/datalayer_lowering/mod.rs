@@ -150,12 +150,14 @@ pub fn lower_datalayers_namelist(
     let threshold_dir_was_explicit = namelist_group_has_field(text, "mkrefine", "threshold_dir")?;
     let mut mkgrd = EarthmeshConfig::from_mkgrd_namelist(text)?;
     let mut refine = if text.to_ascii_lowercase().contains("&mkrefine") {
-        // A regional mother's domain is a demand without a region or criterion.
+        // A regional mother's domain is a demand without a region or
+        // criterion, and so are CMRC's merge criteria (`&certified_merge`).
         RefineConfig::from_mkrefine_namelist_with_external_field(
             text,
             &mkgrd.mesh_type,
             &mkgrd.mode_grid,
-            mkgrd.regional_mother_levels > 0,
+            mkgrd.regional_mother_levels > 0
+                || crate::namelist_has_section(text, "certified_merge"),
         )?
     } else {
         RefineConfig::default()

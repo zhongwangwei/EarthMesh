@@ -101,8 +101,37 @@ impl LoweredProject {
         };
         let certified = if self.mkgrd.refine && self.backend == crate::RefinementBackend::Certified
         {
+            // Absent means whole, so projects that never chose keep their
+            // namelist byte for byte.
+            let materialization = match self.certified.materialization {
+                crate::CertifiedMaterialization::Whole => String::new(),
+                other => format!("   NL%materialization = '{}'\n", other.engine_str()),
+            };
+            let merge = self
+                .certified
+                .merge
+                .as_ref()
+                .map(|merge| {
+                    let mut section = format!(
+                        "&certified_merge\n   NL%finest_m = {}\n   NL%minimum_samples = {}\n",
+                        merge.finest_m, merge.minimum_samples
+                    );
+                    for (index, criterion) in merge.criteria.iter().enumerate() {
+                        let index = index + 1;
+                        section.push_str(&format!(
+                            "   NL%layer_file({index}) = '{}'\n   NL%layer_variable({index}) = '{}'\n   NL%statistic({index}) = '{}'\n   NL%threshold({index}) = {}\n",
+                            criterion.path,
+                            criterion.variable,
+                            criterion.statistic.engine_str(),
+                            criterion.threshold
+                        ));
+                    }
+                    section.push_str("/\n\n");
+                    section
+                })
+                .unwrap_or_default();
             format!(
-                    "&certified\n   NL%mode = '{}'\n   NL%delivery = '{}'\n   NL%angle_contract = '{}'\n   NL%maximum_level = {}\n   NL%maximum_cells = {}\n   NL%gradation_rings_per_level = {}\n   NL%search_budget = {}\n/\n\n",
+                    "&certified\n   NL%mode = '{}'\n   NL%delivery = '{}'\n   NL%angle_contract = '{}'\n   NL%maximum_level = {}\n   NL%maximum_cells = {}\n   NL%gradation_rings_per_level = {}\n   NL%search_budget = {}\n{}/\n\n{}",
                     match self.certified.mode {
                         crate::CertifiedMode::SafeMotherOnly => "safe_mother_only",
                         crate::CertifiedMode::ReverseCoarsening => "reverse_coarsening",
@@ -122,6 +151,8 @@ impl LoweredProject {
                     self.certified.maximum_cells,
                     self.certified.gradation_rings_per_level,
                     self.certified.search_budget,
+                    materialization,
+                    merge,
                 )
         } else {
             String::new()
@@ -351,7 +382,11 @@ impl ProjectConfig {
             refine.mask_refine_spc_fprefix = close.path.clone();
             refine.mask_refine_spc_close_boundary = close.boundary.to_engine_spec();
         }
-        mkgrd.refine = self.refinement.enabled && (refine.refine_cal || refine.refine_spc);
+        // CMRC's merge criteria are a requirement source of their own.
+        let merge_requirement = self.refinement.backend == crate::RefinementBackend::Certified
+            && self.refinement.certified.merge.is_some();
+        mkgrd.refine = self.refinement.enabled
+            && (refine.refine_cal || refine.refine_spc || merge_requirement);
         if mkgrd.refine {
             let max_passes = i32::from(self.refinement.max_passes);
             if refine.refine_cal {

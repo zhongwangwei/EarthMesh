@@ -13,7 +13,7 @@ use super::cli_hydro_workflow::{
     run_hydro_sweep_rank, run_hydro_sweep_recipes, run_hydro_workflow, run_landtype_cell_mask,
     run_mpas_cell_polygons, run_plan_refinement_from_hydro,
 };
-use super::cli_mkgrd_run::run_mkgrd_or_project;
+use super::cli_mkgrd_run::{run_cmrc_merge_preview, run_mkgrd_or_project};
 use super::cli_project_hydro::run_project_hydro_postprocess;
 use super::cli_project_quality::run_project_quality;
 use super::cli_quality::run_mesh_quality;
@@ -28,8 +28,9 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
         return Ok(());
     }
     if first == "--studio-protocol" {
-        // v3 adds the independent LandType-derived `sea_ratio` project criterion.
-        println!("earthmesh-studio-engine/4");
+        // v3 adds the independent LandType-derived `sea_ratio` project
+        // criterion; v5 CMRC's merge criteria and `--cmrc-merge-preview`.
+        println!("earthmesh-studio-engine/5");
         return Ok(());
     }
     if first == "-h" || first == "--help" {
@@ -110,6 +111,9 @@ pub(crate) fn run_cli_command() -> Result<(), String> {
     }
     if first == "--project-quality" {
         return run_project_quality(args);
+    }
+    if first == "--cmrc-merge-preview" {
+        return run_cmrc_merge_preview(args);
     }
     run_mkgrd_or_project(first, args)
 }

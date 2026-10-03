@@ -105,7 +105,9 @@ layer rather than coordinate clamping, which would misrepresent the mesh.
 | `set_specified_refinement` | `yaml, enabled, kind?, lon?, lat?, radiusKm?, w?, e?, s?, n?, path?` | updated **YAML** (radius, bbox, or close refinement) |
 | `set_refinement_backend` | `yaml, backend` | updated **YAML**; accepts `method_c`, `lepp_delaunay` (AdaptiveHybrid), `red_green`, and peer CMRC backend `certified` |
 | `set_method_c_algorithm_options` | `yaml` plus the eight LEPP-Delaunay controls | updated **YAML** after validating cycle, tolerance, neighbor-ratio, vertex/insertion/path limits, source-resolution stop, and minimum angle |
-| `set_certified_options` | `yaml` plus CMRC mode, delivery, level/cell, grading, and search bounds | updated **YAML** after validating strict CMRC bounds |
+| `set_certified_options` | `yaml` plus CMRC mode, delivery, level/cell, grading, and search bounds, `materialization?` | updated **YAML** after validating strict CMRC bounds; an absent `materialization` (`whole`, `on_demand`, `regional`) keeps the project's, and the merge criteria are kept |
+| `set_certified_merge` | `yaml, merge` | updated **YAML**; `merge` is `{finest_m, minimum_samples, criteria:[{path, variable, statistic, threshold}]}` (`statistic` is `std`, `cv` or `purity`) or `null` to turn CMRC's merge criteria off |
+| `preview_certified_merge` | `yaml` | what the merge criteria alone ask of the domain, from `mkgrd.x --cmrc-merge-preview`: the layers read, the finest level required, and the criterion mesh per level |
 | `set_hfield_refinement` | `yaml, enabled, g?, maxLevel?, baseM?` | updated **YAML** (opt-in canonical H-field; point+radius is the GUI default) |
 | `set_expert` | `yaml, nxp?, openmp?, niter?, niterRefine?, maxIterSpc?, maxIterCal?, halo?, maxTransitionRow?, setDisType?, numRc?, vertexPretectLayers?, springGlobalType?, springRegionalType?, beta?, relax?, weakConcavEliminate?, isolatedOcean?` | updated **YAML** (expert overrides; compatibility-only values remain preserved even when not editable in the GUI) |
 | `pick_data_file` | – | native file picker → path (or `null`) |
@@ -178,8 +180,19 @@ It is off by default. The threshold `t` is a fraction in `0 ≤ t < 0.5` (defaul
 `0.05`): refine where ocean share is strictly between `t` and `1−t` (5%–95% by
 default). `0` selects any mixed land/ocean neighbourhood; pure land and pure
 ocean do not qualify. This does not change the domain's sea/land masking ratio.
-Studio requires engine protocol `earthmesh-studio-engine/4` for this criterion;
-older sidecars are rejected even when their package version is identical.
+Studio requires engine protocol `earthmesh-studio-engine/5` (v4 added this
+criterion, v5 CMRC's merge criteria and their preview); older sidecars are
+rejected even when their package version is identical.
+
+With CMRC selected, the Refinement step offers a third strategy, **Merge
+criteria**: reverse coarsening from a finest cell size down to the base (the
+project's resolution), a parent merged only where every criterion passes on the
+data it covers -- a standard deviation, a coefficient of variation, or a
+dominant-class share, each on a NetCDF file or a folder of 5-degree tiles. It
+replaces specified and threshold refinement (their settings are kept for when
+it is turned off), needs a regional domain, and is published as the region.
+**Preview the levels** reads the layers and shows the criterion mesh per level
+before any run.
 
 Clicking **Run** spawns the mesh generator. **No setup needed if you've built the
 engine** — `make build` copies the CLI to `<repo>/mkgrd.x`, and the app

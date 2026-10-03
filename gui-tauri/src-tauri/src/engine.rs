@@ -9,8 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, fs};
 
 static ENGINE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-// v3 requires the independent LandType-derived `sea_ratio` project criterion.
-const ENGINE_PROTOCOL: &str = "earthmesh-studio-engine/4";
+// v3 requires the independent LandType-derived `sea_ratio` project criterion;
+// v5 CMRC's merge criteria (`refinement.certified.merge`) and their preview
+// (`--cmrc-merge-preview`).
+const ENGINE_PROTOCOL: &str = "earthmesh-studio-engine/5";
 
 /// Locate the mesh-generator binary, in priority order:
 ///   1. `$EARTHMESH_MKGRD` (explicit override),

@@ -329,6 +329,7 @@ pub use hfield_refine::{
 };
 mod refine_pipeline;
 pub use refine_pipeline::{
-    run_refine_pipeline_namelist, run_refine_pipeline_with_delivery, LeppResolvedTargets,
+    certified_merge_preview, run_refine_pipeline_namelist, run_refine_pipeline_with_delivery,
+    LeppResolvedTargets,
 };
 pub mod mkgrd_top_level_dispatch;

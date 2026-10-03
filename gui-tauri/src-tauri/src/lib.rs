@@ -66,6 +66,8 @@ pub fn run() {
             set_refinement_backend,
             set_method_c_algorithm_options,
             set_certified_options,
+            set_certified_merge,
+            preview_certified_merge,
             set_hfield_refinement,
             set_expert,
             pick_data_file,

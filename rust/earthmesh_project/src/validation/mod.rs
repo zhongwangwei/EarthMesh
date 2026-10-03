@@ -60,6 +60,7 @@ impl ProjectConfig {
             );
         }
         self.validate_refinement_sources()?;
+        self.validate_certified_merge()?;
         self.validate_backend_serves_refinement_route()?;
         self.validate_certified_delivery_matches_target_cell()?;
         self.validate_icon_refinement_on_closed_sphere()?;
@@ -340,7 +341,10 @@ impl ProjectConfig {
         if !self.refinement.enabled {
             return Ok(());
         }
-        if self.has_specified_refinement_source() || self.has_calculated_refinement_source() {
+        if self.has_specified_refinement_source()
+            || self.has_calculated_refinement_source()
+            || self.has_certified_merge_requirement()
+        {
             Ok(())
         } else {
             Err(
@@ -391,6 +395,64 @@ impl ProjectConfig {
                     .to_string(),
             ),
         }
+    }
+
+    fn has_certified_merge_requirement(&self) -> bool {
+        self.refinement.backend == crate::RefinementBackend::Certified
+            && self.refinement.certified.merge.is_some()
+    }
+
+    /// CMRC's merge criteria (guide 11.111) are reverse coarsening of a
+    /// regional domain, published as the region, and the only requirement:
+    /// the engine refuses anything else, so the project does too, before a
+    /// run is started.
+    fn validate_certified_merge(&self) -> Result<(), String> {
+        if !self.refinement.enabled || !self.has_certified_merge_requirement() {
+            return Ok(());
+        }
+        let certified = &self.refinement.certified;
+        let merge = certified.merge.as_ref().expect("checked above");
+        if certified.mode != crate::CertifiedMode::ReverseCoarsening {
+            return Err(
+                "refinement.certified.merge needs refinement.certified.mode reverse_coarsening"
+                    .to_string(),
+            );
+        }
+        if certified.materialization != crate::CertifiedMaterialization::Regional {
+            return Err(
+                "refinement.certified.merge needs refinement.certified.materialization regional"
+                    .to_string(),
+            );
+        }
+        if !matches!(self.domain, DomainConfig::Regional { .. }) {
+            return Err("refinement.certified.merge needs a regional domain".to_string());
+        }
+        if self.has_specified_refinement_source() || self.has_calculated_refinement_source() {
+            return Err(
+                "refinement.certified.merge replaces the threshold and specified sources; turn those off"
+                    .to_string(),
+            );
+        }
+        let nxp = self.expert.nxp.unwrap_or(match self.target.resolution {
+            ResolutionSpec::Nxp(nxp) => nxp,
+            ResolutionSpec::ApproxKm(km) => crate::km_to_nxp(km),
+            ResolutionSpec::ApproxDegree(degrees) => crate::degree_to_nxp(degrees),
+        });
+        let base_m = crate::nxp_to_km(nxp) * 1000.0;
+        let levels = (base_m / merge.finest_m).log2().round();
+        if levels < 1.0 {
+            return Err(format!(
+                "refinement.certified.merge finest_m {} is not finer than the base cell ({base_m:.0} m)",
+                merge.finest_m
+            ));
+        }
+        if levels > f64::from(certified.maximum_level) {
+            return Err(format!(
+                "refinement.certified.merge finest_m {} is {levels} levels below the base cell ({base_m:.0} m); maximum_level is {}",
+                merge.finest_m, certified.maximum_level
+            ));
+        }
+        Ok(())
     }
 
     fn has_specified_refinement_source(&self) -> bool {
@@ -796,6 +858,10 @@ impl RefinementRecipe {
         if !self.enabled {
             return Ok(());
         }
+        // CMRC's merge criteria take their levels from finest_m.
+        if self.backend == crate::RefinementBackend::Certified && self.certified.merge.is_some() {
+            return Ok(());
+        }
         if self.max_passes == 0 {
             return Err("refinement max_passes must be > 0 when refinement is enabled".to_string());
         }
@@ -821,6 +887,42 @@ impl crate::CertifiedRefinementRecipe {
         }
         if self.search_budget == 0 {
             return Err("refinement.certified search_budget must be > 0".to_string());
+        }
+        if let Some(merge) = &self.merge {
+            if !merge.finest_m.is_finite() || merge.finest_m <= 0.0 {
+                return Err("refinement.certified.merge finest_m must be > 0".to_string());
+            }
+            if merge.criteria.is_empty() {
+                return Err("refinement.certified.merge names no criterion".to_string());
+            }
+            for (index, criterion) in merge.criteria.iter().enumerate() {
+                let index = index + 1;
+                if criterion.path.trim().is_empty() || criterion.variable.trim().is_empty() {
+                    return Err(format!(
+                        "refinement.certified.merge criterion {index} needs a path and a variable"
+                    ));
+                }
+                if [&criterion.path, &criterion.variable]
+                    .iter()
+                    .any(|text| text.contains(['\'', '\n']))
+                {
+                    return Err(format!(
+                        "refinement.certified.merge criterion {index}: a path or variable cannot hold a quote or a line break"
+                    ));
+                }
+                if !criterion.threshold.is_finite() || criterion.threshold < 0.0 {
+                    return Err(format!(
+                        "refinement.certified.merge criterion {index} threshold must be >= 0"
+                    ));
+                }
+                if criterion.statistic == crate::CertifiedMergeStatistic::Purity
+                    && criterion.threshold > 1.0
+                {
+                    return Err(format!(
+                        "refinement.certified.merge criterion {index}: a purity threshold is a share, at most 1"
+                    ));
+                }
+            }
         }
         Ok(())
     }

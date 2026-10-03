@@ -12,4 +12,5 @@ mod outputs;
 
 pub use final_delivery::run_refine_pipeline_with_delivery;
 
+pub use certified_pipeline::certified_merge_preview;
 pub use global_source::run_refine_pipeline_namelist;

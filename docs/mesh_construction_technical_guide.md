@@ -5274,7 +5274,7 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
 完成的那例：区域最终网格 66,771 面、角度 38.25°–81.80°，交付 18,883 个 31 m 的 Voronoi 单元（需求在域内合成，31 m 正好铺满
 交付域），外面一圈 62 m 过渡，再外是 125 m 基面直到物化区边缘。峰值内存大半是 0.02° 的全球 h-field 栅格。
 
-### 11.111 格点需求场：父单元均匀才合并（H1–H3，2026-10-03）
+### 11.111 格点需求场：父单元均匀才合并（H1–H4，2026-10-03）
 
 用户 2026-10-03 定下的方向（设计稿 `docs/certified_mesh/heterogeneity_merge.md`）：CMRC 以“最细、最粗”两个分辨率加一张合并
 判据表描述，判据直接在格点三角形上自下而上评估，不再经过 h-field。CMRC 的反向粗化本身从不用 h-field；需求规划为了与其他后端
@@ -5310,5 +5310,15 @@ CLI 测试 `on_demand_materialization_delivers_the_whole_spheres_regional_grid`�
   103.5°E 分两类。66 个交付基面、两层各 6794 像元；45 个基面合并到底，21 个保持细一级（84 片叶子）。发布网格中粗糙区中心
   0.3° 内的单元全为 1 级，远离粗糙区和类别界线处有 0 级（3.5 s）。
 
+- **工程与 Studio（H4）**：工程文件 `refinement.certified` 增加 `materialization`（`whole`、`on_demand`、`regional`，`whole`
+  不写出，旧工程的 namelist 逐字节不变）与 `merge`（`finest_m`、`minimum_samples`、判据表，路径相对工程文件解析）。降级写出
+  `&certified_merge`，`&mkrefine` 照写（两个开关都关），引擎把 `&certified_merge` 当作外部需求源接受；合并判据启用时
+  `max_passes` 不再要求。工程校验与引擎一致：反向粗化、区域发布、区域域，且不能与阈值、指定需求并用；最细尺寸须比基面细，
+  级数不超过 `maximum_level`。Studio 在 CMRC 下给出第三个细化策略开关“合并判据”（常规可见）：最粗即项目分辨率，最细按米输入
+  并显示吸附后的级数与实际尺寸，判据表逐行选数据文件或瓦片目录、变量、统计量、阈值；开启时指定与阈值细化停用但保留设置。
+  “预览各级单元”调用 `mkgrd.x --cmrc-merge-preview`（只读，不写 run manifest），几秒内给出各级单元尺寸与判据网格三角形数、
+  每层读到的像元与所需最细级。Studio 与引擎协议升到 `earthmesh-studio-engine/5`。工程测试：相对路径的工程预览与
+  `--project` 完整运行都得到认证的区域网格（10 s）。
+
 细长特征代价高：同样的流程，若需求是一道沿斜线的 50 m 陡坎（最细一级成一条窄带），过渡边界长、拓扑搜索要十几分钟；紧凑的
-粗糙区只要几秒。尚未完成：Studio 面板（H4）、真实 DEM 演示（H5）。
+粗糙区只要几秒。尚未完成：真实 DEM 演示（H5）。

@@ -158,6 +158,8 @@ pub(crate) struct ProjectSummary {
     pub(crate) certified_maximum_cells: usize,
     pub(crate) certified_gradation_rings_per_level: u8,
     pub(crate) certified_search_budget: usize,
+    pub(crate) certified_materialization: String,
+    pub(crate) certified_merge: Option<earthmesh_project::CertifiedMergeRecipe>,
     pub(crate) hydro_river_refine_enabled: bool,
     pub(crate) hydro_river_width_refine_enabled: bool,
     pub(crate) hydro_river_upstream_area_refine_enabled: bool,

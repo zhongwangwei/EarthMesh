@@ -129,6 +129,15 @@ pub(super) fn compile_project_spec(spec: &ProjectRunSpec) -> Result<String, Stri
                 .into_owned();
         }
     }
+    if let Some(merge) = &mut config.refinement.certified.merge {
+        for criterion in &mut merge.criteria {
+            if !criterion.path.trim().is_empty() {
+                criterion.path = resolve_project_path(&spec.path, &criterion.path)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+    }
     config.validate()?;
     let requested_nxp = config.expert.nxp.unwrap_or(match config.target.resolution {
         ResolutionSpec::Nxp(nxp) => nxp,

@@ -3363,6 +3363,8 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
         maximum_cells: 900_000,
         gradation_rings_per_level: 5,
         search_budget: 12_000,
+        materialization: crate::CertifiedMaterialization::Whole,
+        merge: None,
     };
 
     let yaml = project.to_yaml().expect("certified project yaml");
@@ -3384,6 +3386,116 @@ fn certified_algorithm_is_a_parallel_backend_and_lowers_its_strict_bounds() {
     assert!(namelist.contains("NL%search_budget = 12000"));
     assert!(!namelist.contains("&adaptive"));
     assert!(!namelist.contains("legacy"));
+    // Whole materialization is the engine's default and is not written.
+    assert!(!namelist.contains("NL%materialization"));
+    assert!(!namelist.contains("&certified_merge"));
+}
+
+/// CMRC's merge criteria (guide 11.111) lower to `&certified_merge` and are
+/// the requirement on their own: no `&mkrefine`, refinement on. They need
+/// reverse coarsening of a regional domain published as the region, and no
+/// other source; a finest cell no finer than the base is refused.
+#[test]
+fn certified_merge_criteria_lower_to_their_own_section_and_need_a_regional_run() {
+    let mut project = sample();
+    project.target.kind = MeshDomainKind::Earth;
+    project.refinement.threshold_enabled = false;
+    project.refinement.backend = crate::RefinementBackend::Certified;
+    project.refinement.certified.mode = crate::CertifiedMode::ReverseCoarsening;
+    project.refinement.certified.materialization = crate::CertifiedMaterialization::Regional;
+    project.refinement.certified.merge = Some(crate::CertifiedMergeRecipe {
+        finest_m: 50_000.0,
+        minimum_samples: 6,
+        criteria: vec![
+            crate::CertifiedMergeCriterion {
+                path: "/data/merit".into(),
+                variable: "elv".into(),
+                statistic: crate::CertifiedMergeStatistic::Std,
+                threshold: 5.0,
+            },
+            crate::CertifiedMergeCriterion {
+                path: "/data/lc.nc".into(),
+                variable: "landtype".into(),
+                statistic: crate::CertifiedMergeStatistic::Purity,
+                threshold: 0.8,
+            },
+        ],
+    });
+    let reparsed = yaml_round_trip(&project);
+    assert_eq!(reparsed, project);
+    let namelist = reparsed.try_lower().expect("merge project").to_namelist();
+    for line in [
+        "NL%refine = .TRUE.",
+        "NL%materialization = 'regional'",
+        "&certified_merge",
+        "NL%finest_m = 50000",
+        "NL%minimum_samples = 6",
+        "NL%layer_file(1) = '/data/merit'",
+        "NL%layer_variable(1) = 'elv'",
+        "NL%statistic(1) = 'std'",
+        "NL%threshold(1) = 5",
+        "NL%layer_file(2) = '/data/lc.nc'",
+        "NL%statistic(2) = 'purity'",
+        "NL%threshold(2) = 0.8",
+    ] {
+        assert!(namelist.contains(line), "{line} in\n{namelist}");
+    }
+    // `&mkrefine` keeps its transition settings; with neither switch on,
+    // the engine takes `&certified_merge` as the requirement.
+    assert!(namelist.contains("RL%refine_spc = .FALSE."), "{namelist}");
+    assert!(namelist.contains("RL%refine_cal = .FALSE."), "{namelist}");
+
+    let refused = |edit: &dyn Fn(&mut ProjectConfig), expected: &str| {
+        let mut changed = project.clone();
+        edit(&mut changed);
+        let error = yaml_err(&changed);
+        assert!(error.contains(expected), "{expected}: {error}");
+    };
+    refused(
+        &|p| p.refinement.certified.mode = crate::CertifiedMode::SafeMotherOnly,
+        "needs refinement.certified.mode reverse_coarsening",
+    );
+    refused(
+        &|p| p.refinement.certified.materialization = crate::CertifiedMaterialization::Whole,
+        "needs refinement.certified.materialization regional",
+    );
+    refused(
+        &|p| p.domain = DomainConfig::Global,
+        "needs a regional domain",
+    );
+    refused(
+        &|p| p.refinement.threshold_enabled = true,
+        "replaces the threshold and specified sources",
+    );
+    refused(
+        &|p| p.refinement.certified.merge.as_mut().unwrap().finest_m = 400_000.0,
+        "is not finer than the base cell",
+    );
+    refused(
+        &|p| p.refinement.certified.merge.as_mut().unwrap().criteria[1].threshold = 1.5,
+        "a purity threshold is a share",
+    );
+    refused(
+        &|p| {
+            p.refinement
+                .certified
+                .merge
+                .as_mut()
+                .unwrap()
+                .criteria
+                .clear()
+        },
+        "names no criterion",
+    );
+    // With another backend the recipe is inert and lowers nothing.
+    let mut other = project.clone();
+    other.refinement.backend = crate::RefinementBackend::MethodC;
+    other.refinement.threshold_enabled = true;
+    assert!(!yaml_round_trip(&other)
+        .try_lower()
+        .unwrap()
+        .to_namelist()
+        .contains("&certified_merge"));
 }
 
 #[test]

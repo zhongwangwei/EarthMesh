@@ -2175,6 +2175,46 @@ if(MAP_WINDOW_MODE){
     if (r.approxDegree > 0) return kmToNxp(r.approxDegree*KM_PER_DEG_EQ);
     return r.approxKm > 0 ? kmToNxp(r.approxKm) : 0;
   }
+  // CMRC's merge criteria (guide 11.111): the coarsest cell is the base (the
+  // project's NXP), the finest that base halved to the power of two nearest
+  // the size asked for -- the engine snaps it the same way.
+  function certifiedMergeLevels(finestM, nxp = currentNxp()) {
+    const baseM = nxpToKm(nxp) * 1000;
+    if (!(typeof finestM === "number" && finestM > 0) || !(baseM > 0)) return null;
+    const levels = Math.round(Math.log2(baseM / finestM));
+    return { baseM, levels, finestM: baseM / Math.pow(2, levels) };
+  }
+  function formatMetres(m) {
+    if (!(m > 0)) return "—";
+    return m >= 1000 ? (m / 1000).toFixed(m >= 10000 ? 0 : 1) + " km" : Math.round(m) + " m";
+  }
+  // The merge criteria's own mesh before any coarsening: per level its cell
+  // size and faces, the layers read and the finest level required. Rendered
+  // as text nodes: paths come from the user.
+  function renderCertifiedMergePreview(container, preview) {
+    const z = zh();
+    container.textContent = "";
+    const cell = (tag, text) => { const el = document.createElement(tag); el.textContent = text; el.style.padding = "2px 8px 2px 0"; el.style.textAlign = "left"; return el; };
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    const head = document.createElement("tr");
+    [z?"级":"Level", z?"单元尺寸":"Cell size", z?"判据网格三角形":"Criterion-mesh triangles"].forEach((text) => head.appendChild(cell("th", text)));
+    table.appendChild(head);
+    for (const level of preview.criterion_mesh || []) {
+      const row = document.createElement("tr");
+      [String(level.level), formatMetres(level.cell_m), String(level.faces)].forEach((text) => row.appendChild(cell("td", text)));
+      table.appendChild(row);
+    }
+    container.appendChild(table);
+    const note = document.createElement("div");
+    note.style.marginTop = "6px";
+    note.style.color = "var(--muted)";
+    const layers = (preview.layers || []).map((layer) => `${layer.variable} ← ${layer.file}: ${layer.samples_read}`).join("; ");
+    note.textContent = (z
+      ? `所需最细级：${preview.finest_level_required}（请求 ${preview.levels_requested}）；读取像元：${layers}。判据网格只看判据，不计平衡与过渡带，实际单元会多一些。`
+      : `Finest level required: ${preview.finest_level_required} (asked ${preview.levels_requested}); pixels read: ${layers}. The criterion mesh counts the criteria alone, before balance and transitions; the delivered mesh has somewhat more cells.`);
+    container.appendChild(note);
+  }
   function currentResolutionLabel() {
     const r = currentResolution();
     if (r.nxp != null) return "NXP=" + r.nxp + " (≈" + nxpToKm(r.nxp).toFixed(1) + " km)";
@@ -2226,7 +2266,12 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     certifiedMaximumLevel: CERTIFIED_DEFAULTS.maximum_level,
     certifiedMaximumCells: CERTIFIED_DEFAULTS.maximum_cells,
     certifiedGradationRingsPerLevel: CERTIFIED_DEFAULTS.gradation_rings_per_level,
-    certifiedSearchBudget: CERTIFIED_DEFAULTS.search_budget
+    certifiedSearchBudget: CERTIFIED_DEFAULTS.search_budget,
+    certifiedMaterialization: CERTIFIED_DEFAULTS.materialization || "whole",
+    certifiedRequirement: "discrete",
+    certifiedMergeFinestM: null,
+    certifiedMergeMinimumSamples: 4,
+    certifiedMergeCriteria: []
   });
   let specifiedRefine = { ...defaultAlgorithmControls(), enabled: false, kind: "radius", lon: null, lat: null, radiusKm: null, circleCount: 0, w: null, e: null, s: null, n: null, path: null, closeBoundary: normalizeCloseBoundary(null), algorithm: "method_c", route: "adaptive", adaptiveMaxLevel: 0, adaptiveCoastline: true, hfieldEnabled: false, hfieldG: null, hfieldMaxLevel: null, hfieldBaseM: null };
   let metadataEdit = { authors: [], description: "" };
@@ -2363,6 +2408,28 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         return z ? "H 场基准尺寸必须是正数，或留空自动。" : "H-field base size must be positive, or blank for automatic.";
       }
     }
+    if (r.algorithm === "certified" && r.certifiedRequirement === "merge") {
+      const levels = certifiedMergeLevels(r.certifiedMergeFinestM);
+      if (!levels || levels.levels < 1) {
+        return z ? "合并判据的最细尺寸必须是比基面更细的正数（米）。" : "The merge criteria's finest size must be a positive number of metres, finer than the base.";
+      }
+      if (!Number.isInteger(r.certifiedMergeMinimumSamples) || r.certifiedMergeMinimumSamples < 1) {
+        return z ? "每面样本下限必须是正整数。" : "Minimum samples per face must be a positive integer.";
+      }
+      const criteria = r.certifiedMergeCriteria || [];
+      if (!criteria.length) {
+        return z ? "合并判据至少需要一条判据。" : "The merge criteria need at least one criterion.";
+      }
+      for (const [index, criterion] of criteria.entries()) {
+        if (!String(criterion.path || "").trim() || !String(criterion.variable || "").trim()) {
+          return z ? `判据 ${index + 1} 需要数据文件（或瓦片目录）和变量名。` : `Criterion ${index + 1} needs a data file (or tile folder) and a variable.`;
+        }
+        const t = criterion.threshold;
+        if (!(typeof t === "number" && Number.isFinite(t) && t >= 0 && (criterion.statistic !== "purity" || t <= 1))) {
+          return z ? `判据 ${index + 1} 的阈值无效（纯度在 0 与 1 之间）。` : `Criterion ${index + 1} has an invalid threshold (a purity is between 0 and 1).`;
+        }
+      }
+    }
     const keys = r.algorithm === "lepp_delaunay"
       ? ["leppMaxCycles", "leppTargetSizeTolerance", "leppMaximumNeighborSizeRatio", "leppMaximumVertices",
          "leppMaximumInsertionsPerCycle", "leppMaximumPathLength", "leppMinimumTriangleAngleDeg"]
@@ -2493,14 +2560,18 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       isolatedOcean: expertEdit.isolatedOcean
     });
     const summary = await invoke("project_summary", { yaml });
-    const thresholdSourceEnabled = thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
-    const refinementEnabled = thresholdSourceEnabled || !!refine.enabled;
+    // CMRC's merge criteria are the requirement on their own: the specified
+    // and threshold sources keep their settings but take no part.
+    const mergeOn = refine.algorithm === "certified" && refine.certifiedRequirement === "merge";
+    const specifiedOn = !!refine.enabled && !mergeOn;
+    const thresholdSourceEnabled = !mergeOn && thresholdRefine.enabled && (hasEnabledThresholdLayer(summary) || hasEnabledHydroRefinement(summary));
+    const refinementEnabled = thresholdSourceEnabled || specifiedOn || mergeOn;
     const maxRefinePasses = METHOD_C_MAX_REFINEMENT_LEVEL;
     const requestedPasses = template && template.maxPasses != null ? template.maxPasses : maxPasses;
     const refinementPasses = refinementEnabled
       ? Math.min(maxRefinePasses, Math.max(1, requestedPasses == null ? (summary.max_passes || 1) : requestedPasses))
       : 0;
-    if (refine.enabled) {
+    if (specifiedOn) {
       const required = refine.kind === "radius" ? [refine.lon, refine.lat, refine.radiusKm]
         : refine.kind === "bbox" ? [refine.w, refine.e, refine.s, refine.n] : [];
       if (!required.every(Number.isFinite)) {
@@ -2508,13 +2579,13 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       }
     }
     yaml = await invoke("set_specified_refinement", {
-      yaml, enabled: !!refine.enabled,
+      yaml, enabled: specifiedOn,
       kind: refine.kind || "radius",
-      ...(refine.enabled && (refine.kind || "radius") === "radius" ? { lon: refine.lon ?? 0, lat: refine.lat ?? 0, radiusKm: refine.radiusKm ?? 100 } : {}),
-      ...(refine.enabled && refine.kind === "bbox" ? { w: refine.w ?? DEFAULT_BBOX[0], e: refine.e ?? DEFAULT_BBOX[1], s: refine.s ?? DEFAULT_BBOX[2], n: refine.n ?? DEFAULT_BBOX[3] } : {}),
+      ...(specifiedOn && (refine.kind || "radius") === "radius" ? { lon: refine.lon ?? 0, lat: refine.lat ?? 0, radiusKm: refine.radiusKm ?? 100 } : {}),
+      ...(specifiedOn && refine.kind === "bbox" ? { w: refine.w ?? DEFAULT_BBOX[0], e: refine.e ?? DEFAULT_BBOX[1], s: refine.s ?? DEFAULT_BBOX[2], n: refine.n ?? DEFAULT_BBOX[3] } : {}),
       path: refine.path
     });
-    if (refine.enabled && refine.kind === "close") {
+    if (specifiedOn && refine.kind === "close") {
       yaml = await applyCloseBoundary(yaml, "specified", refine.closeBoundary);
     }
 
@@ -2554,18 +2625,30 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
     if (refine.algorithm === "certified") {
       yaml = await invoke("set_certified_options", {
         yaml,
-        mode: refine.certifiedMode,
+        mode: mergeOn ? "reverse_coarsening" : refine.certifiedMode,
         delivery: refine.certifiedDelivery,
         angleContract: refine.certifiedAngleContract,
         maximumLevel: refine.certifiedMaximumLevel,
         maximumCells: refine.certifiedMaximumCells,
         gradationRingsPerLevel: refine.certifiedGradationRingsPerLevel,
-        searchBudget: refine.certifiedSearchBudget
+        searchBudget: refine.certifiedSearchBudget,
+        materialization: mergeOn ? "regional" : (refine.certifiedMaterialization || "whole")
+      });
+      yaml = await invoke("set_certified_merge", {
+        yaml,
+        merge: mergeOn ? {
+          finest_m: refine.certifiedMergeFinestM,
+          minimum_samples: refine.certifiedMergeMinimumSamples,
+          criteria: (refine.certifiedMergeCriteria || []).map((c) => ({
+            path: String(c.path || "").trim(), variable: String(c.variable || "").trim(),
+            statistic: c.statistic || "std", threshold: c.threshold
+          }))
+        } : null
       });
     }
     // Validate active demands only after their consuming route is configured.
     yaml = await invoke("set_refinement", {
-      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled,
+      yaml, enabled: refinementEnabled, thresholdEnabled: !!thresholdRefine.enabled && !mergeOn,
       maxPasses: refinementPasses
     });
     if (baseProjectYaml) {
@@ -3287,6 +3370,49 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ? "只用于全球三角形 ICON 目标。每层嵌套在需求区外留出边界带（14 行索引、12 行插值与松弛），所以嵌套比需求区大；需求越深，外层嵌套越宽。输出为全球网格 DOM01 与各嵌套 DOMnn，另附 grid_nml 片段与摘要。原生 gridfile 是未加密的全球网格，其质量对账会报“比目标粗”，需求由嵌套满足。"
         : "For global triangle ICON targets only. Each nest keeps a boundary zone around its demand (14 indexed rows, 12 for interpolation and nudging), so a nest is wider than the demand, and outer nests widen with every deeper level. Output is the global grid DOM01 and a DOMnn per nest, with a grid_nml snippet and a summary. The native gridfile is the unrefined global grid, so its reconciliation reports cells coarser than target; the nests serve that demand."}</div>
     </div>`;
+    // CMRC's merge criteria (guide 11.111): from the finest level up, a
+    // parent merges only where its data are homogeneous enough, to the base.
+    const certifiedMergeOn = algorithm === "certified" && specifiedRefine.certifiedRequirement === "merge";
+    const certifiedMergeScale = certifiedMergeLevels(specifiedRefine.certifiedMergeFinestM);
+    const certifiedMergeStatistics = [
+      ["std", z?"标准差 ≤ 阈值":"Std. dev. ≤ threshold"],
+      ["cv", z?"变异系数 ≤ 阈值":"Coeff. of variation ≤ threshold"],
+      ["purity", z?"主导类占比 ≥ 阈值（类别）":"Dominant class share ≥ threshold (classes)"]
+    ];
+    // Paths and variables are user text: the inputs are filled from the state
+    // after rendering, never interpolated into the markup.
+    const certifiedMergeRows = (specifiedRefine.certifiedMergeCriteria || []).map((_, index) => `<tr data-merge-row="${index}">
+        <td style="padding:3px 4px"><div style="display:flex;gap:4px"><input class="input merge-path" placeholder="${z?"NetCDF 文件或 5° 瓦片目录":"NetCDF file or 5° tile folder"}"><button type="button" class="btn-ghost merge-browse">${z?"文件":"File"}</button><button type="button" class="btn-ghost merge-browse-folder">${z?"目录":"Folder"}</button></div></td>
+        <td style="padding:3px 4px"><input class="input merge-variable" placeholder="elv"></td>
+        <td style="padding:3px 4px"><select class="select merge-statistic">${certifiedMergeStatistics.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></td>
+        <td style="padding:3px 4px"><input class="input merge-threshold" type="number" min="0" step="any"></td>
+        <td style="padding:3px 4px"><button type="button" class="btn-ghost merge-remove" aria-label="${z?"删除判据":"Remove criterion"}">✕</button></td>
+      </tr>`).join("");
+    const certifiedMergeBlock = certifiedMergeOn ? `<div id="certifiedMergeOptions" style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+      <div style="font-weight:700;margin-bottom:6px">${z?"合并判据":"Merge criteria"}</div>
+      <div style="color:var(--muted);font-size:12px;line-height:1.6;margin-bottom:10px">${z
+        ? "从最细一级出发，父三角形只有在它覆盖的数据足够均匀（每条判据都通过）且四个子三角形都已合并时才合并，到基面为止。判据在格点三角形上自下而上评估，不经过 H 场；只读区域窗口内的原始数据。"
+        : "From the finest level up, a parent triangle merges only where the data it covers are homogeneous enough (every criterion passes) and its four children merged, up to the base. Criteria are judged bottom up on the lattice triangles, without the h-field; only the region's window of the source data is read."}</div>
+      <div class="grid2">
+        ${field(z?"最粗（基面）":"Coarsest (base)",`<input class="input" value="${certifiedMergeScale ? formatMetres(certifiedMergeScale.baseM) : formatMetres(nxpToKm(currentNxp()) * 1000)} · NXP=${currentNxp()}" disabled>`,z?"即项目分辨率，在分辨率一步修改":"the project's resolution; change it in the Resolution step")}
+        ${field(z?"最细（米）":"Finest (m)",`<input class="input" type="number" id="certifiedMergeFinestM" min="1" step="any" value="${specifiedRefine.certifiedMergeFinestM ?? ""}">`,certifiedMergeScale && certifiedMergeScale.levels >= 1
+          ? (z?`吸附为 ${certifiedMergeScale.levels} 级，实际约 ${formatMetres(certifiedMergeScale.finestM)}`:`snaps to ${certifiedMergeScale.levels} level(s), about ${formatMetres(certifiedMergeScale.finestM)}`)
+          : (z?"须比基面细":"must be finer than the base"))}
+        ${expertField(z?"每面样本下限":"Minimum samples per face",`<input class="input" type="number" id="certifiedMergeMinimumSamples" min="1" step="1" value="${specifiedRefine.certifiedMergeMinimumSamples ?? 4}">`,z?"样本少于此数的面不构成反对合并的证据":"a face with fewer samples gives no evidence against merging")}
+      </div>
+      <table style="width:100%;margin-top:10px;border-collapse:collapse;font-size:12px">
+        <thead><tr><th style="text-align:left">${z?"数据层":"Data layer"}</th><th style="text-align:left">${z?"变量":"Variable"}</th><th style="text-align:left">${z?"统计量":"Statistic"}</th><th style="text-align:left">${z?"阈值":"Threshold"}</th><th></th></tr></thead>
+        <tbody id="certifiedMergeRows">${certifiedMergeRows}</tbody>
+      </table>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button type="button" class="btn-ghost" id="certifiedMergeAdd">${z?"+ 添加判据":"+ Add criterion"}</button>
+        <button type="button" class="btn-ghost" id="certifiedMergePreview">${z?"预览各级单元":"Preview the levels"}</button>
+      </div>
+      <div id="certifiedMergePreviewResult" style="font-size:12px;margin-top:8px"></div>
+      <div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
+        ? "需要区域域与认证反向粗化，并按区域发布。启用时指定细化与阈值细化不参与（设置保留，关闭合并判据后恢复）。"
+        : "Needs a regional domain and certified reverse coarsening, published as the region. While on, specified and threshold refinement take no part (their settings are kept for when merge criteria are turned off)."}</div>
+    </div>` : "";
     const redGreenOptions = `<div id="redGreenOptions" class="expert" style="margin-top:12px">
       <span class="expert-tag">⚙ ${z?"专家 — ":"EXPERT — "}Red-Green · ${z?"专属参数":"specific parameters"}</span>
       <div class="grid2">
@@ -3307,7 +3433,9 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         ${expertField(z?"每级渐变图环":"Gradation rings per level",`<input class="input" type="number" id="certifiedGradationRingsPerLevel" min="1" step="1" value="${specifiedRefine.certifiedGradationRingsPerLevel}">`)}
         ${expertField(z?"层级搜索预算":"Hierarchy search budget",`<input class="input" type="number" id="certifiedSearchBudget" min="1" step="1" value="${specifiedRefine.certifiedSearchBudget}">`)}
         ${field(z?"认证内容":"Certificate",`<input class="input" value="Euler 2 · charge 12 · primal/dual/requirement/balance/remap" disabled>`,z?"角度硬门以上方所选合同为准；任一认证失败都不写正式 gridfile":"The selected contract defines the angle gate; no formal gridfile is written if certification fails")}
+        ${specifiedRefine.certifiedMode==="reverse_coarsening" ? field(z?"物化方式":"Materialization",`<select class="select" id="certifiedMaterialization" ${certifiedMergeOn?"disabled":""}><option value="whole" ${!certifiedMergeOn && (specifiedRefine.certifiedMaterialization||"whole")==="whole"?"selected":""}>${z?"整球（默认）":"Whole sphere (default)"}</option><option value="on_demand" ${!certifiedMergeOn && specifiedRefine.certifiedMaterialization==="on_demand"?"selected":""}>${z?"按需（只建需求所及，再拼回整球）":"On demand (built where needed, put back into the sphere)"}</option><option value="regional" ${certifiedMergeOn || specifiedRefine.certifiedMaterialization==="regional"?"selected":""}>${z?"区域发布（只建需求所及，按区域发布）":"Regional publication (built where needed, published as the region)"}</option></select>`,certifiedMergeOn ? (z?"合并判据按区域发布":"merge criteria are published as the region") : (z?"按需与区域发布只用于区域域；区域发布可到 30 m":"on demand and regional need a regional domain; regional reaches 30 m")) : ""}
       </div>
+      ${certifiedMergeBlock}
       ${specifiedRefine.certifiedMode==="stretched_mother"
         ? `<div style="color:var(--muted);font-size:12px;line-height:1.6;margin-top:8px">${z
             ? "认证拉伸：只挪顶点，无七边形，全球 ICON 可用。只有一个焦点：需求集中在一处时比安全母网格省单元（实测 2 级约 2.8 倍、3 级约 6 倍）；需求分散或只有 1 级时自动退回安全母网格并说明原因。"
@@ -3434,16 +3562,19 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         : draftError || (z ? "两个策略可独立启用，也可同时启用。" : "The two strategies can be enabled independently or together.");
       const anchor = ch;
       const switches = `<div class="grid2" id="refinementStrategySwitches" style="margin-top:12px">
-        ${field(z?"指定细化":"Specified refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled ? "checked" : ""}>${z?"启用后显示指定区域设置":"Show specified-region settings"}</label>`)}
-        ${field(z?"阈值细化":"Threshold refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="thresholdRefineOn" ${thresholdRefine.enabled ? "checked" : ""}>${z?"启用后显示数据判据设置":"Show data-criterion settings"}</label>`)}
+        ${field(z?"指定细化":"Specified refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="specifiedRefineOn" ${specifiedRefine.enabled && !certifiedMergeOn ? "checked" : ""} ${certifiedMergeOn ? "disabled" : ""}>${z?"启用后显示指定区域设置":"Show specified-region settings"}</label>`)}
+        ${field(z?"阈值细化":"Threshold refinement",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="thresholdRefineOn" ${thresholdRefine.enabled && !certifiedMergeOn ? "checked" : ""} ${certifiedMergeOn ? "disabled" : ""}>${z?"启用后显示数据判据设置":"Show data-criterion settings"}</label>`)}
+        ${algorithm==="certified" ? field(z?"合并判据（CMRC）":"Merge criteria (CMRC)",`<label style="display:flex;gap:8px;align-items:center;height:38px"><input type="checkbox" id="certifiedMergeOn" ${certifiedMergeOn ? "checked" : ""}>${z?"父单元均匀才合并，取代指定与阈值细化":"a parent merges only where homogeneous; replaces specified and threshold refinement"}</label>`) : ""}
       </div>`;
-      const strategyEnabled = specifiedRefine.enabled || thresholdRefine.enabled;
+      // CMRC's merge criteria are the requirement on their own: the other two
+      // strategies keep their settings but are not shown or applied.
+      const strategyEnabled = !certifiedMergeOn && (specifiedRefine.enabled || thresholdRefine.enabled);
       const mp = switches
         + algorithmBlock
         + algorithmOptionsBlock
         + expertRefine
-        + (specifiedRefine.enabled ? specified : "")
-        + (thresholdRefine.enabled ? threshold : "")
+        + (certifiedMergeOn ? "" : (specifiedRefine.enabled ? specified : ""))
+        + (certifiedMergeOn ? "" : (thresholdRefine.enabled ? threshold : ""))
         + (strategyEnabled ? hfieldBlock : "");
       anchor.insertAdjacentHTML("afterend", mp);
       if (draftError) {
@@ -3602,6 +3733,93 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
       if (certifiedAngleContract) certifiedAngleContract.onchange = () => {
         specifiedRefine.certifiedAngleContract = certifiedAngleContract.value;
         clearRunArtifacts();
+      };
+      const certifiedMergeSwitch = document.getElementById("certifiedMergeOn");
+      if (certifiedMergeSwitch) certifiedMergeSwitch.onchange = () => {
+        specifiedRefine.certifiedRequirement = certifiedMergeSwitch.checked ? "merge" : "discrete";
+        if (certifiedMergeSwitch.checked) {
+          // The merge criteria are reverse coarsening published as the region.
+          specifiedRefine.certifiedMode = "reverse_coarsening";
+          specifiedRefine.certifiedMaterialization = "regional";
+          // Two levels below the base to start from, in round metres.
+          if (specifiedRefine.certifiedMergeFinestM == null) {
+            const quarter = nxpToKm(currentNxp()) * 1000 / 4;
+            const unit = Math.pow(10, Math.max(0, Math.floor(Math.log10(quarter)) - 1));
+            specifiedRefine.certifiedMergeFinestM = Math.round(quarter / unit) * unit;
+          }
+          if (!(specifiedRefine.certifiedMergeCriteria || []).length) {
+            specifiedRefine.certifiedMergeCriteria = [{ path: "", variable: "", statistic: "std", threshold: 5 }];
+          }
+        }
+        clearRunArtifacts();
+        enhanceRefinementStep();
+      };
+      const certifiedMaterialization = document.getElementById("certifiedMaterialization");
+      if (certifiedMaterialization) certifiedMaterialization.onchange = () => {
+        specifiedRefine.certifiedMaterialization = certifiedMaterialization.value;
+        clearRunArtifacts();
+      };
+      const mergeFinest = document.getElementById("certifiedMergeFinestM");
+      if (mergeFinest) {
+        mergeFinest.oninput = () => {
+          specifiedRefine.certifiedMergeFinestM = mergeFinest.value.trim() ? readNum(mergeFinest) : null;
+          clearRunArtifacts();
+        };
+        // The snapped size beside it is redrawn once the edit is done.
+        mergeFinest.onchange = () => enhanceRefinementStep();
+      }
+      bindAlgorithmNumber("certifiedMergeMinimumSamples", "certifiedMergeMinimumSamples", true);
+      document.querySelectorAll("#certifiedMergeRows tr[data-merge-row]").forEach((row) => {
+        const criterion = specifiedRefine.certifiedMergeCriteria[Number(row.dataset.mergeRow)];
+        if (!criterion) return;
+        const path = row.querySelector(".merge-path");
+        const variable = row.querySelector(".merge-variable");
+        const statistic = row.querySelector(".merge-statistic");
+        const threshold = row.querySelector(".merge-threshold");
+        path.value = criterion.path || "";
+        variable.value = criterion.variable || "";
+        statistic.value = criterion.statistic || "std";
+        threshold.value = criterion.threshold ?? "";
+        path.oninput = () => { criterion.path = path.value; clearRunArtifacts(); };
+        variable.oninput = () => { criterion.variable = variable.value; clearRunArtifacts(); };
+        statistic.onchange = () => { criterion.statistic = statistic.value; clearRunArtifacts(); };
+        threshold.oninput = () => { criterion.threshold = threshold.value.trim() ? readNum(threshold) : null; clearRunArtifacts(); };
+        const browse = async (folder) => {
+          let picked;
+          try { picked = await (folder ? api.pickDataFolder() : api.pickDataFile()); }
+          catch (e) { logLine("✗ " + e); return; }
+          if (!picked) return;
+          criterion.path = picked;
+          path.value = picked;
+          clearRunArtifacts();
+        };
+        row.querySelector(".merge-browse").onclick = () => browse(false);
+        row.querySelector(".merge-browse-folder").onclick = () => browse(true);
+        row.querySelector(".merge-remove").onclick = () => {
+          specifiedRefine.certifiedMergeCriteria.splice(Number(row.dataset.mergeRow), 1);
+          clearRunArtifacts();
+          enhanceRefinementStep();
+        };
+      });
+      const mergeAdd = document.getElementById("certifiedMergeAdd");
+      if (mergeAdd) mergeAdd.onclick = () => {
+        (specifiedRefine.certifiedMergeCriteria = specifiedRefine.certifiedMergeCriteria || [])
+          .push({ path: "", variable: "", statistic: "std", threshold: null });
+        clearRunArtifacts();
+        enhanceRefinementStep();
+      };
+      const mergePreview = document.getElementById("certifiedMergePreview");
+      const mergePreviewResult = document.getElementById("certifiedMergePreviewResult");
+      if (mergePreview && mergePreviewResult) mergePreview.onclick = async () => {
+        mergePreview.disabled = true;
+        mergePreviewResult.textContent = z ? "读取数据、计算判据网格…" : "Reading the layers and building the criterion mesh…";
+        try {
+          renderCertifiedMergePreview(mergePreviewResult, await invoke("preview_certified_merge", { yaml: await composeYaml() }));
+        } catch (e) {
+          mergePreviewResult.textContent = "✗ " + e;
+        } finally {
+          mergePreview.disabled = false;
+        }
       };
     }
     // toggles (only for criteria that have data)
@@ -3982,6 +4200,11 @@ let expertEdit = { enabled: false, nxp: null, openmp: null, niter: null, niterRe
         certifiedMaximumCells: sum.certified_maximum_cells ?? algorithmDefaults.certifiedMaximumCells,
         certifiedGradationRingsPerLevel: sum.certified_gradation_rings_per_level ?? algorithmDefaults.certifiedGradationRingsPerLevel,
         certifiedSearchBudget: sum.certified_search_budget ?? algorithmDefaults.certifiedSearchBudget,
+        certifiedMaterialization: sum.certified_materialization ?? algorithmDefaults.certifiedMaterialization,
+        certifiedRequirement: sum.certified_merge ? "merge" : "discrete",
+        certifiedMergeFinestM: sum.certified_merge ? sum.certified_merge.finest_m : null,
+        certifiedMergeMinimumSamples: sum.certified_merge ? sum.certified_merge.minimum_samples : algorithmDefaults.certifiedMergeMinimumSamples,
+        certifiedMergeCriteria: sum.certified_merge ? sum.certified_merge.criteria.map((c) => ({ ...c })) : [],
         route: sum.hfield_enabled ? "hfield" : (sum.adaptive_enabled ? "adaptive" : "discrete"),
         adaptiveMaxLevel: sum.adaptive_max_level ?? 0,
         adaptiveCoastline: sum.adaptive_coastline !== false,

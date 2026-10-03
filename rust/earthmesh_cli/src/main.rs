@@ -31,6 +31,8 @@ fn main() -> ExitCode {
             | Some("-V")
             | Some("--version")
             | Some("--studio-protocol")
+            // A query: it reads the layers and prints, and leaves nothing.
+            | Some("--cmrc-merge-preview")
     );
     let result = run_cli_command();
     if !is_informational {

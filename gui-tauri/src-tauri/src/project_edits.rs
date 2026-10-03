@@ -795,8 +795,23 @@ pub(crate) fn set_certified_options(
     maximum_cells: usize,
     gradation_rings_per_level: u8,
     search_budget: usize,
+    materialization: Option<String>,
 ) -> Result<String, String> {
     let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    // Absent keeps what the project has, as the merge criteria are kept:
+    // they are set by `set_certified_merge`.
+    let materialization = match materialization.as_deref() {
+        None => cfg.refinement.certified.materialization,
+        Some("whole") => earthmesh_project::CertifiedMaterialization::Whole,
+        Some("on_demand") => earthmesh_project::CertifiedMaterialization::OnDemand,
+        Some("regional") => earthmesh_project::CertifiedMaterialization::Regional,
+        Some(other) => {
+            return Err(format!(
+                "unknown certified materialization {other}: expected whole, on_demand or regional"
+            ))
+        }
+    };
+    let merge = cfg.refinement.certified.merge.take();
     cfg.refinement.certified = earthmesh_project::CertifiedRefinementRecipe {
         mode: match mode.as_str() {
             "safe_mother_only" => earthmesh_project::CertifiedMode::SafeMotherOnly,
@@ -836,7 +851,21 @@ pub(crate) fn set_certified_options(
         maximum_cells,
         gradation_rings_per_level,
         search_budget,
+        materialization,
+        merge,
     };
+    validated_yaml(cfg)
+}
+
+/// CMRC's merge criteria (guide 11.111): `None` turns them off, and the
+/// threshold and named-region sources serve as before.
+#[tauri::command]
+pub(crate) fn set_certified_merge(
+    yaml: String,
+    merge: Option<earthmesh_project::CertifiedMergeRecipe>,
+) -> Result<String, String> {
+    let mut cfg = ProjectConfig::from_yaml(&yaml)?;
+    cfg.refinement.certified.merge = merge;
     validated_yaml(cfg)
 }
 

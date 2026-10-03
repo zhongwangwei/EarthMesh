@@ -2273,7 +2273,8 @@ pub(super) fn refine_with_certified(
                 contents,
                 config.mesh_type.trim(),
                 requested_view,
-                crate::hfield_refine::read_hfield_refine_options(contents)?.is_some(),
+                crate::hfield_refine::read_hfield_refine_options(contents)?.is_some()
+                    || crate::namelist_reader::namelist_has_section(contents, "certified_merge"),
             )
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
         } else {
@@ -4129,6 +4130,51 @@ fn lon_lat_windows(
         });
     }
     Ok(windows)
+}
+
+/// What the merge criteria alone ask of a namelist's domain (design H3,
+/// step 7), before any coarsening: the lattice field over the domain's base
+/// faces and its criterion mesh -- every face merged where it may be, before
+/// balance and transitions -- level by level, with each level's cell size.
+/// The layers are read as a run reads them, so thresholds can be tuned
+/// against this in seconds rather than a run.
+pub fn certified_merge_preview(namelist_source: &Path) -> io::Result<serde_json::Value> {
+    let invalid_input = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message);
+    let contents = fs::read_to_string(namelist_source)?;
+    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let merge = read_certified_merge_options(&contents)?
+        .ok_or_else(|| invalid_input("the namelist has no &certified_merge"))?;
+    let options = crate::certified_options::read_certified_options(&contents)?;
+    let domain = (!config.mask_domain_global)
+        .then(|| read_method_c_domain_region(&config))
+        .transpose()?
+        .flatten()
+        .ok_or_else(|| invalid_input("CMRC merge criteria need a regional domain"))?;
+    let base_nxp = usize::try_from(config.nxp)
+        .ok()
+        .filter(|&nxp| nxp > 0)
+        .ok_or_else(|| invalid_input("CMRC NXP must be positive"))?;
+    let plan = certified_merge_plan(&merge, base_nxp, &domain, options.maximum_level)?;
+    let (Some(field), Some(mut preview)) = (plan.lattice, plan.lattice_provenance) else {
+        return Err(io::Error::other("a merge plan carries its field"));
+    };
+    let base_cell_m = CertifiedMergeOptions::base_cell_m(base_nxp);
+    preview["base_nxp"] = base_nxp.into();
+    preview["criterion_mesh"] = field
+        .leaves_per_level()
+        .iter()
+        .enumerate()
+        .map(|(level, &faces)| {
+            serde_json::json!({
+                "level": level,
+                "cell_m": base_cell_m / (1u64 << level) as f64,
+                "faces": faces,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
+    Ok(preview)
 }
 
 /// The merge criteria's requirement (`&certified_merge`, design H3): every
