@@ -1393,7 +1393,12 @@ fn certified_ocean_output_is_masked_and_boundary_checked() {
     let case = "ocean_mask_gate";
     let namelist = landtype_namelist(&root, case, &landtype)
         .replace("landmesh", "oceanmesh")
-        .replace("mode_grid='hex'", "mode_grid='tri'")
+        // Only the largest water body, as a project lowers an ocean mesh
+        // (`isolated_ocean`); a namelist that leaves it out keeps every body.
+        .replace(
+            "mode_grid='hex'",
+            "mode_grid='tri'\n  NL%isolated_ocean=.true.",
+        )
         .replace("output_format='CoLM'", "output_format='FVCOM'");
     fs::write(&path, namelist).unwrap();
     let result_dir = root.join(case).join("result");
@@ -1560,7 +1565,12 @@ fn certified_ocean_reports_declared_region_centers_removed_by_final_mask() {
     let path = root.join("cmrc.nml");
     let contents = specified_circle_namelist(&root, "ocean_demand_mask_loss", &circle)
         .replace("mesh_type='earthmesh'", "mesh_type='oceanmesh'")
-        .replace("mode_grid='hex'", "mode_grid='tri'")
+        // Only the largest water body, as a project lowers an ocean mesh
+        // (`isolated_ocean`); a namelist that leaves it out keeps every body.
+        .replace(
+            "mode_grid='hex'",
+            "mode_grid='tri'\n  NL%isolated_ocean=.true.",
+        )
         .replace(
             "landtype_file='none'",
             &format!("landtype_file='{}'", landtype.display()),
