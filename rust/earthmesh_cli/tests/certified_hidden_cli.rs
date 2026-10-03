@@ -696,7 +696,7 @@ fn safe_mother_publishes_only_after_all_hard_gates_pass() {
 }
 
 #[test]
-fn certified_atmos_mpas_safe_mother_publishes_mesh_and_graph_atomically() {
+fn certified_atmos_mpas_safe_mother_leaves_the_model_files_to_the_shared_writer() {
     let root = temp_root("atmos_mpas_safe");
     let case = "atmos_mpas_safe";
     let path = root.join("cmrc.nml");
@@ -709,32 +709,30 @@ fn certified_atmos_mpas_safe_mother_publishes_mesh_and_graph_atomically() {
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let certified = run.certified_run.unwrap();
     let result = root.join(case).join("result");
-    let mpas = result.join("MPASOUT_NXP0003_global.nc4");
-    let graph = result.join("MPASOUT_NXP0003_global.graph.info");
-    assert!(mpas.exists());
-    assert!(graph.exists());
+    // CMRC publishes the gridfile with its MPAS widths; the MPAS files are
+    // written from it by the shared delivery, as for every backend.
+    assert!(!result.join("MPASOUT_NXP0003_global.nc4").exists());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
+    assert!(manifest.get("mpas").is_none(), "{manifest}");
+    let context =
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
+            .unwrap()
+            .expect("CMRC gridfile carries its MPAS widths");
+    assert_eq!(context.source, "cmrc_delivered_w_levels");
+    let (mpas, graph) = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &run.output.output,
+        root.join("mpas"),
+        earthmesh_project::ModelFormat::Mpas,
+    )
+    .unwrap();
+    let graph = graph.expect("full MPAS writes graph.info");
     assert_mpas_unit_sphere(&mpas);
     assert_graph_header_matches_mesh(&graph, &mpas);
     let file = netcdf::open(&mpas).expect("open MPAS mesh");
     let density = read_f64(&file, "meshDensity");
     assert_eq!(density.len(), file.dimension("nCells").unwrap().len());
     assert!(density.iter().all(|value| *value == 1.0));
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
-    assert_eq!(manifest["mpas"], mpas.display().to_string());
-    assert_eq!(manifest["mpas_graph_info"], graph.display().to_string());
-    assert_eq!(manifest["mpas_sphere_radius"], 1.0);
-    let resources: serde_json::Value =
-        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
-    assert_eq!(resources["mpas"]["mesh"], mpas.display().to_string());
-    assert_eq!(resources["mpas"]["graph_info"], graph.display().to_string());
-    assert!(resources["artifact_bytes"]["mpas"].as_u64().unwrap() > 0);
-    assert!(
-        resources["artifact_bytes"]["mpas_graph_info"]
-            .as_u64()
-            .unwrap()
-            > 0
-    );
 }
 
 #[test]
@@ -768,9 +766,13 @@ fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
     let run = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None).unwrap();
     let certified = run.certified_run.unwrap();
     assert!(certified.fulfillment.mixed_levels_delivered);
-    let mpas = root
-        .join("atmos_mpas_adaptive")
-        .join("result/MPASOUT_NXP0003_global.nc4");
+    // The MPAS mesh comes from the shared writer, from CMRC's gridfile.
+    let (mpas, _) = earthmesh_cli::mpas_gridfile_writers::write_mpas_from_final_gridfile(
+        &run.output.output,
+        root.join("mpas"),
+        earthmesh_project::ModelFormat::Mpas,
+    )
+    .unwrap();
     let file = netcdf::open(&mpas).expect("open MPAS mesh");
     let density = read_f64(&file, "meshDensity");
     assert!(density
@@ -786,11 +788,6 @@ fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
             .any(|value| (*value - density[0]).abs() > 1.0e-12),
         "adaptive CMRC MPAS must not synthesize all-one meshDensity"
     );
-    let resources: serde_json::Value =
-        serde_json::from_slice(&fs::read(certified.resources).unwrap()).unwrap();
-    assert_eq!(resources["mpas"]["mesh_density_min"], 0.0625);
-    assert_eq!(resources["mpas"]["mesh_density_max"], 1.0);
-    assert_eq!(resources["mpas"]["step"], 2);
     let native = netcdf::open(&run.output.output).unwrap();
     let widths = read_f64(&native, "earthmesh_w_cellwidth_km");
     assert_eq!(widths.len(), native.dimension("lbx_points").unwrap().len());
@@ -850,7 +847,7 @@ fn certified_atmos_mpas_adaptive_density_uses_delivered_refinement_levels() {
 }
 
 #[test]
-fn certified_atmos_mpas_publication_failure_restores_prior_complete_bundle() {
+fn certified_publication_failure_restores_prior_complete_bundle() {
     let root = temp_root("atmos_mpas_rollback");
     let case = "atmos_mpas_rollback";
     let path = root.join("cmrc.nml");
@@ -861,30 +858,31 @@ fn certified_atmos_mpas_publication_failure_restores_prior_complete_bundle() {
     fs::write(&path, contents).unwrap();
 
     let first = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect("initial complete MPAS bundle");
+        .expect("initial complete CMRC bundle");
     let certified = first.certified_run.unwrap();
     let result = root.join(case).join("result");
     let grid = first.output.output;
-    let mpas = result.join("MPASOUT_NXP0003_global.nc4");
-    let graph = result.join("MPASOUT_NXP0003_global.graph.info");
+    let remap = certified
+        .remap
+        .clone()
+        .expect("a global CMRC run publishes its remap");
     let ready = certified.ready_marker;
     let before = artifact_bytes(&[
         grid.as_path(),
-        mpas.as_path(),
         certified.certificate.as_path(),
         certified.manifest.as_path(),
         certified.resources.as_path(),
         ready.as_path(),
     ]);
 
-    fs::remove_file(&graph).unwrap();
-    fs::create_dir(&graph).unwrap();
+    fs::remove_file(&remap).unwrap();
+    fs::create_dir(&remap).unwrap();
     let error = earthmesh_cli::run_refine_pipeline_namelist(&path, &root, 1_000, None)
-        .expect_err("directory at graph path must make publication fail");
+        .expect_err("directory at the remap path must make publication fail");
     assert!(error
         .to_string()
         .contains("CMRC atomic artifact publication failed"));
-    fs::remove_dir(&graph).unwrap();
+    fs::remove_dir(&remap).unwrap();
     assert_artifacts_unchanged(&before);
     assert_no_cmrc_temporaries(&result);
 }
@@ -1304,14 +1302,12 @@ fn mixed_uniform_delivery_fails_closed_or_uses_an_explicitly_named_safe_fallback
         run.output.output.file_name().unwrap().to_str().unwrap(),
         "gridfile_NXP0003_hex_certified_safe_fallback.nc4"
     );
-    assert!(root
-        .join("mixed_safe_fallback/result/MPASOUT_NXP0003_global_certified_safe_fallback.nc4")
-        .exists());
-    assert!(root
-        .join(
-            "mixed_safe_fallback/result/MPASOUT_NXP0003_global_certified_safe_fallback.graph.info"
-        )
-        .exists());
+    assert!(
+        earthmesh_cli::mpas_gridfile_context::read_mpas_gridfile_context(&run.output.output)
+            .unwrap()
+            .is_some(),
+        "the fallback gridfile carries its MPAS widths for the shared writer"
+    );
     assert_eq!(
         fs::read_to_string(&certified.ready_marker).unwrap(),
         "certified_safe_fallback\n"
@@ -1825,11 +1821,9 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
         run.output.output.file_name().unwrap().to_str().unwrap(),
         "gridfile_NXP0003_tri_oceanmesh.nc4"
     );
-    let fvcom = root.join("regional_ocean/result/fvcom.2dm");
-    assert!(fvcom.exists());
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&certified.manifest).unwrap()).unwrap();
-    assert_eq!(manifest["fvcom_2dm"], fvcom.display().to_string());
+    // FVCOM is the shared delivery's, written from the published gridfile
+    // (below); CMRC no longer writes its own.
+    assert!(!root.join("regional_ocean/result/fvcom.2dm").exists());
     let certificate: serde_json::Value =
         serde_json::from_slice(&fs::read(certified.certificate).unwrap()).unwrap();
     assert_eq!(certificate["geometry_scope"], "pre_export_closed_sphere");
@@ -1850,11 +1844,6 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
         resources["published_domain_topology"]["violations"],
         serde_json::json!([])
     );
-    assert_eq!(
-        resources["fvcom_2dm"]["output"],
-        fvcom.display().to_string()
-    );
-    assert!(resources["fvcom_2dm"]["triangles"].as_u64().unwrap() > 0);
     // CMRC already removed its temporary domain directory: the published native
     // gridfile must carry the exact OBC needed by delayed Project delivery.
     let obc = earthmesh_cli::obc_boundary_io::read_gridfile_obc_order(&run.output.output)
@@ -1870,25 +1859,14 @@ fn certified_close_ocean_publishes_regional_fvcom_after_global_certificate() {
     .unwrap();
     assert_eq!(
         delayed.triangles as u64,
-        resources["fvcom_2dm"]["triangles"].as_u64().unwrap()
-    );
-    assert_eq!(
-        delayed.nodes as u64,
-        resources["fvcom_2dm"]["nodes"].as_u64().unwrap()
-    );
-    assert_eq!(
-        delayed.boundary_segments as u64,
-        resources["fvcom_2dm"]["boundary_segments"]
+        certificate["published_domain_geometry"]["cells"]
             .as_u64()
             .unwrap()
     );
+    assert!(delayed.nodes > 0);
     // This existing synthetic case classifies no open chains. Preserve that
     // result exactly; do not invent NS records to make a model-ready claim.
     assert_eq!(delayed.boundary_segments, 0);
-    assert_eq!(
-        fs::read_to_string(&fvcom).unwrap(),
-        fs::read_to_string(&delayed_path).unwrap()
-    );
 
     assert!(
         resources["published_domain_topology"]["boundary_loops"]

@@ -5425,3 +5425,19 @@ Stretch/ICON（`fixed_topology_adaptive_run`）每一轮都写上全部命名区
 
 里海在 `landtype_igbp_update.nc` 里是 17（内陆水体），裁剪只把 0 当海洋，所以它对海洋网格是陆地，与需求无关。12 个交接用例
 与 3 个示例工程逐产物不变。
+
+### 11.115 CMRC 的模型文件由共用交付写出（2026-10-03）
+
+分层复查第 3 项的最后一条（用户选"改走共用交付"）。工程运行延迟导出，CMRC 的 MPAS/FVCOM 本来就由共用交付从最终 gridfile
+写出；直接跑 namelist 时 CMRC 却自己写 `result/MPASOUT_NXP####_global.nc4`、graph.info 与 `result/fvcom.2dm`，最终交付
+见清单里有模型就不再调用共用写出。同一个 CMRC 网格两种跑法得到两份不同的 MPAS：CMRC 自己的版本用构建器的 `meshDensity`，
+不带宽度来源与参考宽度两个属性。
+
+现在 CMRC 只发布 gridfile（带按交付层级算的 MPAS 宽度上下文，`MpasWidthSource::CertifiedDeliveredLevels`）、remap、证书、
+清单与资源记录；模型文件一律由最终交付的 `write_available_models` 写到 `standard/` 下，与其余后端相同。清单与资源记录不再有
+`mpas`、`mpas_graph_info`、`mpas_sphere_radius`、`fvcom_2dm` 字段。只跑原始流水线（不走最终交付）时 CMRC 不再顺带出模型
+文件，与其余后端一致。
+
+全球网格上两份 MPAS 的数值一致：共用写出按 (参考宽度/宽度)^4 算 `meshDensity`，参考宽度就是最细的交付宽度（测试里
+1280 km，第 1 层 1.0、第 0 层 0.0625，与原来相同）；CMRC 的宽度不是名义需求，`nominalMinDc` 仍取构建器的值。区域海洋的
+FVCOM 本来就是同一个 `write_fvcom_from_final_gridfile` 从带开边界上下文的 gridfile 写出，只是换了位置。

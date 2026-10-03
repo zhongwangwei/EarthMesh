@@ -10,7 +10,6 @@ use crate::certified_options::{
     read_certified_merge_options, CertifiedDelivery, CertifiedMaterialization,
     CertifiedMergeOptions, CertifiedMode, CertifiedRunOptions,
 };
-use crate::fvcom_mesh_2dm_output_path;
 use crate::gridfile_mesh_from_one_based_state;
 use crate::mkgrd_run_types::CertifiedRunRecord;
 use crate::native_grid_refinement_requested;
@@ -206,14 +205,6 @@ pub(super) struct CertifiedDomainPublication {
     pub(super) topology: serde_json::Value,
     pub(super) quality_topology: (usize, Vec<serde_json::Value>),
     pub(super) geometry: serde_json::Value,
-    pub(super) fvcom_2dm: Option<crate::FvcomMesh2dmWriteReport>,
-}
-
-pub(super) struct CertifiedMpasPublication {
-    report: crate::MpasFullMeshPipelineReport,
-    mesh_density_min: f64,
-    mesh_density_max: f64,
-    step: usize,
 }
 
 pub(super) fn certified_mpas_cellwidth(
@@ -241,46 +232,6 @@ pub(super) fn certified_mpas_cellwidth(
         .collect()
 }
 
-pub(super) fn publish_certified_atmos_mpas(
-    mesh: &crate::UnstructuredMesh,
-    context: &crate::mpas_gridfile_context::MpasGridfileContext,
-    mesh_output: &Path,
-    graph_output: &Path,
-) -> io::Result<CertifiedMpasPublication> {
-    let step = context.step;
-    let mpas = crate::build_mpas_mesh_from_unstructured_one_based(
-        mesh,
-        &context.cellwidth_km,
-        context.base_nxp,
-        step,
-    )?;
-    let mesh_density_min = mpas.mesh_density[1..]
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let mesh_density_max = mpas.mesh_density[1..]
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let mesh_report = crate::write_mpas_mesh_netcdf(mesh_output, &mpas)?;
-    let graph_info = crate::write_mpas_graph_info(
-        graph_output,
-        10,
-        &mpas.cells_on_cell,
-        &mpas.cells_on_edge,
-        &mpas.n_edges_on_cell,
-    )?;
-    Ok(CertifiedMpasPublication {
-        report: crate::MpasFullMeshPipelineReport {
-            mesh: mesh_report,
-            graph_info,
-        },
-        mesh_density_min,
-        mesh_density_max,
-        step,
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn publish_certified_domain_gridfile(
     source_gridfile: &Path,
@@ -290,12 +241,11 @@ pub(super) fn publish_certified_domain_gridfile(
     workdir: &Path,
     domain_region: Option<&GridRegion>,
     angle_contract: earthmesh_refine_certified::AngleContractId,
-    fvcom_output: Option<&Path>,
     hard_center_demand: Option<&[bool]>,
 ) -> io::Result<CertifiedDomainPublication> {
     let mode_grid = config.mode_grid.trim();
     let mesh_type = config.mesh_type.trim();
-    let (kept_cells, fvcom_2dm) = if let (Some(region), "earthmesh" | "atmos" | "atmosmesh") =
+    let kept_cells = if let (Some(region), "earthmesh" | "atmos" | "atmosmesh") =
         (domain_region, mesh_type)
     {
         if mode_grid == "hex" {
@@ -313,7 +263,7 @@ pub(super) fn publish_certified_domain_gridfile(
             region,
             mode_grid,
         )?;
-        (Some(kept), None)
+        Some(kept)
     } else {
         let gridnum_perdegree = crate::mkgrd_gridinit_driver::landtype_gridnum_perdegree(
             Path::new(config.landtype_file.trim()),
@@ -342,17 +292,10 @@ pub(super) fn publish_certified_domain_gridfile(
                 config.mask_sea_ratio,
                 workdir,
             )?;
+            // The boundary context travels in the gridfile, where the shared
+            // FVCOM delivery reads it.
             fs::copy(&plan.result_gridfile, output_gridfile)?;
-            // The boundary context travels in the gridfile; FVCOM reads it there.
-            let fvcom = fvcom_output
-                .map(|output| {
-                    crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
-                        output_gridfile,
-                        output,
-                    )
-                })
-                .transpose()?;
-            (None, fvcom)
+            None
         } else if let (Some(region), "landmesh", "tri") = (domain_region, mesh_type, mode_grid) {
             fs::create_dir_all(workdir)?;
             let regional_gridfile = workdir.join("whole_regional_tri.nc4");
@@ -374,7 +317,7 @@ pub(super) fn publish_certified_domain_gridfile(
                 false,
                 None,
             )?;
-            (Some(kept), None)
+            Some(kept)
         } else {
             // The carve every backend's mesh gets: the largest water body is
             // kept when `isolated_ocean` asks for it (on by default for an
@@ -392,18 +335,10 @@ pub(super) fn publish_certified_domain_gridfile(
                 config.isolated_ocean,
                 hard_center_demand,
             )?;
-            // Not an empty boundary list assumed here: the carve records
-            // whether its boundary is coastline only, and a bounded mesh
-            // without that record is refused rather than exported as all wall.
-            let fvcom = fvcom_output
-                .map(|output| {
-                    crate::regional_gridfile_writers::write_fvcom_from_final_gridfile(
-                        output_gridfile,
-                        output,
-                    )
-                })
-                .transpose()?;
-            (Some(kept), fvcom)
+            // The carve records whether its boundary is coastline only; the
+            // shared FVCOM delivery refuses a bounded mesh without that record
+            // rather than exporting it as all wall.
+            Some(kept)
         }
     };
 
@@ -510,12 +445,6 @@ pub(super) fn publish_certified_domain_gridfile(
             })
         })
         .collect::<Vec<_>>();
-    if fvcom_2dm
-        .as_ref()
-        .is_some_and(|report| report.boundary_segments == 0)
-    {
-        eprintln!("earthmesh_cli: FVCOM has no explicit open-boundary chains; model boundary classification and forcing must be supplied separately");
-    }
     Ok(CertifiedDomainPublication {
         report: crate::unstructured_mesh_write_report_from_file(output_gridfile)?,
         kept_cells: kept_cells.unwrap_or(quality_report.geometry.cell_count),
@@ -536,7 +465,6 @@ pub(super) fn publish_certified_domain_gridfile(
             "contract_maximum_deg": (mode_grid == "tri").then_some(delivery_window.maximum_degrees),
             "contract_pass": (mode_grid == "tri").then_some(true),
         }),
-        fvcom_2dm,
     })
 }
 
@@ -1387,40 +1315,6 @@ pub(super) fn deliver_certified(
     certificate_document["region"] = region
         .as_ref()
         .map_or(serde_json::Value::Null, region_publication_json);
-    let fvcom_output_path = (!config.defer_model_exports
-        && is_domain_export
-        && config.mesh_type.trim() == "oceanmesh"
-        && config.mode_grid.trim() == "tri"
-        && config.output_format.trim().eq_ignore_ascii_case("FVCOM"))
-    .then(|| fvcom_mesh_2dm_output_path(file_dir));
-    let temporary_fvcom_path =
-        result_dir.join(format!(".fvcom.2dm.cmrc-tmp-{}", std::process::id()));
-    let mpas_suffix = if safe_fallback {
-        "_certified_safe_fallback"
-    } else {
-        ""
-    };
-    let mpas_output_paths = (!config.defer_model_exports
-        && !is_domain_export
-        && matches!(config.mesh_type.trim(), "atmos" | "atmosmesh")
-        && config.mode_grid.trim() == "hex"
-        && config.output_format.trim().eq_ignore_ascii_case("MPAS"))
-    .then(|| {
-        (
-            result_dir.join(format!("MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.nc4")),
-            result_dir.join(format!(
-                "MPASOUT_NXP{base_nxp:04}_global{mpas_suffix}.graph.info"
-            )),
-        )
-    });
-    let temporary_mpas_path = result_dir.join(format!(
-        ".MPASOUT_NXP{base_nxp:04}_global.nc4.cmrc-tmp-{}",
-        std::process::id()
-    ));
-    let temporary_mpas_graph_path = result_dir.join(format!(
-        ".MPASOUT_NXP{base_nxp:04}_global.graph.info.cmrc-tmp-{}",
-        std::process::id()
-    ));
     let mut manifest = serde_json::json!({
         "backend": "certified",
         "angle_contract": options.angle_contract.as_str(),
@@ -1440,15 +1334,11 @@ pub(super) fn deliver_certified(
         "region": region.as_ref().map_or(serde_json::Value::Null, region_publication_json),
         "remap": if is_domain_export { serde_json::Value::Null } else { serde_json::Value::String(remap_path.display().to_string()) },
         "pre_export_remap": if is_domain_export { serde_json::Value::String(remap_path.display().to_string()) } else { serde_json::Value::Null },
-        "fvcom_2dm": fvcom_output_path.as_ref().map(|path| path.display().to_string()),
         "remap_scope": if is_domain_export { format!("{pre_export_scope}_voronoi") } else { "published_grid_voronoi".to_string() },
         "published_grid_remap_status": if is_surface_masked { "not_available_after_landtype_subset" } else if is_domain_export { "not_available_after_regional_subset" } else { "certified" },
         "certificate": certificate_path.display().to_string(),
         "resources": resources_path.display().to_string(),
         "ready": ready_marker.display().to_string(),
-        "mpas": mpas_output_paths.as_ref().map(|(mesh, _)| mesh.display().to_string()),
-        "mpas_graph_info": mpas_output_paths.as_ref().map(|(_, graph)| graph.display().to_string()),
-        "mpas_sphere_radius": mpas_output_paths.as_ref().map(|_| 1.0),
     });
     if let Some(mut report) = local_update {
         report["full_delivery_recertified"] = serde_json::json!(true);
@@ -1469,9 +1359,6 @@ pub(super) fn deliver_certified(
         temporary_manifest_path.as_path(),
         temporary_resources_path.as_path(),
         temporary_ready_marker.as_path(),
-        temporary_fvcom_path.as_path(),
-        temporary_mpas_path.as_path(),
-        temporary_mpas_graph_path.as_path(),
     ];
     for path in &temporary_paths {
         let _ = fs::remove_file(path);
@@ -1503,7 +1390,6 @@ pub(super) fn deliver_certified(
             domain_quality,
             published_geometry,
             region_center_retention,
-            fvcom_2dm,
         ) = if is_domain_export {
             let (m_pre_export_lineage, w_pre_export_lineage) =
                 certified_gridfile_pre_export_lineages(&output_mesh);
@@ -1551,9 +1437,6 @@ pub(super) fn deliver_certified(
                 &domain_workdir,
                 regional_domain.as_ref(),
                 options.angle_contract,
-                fvcom_output_path
-                    .as_ref()
-                    .map(|_| temporary_fvcom_path.as_path()),
                 hard_center_demand.as_deref(),
             );
             let _ = fs::remove_dir_all(&domain_workdir);
@@ -1598,7 +1481,6 @@ pub(super) fn deliver_certified(
                 Some(published.quality_topology),
                 Some(published.geometry),
                 region_center_retention,
-                published.fvcom_2dm,
             )
         } else {
             (
@@ -1617,18 +1499,7 @@ pub(super) fn deliver_certified(
                 None,
                 None,
                 None,
-                None,
             )
-        };
-        let mpas = if mpas_output_paths.is_some() {
-            Some(publish_certified_atmos_mpas(
-                &output_mesh,
-                &mpas_context,
-                &temporary_mpas_path,
-                &temporary_mpas_graph_path,
-            )?)
-        } else {
-            None
         };
         log_cmrc_phase(
             timing_enabled,
@@ -1669,9 +1540,6 @@ pub(super) fn deliver_certified(
                 "remap": fs::metadata(&temporary_remap_path)?.len(),
                 "certificate": fs::metadata(&temporary_certificate_path)?.len(),
                 "manifest": fs::metadata(&temporary_manifest_path)?.len(),
-                "fvcom_2dm": if temporary_fvcom_path.exists() { serde_json::Value::from(fs::metadata(&temporary_fvcom_path)?.len()) } else { serde_json::Value::Null },
-                "mpas": if temporary_mpas_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_path)?.len()) } else { serde_json::Value::Null },
-                "mpas_graph_info": if temporary_mpas_graph_path.exists() { serde_json::Value::from(fs::metadata(&temporary_mpas_graph_path)?.len()) } else { serde_json::Value::Null },
             },
             "peak_memory_bytes": serde_json::Value::Null,
             "peak_memory_measurement": "external acceptance harness required",
@@ -1687,32 +1555,6 @@ pub(super) fn deliver_certified(
             })),
             "published_domain_geometry": published_geometry,
             "published_refinement_region_centers": region_center_retention,
-            "fvcom_2dm": fvcom_2dm.as_ref().map(|report| {
-                let output = fvcom_output_path.as_ref().unwrap_or(&report.output);
-                serde_json::json!({
-                    "output": output.display().to_string(),
-                    "triangles": report.triangles,
-                    "nodes": report.nodes,
-                    "boundary_segments": report.boundary_segments,
-                })
-            }),
-            "mpas": mpas.as_ref().map(|report| {
-                let (mesh, graph) = mpas_output_paths.as_ref().expect("MPAS paths");
-                serde_json::json!({
-                    "mesh": mesh.display().to_string(),
-                    "graph_info": graph.display().to_string(),
-                    "n_cells": report.report.mesh.n_cells,
-                    "n_vertices": report.report.mesh.n_vertices,
-                    "n_edges": report.report.mesh.n_edges,
-                    "graph_interior_edges": report.report.graph_info.interior_edges,
-                    "mesh_density_min": report.mesh_density_min,
-                    "mesh_density_max": report.mesh_density_max,
-                    "base_nxp": base_nxp,
-                    "step": report.step,
-                    "sphere_radius": 1.0,
-                    "unit_convention": "unit_sphere",
-                })
-            }),
             "elastic_component_epochs": elastic_report_json,
         }))
         .map_err(io::Error::other)?;
@@ -1741,13 +1583,6 @@ pub(super) fn deliver_certified(
     ];
     if let Some(parent) = &global_parent_path {
         publications.push((temporary_source_path.as_path(), parent.as_path()));
-    }
-    if let Some(fvcom_path) = &fvcom_output_path {
-        publications.push((temporary_fvcom_path.as_path(), fvcom_path.as_path()));
-    }
-    if let Some((mpas_path, graph_path)) = &mpas_output_paths {
-        publications.push((temporary_mpas_path.as_path(), mpas_path.as_path()));
-        publications.push((temporary_mpas_graph_path.as_path(), graph_path.as_path()));
     }
     publications.push((temporary_ready_marker.as_path(), ready_marker.as_path()));
     if let Err(error) = publish_artifacts(&publications, &[&obsolete_remap_path]) {

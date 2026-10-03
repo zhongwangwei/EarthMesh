@@ -584,7 +584,11 @@ MPAS 宽度：输出层原来靠来源字符串的前缀认生产者（校验版
 `MpasWidthSource`，文件里记录的字符串不变，输出不变。MPAS/FVCOM 写出改走共用交付这一条做不到输出不变：CMRC 直接跑
 namelist 时自己写 `result/MPASOUT_NXP####_global.nc4`，最终交付见清单里已有模型就不再调用共用写出；改走共用写出后文件
 移到 `standard/MPAS/mesh.nc4`，`meshDensity` 按生产者的参考宽度计算，并多两个出处属性；只跑原始流水线时 CMRC 也不再顺带出
-MPAS。待用户定。
+MPAS。用户定为改走共用交付（MPAS 与 FVCOM 都是），技术指南 11.115。
+
+做第 2 项时发现的对账缺陷也按用户的决定修了：Red-Green 与 Stretch/ICON 每一轮只记录层级不浅于该轮的命名区域（技术指南
+11.113）。另外 0717b3c6 推送前没有跑 `certified_hidden_cli`，两个依赖"只留最大海域"的海洋测试在 bc2b8070 上失败，
+49642739 让它们显式设 `isolated_ocean = .true.`。
 
 第 1 项（用户选：先做不改输出的结构统一）。输入层的 `ComposedRequirement` 与 `compose_requirement` 是每条栅格路线的起点：
 命名区域、阈值判据与水文目标合成一张单元宽度场，连同阈值审计。h-field 路线在它之上叠母网格、区域外缘与量化

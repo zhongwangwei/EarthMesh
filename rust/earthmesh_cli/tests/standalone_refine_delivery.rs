@@ -769,15 +769,13 @@ fn cli_cmrc_mpas_completion_keeps_certificate_ready_and_model_outputs() {
         let path = PathBuf::from(path.as_str().expect("model path"));
         assert!(path.is_file(), "missing model artifact {}", path.display());
     }
+    // Written by the shared delivery from CMRC's gridfile, as for any backend.
     let model_text = record["model_artifacts"].to_string();
     assert!(
-        model_text.contains("MPASOUT_NXP0003_global.nc4"),
+        model_text.contains("standard/MPAS_") && model_text.contains("mesh.nc4"),
         "{record}"
     );
-    assert!(
-        model_text.contains("MPASOUT_NXP0003_global.graph.info"),
-        "{record}"
-    );
+    assert!(model_text.contains("graph.info"), "{record}");
     let aux = record["auxiliary_artifacts"]
         .as_object()
         .expect("auxiliary artifacts");
@@ -821,7 +819,7 @@ fn cli_cmrc_mpas_completion_keeps_certificate_ready_and_model_outputs() {
         .values()
         .find_map(|value| {
             let path = value.as_str()?;
-            path.ends_with(".graph.info").then(|| PathBuf::from(path))
+            path.ends_with("graph.info").then(|| PathBuf::from(path))
         })
         .expect("graph artifact path");
     let marker = marker_path(&root, case);

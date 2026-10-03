@@ -76,7 +76,6 @@ pub(super) fn publish_regional_hex(
         topology,
         quality_topology,
         geometry,
-        fvcom_2dm: None,
     })
 }
 

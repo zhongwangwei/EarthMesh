@@ -81,20 +81,9 @@ pub fn run_refine_pipeline_with_delivery(
             ]);
         }
     }
+    // Every backend's model files are written here from the admitted native
+    // gridfile -- CMRC's too, which used to write its own MPAS and FVCOM.
     let mut models = BTreeMap::new();
-    if let Some(certified) = &report.certified_run {
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&certified.manifest)?).map_err(io::Error::other)?;
-        for (field, role) in [
-            ("fvcom_2dm", "fvcom_2dm"),
-            ("mpas", "mpas_mesh_input"),
-            ("mpas_graph_info", "mpas_graph_info"),
-        ] {
-            if let Some(path) = manifest[field].as_str() {
-                models.insert(role, PathBuf::from(path));
-            }
-        }
-    }
     if let Some(nests) = &report.icon_nest_run {
         models.extend(nests.model_artifacts());
     }
