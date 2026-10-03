@@ -2,7 +2,7 @@
 name = "earthmesh_refine_redgreen"
 version = "3.0.0-alpha9"
 edition = "2021"
-description = "Bit-for-bit compatibility port of the MOD_grid_preprocess.F90 triangle refinement pipeline. Not part of the production engine."
+description = "The Red-Green backend: marks triangles, splits them 1->4 and closes the seams (NL%refine_backend = 'red_green')"
 license = "GPL-2.0-only"
 repository = "https://github.com/zhongwangwei/EarthMesh"
 

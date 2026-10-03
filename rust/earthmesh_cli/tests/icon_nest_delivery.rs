@@ -2,7 +2,7 @@
 //! and checked the way ICON checks the domains it loads (guide 11.86).
 
 use earthmesh_cli::{validate_icon_nest_set, write_icon_nest_set};
-use earthmesh_mesh::{plan_icon_nests, IconNestOptions};
+use earthmesh_refine_icon_nest::{plan_icon_nests, IconNestOptions};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 type P = [f64; 3];

@@ -112,8 +112,8 @@ pub use mesh_stretch::{
     schmidt_factor_for_levels, schmidt_factor_for_scales, schmidt_focus_for_levels,
     schmidt_local_scale, schmidt_stretch, SchmidtFactor,
 };
-mod mesh_icon_nest;
-pub use mesh_icon_nest::{plan_icon_nests, IconNestDomain, IconNestOptions, NestVertexOrigin};
+pub mod nested_grid;
+pub use nested_grid::{IconNestDomain, NestVertexOrigin};
 mod mesh_flip;
 pub use mesh_flip::FlipError;
 pub use spherical_circumcenter_mesh::circumcenter_is_local_enough;

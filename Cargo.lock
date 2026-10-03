@@ -174,6 +174,7 @@ dependencies = [
  "earthmesh_quality",
  "earthmesh_refine",
  "earthmesh_refine_certified",
+ "earthmesh_refine_icon_nest",
  "earthmesh_refine_method_c",
  "earthmesh_refine_planner",
  "earthmesh_refine_redgreen",
@@ -294,6 +295,13 @@ dependencies = [
  "earthmesh_mesh",
  "earthmesh_quality",
  "rayon",
+]
+
+[[package]]
+name = "earthmesh_refine_icon_nest"
+version = "3.0.0-alpha9"
+dependencies = [
+ "earthmesh_mesh",
 ]
 
 [[package]]

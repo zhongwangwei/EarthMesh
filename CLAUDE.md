@@ -2,9 +2,10 @@
 
 ## There are two Rust workspaces, not one
 
-The root workspace holds fifteen crates, all under `rust/` -- including the
+The root workspace holds sixteen crates, all under `rust/` -- including the
 retained refinement backends (`earthmesh_refine_method_c`,
-`earthmesh_refine_redgreen`, and `earthmesh_refine_certified`), the output
+`earthmesh_refine_redgreen`, `earthmesh_refine_certified`, and
+`earthmesh_refine_icon_nest`), the output
 layer `earthmesh_delivery` (gridfile mesh types, NetCDF read/write, model
 writers) and the input layer `earthmesh_inputs` (source-data readers and
 `Area_judge`).
@@ -14,9 +15,9 @@ That means a root-level command silently covers only part of the repository:
 
 | command | covers | misses |
 |---|---|---|
-| `cargo test --workspace` | the fifteen engine crates | the Tauri crate |
-| `cargo fmt --all` | the fifteen engine crates | the Tauri crate |
-| `cargo clippy --workspace` | the fifteen engine crates | the Tauri crate |
+| `cargo test --workspace` | the sixteen engine crates | the Tauri crate |
+| `cargo fmt --all` | the sixteen engine crates | the Tauri crate |
+| `cargo clippy --workspace` | the sixteen engine crates | the Tauri crate |
 
 Nothing fails when the GUI is skipped — the command reports success for what it
 did run, which reads as "everything passed". After touching anything under
@@ -58,9 +59,9 @@ A crate added to the workspace is **not** automatically covered — add it to th
 Makefile lists too. This has already gone wrong once: `earthmesh_boundary`,
 `earthmesh_refine` were skipped by the fast job
 for several commits while it reported success. The counts to check against are
-15 in `fmt` (every crate), 12 in `clippy` and `test-fast` (all but the three
+16 in `fmt` (every crate), 13 in `clippy` and `test-fast` (all but the three
 NetCDF crates `earthmesh_cli`, `earthmesh_delivery` and `earthmesh_inputs`), and
-15 workspace members.
+16 workspace members.
 
 ## End-to-end regressions
 
@@ -81,7 +82,7 @@ The convention is **a branch per version**, not just a tag: `v1.0.0`, `v2.0.0`,
 pushing the branch is what builds the wheels. `master` is a separate lineage and
 is not where the v3 line lives.
 
-1. Bump the version everywhere. It appears in fifteen `Cargo.toml` files plus
+1. Bump the version everywhere. It appears in sixteen `Cargo.toml` files plus
    both `Cargo.lock` files (`cargo update -w` in the root and in
    `gui-tauri/src-tauri`), `gui-tauri/src-tauri/tauri.conf.json`, the README
    title and changelog, **`pyproject.toml`'s `version` in PEP 440 form**

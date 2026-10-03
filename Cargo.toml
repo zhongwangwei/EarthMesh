@@ -15,6 +15,7 @@ members = [
     "rust/earthmesh_refine_planner",
     "rust/earthmesh_refine_method_c",
     "rust/earthmesh_refine_certified",
+    "rust/earthmesh_refine_icon_nest",
     "rust/earthmesh_cli",
     "rust/earthmesh_delivery",
     "rust/earthmesh_inputs",

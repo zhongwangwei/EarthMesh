@@ -180,8 +180,8 @@ pub(super) fn plan_icon_nests(
             }
         }
     };
-    let options = earthmesh_mesh::IconNestOptions::default();
-    let planned = earthmesh_mesh::plan_icon_nests(points, triangles, target, &options);
+    let options = earthmesh_refine_icon_nest::IconNestOptions::default();
+    let planned = earthmesh_refine_icon_nest::plan_icon_nests(points, triangles, target, &options);
     if let Some(error) = failure.borrow_mut().take() {
         return Err(error);
     }

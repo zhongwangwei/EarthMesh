@@ -54,6 +54,7 @@ BACKEND_CRATES = (
     "earthmesh_refine_method_c",
     "earthmesh_refine_redgreen",
     "earthmesh_refine_certified",
+    "earthmesh_refine_icon_nest",
 )
 BACKEND_REFERENCE = re.compile(r"\b(" + "|".join(BACKEND_CRATES) + r")\b")
 
@@ -83,6 +84,7 @@ CLI_BACKEND_ADAPTERS = frozenset(
         "refine_pipeline/cmrc_local_updates.rs",
         "refine_pipeline/certified_pipeline.rs",
         "refine_pipeline/certified_merge.rs",
+        "refine_pipeline/icon_nest.rs",
         "refine_pipeline/lepp_targets.rs",
         "redgreen_bridge.rs",
         "method_c_adaptive_nest.rs",

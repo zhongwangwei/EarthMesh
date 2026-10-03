@@ -1,0 +1,10 @@
+[package]
+name = "earthmesh_refine_icon_nest"
+version = "3.0.0-alpha9"
+edition = "2021"
+description = "The ICON nest backend: plans nested domains over a global triangle grid, each a 1->4 bisection of its parent (NL%refine_backend = 'icon_nest')"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[dependencies]
+earthmesh_mesh = { path = "../earthmesh_mesh" }
