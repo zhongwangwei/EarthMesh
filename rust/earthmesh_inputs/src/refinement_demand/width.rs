@@ -130,7 +130,7 @@ pub fn mpas_context_from_hfield(
         base_nxp,
         step: usize::from(finest) + 1,
         density_reference_width_km: reference,
-        source: crate::mpas_gridfile_context::HFIELD_QUANTIZED_DEMAND_V1.to_string(),
+        source: crate::mpas_gridfile_context::MpasWidthSource::HfieldQuantizedDemandV1,
     };
     context.validate(mesh.w_points.len())?;
     Ok(context)
@@ -202,7 +202,7 @@ pub fn mpas_context_from_region_passes(
         base_nxp,
         step: report.deepest_level + 1,
         density_reference_width_km: reference,
-        source: crate::mpas_gridfile_context::ADAPTIVE_REGION_PASS_DEMAND_V1.to_string(),
+        source: crate::mpas_gridfile_context::MpasWidthSource::AdaptiveRegionPassDemandV1,
     };
     context.validate(mesh.w_points.len())?;
     Ok(context)
@@ -256,7 +256,7 @@ pub fn mpas_context_from_resolved_targets(
         base_nxp,
         step: report.deepest_target_level() + 1,
         density_reference_width_km: reference,
-        source: crate::mpas_gridfile_context::LEPP_RESOLVED_REGION_DEMAND_V1.to_string(),
+        source: crate::mpas_gridfile_context::MpasWidthSource::LeppResolvedRegionDemandV1,
     };
     context.validate(mesh.w_points.len())?;
     Ok(Some(context))

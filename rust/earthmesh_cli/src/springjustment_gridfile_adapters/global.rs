@@ -91,7 +91,7 @@ pub fn write_springjustment_global_gridfile(
                 widths.clone(),
                 nxp,
                 step,
-                "spring_global_distance_layers",
+                crate::mpas_gridfile_context::MpasWidthSource::SpringGlobalDistanceLayers,
             )
         })
         .transpose()?;

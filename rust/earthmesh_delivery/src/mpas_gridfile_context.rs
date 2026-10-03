@@ -11,6 +11,119 @@ const SOURCE: &str = "earthmesh_mpas_cellwidth_source";
 pub const LEPP_RESOLVED_REGION_DEMAND_V1: &str = "lepp_resolved_region_w_demand_v1";
 pub const ADAPTIVE_REGION_PASS_DEMAND_V1: &str = "adaptive_region_pass_w_demand_v1";
 pub const HFIELD_QUANTIZED_DEMAND_V1: &str = "method_c_hfield_quantized_w_demand_v1";
+const GRIDINIT_UNIFORM_BASE: &str = "gridinit_uniform_base";
+const SPRING_GLOBAL_DISTANCE_LAYERS: &str = "spring_global_distance_layers";
+const CERTIFIED_DELIVERED_LEVELS: &str = "cmrc_delivered_w_levels";
+
+/// Where a mesh's MPAS cell widths came from, as the gridfile records it in
+/// `earthmesh_mpas_cellwidth_source`.
+///
+/// The output layer reads widths from any producer the same way; what it needs
+/// to know about the producer is only whether the widths are a nominal demand
+/// (then the MPAS mesh takes the producer's reference as `nominalMinDc`) and,
+/// for a versioned demand, whether this version reads it. A file written by
+/// another version or tool keeps what it recorded, verbatim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MpasWidthSource {
+    /// The uniform base mesh: every cell the base NXP's width.
+    GridinitUniformBase,
+    /// The global spring's distance layers.
+    SpringGlobalDistanceLayers,
+    /// Method-C's h-field, quantized to levels (version 1).
+    HfieldQuantizedDemandV1,
+    /// The point+radius route's per-pass regions (version 1).
+    AdaptiveRegionPassDemandV1,
+    /// LEPP's resolved region targets (version 1).
+    LeppResolvedRegionDemandV1,
+    /// CMRC's delivered W levels.
+    CertifiedDeliveredLevels,
+    /// A source this version does not produce, kept as recorded.
+    Recorded(String),
+}
+
+impl MpasWidthSource {
+    pub fn parse(text: &str) -> Self {
+        match text {
+            GRIDINIT_UNIFORM_BASE => Self::GridinitUniformBase,
+            SPRING_GLOBAL_DISTANCE_LAYERS => Self::SpringGlobalDistanceLayers,
+            HFIELD_QUANTIZED_DEMAND_V1 => Self::HfieldQuantizedDemandV1,
+            ADAPTIVE_REGION_PASS_DEMAND_V1 => Self::AdaptiveRegionPassDemandV1,
+            LEPP_RESOLVED_REGION_DEMAND_V1 => Self::LeppResolvedRegionDemandV1,
+            CERTIFIED_DELIVERED_LEVELS => Self::CertifiedDeliveredLevels,
+            other => Self::Recorded(other.to_string()),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::GridinitUniformBase => GRIDINIT_UNIFORM_BASE,
+            Self::SpringGlobalDistanceLayers => SPRING_GLOBAL_DISTANCE_LAYERS,
+            Self::HfieldQuantizedDemandV1 => HFIELD_QUANTIZED_DEMAND_V1,
+            Self::AdaptiveRegionPassDemandV1 => ADAPTIVE_REGION_PASS_DEMAND_V1,
+            Self::LeppResolvedRegionDemandV1 => LEPP_RESOLVED_REGION_DEMAND_V1,
+            Self::CertifiedDeliveredLevels => CERTIFIED_DELIVERED_LEVELS,
+            Self::Recorded(text) => text,
+        }
+    }
+
+    /// Widths that are a nominal demand: the MPAS mesh takes the producer's
+    /// reference width as its `nominalMinDc`.
+    pub fn is_nominal_demand(&self) -> bool {
+        matches!(
+            self,
+            Self::HfieldQuantizedDemandV1
+                | Self::AdaptiveRegionPassDemandV1
+                | Self::LeppResolvedRegionDemandV1
+        )
+    }
+
+    /// Why this version cannot read the widths, if it cannot: a versioned
+    /// demand it does not know, or a known one at a level beyond its cap.
+    fn unsupported(&self, step: usize) -> Option<&'static str> {
+        const HFIELD: &str = "unsupported HField MPAS demand version or level cap";
+        const ADAPTIVE: &str = "unsupported adaptive region-pass MPAS demand version or level cap";
+        const LEPP: &str = "unsupported LEPP resolved-region MPAS demand version or level cap";
+        match self {
+            Self::HfieldQuantizedDemandV1 => (step > 6).then_some(HFIELD),
+            Self::AdaptiveRegionPassDemandV1 => (step > 6).then_some(ADAPTIVE),
+            Self::LeppResolvedRegionDemandV1 => (step > 6).then_some(LEPP),
+            Self::Recorded(text) if text.starts_with("method_c_hfield_quantized_w_demand_") => {
+                Some(HFIELD)
+            }
+            Self::Recorded(text) if text.starts_with("adaptive_region_pass_w_demand_") => {
+                Some(ADAPTIVE)
+            }
+            Self::Recorded(text) if text.starts_with("lepp_resolved_region_w_demand_") => {
+                Some(LEPP)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<&str> for MpasWidthSource {
+    fn from(text: &str) -> Self {
+        Self::parse(text)
+    }
+}
+
+impl From<String> for MpasWidthSource {
+    fn from(text: String) -> Self {
+        Self::parse(&text)
+    }
+}
+
+impl PartialEq<&str> for MpasWidthSource {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for MpasWidthSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MpasGridfileContext {
@@ -21,7 +134,7 @@ pub struct MpasGridfileContext {
     /// Original producer minimum, retained even if a crop removes the finest cells.
     pub density_reference_width_km: f64,
     /// Describes the actual producer, not a claim of equivalent backend levels.
-    pub source: String,
+    pub source: MpasWidthSource,
 }
 
 pub fn invalid(message: impl Into<String>) -> io::Error {
@@ -34,7 +147,7 @@ impl MpasGridfileContext {
         cellwidth_km: Vec<f64>,
         base_nxp: usize,
         step: usize,
-        source: &str,
+        source: MpasWidthSource,
     ) -> io::Result<Self> {
         let first =
             crate::unstructured_mesh_support::unstructured_w_row_layout(mesh).first_physical_row;
@@ -49,35 +162,15 @@ impl MpasGridfileContext {
             base_nxp,
             step,
             density_reference_width_km,
-            source: source.to_string(),
+            source,
         };
         context.validate(mesh.w_points.len())?;
         Ok(context)
     }
 
     pub fn validate(&self, rows: usize) -> io::Result<()> {
-        if self
-            .source
-            .starts_with("method_c_hfield_quantized_w_demand_")
-            && (self.source != HFIELD_QUANTIZED_DEMAND_V1 || self.step > 6)
-        {
-            return Err(invalid(
-                "unsupported HField MPAS demand version or level cap",
-            ));
-        }
-        if self.source.starts_with("adaptive_region_pass_w_demand_")
-            && (self.source != ADAPTIVE_REGION_PASS_DEMAND_V1 || self.step > 6)
-        {
-            return Err(invalid(
-                "unsupported adaptive region-pass MPAS demand version or level cap",
-            ));
-        }
-        if self.source.starts_with("lepp_resolved_region_w_demand_")
-            && (self.source != LEPP_RESOLVED_REGION_DEMAND_V1 || self.step > 6)
-        {
-            return Err(invalid(
-                "unsupported LEPP resolved-region MPAS demand version or level cap",
-            ));
+        if let Some(why) = self.source.unsupported(self.step) {
+            return Err(invalid(why));
         }
         if self.cellwidth_km.len() != rows || rows == 0 {
             return Err(invalid("MPAS cellwidth must match every native W row"));
@@ -91,7 +184,7 @@ impl MpasGridfileContext {
                 "MPAS context requires positive i32 NXP and a representable step",
             ));
         }
-        if self.source.trim().is_empty()
+        if self.source.as_str().trim().is_empty()
             || !self.density_reference_width_km.is_finite()
             || self.density_reference_width_km <= 0.0
             || self.cellwidth_km.iter().any(|&width| {
@@ -181,7 +274,7 @@ pub fn read_mpas_gridfile_context(
             _ => return Err(invalid("MPAS density reference must be f64")),
         },
         source: match attribute(SOURCE)? {
-            netcdf::AttributeValue::Str(value) => value,
+            netcdf::AttributeValue::Str(value) => MpasWidthSource::parse(&value),
             _ => return Err(invalid("MPAS cellwidth source must be text")),
         },
     };
@@ -216,7 +309,8 @@ mod tests {
             mesh.n_w_to_m.extend([3, 3]);
             let mut widths = vec![100.0; placeholders];
             widths.extend([25.0, 50.0]);
-            let context = MpasGridfileContext::from_producer(&mesh, widths, 4, 2, "test").unwrap();
+            let context =
+                MpasGridfileContext::from_producer(&mesh, widths, 4, 2, "test".into()).unwrap();
             assert_eq!(
                 crate::unstructured_mesh_support::unstructured_w_row_layout(&mesh)
                     .first_physical_row,

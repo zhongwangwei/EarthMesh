@@ -101,7 +101,7 @@ pub(crate) fn generate_gridinit_carrier(
             vec![7680.0 / nxp as f64; mesh.w_points.len()],
             nxp,
             1,
-            "gridinit_uniform_base",
+            crate::mpas_gridfile_context::MpasWidthSource::GridinitUniformBase,
         )?;
         // Fresh snapshot identities survive whole-cell extraction. Imported
         // mode files retain only their own metadata; do not invent ancestry.

@@ -836,7 +836,7 @@ fn project_lepp_resolved_region_delivers_mpas_after_selected_admission() {
     assert!((context.density_reference_width_km - reference_km).abs() < 1.0e-9);
     assert_eq!(
         scalar_attr_string(mesh, "earthmesh_mpas_cellwidth_source"),
-        context.source
+        context.source.as_str()
     );
     assert!(
         (scalar_attr_f64(mesh, "earthmesh_mpas_density_reference_width_km") - reference_km).abs()

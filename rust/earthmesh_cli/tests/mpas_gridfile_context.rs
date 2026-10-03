@@ -43,7 +43,7 @@ fn context() -> MpasGridfileContext {
         base_nxp: 80,
         step: 2,
         density_reference_width_km: 25.25,
-        source: "cmrc-test".to_string(),
+        source: "cmrc-test".into(),
     }
 }
 
@@ -616,7 +616,7 @@ fn rejects_invalid_adaptive_region_demand_inputs_and_reserved_versions() {
         &mesh, &report, base, 42,
     )
     .unwrap();
-    reserved.source = "adaptive_region_pass_w_demand_v2".to_string();
+    reserved.source = "adaptive_region_pass_w_demand_v2".into();
     let root = root("reserved_adaptive_source");
     let output = root.join("bad.nc4");
     let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
@@ -882,7 +882,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     )
     .unwrap()
     .unwrap();
-    context.source = "lepp_resolved_region_w_demand_v2".to_string();
+    context.source = "lepp_resolved_region_w_demand_v2".into();
     let err = earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &output,
         &mesh,
@@ -901,7 +901,7 @@ fn lepp_resolved_demand_requires_complete_valid_coverage_and_supported_version()
     )
     .unwrap()
     .unwrap();
-    valid.source = "lepp_resolved_region_w_demand_v1".to_string();
+    valid.source = "lepp_resolved_region_w_demand_v1".into();
     let native = root.join("native.nc4");
     earthmesh_cli::unstructured_mesh_io::write_unstructured_mesh_netcdf_with_metadata(
         &native,

@@ -131,7 +131,7 @@ fn context_for(mesh: &UnstructuredMesh) -> MpasGridfileContext {
         base_nxp: 80,
         step: 2,
         density_reference_width_km: 25.0,
-        source: "cmrc-test-final".to_string(),
+        source: "cmrc-test-final".into(),
     }
 }
 
@@ -223,7 +223,7 @@ fn scalar_attr_string(path: &Path, name: &str) -> String {
 fn assert_delivery_provenance(path: &Path, context: &MpasGridfileContext) {
     assert_eq!(
         scalar_attr_string(path, "earthmesh_mpas_cellwidth_source"),
-        context.source
+        context.source.as_str()
     );
     assert_close(
         scalar_attr_f64(path, "earthmesh_mpas_density_reference_width_km"),
@@ -426,7 +426,7 @@ fn final_mpas_delivery_rejects_raw_hfield_without_mpas_widths() {
 
 fn exact_hfield_quantized_context(mesh: &UnstructuredMesh) -> MpasGridfileContext {
     let mut context = context_for(mesh);
-    context.source = "method_c_hfield_quantized_w_demand_v1".to_string();
+    context.source = "method_c_hfield_quantized_w_demand_v1".into();
     context.density_reference_width_km = 12.5;
     context.cellwidth_km.fill(25.0);
     context.cellwidth_km[0] = 12.5;
@@ -450,7 +450,7 @@ fn final_mpas_delivery_uses_demand_reference_for_nominal_only_on_exact_source() 
             let root = temp_root("exact_hfield_nominal");
             let mesh = canonical_voronoi_fixture_mesh();
             let mut context = exact_hfield_quantized_context(&mesh);
-            context.source = source.to_string();
+            context.source = source.into();
             let gridfile = root.join("final_grid.nc4");
             let out = root.join("mpas");
             write_gridfile(&gridfile, &mesh, Some(&context));

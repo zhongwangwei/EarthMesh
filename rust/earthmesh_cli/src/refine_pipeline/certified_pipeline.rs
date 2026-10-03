@@ -1494,7 +1494,7 @@ pub(super) fn deliver_certified(
             delivered_level.checked_add(1).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "CMRC MPAS step overflow")
             })?,
-            "cmrc_delivered_w_levels",
+            crate::mpas_gridfile_context::MpasWidthSource::CertifiedDeliveredLevels,
         )?;
         let (
             report,
