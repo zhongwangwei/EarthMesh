@@ -19,6 +19,7 @@ pub use constants::{
 mod datalayers;
 pub use datalayers::{DataLayerConfig, DataLayerRole, DataLayersNamelist, ThresholdVar};
 mod datalayer_lowering;
+pub mod resolution;
 pub use datalayer_lowering::{
     lower_datalayers_namelist, LowerReport, LoweredDatalayers, RefineSwitchArray,
 };

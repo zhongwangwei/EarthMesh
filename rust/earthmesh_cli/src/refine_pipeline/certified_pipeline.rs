@@ -793,7 +793,7 @@ const DELIVERY_WALK_LIMIT: usize = 1 << 24;
 /// are walked from the face holding its centre -- through faces within the
 /// longest edge more, which no face between them and the centre is beyond --
 /// and tested as `delivery_base_faces` tests every face.
-fn delivery_base_faces_by_address(
+pub(super) fn delivery_base_faces_by_address(
     domain: &GridRegion,
     base_n: usize,
 ) -> io::Result<BTreeSet<earthmesh_refine_certified::TriangleAddress>> {
@@ -3666,7 +3666,7 @@ pub(super) struct CertifiedRequirementPlan {
     /// set it is the requirement, and the raster is an unused placeholder.
     lattice: Option<earthmesh_refine_certified::requirement::heterogeneity::HeterogeneityField>,
     /// What the merge criteria read and found, for the certificate.
-    lattice_provenance: Option<serde_json::Value>,
+    lattice_record: Option<super::certified_merge::MergeRecord>,
 }
 
 impl CertifiedRequirementPlan {
@@ -3683,7 +3683,7 @@ impl CertifiedRequirementPlan {
             domain_scoped: false,
             regions_outside_domain: 0,
             lattice: None,
-            lattice_provenance: None,
+            lattice_record: None,
         }
     }
 
@@ -3771,7 +3771,7 @@ impl CertifiedRequirementPlan {
             "histogram": elastic.map(|report| &report.requested_histogram),
             "gradation_rings_per_level": elastic.map(|_| rings),
         });
-        if let Some(lattice) = &self.lattice_provenance {
+        if let Some(lattice) = &self.lattice_record {
             return serde_json::json!({
                 "policy": "lattice_requirement_remains_hard",
                 "requirement_scope": "regional_domain",
@@ -4078,248 +4078,23 @@ pub(super) fn certified_requirement_plan(
         domain_scoped: domain.is_some(),
         regions_outside_domain,
         lattice: None,
-        lattice_provenance: None,
+        lattice_record: None,
     })
 }
 
-/// Longitude-latitude windows covering `faces` -- each face's cap, marked on
-/// 0.01-degree longitude bins and read back as runs, so a window never
-/// crosses the dateline; over the faces' latitude range. A merge criterion's
-/// layer is read in these alone.
-fn lon_lat_windows(
-    faces: &BTreeSet<earthmesh_refine_certified::TriangleAddress>,
-) -> io::Result<Vec<earthmesh_inputs::merge_layer_samples::LonLatWindow>> {
-    use earthmesh_refine_certified::mother_grid::lattice;
-    const BINS: usize = 36_000;
-    let width = 360.0 / BINS as f64;
-    let mut marked = vec![false; BINS];
-    let (mut south, mut north) = (90.0f64, -90.0f64);
-    for &face in faces {
-        let (centre, radius) = lattice::face_cap(face)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let lat = centre[2].clamp(-1.0, 1.0).asin();
-        let lon = centre[1].atan2(centre[0]);
-        south = south.min((lat - radius).to_degrees().max(-90.0));
-        north = north.max((lat + radius).to_degrees().min(90.0));
-        if lat.abs() + radius >= std::f64::consts::FRAC_PI_2 {
-            marked.fill(true);
-            continue;
-        }
-        let half = (radius.sin() / lat.cos()).min(1.0).asin();
-        let bin = |angle: f64| ((angle.to_degrees() + 180.0) / width).floor() as isize;
-        for at in bin(lon - half)..=bin(lon + half) {
-            marked[at.rem_euclid(BINS as isize) as usize] = true;
-        }
-    }
-    let mut windows = Vec::new();
-    let mut at = 0;
-    while at < BINS {
-        if !marked[at] {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        while at < BINS && marked[at] {
-            at += 1;
-        }
-        windows.push(earthmesh_inputs::merge_layer_samples::LonLatWindow {
-            west: -180.0 + start as f64 * width,
-            east: -180.0 + at as f64 * width,
-            south,
-            north,
-        });
-    }
-    Ok(windows)
-}
-
-/// What the merge criteria alone ask of a namelist's domain (design H3,
-/// step 7), before any coarsening: the lattice field over the domain's base
-/// faces and its criterion mesh -- every face merged where it may be, before
-/// balance and transitions -- level by level, with each level's cell size.
-/// The layers are read as a run reads them, so thresholds can be tuned
-/// against this in seconds rather than a run.
-pub fn certified_merge_preview(namelist_source: &Path) -> io::Result<serde_json::Value> {
-    let invalid_input = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message);
-    let contents = fs::read_to_string(namelist_source)?;
-    let config = EarthmeshConfig::from_mkgrd_namelist(&contents)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let merge = read_certified_merge_options(&contents)?
-        .ok_or_else(|| invalid_input("the namelist has no &certified_merge"))?;
-    let options = crate::certified_options::read_certified_options(&contents)?;
-    let domain = (!config.mask_domain_global)
-        .then(|| read_method_c_domain_region(&config))
-        .transpose()?
-        .flatten()
-        .ok_or_else(|| invalid_input("CMRC merge criteria need a regional domain"))?;
-    let base_nxp = usize::try_from(config.nxp)
-        .ok()
-        .filter(|&nxp| nxp > 0)
-        .ok_or_else(|| invalid_input("CMRC NXP must be positive"))?;
-    let plan = certified_merge_plan(&merge, base_nxp, &domain, options.maximum_level)?;
-    let (Some(field), Some(mut preview)) = (plan.lattice, plan.lattice_provenance) else {
-        return Err(io::Error::other("a merge plan carries its field"));
-    };
-    let base_cell_m = CertifiedMergeOptions::base_cell_m(base_nxp);
-    preview["base_nxp"] = base_nxp.into();
-    preview["criterion_mesh"] = field
-        .leaves_per_level()
-        .iter()
-        .enumerate()
-        .map(|(level, &faces)| {
-            serde_json::json!({
-                "level": level,
-                "cell_m": base_cell_m / (1u64 << level) as f64,
-                "faces": faces,
-            })
-        })
-        .collect::<Vec<_>>()
-        .into();
-    Ok(preview)
-}
-
-/// The merge criteria's requirement (`&certified_merge`, design H3): every
-/// layer read at its own resolution in the windows of the domain's base
-/// faces, and the lattice field built bottom up over those faces -- no
-/// requirement raster, no h-field. The field is cut to the finest level any
-/// face requires (one at least, so reverse coarsening has a level to merge).
+/// The merge criteria as the requirement plan: the lattice field is the
+/// requirement, the raster an unused placeholder (`certified_merge`).
 fn certified_merge_plan(
     merge: &CertifiedMergeOptions,
     base_nxp: usize,
     domain: &GridRegion,
     maximum_level: usize,
 ) -> io::Result<CertifiedRequirementPlan> {
-    use earthmesh_refine_certified::requirement::heterogeneity::{
-        Criterion, HeterogeneityField, Statistic,
-    };
-    let invalid_data = |error: String| io::Error::new(io::ErrorKind::InvalidData, error);
-    let levels = merge.levels(base_nxp)?;
-    if levels > maximum_level {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "CMRC MaximumLevelReached: the merge criteria start {levels} levels below the \
-                 base, &certified maximum_level is {maximum_level}"
-            ),
-        ));
-    }
-    let faces = delivery_base_faces_by_address(domain, base_nxp)?;
-    let windows = lon_lat_windows(&faces)?;
-    let mut layers = Vec::<(PathBuf, String)>::new();
-    let criteria = merge
-        .criteria
-        .iter()
-        .map(|criterion| {
-            let key = (criterion.file.clone(), criterion.variable.clone());
-            let layer = match layers.iter().position(|layer| *layer == key) {
-                Some(layer) => layer,
-                None => {
-                    layers.push(key);
-                    layers.len() - 1
-                }
-            };
-            Criterion {
-                layer,
-                statistic: criterion.statistic,
-                threshold: criterion.threshold,
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut samples = Vec::with_capacity(layers.len());
-    for (file, variable) in &layers {
-        let mut read = Vec::new();
-        for &window in &windows {
-            read.extend(
-                earthmesh_inputs::merge_layer_samples::read_window_samples(file, variable, window)
-                    .map_err(|error| {
-                        io::Error::new(
-                            error.kind(),
-                            format!(
-                                "certified_merge layer {variable} in {}: {error}",
-                                file.display()
-                            ),
-                        )
-                    })?,
-            );
-        }
-        samples.push(read);
-    }
-    let unit = |lon: f64, lat: f64| {
-        let (lon, lat) = (lon.to_radians(), lat.to_radians());
-        [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
-    };
-    let field = HeterogeneityField::build(
-        base_nxp,
-        levels,
-        &faces,
-        layers.len(),
-        samples.iter().enumerate().flat_map(|(layer, read)| {
-            read.iter()
-                .map(move |&(lon, lat, value)| (layer, unit(lon, lat), value))
-        }),
-        &criteria,
-        merge.minimum_samples,
-    )
-    .map_err(invalid_data)?;
-    let finest_required = field.finest_required();
-    let field = field
-        .truncated(finest_required.max(1))
-        .map_err(invalid_data)?;
-    let base_cell_m = CertifiedMergeOptions::base_cell_m(base_nxp);
-    let statistic_name = |statistic: Statistic| match statistic {
-        Statistic::StandardDeviation => "std",
-        Statistic::CoefficientOfVariation => "cv",
-        Statistic::Purity => "purity",
-    };
-    let provenance = serde_json::json!({
-        "source": "merge_criteria",
-        "base_cell_m": base_cell_m,
-        "levels_requested": levels,
-        "finest_cell_m_requested": base_cell_m / (1u64 << levels) as f64,
-        "finest_level_required": finest_required,
-        "levels_built": field.levels(),
-        "base_faces": field.base_faces(),
-        "demanding_base_faces": field.demanding_base_faces().count(),
-        "criterion_mesh_leaves_per_level": field.leaves_per_level(),
-        "minimum_samples": merge.minimum_samples,
-        "windows": windows
-            .iter()
-            .map(|window| [window.west, window.east, window.south, window.north])
-            .collect::<Vec<_>>(),
-        "layers": layers
-            .iter()
-            .zip(&samples)
-            .map(|((file, variable), read)| serde_json::json!({
-                "file": file.display().to_string(),
-                "variable": variable,
-                "samples_read": read.len(),
-            }))
-            .collect::<Vec<_>>(),
-        "criteria": criteria
-            .iter()
-            .map(|criterion| serde_json::json!({
-                "layer": criterion.layer,
-                "statistic": statistic_name(criterion.statistic),
-                "threshold": criterion.threshold,
-            }))
-            .collect::<Vec<_>>(),
-    });
-    eprintln!(
-        "earthmesh_cli: cmrc_merge base_faces={} samples={:?} levels={levels} \
-         finest_required={finest_required} leaves_per_level={:?}",
-        faces.len(),
-        samples.iter().map(Vec::len).collect::<Vec<_>>(),
-        field.leaves_per_level()
-    );
-    if samples.iter().all(Vec::is_empty) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "certified_merge: no layer has a valid sample in the regional domain (check that \
-             the layers cover it)",
-        ));
-    }
+    let requirement =
+        super::certified_merge::merge_requirement(merge, base_nxp, domain, maximum_level)?;
     Ok(CertifiedRequirementPlan {
-        lattice: Some(field),
-        lattice_provenance: Some(provenance),
+        lattice: Some(requirement.field),
+        lattice_record: Some(requirement.record),
         sourced: true,
         domain_scoped: true,
         ..CertifiedRequirementPlan::uniform()

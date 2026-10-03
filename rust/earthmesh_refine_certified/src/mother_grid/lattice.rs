@@ -254,6 +254,56 @@ pub fn face_cap(address: TriangleAddress) -> Result<([f64; 3], f64), String> {
     Ok((center, radius))
 }
 
+/// Longitude-latitude boxes, in degrees `[west, east, south, north]`, that
+/// cover `faces`: each face's cap marked on 0.01-degree longitude bins and
+/// read back as runs, so no box crosses the dateline, over the faces'
+/// latitude range. The window a data layer is read in to serve a field on
+/// these faces; a cap over a pole takes every longitude.
+pub fn lon_lat_boxes(
+    faces: impl IntoIterator<Item = TriangleAddress>,
+) -> Result<Vec<[f64; 4]>, String> {
+    const BINS: usize = 36_000;
+    let width = 360.0 / BINS as f64;
+    let mut marked = vec![false; BINS];
+    let (mut south, mut north) = (90.0f64, -90.0f64);
+    for face in faces {
+        let (centre, radius) = face_cap(face)?;
+        let lat = centre[2].clamp(-1.0, 1.0).asin();
+        let lon = centre[1].atan2(centre[0]);
+        south = south.min((lat - radius).to_degrees().max(-90.0));
+        north = north.max((lat + radius).to_degrees().min(90.0));
+        if lat.abs() + radius >= std::f64::consts::FRAC_PI_2 {
+            marked.fill(true);
+            continue;
+        }
+        // The cap's half-width in longitude at its centre's latitude.
+        let half = (radius.sin() / lat.cos()).min(1.0).asin();
+        let bin = |angle: f64| ((angle.to_degrees() + 180.0) / width).floor() as isize;
+        for at in bin(lon - half)..=bin(lon + half) {
+            marked[at.rem_euclid(BINS as isize) as usize] = true;
+        }
+    }
+    let mut boxes = Vec::new();
+    let mut at = 0;
+    while at < BINS {
+        if !marked[at] {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < BINS && marked[at] {
+            at += 1;
+        }
+        boxes.push([
+            -180.0 + start as f64 * width,
+            -180.0 + at as f64 * width,
+            south,
+            north,
+        ]);
+    }
+    Ok(boxes)
+}
+
 /// A face's corners on the unit sphere, in lattice order -- `generate`'s
 /// order, at `generate`'s positions -- so sums over them round as the built
 /// grid's do.
@@ -351,6 +401,51 @@ mod tests {
     use super::*;
     use crate::mother_grid::MotherGrid;
     use std::collections::BTreeMap;
+
+    /// Every corner of the faces lies in a box; faces across the dateline
+    /// give two boxes, each inside -180..180; a face at a pole takes every
+    /// longitude.
+    #[test]
+    fn lon_lat_boxes_cover_their_faces() {
+        let lon_lat = |point: [f64; 3]| {
+            (
+                point[1].atan2(point[0]).to_degrees(),
+                point[2].clamp(-1.0, 1.0).asin().to_degrees(),
+            )
+        };
+        let unit = |lon: f64, lat: f64| {
+            let (lon, lat) = (f64::to_radians(lon), f64::to_radians(lat));
+            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+        };
+        for (lon, lat, expected_boxes) in [(102.7, 25.0, 1), (179.95, -10.0, 2), (0.0, 89.9, 1)] {
+            let n = 240;
+            let centre = locate(n, unit(lon, lat)).unwrap();
+            let mut faces = BTreeSet::from([centre]);
+            faces.extend(faces_around(centre).unwrap());
+            let boxes = lon_lat_boxes(faces.iter().copied()).unwrap();
+            assert_eq!(boxes.len(), expected_boxes, "{boxes:?}");
+            for b in &boxes {
+                assert!(
+                    -180.0 <= b[0] && b[0] < b[1] && b[1] <= 180.0 && b[2] < b[3],
+                    "{b:?}"
+                );
+            }
+            for &face in &faces {
+                for corner in face_corner_points(face).unwrap() {
+                    let (lon, lat) = lon_lat(corner);
+                    assert!(
+                        boxes
+                            .iter()
+                            .any(|b| b[0] <= lon && lon <= b[1] && b[2] <= lat && lat <= b[3]),
+                        "corner {lon},{lat} outside {boxes:?}"
+                    );
+                }
+            }
+            if lat > 89.0 {
+                assert_eq!(boxes[0][0..2], [-180.0, 180.0]);
+            }
+        }
+    }
 
     /// Faces around every vertex and every face's edge neighbours agree with
     /// the whole grid's incidence.

@@ -82,6 +82,7 @@ CLI_BACKEND_ADAPTERS = frozenset(
         "refine_pipeline/global_source.rs",
         "refine_pipeline/cmrc_local_updates.rs",
         "refine_pipeline/certified_pipeline.rs",
+        "refine_pipeline/certified_merge.rs",
         "refine_pipeline/lepp_targets.rs",
         "redgreen_bridge.rs",
         "method_c_adaptive_nest.rs",

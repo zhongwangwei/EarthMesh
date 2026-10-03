@@ -209,14 +209,12 @@ fn merge_criteria_drive_a_regional_reverse_coarsening() {
     );
     assert!(far.contains(&0), "{far:?}");
 
-    // The preview is the run's lattice record, with the criterion mesh;
-    // every finest face lies under one of its faces.
-    let mut preview = preview(&path, &root);
-    let faces = criterion_faces(&preview);
-    let fields = preview.as_object_mut().unwrap();
-    fields.remove("criterion_mesh");
-    assert_eq!(fields.remove("base_nxp"), Some(120.into()));
+    // The preview is the record the run published, field for field; every
+    // finest face lies under one face of its criterion mesh.
+    let preview = preview(&path, &root);
     assert_eq!(&preview, lattice);
+    assert_eq!(preview["base_nxp"], 120);
+    let faces = criterion_faces(&preview);
     assert_eq!(
         faces[0] * 4 + faces[1],
         lattice["base_faces"].as_u64().unwrap() * 4

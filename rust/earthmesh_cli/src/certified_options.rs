@@ -204,29 +204,21 @@ pub struct CertifiedMergeOptions {
 }
 
 impl CertifiedMergeOptions {
-    /// Levels below a base of `base_nxp`: as given, or the power of two
-    /// nearest the ratio of the base cell to `finest_m`, cells measured as
-    /// the h-field measures them (2 pi R / 5 NXP).
+    /// Levels below a base of `base_nxp`: as given, or the level nearest
+    /// `finest_m` on the resolution ladder (`earthmesh_core::resolution`).
     pub fn levels(&self, base_nxp: usize) -> io::Result<usize> {
         match self.finest {
             CertifiedFinest::Levels(levels) => Ok(levels),
             CertifiedFinest::Metres(metres) => {
-                let base_m = Self::base_cell_m(base_nxp);
-                let levels = (base_m / metres).log2().round();
-                if levels < 1.0 {
-                    return Err(invalid(format!(
+                earthmesh_core::resolution::levels_to_cell(base_nxp, metres).ok_or_else(|| {
+                    invalid(format!(
                         "certified_merge finest_m={metres} is not finer than the base cell \
-                         ({base_m:.0} m at NXP={base_nxp})"
-                    )));
-                }
-                Ok(levels as usize)
+                         ({:.0} m at NXP={base_nxp})",
+                        earthmesh_core::resolution::base_cell_metres(base_nxp)
+                    ))
+                })
             }
         }
-    }
-
-    /// The base cell size the levels count down from, metres.
-    pub fn base_cell_m(base_nxp: usize) -> f64 {
-        2.0 * std::f64::consts::PI * earthmesh_hfield::EARTH_RADIUS_METERS / (5.0 * base_nxp as f64)
     }
 }
 
@@ -408,7 +400,7 @@ mod tests {
             ]
         );
         // 30 m from a 1 km base: five levels, 31 m.
-        let nxp = (CertifiedMergeOptions::base_cell_m(1) / 1000.0).round() as usize;
+        let nxp = (earthmesh_core::resolution::NXP1_CELL_METRES / 1000.0).round() as usize;
         assert_eq!(options.levels(nxp).unwrap(), 5);
         assert!(read_certified_merge_options("&mkgrd\n/").unwrap().is_none());
 

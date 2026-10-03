@@ -438,15 +438,15 @@ impl ProjectConfig {
             ResolutionSpec::ApproxKm(km) => crate::km_to_nxp(km),
             ResolutionSpec::ApproxDegree(degrees) => crate::degree_to_nxp(degrees),
         });
-        let base_m = crate::nxp_to_km(nxp) * 1000.0;
-        let levels = (base_m / merge.finest_m).log2().round();
-        if levels < 1.0 {
+        let nxp = usize::try_from(nxp.max(1)).unwrap_or(1);
+        let base_m = earthmesh_core::resolution::base_cell_metres(nxp);
+        let Some(levels) = earthmesh_core::resolution::levels_to_cell(nxp, merge.finest_m) else {
             return Err(format!(
                 "refinement.certified.merge finest_m {} is not finer than the base cell ({base_m:.0} m)",
                 merge.finest_m
             ));
-        }
-        if levels > f64::from(certified.maximum_level) {
+        };
+        if levels > usize::from(certified.maximum_level) {
             return Err(format!(
                 "refinement.certified.merge finest_m {} is {levels} levels below the base cell ({base_m:.0} m); maximum_level is {}",
                 merge.finest_m, certified.maximum_level
