@@ -87,8 +87,14 @@ def netcdf_differences(left, right):
 SCRATCH_NAME = re.compile(r"earthmesh-(run|lowered)-\d+-\d+-\d+")
 
 
+# Any run directory, not only this side's own: a base kept from another
+# working directory (--reuse-base after a copy) names its original one.
+ANY_RUN_ROOT = re.compile(r"/[^\s\"']*?/project\.yaml\.earthmesh-run-[^/\s\"']*")
+
+
 def normalised_text(text, root):
-    return SCRATCH_NAME.sub(r"earthmesh-\1-N", text.replace(root, "<RUN>"))
+    text = ANY_RUN_ROOT.sub("<RUN>", text.replace(root, "<RUN>"))
+    return SCRATCH_NAME.sub(r"earthmesh-\1-N", text)
 
 
 VOLATILE_JSON_KEYS = {"certification_elapsed_ms", "elapsed_ms", "elapsed_seconds", "wall_seconds"}
