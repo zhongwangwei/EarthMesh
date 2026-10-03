@@ -225,8 +225,17 @@ pub fn refine_levels(request: &RedGreenRequest<'_>) -> io::Result<RedGreenLevels
         let region_targets = RegionTargets::new(&marked_regions);
         let before = redgreen.triangle_count();
         // What this level itself asked for, as the run record reports it; the
-        // marking reads `region_targets`, which holds every level's.
-        let mut level_regions: Vec<RefinementRegion> = named_regions.to_vec();
+        // marking reads `region_targets`, which holds every level's. Only the
+        // named regions asked at least this deep: the record keeps a pass's
+        // regions without their own levels, and the quality step reads every
+        // one as asking for the pass's level -- a level-1 region listed in
+        // pass 2 read as level-2 demand and reported cells below a target
+        // nobody set (guide 11.113).
+        let mut level_regions: Vec<RefinementRegion> = named_regions
+            .iter()
+            .filter(|region| region.level() >= level)
+            .cloned()
+            .collect();
         let mut demanded_cells = 0usize;
         if let (Some(criteria), Some(demand)) = (criteria, planned_circles.get(level - 1)) {
             demanded_cells = demand.demanded_cells;
@@ -462,4 +471,50 @@ pub fn finish_levels(
         transition_faces,
         hex_repaired,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pass_records_only_the_named_regions_asked_that_deep() {
+        // The quality step reads every region of a pass at the pass's level,
+        // so a level-1 region listed in pass 2 would read as level-2 demand.
+        let mesh = TriangularMesh::from_icosahedron(6, 0, 1.0, 0.25).expect("base mesh");
+        let shallow = RefinementRegion::Circle {
+            center: LonLatDegrees::new(0.0, 0.0),
+            radius_meters: 3_000_000.0,
+            level: 1,
+        };
+        let deep = RefinementRegion::Circle {
+            center: LonLatDegrees::new(90.0, 0.0),
+            radius_meters: 3_000_000.0,
+            level: 2,
+        };
+        let named = [shallow.clone(), deep.clone()];
+        let refine = RefineConfig {
+            is_transition: true,
+            ..RefineConfig::default()
+        };
+        let levels = refine_levels(&RedGreenRequest {
+            mesh: &mesh,
+            named_regions: &named,
+            refine: &refine,
+            max_level: 2,
+            mother_levels: 0,
+            criteria: None,
+            hfield: None,
+            base_cell_meters: 1_000_000.0,
+            preserve_locality: true,
+        })
+        .expect("two red-green levels");
+        assert_eq!(levels.passes.len(), 2);
+        assert_eq!(levels.passes[0].regions, vec![shallow, deep.clone()]);
+        assert_eq!(
+            levels.passes[1].regions,
+            vec![deep],
+            "a level-1 region is not level-2 demand"
+        );
+    }
 }

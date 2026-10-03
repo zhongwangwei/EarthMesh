@@ -2495,7 +2495,14 @@ fn fixed_topology_adaptive_run(
     let mut stopped_on_empty_demand = planned_circles.is_empty() && named_regions.is_empty();
     for (index, demand) in planned_circles.iter().enumerate() {
         let level = index + 1;
-        let mut pass_regions = named_regions.to_vec();
+        // The named regions asked at least this deep, as red-green records
+        // them: the quality step reads every region of a pass at the pass's
+        // level.
+        let mut pass_regions = named_regions
+            .iter()
+            .filter(|region| region.level() >= level)
+            .cloned()
+            .collect::<Vec<_>>();
         pass_regions.extend(demand.circles.iter().cloned());
         if !pass_regions.iter().any(|region| region.level() >= level) {
             stopped_on_empty_demand = true;

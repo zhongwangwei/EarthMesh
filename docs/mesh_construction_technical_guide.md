@@ -5394,8 +5394,9 @@ Method-C 传它的 `max_mrows`（`refine_pipeline::hfield_transition_rows`），
 **改前 Red-Green 的 597 个"低于目标"是对账的错，不是加密不够。** 运行记录 `adaptive_refinement.json` 按轮记圆，只写经纬度与
 半径；质量步骤把一轮里的圆都当作这一轮的层级（`every_circle_reads_back_with_the_level_that_emitted_it`）。Red-Green 与
 Stretch/ICON（`fixed_topology_adaptive_run`）每一轮都写上全部命名区域，于是第 2 轮里第 1 层的父圆被当成第 2 层要求，897 个
-单元被要求到第 2 层。去掉父层后目标与实际对上（262 对 284）。只要命名区域本身有不同层级，或有区域母网格的域区域，这个
-错仍会出现；修法是每一轮只记录层级不浅于该轮的区域。尚未修（改的是质量报告，待定）。
+单元被要求到第 2 层。去掉父层后目标与实际对上（262 对 284）。只要命名区域本身有不同层级，这个错仍会出现，所以记录也改了
+（2026-10-03，用户确认）：Red-Green 与 Stretch/ICON 每一轮只记录层级不浅于该轮的命名区域。网格与 MPAS 宽度不变——宽度本来
+就按 `contains_lonlat_canonical(site, 该轮层级)` 只认够深的区域——变的是 `adaptive_refinement.json` 与质量对账。
 
 ### 11.114 CMRC 的海洋裁剪改用共用规则（2026-10-03）
 
