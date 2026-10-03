@@ -1,3 +1,5 @@
+pub mod heterogeneity;
+
 use crate::fingerprint::mesh_fingerprint;
 use crate::remap::{voronoi_rings, ConservativeRemap};
 use earthmesh_mesh::MeshState;

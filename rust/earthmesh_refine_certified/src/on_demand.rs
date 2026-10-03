@@ -287,7 +287,7 @@ pub fn materialization_extent_by_address(
     delivered: &BTreeSet<TriangleAddress>,
 ) -> Result<MaterializationExtent, String> {
     use crate::mother_grid::lattice::{face_cap, faces_around, locate, longest_edge};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
 
     if base_n == 0 {
         return Err("base subdivision must be positive".into());
@@ -354,6 +354,31 @@ pub fn materialization_extent_by_address(
         }
     }
 
+    materialization_extent_from_seeds(base_n, levels, margins, &seeds, delivered)
+}
+
+/// The extent around base faces `seeds` -- faces a requirement reaches,
+/// however it was found: the margin rings the coarsening may touch, the
+/// delivered faces with a ring, and the frame of two rings beyond. What
+/// `materialization_extent_by_address` does after its raster seeds, and
+/// what a lattice requirement field (`requirement::heterogeneity`) hands
+/// over directly.
+pub fn materialization_extent_from_seeds(
+    base_n: usize,
+    levels: usize,
+    margins: ExtentMargins,
+    seeds: &BTreeSet<TriangleAddress>,
+    delivered: &BTreeSet<TriangleAddress>,
+) -> Result<MaterializationExtent, String> {
+    use crate::mother_grid::lattice::faces_around;
+    use std::collections::BTreeMap;
+
+    if base_n == 0 {
+        return Err("base subdivision must be positive".into());
+    }
+    if let Some(face) = seeds.iter().chain(delivered).find(|face| face.n != base_n) {
+        return Err(format!("{face:?} is not a level-{base_n} face"));
+    }
     // Rings around the seeds, delivered faces with one ring, then the frame.
     let rings = (1..=levels)
         .map(|level| (margins.parent_rings_per_level + 1).div_ceil(1usize << (level - 1).min(62)))
@@ -361,7 +386,7 @@ pub fn materialization_extent_by_address(
         + 2;
     let mut distance = BTreeMap::new();
     let mut queue = std::collections::VecDeque::new();
-    for &seed in &seeds {
+    for &seed in seeds {
         distance.insert(seed, 0usize);
         queue.push_back(seed);
     }
