@@ -53,6 +53,7 @@ fmt:
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_certified/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_refine_icon_nest/Cargo.toml --check
+	$(CARGO) fmt --manifest-path rust/earthmesh_refine_stretch/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_delivery/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_inputs/Cargo.toml --check
 	$(CARGO) fmt --manifest-path rust/earthmesh_cli/Cargo.toml --check
@@ -79,6 +80,7 @@ clippy:
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_redgreen/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_certified/Cargo.toml --all-targets -- -D warnings
 	$(CARGO) clippy --manifest-path rust/earthmesh_refine_icon_nest/Cargo.toml --all-targets -- -D warnings
+	$(CARGO) clippy --manifest-path rust/earthmesh_refine_stretch/Cargo.toml --all-targets -- -D warnings
 
 clippy-gui:
 	CARGO_TARGET_DIR=$(GUI_TARGET_DIR) $(CARGO) clippy --manifest-path gui-tauri/src-tauri/Cargo.toml --all-targets -- -D warnings

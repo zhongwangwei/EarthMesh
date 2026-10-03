@@ -55,6 +55,7 @@ BACKEND_CRATES = (
     "earthmesh_refine_redgreen",
     "earthmesh_refine_certified",
     "earthmesh_refine_icon_nest",
+    "earthmesh_refine_stretch",
 )
 BACKEND_REFERENCE = re.compile(r"\b(" + "|".join(BACKEND_CRATES) + r")\b")
 

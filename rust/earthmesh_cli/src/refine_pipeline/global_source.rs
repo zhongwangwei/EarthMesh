@@ -2760,11 +2760,9 @@ fn refine_with_stretch(
         levels[v] = targets.target_level(lonlat)?;
     }
     let asks_anywhere = targets.demands_anywhere(1);
-    let Some((focus, focus_factor)) = earthmesh_mesh::schmidt_focus_for_levels(
-        &points,
-        &levels,
-        2f64.powi(max_level.min(16) as i32),
-    ) else {
+    let Some(plan) =
+        earthmesh_refine_stretch::plan_stretch(&points, &levels, h0_radians, max_level)
+    else {
         // Nothing to stretch toward: the grid as it is, when that is the answer.
         if !asks_anywhere
             && planned_circles.iter().all(|demand| !demand.demanded)
@@ -2809,30 +2807,17 @@ fn refine_with_stretch(
         ));
     };
     drop(targets);
-    // `2^deepest` makes only the focus that fine; the scale grows away from
-    // it, so the factor is the one the farthest demanded point needs (half a
-    // base cell beyond it, so the cells over the demand's edge qualify too).
-    // At most four times `2^deepest`: a demand needing more is too spread
-    // for one focus, and the stretch would coarsen the rest of the globe by
-    // as much.
-    let needed = earthmesh_mesh::schmidt_factor_for_levels(
-        &points,
-        &levels,
-        focus,
-        h0_radians.unwrap_or(0.0) / 2.0,
-        4.0 * focus_factor,
-    );
-    let factor = needed.factor;
-    if needed.unreachable > 0 || needed.capped {
+    let (focus, factor, focus_factor) = (plan.focus, plan.factor, plan.focus_factor);
+    if plan.unreachable > 0 || plan.capped {
         eprintln!(
             "earthmesh_cli: warning: stretch refinement cannot serve all of its demand from one \
              focus: {} demanded vertex(es) lie too far from it to reach their level at any \
              factor (farthest {:.1} deg; the reach is asin(2^-level) -- 30 deg for level 1, \
              14.5 for level 2){}. The quality reconciliation reports them as coarser than \
              target. refinement.backend IconNest serves scattered demand with one nest per region",
-            needed.unreachable,
-            needed.farthest_unreachable_deg,
-            if needed.capped {
+            plan.unreachable,
+            plan.farthest_unreachable_deg,
+            if plan.capped {
                 format!(
                     ", and the rest would need more than the cap of {:.1}",
                     4.0 * focus_factor
@@ -2842,8 +2827,8 @@ fn refine_with_stretch(
             }
         );
     }
-    let demanded = levels.iter().filter(|&&level| level > 0).count();
-    earthmesh_mesh::schmidt_stretch(&mut points, focus, factor);
+    let demanded = plan.demanded;
+    earthmesh_refine_stretch::apply_stretch(&mut points, &plan);
     for &v in &live {
         let r = radius_of(state.vertices()[v]);
         let p = points[v];

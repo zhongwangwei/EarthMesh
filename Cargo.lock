@@ -178,6 +178,7 @@ dependencies = [
  "earthmesh_refine_method_c",
  "earthmesh_refine_planner",
  "earthmesh_refine_redgreen",
+ "earthmesh_refine_stretch",
  "flate2",
  "hdf5-metno-sys",
  "netcdf",
@@ -329,6 +330,13 @@ name = "earthmesh_refine_redgreen"
 version = "3.0.0-alpha9"
 dependencies = [
  "earthmesh_hfield",
+ "earthmesh_mesh",
+]
+
+[[package]]
+name = "earthmesh_refine_stretch"
+version = "3.0.0-alpha9"
+dependencies = [
  "earthmesh_mesh",
 ]
 

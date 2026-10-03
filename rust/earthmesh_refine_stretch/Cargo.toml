@@ -1,0 +1,10 @@
+[package]
+name = "earthmesh_refine_stretch"
+version = "3.0.0-alpha9"
+edition = "2021"
+description = "The Stretch backend: moves an icosahedral grid's vertices toward the demand by a Schmidt transform, keeping its topology (NL%refine_backend = 'stretch')"
+license = "GPL-2.0-only"
+repository = "https://github.com/zhongwangwei/EarthMesh"
+
+[dependencies]
+earthmesh_mesh = { path = "../earthmesh_mesh" }
